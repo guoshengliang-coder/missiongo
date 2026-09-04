@@ -1,6 +1,10 @@
 import type {
   AttachmentKind,
   ActorKind,
+  ExecutionMode,
+  ExecutionReport,
+  ExecutionStatus,
+  ExecutionTriggerSource,
   TransitionReason,
   WorkItemEnvironment,
   WorkItemPriority,
@@ -86,6 +90,32 @@ export interface AppendAnalysisInput {
   readonly evidence: readonly string[];
   readonly risks: readonly string[];
   readonly agentName?: string;
+  readonly idempotencyKey: string;
+}
+
+export interface ExecutionSnapshot {
+  readonly id: string;
+  readonly itemKey: string;
+  readonly agentId: string;
+  readonly mode: Exclude<ExecutionMode, "analyze">;
+  readonly triggerSource: ExecutionTriggerSource;
+  readonly status: ExecutionStatus;
+  readonly report?: ExecutionReport;
+  readonly humanQuestion?: string;
+  readonly activeLease?: {
+    readonly id: string;
+    readonly expiresAt: string;
+  };
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly completedAt?: string;
+}
+
+export interface ClaimExecutionInput {
+  readonly itemKey: string;
+  readonly agentId: string;
+  readonly mode: Exclude<ExecutionMode, "analyze">;
+  readonly leaseSeconds: number;
   readonly idempotencyKey: string;
 }
 

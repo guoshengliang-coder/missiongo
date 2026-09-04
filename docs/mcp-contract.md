@@ -16,17 +16,11 @@ MCP 服务不能依赖自定义管理界面才能使用。工具应返回简洁�
 - `get_item_context`
 - `get_item_timeline`
 - `get_attachment`
-
-计划中的只读工具：
-
 - `get_execution`
 
 已实现的受控写入工具：
 
 - `append_analysis`
-
-计划中的受控写入工具：
-
 - `claim_item`
 - `renew_item_lease`
 - `append_progress`
@@ -44,7 +38,8 @@ MCP 服务不得提供任意 SQL、任意修改工作条目、删除条目、最
 - `claim_item` 必须执行原子比较并设置，同时创建一条执行记录和一份租约。
 - 租约必须绑定工作条目、执行记录、AI 和 Token 权限范围。
 - 不符合领域状态机的状态变化必须由服务端拒绝。
-- AI 不领取任务、不改变工作条目状态，也可以追加分析。
+- 只分析模式不领取任务、不改变工作条目状态，只能追加分析。
+- 实际处理必须由用户指定编号并明确发起；首版不自动扫描或领取队列。
 - 提交处理结果时，必须先保存完整报告，再允许条目进入人工验收状态。
 - `get_attachment` 可以返回小型图片；在受控资源或短期访问地址实现前，大型图片和视频只返回元数据。主条目响应永远不内嵌附件内容。
 - `get_item_context` 在存在相关数据时，必须包含结构化平台、产品版本、构建版本、代码版本、系统、设备、自定义元数据和附件元数据。
@@ -63,6 +58,7 @@ MCP 服务不得提供任意 SQL、任意修改工作条目、删除条目、最
 - `lease_expired`
 - `invalid_state_transition`
 - `idempotency_conflict`
+- `resolution_required`
 - `attachment_not_found`
 - `validation_failed`
 

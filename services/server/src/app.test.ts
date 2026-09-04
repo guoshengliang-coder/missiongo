@@ -94,6 +94,9 @@ describe("MissionGo REST API", () => {
     const names = (tools.result?.tools as Array<{ name: string }>).map((tool) => tool.name);
     expect(names).toContain("get_item_context");
     expect(names).toContain("append_analysis");
+    expect(names).toContain("claim_item");
+    expect(names).toContain("submit_resolution");
+    expect(names).toContain("mark_pending_verification");
     expect(names.some((name) => name.toLowerCase().includes("sql"))).toBe(false);
 
     const context = await call(3, "tools/call", { name: "get_item_context", arguments: { itemKey: "HG-1" } });
@@ -126,6 +129,216 @@ describe("MissionGo REST API", () => {
     expect(
       timeline.json<{ events: Array<{ eventType: string }> }>().events.filter((event) => event.eventType === "analysis_appended"),
     ).toHaveLength(1);
+
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "task",
+        priority: "normal",
+        title: "Process through MCP",
+        description: "Exercise the controlled processing tools.",
+      },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items/HG-2/transitions",
+      payload: { to: "ready", reason: "triaged" },
+    });
+    const claimed = await call(7, "tools/call", {
+      name: "claim_item",
+      arguments: {
+        itemKey: "HG-2",
+        agentId: "codex-mcp-test",
+        mode: "process",
+        leaseSeconds: 900,
+        idempotencyKey: "mcp-claim-hg-2",
+      },
+    });
+    const execution = claimed.result?.structuredContent as { executionId: string; leaseId: string };
+    await call(8, "tools/call", {
+      name: "submit_resolution",
+      arguments: {
+        executionId: execution.executionId,
+        leaseId: execution.leaseId,
+        report: {
+          conclusion: "Processing completed.",
+          changeSummary: "Verified the MCP processing lifecycle.",
+          affectedFiles: [],
+          checks: [{ name: "contract", outcome: "passed", summary: "The MCP calls succeeded." }],
+          remainingRisks: [],
+          manualVerificationSteps: ["Confirm the item is pending verification."],
+        },
+        idempotencyKey: "mcp-resolution-hg-2",
+      },
+    });
+    await call(9, "tools/call", {
+      name: "mark_pending_verification",
+      arguments: {
+        executionId: execution.executionId,
+        leaseId: execution.leaseId,
+        idempotencyKey: "mcp-pending-hg-2",
+      },
+    });
+    expect((await app.inject({ method: "GET", url: "/api/v1/items/HG-2" })).json()).toMatchObject({
+      status: "pending_verification",
+    });
+  });
+
+  it("runs an idempotent AI processing lease through pending human verification", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "MissionGo", keyPrefix: "MG" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "task",
+        priority: "normal",
+        title: "Add processing workflow",
+        description: "Let an AI claim, report, and hand work back for verification.",
+      },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items/MG-1/transitions",
+      payload: { to: "ready", reason: "triaged" },
+    });
+
+    const claimInput = {
+      itemKey: "MG-1",
+      agentId: "codex-test",
+      mode: "process" as const,
+      leaseSeconds: 900,
+      idempotencyKey: "claim-mg-1",
+    };
+    const claim = app.missionGoStore.claimExecution(claimInput);
+    const repeatedClaim = app.missionGoStore.claimExecution(claimInput);
+    expect(repeatedClaim).toEqual(claim);
+    expect(claim).toMatchObject({ itemKey: "MG-1", status: "running", activeLease: { id: expect.any(String) } });
+    expect((await app.inject({ method: "GET", url: "/api/v1/items/MG-1" })).json()).toMatchObject({
+      status: "in_progress",
+    });
+
+    const leaseId = claim.activeLease!.id;
+    app.missionGoStore.appendExecutionProgress({
+      executionId: claim.id,
+      leaseId,
+      message: "Implementation and tests are complete.",
+      idempotencyKey: "progress-mg-1",
+    });
+    expect(() => app.missionGoStore.markExecutionPendingVerification({
+      executionId: claim.id,
+      leaseId,
+      idempotencyKey: "pending-too-early-mg-1",
+    })).toThrowError(/resolution report/);
+    const resolved = app.missionGoStore.submitExecutionResolution({
+      executionId: claim.id,
+      leaseId,
+      report: {
+        conclusion: "The requested workflow is implemented.",
+        changeSummary: "Added a lease-backed processing lifecycle.",
+        affectedFiles: ["services/server/src/store.ts"],
+        checks: [{ name: "tests", outcome: "passed", summary: "All tests passed." }],
+        remainingRisks: [],
+        manualVerificationSteps: ["Review the timeline and approve the item."],
+      },
+      idempotencyKey: "resolution-mg-1",
+    });
+    expect(resolved).toMatchObject({ status: "succeeded", report: { checks: [{ outcome: "passed" }] } });
+
+    const pending = app.missionGoStore.markExecutionPendingVerification({
+      executionId: claim.id,
+      leaseId,
+      idempotencyKey: "pending-mg-1",
+    });
+    expect(pending.activeLease).toBeUndefined();
+    expect((await app.inject({ method: "GET", url: "/api/v1/items/MG-1" })).json()).toMatchObject({
+      status: "pending_verification",
+    });
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/MG-1/transitions",
+      payload: { to: "done", reason: "verification_passed", note: "Human verification passed." },
+    });
+    expect(accepted.json()).toMatchObject({ status: "done" });
+
+    const events = (await app.inject({ method: "GET", url: "/api/v1/items/MG-1/timeline" })).json<{
+      events: Array<{ eventType: string }>;
+    }>().events;
+    expect(events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
+      "execution_claimed",
+      "execution_progress",
+      "resolution_submitted",
+    ]));
+  });
+
+  it("prevents concurrent claims and safely pauses, resumes, and releases an execution", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Hermes Go", keyPrefix: "HG" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "bug",
+        priority: "high",
+        title: "Needs a product decision",
+        description: "The safe behavior is ambiguous.",
+      },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items/HG-1/transitions",
+      payload: { to: "ready", reason: "triaged" },
+    });
+
+    const claimed = app.missionGoStore.claimExecution({
+      itemKey: "HG-1",
+      agentId: "codex-one",
+      mode: "process",
+      leaseSeconds: 900,
+      idempotencyKey: "claim-hg-1-one",
+    });
+    expect(() => app.missionGoStore.claimExecution({
+      itemKey: "HG-1",
+      agentId: "codex-two",
+      mode: "process",
+      leaseSeconds: 900,
+      idempotencyKey: "claim-hg-1-two",
+    })).toThrowError(/active AI lease/);
+
+    const paused = app.missionGoStore.requestExecutionHumanInput({
+      executionId: claimed.id,
+      leaseId: claimed.activeLease!.id,
+      question: "Should this preserve the existing fallback behavior?",
+      idempotencyKey: "question-hg-1",
+    });
+    expect(paused).toMatchObject({ status: "waiting_for_human", humanQuestion: expect.any(String) });
+    expect(paused.activeLease).toBeUndefined();
+    expect((await app.inject({ method: "GET", url: "/api/v1/items/HG-1" })).json()).toMatchObject({ status: "on_hold" });
+
+    const resumed = app.missionGoStore.resumeExecution({
+      executionId: claimed.id,
+      leaseSeconds: 900,
+      idempotencyKey: "resume-hg-1",
+    });
+    expect(resumed).toMatchObject({ status: "running", activeLease: { id: expect.any(String) } });
+    const released = app.missionGoStore.releaseExecution({
+      executionId: claimed.id,
+      leaseId: resumed.activeLease!.id,
+      note: "The user asked to defer this change.",
+      idempotencyKey: "release-hg-1",
+    });
+    expect(released).toMatchObject({ status: "aborted" });
+    expect(released.activeLease).toBeUndefined();
+    expect((await app.inject({ method: "GET", url: "/api/v1/items/HG-1" })).json()).toMatchObject({ status: "ready" });
   });
 
   it("protects management routes when an admin token is configured", async () => {

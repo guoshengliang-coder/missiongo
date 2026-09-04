@@ -1,6 +1,6 @@
 # AI 客户端接入说明
 
-服务端配置 `MCP_API_TOKEN` 后，MissionGo 会在 `/mcp` 提供带鉴权的 Streamable HTTP MCP 端点。当前工具支持按需读取条目、查看附件和回写分析，不提供 SQL、任意修改条目、领取任务或自动处理能力。
+服务端配置 `MCP_API_TOKEN` 后，MissionGo 会在 `/mcp` 提供带鉴权的 Streamable HTTP MCP 端点。当前工具支持按需读取、分析和处理用户指定的条目，不提供 SQL、任意字段修改、自动扫描队列或最终人工验收能力。
 
 真实服务地址和 Token 必须只保存在本地配置中。下面全部使用示例值。
 
@@ -35,7 +35,16 @@ enabled_tools = [
   "get_item_context",
   "get_item_timeline",
   "get_attachment",
+  "get_execution",
   "append_analysis",
+  "claim_item",
+  "renew_item_lease",
+  "append_progress",
+  "request_human_input",
+  "submit_resolution",
+  "mark_pending_verification",
+  "release_item",
+  "resume_execution",
 ]
 default_tools_approval_mode = "writes"
 ```
@@ -43,6 +52,10 @@ default_tools_approval_mode = "writes"
 把仓库中的 [`skills/missiongo`](../skills/missiongo) 安装或链接到本机 Codex Skill 目录。之后可以直接这样说：
 
 > 分析 MissionGo 条目 HG-12，把结论回写到条目中，不要修改代码。
+
+或在条目已经由人工整理为 `ready` 后：
+
+> 处理 MissionGo 条目 HG-12，完成代码修改和验证后，把结果转为待人工验证；不要 push 或 merge。
 
 ## Claude Code
 
@@ -70,7 +83,7 @@ Claude Code 支持带请求头的 HTTP MCP 服务。如果部署地址属于隐�
 
 - URL：`https://missiongo.example.com/mcp`
 - 请求头：`Authorization: Bearer <本地 Token>`
-- 工具：允许使用 Codex 示例中列出的七个工具
+- 工具：允许使用 Codex 示例中列出的工具
 
 如果客户端支持可复用指令或 Skill，请使用 [`skills/missiongo/SKILL.md`](../skills/missiongo/SKILL.md) 中的工作流。MCP 配置负责提供数据访问，Skill 负责约束安全的分析流程。
 
@@ -81,3 +94,11 @@ Claude Code 支持带请求头的 HTTP MCP 服务。如果部署地址属于隐�
 - `get_item_timeline`：分页读取历史事件。
 - `get_attachment`：分页读取日志；小型图片可以直接交给 AI 查看；视频和大型图片暂时只返回元数据。
 - `append_analysis`：把结论、依据和风险写入时间线，不改变条目状态。重复使用同一个幂等键时会返回原结果，不会创建重复记录。
+- `claim_item`、`renew_item_lease`：按编号原子领取条目，并维持有时限的处理租约。
+- `append_progress`、`request_human_input`、`resume_execution`：记录关键进度，或安全暂停并恢复等待人工信息的处理。
+- `submit_resolution`：回写代码改动、检查结果、剩余风险和人工验证步骤。
+- `mark_pending_verification`：仅在处理报告已保存后，把条目转为“待验证”；AI 不能转为“已完成”。
+- `release_item`：未完成时释放租约并让条目回到可处理状态。
+- `get_execution`：读取一次 AI 处理的状态、报告和当前租约信息。
+
+当前是按需模式：必须由用户给出条目编号并明确要求处理，不会自动扫描或领取待办队列。
