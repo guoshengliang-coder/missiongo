@@ -49,7 +49,6 @@ export type ComponentKind = (typeof COMPONENT_KINDS)[number];
 export interface Component {
   readonly id: string;
   readonly productId: string;
-  readonly parentComponentId?: string;
   readonly name: string;
   readonly kind: ComponentKind;
   readonly createdAt: string;

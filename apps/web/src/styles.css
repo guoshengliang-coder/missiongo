@@ -389,6 +389,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .product-create-panel { width: min(460px, 100%); margin: 30px auto; }
 .product-create-panel h3 { margin: 0 0 20px; font-size: 20px; }
 .product-settings { display: flex; flex-direction: column; gap: 22px; }
+.product-settings-tabs { display: flex; gap: 4px; padding: 4px; background: #eeece6; border-radius: 11px; }
+.product-settings-tabs button { flex: 1; min-height: 38px; padding: 7px 14px; color: var(--muted); background: transparent; border: 0; border-radius: 8px; font-size: 12px; font-weight: 750; cursor: pointer; }
+.product-settings-tabs button:hover { color: var(--ink); }
+.product-settings-tabs button.active { color: var(--ink); background: white; box-shadow: 0 1px 4px rgba(27, 37, 33, .09); }
 .product-settings-section { padding-bottom: 22px; border-bottom: 1px solid var(--line); }
 .product-settings-section:last-child { border-bottom: 0; }
 .product-settings-section > header { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 15px; }
@@ -401,10 +405,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .component-header-actions { display: flex; align-items: center; gap: 9px; }
 .component-add-trigger { min-height: 36px; }
 .component-management-help { margin: -5px 0 15px; color: var(--muted); font-size: 11px; line-height: 1.55; }
-.component-list-head { display: grid; grid-template-columns: minmax(0, 1.2fr) 128px minmax(155px, .8fr) 62px; gap: 8px; padding: 0 10px; color: var(--muted); font-size: 9px; font-weight: 750; }
-.component-tree-entry { position: relative; }
-.component-tree-entry[style]:not([style="padding-left: 0px;"])::before { content: ""; position: absolute; top: 0; bottom: 50%; left: 7px; width: 9px; border-left: 1px solid var(--line-dark); border-bottom: 1px solid var(--line-dark); border-radius: 0 0 0 6px; }
-.component-settings-row, .component-add-row { display: grid; grid-template-columns: minmax(0, 1.2fr) 128px minmax(155px, .8fr) auto; align-items: center; gap: 8px; }
+.component-list-head { display: grid; grid-template-columns: minmax(0, 1fr) 128px 62px; gap: 8px; padding: 0 10px; color: var(--muted); font-size: 9px; font-weight: 750; }
+.component-settings-row, .component-add-row { display: grid; grid-template-columns: minmax(0, 1fr) 128px auto; align-items: center; gap: 8px; }
 .component-settings-row .inline-error { grid-column: 1 / -1; }
 .component-settings-row input, .component-settings-row select { height: 38px; }
 .component-settings-row .secondary-button, .component-add-row .secondary-button { height: 38px; white-space: nowrap; }

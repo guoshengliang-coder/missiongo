@@ -237,7 +237,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       productId,
       name: stringField(body, "name")!,
       kind: enumField(body, "kind", COMPONENT_KINDS)! as ComponentKind,
-      ...(stringField(body, "parentComponentId", false) ? { parentComponentId: body.parentComponentId as string } : {}),
     });
     return reply.status(201).send(component);
   });
@@ -248,9 +247,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return store.updateComponent(productId, componentId, {
       name: stringField(body, "name")!,
       kind: enumField(body, "kind", COMPONENT_KINDS)! as ComponentKind,
-      ...(body.parentComponentId !== undefined
-        ? { parentComponentId: body.parentComponentId === null ? null : stringField(body, "parentComponentId")! }
-        : {}),
     });
   });
 

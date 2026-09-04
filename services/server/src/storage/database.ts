@@ -38,13 +38,6 @@ export class MissionGoDatabase {
 
   private migrate(): void {
     this.connection.exec(INITIAL_SCHEMA);
-    const componentColumns = this.connection.prepare("PRAGMA table_info(components)").all() as unknown as Array<{ name: string }>;
-    if (!componentColumns.some((column) => column.name === "parent_component_id")) {
-      this.connection.exec(
-        "ALTER TABLE components ADD COLUMN parent_component_id TEXT REFERENCES components(id) ON DELETE SET NULL;",
-      );
-    }
-    this.connection.exec("CREATE INDEX IF NOT EXISTS idx_components_parent ON components(parent_component_id);");
     this.connection
       .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
       .run(1, new Date().toISOString());
@@ -60,6 +53,24 @@ export class MissionGoDatabase {
     this.connection
       .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
       .run(5, new Date().toISOString());
+
+    const flatComponentMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 6")
+      .get() as unknown as { version: number } | undefined;
+    if (!flatComponentMigration) {
+      this.transaction(() => {
+        const componentColumns = this.connection
+          .prepare("PRAGMA table_info(components)")
+          .all() as unknown as Array<{ name: string }>;
+        if (componentColumns.some((column) => column.name === "parent_component_id")) {
+          this.connection.exec("DROP INDEX IF EXISTS idx_components_parent;");
+          this.connection.exec("ALTER TABLE components DROP COLUMN parent_component_id;");
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(6, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

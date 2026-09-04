@@ -82,12 +82,12 @@ export const api = {
     }),
   listComponents: (productId: string) =>
     request<Component[]>(`/api/v1/products/${encodeURIComponent(productId)}/components`),
-  createComponent: (productId: string, input: { name: string; kind: ComponentKind; parentComponentId?: string }) =>
+  createComponent: (productId: string, input: { name: string; kind: ComponentKind }) =>
     request<Component>(`/api/v1/products/${encodeURIComponent(productId)}/components`, {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  updateComponent: (productId: string, componentId: string, input: { name: string; kind: ComponentKind; parentComponentId?: string | null }) =>
+  updateComponent: (productId: string, componentId: string, input: { name: string; kind: ComponentKind }) =>
     request<Component>(`/api/v1/products/${encodeURIComponent(productId)}/components/${encodeURIComponent(componentId)}`, {
       method: "PATCH",
       body: JSON.stringify(input),

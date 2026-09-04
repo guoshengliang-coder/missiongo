@@ -1088,7 +1088,7 @@ function WorkItemFields({
             disabled={componentsQuery.isLoading || !draft.environment.platform}
           >
             <option value="">{t("allModules")}</option>
-            {componentTreeEntries((componentsQuery.data ?? []).filter((component) => component.kind === draft.environment.platform)).map(({ component, depth }) => <option key={component.id} value={component.id}>{`${"— ".repeat(depth)}${component.name}`}</option>)}
+            {(componentsQuery.data ?? []).filter((component) => component.kind === draft.environment.platform).map((component) => <option key={component.id} value={component.id}>{component.name}</option>)}
           </select>
         </label>
         <label>{t("priority")}<select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
@@ -1494,22 +1494,26 @@ function ProductManager({
 function ProductSettings({ product, onSelected }: { product: Product; onSelected: () => void }) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components">("product");
   const [name, setName] = useState(product.name);
   const [newComponentName, setNewComponentName] = useState("");
   const [newComponentKind, setNewComponentKind] = useState<ComponentKind>("android");
-  const [newComponentParentId, setNewComponentParentId] = useState("");
   const [addingComponent, setAddingComponent] = useState(false);
-  const componentsQuery = useQuery({ queryKey: ["components", product.id], queryFn: () => api.listComponents(product.id) });
-  const componentEntries = useMemo(() => componentTreeEntries(componentsQuery.data ?? []), [componentsQuery.data]);
+  const componentsQuery = useQuery({
+    queryKey: ["components", product.id],
+    queryFn: () => api.listComponents(product.id),
+    enabled: activeSettingsTab === "components",
+  });
+  const components = componentsQuery.data ?? [];
 
   const closeComponentForm = () => {
     setAddingComponent(false);
     setNewComponentName("");
     setNewComponentKind("android");
-    setNewComponentParentId("");
   };
 
   useEffect(() => setName(product.name), [product.id, product.name]);
+  useEffect(() => setActiveSettingsTab("product"), [product.id]);
 
   const productMutation = useMutation({
     mutationFn: () => api.updateProduct(product.id, { name }),
@@ -1522,7 +1526,6 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
     mutationFn: () => api.createComponent(product.id, {
       name: newComponentName,
       kind: newComponentKind,
-      ...(newComponentParentId ? { parentComponentId: newComponentParentId } : {}),
     }),
     onSuccess: async () => {
       closeComponentForm();
@@ -1532,95 +1535,108 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
 
   return (
     <div className="product-settings">
-      <section className="product-settings-section">
-        <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("productSettings")}</h3></div></header>
-        <div className="product-settings-grid">
-          <label>{t("productName")}<input value={name} onChange={(event) => setName(event.target.value)} /></label>
-          <label>{t("itemPrefix")}<input value={product.keyPrefix} readOnly /><small>{t("prefixLockedHelp")}</small></label>
-        </div>
-        {productMutation.isError && <InlineError message={errorMessage(productMutation.error, t("somethingWentWrong"))} />}
-        <button className="primary-button settings-save" disabled={!name.trim() || name.trim() === product.name || productMutation.isPending} onClick={() => productMutation.mutate()}>
-          {productMutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {t("saveProduct")}
+      <div className="product-settings-tabs" role="tablist" aria-label={t("productSettings")}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeSettingsTab === "product"}
+          className={activeSettingsTab === "product" ? "active" : ""}
+          onClick={() => setActiveSettingsTab("product")}
+        >
+          {t("productInformation")}
         </button>
-      </section>
-      <section className="product-settings-section component-management">
-        <header>
-          <div><p className="eyebrow">{t("productComponents")}</p><h3>{t("manageComponents")}</h3></div>
-          <div className="component-header-actions">
-            <span>{componentsQuery.data?.length ?? 0}</span>
-            {(componentsQuery.data?.length ?? 0) > 0 && (
-              <button className="primary-button component-add-trigger" onClick={() => setAddingComponent((value) => !value)}><Plus size={15} /> {t("newComponent")}</button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeSettingsTab === "components"}
+          className={activeSettingsTab === "components" ? "active" : ""}
+          onClick={() => setActiveSettingsTab("components")}
+        >
+          {t("moduleManagement")}
+        </button>
+      </div>
+      {activeSettingsTab === "product" ? (
+        <section className="product-settings-section" role="tabpanel">
+          <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("productInformation")}</h3></div></header>
+          <div className="product-settings-grid">
+            <label>{t("productName")}<input value={name} onChange={(event) => setName(event.target.value)} /></label>
+            <label>{t("itemPrefix")}<input value={product.keyPrefix} readOnly /><small>{t("prefixLockedHelp")}</small></label>
+          </div>
+          {productMutation.isError && <InlineError message={errorMessage(productMutation.error, t("somethingWentWrong"))} />}
+          <button className="primary-button settings-save" disabled={!name.trim() || name.trim() === product.name || productMutation.isPending} onClick={() => productMutation.mutate()}>
+            {productMutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {t("saveProduct")}
+          </button>
+        </section>
+      ) : (
+        <section className="product-settings-section component-management" role="tabpanel">
+          <header>
+            <div><p className="eyebrow">{t("productComponents")}</p><h3>{t("moduleManagement")}</h3></div>
+            <div className="component-header-actions">
+              <span>{componentsQuery.data?.length ?? 0}</span>
+              {(componentsQuery.data?.length ?? 0) > 0 && (
+                <button className="primary-button component-add-trigger" onClick={() => setAddingComponent((value) => !value)}><Plus size={15} /> {t("newComponent")}</button>
+              )}
+            </div>
+          </header>
+          <p className="component-management-help">{t("componentManagementHelp")}</p>
+          <div className="component-manager-list">
+            {components.length > 0 && (
+              <div className="component-list-head">
+                <span>{t("componentName")}</span><span>{t("componentKind")}</span><span>{t("save")}</span>
+              </div>
+            )}
+            {components.map((component) => (
+              <div key={component.id}>
+                <ComponentSettingsRow component={component} />
+              </div>
+            ))}
+            {!componentsQuery.isLoading && (componentsQuery.data?.length ?? 0) === 0 && !addingComponent && (
+              <div className="component-empty-state">
+                <button className="primary-button" onClick={() => setAddingComponent(true)}><Plus size={17} /> {t("newComponent")}</button>
+              </div>
             )}
           </div>
-        </header>
-        <p className="component-management-help">{t("componentManagementHelp")}</p>
-        <div className="component-manager-list">
-          {componentEntries.length > 0 && (
-            <div className="component-list-head">
-              <span>{t("componentName")}</span><span>{t("componentKind")}</span><span>{t("parentComponent")}</span><span>{t("save")}</span>
+          {addingComponent && (
+            <div className="component-add-panel">
+              <header>
+                <h4>{t("newComponent")}</h4>
+                <button className="secondary-button component-add-cancel" disabled={componentMutation.isPending} onClick={closeComponentForm}><X size={15} /> {t("cancel")}</button>
+              </header>
+              <div className="component-add-row">
+                <label>{t("componentName")}<input value={newComponentName} onChange={(event) => setNewComponentName(event.target.value)} placeholder={t("componentNamePlaceholder")} autoFocus /></label>
+                <label>{t("componentKind")}<select value={newComponentKind} onChange={(event) => setNewComponentKind(event.target.value as ComponentKind)}>{COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</select></label>
+                <button className="primary-button" disabled={!newComponentName.trim() || componentMutation.isPending} onClick={() => componentMutation.mutate()}>
+                  {componentMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createComponent")}
+                </button>
+              </div>
             </div>
           )}
-          {componentEntries.map(({ component, depth }) => (
-            <div className="component-tree-entry" style={{ paddingLeft: depth * 18 }} key={component.id}>
-              <ComponentSettingsRow component={component} components={componentsQuery.data ?? []} />
-            </div>
-          ))}
-          {!componentsQuery.isLoading && (componentsQuery.data?.length ?? 0) === 0 && !addingComponent && (
-            <div className="component-empty-state">
-              <button className="primary-button" onClick={() => setAddingComponent(true)}><Plus size={17} /> {t("newComponent")}</button>
-            </div>
-          )}
-        </div>
-        {addingComponent && (
-          <div className="component-add-panel">
-            <header>
-              <h4>{t("newComponent")}</h4>
-              <button className="secondary-button component-add-cancel" disabled={componentMutation.isPending} onClick={closeComponentForm}><X size={15} /> {t("cancel")}</button>
-            </header>
-            <div className="component-add-row">
-              <label>{t("componentName")}<input value={newComponentName} onChange={(event) => setNewComponentName(event.target.value)} placeholder={t("componentNamePlaceholder")} autoFocus /></label>
-              <label>{t("componentKind")}<select value={newComponentKind} onChange={(event) => setNewComponentKind(event.target.value as ComponentKind)}>{COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</select></label>
-              <label>{t("parentComponent")}<select value={newComponentParentId} onChange={(event) => setNewComponentParentId(event.target.value)}><option value="">{t("topLevelComponent")}</option>{componentEntries.map(({ component, depth }) => <option key={component.id} value={component.id}>{`${"— ".repeat(depth)}${component.name}`}</option>)}</select></label>
-              <button className="primary-button" disabled={!newComponentName.trim() || componentMutation.isPending} onClick={() => componentMutation.mutate()}>
-                {componentMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createComponent")}
-              </button>
-            </div>
-          </div>
-        )}
-        {componentMutation.isError && <InlineError message={errorMessage(componentMutation.error, t("somethingWentWrong"))} />}
-      </section>
+          {componentMutation.isError && <InlineError message={errorMessage(componentMutation.error, t("somethingWentWrong"))} />}
+        </section>
+      )}
     </div>
   );
 }
 
-function ComponentSettingsRow({ component, components }: { component: Component; components: readonly Component[] }) {
+function ComponentSettingsRow({ component }: { component: Component }) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
   const [name, setName] = useState(component.name);
   const [kind, setKind] = useState<ComponentKind>(component.kind);
-  const [parentComponentId, setParentComponentId] = useState(component.parentComponentId ?? "");
   useEffect(() => {
     setName(component.name);
     setKind(component.kind);
-    setParentComponentId(component.parentComponentId ?? "");
-  }, [component.kind, component.name, component.parentComponentId]);
-  const unavailableParentIds = componentDescendantIds(component.id, components);
-  unavailableParentIds.add(component.id);
-  const parentOptions = componentTreeEntries(components).filter(({ component: option }) => !unavailableParentIds.has(option.id));
+  }, [component.kind, component.name]);
   const mutation = useMutation({
-    mutationFn: () => api.updateComponent(component.productId, component.id, { name, kind, parentComponentId: parentComponentId || null }),
+    mutationFn: () => api.updateComponent(component.productId, component.id, { name, kind }),
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["components", component.productId] }),
   });
-  const changed = name.trim() !== component.name || kind !== component.kind || parentComponentId !== (component.parentComponentId ?? "");
+  const changed = name.trim() !== component.name || kind !== component.kind;
   return (
     <div className="component-settings-row">
       <input value={name} onChange={(event) => setName(event.target.value)} aria-label={t("componentName")} />
       <select value={kind} onChange={(event) => setKind(event.target.value as ComponentKind)} aria-label={t("componentKind")}>
         {COMPONENT_KINDS.map((value) => <option key={value} value={value}>{t(value)}</option>)}
-      </select>
-      <select value={parentComponentId} onChange={(event) => setParentComponentId(event.target.value)} aria-label={t("parentComponent")}>
-        <option value="">{t("topLevelComponent")}</option>
-        {parentOptions.map(({ component: option, depth }) => <option key={option.id} value={option.id}>{`${"— ".repeat(depth)}${option.name}`}</option>)}
       </select>
       <button className="secondary-button" disabled={!changed || !name.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
         {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
@@ -1628,45 +1644,6 @@ function ComponentSettingsRow({ component, components }: { component: Component;
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
     </div>
   );
-}
-
-function componentTreeEntries(components: readonly Component[]): readonly { component: Component; depth: number }[] {
-  const componentIds = new Set(components.map((component) => component.id));
-  const children = new Map<string | null, Component[]>();
-  for (const component of components) {
-    const parentId = component.parentComponentId && componentIds.has(component.parentComponentId) ? component.parentComponentId : null;
-    children.set(parentId, [...(children.get(parentId) ?? []), component]);
-  }
-  for (const entries of children.values()) entries.sort((left, right) => left.name.localeCompare(right.name));
-  const result: Array<{ component: Component; depth: number }> = [];
-  const visited = new Set<string>();
-  const visit = (component: Component, depth: number) => {
-    if (visited.has(component.id)) return;
-    visited.add(component.id);
-    result.push({ component, depth });
-    for (const child of children.get(component.id) ?? []) visit(child, depth + 1);
-  };
-  for (const root of children.get(null) ?? []) visit(root, 0);
-  for (const component of components) visit(component, 0);
-  return result;
-}
-
-function componentDescendantIds(componentId: string, components: readonly Component[]): Set<string> {
-  const children = new Map<string, string[]>();
-  for (const component of components) {
-    if (!component.parentComponentId) continue;
-    children.set(component.parentComponentId, [...(children.get(component.parentComponentId) ?? []), component.id]);
-  }
-  const descendants = new Set<string>();
-  const visit = (id: string) => {
-    for (const childId of children.get(id) ?? []) {
-      if (descendants.has(childId)) continue;
-      descendants.add(childId);
-      visit(childId);
-    }
-  };
-  visit(componentId);
-  return descendants;
 }
 
 function ProductForm({ onCreated }: { onCreated: (product: Product) => void | Promise<void> }) {

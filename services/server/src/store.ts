@@ -51,7 +51,6 @@ interface ProductRow {
 interface ComponentRow {
   id: string;
   product_id: string;
-  parent_component_id: string | null;
   name: string;
   kind: ComponentKind;
   created_at: string;
@@ -200,23 +199,21 @@ export class MissionGoStore {
     return this.getProduct(productId);
   }
 
-  createComponent(input: { productId: string; name: string; kind: ComponentKind; parentComponentId?: string }): ComponentSnapshot {
+  createComponent(input: { productId: string; name: string; kind: ComponentKind }): ComponentSnapshot {
     this.getProduct(input.productId);
     const name = requiredText(input.name, "Component name");
     if (!isOneOf(input.kind, COMPONENT_KINDS)) {
       throw invalidInput(`Unsupported component kind: ${String(input.kind)}.`);
     }
-    if (input.parentComponentId) this.assertValidComponentParent(input.productId, input.parentComponentId);
-
     const now = new Date().toISOString();
     const id = randomUUID();
     try {
       this.database.connection
         .prepare(
-          `INSERT INTO components (id, product_id, parent_component_id, name, kind, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO components (id, product_id, name, kind, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, input.productId, input.parentComponentId ?? null, name, input.kind, now, now);
+        .run(id, input.productId, name, input.kind, now, now);
     } catch (error) {
       if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
         throw conflict("component_name_conflict", `Component ${name} already exists in this product.`);
@@ -231,7 +228,7 @@ export class MissionGoStore {
     this.getProduct(productId);
     const rows = this.database.connection
       .prepare(
-        `SELECT id, product_id, parent_component_id, name, kind, created_at, updated_at
+        `SELECT id, product_id, name, kind, created_at, updated_at
          FROM components WHERE product_id = ? ORDER BY name`,
       )
       .all(productId) as unknown as ComponentRow[];
@@ -241,24 +238,18 @@ export class MissionGoStore {
   updateComponent(
     productId: string,
     componentId: string,
-    input: { name: string; kind: ComponentKind; parentComponentId?: string | null },
+    input: { name: string; kind: ComponentKind },
   ): ComponentSnapshot {
     this.getProduct(productId);
     const current = this.getComponent(componentId);
     if (current.productId !== productId) throw notFound("Component");
     const name = requiredText(input.name, "Component name");
     if (!isOneOf(input.kind, COMPONENT_KINDS)) throw invalidInput(`Unsupported component kind: ${String(input.kind)}.`);
-    const parentComponentId = input.parentComponentId === undefined
-      ? current.parentComponentId
-      : input.parentComponentId ?? undefined;
-    if (parentComponentId) {
-      this.assertValidComponentParent(productId, parentComponentId, componentId);
-    }
     const now = new Date().toISOString();
     try {
       this.database.connection
-        .prepare("UPDATE components SET name = ?, kind = ?, parent_component_id = ?, updated_at = ? WHERE id = ?")
-        .run(name, input.kind, parentComponentId ?? null, now, componentId);
+        .prepare("UPDATE components SET name = ?, kind = ?, updated_at = ? WHERE id = ?")
+        .run(name, input.kind, now, componentId);
     } catch (error) {
       if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
         throw conflict("component_name_conflict", `Component ${name} already exists in this product.`);
@@ -1027,24 +1018,10 @@ export class MissionGoStore {
 
   private getComponent(componentId: string): ComponentSnapshot {
     const row = this.database.connection
-      .prepare("SELECT id, product_id, parent_component_id, name, kind, created_at, updated_at FROM components WHERE id = ?")
+      .prepare("SELECT id, product_id, name, kind, created_at, updated_at FROM components WHERE id = ?")
       .get(componentId) as unknown as ComponentRow | undefined;
     if (!row) throw notFound("Component");
     return this.mapComponent(row);
-  }
-
-  private assertValidComponentParent(productId: string, parentComponentId: string, componentId?: string): void {
-    let candidate: ComponentSnapshot | undefined = this.getComponent(parentComponentId);
-    const visited = new Set<string>();
-    while (candidate) {
-      if (candidate.productId !== productId) {
-        throw invalidInput("The parent component must belong to the same product.");
-      }
-      if (candidate.id === componentId) throw invalidInput("A component cannot be its own parent or descendant.");
-      if (visited.has(candidate.id)) throw invalidInput("The component hierarchy contains a cycle.");
-      visited.add(candidate.id);
-      candidate = candidate.parentComponentId ? this.getComponent(candidate.parentComponentId) : undefined;
-    }
   }
 
   private getWorkItemRow(itemKey: string): WorkItemRow | undefined {
@@ -1129,7 +1106,6 @@ export class MissionGoStore {
     return {
       id: row.id,
       productId: row.product_id,
-      ...(row.parent_component_id ? { parentComponentId: row.parent_component_id } : {}),
       name: row.name,
       kind: row.kind,
       createdAt: row.created_at,

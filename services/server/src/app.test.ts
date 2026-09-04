@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
@@ -360,6 +361,61 @@ describe("MissionGo REST API", () => {
     expect(authorized.statusCode).toBe(200);
   });
 
+  it("flattens legacy component hierarchies without removing modules", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-legacy-components-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "missiongo.sqlite");
+    const legacyDatabase = new DatabaseSync(databasePath);
+    legacyDatabase.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE products (
+        id TEXT PRIMARY KEY,
+        key_prefix TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        name TEXT NOT NULL,
+        next_item_sequence INTEGER NOT NULL DEFAULT 1 CHECK (next_item_sequence > 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE components (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        parent_component_id TEXT REFERENCES components(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (product_id, name)
+      ) STRICT;
+      CREATE INDEX idx_components_parent ON components(parent_component_id);
+      INSERT INTO products (id, key_prefix, name, created_at, updated_at)
+      VALUES ('product-1', 'HG', 'Hermes Go', '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z');
+      INSERT INTO components (id, product_id, parent_component_id, name, kind, created_at, updated_at)
+      VALUES
+        ('clients', 'product-1', NULL, 'Clients', 'shared', '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z'),
+        ('android', 'product-1', 'clients', 'Android', 'android', '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z');
+    `);
+    legacyDatabase.close();
+
+    const app = buildApp({ databasePath, attachmentsPath: join(directory, "attachments") });
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: "/api/v1/products/product-1/components" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([
+      expect.objectContaining({ id: "android", name: "Android" }),
+      expect.objectContaining({ id: "clients", name: "Clients" }),
+    ]);
+    expect(response.json().every((component: Record<string, unknown>) => !("parentComponentId" in component))).toBe(true);
+
+    const columns = app.missionGoStore.database.connection
+      .prepare("PRAGMA table_info(components)")
+      .all() as unknown as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).not.toContain("parent_component_id");
+  });
+
   it("creates a product, components, and sequential work items", async () => {
     const { app } = await testApp();
 
@@ -419,15 +475,8 @@ describe("MissionGo REST API", () => {
       id: android.id,
       name: "Android client",
       kind: "android",
-      parentComponentId: clients.id,
     });
-
-    const cycleResponse = await app.inject({
-      method: "PATCH",
-      url: `/api/v1/products/${product.id}/components/${clients.id}`,
-      payload: { name: "Clients", kind: "shared", parentComponentId: android.id },
-    });
-    expect(cycleResponse.statusCode).toBe(400);
+    expect(componentUpdateResponse.json()).not.toHaveProperty("parentComponentId");
 
     const componentsResponse = await app.inject({
       method: "GET",
@@ -435,9 +484,9 @@ describe("MissionGo REST API", () => {
     });
     expect(componentsResponse.json()).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: clients.id }),
-      expect.objectContaining({ id: android.id, parentComponentId: clients.id }),
+      expect.objectContaining({ id: android.id }),
     ]));
-    expect(componentsResponse.json().find((component: { id: string }) => component.id === clients.id)).not.toHaveProperty("parentComponentId");
+    expect(componentsResponse.json().every((component: Record<string, unknown>) => !("parentComponentId" in component))).toBe(true);
 
     const firstResponse = await app.inject({
       method: "POST",
