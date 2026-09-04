@@ -477,6 +477,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .component-quick-form .secondary-button { height: 42px; }
 label { display: flex; flex-direction: column; gap: 7px; color: #4b5360; font-size: 11px; font-weight: 720; }
 label small { color: var(--muted); font-size: 9px; font-weight: 500; }
+.field-label { display: inline-flex; align-items: center; gap: 3px; }
+.field-label em { color: var(--red); font-style: normal; }
 input, textarea, select {
   width: 100%;
   color: var(--ink);
@@ -489,6 +491,7 @@ input, select { height: 42px; padding: 0 12px; }
 textarea { resize: vertical; padding: 11px 12px; line-height: 1.55; }
 input::placeholder, textarea::placeholder { color: #a1a5ad; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.classification-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .form-footer { display: flex; align-items: center; justify-content: flex-end; gap: 15px; padding-top: 2px; }
 .privacy-note { display: flex; align-items: center; gap: 6px; margin: -3px 0 0; color: var(--muted); font-size: 10px; }
 .inline-error { display: flex; align-items: center; gap: 7px; padding: 10px 11px; color: #943c42; background: #ffebec; border: 1px solid #f2c9cb; border-radius: 9px; font-size: 11px; }
@@ -579,7 +582,7 @@ input::placeholder, textarea::placeholder { color: #a1a5ad; }
   .item-row-actions { margin: 12px 0 0 50px; justify-content: flex-start; }
   .detail-back-button { width: 36px; padding: 0; font-size: 0; }
   .detail-toolbar code { display: none; }
-  .field-row, .context-grid { grid-template-columns: 1fr; }
+  .field-row, .classification-row, .context-grid { grid-template-columns: 1fr; }
   .capture-type-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .selected-preview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .selected-preview-media { height: 112px; }

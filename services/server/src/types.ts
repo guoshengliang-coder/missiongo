@@ -44,7 +44,7 @@ export interface CreateWorkItemInput {
   readonly priority: WorkItemPriority;
   readonly title: string;
   readonly description: string;
-  readonly environment?: WorkItemEnvironment;
+  readonly environment: WorkItemEnvironment;
 }
 
 export interface ListWorkItemsInput {

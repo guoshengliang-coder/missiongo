@@ -137,15 +137,25 @@ function environmentPayload(draft: EnvironmentDraft): WorkItemEnvironment | unde
   const sourceRevision = draft.sourceRevision.trim();
   const osVersion = draft.osVersion.trim();
   const deviceModel = draft.deviceModel.trim();
-  if (!draft.platform && !appVersion && !buildNumber && !sourceRevision && !osVersion && !deviceModel) return undefined;
+  if (!draft.platform) return undefined;
   return {
-    platform: draft.platform || "other",
+    platform: draft.platform,
     ...(appVersion ? { appVersion } : {}),
     ...(buildNumber ? { buildNumber } : {}),
     ...(sourceRevision ? { sourceRevision } : {}),
     ...(osVersion ? { osVersion } : {}),
     ...(deviceModel ? { deviceModel } : {}),
   };
+}
+
+function hasOptionalEnvironmentDetails(draft: EnvironmentDraft): boolean {
+  return Boolean(
+    draft.appVersion.trim() ||
+    draft.buildNumber.trim() ||
+    draft.sourceRevision.trim() ||
+    draft.osVersion.trim() ||
+    draft.deviceModel.trim()
+  );
 }
 
 function formatBytes(bytes: number): string {
@@ -288,7 +298,8 @@ export function App() {
       visibleItems,
       activeFilters: { status: statusFilter, type: typeFilter, search },
       createItem: async (input) => {
-        const item = await api.createItem({ productId: selectedProduct.id, ...input });
+        const { platform, ...workItemInput } = input;
+        const item = await api.createItem({ productId: selectedProduct.id, ...workItemInput, environment: { platform } });
         openItemPage(item.key);
         setNotice(t("capturedInInbox", { key: item.key }));
         await queryClient.invalidateQueries({ queryKey: ["items", selectedProduct.id] });
@@ -697,6 +708,8 @@ function platformName(platform: WorkItemEnvironment["platform"], t: ReturnType<t
   if (platform === "android") return t("android");
   if (platform === "macos") return t("macos");
   if (platform === "web") return t("web");
+  if (platform === "server") return t("server");
+  if (platform === "shared") return t("shared");
   return t("other");
 }
 
@@ -965,7 +978,7 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
       />
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
       <div className="form-footer">
-        <button className="primary-button" disabled={mutation.isPending || !draft.title.trim()}>
+        <button className="primary-button" disabled={mutation.isPending || !draft.title.trim() || !draft.environment.platform}>
           {mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />} {t("saveChanges")}
         </button>
       </div>
@@ -1007,10 +1020,11 @@ function WorkItemFields({
 
   useEffect(() => {
     if (!draft.sourceComponentId || !componentsQuery.data) return;
-    if (!componentsQuery.data.some((component) => component.id === draft.sourceComponentId)) {
+    const selectedModule = componentsQuery.data.find((component) => component.id === draft.sourceComponentId);
+    if (!selectedModule || (draft.environment.platform && selectedModule.kind !== draft.environment.platform)) {
       updateDraft("sourceComponentId", "");
     }
-  }, [componentsQuery.data, draft.sourceComponentId]);
+  }, [componentsQuery.data, draft.environment.platform, draft.sourceComponentId]);
 
   const componentMutation = useMutation({
     mutationFn: () => api.createComponent(productId, { name: componentName, kind: componentKind }),
@@ -1019,9 +1033,7 @@ function WorkItemFields({
       onDraft({
         ...draft,
         sourceComponentId: component.id,
-        environment: !draft.environment.platform && ["android", "macos", "web"].includes(component.kind)
-          ? { ...draft.environment, platform: component.kind as WorkItemEnvironment["platform"] }
-          : draft.environment,
+        environment: { ...draft.environment, platform: component.kind },
       });
       setComponentName("");
       setComponentFormOpen(false);
@@ -1040,7 +1052,25 @@ function WorkItemFields({
           );
         })}
       </div>
-      <div className="field-row">
+      <div className="classification-row">
+        <label><span className="field-label">{t("platform")}<em>*</em></span>
+          <select
+            value={draft.environment.platform}
+            onChange={(event) => {
+              const platform = event.target.value as EnvironmentDraft["platform"];
+              const selectedModule = componentsQuery.data?.find((component) => component.id === draft.sourceComponentId);
+              onDraft({
+                ...draft,
+                sourceComponentId: selectedModule && selectedModule.kind !== platform ? "" : draft.sourceComponentId,
+                environment: { ...draft.environment, platform },
+              });
+            }}
+            required
+          >
+            <option value="">{t("selectPlatform")}</option>
+            {COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}
+          </select>
+        </label>
         <label>{t("sourceComponent")}
           <select
             value={draft.sourceComponentId}
@@ -1050,15 +1080,15 @@ function WorkItemFields({
               onDraft({
                 ...draft,
                 sourceComponentId,
-                environment: !draft.environment.platform && kind && ["android", "macos", "web"].includes(kind)
-                  ? { ...draft.environment, platform: kind as WorkItemEnvironment["platform"] }
+                environment: kind
+                  ? { ...draft.environment, platform: kind }
                   : draft.environment,
               });
             }}
-            disabled={componentsQuery.isLoading}
+            disabled={componentsQuery.isLoading || !draft.environment.platform}
           >
-            <option value="">{t("notSpecified")}</option>
-            {componentTreeEntries(componentsQuery.data ?? []).map(({ component, depth }) => <option key={component.id} value={component.id}>{`${"— ".repeat(depth)}${component.name}`}</option>)}
+            <option value="">{t("allModules")}</option>
+            {componentTreeEntries((componentsQuery.data ?? []).filter((component) => component.kind === draft.environment.platform)).map(({ component, depth }) => <option key={component.id} value={component.id}>{`${"— ".repeat(depth)}${component.name}`}</option>)}
           </select>
         </label>
         <label>{t("priority")}<select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
@@ -1085,7 +1115,7 @@ function WorkItemFields({
       {existingItemKey && existingAttachments.length > 0 && (
         <AttachmentSection itemKey={existingItemKey} attachments={existingAttachments} uploading={false} allowUpload={false} onUpload={() => undefined} />
       )}
-      <details className="capture-optional" open={Boolean(environmentPayload(draft.environment))}>
+      <details className="capture-optional" open={hasOptionalEnvironmentDetails(draft.environment)}>
         <summary><ChevronRight size={16} /> <span><strong>{t("optionalDetails")}</strong><small>{t("optionalDetailsHelp")}</small></span></summary>
         <div className="capture-optional-body">
           <EnvironmentFields value={draft.environment} onChange={(value) => updateDraft("environment", value)} />
@@ -1124,7 +1154,7 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
         ...(draft.sourceComponentId
           ? { sourceComponentId: draft.sourceComponentId, affectedComponentIds: [draft.sourceComponentId] }
           : {}),
-        ...(environmentPayload(draft.environment) ? { environment: environmentPayload(draft.environment)! } : {}),
+        environment: environmentPayload(draft.environment)!,
       });
       const uploads = await Promise.allSettled(files.map((file) => api.uploadAttachment(item.key, file)));
       return { item, failedUploads: uploads.filter((result) => result.status === "rejected").length };
@@ -1172,7 +1202,7 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
         fileError={fileError}
       />
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
-      <div className="form-footer"><button className="primary-button" disabled={mutation.isPending || !draft.title.trim()}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {t("captureItem")}</button></div>
+      <div className="form-footer"><button className="primary-button" disabled={mutation.isPending || !draft.title.trim() || !draft.environment.platform}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {t("captureItem")}</button></div>
     </form>
   );
 }
@@ -1185,15 +1215,6 @@ function EnvironmentFields({ value, onChange }: { value: EnvironmentDraft; onCha
       <legend>{t("environmentDetails")}</legend>
       <p>{t("environmentHelp")}</p>
       <div className="field-row">
-        <label>{t("platform")}
-          <select value={value.platform} onChange={(event) => update("platform", event.target.value)}>
-            <option value="">{t("notSpecified")}</option>
-            <option value="android">{t("android")}</option>
-            <option value="macos">{t("macos")}</option>
-            <option value="web">{t("web")}</option>
-            <option value="other">{t("other")}</option>
-          </select>
-        </label>
         <label>{t("appVersion")}<input value={value.appVersion} onChange={(event) => update("appVersion", event.target.value)} placeholder="1.4.0" maxLength={500} /></label>
         <label>{t("buildNumber")}<input value={value.buildNumber} onChange={(event) => update("buildNumber", event.target.value)} placeholder="10400" maxLength={500} /></label>
         <label>{t("osVersion")}<input value={value.osVersion} onChange={(event) => update("osVersion", event.target.value)} placeholder="Android 16 / macOS 16" maxLength={500} /></label>

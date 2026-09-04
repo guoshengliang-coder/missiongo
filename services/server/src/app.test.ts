@@ -50,7 +50,7 @@ describe("MissionGo REST API", () => {
     await app.inject({
       method: "POST",
       url: "/api/v1/items",
-      payload: { productId: product.id, type: "bug", priority: "high", title: "Crash", description: "Fails on launch" },
+      payload: { productId: product.id, type: "bug", priority: "high", title: "Crash", description: "Fails on launch", environment: { platform: "other" } },
     });
     const uploadedLog = await app.inject({
       method: "POST",
@@ -139,6 +139,7 @@ describe("MissionGo REST API", () => {
         priority: "normal",
         title: "Process through MCP",
         description: "Exercise the controlled processing tools.",
+        environment: { platform: "other" },
       },
     });
     await app.inject({
@@ -200,6 +201,7 @@ describe("MissionGo REST API", () => {
         priority: "normal",
         title: "Add processing workflow",
         description: "Let an AI claim, report, and hand work back for verification.",
+        environment: { platform: "other" },
       },
     });
     await app.inject({
@@ -291,6 +293,7 @@ describe("MissionGo REST API", () => {
         priority: "high",
         title: "Needs a product decision",
         description: "The safe behavior is ambiguous.",
+        environment: { platform: "other" },
       },
     });
     await app.inject({
@@ -368,6 +371,19 @@ describe("MissionGo REST API", () => {
     expect(productResponse.statusCode).toBe(201);
     const product = productResponse.json<{ id: string; keyPrefix: string }>();
     expect(product.keyPrefix).toBe("HG");
+
+    const missingPlatformResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "idea",
+        priority: "normal",
+        title: "Missing platform",
+        description: "",
+      },
+    });
+    expect(missingPlatformResponse.statusCode).toBe(400);
 
     const androidResponse = await app.inject({
       method: "POST",
@@ -449,6 +465,7 @@ describe("MissionGo REST API", () => {
         priority: "high",
         title: "Read an item through MCP",
         description: "",
+        environment: { platform: "shared" },
       },
     });
     expect(secondResponse.json()).toMatchObject({ key: "HG-2", status: "inbox", type: "requirement" });
@@ -486,6 +503,7 @@ describe("MissionGo REST API", () => {
         priority: "low",
         title: "Initial note",
         description: "Draft",
+        environment: { platform: "other" },
       },
     });
 
@@ -547,6 +565,7 @@ describe("MissionGo REST API", () => {
         priority: "urgent",
         title: "Persist me",
         description: "Database smoke test",
+        environment: { platform: "other" },
       },
     });
     await app.close();
@@ -567,6 +586,7 @@ describe("MissionGo REST API", () => {
         priority: "normal",
         title: "Continue the sequence",
         description: "",
+        environment: { platform: "other" },
       },
     });
     expect(nextResponse.json()).toMatchObject({ key: "HG-2" });
@@ -606,6 +626,7 @@ describe("MissionGo REST API", () => {
         priority: "normal",
         title: "Wrong component",
         description: "",
+        environment: { platform: "other" },
       },
     });
     expect(response.statusCode).toBe(400);

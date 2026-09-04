@@ -66,7 +66,7 @@ export function parseCaptureDraft(raw: string | null): CaptureDraft {
     const environment = value.environment && typeof value.environment === "object"
       ? value.environment as Partial<EnvironmentDraft>
       : {};
-    const platform = ["", "android", "macos", "web", "other"].includes(environment.platform ?? "")
+    const platform = ["", "android", "macos", "web", "server", "shared", "other"].includes(environment.platform ?? "")
       ? environment.platform as EnvironmentPlatform
       : "";
     return {

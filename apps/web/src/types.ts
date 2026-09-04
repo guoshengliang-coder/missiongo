@@ -16,7 +16,7 @@ export const ITEM_STATUSES = [
 export type WorkItemStatus = (typeof ITEM_STATUSES)[number];
 
 export interface WorkItemEnvironment {
-  readonly platform: "android" | "macos" | "web" | "other";
+  readonly platform: "android" | "macos" | "web" | "server" | "shared" | "other";
   readonly appVersion?: string;
   readonly buildNumber?: string;
   readonly sourceRevision?: string;
@@ -93,7 +93,7 @@ export interface CreateWorkItemInput {
   readonly priority: WorkItemPriority;
   readonly title: string;
   readonly description: string;
-  readonly environment?: WorkItemEnvironment;
+  readonly environment: WorkItemEnvironment;
 }
 
 export interface UpdateWorkItemInput {

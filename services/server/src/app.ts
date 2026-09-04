@@ -26,7 +26,7 @@ export interface BuildAppOptions {
   readonly attachmentsPath?: string;
 }
 
-const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "other"] as const;
+const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "server", "shared", "other"] as const;
 
 function objectBody(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidInput("A JSON object is required.");
@@ -280,6 +280,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.post("/api/v1/items", async (request, reply) => {
     const body = objectBody(request.body);
     const environment = environmentBody(body.environment);
+    if (!environment) throw invalidInput("environment.platform is required.");
     const item = store.createWorkItem({
       productId: stringField(body, "productId")!,
       ...(stringField(body, "sourceComponentId", false) ? { sourceComponentId: body.sourceComponentId as string } : {}),
@@ -291,7 +292,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       priority: enumField(body, "priority", WORK_ITEM_PRIORITIES)!,
       title: stringField(body, "title")!,
       description: stringField(body, "description")!,
-      ...(environment ? { environment } : {}),
+      environment,
     });
     return reply.status(201).send(item);
   });

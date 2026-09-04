@@ -62,9 +62,9 @@ describe("MissionGo WebMCP", () => {
   it("creates a work item and rejects invalid input", async () => {
     const { tools, createItem } = setup();
     await expect(
-      tools.get("create_work_item")!.execute({ title: "New idea", type: "idea", priority: "normal" }),
+      tools.get("create_work_item")!.execute({ title: "New idea", type: "idea", priority: "normal", platform: "android" }),
     ).resolves.toMatchObject({ created: "HG-1" });
-    expect(createItem).toHaveBeenCalledWith({ title: "New idea", description: "", type: "idea", priority: "normal" });
+    expect(createItem).toHaveBeenCalledWith({ title: "New idea", description: "", type: "idea", priority: "normal", platform: "android" });
     await expect(
       tools.get("create_work_item")!.execute({ title: "Bad", type: "unknown", priority: "normal" }),
     ).rejects.toThrow(/type must be one of/);

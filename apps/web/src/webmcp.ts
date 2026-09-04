@@ -1,4 +1,4 @@
-import { ITEM_PRIORITIES, ITEM_TYPES, type WorkItem, type WorkItemPriority, type WorkItemType } from "./types";
+import { COMPONENT_KINDS, ITEM_PRIORITIES, ITEM_TYPES, type WorkItem, type WorkItemEnvironment, type WorkItemPriority, type WorkItemType } from "./types";
 
 export interface WebMcpTool {
   readonly name: string;
@@ -25,6 +25,7 @@ export interface MissionGoWebMcpOptions {
     readonly description: string;
     readonly type: WorkItemType;
     readonly priority: WorkItemPriority;
+    readonly platform: WorkItemEnvironment["platform"];
   }) => Promise<WorkItem>;
   readonly openItem: (itemKey: string) => WorkItem;
   readonly reportError?: (error: unknown) => void;
@@ -121,8 +122,9 @@ export function registerMissionGoWebMcp(
         description: { type: "string" },
         type: { type: "string", enum: ITEM_TYPES },
         priority: { type: "string", enum: ITEM_PRIORITIES },
+        platform: { type: "string", enum: COMPONENT_KINDS },
       },
-      required: ["title", "type", "priority"],
+      required: ["title", "type", "priority", "platform"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, untrustedContentHint: true },
@@ -133,6 +135,7 @@ export function registerMissionGoWebMcp(
         description: optionalString(value, "description"),
         type: enumValue(value, "type", ITEM_TYPES),
         priority: enumValue(value, "priority", ITEM_PRIORITIES),
+        platform: enumValue(value, "platform", COMPONENT_KINDS),
       });
       return { created: item.key, title: item.title, status: item.status };
     },

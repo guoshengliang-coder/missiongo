@@ -287,6 +287,9 @@ export class MissionGoStore {
         input.productId,
         input.sourceComponentId ? [input.sourceComponentId, ...affectedComponentIds] : affectedComponentIds,
       );
+      if (input.sourceComponentId && this.getComponent(input.sourceComponentId).kind !== input.environment.platform) {
+        throw invalidInput("The source module must belong to the selected platform.");
+      }
 
       const key = createWorkItemKey(product.key_prefix, product.next_item_sequence);
       this.database.connection
