@@ -13,7 +13,7 @@ describe("MissionGo interface language", () => {
   });
 
   it("translates and interpolates interface copy", () => {
-    expect(translate("zh-CN", "capturedInInbox", { key: "HG-8" })).toBe("HG-8 已记录到收件箱。");
+    expect(translate("zh-CN", "capturedInInbox", { key: "HG-8" })).toBe("HG-8 已记录到待整理。");
     expect(translate("en", "capturedInInbox", { key: "HG-8" })).toBe("HG-8 captured in Inbox.");
   });
 });

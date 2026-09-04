@@ -841,8 +841,9 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
       <label>{t("context")}<textarea value={draft.description} onChange={(event) => updateDraft("description", event.target.value)} placeholder={t("contextPlaceholder")} rows={4} /></label>
       <div className="attachment-picker-block capture-attachment-block">
         <div><strong>{t("attachments")}</strong><p>{t("pasteDropHelp")}</p></div>
-        <FilePicker files={files} onFiles={setFiles} remaining={10 - files.length} />
+        <FilePicker files={files} onFiles={setFiles} remaining={10 - files.length} showSelectedFiles={false} />
       </div>
+      {files.length > 0 && <SelectedFilePreviews files={files} onFiles={setFiles} />}
       {fileError && <InlineError message={fileError} />}
       <details className="capture-optional" open={Boolean(draft.sourceComponentId || draft.priority !== "normal" || environmentPayload(draft.environment))}>
         <summary><ChevronRight size={16} /> <span><strong>{t("optionalDetails")}</strong><small>{t("optionalDetailsHelp")}</small></span></summary>
@@ -939,11 +940,13 @@ function FilePicker({
   onFiles,
   remaining,
   disabled = false,
+  showSelectedFiles = true,
 }: {
   files?: readonly File[];
   onFiles: (files: readonly File[]) => void;
   remaining: number;
   disabled?: boolean;
+  showSelectedFiles?: boolean;
 }) {
   const { t } = useI18n();
   const [error, setError] = useState<string | null>(null);
@@ -990,7 +993,7 @@ function FilePicker({
           }}
         />
       </label>
-      {files.length > 0 && (
+      {showSelectedFiles && files.length > 0 && (
         <div className="selected-files">
           {files.map((file, index) => (
             <span key={`${file.name}-${file.lastModified}-${index}`}>
@@ -1001,6 +1004,62 @@ function FilePicker({
         </div>
       )}
       {error && <InlineError message={error} />}
+    </div>
+  );
+}
+
+function SelectedFilePreviews({ files, onFiles }: { files: readonly File[]; onFiles: (files: readonly File[]) => void }) {
+  const { t } = useI18n();
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const previews = useMemo(
+    () => files.map((file) => ({ file, url: URL.createObjectURL(file) })),
+    [files],
+  );
+
+  useEffect(() => () => {
+    for (const preview of previews) URL.revokeObjectURL(preview.url);
+  }, [previews]);
+
+  useEffect(() => {
+    if (previewIndex !== null && previewIndex >= previews.length) setPreviewIndex(null);
+  }, [previewIndex, previews.length]);
+
+  const activePreview = previewIndex === null ? undefined : previews[previewIndex];
+  return (
+    <div className="selected-preview-section">
+      <p>{t("selectedAttachments", { count: files.length })}</p>
+      <div className="selected-preview-grid">
+        {previews.map(({ file, url }, index) => {
+          const isImage = file.type.startsWith("image/");
+          const isVideo = file.type.startsWith("video/");
+          return (
+            <article className="selected-preview-card" key={`${file.name}-${file.size}-${file.lastModified}`}>
+              <button type="button" className="selected-preview-media" onClick={() => setPreviewIndex(index)} aria-label={t("previewAttachment", { filename: file.name })}>
+                {isImage && <img src={url} alt="" />}
+                {isVideo && <video src={url} muted playsInline preload="metadata" />}
+                {!isImage && !isVideo && <span><FileText size={25} /><small>{file.name.split(".").pop()?.toUpperCase()}</small></span>}
+                <em>{t("preview")}</em>
+              </button>
+              <footer>
+                <span><strong>{file.name}</strong><small>{formatBytes(file.size)}</small></span>
+                <button type="button" onClick={() => onFiles(files.filter((_, fileIndex) => fileIndex !== index))} aria-label={t("removeFile", { filename: file.name })}><X size={14} /></button>
+              </footer>
+            </article>
+          );
+        })}
+      </div>
+      {activePreview && (
+        <div className="selected-media-lightbox" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPreviewIndex(null); }}>
+          <section role="dialog" aria-modal="true" aria-label={activePreview.file.name}>
+            <header><strong>{activePreview.file.name}</strong><button type="button" onClick={() => setPreviewIndex(null)} aria-label={t("closePreview")}><X size={20} /></button></header>
+            {activePreview.file.type.startsWith("image/") && <img src={activePreview.url} alt={activePreview.file.name} />}
+            {activePreview.file.type.startsWith("video/") && <video src={activePreview.url} controls playsInline preload="metadata" />}
+            {!activePreview.file.type.startsWith("image/") && !activePreview.file.type.startsWith("video/") && (
+              <div className="selected-log-preview"><FileText size={34} /><p>{activePreview.file.name}</p><small>{formatBytes(activePreview.file.size)}</small></div>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   );
 }
