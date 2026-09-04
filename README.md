@@ -14,9 +14,11 @@ The core server foundation is now runnable. The repository currently contains:
 - an initial REST API contract;
 - a Fastify server backed by SQLite;
 - Product, Component, Work Item, and Timeline persistence;
+- a responsive Web Console for capture, filtering, editing, transitions, and timeline review;
+- a small browser-native WebMCP surface for listing, opening, and creating work items;
 - tests for persistence, validation, authentication, and the highest-risk transition rules.
 
-No Web UI, Android app, feedback SDK, attachment upload, or MCP transport has been implemented yet.
+No Android app, feedback SDK, attachment upload, or remote MCP transport has been implemented yet.
 
 ## Confirmed MVP scope
 
@@ -39,9 +41,12 @@ npm test
 npm run typecheck
 npm run build
 npm run dev:server
+npm run dev:web
 ```
 
-The development server defaults to `127.0.0.1:8787` and stores data in `./data/missiongo.sqlite`. Copy `.env.example` to `.env` to override local settings. A non-loopback bind is rejected unless `ADMIN_API_TOKEN` is configured.
+The API defaults to `127.0.0.1:8787`, the Web Console defaults to `127.0.0.1:5173`, and local data is stored in `./data/missiongo.sqlite`. Run the two development commands in separate terminals. Copy `.env.example` to `.env` to override local settings. A non-loopback API bind is rejected unless `ADMIN_API_TOKEN` is configured.
+
+For a public build, set `MISSIONGO_PUBLIC_ORIGIN` to the canonical HTTP(S) origin, such as `https://missiongo.example.com`. This emits absolute Open Graph and X image metadata without committing a real deployment address.
 
 ## Security
 

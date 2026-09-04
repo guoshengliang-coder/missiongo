@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./apps/web" },
     { "path": "./packages/domain" },
     { "path": "./packages/contracts" },
     { "path": "./services/server" }

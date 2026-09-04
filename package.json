@@ -13,9 +13,12 @@
     "services/*"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "npm run build:types && npm run build:web",
+    "build:types": "tsc -b",
+    "build:web": "npm run build --workspace @missiongo/web",
     "dev:server": "npm run dev --workspace @missiongo/server",
-    "test": "npm run build && npm run test --workspaces --if-present",
+    "dev:web": "npm run dev --workspace @missiongo/web",
+    "test": "npm run build:types && npm run test --workspaces --if-present",
     "typecheck": "tsc -b --pretty false"
   },
   "devDependencies": {
