@@ -71,6 +71,13 @@ export const INITIAL_SCHEMA = `
     created_at TEXT NOT NULL
   ) STRICT;
 
+  CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key TEXT PRIMARY KEY,
+    operation TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  ) STRICT;
+
   CREATE INDEX IF NOT EXISTS idx_components_product ON components(product_id);
   CREATE INDEX IF NOT EXISTS idx_work_items_product_sequence ON work_items(product_id, sequence DESC);
   CREATE INDEX IF NOT EXISTS idx_work_items_product_status ON work_items(product_id, status);

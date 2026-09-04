@@ -14,6 +14,7 @@ import {
 
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
 import { invalidInput, MissionGoError } from "./errors.js";
+import { createMissionGoMcpHandler } from "./mcp.js";
 import { MissionGoStore } from "./store.js";
 import { COMPONENT_KINDS, type ComponentKind } from "./types.js";
 
@@ -21,6 +22,7 @@ export interface BuildAppOptions {
   readonly databasePath?: string;
   readonly logger?: FastifyServerOptions["logger"];
   readonly adminToken?: string;
+  readonly mcpToken?: string;
   readonly attachmentsPath?: string;
 }
 
@@ -111,10 +113,18 @@ function publicAttachment<T extends { readonly storageFilename: string }>(attach
   return visible;
 }
 
+function hasBearerToken(authorization: string | undefined, token: string): boolean {
+  const suppliedToken = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const expected = Buffer.from(token);
+  const supplied = Buffer.from(suppliedToken);
+  return expected.length === supplied.length && timingSafeEqual(expected, supplied);
+}
+
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? false });
   const store = new MissionGoStore(options.databasePath ?? ":memory:");
   const attachmentStorage = new AttachmentStorage(options.attachmentsPath ?? "./data/attachments");
+  const mcpHandler = options.mcpToken ? createMissionGoMcpHandler(store, attachmentStorage) : undefined;
 
   app.addContentTypeParser(
     "application/octet-stream",
@@ -123,16 +133,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   );
 
   app.decorate("missionGoStore", store);
-  app.addHook("onClose", () => store.close());
+  app.addHook("onClose", async () => {
+    await mcpHandler?.close();
+    store.close();
+  });
 
   app.addHook("onRequest", async (request, reply) => {
     if (!request.url.startsWith("/api/v1/") || !options.adminToken) return;
-    const authorization = request.headers.authorization;
-    const suppliedToken = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
-    const expected = Buffer.from(options.adminToken);
-    const supplied = Buffer.from(suppliedToken);
-    const authenticated = expected.length === supplied.length && timingSafeEqual(expected, supplied);
-    if (!authenticated) {
+    if (!hasBearerToken(request.headers.authorization, options.adminToken)) {
       return reply.status(401).send({
         type: "urn:missiongo:problem:authentication_required",
         title: "A valid bearer token is required.",
@@ -162,6 +170,43 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   app.get("/health", async () => ({ status: "ok" }));
+
+  if (mcpHandler && options.mcpToken) {
+    app.route({
+      method: ["GET", "POST", "DELETE"],
+      url: "/mcp",
+      handler: async (request, reply) => {
+        if (!hasBearerToken(request.headers.authorization, options.mcpToken!)) {
+          return reply
+            .header("www-authenticate", 'Bearer realm="MissionGo MCP"')
+            .status(401)
+            .send({
+              type: "urn:missiongo:problem:authentication_required",
+              title: "A valid MCP bearer token is required.",
+              status: 401,
+              code: "authentication_required",
+            });
+        }
+
+        const headers = new Headers();
+        for (const [name, value] of Object.entries(request.headers)) {
+          if (value === undefined || name === "content-length" || name === "host") continue;
+          headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+        }
+        const method = request.method.toUpperCase();
+        const webRequest = new Request(`http://missiongo.local${request.raw.url}`, {
+          method,
+          headers,
+          ...(method === "POST" ? { body: JSON.stringify(request.body) } : {}),
+        });
+        const response = await mcpHandler.fetch(webRequest, { parsedBody: request.body });
+        reply.status(response.status);
+        response.headers.forEach((value, name) => reply.header(name, value));
+        if (response.body === null) return reply.send();
+        return reply.send(Buffer.from(await response.arrayBuffer()));
+      },
+    });
+  }
 
   app.get("/api/v1/products", async () => store.listProducts());
 

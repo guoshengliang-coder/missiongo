@@ -304,6 +304,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .timeline-dot { position: relative; z-index: 1; width: 7px; height: 7px; margin-top: 4px; background: var(--mint-dark); border: 2px solid var(--surface); border-radius: 50%; box-sizing: content-box; }
 .timeline-event strong { display: block; font-size: 11px; }
 .timeline-event p { margin: 3px 0 0; color: var(--muted); font-size: 9px; }
+.analysis-details { display: grid; gap: 10px; margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.analysis-details span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.analysis-details p { color: var(--ink); font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+.analysis-details ul { margin: 0; padding-left: 18px; color: var(--ink); font-size: 10px; line-height: 1.55; }
 .detail-placeholder { align-items: center; justify-content: center; padding: 45px; text-align: center; }
 .detail-placeholder h2, .empty-list h2 { margin: 14px 0 5px; font-size: 17px; }
 .detail-placeholder p, .empty-list p { max-width: 310px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }

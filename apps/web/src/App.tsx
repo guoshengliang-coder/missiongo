@@ -661,6 +661,7 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
                     <div>
                       <strong>{event.eventType === "status_changed" ? `${event.fromStatus ? statusLabel(event.fromStatus) : t("status")} → ${event.toStatus ? statusLabel(event.toStatus) : t("updated")}` : eventLabel(event.eventType)}</strong>
                       <p>{actorLabel(event.actorKind)} · {formatTime(event.createdAt)}</p>
+                      {event.eventType === "analysis_appended" && <AnalysisDetails payload={event.payload} />}
                     </div>
                   </div>
                 ))}
@@ -670,6 +671,21 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
         )}
       </div>
     </aside>
+  );
+}
+
+function AnalysisDetails({ payload }: { payload: Readonly<Record<string, unknown>> }) {
+  const { t } = useI18n();
+  const conclusion = typeof payload.conclusion === "string" ? payload.conclusion : "";
+  const evidence = Array.isArray(payload.evidence) ? payload.evidence.filter((entry): entry is string => typeof entry === "string") : [];
+  const risks = Array.isArray(payload.risks) ? payload.risks.filter((entry): entry is string => typeof entry === "string") : [];
+  if (!conclusion && evidence.length === 0 && risks.length === 0) return null;
+  return (
+    <div className="analysis-details">
+      {conclusion && <div><span>{t("analysisConclusion")}</span><p>{conclusion}</p></div>}
+      {evidence.length > 0 && <div><span>{t("analysisEvidence")}</span><ul>{evidence.map((entry, index) => <li key={`${index}-${entry}`}>{entry}</li>)}</ul></div>}
+      {risks.length > 0 && <div><span>{t("analysisRisks")}</span><ul>{risks.map((entry, index) => <li key={`${index}-${entry}`}>{entry}</li>)}</ul></div>}
+    </div>
   );
 }
 

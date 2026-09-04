@@ -9,7 +9,7 @@ MissionGo is a personal, self-hosted work hub for independent developers. It cap
 The core server foundation is now runnable. The repository currently contains:
 
 - the core work-item state machine;
-- typed MCP contract definitions;
+- typed MCP contract definitions and a working Streamable HTTP MCP endpoint;
 - domain and security decisions;
 - an initial REST API contract;
 - a Fastify server backed by SQLite;
@@ -19,9 +19,10 @@ The core server foundation is now runnable. The repository currently contains:
 - manual device, OS, app/build version, and source-revision capture;
 - Simplified Chinese and English interface languages, with Chinese as the first-run default;
 - a small browser-native WebMCP surface for listing, opening, and creating work items;
-- tests for persistence, validation, authentication, and the highest-risk transition rules.
+- tests for persistence, validation, authentication, and the highest-risk transition rules;
+- an analysis-only MissionGo skill plus local setup guidance for Codex, Claude Code, and other MCP clients.
 
-No Android app, feedback SDK, or remote MCP transport has been implemented yet. Client SDK auto-capture is represented by the REST data contract but is not implemented yet.
+No Android app or feedback SDK has been implemented yet. Client SDK auto-capture is represented by the REST data contract but is not implemented yet. MCP task claiming, code-processing runs, and automatic dispatch remain planned work; the current MCP endpoint supports read, attachment inspection, and analysis writeback only.
 
 ## Confirmed MVP scope
 
@@ -49,6 +50,8 @@ npm run dev:web
 
 The API defaults to `127.0.0.1:8787`, the Web Console defaults to `127.0.0.1:5173`, and local data is stored in `./data/missiongo.sqlite`. Run the two development commands in separate terminals. Copy `.env.example` to `.env` to override local settings. A non-loopback API bind is rejected unless `ADMIN_API_TOKEN` is configured.
 
+Set a separate `MCP_API_TOKEN` to enable the `/mcp` endpoint. See [AI client setup](docs/ai-client-setup.md) for local-only Codex, Claude Code, and generic MCP configuration examples.
+
 For a public build, set `MISSIONGO_PUBLIC_ORIGIN` to the canonical HTTP(S) origin, such as `https://missiongo.example.com`. This emits absolute Open Graph and X image metadata without committing a real deployment address.
 
 ## Security
@@ -65,4 +68,5 @@ MissionGo is licensed under the [Apache License 2.0](LICENSE).
 - [Phase 0 decisions](docs/phase-0-decisions.md)
 - [Domain model](docs/domain-model.md)
 - [MCP contract](docs/mcp-contract.md)
+- [AI client setup](docs/ai-client-setup.md)
 - [REST API draft](docs/openapi.yaml)

@@ -20,8 +20,8 @@ const EN_MESSAGES = {
   capture: "Capture",
   workspace: "Workspace",
   allItems: "All items",
-  aiDispatchNext: "AI dispatch is next",
-  aiDispatchDescription: "Items marked Ready will soon be available to your coding agents.",
+  aiDispatchNext: "AI analysis is ready",
+  aiDispatchDescription: "Ask a connected coding agent to analyze an item by ID. Its conclusion will appear in the timeline.",
   addProduct: "Add product",
   productWorkspace: "{prefix} workspace",
   allWork: "All work",
@@ -90,6 +90,9 @@ const EN_MESSAGES = {
   nextAction: "Next action",
   moveForward: "Move this work forward",
   timeline: "Timeline",
+  analysisConclusion: "Conclusion",
+  analysisEvidence: "Evidence",
+  analysisRisks: "Risks / open questions",
   status: "Status",
   updated: "Updated",
   whatNeedsAttention: "What needs attention?",
@@ -134,8 +137,8 @@ const ZH_MESSAGES: Record<MessageKey, string> = {
   capture: "记录",
   workspace: "工作区",
   allItems: "全部条目",
-  aiDispatchNext: "下一步：AI 调度",
-  aiDispatchDescription: "标记为“待领取”的条目将可以交给你的 AI 开发工具处理。",
+  aiDispatchNext: "AI 分析已可用",
+  aiDispatchDescription: "让已连接的 AI 按编号分析条目，结论、依据和风险会回写到处理记录。",
   addProduct: "添加产品",
   productWorkspace: "{prefix} 工作区",
   allWork: "全部工作",
@@ -204,6 +207,9 @@ const ZH_MESSAGES: Record<MessageKey, string> = {
   nextAction: "下一步操作",
   moveForward: "推进此项工作",
   timeline: "处理记录",
+  analysisConclusion: "分析结论",
+  analysisEvidence: "判断依据",
+  analysisRisks: "风险与待确认项",
   status: "状态",
   updated: "已更新",
   whatNeedsAttention: "需要记录什么？",
@@ -285,8 +291,8 @@ const ACTOR_LABELS: Record<Locale, Record<string, string>> = {
 };
 
 const EVENT_LABELS: Record<Locale, Record<string, string>> = {
-  en: { item_created: "Item created", item_updated: "Item updated", attachment_added: "Attachment added" },
-  "zh-CN": { item_created: "已创建条目", item_updated: "已更新详情", attachment_added: "已添加附件" },
+  en: { item_created: "Item created", item_updated: "Item updated", attachment_added: "Attachment added", analysis_appended: "AI analysis added" },
+  "zh-CN": { item_created: "已创建条目", item_updated: "已更新详情", attachment_added: "已添加附件", analysis_appended: "AI 已回写分析" },
 };
 
 interface I18nValue {

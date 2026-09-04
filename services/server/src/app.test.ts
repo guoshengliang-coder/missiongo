@@ -26,6 +26,108 @@ afterEach(async () => {
 });
 
 describe("MissionGo REST API", () => {
+  it("serves an authenticated MCP analysis loop without exposing SQL or changing status", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-mcp-"));
+    temporaryDirectories.push(directory);
+    const app = buildApp({
+      databasePath: join(directory, "missiongo.sqlite"),
+      attachmentsPath: join(directory, "attachments"),
+      mcpToken: "mcp-test-token",
+    });
+    apps.push(app);
+
+    const unauthorized = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      payload: { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } } },
+    });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Hermes Go", keyPrefix: "HG" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: { productId: product.id, type: "bug", priority: "high", title: "Crash", description: "Fails on launch" },
+    });
+    const uploadedLog = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/HG-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "text/plain",
+        "x-missiongo-filename": "launch.log",
+      },
+      payload: "Fatal exception at launch\n",
+    });
+    const attachmentId = uploadedLog.json<{ id: string }>().id;
+
+    const call = async (id: number, method: string, params: Readonly<Record<string, unknown>> = {}) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/mcp",
+        headers: {
+          authorization: "Bearer mcp-test-token",
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        payload: { jsonrpc: "2.0", id, method, params },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      const payload = response.headers["content-type"]?.includes("text/event-stream")
+        ? response.body.split("\n").find((line) => line.startsWith("data: "))?.slice(6)
+        : response.body;
+      if (!payload) throw new Error("MCP response did not contain a JSON payload.");
+      return JSON.parse(payload) as { result?: Record<string, unknown>; error?: unknown };
+    };
+
+    const initialized = await call(1, "initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "missiongo-test", version: "1.0.0" },
+    });
+    expect(initialized.result).toMatchObject({ serverInfo: { name: "missiongo" } });
+
+    const tools = await call(2, "tools/list");
+    const names = (tools.result?.tools as Array<{ name: string }>).map((tool) => tool.name);
+    expect(names).toContain("get_item_context");
+    expect(names).toContain("append_analysis");
+    expect(names.some((name) => name.toLowerCase().includes("sql"))).toBe(false);
+
+    const context = await call(3, "tools/call", { name: "get_item_context", arguments: { itemKey: "HG-1" } });
+    expect(context.error).toBeUndefined();
+    expect(context.result?.structuredContent).toMatchObject({
+      item: { key: "HG-1", status: "inbox", attachments: [{ id: attachmentId, kind: "log" }] },
+    });
+
+    const attachment = await call(4, "tools/call", {
+      name: "get_attachment",
+      arguments: { itemKey: "HG-1", attachmentId, maxBytes: 8 },
+    });
+    expect(attachment.result?.structuredContent).toMatchObject({ text: "Fatal ex", nextOffsetBytes: 8 });
+
+    const analysisArguments = {
+      itemKey: "HG-1",
+      conclusion: "The launch path needs a guarded fallback.",
+      evidence: ["The report says it fails on launch."],
+      risks: ["No log attachment is available yet."],
+      agentName: "Codex",
+      idempotencyKey: "91ec22f8-a969-4139-b830-58a15c9ec818",
+    };
+    const firstAppend = await call(5, "tools/call", { name: "append_analysis", arguments: analysisArguments });
+    const repeatedAppend = await call(6, "tools/call", { name: "append_analysis", arguments: analysisArguments });
+    expect(firstAppend.result?.structuredContent).toEqual(repeatedAppend.result?.structuredContent);
+
+    const item = await app.inject({ method: "GET", url: "/api/v1/items/HG-1" });
+    expect(item.json()).toMatchObject({ status: "inbox" });
+    const timeline = await app.inject({ method: "GET", url: "/api/v1/items/HG-1/timeline" });
+    expect(
+      timeline.json<{ events: Array<{ eventType: string }> }>().events.filter((event) => event.eventType === "analysis_appended"),
+    ).toHaveLength(1);
+  });
+
   it("protects management routes when an admin token is configured", async () => {
     const app = buildApp({ adminToken: "example-test-token" });
     apps.push(app);

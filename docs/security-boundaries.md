@@ -20,7 +20,7 @@ Tracked examples must use blank values or reserved/example values only.
 - MCP agent token: scoped read/claim/write actions for selected products.
 - Future node token: bound to one worker machine and its capabilities.
 
-Long-lived tokens are stored hashed. Plaintext is shown only at creation time and can be revoked.
+The current single-user MCP token is loaded from an untracked local environment file and is never stored in SQLite. Managed tokens added later must be stored hashed; plaintext should be shown only at creation time and remain revocable.
 
 ## Untrusted feedback
 

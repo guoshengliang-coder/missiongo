@@ -80,6 +80,15 @@ export interface TransitionWorkItemInput {
   readonly note?: string;
 }
 
+export interface AppendAnalysisInput {
+  readonly itemKey: string;
+  readonly conclusion: string;
+  readonly evidence: readonly string[];
+  readonly risks: readonly string[];
+  readonly agentName?: string;
+  readonly idempotencyKey: string;
+}
+
 export interface WorkItemEventSnapshot {
   readonly id: string;
   readonly itemKey: string;

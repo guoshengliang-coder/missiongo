@@ -21,6 +21,7 @@ import { conflict, invalidInput, notFound } from "./errors.js";
 import { MissionGoDatabase } from "./storage/database.js";
 import {
   COMPONENT_KINDS,
+  type AppendAnalysisInput,
   type AttachmentRecord,
   type ComponentKind,
   type ComponentSnapshot,
@@ -467,6 +468,54 @@ export class MissionGoStore {
     }));
   }
 
+  appendAnalysis(input: AppendAnalysisInput): WorkItemEventSnapshot {
+    const conclusion = requiredText(input.conclusion, "Conclusion");
+    if (conclusion.length > 20_000) throw invalidInput("Conclusion must be 20,000 characters or fewer.");
+    const evidence = this.validateAnalysisList(input.evidence, "Evidence");
+    const risks = this.validateAnalysisList(input.risks, "Risks");
+    const agentName = input.agentName?.trim();
+    if (agentName && agentName.length > 100) throw invalidInput("Agent name must be 100 characters or fewer.");
+    const idempotencyKey = requiredText(input.idempotencyKey, "Idempotency key");
+    if (idempotencyKey.length > 200) throw invalidInput("Idempotency key must be 200 characters or fewer.");
+    const operation = `append_analysis:${input.itemKey}`;
+
+    return this.database.transaction(() => {
+      const existing = this.database.connection
+        .prepare("SELECT operation, result_json FROM idempotency_keys WHERE key = ?")
+        .get(idempotencyKey) as unknown as { operation: string; result_json: string } | undefined;
+      if (existing) {
+        if (existing.operation !== operation) {
+          throw conflict("idempotency_conflict", "This idempotency key was already used for another operation.");
+        }
+        return JSON.parse(existing.result_json) as WorkItemEventSnapshot;
+      }
+
+      const item = this.getWorkItemRow(input.itemKey);
+      if (!item) throw notFound("Work item");
+      const now = new Date().toISOString();
+      const payload = {
+        conclusion,
+        evidence,
+        risks,
+        ...(agentName ? { agentName } : {}),
+      };
+      const eventId = this.insertEvent(item.id, "analysis_appended", "agent", null, null, payload, now);
+      this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
+      const result: WorkItemEventSnapshot = {
+        id: eventId,
+        itemKey: item.item_key,
+        eventType: "analysis_appended",
+        actorKind: "agent",
+        payload,
+        createdAt: now,
+      };
+      this.database.connection
+        .prepare("INSERT INTO idempotency_keys (key, operation, result_json, created_at) VALUES (?, ?, ?, ?)")
+        .run(idempotencyKey, operation, JSON.stringify(result), now);
+      return result;
+    });
+  }
+
   private getProductRow(productId: string): ProductRow | undefined {
     return this.database.connection
       .prepare("SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at FROM products WHERE id = ?")
@@ -528,14 +577,25 @@ export class MissionGoStore {
     toStatus: WorkItemStatus | null,
     payload: Readonly<Record<string, unknown>>,
     createdAt: string,
-  ): void {
+  ): string {
+    const id = randomUUID();
     this.database.connection
       .prepare(
         `INSERT INTO work_item_events
            (id, item_id, event_type, actor_kind, from_status, to_status, payload_json, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(randomUUID(), itemId, eventType, actorKind, fromStatus, toStatus, JSON.stringify(payload), createdAt);
+      .run(id, itemId, eventType, actorKind, fromStatus, toStatus, JSON.stringify(payload), createdAt);
+    return id;
+  }
+
+  private validateAnalysisList(value: readonly string[], field: string): readonly string[] {
+    if (value.length > 50) throw invalidInput(`${field} can contain at most 50 entries.`);
+    return value.map((entry) => {
+      const normalized = requiredText(entry, `${field} entry`);
+      if (normalized.length > 2_000) throw invalidInput(`${field} entries must be 2,000 characters or fewer.`);
+      return normalized;
+    });
   }
 
   private mapProduct(row: ProductRow): ProductSnapshot {

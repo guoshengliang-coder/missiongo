@@ -2,13 +2,13 @@
 
 ## Transport and authentication
 
-The production MCP endpoint will use Streamable HTTP over HTTPS. The MVP uses a revocable Bearer Token stored only in local client configuration. OAuth can be added if the project later becomes multi-user.
+The MCP endpoint uses Streamable HTTP and must be placed behind HTTPS for remote use. The MVP uses a separate revocable Bearer Token stored only in local client configuration. OAuth can be added if the project later becomes multi-user.
 
 The server must remain usable without a custom UI. Tools return concise structured data, stable error codes, and actionable messages.
 
 ## Tool groups
 
-Read-only tools:
+Implemented read-only tools:
 
 - `list_products`
 - `list_components`
@@ -16,13 +16,19 @@ Read-only tools:
 - `get_item_context`
 - `get_item_timeline`
 - `get_attachment`
+
+Planned read-only tools:
+
 - `get_execution`
 
-Controlled write tools:
+Implemented controlled write tools:
+
+- `append_analysis`
+
+Planned controlled write tools:
 
 - `claim_item`
 - `renew_item_lease`
-- `append_analysis`
 - `append_progress`
 - `request_human_input`
 - `submit_resolution`
@@ -40,7 +46,7 @@ The MCP server must not expose arbitrary SQL, arbitrary work-item updates, work-
 - The server rejects state changes that do not pass the domain state machine.
 - Analysis can be appended without claiming or changing work-item status.
 - Resolution submission stores the report before the work item can move to human verification.
-- Large attachments are returned as controlled resources or short-lived URLs, not Base64 embedded in the main item response.
+- Small images may be returned by `get_attachment`; large images and videos return metadata only until controlled resources or short-lived URLs are implemented. Attachments are never embedded in the main item response.
 - `get_item_context` includes structured platform, app/build version, source revision, OS, device, custom metadata, and attachment metadata when present.
 - Pagination is required for work-item lists, timelines, and long logs.
 
