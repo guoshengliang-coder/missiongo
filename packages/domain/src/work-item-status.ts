@@ -3,19 +3,21 @@ import type { WorkItemStatus } from "./work-item.js";
 export const ACTOR_KINDS = ["human", "agent", "system"] as const;
 export type ActorKind = (typeof ACTOR_KINDS)[number];
 
-export type TransitionReason =
-  | "triaged"
-  | "claim"
-  | "request_human_input"
-  | "resume"
-  | "resolution_submitted"
-  | "verification_passed"
-  | "verification_failed"
-  | "lease_expired"
-  | "released"
-  | "cancelled"
-  | "reopened"
-  | "restored";
+export const TRANSITION_REASONS = [
+  "triaged",
+  "claim",
+  "request_human_input",
+  "resume",
+  "resolution_submitted",
+  "verification_passed",
+  "verification_failed",
+  "lease_expired",
+  "released",
+  "cancelled",
+  "reopened",
+  "restored",
+] as const;
+export type TransitionReason = (typeof TRANSITION_REASONS)[number];
 
 export interface WorkItemTransitionRequest {
   readonly from: WorkItemStatus;

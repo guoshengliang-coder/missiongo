@@ -6,15 +6,17 @@ MissionGo is a personal, self-hosted work hub for independent developers. It cap
 
 ## Current status
 
-Phase 0 is in progress. The repository currently contains:
+The core server foundation is now runnable. The repository currently contains:
 
 - the core work-item state machine;
 - typed MCP contract definitions;
 - domain and security decisions;
 - an initial REST API contract;
-- tests for the highest-risk transition rules.
+- a Fastify server backed by SQLite;
+- Product, Component, Work Item, and Timeline persistence;
+- tests for persistence, validation, authentication, and the highest-risk transition rules.
 
-No production server, Web UI, Android app, or SDK has been implemented yet.
+No Web UI, Android app, feedback SDK, attachment upload, or MCP transport has been implemented yet.
 
 ## Confirmed MVP scope
 
@@ -29,12 +31,17 @@ No production server, Web UI, Android app, or SDK has been implemented yet.
 
 ## Workspace commands
 
+Node.js 22.13 or newer is required. Node.js 24 LTS or newer is recommended.
+
 ```bash
 npm install
 npm test
 npm run typecheck
 npm run build
+npm run dev:server
 ```
+
+The development server defaults to `127.0.0.1:8787` and stores data in `./data/missiongo.sqlite`. Copy `.env.example` to `.env` to override local settings. A non-loopback bind is rejected unless `ADMIN_API_TOKEN` is configured.
 
 ## Security
 

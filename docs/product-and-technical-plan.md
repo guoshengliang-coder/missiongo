@@ -501,13 +501,13 @@ missiongo/
 | `components` | Android、macOS、服务端、公共核心等组件 |
 | `areas` | 登录、同步等功能模块 |
 | `repositories` | 仓库逻辑信息，不保存本地绝对路径和 Git 凭据 |
-| `tasks` | 任务主体和当前状态 |
-| `task_components` | 任务与影响组件的多对多关系 |
-| `task_events` | 不可变状态和审计事件 |
+| `work_items` | 工作事项主体和当前状态 |
+| `work_item_affected_components` | 工作事项与影响组件的多对多关系 |
+| `work_item_events` | 不可变状态和审计事件 |
 | `comments` | 人工与 AI 可读备注 |
 | `attachments` | 附件元数据和受控存储位置 |
 | `execution_runs` | 每一次分析、处理或验证执行 |
-| `task_leases` | AI 领取租约 |
+| `work_item_leases` | AI 领取租约 |
 | `access_tokens` | SDK、MCP 等令牌摘要和权限范围 |
 | `feedback_drafts` | SDK 创建的短期反馈草稿 |
 

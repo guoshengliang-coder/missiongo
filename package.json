@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "type": "module",
   "workspaces": [
     "apps/*",
@@ -11,10 +14,13 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "test": "npm run test --workspaces --if-present",
+    "dev:server": "npm run dev --workspace @missiongo/server",
+    "test": "npm run build && npm run test --workspaces --if-present",
     "typecheck": "tsc -b --pretty false"
   },
   "devDependencies": {
+    "@types/node": "^22.20.1",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
   }

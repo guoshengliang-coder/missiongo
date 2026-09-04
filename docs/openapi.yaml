@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: MissionGo API
-  version: 0.0.0
-  description: Initial Phase 0 REST contract. Domain actions are intentionally narrow.
+  version: 0.1.0
+  description: Core REST contract for products, components, work items, and their timelines.
 servers: []
 security:
   - bearerAuth: []
@@ -34,6 +34,50 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Product"
+    post:
+      operationId: createProduct
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProductRequest"
+      responses:
+        "201":
+          description: Product created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+  /api/v1/products/{productId}/components:
+    parameters:
+      - $ref: "#/components/parameters/ProductId"
+    get:
+      operationId: listComponents
+      responses:
+        "200":
+          description: Components in the product.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Component"
+    post:
+      operationId: createComponent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateComponentRequest"
+      responses:
+        "201":
+          description: Component created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Component"
   /api/v1/items:
     get:
       operationId: listItems
@@ -47,9 +91,25 @@ paths:
           name: status
           schema:
             $ref: "#/components/schemas/WorkItemStatus"
+        - in: query
+          name: type
+          schema:
+            $ref: "#/components/schemas/WorkItemType"
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - in: query
+          name: beforeSequence
+          schema:
+            type: integer
+            minimum: 1
       responses:
         "200":
-          description: Paginated work-item summary list.
+          description: Work items ordered by newest product sequence first.
           content:
             application/json:
               schema:
@@ -60,8 +120,6 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/WorkItem"
-                  nextCursor:
-                    type: [string, "null"]
     post:
       operationId: createItem
       requestBody:
@@ -72,16 +130,16 @@ paths:
               $ref: "#/components/schemas/CreateWorkItemRequest"
       responses:
         "201":
-          description: Work item created.
+          description: Work item created in Inbox.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkItem"
   /api/v1/items/{itemKey}:
+    parameters:
+      - $ref: "#/components/parameters/WorkItemKey"
     get:
       operationId: getItem
-      parameters:
-        - $ref: "#/components/parameters/WorkItemKey"
       responses:
         "200":
           description: Complete work-item context.
@@ -91,37 +149,72 @@ paths:
                 $ref: "#/components/schemas/WorkItem"
         "404":
           $ref: "#/components/responses/NotFound"
-  /api/v1/items/{itemKey}/verification:
-    post:
-      operationId: verifyItem
-      parameters:
-        - $ref: "#/components/parameters/WorkItemKey"
+    patch:
+      operationId: updateItem
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [outcome, note]
-              properties:
-                outcome:
-                  enum: [passed, failed]
-                note:
-                  type: string
-                  minLength: 1
+              $ref: "#/components/schemas/UpdateWorkItemRequest"
       responses:
         "200":
-          description: Verification recorded and work-item state updated.
+          description: Work item updated.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkItem"
+  /api/v1/items/{itemKey}/transitions:
+    parameters:
+      - $ref: "#/components/parameters/WorkItemKey"
+    post:
+      operationId: transitionItem
+      description: Applies a human transition through the authoritative domain state machine.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransitionWorkItemRequest"
+      responses:
+        "200":
+          description: State transition recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkItem"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /api/v1/items/{itemKey}/timeline:
+    parameters:
+      - $ref: "#/components/parameters/WorkItemKey"
+    get:
+      operationId: getItemTimeline
+      responses:
+        "200":
+          description: Immutable events for the work item.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkItemEvent"
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
   parameters:
+    ProductId:
+      in: path
+      name: productId
+      required: true
+      schema:
+        type: string
     WorkItemKey:
       in: path
       name: itemKey
@@ -133,91 +226,145 @@ components:
     NotFound:
       description: Resource not found.
       content:
-        application/problem+json:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Conflict:
+      description: The requested operation conflicts with current state.
+      content:
+        application/json:
           schema:
             $ref: "#/components/schemas/Problem"
   schemas:
     Product:
       type: object
-      required: [id, keyPrefix, name]
+      required: [id, keyPrefix, name, createdAt, updatedAt]
       properties:
-        id:
-          type: string
-        keyPrefix:
-          type: string
-          pattern: "^[A-Z][A-Z0-9]{1,9}$"
-        name:
-          type: string
+        id: { type: string }
+        keyPrefix: { type: string, pattern: "^[A-Z][A-Z0-9]{1,9}$" }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CreateProductRequest:
+      type: object
+      required: [name, keyPrefix]
+      properties:
+        name: { type: string, minLength: 1 }
+        keyPrefix: { type: string, pattern: "^[A-Za-z][A-Za-z0-9]{1,9}$" }
+    ComponentKind:
+      enum: [android, macos, web, server, shared, other]
+    Component:
+      type: object
+      required: [id, productId, name, kind, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        productId: { type: string }
+        name: { type: string }
+        kind: { $ref: "#/components/schemas/ComponentKind" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CreateComponentRequest:
+      type: object
+      required: [name, kind]
+      properties:
+        name: { type: string, minLength: 1 }
+        kind: { $ref: "#/components/schemas/ComponentKind" }
+    WorkItemType:
+      enum: [idea, requirement, bug, task, note]
+    WorkItemPriority:
+      enum: [urgent, high, normal, low]
     WorkItemStatus:
-      enum:
-        - inbox
-        - ready
-        - in_progress
-        - on_hold
-        - pending_verification
-        - done
-        - cancelled
+      enum: [inbox, ready, in_progress, on_hold, pending_verification, done, cancelled]
+    WorkItemEnvironment:
+      type: object
+      required: [platform]
+      properties:
+        platform: { enum: [android, macos, web, other] }
+        appVersion: { type: string }
+        buildNumber: { type: string }
+        sourceRevision: { type: string }
+        osVersion: { type: string }
+        deviceModel: { type: string }
+        metadata:
+          type: object
+          additionalProperties: { type: string }
     WorkItem:
       type: object
-      required: [id, key, productId, type, priority, status, title, description, affectedComponentIds]
+      required: [id, key, productId, affectedComponentIds, type, priority, status, title, description, createdAt, updatedAt]
       properties:
-        id:
-          type: string
-        key:
-          type: string
-        productId:
-          type: string
-        sourceComponentId:
-          type: string
+        id: { type: string }
+        key: { type: string }
+        productId: { type: string }
+        sourceComponentId: { type: string }
         affectedComponentIds:
           type: array
-          items:
-            type: string
-        type:
-          enum: [idea, requirement, bug, task, note]
-        priority:
-          enum: [urgent, high, normal, low]
-        status:
-          $ref: "#/components/schemas/WorkItemStatus"
-        title:
-          type: string
-        description:
-          type: string
+          uniqueItems: true
+          items: { type: string }
+        areaId: { type: string }
+        type: { $ref: "#/components/schemas/WorkItemType" }
+        priority: { $ref: "#/components/schemas/WorkItemPriority" }
+        status: { $ref: "#/components/schemas/WorkItemStatus" }
+        title: { type: string }
+        description: { type: string }
+        environment: { $ref: "#/components/schemas/WorkItemEnvironment" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     CreateWorkItemRequest:
       type: object
       required: [productId, type, priority, title, description]
       properties:
-        productId:
-          type: string
-        sourceComponentId:
-          type: string
+        productId: { type: string }
+        sourceComponentId: { type: string }
         affectedComponentIds:
           type: array
-          items:
-            type: string
-        areaId:
-          type: string
-        type:
-          enum: [idea, requirement, bug, task, note]
-        priority:
-          enum: [urgent, high, normal, low]
-        title:
-          type: string
-          minLength: 1
-        description:
-          type: string
+          uniqueItems: true
+          items: { type: string }
+        areaId: { type: string }
+        type: { $ref: "#/components/schemas/WorkItemType" }
+        priority: { $ref: "#/components/schemas/WorkItemPriority" }
+        title: { type: string, minLength: 1 }
+        description: { type: string }
+        environment: { $ref: "#/components/schemas/WorkItemEnvironment" }
+    UpdateWorkItemRequest:
+      type: object
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 1 }
+        description: { type: string }
+        type: { $ref: "#/components/schemas/WorkItemType" }
+        priority: { $ref: "#/components/schemas/WorkItemPriority" }
+        affectedComponentIds:
+          type: array
+          uniqueItems: true
+          items: { type: string }
+    TransitionWorkItemRequest:
+      type: object
+      required: [to, reason]
+      properties:
+        to: { $ref: "#/components/schemas/WorkItemStatus" }
+        reason:
+          enum: [triaged, claim, request_human_input, resume, resolution_submitted, verification_passed, verification_failed, lease_expired, released, cancelled, reopened, restored]
+        note: { type: string }
+    WorkItemEvent:
+      type: object
+      required: [id, itemKey, eventType, actorKind, payload, createdAt]
+      properties:
+        id: { type: string }
+        itemKey: { type: string }
+        eventType: { type: string }
+        actorKind: { enum: [human, agent, system] }
+        fromStatus: { $ref: "#/components/schemas/WorkItemStatus" }
+        toStatus: { $ref: "#/components/schemas/WorkItemStatus" }
+        payload:
+          type: object
+          additionalProperties: true
+        createdAt: { type: string, format: date-time }
     Problem:
       type: object
       required: [type, title, status, code]
       properties:
-        type:
-          type: string
-          format: uri-reference
-        title:
-          type: string
-        status:
-          type: integer
-        code:
-          type: string
-        detail:
-          type: string
+        type: { type: string, format: uri-reference }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string }
+        detail: { type: string }
