@@ -7,6 +7,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   CircleDot,
   CirclePause,
   ClipboardCheck,
@@ -33,10 +34,20 @@ import {
 
 import { api, ApiError, getAdminToken, setAdminToken } from "./api";
 import {
+  EMPTY_ENVIRONMENT,
+  captureDraftStorageKey,
+  hasCaptureDraftContent,
+  parseCaptureDraft,
+  type CaptureDraft,
+  type EnvironmentDraft,
+} from "./capture-draft";
+import {
+  COMPONENT_KINDS,
   ITEM_PRIORITIES,
   ITEM_STATUSES,
   ITEM_TYPES,
   type Product,
+  type ComponentKind,
   type TransitionAction,
   type WorkItem,
   type WorkItemAttachment,
@@ -95,26 +106,6 @@ const TRANSITIONS: Record<WorkItemStatus, readonly TransitionAction[]> = {
   cancelled: [{ label: "Restore", to: "inbox", reason: "restored", tone: "primary" }],
 };
 
-type EnvironmentPlatform = WorkItemEnvironment["platform"] | "";
-
-interface EnvironmentDraft {
-  readonly platform: EnvironmentPlatform;
-  readonly appVersion: string;
-  readonly buildNumber: string;
-  readonly sourceRevision: string;
-  readonly osVersion: string;
-  readonly deviceModel: string;
-}
-
-const EMPTY_ENVIRONMENT: EnvironmentDraft = {
-  platform: "",
-  appVersion: "",
-  buildNumber: "",
-  sourceRevision: "",
-  osVersion: "",
-  deviceModel: "",
-};
-
 const FILE_LIMITS_MIB: Readonly<Record<string, number>> = {
   png: 20,
   jpg: 20,
@@ -162,6 +153,36 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function validateIncomingFiles(
+  current: readonly File[],
+  incoming: readonly File[],
+  t: ReturnType<typeof useI18n>["t"],
+): { files: readonly File[]; error?: string } {
+  const remaining = 10 - current.length;
+  if (incoming.length > remaining) return { files: current, error: t("tooManyFiles", { count: remaining }) };
+  const known = new Set(current.map((file) => `${file.name}:${file.size}:${file.lastModified}`));
+  const accepted: File[] = [];
+  let error: string | undefined;
+  for (const file of incoming) {
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const limit = FILE_LIMITS_MIB[extension];
+    if (!limit) {
+      error ??= t("unsupportedFile", { filename: file.name });
+      continue;
+    }
+    if (file.size > limit * 1024 * 1024) {
+      error ??= t("fileTooLarge", { filename: file.name, size: limit });
+      continue;
+    }
+    const identity = `${file.name}:${file.size}:${file.lastModified}`;
+    if (!known.has(identity)) {
+      known.add(identity);
+      accepted.push(file);
+    }
+  }
+  return { files: [...current, ...accepted], ...(error ? { error } : {}) };
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -518,6 +539,11 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
   const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey) });
   const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey) });
   const item = itemQuery.data;
+  const componentsQuery = useQuery({
+    queryKey: ["components", item?.productId],
+    queryFn: () => api.listComponents(item!.productId),
+    enabled: Boolean(item?.productId),
+  });
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -582,6 +608,8 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
 
   const PrimaryIcon = TYPE_ICONS[item.type];
   const actions = TRANSITIONS[item.status];
+  const sourceComponent = componentsQuery.data?.find((component) => component.id === item.sourceComponentId);
+  const affectedComponents = (componentsQuery.data ?? []).filter((component) => item.affectedComponentIds.includes(component.id));
   return (
     <aside className="detail-pane">
       <div className="detail-toolbar">
@@ -617,15 +645,17 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
             </section>
             <section className="environment-block">
               <h3>{t("capturedContext")}</h3>
-              {item.environment ? (
+              {item.environment || sourceComponent || affectedComponents.length > 0 ? (
                 <div className="context-grid">
-                  <span><small>{t("platform")}</small>{t(item.environment.platform)}</span>
-                  {item.environment.appVersion && <span><small>{t("version")}</small>{item.environment.appVersion}</span>}
-                  {item.environment.buildNumber && <span><small>{t("buildNumber")}</small>{item.environment.buildNumber}</span>}
-                  {item.environment.osVersion && <span><small>{t("operatingSystem")}</small>{item.environment.osVersion}</span>}
-                  {item.environment.deviceModel && <span><small>{t("device")}</small>{item.environment.deviceModel}</span>}
-                  {item.environment.sourceRevision && <span><small>{t("sourceRevision")}</small><code>{item.environment.sourceRevision}</code></span>}
-                  {Object.entries(item.environment.metadata ?? {}).map(([key, value]) => <span key={key}><small>{key}</small>{value}</span>)}
+                  {sourceComponent && <span><small>{t("sourceComponent")}</small>{sourceComponent.name}</span>}
+                  {affectedComponents.length > 0 && <span><small>{t("affectedComponents")}</small>{affectedComponents.map((component) => component.name).join("、")}</span>}
+                  {item.environment && <span><small>{t("platform")}</small>{t(item.environment.platform)}</span>}
+                  {item.environment?.appVersion && <span><small>{t("version")}</small>{item.environment.appVersion}</span>}
+                  {item.environment?.buildNumber && <span><small>{t("buildNumber")}</small>{item.environment.buildNumber}</span>}
+                  {item.environment?.osVersion && <span><small>{t("operatingSystem")}</small>{item.environment.osVersion}</span>}
+                  {item.environment?.deviceModel && <span><small>{t("device")}</small>{item.environment.deviceModel}</span>}
+                  {item.environment?.sourceRevision && <span><small>{t("sourceRevision")}</small><code>{item.environment.sourceRevision}</code></span>}
+                  {Object.entries(item.environment?.metadata ?? {}).map(([key, value]) => <span key={key}><small>{key}</small>{value}</span>)}
                 </div>
               ) : <p className="section-empty">{t("noEnvironment")}</p>}
             </section>
@@ -690,27 +720,78 @@ function AnalysisDetails({ payload }: { payload: Readonly<Record<string, unknown
 }
 
 function CaptureForm({ product, onCreated }: { product: Product; onCreated: (item: WorkItem, failedUploads: number) => void }) {
+  const queryClient = useQueryClient();
   const { priorityLabel, t, typeLabel } = useI18n();
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [type, setType] = useState<WorkItemType>("idea");
-  const [priority, setPriority] = useState<WorkItemPriority>("normal");
-  const [environment, setEnvironment] = useState<EnvironmentDraft>(EMPTY_ENVIRONMENT);
+  const storageKey = captureDraftStorageKey(product.id);
+  const [draft, setDraft] = useState<CaptureDraft>(() => parseCaptureDraft(localStorage.getItem(storageKey)));
   const [files, setFiles] = useState<readonly File[]>([]);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [componentFormOpen, setComponentFormOpen] = useState(false);
+  const [componentName, setComponentName] = useState("");
+  const [componentKind, setComponentKind] = useState<ComponentKind>("android");
+  const componentsQuery = useQuery({
+    queryKey: ["components", product.id],
+    queryFn: () => api.listComponents(product.id),
+  });
+
+  useEffect(() => {
+    if (hasCaptureDraftContent(draft)) localStorage.setItem(storageKey, JSON.stringify(draft));
+    else localStorage.removeItem(storageKey);
+  }, [draft, storageKey]);
+
+  useEffect(() => {
+    if (!draft.sourceComponentId || !componentsQuery.data) return;
+    if (!componentsQuery.data.some((component) => component.id === draft.sourceComponentId)) {
+      setDraft((value) => ({ ...value, sourceComponentId: "" }));
+    }
+  }, [componentsQuery.data, draft.sourceComponentId]);
+
+  const updateDraft = <Key extends keyof CaptureDraft>(key: Key, value: CaptureDraft[Key]) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  const addIncomingFiles = (incoming: readonly File[]) => {
+    const result = validateIncomingFiles(files, incoming, t);
+    setFiles(result.files);
+    setFileError(result.error ?? null);
+  };
+
+  const componentMutation = useMutation({
+    mutationFn: () => api.createComponent(product.id, { name: componentName, kind: componentKind }),
+    onSuccess: async (component) => {
+      await queryClient.invalidateQueries({ queryKey: ["components", product.id] });
+      setDraft((current) => ({
+        ...current,
+        sourceComponentId: component.id,
+        environment: !current.environment.platform && ["android", "macos", "web"].includes(component.kind)
+          ? { ...current.environment, platform: component.kind as WorkItemEnvironment["platform"] }
+          : current.environment,
+      }));
+      setComponentName("");
+      setComponentFormOpen(false);
+    },
+  });
+
   const mutation = useMutation({
     mutationFn: async () => {
       const item = await api.createItem({
         productId: product.id,
-        title,
-        description,
-        type,
-        priority,
-        ...(environmentPayload(environment) ? { environment: environmentPayload(environment)! } : {}),
+        title: draft.title,
+        description: draft.description,
+        type: draft.type,
+        priority: draft.priority,
+        ...(draft.sourceComponentId
+          ? { sourceComponentId: draft.sourceComponentId, affectedComponentIds: [draft.sourceComponentId] }
+          : {}),
+        ...(environmentPayload(draft.environment) ? { environment: environmentPayload(draft.environment)! } : {}),
       });
       const uploads = await Promise.allSettled(files.map((file) => api.uploadAttachment(item.key, file)));
       return { item, failedUploads: uploads.filter((result) => result.status === "rejected").length };
     },
-    onSuccess: ({ item, failedUploads }) => onCreated(item, failedUploads),
+    onSuccess: ({ item, failedUploads }) => {
+      localStorage.removeItem(storageKey);
+      onCreated(item, failedUploads);
+    },
   });
 
   const submit = (event: FormEvent) => {
@@ -719,20 +800,109 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
   };
 
   return (
-    <form className="capture-form" onSubmit={submit}>
-      <label>{t("whatNeedsAttention")}<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
-      <label>{t("context")}<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("contextPlaceholder")} rows={6} /></label>
-      <div className="field-row">
-        <label>{t("type")}<select value={type} onChange={(event) => setType(event.target.value as WorkItemType)}>{ITEM_TYPES.map((value) => <option key={value} value={value}>{typeLabel(value)}</option>)}</select></label>
-        <label>{t("priority")}<select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
+    <form
+      className="capture-form quick-capture-form"
+      onSubmit={submit}
+      onKeyDown={(event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.requestSubmit();
+        }
+      }}
+      onPaste={(event) => {
+        const pastedFiles = Array.from(event.clipboardData.files);
+        if (pastedFiles.length > 0) {
+          event.preventDefault();
+          addIncomingFiles(pastedFiles);
+        }
+      }}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        addIncomingFiles(Array.from(event.dataTransfer.files));
+      }}
+    >
+      <div className="capture-type-grid" aria-label={t("type")}>
+        {ITEM_TYPES.map((value) => {
+          const Icon = TYPE_ICONS[value];
+          return (
+            <button
+              key={value}
+              type="button"
+              className={`capture-type ${draft.type === value ? "active" : ""} type-${value}`}
+              onClick={() => updateDraft("type", value)}
+            >
+              <Icon size={16} /> {typeLabel(value)}
+            </button>
+          );
+        })}
       </div>
-      <EnvironmentFields value={environment} onChange={setEnvironment} />
-      <div className="attachment-picker-block">
-        <div><strong>{t("attachments")}</strong><p>{t("attachmentHelp")}</p></div>
+      <label>{t("whatNeedsAttention")}<input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
+      <label>{t("context")}<textarea value={draft.description} onChange={(event) => updateDraft("description", event.target.value)} placeholder={t("contextPlaceholder")} rows={4} /></label>
+      <div className="attachment-picker-block capture-attachment-block">
+        <div><strong>{t("attachments")}</strong><p>{t("pasteDropHelp")}</p></div>
         <FilePicker files={files} onFiles={setFiles} remaining={10 - files.length} />
       </div>
+      {fileError && <InlineError message={fileError} />}
+      <details className="capture-optional" open={Boolean(draft.sourceComponentId || draft.priority !== "normal" || environmentPayload(draft.environment))}>
+        <summary><ChevronRight size={16} /> <span><strong>{t("optionalDetails")}</strong><small>{t("optionalDetailsHelp")}</small></span></summary>
+        <div className="capture-optional-body">
+          <div className="field-row">
+            <label>{t("sourceComponent")}
+              <select
+                value={draft.sourceComponentId}
+                onChange={(event) => {
+                  const sourceComponentId = event.target.value;
+                  const kind = componentsQuery.data?.find((component) => component.id === sourceComponentId)?.kind;
+                  setDraft((current) => ({
+                    ...current,
+                    sourceComponentId,
+                    environment: !current.environment.platform && kind && ["android", "macos", "web"].includes(kind)
+                      ? { ...current.environment, platform: kind as WorkItemEnvironment["platform"] }
+                      : current.environment,
+                  }));
+                }}
+                disabled={componentsQuery.isLoading}
+              >
+                <option value="">{t("notSpecified")}</option>
+                {(componentsQuery.data ?? []).map((component) => (
+                  <option key={component.id} value={component.id}>{component.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>{t("priority")}<select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
+          </div>
+          <button type="button" className="text-button inline-add-component" onClick={() => setComponentFormOpen((value) => !value)}>
+            <Plus size={14} /> {t("addComponent")}
+          </button>
+          {componentFormOpen && (
+            <div className="component-quick-form">
+              <label>{t("componentName")}<input value={componentName} onChange={(event) => setComponentName(event.target.value)} placeholder={t("componentNamePlaceholder")} /></label>
+              <label>{t("componentKind")}
+                <select value={componentKind} onChange={(event) => setComponentKind(event.target.value as ComponentKind)}>
+                  {COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!componentName.trim() || componentMutation.isPending}
+                onClick={() => componentMutation.mutate()}
+              >
+                {componentMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createComponent")}
+              </button>
+            </div>
+          )}
+          {componentMutation.isError && <InlineError message={errorMessage(componentMutation.error, t("somethingWentWrong"))} />}
+          <EnvironmentFields value={draft.environment} onChange={(value) => updateDraft("environment", value)} />
+        </div>
+      </details>
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
-      <div className="form-footer"><span>{t("landsInInbox")}</span><button className="primary-button" disabled={mutation.isPending}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {t("captureItem")}</button></div>
+      <div className="draft-status">
+        <span>{hasCaptureDraftContent(draft) ? t("draftSaved") : t("landsInInbox")}</span>
+        <small>{t("captureShortcut")}</small>
+      </div>
+      <div className="form-footer"><span>{t("landsInInbox")}</span><button className="primary-button" disabled={mutation.isPending || !draft.title.trim()}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {t("captureItem")}</button></div>
     </form>
   );
 }

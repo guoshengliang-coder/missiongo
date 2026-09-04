@@ -1,4 +1,6 @@
 import type {
+  Component,
+  ComponentKind,
   CreateWorkItemInput,
   Product,
   TransitionAction,
@@ -73,6 +75,13 @@ export const api = {
   listProducts: () => request<Product[]>("/api/v1/products"),
   createProduct: (input: { name: string; keyPrefix: string }) =>
     request<Product>("/api/v1/products", { method: "POST", body: JSON.stringify(input) }),
+  listComponents: (productId: string) =>
+    request<Component[]>(`/api/v1/products/${encodeURIComponent(productId)}/components`),
+  createComponent: (productId: string, input: { name: string; kind: ComponentKind }) =>
+    request<Component>(`/api/v1/products/${encodeURIComponent(productId)}/components`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   listItems: (productId: string, status?: WorkItemStatus, type?: WorkItemType) => {
     const params = new URLSearchParams({ productId });
     if (status) params.set("status", status);

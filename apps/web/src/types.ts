@@ -43,6 +43,18 @@ export interface Product {
   readonly updatedAt: string;
 }
 
+export const COMPONENT_KINDS = ["android", "macos", "web", "server", "shared", "other"] as const;
+export type ComponentKind = (typeof COMPONENT_KINDS)[number];
+
+export interface Component {
+  readonly id: string;
+  readonly productId: string;
+  readonly name: string;
+  readonly kind: ComponentKind;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 export interface WorkItem {
   readonly id: string;
   readonly key: string;
@@ -74,6 +86,8 @@ export interface WorkItemEvent {
 
 export interface CreateWorkItemInput {
   readonly productId: string;
+  readonly sourceComponentId?: string;
+  readonly affectedComponentIds?: readonly string[];
   readonly type: WorkItemType;
   readonly priority: WorkItemPriority;
   readonly title: string;
