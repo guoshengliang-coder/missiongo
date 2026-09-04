@@ -377,6 +377,14 @@ describe("MissionGo REST API", () => {
     const android = androidResponse.json<{ id: string }>();
     expect(androidResponse.statusCode).toBe(201);
 
+    const clientsResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/products/${product.id}/components`,
+      payload: { name: "Clients", kind: "shared" },
+    });
+    const clients = clientsResponse.json<{ id: string }>();
+    expect(clientsResponse.statusCode).toBe(201);
+
     const productUpdateResponse = await app.inject({
       method: "PATCH",
       url: `/api/v1/products/${product.id}`,
@@ -388,10 +396,32 @@ describe("MissionGo REST API", () => {
     const componentUpdateResponse = await app.inject({
       method: "PATCH",
       url: `/api/v1/products/${product.id}/components/${android.id}`,
-      payload: { name: "Android client", kind: "android" },
+      payload: { name: "Android client", kind: "android", parentComponentId: clients.id },
     });
     expect(componentUpdateResponse.statusCode).toBe(200);
-    expect(componentUpdateResponse.json()).toMatchObject({ id: android.id, name: "Android client", kind: "android" });
+    expect(componentUpdateResponse.json()).toMatchObject({
+      id: android.id,
+      name: "Android client",
+      kind: "android",
+      parentComponentId: clients.id,
+    });
+
+    const cycleResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/products/${product.id}/components/${clients.id}`,
+      payload: { name: "Clients", kind: "shared", parentComponentId: android.id },
+    });
+    expect(cycleResponse.statusCode).toBe(400);
+
+    const componentsResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/products/${product.id}/components`,
+    });
+    expect(componentsResponse.json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: clients.id }),
+      expect.objectContaining({ id: android.id, parentComponentId: clients.id }),
+    ]));
+    expect(componentsResponse.json().find((component: { id: string }) => component.id === clients.id)).not.toHaveProperty("parentComponentId");
 
     const firstResponse = await app.inject({
       method: "POST",

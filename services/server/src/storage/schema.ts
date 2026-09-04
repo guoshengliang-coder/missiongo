@@ -18,6 +18,7 @@ export const INITIAL_SCHEMA = `
   CREATE TABLE IF NOT EXISTS components (
     id TEXT PRIMARY KEY,
     product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    parent_component_id TEXT REFERENCES components(id) ON DELETE SET NULL,
     name TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('android', 'macos', 'web', 'server', 'shared', 'other')),
     created_at TEXT NOT NULL,

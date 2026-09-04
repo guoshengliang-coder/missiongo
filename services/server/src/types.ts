@@ -28,6 +28,7 @@ export interface ProductSnapshot {
 export interface ComponentSnapshot {
   readonly id: string;
   readonly productId: string;
+  readonly parentComponentId?: string;
   readonly name: string;
   readonly kind: ComponentKind;
   readonly createdAt: string;
