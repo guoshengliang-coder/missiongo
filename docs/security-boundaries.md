@@ -1,39 +1,39 @@
-# Security boundaries
+# 安全边界
 
-## Secret policy
+## 敏感信息规则
 
-Never commit:
+严禁提交以下内容：
 
-- real domains, IP addresses, or ports;
-- database credentials or paths containing private machine details;
-- MCP, SDK, session, GitHub, or AI-provider tokens;
-- Android keystores, Apple certificates, provisioning profiles, or signing passwords;
-- local repository paths;
-- production logs, screenshots, attachments, or database snapshots.
+- 真实域名、IP 地址或端口；
+- 数据库凭据，或包含私人机器信息的路径；
+- MCP、SDK、会话、GitHub 或 AI 服务商 Token；
+- Android 密钥库、Apple 证书、描述文件或签名密码；
+- 本机代码仓库路径；
+- 生产日志、截图、附件或数据库快照。
 
-Tracked examples must use blank values or reserved/example values only.
+仓库中可跟踪的示例只能使用空值或明确的保留示例值。
 
-## Token classes
+## Token 类型
 
-- Admin session: full management access.
-- SDK token: submit-only and scoped to one product/component.
-- MCP agent token: scoped read/claim/write actions for selected products.
-- Future node token: bound to one worker machine and its capabilities.
+- 管理会话：拥有完整管理权限。
+- SDK Token：只能提交反馈，并限制到一个产品或组件。
+- MCP Agent Token：按授权范围读取、领取和回写指定产品的数据。
+- 未来的节点 Token：绑定一台 AI 工作机器及其允许的能力。
 
-The current single-user MCP token is loaded from an untracked local environment file and is never stored in SQLite. Managed tokens added later must be stored hashed; plaintext should be shown only at creation time and remain revocable.
+当前单用户 MCP Token 从未被 Git 跟踪的本地环境文件加载，不写入 SQLite。以后增加可管理 Token 时，服务端必须只保存摘要；明文只能在创建时显示一次，并且 Token 必须可以撤销。
 
-## Untrusted feedback
+## 不可信反馈内容
 
-Descriptions, comments, logs, OCR, filenames, images, and videos can contain malicious instructions. They must be labeled and handled as data. Neither the service nor a skill may let them override system, user, repository, or safety instructions.
+描述、评论、日志、OCR 结果、文件名、图片和视频都可能包含恶意指令，必须明确标记并按数据处理。服务端和 Skill 都不能允许这些内容覆盖系统指令、用户指令、代码仓库规则或安全规则。
 
-## Attachment safety
+## 附件安全
 
-- Generate storage names server-side.
-- Enforce size, count, MIME, and extension allowlists.
-- Prevent path traversal and direct public directory access.
-- Serve through authenticated endpoints or short-lived URLs.
-- Escape user filenames in all rendered views.
+- 存储文件名由服务端生成。
+- 限制文件大小、数量、MIME 和扩展名白名单。
+- 防止路径穿越，禁止直接公开附件目录。
+- 只通过带鉴权的端点或短期访问地址提供内容。
+- 展示用户文件名时必须转义。
 
-## Audit events
+## 审计事件
 
-Record authentication failures, token lifecycle events, task claims, lease expiry, state changes, verification, exports, and attachment access suitable for incident review.
+记录鉴权失败、Token 生命周期、任务领取、租约过期、状态变化、人工验收、导出和附件访问等事件，以便后续审计。
