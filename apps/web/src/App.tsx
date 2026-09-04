@@ -733,6 +733,7 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
       await refreshItem();
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
+    onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
   });
   const attachmentMutation = useMutation({
     mutationFn: async (files: readonly File[]) => Promise.allSettled(files.map((file) => api.uploadAttachment(itemKey!, file))),
@@ -752,6 +753,8 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
 
   const PrimaryIcon = TYPE_ICONS[item.type];
   const actions = TRANSITIONS[item.status];
+  const primaryAction = actions[0];
+  const secondaryActions = actions.slice(1);
   const sourceComponent = componentsQuery.data?.find((component) => component.id === item.sourceComponentId);
   const affectedComponents = (componentsQuery.data ?? []).filter((component) => item.affectedComponentIds.includes(component.id));
   return (
@@ -761,14 +764,15 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
         <code>{item.key}</code>
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <span className="toolbar-spacer" />
-        {item.status === "inbox" && (
+        {primaryAction && (
           <button
-            className="secondary-button toolbar-ready-button"
+            className={`secondary-button toolbar-primary-action ${primaryAction.tone === "positive" ? "positive" : ""}`}
             disabled={transitionMutation.isPending}
-            onClick={() => transitionMutation.mutate(TRANSITIONS.inbox[0]!)}
+            onClick={() => transitionMutation.mutate(primaryAction)}
+            title={transitionLabel(primaryAction.label)}
           >
             {transitionMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
-            {t("markReady")}
+            {quickActionLabel(item.status, t)}
           </button>
         )}
         <button className="secondary-button" onClick={() => setEditing((value) => !value)}>{editing ? t("cancel") : t("edit")}</button>
@@ -818,22 +822,23 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
               uploading={attachmentMutation.isPending}
               onUpload={(files) => attachmentMutation.mutate(files)}
             />
-            <section className="next-action-block">
-              <div><p className="eyebrow">{t("nextAction")}</p><h3>{t("moveForward")}</h3></div>
-              <div className="action-row">
-                {actions.map((action) => (
+            {secondaryActions.length > 0 && (
+              <section className="next-action-block secondary-actions-block">
+                <div><h3>{t("moreActions")}</h3></div>
+                <div className="action-row">
+                  {secondaryActions.map((action) => (
                   <button
                     key={`${action.to}-${action.reason}`}
-                    className={action.tone === "primary" || action.tone === "positive" ? `primary-button ${action.tone === "positive" ? "positive" : ""}` : "secondary-button"}
+                    className="secondary-button"
                     disabled={transitionMutation.isPending}
                     onClick={() => transitionMutation.mutate(action)}
                   >
                     {transitionMutation.isPending ? <LoaderCircle className="spin" size={16} /> : null}{transitionLabel(action.label)}
                   </button>
-                ))}
-              </div>
-              {transitionMutation.isError && <InlineError message={errorMessage(transitionMutation.error, t("somethingWentWrong"))} />}
-            </section>
+                  ))}
+                </div>
+              </section>
+            )}
             <section className="timeline-block">
               <h3>{t("timeline")}</h3>
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
