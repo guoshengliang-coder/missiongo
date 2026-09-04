@@ -1,8 +1,10 @@
 import type {
+  AttachmentKind,
   ActorKind,
   TransitionReason,
   WorkItemEnvironment,
   WorkItemPriority,
+  WorkItemAttachment,
   WorkItemSnapshot,
   WorkItemStatus,
   WorkItemType,
@@ -53,7 +55,21 @@ export interface UpdateWorkItemInput {
   readonly description?: string;
   readonly type?: WorkItemType;
   readonly priority?: WorkItemPriority;
+  readonly environment?: WorkItemEnvironment | null;
   readonly affectedComponentIds?: readonly string[];
+}
+
+export interface CreateAttachmentMetadataInput {
+  readonly itemKey: string;
+  readonly kind: AttachmentKind;
+  readonly filename: string;
+  readonly storageFilename: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+}
+
+export interface AttachmentRecord extends WorkItemAttachment {
+  readonly storageFilename: string;
 }
 
 export interface TransitionWorkItemInput {

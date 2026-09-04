@@ -252,12 +252,46 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .detail-title-block h2 { max-width: 680px; margin: 0; font-size: clamp(22px, 2.3vw, 30px); letter-spacing: -0.035em; line-height: 1.17; }
 .detail-title-block .eyebrow { margin-top: 2px; }
 .detail-pane h3 { margin: 0; font-size: 12px; letter-spacing: -0.01em; }
-.description-block, .environment-block, .timeline-block { padding: 0 0 24px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
+.description-block, .environment-block, .attachment-block, .timeline-block { padding: 0 0 24px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
 .description-block p { margin: 10px 0 0; color: #4e5664; font-size: 13px; line-height: 1.75; white-space: pre-wrap; }
 .description-block p.muted { color: #9a9ea6; font-style: italic; }
 .context-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 11px; }
 .context-grid span { padding: 10px 12px; background: white; border: 1px solid var(--line); border-radius: 9px; font-size: 12px; font-weight: 650; }
 .context-grid small { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; font-weight: 750; text-transform: uppercase; }
+.context-grid code { overflow-wrap: anywhere; font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; }
+.section-empty { margin: 10px 0 0; color: #969ba4; font-size: 11px; font-style: italic; }
+.environment-fields { margin: 0; padding: 14px; background: #f3f2ed; border: 1px solid var(--line); border-radius: 12px; }
+.environment-fields legend { padding: 0 5px; color: var(--ink); font-size: 11px; font-weight: 760; }
+.environment-fields > p, .attachment-picker-block > div:first-child p { margin: 0 0 12px; color: var(--muted); font-size: 9px; font-weight: 500; line-height: 1.5; }
+.environment-fields .field-row { row-gap: 10px; }
+.attachment-picker-block { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px; padding: 14px; background: #f3f2ed; border: 1px solid var(--line); border-radius: 12px; }
+.attachment-picker-block strong { display: block; margin-bottom: 4px; font-size: 11px; }
+.attachment-picker-block > div:first-child p { margin-bottom: 0; }
+.file-picker { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.file-picker-button { white-space: nowrap; }
+.file-picker-button.disabled { opacity: 0.55; cursor: wait; }
+.file-picker-button input { position: absolute; width: 1px; height: 1px; padding: 0; opacity: 0; pointer-events: none; }
+.selected-files { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.selected-files > span { max-width: 100%; display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; color: #515866; background: white; border: 1px solid var(--line); border-radius: 7px; font-size: 9px; }
+.selected-files > span small { color: var(--muted); }
+.selected-files button { display: grid; place-items: center; padding: 1px; color: var(--muted); background: transparent; border: 0; cursor: pointer; }
+.attachment-block > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.attachment-block > header p { max-width: 460px; margin: 5px 0 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
+.attachment-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 13px; }
+.attachment-card { min-width: 0; overflow: hidden; background: white; border: 1px solid var(--line); border-radius: 11px; }
+.attachment-preview { min-height: 94px; max-height: 240px; display: grid; place-items: center; overflow: auto; background: #eae9e3; }
+.attachment-preview > span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 9px; }
+.attachment-preview img, .attachment-preview video { width: 100%; max-height: 240px; display: block; object-fit: contain; }
+.attachment-preview pre { align-self: stretch; width: 100%; min-height: 120px; max-height: 220px; margin: 0; padding: 11px; overflow: auto; color: #d8e2f0; background: #1e2638; font-family: "SFMono-Regular", Consolas, monospace; font-size: 8px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.attachment-error { color: var(--red) !important; }
+.attachment-card footer { display: grid; grid-template-columns: 18px minmax(0, 1fr) 30px; align-items: center; gap: 6px; padding: 8px 9px; }
+.attachment-card footer > svg { color: var(--muted); }
+.attachment-card footer span { min-width: 0; }
+.attachment-card footer strong, .attachment-card footer small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-card footer strong { font-size: 9px; }
+.attachment-card footer small { margin-top: 2px; color: var(--muted); font-size: 8px; }
+.attachment-card footer button { width: 28px; height: 28px; display: grid; place-items: center; color: var(--muted); background: transparent; border: 0; border-radius: 7px; cursor: pointer; }
+.attachment-card footer button:hover { color: var(--ink); background: var(--canvas); }
 .next-action-block { padding: 17px; margin-bottom: 25px; background: #eeece5; border: 1px solid #dcd9cf; border-radius: 13px; }
 .next-action-block { display: flex; align-items: center; justify-content: space-between; gap: 15px; flex-wrap: wrap; }
 .next-action-block .eyebrow { margin-bottom: 4px; }
@@ -380,6 +414,10 @@ input::placeholder, textarea::placeholder { color: #a1a5ad; }
   .status-pill { display: none; }
   .item-row .status-pill { display: inline-flex; }
   .field-row, .context-grid { grid-template-columns: 1fr; }
+  .attachment-picker-block { grid-template-columns: 1fr; }
+  .attachment-picker-block .file-picker { align-items: stretch; }
+  .attachment-grid { grid-template-columns: 1fr; }
+  .attachment-block > header { flex-direction: column; }
   .modal-layer { align-items: end; padding: 0; }
   .modal { width: 100%; max-height: 92vh; border-radius: 20px 20px 0 0; padding: 20px 18px 26px; }
   .form-footer { align-items: stretch; flex-direction: column; }

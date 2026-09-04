@@ -49,6 +49,17 @@ export const INITIAL_SCHEMA = `
     PRIMARY KEY (item_id, component_id)
   ) STRICT;
 
+  CREATE TABLE IF NOT EXISTS work_item_attachments (
+    id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'log')),
+    original_filename TEXT NOT NULL,
+    storage_filename TEXT NOT NULL UNIQUE,
+    content_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+    created_at TEXT NOT NULL
+  ) STRICT;
+
   CREATE TABLE IF NOT EXISTS work_item_events (
     id TEXT PRIMARY KEY,
     item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
@@ -63,5 +74,6 @@ export const INITIAL_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_components_product ON components(product_id);
   CREATE INDEX IF NOT EXISTS idx_work_items_product_sequence ON work_items(product_id, sequence DESC);
   CREATE INDEX IF NOT EXISTS idx_work_items_product_status ON work_items(product_id, status);
+  CREATE INDEX IF NOT EXISTS idx_work_item_attachments_item_created ON work_item_attachments(item_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_work_item_events_item_created ON work_item_events(item_id, created_at);
 `;

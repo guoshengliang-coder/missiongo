@@ -13,6 +13,7 @@ const item: WorkItem = {
   status: "inbox",
   title: "Capture faster",
   description: "",
+  attachments: [],
   createdAt: "2026-09-04T00:00:00.000Z",
   updatedAt: "2026-09-04T00:00:00.000Z",
 };
@@ -51,7 +52,10 @@ describe("MissionGo WebMCP", () => {
       product: { name: "Hermes Go" },
       items: [{ key: "HG-1" }],
     });
-    expect(await tools.get("open_work_item")!.execute({ itemKey: "hg-1" })).toMatchObject({ opened: "HG-1" });
+    expect(await tools.get("open_work_item")!.execute({ itemKey: "hg-1" })).toMatchObject({
+      opened: "HG-1",
+      item: { key: "HG-1", attachments: [] },
+    });
     expect(openItem).toHaveBeenCalledWith("HG-1");
   });
 

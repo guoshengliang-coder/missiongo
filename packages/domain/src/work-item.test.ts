@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createWorkItemKey, WORK_ITEM_TYPES } from "./work-item.js";
+import { ATTACHMENT_KINDS, createWorkItemKey, WORK_ITEM_TYPES } from "./work-item.js";
 
 describe("createWorkItemKey", () => {
   it("creates a stable product-scoped work item key", () => {
@@ -9,6 +9,10 @@ describe("createWorkItemKey", () => {
 
   it("supports every confirmed work item type", () => {
     expect(WORK_ITEM_TYPES).toEqual(["idea", "requirement", "bug", "task", "note"]);
+  });
+
+  it("classifies the supported attachment kinds", () => {
+    expect(ATTACHMENT_KINDS).toEqual(["image", "video", "log"]);
   });
 
   it("rejects unsafe or ambiguous product prefixes", () => {

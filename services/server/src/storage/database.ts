@@ -41,5 +41,9 @@ export class MissionGoDatabase {
     this.connection
       .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
       .run(1, new Date().toISOString());
+    this.connection
+      .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+      .run(2, new Date().toISOString());
+    this.connection.exec("PRAGMA optimize;");
   }
 }

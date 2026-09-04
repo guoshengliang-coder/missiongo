@@ -14,12 +14,14 @@ The core server foundation is now runnable. The repository currently contains:
 - an initial REST API contract;
 - a Fastify server backed by SQLite;
 - Product, Component, Work Item, and Timeline persistence;
+- local attachment storage for images, videos, and log files;
 - a responsive Web Console for capture, filtering, editing, transitions, and timeline review;
+- manual device, OS, app/build version, and source-revision capture;
 - Simplified Chinese and English interface languages, with Chinese as the first-run default;
 - a small browser-native WebMCP surface for listing, opening, and creating work items;
 - tests for persistence, validation, authentication, and the highest-risk transition rules.
 
-No Android app, feedback SDK, attachment upload, or remote MCP transport has been implemented yet.
+No Android app, feedback SDK, or remote MCP transport has been implemented yet. Client SDK auto-capture is represented by the REST data contract but is not implemented yet.
 
 ## Confirmed MVP scope
 

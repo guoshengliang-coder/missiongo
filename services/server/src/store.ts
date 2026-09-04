@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 
 import {
+  ATTACHMENT_KINDS,
   assertWorkItemTransition,
   createWorkItemKey,
   WORK_ITEM_PRIORITIES,
   WORK_ITEM_STATUSES,
   WORK_ITEM_TYPES,
   type ActorKind,
+  type AttachmentKind,
   type WorkItemEnvironment,
   type WorkItemPriority,
   type WorkItemSnapshot,
@@ -19,9 +21,11 @@ import { conflict, invalidInput, notFound } from "./errors.js";
 import { MissionGoDatabase } from "./storage/database.js";
 import {
   COMPONENT_KINDS,
+  type AttachmentRecord,
   type ComponentKind,
   type ComponentSnapshot,
   type CreateWorkItemInput,
+  type CreateAttachmentMetadataInput,
   type ListWorkItemsInput,
   type ProductSnapshot,
   type TransitionWorkItemInput,
@@ -72,6 +76,17 @@ interface EventRow {
   from_status: WorkItemStatus | null;
   to_status: WorkItemStatus | null;
   payload_json: string;
+  created_at: string;
+}
+
+interface AttachmentRow {
+  id: string;
+  item_key: string;
+  kind: AttachmentKind;
+  original_filename: string;
+  storage_filename: string;
+  content_type: string;
+  size_bytes: number;
   created_at: string;
 }
 
@@ -311,6 +326,10 @@ export class MissionGoStore {
       fields.push("priority = ?");
       values.push(input.priority);
     }
+    if (input.environment !== undefined) {
+      fields.push("environment_json = ?");
+      values.push(input.environment === null ? null : JSON.stringify(input.environment));
+    }
     if (fields.length === 0 && affectedComponentIds === undefined) throw invalidInput("No editable fields were provided.");
 
     const now = new Date().toISOString();
@@ -332,6 +351,68 @@ export class MissionGoStore {
     });
 
     return this.getWorkItem(itemKey);
+  }
+
+  createAttachmentMetadata(input: CreateAttachmentMetadataInput): AttachmentRecord {
+    const item = this.getWorkItemRow(input.itemKey);
+    if (!item) throw notFound("Work item");
+    if (!isOneOf(input.kind, ATTACHMENT_KINDS)) throw invalidInput("Unsupported attachment kind.");
+    if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 1) throw invalidInput("Attachment size is invalid.");
+
+    const count = this.database.connection
+      .prepare("SELECT COUNT(*) AS count FROM work_item_attachments WHERE item_id = ?")
+      .get(item.id) as unknown as { count: number };
+    if (count.count >= 10) throw conflict("attachment_limit_reached", "A work item can have at most 10 attachments.");
+
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database.connection
+        .prepare(
+          `INSERT INTO work_item_attachments
+             (id, item_id, kind, original_filename, storage_filename, content_type, size_bytes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          item.id,
+          input.kind,
+          input.filename,
+          input.storageFilename,
+          input.contentType,
+          input.sizeBytes,
+          now,
+        );
+      this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
+      this.insertEvent(item.id, "attachment_added", "human", null, null, {
+        attachmentId: id,
+        kind: input.kind,
+        filename: input.filename,
+        contentType: input.contentType,
+        sizeBytes: input.sizeBytes,
+      }, now);
+    });
+    return this.getAttachmentRecord(input.itemKey, id);
+  }
+
+  listAttachments(itemKey: string): readonly AttachmentRecord[] {
+    const item = this.getWorkItemRow(itemKey);
+    if (!item) throw notFound("Work item");
+    return this.listAttachmentsByItemId(item.id);
+  }
+
+  getAttachmentRecord(itemKey: string, attachmentId: string): AttachmentRecord {
+    const row = this.database.connection
+      .prepare(
+        `SELECT a.id, w.item_key, a.kind, a.original_filename, a.storage_filename,
+                a.content_type, a.size_bytes, a.created_at
+         FROM work_item_attachments a
+         JOIN work_items w ON w.id = a.item_id
+         WHERE w.item_key = ? AND a.id = ?`,
+      )
+      .get(itemKey, attachmentId) as unknown as AttachmentRow | undefined;
+    if (!row) throw notFound("Attachment");
+    return this.mapAttachment(row);
   }
 
   transitionWorkItem(input: TransitionWorkItemInput): WorkItemSnapshot {
@@ -425,6 +506,20 @@ export class MissionGoStore {
     return rows.map((row) => row.component_id);
   }
 
+  private listAttachmentsByItemId(itemId: string): readonly AttachmentRecord[] {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT a.id, w.item_key, a.kind, a.original_filename, a.storage_filename,
+                a.content_type, a.size_bytes, a.created_at
+         FROM work_item_attachments a
+         JOIN work_items w ON w.id = a.item_id
+         WHERE a.item_id = ?
+         ORDER BY a.created_at, a.rowid`,
+      )
+      .all(itemId) as unknown as AttachmentRow[];
+    return rows.map((row) => this.mapAttachment(row));
+  }
+
   private insertEvent(
     itemId: string,
     eventType: string,
@@ -464,6 +559,19 @@ export class MissionGoStore {
     };
   }
 
+  private mapAttachment(row: AttachmentRow): AttachmentRecord {
+    return {
+      id: row.id,
+      itemKey: row.item_key,
+      kind: row.kind,
+      filename: row.original_filename,
+      storageFilename: row.storage_filename,
+      contentType: row.content_type,
+      sizeBytes: row.size_bytes,
+      createdAt: row.created_at,
+    };
+  }
+
   private mapWorkItem(row: WorkItemRow): WorkItemSnapshot {
     const environment = parseEnvironment(row.environment_json);
     return {
@@ -479,6 +587,7 @@ export class MissionGoStore {
       title: row.title,
       description: row.description,
       ...(environment ? { environment } : {}),
+      attachments: this.listAttachmentsByItemId(row.id).map(({ storageFilename: _, ...attachment }) => attachment),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

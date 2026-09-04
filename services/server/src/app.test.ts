@@ -10,13 +10,14 @@ import { buildApp } from "./app.js";
 const apps: FastifyInstance[] = [];
 const temporaryDirectories: string[] = [];
 
-async function testApp(): Promise<{ app: FastifyInstance; databasePath: string }> {
+async function testApp(): Promise<{ app: FastifyInstance; databasePath: string; attachmentsPath: string }> {
   const directory = await mkdtemp(join(tmpdir(), "missiongo-server-"));
   temporaryDirectories.push(directory);
   const databasePath = join(directory, "missiongo.sqlite");
-  const app = buildApp({ databasePath });
+  const attachmentsPath = join(directory, "attachments");
+  const app = buildApp({ databasePath, attachmentsPath });
   apps.push(app);
-  return { app, databasePath };
+  return { app, databasePath, attachmentsPath };
 }
 
 afterEach(async () => {
@@ -230,5 +231,91 @@ describe("MissionGo REST API", () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ code: "validation_failed" });
+  });
+
+  it("stores environment context and authenticated attachment content", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/products",
+        payload: { name: "Hermes Go", keyPrefix: "HG" },
+      })
+    ).json<{ id: string }>();
+    const itemResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "bug",
+        priority: "high",
+        title: "Crash on launch",
+        description: "Captured from Android",
+        environment: {
+          platform: "android",
+          appVersion: "1.4.0",
+          buildNumber: "10400",
+          osVersion: "Android 16",
+          deviceModel: "Pixel 9",
+          sourceRevision: "abc123",
+          metadata: { channel: "internal" },
+        },
+      },
+    });
+    expect(itemResponse.statusCode).toBe(201);
+    expect(itemResponse.json()).toMatchObject({
+      environment: { platform: "android", appVersion: "1.4.0", deviceModel: "Pixel 9" },
+      attachments: [],
+    });
+
+    const updateEnvironmentResponse = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/items/HG-1",
+      payload: { environment: { platform: "macos", appVersion: "1.4.1", deviceModel: "Mac mini" } },
+    });
+    expect(updateEnvironmentResponse.statusCode).toBe(200);
+    expect(updateEnvironmentResponse.json()).toMatchObject({
+      environment: { platform: "macos", appVersion: "1.4.1", deviceModel: "Mac mini" },
+    });
+
+    const log = Buffer.from("Fatal exception\nMissionGo test log\n");
+    const uploadResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/HG-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "text/plain",
+        "x-missiongo-filename": encodeURIComponent("launch.log"),
+      },
+      payload: log,
+    });
+    expect(uploadResponse.statusCode).toBe(201);
+    const attachment = uploadResponse.json<{ id: string; filename: string; kind: string; sizeBytes: number }>();
+    expect(attachment).toMatchObject({ filename: "launch.log", kind: "log", sizeBytes: log.length });
+
+    const detailResponse = await app.inject({ method: "GET", url: "/api/v1/items/HG-1" });
+    expect(detailResponse.json()).toMatchObject({
+      attachments: [{ id: attachment.id, filename: "launch.log", kind: "log" }],
+    });
+
+    const contentResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/HG-1/attachments/${attachment.id}/content`,
+    });
+    expect(contentResponse.statusCode).toBe(200);
+    expect(contentResponse.headers["content-type"]).toContain("text/plain");
+    expect(contentResponse.body).toBe(log.toString());
+
+    const unsafeResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/HG-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "text/plain",
+        "x-missiongo-filename": encodeURIComponent("../unsafe.log"),
+      },
+      payload: "unsafe",
+    });
+    expect(unsafeResponse.statusCode).toBe(400);
   });
 });

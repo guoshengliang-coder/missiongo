@@ -15,6 +15,26 @@ export const ITEM_STATUSES = [
 ] as const;
 export type WorkItemStatus = (typeof ITEM_STATUSES)[number];
 
+export interface WorkItemEnvironment {
+  readonly platform: "android" | "macos" | "web" | "other";
+  readonly appVersion?: string;
+  readonly buildNumber?: string;
+  readonly sourceRevision?: string;
+  readonly osVersion?: string;
+  readonly deviceModel?: string;
+  readonly metadata?: Readonly<Record<string, string>>;
+}
+
+export interface WorkItemAttachment {
+  readonly id: string;
+  readonly itemKey: string;
+  readonly kind: "image" | "video" | "log";
+  readonly filename: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+  readonly createdAt: string;
+}
+
 export interface Product {
   readonly id: string;
   readonly keyPrefix: string;
@@ -35,15 +55,8 @@ export interface WorkItem {
   readonly status: WorkItemStatus;
   readonly title: string;
   readonly description: string;
-  readonly environment?: {
-    readonly platform: "android" | "macos" | "web" | "other";
-    readonly appVersion?: string;
-    readonly buildNumber?: string;
-    readonly sourceRevision?: string;
-    readonly osVersion?: string;
-    readonly deviceModel?: string;
-    readonly metadata?: Readonly<Record<string, string>>;
-  };
+  readonly environment?: WorkItemEnvironment;
+  readonly attachments: readonly WorkItemAttachment[];
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -65,6 +78,7 @@ export interface CreateWorkItemInput {
   readonly priority: WorkItemPriority;
   readonly title: string;
   readonly description: string;
+  readonly environment?: WorkItemEnvironment;
 }
 
 export interface UpdateWorkItemInput {
@@ -72,6 +86,7 @@ export interface UpdateWorkItemInput {
   readonly description?: string;
   readonly type?: WorkItemType;
   readonly priority?: WorkItemPriority;
+  readonly environment?: WorkItemEnvironment | null;
 }
 
 export interface TransitionAction {

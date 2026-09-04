@@ -4,6 +4,7 @@ import type {
   TransitionAction,
   UpdateWorkItemInput,
   WorkItem,
+  WorkItemAttachment,
   WorkItemEvent,
   WorkItemStatus,
   WorkItemType,
@@ -51,6 +52,23 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function attachmentRequest(path: string, init: RequestInit = {}): Promise<Response> {
+  const token = getAdminToken();
+  const response = await fetch(path, {
+    ...init,
+    headers: {
+      accept: "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...init.headers,
+    },
+  });
+  if (!response.ok) {
+    const problem = (await response.json().catch(() => null)) as { code?: string; title?: string } | null;
+    throw new ApiError(response.status, problem?.code ?? "request_failed", problem?.title ?? "Request failed.");
+  }
+  return response;
+}
+
 export const api = {
   listProducts: () => request<Product[]>("/api/v1/products"),
   createProduct: (input: { name: string; keyPrefix: string }) =>
@@ -69,6 +87,24 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
+  uploadAttachment: async (itemKey: string, file: File) => {
+    const response = await attachmentRequest(`/api/v1/items/${encodeURIComponent(itemKey)}/attachments`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": file.type || "application/octet-stream",
+        "x-missiongo-filename": encodeURIComponent(file.name),
+      },
+      body: file,
+    });
+    return response.json() as Promise<WorkItemAttachment>;
+  },
+  downloadAttachment: async (itemKey: string, attachmentId: string) => {
+    const response = await attachmentRequest(
+      `/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}/content`,
+    );
+    return response.blob();
+  },
   transitionItem: (itemKey: string, action: TransitionAction) =>
     request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transitions`, {
       method: "POST",

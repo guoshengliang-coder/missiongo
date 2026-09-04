@@ -25,6 +25,19 @@ export interface WorkItemEnvironment {
   readonly metadata?: Readonly<Record<string, string>>;
 }
 
+export const ATTACHMENT_KINDS = ["image", "video", "log"] as const;
+export type AttachmentKind = (typeof ATTACHMENT_KINDS)[number];
+
+export interface WorkItemAttachment {
+  readonly id: string;
+  readonly itemKey: string;
+  readonly kind: AttachmentKind;
+  readonly filename: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+  readonly createdAt: string;
+}
+
 export interface WorkItemSnapshot {
   readonly id: string;
   readonly key: string;
@@ -38,6 +51,7 @@ export interface WorkItemSnapshot {
   readonly title: string;
   readonly description: string;
   readonly environment?: WorkItemEnvironment;
+  readonly attachments: readonly WorkItemAttachment[];
   readonly createdAt: string;
   readonly updatedAt: string;
 }

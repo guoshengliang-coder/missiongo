@@ -79,12 +79,14 @@ export function registerMissionGoWebMcp(
       return {
         product: options.product,
         filters: options.activeFilters,
-        items: options.visibleItems.map(({ key, title, type, priority, status, updatedAt }) => ({
+        items: options.visibleItems.map(({ key, title, type, priority, status, environment, attachments, updatedAt }) => ({
           key,
           title,
           type,
           priority,
           status,
+          environment,
+          attachmentCount: attachments?.length ?? 0,
           updatedAt,
         })),
       };
@@ -104,7 +106,7 @@ export function registerMissionGoWebMcp(
     annotations: { readOnlyHint: true, untrustedContentHint: true },
     execute(input) {
       const item = options.openItem(requiredString(objectInput(input), "itemKey").toUpperCase());
-      return { opened: item.key, title: item.title, status: item.status };
+      return { opened: item.key, item };
     },
   });
 

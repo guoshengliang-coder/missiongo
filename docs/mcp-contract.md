@@ -41,6 +41,7 @@ The MCP server must not expose arbitrary SQL, arbitrary work-item updates, work-
 - Analysis can be appended without claiming or changing work-item status.
 - Resolution submission stores the report before the work item can move to human verification.
 - Large attachments are returned as controlled resources or short-lived URLs, not Base64 embedded in the main item response.
+- `get_item_context` includes structured platform, app/build version, source revision, OS, device, custom metadata, and attachment metadata when present.
 - Pagination is required for work-item lists, timelines, and long logs.
 
 ## Error codes

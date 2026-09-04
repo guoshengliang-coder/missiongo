@@ -10,7 +10,9 @@ import {
   CircleDot,
   CirclePause,
   ClipboardCheck,
+  Download,
   FileText,
+  ImageIcon,
   Inbox,
   KeyRound,
   Languages,
@@ -19,11 +21,13 @@ import {
   LoaderCircle,
   Menu,
   MoreHorizontal,
+  Paperclip,
   Plus,
   Rocket,
   Search,
   Settings2,
   Sparkles,
+  Video,
   X,
 } from "lucide-react";
 
@@ -35,6 +39,8 @@ import {
   type Product,
   type TransitionAction,
   type WorkItem,
+  type WorkItemAttachment,
+  type WorkItemEnvironment,
   type WorkItemPriority,
   type WorkItemStatus,
   type WorkItemType,
@@ -88,6 +94,75 @@ const TRANSITIONS: Record<WorkItemStatus, readonly TransitionAction[]> = {
   done: [{ label: "Reopen", to: "ready", reason: "reopened", tone: "primary" }],
   cancelled: [{ label: "Restore", to: "inbox", reason: "restored", tone: "primary" }],
 };
+
+type EnvironmentPlatform = WorkItemEnvironment["platform"] | "";
+
+interface EnvironmentDraft {
+  readonly platform: EnvironmentPlatform;
+  readonly appVersion: string;
+  readonly buildNumber: string;
+  readonly sourceRevision: string;
+  readonly osVersion: string;
+  readonly deviceModel: string;
+}
+
+const EMPTY_ENVIRONMENT: EnvironmentDraft = {
+  platform: "",
+  appVersion: "",
+  buildNumber: "",
+  sourceRevision: "",
+  osVersion: "",
+  deviceModel: "",
+};
+
+const FILE_LIMITS_MIB: Readonly<Record<string, number>> = {
+  png: 20,
+  jpg: 20,
+  jpeg: 20,
+  webp: 20,
+  gif: 20,
+  heic: 20,
+  mp4: 100,
+  mov: 100,
+  webm: 100,
+  log: 10,
+  txt: 10,
+  json: 10,
+};
+
+function environmentDraft(environment?: WorkItemEnvironment): EnvironmentDraft {
+  return {
+    platform: environment?.platform ?? "",
+    appVersion: environment?.appVersion ?? "",
+    buildNumber: environment?.buildNumber ?? "",
+    sourceRevision: environment?.sourceRevision ?? "",
+    osVersion: environment?.osVersion ?? "",
+    deviceModel: environment?.deviceModel ?? "",
+  };
+}
+
+function environmentPayload(draft: EnvironmentDraft): WorkItemEnvironment | undefined {
+  const appVersion = draft.appVersion.trim();
+  const buildNumber = draft.buildNumber.trim();
+  const sourceRevision = draft.sourceRevision.trim();
+  const osVersion = draft.osVersion.trim();
+  const deviceModel = draft.deviceModel.trim();
+  if (!draft.platform && !appVersion && !buildNumber && !sourceRevision && !osVersion && !deviceModel) return undefined;
+  return {
+    platform: draft.platform || "other",
+    ...(appVersion ? { appVersion } : {}),
+    ...(buildNumber ? { buildNumber } : {}),
+    ...(sourceRevision ? { sourceRevision } : {}),
+    ...(osVersion ? { osVersion } : {}),
+    ...(deviceModel ? { deviceModel } : {}),
+  };
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
@@ -353,10 +428,14 @@ export function App() {
         <Modal title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={() => setCaptureOpen(false)}>
           <CaptureForm
             product={selectedProduct}
-            onCreated={(item) => {
+            onCreated={(item, failedUploads) => {
               setCaptureOpen(false);
               setSelectedItemKey(item.key);
-              setNotice(t("capturedInInbox", { key: item.key }));
+              setNotice(
+                failedUploads > 0
+                  ? t("uploadPartial", { key: item.key, count: failedUploads })
+                  : t("capturedInInbox", { key: item.key }),
+              );
               void queryClient.invalidateQueries({ queryKey: ["items", selectedProduct.id] });
             }}
           />
@@ -421,7 +500,10 @@ function ItemRow({ item, selected, onClick }: { item: WorkItem; selected: boolea
       <span className={`type-icon type-${item.type}`}><TypeIcon size={17} /></span>
       <span className="item-copy">
         <span className="item-title">{item.title}</span>
-        <span className="item-meta"><code>{item.key}</code><span>·</span>{typeLabel(item.type)}<span>·</span>{formatTime(item.updatedAt)}</span>
+        <span className="item-meta">
+          <code>{item.key}</code><span>·</span>{typeLabel(item.type)}<span>·</span>{formatTime(item.updatedAt)}
+          {(item.attachments?.length ?? 0) > 0 && <><span>·</span><Paperclip size={10} /> {item.attachments.length}</>}
+        </span>
       </span>
       <span className={`priority-dot priority-${item.priority}`} title={priorityLabel(item.priority)} />
       <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
@@ -441,6 +523,7 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
   const [description, setDescription] = useState("");
   const [type, setType] = useState<WorkItemType>("idea");
   const [priority, setPriority] = useState<WorkItemPriority>("normal");
+  const [environment, setEnvironment] = useState<EnvironmentDraft>(EMPTY_ENVIRONMENT);
 
   useEffect(() => {
     if (!item) return;
@@ -448,6 +531,7 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
     setDescription(item.description);
     setType(item.type);
     setPriority(item.priority);
+    setEnvironment(environmentDraft(item.environment));
     setEditing(false);
   }, [item]);
 
@@ -460,7 +544,13 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
   };
 
   const updateMutation = useMutation({
-    mutationFn: () => api.updateItem(itemKey!, { title, description, type, priority }),
+    mutationFn: () => api.updateItem(itemKey!, {
+      title,
+      description,
+      type,
+      priority,
+      environment: environmentPayload(environment) ?? null,
+    }),
     onSuccess: async () => {
       setEditing(false);
       await refreshItem();
@@ -472,6 +562,14 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
     onSuccess: async (updated) => {
       await refreshItem();
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
+    },
+  });
+  const attachmentMutation = useMutation({
+    mutationFn: async (files: readonly File[]) => Promise.allSettled(files.map((file) => api.uploadAttachment(itemKey!, file))),
+    onSuccess: async (results) => {
+      await refreshItem();
+      const failed = results.filter((result) => result.status === "rejected").length;
+      onNotice(failed > 0 ? t("uploadFailed", { count: failed }) : t("itemUpdated", { key: itemKey ?? "" }));
     },
   });
 
@@ -503,6 +601,7 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
               <label>{t("priority")}<select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
             </div>
             <label>{t("description")}<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={8} /></label>
+            <EnvironmentFields value={environment} onChange={setEnvironment} />
             {updateMutation.isError && <InlineError message={errorMessage(updateMutation.error, t("somethingWentWrong"))} />}
             <button className="primary-button" disabled={updateMutation.isPending}>{updateMutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />} {t("saveChanges")}</button>
           </form>
@@ -516,17 +615,26 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
               <h3>{t("description")}</h3>
               <p className={!item.description ? "muted" : ""}>{item.description || t("noDescription")}</p>
             </section>
-            {item.environment && (
-              <section className="environment-block">
-                <h3>{t("capturedContext")}</h3>
+            <section className="environment-block">
+              <h3>{t("capturedContext")}</h3>
+              {item.environment ? (
                 <div className="context-grid">
-                  <span><small>{t("platform")}</small>{item.environment.platform}</span>
+                  <span><small>{t("platform")}</small>{t(item.environment.platform)}</span>
                   {item.environment.appVersion && <span><small>{t("version")}</small>{item.environment.appVersion}</span>}
+                  {item.environment.buildNumber && <span><small>{t("buildNumber")}</small>{item.environment.buildNumber}</span>}
                   {item.environment.osVersion && <span><small>{t("operatingSystem")}</small>{item.environment.osVersion}</span>}
                   {item.environment.deviceModel && <span><small>{t("device")}</small>{item.environment.deviceModel}</span>}
+                  {item.environment.sourceRevision && <span><small>{t("sourceRevision")}</small><code>{item.environment.sourceRevision}</code></span>}
+                  {Object.entries(item.environment.metadata ?? {}).map(([key, value]) => <span key={key}><small>{key}</small>{value}</span>)}
                 </div>
-              </section>
-            )}
+              ) : <p className="section-empty">{t("noEnvironment")}</p>}
+            </section>
+            <AttachmentSection
+              itemKey={item.key}
+              attachments={item.attachments ?? []}
+              uploading={attachmentMutation.isPending}
+              onUpload={(files) => attachmentMutation.mutate(files)}
+            />
             <section className="next-action-block">
               <div><p className="eyebrow">{t("nextAction")}</p><h3>{t("moveForward")}</h3></div>
               <div className="action-row">
@@ -565,17 +673,33 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
   );
 }
 
-function CaptureForm({ product, onCreated }: { product: Product; onCreated: (item: WorkItem) => void }) {
+function CaptureForm({ product, onCreated }: { product: Product; onCreated: (item: WorkItem, failedUploads: number) => void }) {
   const { priorityLabel, t, typeLabel } = useI18n();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [type, setType] = useState<WorkItemType>("idea");
   const [priority, setPriority] = useState<WorkItemPriority>("normal");
-  const mutation = useMutation({ mutationFn: api.createItem, onSuccess: onCreated });
+  const [environment, setEnvironment] = useState<EnvironmentDraft>(EMPTY_ENVIRONMENT);
+  const [files, setFiles] = useState<readonly File[]>([]);
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const item = await api.createItem({
+        productId: product.id,
+        title,
+        description,
+        type,
+        priority,
+        ...(environmentPayload(environment) ? { environment: environmentPayload(environment)! } : {}),
+      });
+      const uploads = await Promise.allSettled(files.map((file) => api.uploadAttachment(item.key, file)));
+      return { item, failedUploads: uploads.filter((result) => result.status === "rejected").length };
+    },
+    onSuccess: ({ item, failedUploads }) => onCreated(item, failedUploads),
+  });
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    mutation.mutate({ productId: product.id, title, description, type, priority });
+    mutation.mutate();
   };
 
   return (
@@ -586,9 +710,194 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
         <label>{t("type")}<select value={type} onChange={(event) => setType(event.target.value as WorkItemType)}>{ITEM_TYPES.map((value) => <option key={value} value={value}>{typeLabel(value)}</option>)}</select></label>
         <label>{t("priority")}<select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
       </div>
+      <EnvironmentFields value={environment} onChange={setEnvironment} />
+      <div className="attachment-picker-block">
+        <div><strong>{t("attachments")}</strong><p>{t("attachmentHelp")}</p></div>
+        <FilePicker files={files} onFiles={setFiles} remaining={10 - files.length} />
+      </div>
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
       <div className="form-footer"><span>{t("landsInInbox")}</span><button className="primary-button" disabled={mutation.isPending}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {t("captureItem")}</button></div>
     </form>
+  );
+}
+
+function EnvironmentFields({ value, onChange }: { value: EnvironmentDraft; onChange: (value: EnvironmentDraft) => void }) {
+  const { t } = useI18n();
+  const update = (field: keyof EnvironmentDraft, nextValue: string) => onChange({ ...value, [field]: nextValue });
+  return (
+    <fieldset className="environment-fields">
+      <legend>{t("environmentDetails")}</legend>
+      <p>{t("environmentHelp")}</p>
+      <div className="field-row">
+        <label>{t("platform")}
+          <select value={value.platform} onChange={(event) => update("platform", event.target.value)}>
+            <option value="">{t("notSpecified")}</option>
+            <option value="android">{t("android")}</option>
+            <option value="macos">{t("macos")}</option>
+            <option value="web">{t("web")}</option>
+            <option value="other">{t("other")}</option>
+          </select>
+        </label>
+        <label>{t("appVersion")}<input value={value.appVersion} onChange={(event) => update("appVersion", event.target.value)} placeholder="1.4.0" maxLength={500} /></label>
+        <label>{t("buildNumber")}<input value={value.buildNumber} onChange={(event) => update("buildNumber", event.target.value)} placeholder="10400" maxLength={500} /></label>
+        <label>{t("osVersion")}<input value={value.osVersion} onChange={(event) => update("osVersion", event.target.value)} placeholder="Android 16 / macOS 16" maxLength={500} /></label>
+        <label>{t("deviceModel")}<input value={value.deviceModel} onChange={(event) => update("deviceModel", event.target.value)} placeholder="Pixel 9 / Mac mini" maxLength={500} /></label>
+        <label>{t("sourceRevision")}<input value={value.sourceRevision} onChange={(event) => update("sourceRevision", event.target.value)} placeholder="abc123" maxLength={500} /></label>
+      </div>
+    </fieldset>
+  );
+}
+
+function FilePicker({
+  files = [],
+  onFiles,
+  remaining,
+  disabled = false,
+}: {
+  files?: readonly File[];
+  onFiles: (files: readonly File[]) => void;
+  remaining: number;
+  disabled?: boolean;
+}) {
+  const { t } = useI18n();
+  const [error, setError] = useState<string | null>(null);
+
+  const addFiles = (selected: FileList | null) => {
+    if (!selected) return;
+    const incoming = Array.from(selected);
+    if (incoming.length > remaining) {
+      setError(t("tooManyFiles", { count: remaining }));
+      return;
+    }
+    const accepted: File[] = [];
+    let nextError: string | null = null;
+    for (const file of incoming) {
+      const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+      const limit = FILE_LIMITS_MIB[extension];
+      if (!limit) {
+        nextError ??= t("unsupportedFile", { filename: file.name });
+        continue;
+      }
+      if (file.size > limit * 1024 * 1024) {
+        nextError ??= t("fileTooLarge", { filename: file.name, size: limit });
+        continue;
+      }
+      accepted.push(file);
+    }
+    setError(nextError);
+    if (accepted.length > 0) onFiles(files.length > 0 ? [...files, ...accepted] : accepted);
+  };
+
+  return (
+    <div className="file-picker">
+      <label className={`secondary-button file-picker-button ${disabled || remaining < 1 ? "disabled" : ""}`}>
+        {disabled ? <LoaderCircle className="spin" size={16} /> : <Paperclip size={16} />}
+        {t("addAttachments")}
+        <input
+          type="file"
+          multiple
+          accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.txt,.json"
+          disabled={disabled || remaining < 1}
+          onChange={(event) => {
+            addFiles(event.currentTarget.files);
+            event.currentTarget.value = "";
+          }}
+        />
+      </label>
+      {files.length > 0 && (
+        <div className="selected-files">
+          {files.map((file, index) => (
+            <span key={`${file.name}-${file.lastModified}-${index}`}>
+              <Paperclip size={12} /> {file.name} <small>{formatBytes(file.size)}</small>
+              <button type="button" onClick={() => onFiles(files.filter((_, fileIndex) => fileIndex !== index))} aria-label={t("removeFile", { filename: file.name })}><X size={12} /></button>
+            </span>
+          ))}
+        </div>
+      )}
+      {error && <InlineError message={error} />}
+    </div>
+  );
+}
+
+function AttachmentSection({
+  itemKey,
+  attachments,
+  uploading,
+  onUpload,
+}: {
+  itemKey: string;
+  attachments: readonly WorkItemAttachment[];
+  uploading: boolean;
+  onUpload: (files: readonly File[]) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <section className="attachment-block">
+      <header>
+        <div><h3>{t("attachments")}</h3><p>{t("attachmentHelp")}</p></div>
+        <FilePicker onFiles={onUpload} remaining={Math.max(0, 10 - attachments.length)} disabled={uploading} />
+      </header>
+      {attachments.length === 0 ? <p className="section-empty">{t("noAttachments")}</p> : (
+        <div className="attachment-grid">
+          {attachments.map((attachment) => <AttachmentCard key={attachment.id} itemKey={itemKey} attachment={attachment} />)}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AttachmentCard({ itemKey, attachment }: { itemKey: string; attachment: WorkItemAttachment }) {
+  const { t } = useI18n();
+  const contentQuery = useQuery({
+    queryKey: ["attachment-content", itemKey, attachment.id],
+    queryFn: () => api.downloadAttachment(itemKey, attachment.id),
+    staleTime: Infinity,
+  });
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [logText, setLogText] = useState("");
+
+  useEffect(() => {
+    if (!contentQuery.data) return undefined;
+    if (attachment.kind === "log") {
+      let active = true;
+      void contentQuery.data.text().then((value) => {
+        if (active) setLogText(value.slice(0, 4_000));
+      });
+      return () => { active = false; };
+    }
+    const url = URL.createObjectURL(contentQuery.data);
+    setObjectUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [attachment.kind, contentQuery.data]);
+
+  const download = async () => {
+    const blob = contentQuery.data ?? await api.downloadAttachment(itemKey, attachment.id);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = attachment.filename;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+
+  const Icon = attachment.kind === "image" ? ImageIcon : attachment.kind === "video" ? Video : FileText;
+  return (
+    <article className={`attachment-card attachment-${attachment.kind}`}>
+      <div className="attachment-preview">
+        {contentQuery.isLoading && <span><LoaderCircle className="spin" size={18} /> {t("attachmentLoading")}</span>}
+        {contentQuery.isError && <span className="attachment-error">{t("attachmentFailed")}</span>}
+        {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
+        {attachment.kind === "video" && objectUrl && <video src={objectUrl} controls preload="metadata" />}
+        {attachment.kind === "log" && logText && <pre>{logText}</pre>}
+      </div>
+      <footer>
+        <Icon size={15} />
+        <span><strong>{attachment.filename}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span>
+        <button type="button" onClick={() => void download()} aria-label={`${t("download")} ${attachment.filename}`} title={t("download")}><Download size={15} /></button>
+      </footer>
+    </article>
   );
 }
 

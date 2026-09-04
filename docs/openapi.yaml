@@ -203,6 +203,62 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/WorkItemEvent"
+  /api/v1/items/{itemKey}/attachments:
+    parameters:
+      - $ref: "#/components/parameters/WorkItemKey"
+    get:
+      operationId: listItemAttachments
+      responses:
+        "200":
+          description: Attachment metadata for the work item.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attachments]
+                properties:
+                  attachments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkItemAttachment"
+    post:
+      operationId: uploadItemAttachment
+      description: Uploads one allowlisted image, video, or log file as a binary body.
+      parameters:
+        - in: header
+          name: X-MissionGo-Filename
+          required: true
+          description: URL-encoded original filename without a directory path.
+          schema: { type: string }
+        - in: header
+          name: X-MissionGo-Content-Type
+          required: true
+          description: Original media type. The request Content-Type remains application/octet-stream.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: Attachment stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkItemAttachment"
+  /api/v1/items/{itemKey}/attachments/{attachmentId}/content:
+    parameters:
+      - $ref: "#/components/parameters/WorkItemKey"
+      - in: path
+        name: attachmentId
+        required: true
+        schema: { type: string }
+    get:
+      operationId: downloadItemAttachment
+      responses:
+        "200":
+          description: Authenticated attachment content using its recorded media type.
 components:
   securitySchemes:
     bearerAuth:
@@ -290,7 +346,7 @@ components:
           additionalProperties: { type: string }
     WorkItem:
       type: object
-      required: [id, key, productId, affectedComponentIds, type, priority, status, title, description, createdAt, updatedAt]
+      required: [id, key, productId, affectedComponentIds, type, priority, status, title, description, attachments, createdAt, updatedAt]
       properties:
         id: { type: string }
         key: { type: string }
@@ -307,6 +363,9 @@ components:
         title: { type: string }
         description: { type: string }
         environment: { $ref: "#/components/schemas/WorkItemEnvironment" }
+        attachments:
+          type: array
+          items: { $ref: "#/components/schemas/WorkItemAttachment" }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     CreateWorkItemRequest:
@@ -333,10 +392,25 @@ components:
         description: { type: string }
         type: { $ref: "#/components/schemas/WorkItemType" }
         priority: { $ref: "#/components/schemas/WorkItemPriority" }
+        environment:
+          oneOf:
+            - $ref: "#/components/schemas/WorkItemEnvironment"
+            - type: "null"
         affectedComponentIds:
           type: array
           uniqueItems: true
           items: { type: string }
+    WorkItemAttachment:
+      type: object
+      required: [id, itemKey, kind, filename, contentType, sizeBytes, createdAt]
+      properties:
+        id: { type: string }
+        itemKey: { type: string }
+        kind: { enum: [image, video, log] }
+        filename: { type: string }
+        contentType: { type: string }
+        sizeBytes: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
     TransitionWorkItemRequest:
       type: object
       required: [to, reason]
