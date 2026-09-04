@@ -1522,7 +1522,9 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
           <div><p className="eyebrow">{t("productComponents")}</p><h3>{t("manageComponents")}</h3></div>
           <div className="component-header-actions">
             <span>{componentsQuery.data?.length ?? 0}</span>
-            <button className="primary-button component-add-trigger" onClick={() => setAddingComponent((value) => !value)}><Plus size={15} /> {t("newComponent")}</button>
+            {(componentsQuery.data?.length ?? 0) > 0 && (
+              <button className="primary-button component-add-trigger" onClick={() => setAddingComponent((value) => !value)}><Plus size={15} /> {t("newComponent")}</button>
+            )}
           </div>
         </header>
         <p className="component-management-help">{t("componentManagementHelp")}</p>
@@ -1537,10 +1539,9 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
               <ComponentSettingsRow component={component} components={componentsQuery.data ?? []} />
             </div>
           ))}
-          {!componentsQuery.isLoading && (componentsQuery.data?.length ?? 0) === 0 && (
+          {!componentsQuery.isLoading && (componentsQuery.data?.length ?? 0) === 0 && !addingComponent && (
             <div className="component-empty-state">
-              <p>{t("noComponents")}</p>
-              <button className="secondary-button" onClick={() => setAddingComponent(true)}><Plus size={15} /> {t("newComponent")}</button>
+              <button className="primary-button" onClick={() => setAddingComponent(true)}><Plus size={17} /> {t("newComponent")}</button>
             </div>
           )}
         </div>
