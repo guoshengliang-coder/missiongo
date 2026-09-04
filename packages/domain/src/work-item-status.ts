@@ -1,9 +1,10 @@
-import type { TaskStatus } from "./task.js";
+import type { WorkItemStatus } from "./work-item.js";
 
 export const ACTOR_KINDS = ["human", "agent", "system"] as const;
 export type ActorKind = (typeof ACTOR_KINDS)[number];
 
 export type TransitionReason =
+  | "triaged"
   | "claim"
   | "request_human_input"
   | "resume"
@@ -16,14 +17,14 @@ export type TransitionReason =
   | "reopened"
   | "restored";
 
-export interface TaskTransitionRequest {
-  readonly from: TaskStatus;
-  readonly to: TaskStatus;
+export interface WorkItemTransitionRequest {
+  readonly from: WorkItemStatus;
+  readonly to: WorkItemStatus;
   readonly actor: ActorKind;
   readonly reason: TransitionReason;
 }
 
-export interface TaskTransitionDecision {
+export interface WorkItemTransitionDecision {
   readonly allowed: boolean;
   readonly code: "allowed" | "invalid_transition" | "actor_not_allowed" | "reason_mismatch";
   readonly message: string;
@@ -39,36 +40,45 @@ const rule = (actors: readonly ActorKind[], reasons: readonly TransitionReason[]
   reasons,
 });
 
-const TRANSITIONS: Readonly<Partial<Record<TaskStatus, Readonly<Partial<Record<TaskStatus, TransitionRule>>>>>> = {
-  pending: {
+const TRANSITIONS: Readonly<
+  Partial<Record<WorkItemStatus, Readonly<Partial<Record<WorkItemStatus, TransitionRule>>>>>
+> = {
+  inbox: {
+    ready: rule(["human"], ["triaged"]),
+    on_hold: rule(["human"], ["request_human_input"]),
+    cancelled: rule(["human"], ["cancelled"]),
+  },
+  ready: {
     in_progress: rule(["agent", "human"], ["claim", "resume"]),
+    on_hold: rule(["human"], ["request_human_input"]),
+    inbox: rule(["human"], ["reopened"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
   in_progress: {
-    waiting_for_human: rule(["agent", "human"], ["request_human_input"]),
-    ready_for_verification: rule(["agent", "human"], ["resolution_submitted"]),
-    pending: rule(["agent", "human", "system"], ["released", "lease_expired"]),
+    on_hold: rule(["agent", "human"], ["request_human_input"]),
+    pending_verification: rule(["agent", "human"], ["resolution_submitted"]),
+    ready: rule(["agent", "human", "system"], ["released", "lease_expired"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
-  waiting_for_human: {
+  on_hold: {
     in_progress: rule(["agent", "human"], ["resume"]),
-    pending: rule(["human"], ["reopened"]),
+    ready: rule(["human"], ["reopened"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
-  ready_for_verification: {
-    completed: rule(["human"], ["verification_passed"]),
-    pending: rule(["human"], ["verification_failed"]),
+  pending_verification: {
+    done: rule(["human"], ["verification_passed"]),
+    ready: rule(["human"], ["verification_failed"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
-  completed: {
-    pending: rule(["human"], ["reopened"]),
+  done: {
+    ready: rule(["human"], ["reopened"]),
   },
   cancelled: {
-    pending: rule(["human"], ["restored"]),
+    inbox: rule(["human"], ["restored"]),
   },
 };
 
-export function evaluateTaskTransition(request: TaskTransitionRequest): TaskTransitionDecision {
+export function evaluateWorkItemTransition(request: WorkItemTransitionRequest): WorkItemTransitionDecision {
   const transition = TRANSITIONS[request.from]?.[request.to];
 
   if (!transition) {
@@ -83,7 +93,7 @@ export function evaluateTaskTransition(request: TaskTransitionRequest): TaskTran
     return {
       allowed: false,
       code: "actor_not_allowed",
-      message: `${request.actor} cannot transition a task from ${request.from} to ${request.to}.`,
+      message: `${request.actor} cannot transition a work item from ${request.from} to ${request.to}.`,
     };
   }
 
@@ -102,8 +112,8 @@ export function evaluateTaskTransition(request: TaskTransitionRequest): TaskTran
   };
 }
 
-export function assertTaskTransition(request: TaskTransitionRequest): void {
-  const decision = evaluateTaskTransition(request);
+export function assertWorkItemTransition(request: WorkItemTransitionRequest): void {
+  const decision = evaluateWorkItemTransition(request);
   if (!decision.allowed) {
     throw new Error(decision.message);
   }

@@ -1,5 +1,5 @@
 {
-  "name": "@feedback-system/domain",
+  "name": "@missiongo/domain",
   "version": "0.0.0",
   "private": true,
   "type": "module",

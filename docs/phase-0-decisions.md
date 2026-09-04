@@ -17,17 +17,16 @@
 
 ## AI boundaries
 
-- AI clients access live task data through MCP, never through SQL.
+- AI clients access live work-item data through MCP, never through SQL.
 - Skills teach the repeatable workflow and client-specific invocation details.
 - On-demand invocation is the only MVP trigger.
-- Task content is untrusted data and cannot override skill, repository, or user instructions.
+- Work-item content is untrusted data and cannot override skill, repository, or user instructions.
 - Processing work uses an isolated branch/worktree and may create a local commit.
 - Push and merge are disabled by default.
 - A human owns final verification.
 
 ## Deferred decisions
 
-- Product name and visual identity.
 - Open-source license.
 - Android automatic updates and system notifications.
 - Remote dispatch to Mac mini/server nodes.

@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Feedback System API
+  title: MissionGo API
   version: 0.0.0
   description: Initial Phase 0 REST contract. Domain actions are intentionally narrow.
 servers: []
@@ -34,9 +34,9 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Product"
-  /api/v1/tasks:
+  /api/v1/items:
     get:
-      operationId: listTasks
+      operationId: listItems
       parameters:
         - in: query
           name: productId
@@ -46,10 +46,10 @@ paths:
         - in: query
           name: status
           schema:
-            $ref: "#/components/schemas/TaskStatus"
+            $ref: "#/components/schemas/WorkItemStatus"
       responses:
         "200":
-          description: Paginated task summary list.
+          description: Paginated work-item summary list.
           content:
             application/json:
               schema:
@@ -59,43 +59,43 @@ paths:
                   items:
                     type: array
                     items:
-                      $ref: "#/components/schemas/Task"
+                      $ref: "#/components/schemas/WorkItem"
                   nextCursor:
                     type: [string, "null"]
     post:
-      operationId: createTask
+      operationId: createItem
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateTaskRequest"
+              $ref: "#/components/schemas/CreateWorkItemRequest"
       responses:
         "201":
-          description: Task created.
+          description: Work item created.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Task"
-  /api/v1/tasks/{taskKey}:
+                $ref: "#/components/schemas/WorkItem"
+  /api/v1/items/{itemKey}:
     get:
-      operationId: getTask
+      operationId: getItem
       parameters:
-        - $ref: "#/components/parameters/TaskKey"
+        - $ref: "#/components/parameters/WorkItemKey"
       responses:
         "200":
-          description: Complete task context.
+          description: Complete work-item context.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Task"
+                $ref: "#/components/schemas/WorkItem"
         "404":
           $ref: "#/components/responses/NotFound"
-  /api/v1/tasks/{taskKey}/verification:
+  /api/v1/items/{itemKey}/verification:
     post:
-      operationId: verifyTask
+      operationId: verifyItem
       parameters:
-        - $ref: "#/components/parameters/TaskKey"
+        - $ref: "#/components/parameters/WorkItemKey"
       requestBody:
         required: true
         content:
@@ -111,20 +111,20 @@ paths:
                   minLength: 1
       responses:
         "200":
-          description: Verification recorded and task state updated.
+          description: Verification recorded and work-item state updated.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Task"
+                $ref: "#/components/schemas/WorkItem"
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
   parameters:
-    TaskKey:
+    WorkItemKey:
       in: path
-      name: taskKey
+      name: itemKey
       required: true
       schema:
         type: string
@@ -148,15 +148,16 @@ components:
           pattern: "^[A-Z][A-Z0-9]{1,9}$"
         name:
           type: string
-    TaskStatus:
+    WorkItemStatus:
       enum:
-        - pending
+        - inbox
+        - ready
         - in_progress
-        - waiting_for_human
-        - ready_for_verification
-        - completed
+        - on_hold
+        - pending_verification
+        - done
         - cancelled
-    Task:
+    WorkItem:
       type: object
       required: [id, key, productId, type, priority, status, title, description, affectedComponentIds]
       properties:
@@ -173,16 +174,16 @@ components:
           items:
             type: string
         type:
-          enum: [bug, idea]
+          enum: [idea, requirement, bug, task, note]
         priority:
           enum: [urgent, high, normal, low]
         status:
-          $ref: "#/components/schemas/TaskStatus"
+          $ref: "#/components/schemas/WorkItemStatus"
         title:
           type: string
         description:
           type: string
-    CreateTaskRequest:
+    CreateWorkItemRequest:
       type: object
       required: [productId, type, priority, title, description]
       properties:
@@ -197,7 +198,7 @@ components:
         areaId:
           type: string
         type:
-          enum: [bug, idea]
+          enum: [idea, requirement, bug, task, note]
         priority:
           enum: [urgent, high, normal, low]
         title:

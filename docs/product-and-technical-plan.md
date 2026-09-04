@@ -1,9 +1,11 @@
-# 独立开发反馈闭环系统：需求与技术方案
+# MissionGo：需求与技术方案
+
+> **From idea to shipped.**
 
 > 文档版本：v0.1  
 > 状态：需求基线，待评审  
 > 日期：2026-09-04  
-> 产品名称：待定
+> 产品名称：MissionGo
 
 ## 1. 文档目的
 
@@ -13,9 +15,9 @@
 
 ## 2. 产品概述
 
-本系统是一套面向独立开发者的个人自托管反馈闭环工具，解决以下问题：
+MissionGo 是一套面向独立开发者的个人自托管工作事项与 AI 执行工具，解决以下问题：
 
-- 随时记录 Bug、需求和想法。
+- 随时记录 Idea、Requirement、Bug、Task 和 Note。
 - 从正在开发的 Android 或 macOS App 内直接提交反馈，并自动携带运行现场。
 - 在 Android 管理 App 或 Web 端统一查看、搜索、补充和验收任务。
 - 让 Codex、Claude Code、Hermes 等 AI 工具通过 MCP 按任务编号读取完整上下文。
@@ -97,7 +99,7 @@
 - **组件（Component）**：可单独构建、发布或修改的技术单元，例如 Android 客户端、macOS 客户端、服务端、公共核心。
 - **功能模块（Area）**：产品内的业务区域，例如登录、同步、AI 对话、设置。功能模块保持扁平，不做无限层级嵌套。
 - **代码仓库（Repository）**：代码实际存放位置。一个产品可以关联一个或多个仓库。
-- **任务（Task）**：一条 Bug、需求或想法，拥有稳定编号。
+- **工作事项（Work Item）**：统一承载 Idea、Requirement、Bug、Task 或 Note，并拥有稳定编号。
 - **执行记录（Execution Run）**：某个 AI 对任务进行的一次分析、处理或验证尝试。
 - **来源组件（Source Component）**：反馈被发现或提交的平台组件。
 - **影响组件（Affected Components）**：经人工或 AI 分析后，实际需要修改或验证的组件集合。
@@ -192,10 +194,13 @@ AI 按优先级和创建时间连续领取任务，直到队列为空、用户�
 
 ### 7.2 任务管理
 
-首版任务类型：
+首版工作事项类型：
 
+- Idea
+- Requirement
 - Bug
-- Idea/需求
+- Task
+- Note
 
 首版优先级：
 
@@ -255,29 +260,29 @@ AI 按优先级和创建时间连续领取任务，直到队列为空、用户�
 
 ## 8. 状态模型
 
-### 8.1 任务状态
+### 8.1 工作事项状态
 
 ```text
-待处理
-   ↓ AI 领取
-处理中 ───→ 等待人工
-   ↓           │ 人工补充信息
-已处理，待验证 ←┘
-   ├── 验证通过 → 已完成
-   └── 验证失败 → 待处理（追加“重新打开”事件）
+Inbox → Ready
+          ↓ AI claim
+      In Progress ───→ On Hold
+          ↓                │ resume
+      Pending Verification ←┘
+          ├── verification passed → Done
+          └── verification failed → Ready
 ```
 
-另设“已取消”，由人工使用。
+另设 `Cancelled`，由人工使用。
 
 ### 8.2 状态规则
 
-- `分析任务`不改变任务状态。
-- `处理任务`必须先原子领取，再进入处理中。
-- 信息不足时进入等待人工，并写入具体问题。
-- AI 处理成功后只能进入已处理待验证。
-- 人工验证通过后才能进入已完成。
-- 验证失败不删除 AI 报告，追加失败原因并回到待处理。
-- 租约到期后追加中断记录，任务回到可领取状态。
+- `Analyze` 不改变工作事项状态。
+- `Process` 必须先原子领取，再进入 `In Progress`。
+- 信息不足时进入 `On Hold`，并写入具体问题。
+- AI 处理成功后只能进入 `Pending Verification`。
+- 人工验证通过后才能进入 `Done`。
+- 验证失败不删除 AI 报告，追加失败原因并回到 `Ready`。
+- 租约到期后追加中断记录，工作事项回到 `Ready`。
 - 服务端负责校验状态流转，MCP 不提供任意状态写入。
 
 ### 8.3 执行状态
@@ -343,22 +348,22 @@ OpenAI 官方文档将 MCP 定义为模型连接外部工具与上下文的方�
 
 - `list_products`
 - `list_components`
-- `list_tasks`
-- `get_task_context`
-- `get_task_timeline`
+- `list_items`
+- `get_item_context`
+- `get_item_timeline`
 - `get_attachment`
 - `get_execution`
 
 操作类：
 
-- `claim_task`
-- `renew_task_lease`
+- `claim_item`
+- `renew_item_lease`
 - `append_analysis`
 - `append_progress`
 - `request_human_input`
 - `submit_resolution`
-- `mark_ready_for_verification`
-- `release_task`
+- `mark_pending_verification`
+- `release_item`
 - `resume_execution`
 
 首版不向 AI 暴露：
@@ -461,7 +466,7 @@ Capacitor 的官方定位是以 Web 为核心、通过插件访问 Android/iOS �
 ## 13. 代码仓库建议
 
 ```text
-feedback-system/
+missiongo/
 ├── apps/
 │   ├── web/                    # 管理端和共用 H5
 │   └── android-shell/          # Android 管理外壳
@@ -808,4 +813,3 @@ Android/Web 点击“交给 AI”
 - [OpenAI：Codex 的 MCP 支持与配置](https://learn.chatgpt.com/zh-Hans/docs/extend/mcp)
 - [Capacitor 官方文档](https://capacitorjs.com/docs)
 - [Swift Package Manager 官方文档](https://docs.swift.org/package-manager/)
-

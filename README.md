@@ -1,14 +1,14 @@
-# Feedback System
+# MissionGo
 
-Working title for a personal, self-hosted feedback loop for independent developers.
+> From idea to shipped.
 
-The system will collect Bugs and ideas from Web, Android, and macOS development builds, then let coding agents read and process a task by ID through MCP. Agents write structured analysis, code-change evidence, and test results back to the task. A human performs final verification.
+MissionGo is a personal, self-hosted work hub for independent developers. It captures ideas, requirements, bugs, tasks, and notes from Web, Android, and macOS development builds, then lets coding agents read and process a work item by ID through MCP. Agents write structured analysis, code-change evidence, and test results back to the item. A human performs final verification.
 
 ## Current status
 
 Phase 0 is in progress. The repository currently contains:
 
-- the core task state machine;
+- the core work-item state machine;
 - typed MCP contract definitions;
 - domain and security decisions;
 - an initial REST API contract;
@@ -25,7 +25,7 @@ No production server, Web UI, Android app, or SDK has been implemented yet.
 - On-demand AI processing through a remote MCP server and reusable skills.
 - SQLite metadata storage and a local attachment directory.
 - AI creates isolated local changes and commits but does not push or merge by default.
-- AI stops at `ready_for_verification`; a human closes the task.
+- AI stops at `pending_verification`; a human moves the work item to `done`.
 
 ## Workspace commands
 

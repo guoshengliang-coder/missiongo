@@ -1,24 +1,25 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluateTaskTransition } from "./task-status.js";
+import { evaluateWorkItemTransition } from "./work-item-status.js";
 
-describe("task state machine", () => {
-  it("allows an agent to claim a pending task", () => {
+describe("work item state machine", () => {
+  it("allows a human to move a captured item from inbox to ready", () => {
     expect(
-      evaluateTaskTransition({
-        from: "pending",
-        to: "in_progress",
-        actor: "agent",
-        reason: "claim",
-      }),
+      evaluateWorkItemTransition({ from: "inbox", to: "ready", actor: "human", reason: "triaged" }),
+    ).toMatchObject({ allowed: true, code: "allowed" });
+  });
+
+  it("allows an agent to claim a ready work item", () => {
+    expect(
+      evaluateWorkItemTransition({ from: "ready", to: "in_progress", actor: "agent", reason: "claim" }),
     ).toMatchObject({ allowed: true, code: "allowed" });
   });
 
   it("allows an agent to submit work for human verification", () => {
     expect(
-      evaluateTaskTransition({
+      evaluateWorkItemTransition({
         from: "in_progress",
-        to: "ready_for_verification",
+        to: "pending_verification",
         actor: "agent",
         reason: "resolution_submitted",
       }),
@@ -27,31 +28,31 @@ describe("task state machine", () => {
 
   it("prevents an agent from completing final verification", () => {
     expect(
-      evaluateTaskTransition({
-        from: "ready_for_verification",
-        to: "completed",
+      evaluateWorkItemTransition({
+        from: "pending_verification",
+        to: "done",
         actor: "agent",
         reason: "verification_passed",
       }),
     ).toMatchObject({ allowed: false, code: "actor_not_allowed" });
   });
 
-  it("allows a human to reject verification and reopen the task", () => {
+  it("allows a human to reject verification and reopen the work item", () => {
     expect(
-      evaluateTaskTransition({
-        from: "ready_for_verification",
-        to: "pending",
+      evaluateWorkItemTransition({
+        from: "pending_verification",
+        to: "ready",
         actor: "human",
         reason: "verification_failed",
       }),
     ).toMatchObject({ allowed: true });
   });
 
-  it("lets the system release a task after its lease expires", () => {
+  it("lets the system release a work item after its lease expires", () => {
     expect(
-      evaluateTaskTransition({
+      evaluateWorkItemTransition({
         from: "in_progress",
-        to: "pending",
+        to: "ready",
         actor: "system",
         reason: "lease_expired",
       }),
@@ -60,8 +61,8 @@ describe("task state machine", () => {
 
   it("rejects a mismatched transition reason", () => {
     expect(
-      evaluateTaskTransition({
-        from: "pending",
+      evaluateWorkItemTransition({
+        from: "ready",
         to: "in_progress",
         actor: "agent",
         reason: "verification_passed",

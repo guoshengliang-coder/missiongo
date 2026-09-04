@@ -1,20 +1,21 @@
-export const TASK_TYPES = ["bug", "idea"] as const;
-export type TaskType = (typeof TASK_TYPES)[number];
+export const WORK_ITEM_TYPES = ["idea", "requirement", "bug", "task", "note"] as const;
+export type WorkItemType = (typeof WORK_ITEM_TYPES)[number];
 
-export const TASK_PRIORITIES = ["urgent", "high", "normal", "low"] as const;
-export type TaskPriority = (typeof TASK_PRIORITIES)[number];
+export const WORK_ITEM_PRIORITIES = ["urgent", "high", "normal", "low"] as const;
+export type WorkItemPriority = (typeof WORK_ITEM_PRIORITIES)[number];
 
-export const TASK_STATUSES = [
-  "pending",
+export const WORK_ITEM_STATUSES = [
+  "inbox",
+  "ready",
   "in_progress",
-  "waiting_for_human",
-  "ready_for_verification",
-  "completed",
+  "on_hold",
+  "pending_verification",
+  "done",
   "cancelled",
 ] as const;
-export type TaskStatus = (typeof TASK_STATUSES)[number];
+export type WorkItemStatus = (typeof WORK_ITEM_STATUSES)[number];
 
-export interface TaskEnvironment {
+export interface WorkItemEnvironment {
   readonly platform: "android" | "macos" | "web" | "other";
   readonly appVersion?: string;
   readonly buildNumber?: string;
@@ -24,32 +25,32 @@ export interface TaskEnvironment {
   readonly metadata?: Readonly<Record<string, string>>;
 }
 
-export interface TaskSnapshot {
+export interface WorkItemSnapshot {
   readonly id: string;
   readonly key: string;
   readonly productId: string;
   readonly sourceComponentId?: string;
   readonly affectedComponentIds: readonly string[];
   readonly areaId?: string;
-  readonly type: TaskType;
-  readonly priority: TaskPriority;
-  readonly status: TaskStatus;
+  readonly type: WorkItemType;
+  readonly priority: WorkItemPriority;
+  readonly status: WorkItemStatus;
   readonly title: string;
   readonly description: string;
-  readonly environment?: TaskEnvironment;
+  readonly environment?: WorkItemEnvironment;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
 
 const PRODUCT_PREFIX_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
 
-export function createTaskKey(productPrefix: string, sequence: number): string {
+export function createWorkItemKey(productPrefix: string, sequence: number): string {
   if (!PRODUCT_PREFIX_PATTERN.test(productPrefix)) {
     throw new Error("Product prefix must be 2-10 uppercase letters or digits and start with a letter.");
   }
 
   if (!Number.isSafeInteger(sequence) || sequence < 1) {
-    throw new Error("Task sequence must be a positive safe integer.");
+    throw new Error("Work item sequence must be a positive safe integer.");
   }
 
   return `${productPrefix}-${sequence}`;
