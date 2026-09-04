@@ -1,0 +1,313 @@
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+
+import type { WorkItemPriority, WorkItemStatus, WorkItemType } from "./types";
+
+export type Locale = "zh-CN" | "en";
+
+const EN_MESSAGES = {
+  openingWorkspace: "Opening your workspace…",
+  privateWorkspace: "Private workspace",
+  connectTitle: "Connect to MissionGo",
+  connectBody: "Enter the administrator token configured on your MissionGo Server. It stays in this browser tab.",
+  startWorkspace: "Start your workspace",
+  createFirstProduct: "Create your first product.",
+  productHelp: "Products keep related Android, macOS, Web, and server work under one clear identity.",
+  openNavigation: "Open navigation",
+  closeNavigation: "Close navigation",
+  selectedProduct: "Selected product",
+  searchItems: "Search items…",
+  connectionSettings: "Connection settings",
+  capture: "Capture",
+  workspace: "Workspace",
+  allItems: "All items",
+  aiDispatchNext: "AI dispatch is next",
+  aiDispatchDescription: "Items marked Ready will soon be available to your coding agents.",
+  addProduct: "Add product",
+  productWorkspace: "{prefix} workspace",
+  allWork: "All work",
+  workspaceSummary: "Workspace summary",
+  open: "open",
+  toVerify: "to verify",
+  filterByType: "Filter by type",
+  allTypes: "All types",
+  workItems: "Work items",
+  captureFirstSpark: "Capture the first spark",
+  noMatchingItems: "No matching items",
+  firstSparkHelp: "Ideas, requirements, bugs, tasks, and notes all begin here.",
+  noMatchHelp: "Try another status, type, or search.",
+  captureItem: "Capture item",
+  captureNewItem: "Capture a new item",
+  captureWork: "Capture work",
+  addToProduct: "Add to {product}",
+  createProductWorkspace: "Create another product workspace",
+  connection: "Connection",
+  administratorAccess: "Administrator access for this browser tab",
+  connectionUpdated: "Connection settings updated.",
+  dismiss: "Dismiss",
+  selectItem: "Select an item",
+  selectItemHelp: "Open an item to review context, update details, and move the work forward.",
+  backToList: "Back to list",
+  moreActions: "More actions",
+  cancel: "Cancel",
+  edit: "Edit",
+  title: "Title",
+  type: "Type",
+  priority: "Priority",
+  description: "Description",
+  saveChanges: "Save changes",
+  noDescription: "No description yet.",
+  capturedContext: "Captured context",
+  platform: "Platform",
+  version: "Version",
+  operatingSystem: "OS",
+  device: "Device",
+  nextAction: "Next action",
+  moveForward: "Move this work forward",
+  timeline: "Timeline",
+  status: "Status",
+  updated: "Updated",
+  whatNeedsAttention: "What needs attention?",
+  clearSpecificTitle: "A clear, specific title",
+  context: "Context",
+  contextPlaceholder: "What did you notice? What should happen instead?",
+  landsInInbox: "It will land in Inbox.",
+  productName: "Product name",
+  itemPrefix: "Item prefix",
+  prefixHelp: "Used for item IDs, such as HG-128.",
+  createWorkspace: "Create workspace",
+  administratorToken: "Administrator token",
+  pasteToken: "Paste token",
+  tokenPrivacy: "Stored only for this browser tab.",
+  saveAndConnect: "Save & connect",
+  close: "Close",
+  loadingItems: "Loading items",
+  somethingWentWrong: "Something went wrong.",
+  capturedInInbox: "{key} captured in Inbox.",
+  itemNotLoaded: "{key} is not loaded in the active product.",
+  webToolError: "Web tool error: {message}",
+  itemUpdated: "{key} updated.",
+  itemMoved: "{key} moved to {status}.",
+  switchLanguage: "切换到中文",
+} as const;
+
+export type MessageKey = keyof typeof EN_MESSAGES;
+
+const ZH_MESSAGES: Record<MessageKey, string> = {
+  openingWorkspace: "正在打开工作区…",
+  privateWorkspace: "私人工作区",
+  connectTitle: "连接 MissionGo",
+  connectBody: "请输入 MissionGo 服务端配置的管理员令牌。令牌只会保存在当前浏览器标签页中。",
+  startWorkspace: "开始创建工作区",
+  createFirstProduct: "创建你的第一个产品",
+  productHelp: "产品用于把相关的 Android、macOS、Web 和服务端工作统一归集在同一个项目下。",
+  openNavigation: "打开导航",
+  closeNavigation: "关闭导航",
+  selectedProduct: "当前产品",
+  searchItems: "搜索条目…",
+  connectionSettings: "连接设置",
+  capture: "记录",
+  workspace: "工作区",
+  allItems: "全部条目",
+  aiDispatchNext: "下一步：AI 调度",
+  aiDispatchDescription: "标记为“待领取”的条目将可以交给你的 AI 开发工具处理。",
+  addProduct: "添加产品",
+  productWorkspace: "{prefix} 工作区",
+  allWork: "全部工作",
+  workspaceSummary: "工作区概览",
+  open: "未完成",
+  toVerify: "待验证",
+  filterByType: "按类型筛选",
+  allTypes: "全部类型",
+  workItems: "工作条目",
+  captureFirstSpark: "记录第一个灵感",
+  noMatchingItems: "没有匹配的条目",
+  firstSparkHelp: "灵感、需求、Bug、任务和备注都可以从这里开始。",
+  noMatchHelp: "可以尝试切换状态、类型或搜索条件。",
+  captureItem: "记录条目",
+  captureNewItem: "记录新条目",
+  captureWork: "记录工作",
+  addToProduct: "添加到 {product}",
+  createProductWorkspace: "创建另一个产品工作区",
+  connection: "连接设置",
+  administratorAccess: "当前浏览器标签页的管理员访问权限",
+  connectionUpdated: "连接设置已更新。",
+  dismiss: "关闭提示",
+  selectItem: "选择一个条目",
+  selectItemHelp: "打开条目即可查看上下文、修改详情并推进处理状态。",
+  backToList: "返回列表",
+  moreActions: "更多操作",
+  cancel: "取消",
+  edit: "编辑",
+  title: "标题",
+  type: "类型",
+  priority: "优先级",
+  description: "描述",
+  saveChanges: "保存修改",
+  noDescription: "暂无描述。",
+  capturedContext: "采集的环境信息",
+  platform: "平台",
+  version: "版本",
+  operatingSystem: "系统",
+  device: "设备",
+  nextAction: "下一步操作",
+  moveForward: "推进此项工作",
+  timeline: "处理记录",
+  status: "状态",
+  updated: "已更新",
+  whatNeedsAttention: "需要记录什么？",
+  clearSpecificTitle: "请输入清晰、具体的标题",
+  context: "补充说明",
+  contextPlaceholder: "你发现了什么？期望的结果是什么？",
+  landsInInbox: "条目会先进入收件箱。",
+  productName: "产品名称",
+  itemPrefix: "条目前缀",
+  prefixHelp: "用于生成条目编号，例如 HG-128。",
+  createWorkspace: "创建工作区",
+  administratorToken: "管理员令牌",
+  pasteToken: "粘贴令牌",
+  tokenPrivacy: "仅保存在当前浏览器标签页中。",
+  saveAndConnect: "保存并连接",
+  close: "关闭",
+  loadingItems: "正在加载条目",
+  somethingWentWrong: "出现了问题。",
+  capturedInInbox: "{key} 已记录到收件箱。",
+  itemNotLoaded: "当前产品中尚未加载 {key}。",
+  webToolError: "网页工具错误：{message}",
+  itemUpdated: "{key} 已更新。",
+  itemMoved: "{key} 已移至“{status}”。",
+  switchLanguage: "Switch to English",
+};
+
+const STATUS_LABELS: Record<Locale, Record<WorkItemStatus, string>> = {
+  en: {
+    inbox: "Inbox",
+    ready: "Ready",
+    in_progress: "In progress",
+    on_hold: "On hold",
+    pending_verification: "Pending verification",
+    done: "Done",
+    cancelled: "Cancelled",
+  },
+  "zh-CN": {
+    inbox: "收件箱",
+    ready: "待领取",
+    in_progress: "处理中",
+    on_hold: "暂缓",
+    pending_verification: "待验证",
+    done: "已完成",
+    cancelled: "已取消",
+  },
+};
+
+const TYPE_LABELS: Record<Locale, Record<WorkItemType, string>> = {
+  en: { idea: "Idea", requirement: "Requirement", bug: "Bug", task: "Task", note: "Note" },
+  "zh-CN": { idea: "灵感", requirement: "需求", bug: "Bug", task: "任务", note: "备注" },
+};
+
+const PRIORITY_LABELS: Record<Locale, Record<WorkItemPriority, string>> = {
+  en: { urgent: "Urgent", high: "High", normal: "Normal", low: "Low" },
+  "zh-CN": { urgent: "紧急", high: "高", normal: "普通", low: "低" },
+};
+
+const TRANSITION_LABELS: Record<Locale, Record<string, string>> = {
+  en: {},
+  "zh-CN": {
+    "Move to ready": "移至待领取",
+    "Start work": "开始处理",
+    "Put on hold": "暂缓处理",
+    "Move to inbox": "移回收件箱",
+    "Submit for verification": "提交验证",
+    Release: "释放任务",
+    "Resume work": "继续处理",
+    "Return to ready": "退回待领取",
+    "Verify & close": "验证通过并关闭",
+    "Needs more work": "需要继续处理",
+    Reopen: "重新打开",
+    Restore: "恢复",
+  },
+};
+
+const ACTOR_LABELS: Record<Locale, Record<string, string>> = {
+  en: { human: "Human", agent: "Agent", system: "System" },
+  "zh-CN": { human: "人工", agent: "AI", system: "系统" },
+};
+
+const EVENT_LABELS: Record<Locale, Record<string, string>> = {
+  en: { item_created: "Item created", item_updated: "Item updated" },
+  "zh-CN": { item_created: "已创建条目", item_updated: "已更新详情" },
+};
+
+interface I18nValue {
+  readonly locale: Locale;
+  readonly toggleLocale: () => void;
+  readonly t: (key: MessageKey, variables?: Readonly<Record<string, string | number>>) => string;
+  readonly statusLabel: (status: WorkItemStatus) => string;
+  readonly typeLabel: (type: WorkItemType) => string;
+  readonly priorityLabel: (priority: WorkItemPriority) => string;
+  readonly transitionLabel: (label: string) => string;
+  readonly actorLabel: (actor: string) => string;
+  readonly eventLabel: (event: string) => string;
+  readonly formatTime: (value: string) => string;
+}
+
+const I18nContext = createContext<I18nValue | null>(null);
+
+function interpolate(template: string, variables: Readonly<Record<string, string | number>> = {}): string {
+  return template.replace(/\{(\w+)\}/g, (_, key: string) => String(variables[key] ?? `{${key}}`));
+}
+
+export function resolveLocale(storedLocale: string | null): Locale {
+  return storedLocale === "en" ? "en" : "zh-CN";
+}
+
+export function translate(
+  locale: Locale,
+  key: MessageKey,
+  variables?: Readonly<Record<string, string | number>>,
+): string {
+  const messages = locale === "zh-CN" ? ZH_MESSAGES : EN_MESSAGES;
+  return interpolate(messages[key], variables);
+}
+
+export function I18nProvider({ children }: { children: ReactNode }) {
+  const [locale, setLocale] = useState<Locale>(() => resolveLocale(localStorage.getItem("missiongo.locale")));
+
+  useEffect(() => {
+    localStorage.setItem("missiongo.locale", locale);
+    document.documentElement.lang = locale;
+    document.title = locale === "zh-CN" ? "MissionGo · 从灵感到交付" : "MissionGo · From idea to shipped";
+  }, [locale]);
+
+  const value = useMemo<I18nValue>(() => {
+    return {
+      locale,
+      toggleLocale: () => setLocale((current) => current === "zh-CN" ? "en" : "zh-CN"),
+      t: (key, variables) => translate(locale, key, variables),
+      statusLabel: (status) => STATUS_LABELS[locale][status],
+      typeLabel: (type) => TYPE_LABELS[locale][type],
+      priorityLabel: (priority) => PRIORITY_LABELS[locale][priority],
+      transitionLabel: (label) => TRANSITION_LABELS[locale][label] ?? label,
+      actorLabel: (actor) => ACTOR_LABELS[locale][actor] ?? actor,
+      eventLabel: (event) => EVENT_LABELS[locale][event] ?? event.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()),
+      formatTime: (value) => {
+        const date = new Date(value);
+        const minutes = Math.floor((Date.now() - date.getTime()) / 60_000);
+        if (minutes < 1) return locale === "zh-CN" ? "刚刚" : "just now";
+        if (minutes < 60) return locale === "zh-CN" ? `${minutes} 分钟前` : `${minutes}m ago`;
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) return locale === "zh-CN" ? `${hours} 小时前` : `${hours}h ago`;
+        const days = Math.floor(hours / 24);
+        if (days < 7) return locale === "zh-CN" ? `${days} 天前` : `${days}d ago`;
+        return date.toLocaleDateString(locale, { month: "short", day: "numeric" });
+      },
+    };
+  }, [locale]);
+
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
+}
+
+export function useI18n(): I18nValue {
+  const value = useContext(I18nContext);
+  if (!value) throw new Error("useI18n must be used inside I18nProvider.");
+  return value;
+}

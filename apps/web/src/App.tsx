@@ -13,6 +13,7 @@ import {
   FileText,
   Inbox,
   KeyRound,
+  Languages,
   Lightbulb,
   ListTodo,
   LoaderCircle,
@@ -38,25 +39,8 @@ import {
   type WorkItemStatus,
   type WorkItemType,
 } from "./types";
+import { useI18n } from "./i18n";
 import { registerMissionGoWebMcp } from "./webmcp";
-
-const STATUS_LABELS: Record<WorkItemStatus, string> = {
-  inbox: "Inbox",
-  ready: "Ready",
-  in_progress: "In progress",
-  on_hold: "On hold",
-  pending_verification: "Pending verification",
-  done: "Done",
-  cancelled: "Cancelled",
-};
-
-const TYPE_LABELS: Record<WorkItemType, string> = {
-  idea: "Idea",
-  requirement: "Requirement",
-  bug: "Bug",
-  task: "Task",
-  note: "Note",
-};
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
   inbox: Inbox,
@@ -105,29 +89,13 @@ const TRANSITIONS: Record<WorkItemStatus, readonly TransitionAction[]> = {
   cancelled: [{ label: "Restore", to: "inbox", reason: "restored", tone: "primary" }],
 };
 
-function humanize(value: string): string {
-  return value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
-}
-
-function formatTime(value: string): string {
-  const date = new Date(value);
-  const difference = Date.now() - date.getTime();
-  const minutes = Math.floor(difference / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong.";
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }
 
 export function App() {
   const queryClient = useQueryClient();
+  const { statusLabel, t, typeLabel } = useI18n();
   const [selectedProductId, setSelectedProductId] = useState(() => localStorage.getItem("missiongo.product") ?? "");
   const [selectedItemKey, setSelectedItemKey] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<WorkItemStatus | "all">("all");
@@ -195,19 +163,19 @@ export function App() {
       createItem: async (input) => {
         const item = await api.createItem({ productId: selectedProduct.id, ...input });
         setSelectedItemKey(item.key);
-        setNotice(`${item.key} captured in Inbox.`);
+        setNotice(t("capturedInInbox", { key: item.key }));
         await queryClient.invalidateQueries({ queryKey: ["items", selectedProduct.id] });
         return item;
       },
       openItem: (itemKey) => {
         const item = items.find((candidate) => candidate.key === itemKey);
-        if (!item) throw new Error(`${itemKey} is not loaded in the active product.`);
+        if (!item) throw new Error(t("itemNotLoaded", { key: itemKey }));
         setSelectedItemKey(item.key);
         return item;
       },
-      reportError: (error) => setNotice(`Web tool error: ${errorMessage(error)}`),
+      reportError: (error) => setNotice(t("webToolError", { message: errorMessage(error, t("somethingWentWrong")) })),
     });
-  }, [items, queryClient, search, selectedProduct, statusFilter, typeFilter, visibleItems]);
+  }, [items, queryClient, search, selectedProduct, statusFilter, t, typeFilter, visibleItems]);
 
   const selectStatus = (status: WorkItemStatus | "all") => {
     setStatusFilter(status);
@@ -221,9 +189,10 @@ export function App() {
   if (productsQuery.isLoading) {
     return (
       <main className="centered-state">
+        <div className="page-language"><LanguageSwitch /></div>
         <Brand />
         <LoaderCircle className="spin" size={26} />
-        <p>Opening your workspace…</p>
+        <p>{t("openingWorkspace")}</p>
       </main>
     );
   }
@@ -231,12 +200,13 @@ export function App() {
   if (needsConnection) {
     return (
       <main className="connection-page">
+        <div className="page-language"><LanguageSwitch /></div>
         <Brand />
         <section className="connection-card">
           <div className="round-icon"><KeyRound size={24} /></div>
-          <p className="eyebrow">Private workspace</p>
-          <h1>Connect to MissionGo</h1>
-          <p>Enter the administrator token configured on your MissionGo Server. It stays in this browser tab.</p>
+          <p className="eyebrow">{t("privateWorkspace")}</p>
+          <h1>{t("connectTitle")}</h1>
+          <p>{t("connectBody")}</p>
           <TokenForm onSaved={refresh} />
         </section>
       </main>
@@ -246,12 +216,13 @@ export function App() {
   if (products.length === 0) {
     return (
       <main className="onboarding-page">
+        <div className="page-language"><LanguageSwitch /></div>
         <header className="onboarding-header"><Brand /></header>
         <section className="onboarding-card">
           <div className="step-marker">01</div>
-          <p className="eyebrow">Start your workspace</p>
-          <h1>Create your first product.</h1>
-          <p>Products keep related Android, macOS, Web, and server work under one clear identity.</p>
+          <p className="eyebrow">{t("startWorkspace")}</p>
+          <h1>{t("createFirstProduct")}</h1>
+          <p>{t("productHelp")}</p>
           <ProductForm
             onCreated={(product) => {
               setSelectedProductId(product.id);
@@ -267,7 +238,7 @@ export function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Open navigation">
+        <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label={t("openNavigation")}>
           <Menu size={20} />
         </button>
         <Brand compact />
@@ -280,7 +251,7 @@ export function App() {
               setSelectedProductId(event.target.value);
               setSelectedItemKey(null);
             }}
-            aria-label="Selected product"
+            aria-label={t("selectedProduct")}
           >
             {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
           </select>
@@ -288,25 +259,26 @@ export function App() {
         </div>
         <div className="header-search">
           <Search size={17} />
-          <input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search items…" />
+          <input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("searchItems")} />
           <kbd>⌘ K</kbd>
         </div>
-        <button className="icon-button" onClick={() => setConnectionOpen(true)} aria-label="Connection settings">
+        <LanguageSwitch />
+        <button className="icon-button" onClick={() => setConnectionOpen(true)} aria-label={t("connectionSettings")}>
           <Settings2 size={19} />
         </button>
         <button className="primary-button capture-button" onClick={() => setCaptureOpen(true)}>
-          <Plus size={18} /> <span>Capture</span>
+          <Plus size={18} /> <span>{t("capture")}</span>
         </button>
       </header>
 
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="sidebar-mobile-head mobile-only">
           <Brand compact />
-          <button className="icon-button" onClick={() => setSidebarOpen(false)} aria-label="Close navigation"><X size={20} /></button>
+          <button className="icon-button" onClick={() => setSidebarOpen(false)} aria-label={t("closeNavigation")}><X size={20} /></button>
         </div>
-        <nav aria-label="Work item status">
-          <p className="sidebar-label">Workspace</p>
-          <StatusNavItem label="All items" count={items.length} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
+        <nav aria-label={t("workspace")}>
+          <p className="sidebar-label">{t("workspace")}</p>
+          <StatusNavItem label={t("allItems")} count={items.length} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
             <ListTodo size={17} />
           </StatusNavItem>
           {ITEM_STATUSES.filter((status) => status !== "cancelled").map((status) => {
@@ -314,7 +286,7 @@ export function App() {
             return (
               <StatusNavItem
                 key={status}
-                label={STATUS_LABELS[status]}
+                label={statusLabel(status)}
                 count={items.filter((item) => item.status === status).length}
                 active={statusFilter === status}
                 onClick={() => selectStatus(status)}
@@ -327,44 +299,44 @@ export function App() {
         <div className="sidebar-spacer" />
         <div className="mission-card">
           <span className="mission-orbit"><Sparkles size={16} /></span>
-          <p>AI dispatch is next</p>
-          <span>Items marked Ready will soon be available to your coding agents.</span>
+          <p>{t("aiDispatchNext")}</p>
+          <span>{t("aiDispatchDescription")}</span>
         </div>
-        <button className="text-button add-product" onClick={() => setProductOpen(true)}><Plus size={15} /> Add product</button>
+        <button className="text-button add-product" onClick={() => setProductOpen(true)}><Plus size={15} /> {t("addProduct")}</button>
       </aside>
-      {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close navigation" />}
+      {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label={t("closeNavigation")} />}
 
       <main className="workspace">
         <section className="workspace-head">
           <div>
-            <p className="eyebrow">{selectedProduct?.keyPrefix} workspace</p>
-            <h1>{statusFilter === "all" ? "All work" : STATUS_LABELS[statusFilter]}</h1>
+            <p className="eyebrow">{t("productWorkspace", { prefix: selectedProduct?.keyPrefix ?? "" })}</p>
+            <h1>{statusFilter === "all" ? t("allWork") : statusLabel(statusFilter)}</h1>
           </div>
-          <div className="workspace-stats" aria-label="Workspace summary">
-            <span><strong>{openCount}</strong> open</span>
-            <span><strong>{verifyCount}</strong> to verify</span>
+          <div className="workspace-stats" aria-label={t("workspaceSummary")}>
+            <span><strong>{openCount}</strong> {t("open")}</span>
+            <span><strong>{verifyCount}</strong> {t("toVerify")}</span>
           </div>
         </section>
 
-        <div className="type-filters" aria-label="Filter by type">
-          <button className={typeFilter === "all" ? "active" : ""} onClick={() => setTypeFilter("all")}>All types</button>
+        <div className="type-filters" aria-label={t("filterByType")}>
+          <button className={typeFilter === "all" ? "active" : ""} onClick={() => setTypeFilter("all")}>{t("allTypes")}</button>
           {ITEM_TYPES.map((type) => (
             <button key={type} className={typeFilter === type ? "active" : ""} onClick={() => setTypeFilter(type)}>
-              {TYPE_LABELS[type]}
+              {typeLabel(type)}
             </button>
           ))}
         </div>
 
         <div className="work-grid">
-          <section className="item-list" aria-label="Work items">
+          <section className="item-list" aria-label={t("workItems")}>
             {itemsQuery.isLoading && <ListSkeleton />}
-            {itemsQuery.isError && <InlineError message={errorMessage(itemsQuery.error)} />}
+            {itemsQuery.isError && <InlineError message={errorMessage(itemsQuery.error, t("somethingWentWrong"))} />}
             {!itemsQuery.isLoading && visibleItems.length === 0 && (
               <div className="empty-list">
                 <div className="round-icon"><Lightbulb size={22} /></div>
-                <h2>{items.length === 0 ? "Capture the first spark" : "No matching items"}</h2>
-                <p>{items.length === 0 ? "Ideas, requirements, bugs, tasks, and notes all begin here." : "Try another status, type, or search."}</p>
-                {items.length === 0 && <button className="primary-button" onClick={() => setCaptureOpen(true)}><Plus size={17} /> Capture item</button>}
+                <h2>{items.length === 0 ? t("captureFirstSpark") : t("noMatchingItems")}</h2>
+                <p>{items.length === 0 ? t("firstSparkHelp") : t("noMatchHelp")}</p>
+                {items.length === 0 && <button className="primary-button" onClick={() => setCaptureOpen(true)}><Plus size={17} /> {t("captureItem")}</button>}
               </div>
             )}
             {visibleItems.map((item) => (
@@ -375,23 +347,23 @@ export function App() {
         </div>
       </main>
 
-      <button className="mobile-fab mobile-only" onClick={() => setCaptureOpen(true)} aria-label="Capture a new item"><Plus size={24} /></button>
+      <button className="mobile-fab mobile-only" onClick={() => setCaptureOpen(true)} aria-label={t("captureNewItem")}><Plus size={24} /></button>
 
       {captureOpen && selectedProduct && (
-        <Modal title="Capture work" subtitle={`Add to ${selectedProduct.name}`} onClose={() => setCaptureOpen(false)}>
+        <Modal title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={() => setCaptureOpen(false)}>
           <CaptureForm
             product={selectedProduct}
             onCreated={(item) => {
               setCaptureOpen(false);
               setSelectedItemKey(item.key);
-              setNotice(`${item.key} captured in Inbox.`);
+              setNotice(t("capturedInInbox", { key: item.key }));
               void queryClient.invalidateQueries({ queryKey: ["items", selectedProduct.id] });
             }}
           />
         </Modal>
       )}
       {productOpen && (
-        <Modal title="Add product" subtitle="Create another product workspace" onClose={() => setProductOpen(false)}>
+        <Modal title={t("addProduct")} subtitle={t("createProductWorkspace")} onClose={() => setProductOpen(false)}>
           <ProductForm
             onCreated={(product) => {
               setProductOpen(false);
@@ -403,18 +375,27 @@ export function App() {
         </Modal>
       )}
       {connectionOpen && (
-        <Modal title="Connection" subtitle="Administrator access for this browser tab" onClose={() => setConnectionOpen(false)}>
+        <Modal title={t("connection")} subtitle={t("administratorAccess")} onClose={() => setConnectionOpen(false)}>
           <TokenForm
             onSaved={async () => {
               setConnectionOpen(false);
               await refresh();
-              setNotice("Connection settings updated.");
+              setNotice(t("connectionUpdated"));
             }}
           />
         </Modal>
       )}
-      {notice && <div className="toast" role="status"><Check size={16} /> {notice}<button onClick={() => setNotice(null)} aria-label="Dismiss"><X size={14} /></button></div>}
+      {notice && <div className="toast" role="status"><Check size={16} /> {notice}<button onClick={() => setNotice(null)} aria-label={t("dismiss")}><X size={14} /></button></div>}
     </div>
+  );
+}
+
+function LanguageSwitch() {
+  const { locale, t, toggleLocale } = useI18n();
+  return (
+    <button className="language-button" onClick={toggleLocale} aria-label={t("switchLanguage")} title={t("switchLanguage")}>
+      <Languages size={17} /><span>{locale === "zh-CN" ? "EN" : "中"}</span>
+    </button>
   );
 }
 
@@ -433,16 +414,17 @@ function StatusNavItem({ children, label, count, active, onClick }: { children: 
 }
 
 function ItemRow({ item, selected, onClick }: { item: WorkItem; selected: boolean; onClick: () => void }) {
+  const { formatTime, priorityLabel, statusLabel, typeLabel } = useI18n();
   const TypeIcon = TYPE_ICONS[item.type];
   return (
     <button className={`item-row ${selected ? "selected" : ""}`} onClick={onClick}>
       <span className={`type-icon type-${item.type}`}><TypeIcon size={17} /></span>
       <span className="item-copy">
         <span className="item-title">{item.title}</span>
-        <span className="item-meta"><code>{item.key}</code><span>·</span>{TYPE_LABELS[item.type]}<span>·</span>{formatTime(item.updatedAt)}</span>
+        <span className="item-meta"><code>{item.key}</code><span>·</span>{typeLabel(item.type)}<span>·</span>{formatTime(item.updatedAt)}</span>
       </span>
-      <span className={`priority-dot priority-${item.priority}`} title={`${humanize(item.priority)} priority`} />
-      <span className={`status-pill status-${item.status}`}>{STATUS_LABELS[item.status]}</span>
+      <span className={`priority-dot priority-${item.priority}`} title={priorityLabel(item.priority)} />
+      <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
       <ArrowRight className="row-arrow" size={17} />
     </button>
   );
@@ -450,6 +432,7 @@ function ItemRow({ item, selected, onClick }: { item: WorkItem; selected: boolea
 
 function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; onClose: () => void; onNotice: (message: string) => void }) {
   const queryClient = useQueryClient();
+  const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
   const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey) });
   const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey) });
   const item = itemQuery.data;
@@ -481,19 +464,19 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
     onSuccess: async () => {
       setEditing(false);
       await refreshItem();
-      onNotice(`${itemKey} updated.`);
+      onNotice(t("itemUpdated", { key: itemKey ?? "" }));
     },
   });
   const transitionMutation = useMutation({
     mutationFn: (action: TransitionAction) => api.transitionItem(itemKey!, action),
     onSuccess: async (updated) => {
       await refreshItem();
-      onNotice(`${updated.key} moved to ${STATUS_LABELS[updated.status]}.`);
+      onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
   });
 
   if (!itemKey) {
-    return <aside className="detail-pane detail-placeholder"><div className="round-icon"><ArrowLeft size={20} /></div><h2>Select an item</h2><p>Open an item to review context, update details, and move the work forward.</p></aside>;
+    return <aside className="detail-pane detail-placeholder"><div className="round-icon"><ArrowLeft size={20} /></div><h2>{t("selectItem")}</h2><p>{t("selectItemHelp")}</p></aside>;
   }
   if (itemQuery.isLoading || !item) {
     return <aside className="detail-pane detail-loading"><LoaderCircle className="spin" size={24} /></aside>;
@@ -504,48 +487,48 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
   return (
     <aside className="detail-pane">
       <div className="detail-toolbar">
-        <button className="icon-button mobile-only" onClick={onClose} aria-label="Back to list"><ArrowLeft size={19} /></button>
+        <button className="icon-button mobile-only" onClick={onClose} aria-label={t("backToList")}><ArrowLeft size={19} /></button>
         <code>{item.key}</code>
-        <span className={`status-pill status-${item.status}`}>{STATUS_LABELS[item.status]}</span>
+        <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <span className="toolbar-spacer" />
-        <button className="icon-button" aria-label="More actions"><MoreHorizontal size={19} /></button>
-        <button className="secondary-button" onClick={() => setEditing((value) => !value)}>{editing ? "Cancel" : "Edit"}</button>
+        <button className="icon-button" aria-label={t("moreActions")}><MoreHorizontal size={19} /></button>
+        <button className="secondary-button" onClick={() => setEditing((value) => !value)}>{editing ? t("cancel") : t("edit")}</button>
       </div>
       <div className="detail-scroll">
         {editing ? (
           <form className="edit-form" onSubmit={(event) => { event.preventDefault(); updateMutation.mutate(); }}>
-            <label>Title<input value={title} onChange={(event) => setTitle(event.target.value)} required autoFocus /></label>
+            <label>{t("title")}<input value={title} onChange={(event) => setTitle(event.target.value)} required autoFocus /></label>
             <div className="field-row">
-              <label>Type<select value={type} onChange={(event) => setType(event.target.value as WorkItemType)}>{ITEM_TYPES.map((value) => <option key={value} value={value}>{TYPE_LABELS[value]}</option>)}</select></label>
-              <label>Priority<select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}</select></label>
+              <label>{t("type")}<select value={type} onChange={(event) => setType(event.target.value as WorkItemType)}>{ITEM_TYPES.map((value) => <option key={value} value={value}>{typeLabel(value)}</option>)}</select></label>
+              <label>{t("priority")}<select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
             </div>
-            <label>Description<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={8} /></label>
-            {updateMutation.isError && <InlineError message={errorMessage(updateMutation.error)} />}
-            <button className="primary-button" disabled={updateMutation.isPending}>{updateMutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />} Save changes</button>
+            <label>{t("description")}<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={8} /></label>
+            {updateMutation.isError && <InlineError message={errorMessage(updateMutation.error, t("somethingWentWrong"))} />}
+            <button className="primary-button" disabled={updateMutation.isPending}>{updateMutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />} {t("saveChanges")}</button>
           </form>
         ) : (
           <>
             <div className="detail-title-block">
               <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
-              <div><p className="eyebrow">{TYPE_LABELS[item.type]} · {humanize(item.priority)} priority</p><h2>{item.title}</h2></div>
+              <div><p className="eyebrow">{typeLabel(item.type)} · {priorityLabel(item.priority)}</p><h2>{item.title}</h2></div>
             </div>
             <section className="description-block">
-              <h3>Description</h3>
-              <p className={!item.description ? "muted" : ""}>{item.description || "No description yet."}</p>
+              <h3>{t("description")}</h3>
+              <p className={!item.description ? "muted" : ""}>{item.description || t("noDescription")}</p>
             </section>
             {item.environment && (
               <section className="environment-block">
-                <h3>Captured context</h3>
+                <h3>{t("capturedContext")}</h3>
                 <div className="context-grid">
-                  <span><small>Platform</small>{humanize(item.environment.platform)}</span>
-                  {item.environment.appVersion && <span><small>Version</small>{item.environment.appVersion}</span>}
-                  {item.environment.osVersion && <span><small>OS</small>{item.environment.osVersion}</span>}
-                  {item.environment.deviceModel && <span><small>Device</small>{item.environment.deviceModel}</span>}
+                  <span><small>{t("platform")}</small>{item.environment.platform}</span>
+                  {item.environment.appVersion && <span><small>{t("version")}</small>{item.environment.appVersion}</span>}
+                  {item.environment.osVersion && <span><small>{t("operatingSystem")}</small>{item.environment.osVersion}</span>}
+                  {item.environment.deviceModel && <span><small>{t("device")}</small>{item.environment.deviceModel}</span>}
                 </div>
               </section>
             )}
             <section className="next-action-block">
-              <div><p className="eyebrow">Next action</p><h3>Move this work forward</h3></div>
+              <div><p className="eyebrow">{t("nextAction")}</p><h3>{t("moveForward")}</h3></div>
               <div className="action-row">
                 {actions.map((action) => (
                   <button
@@ -554,22 +537,22 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
                     disabled={transitionMutation.isPending}
                     onClick={() => transitionMutation.mutate(action)}
                   >
-                    {transitionMutation.isPending ? <LoaderCircle className="spin" size={16} /> : null}{action.label}
+                    {transitionMutation.isPending ? <LoaderCircle className="spin" size={16} /> : null}{transitionLabel(action.label)}
                   </button>
                 ))}
               </div>
-              {transitionMutation.isError && <InlineError message={errorMessage(transitionMutation.error)} />}
+              {transitionMutation.isError && <InlineError message={errorMessage(transitionMutation.error, t("somethingWentWrong"))} />}
             </section>
             <section className="timeline-block">
-              <h3>Timeline</h3>
+              <h3>{t("timeline")}</h3>
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
               <div className="timeline">
                 {(timelineQuery.data?.events ?? []).map((event) => (
                   <div className="timeline-event" key={event.id}>
                     <span className="timeline-dot" />
                     <div>
-                      <strong>{event.eventType === "status_changed" ? `${event.fromStatus ? STATUS_LABELS[event.fromStatus] : "Status"} → ${event.toStatus ? STATUS_LABELS[event.toStatus] : "Updated"}` : humanize(event.eventType)}</strong>
-                      <p>{event.actorKind} · {formatTime(event.createdAt)}</p>
+                      <strong>{event.eventType === "status_changed" ? `${event.fromStatus ? statusLabel(event.fromStatus) : t("status")} → ${event.toStatus ? statusLabel(event.toStatus) : t("updated")}` : eventLabel(event.eventType)}</strong>
+                      <p>{actorLabel(event.actorKind)} · {formatTime(event.createdAt)}</p>
                     </div>
                   </div>
                 ))}
@@ -583,6 +566,7 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
 }
 
 function CaptureForm({ product, onCreated }: { product: Product; onCreated: (item: WorkItem) => void }) {
+  const { priorityLabel, t, typeLabel } = useI18n();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [type, setType] = useState<WorkItemType>("idea");
@@ -596,44 +580,47 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
 
   return (
     <form className="capture-form" onSubmit={submit}>
-      <label>What needs attention?<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="A clear, specific title" required autoFocus /></label>
-      <label>Context<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What did you notice? What should happen instead?" rows={6} /></label>
+      <label>{t("whatNeedsAttention")}<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
+      <label>{t("context")}<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("contextPlaceholder")} rows={6} /></label>
       <div className="field-row">
-        <label>Type<select value={type} onChange={(event) => setType(event.target.value as WorkItemType)}>{ITEM_TYPES.map((value) => <option key={value} value={value}>{TYPE_LABELS[value]}</option>)}</select></label>
-        <label>Priority<select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}</select></label>
+        <label>{t("type")}<select value={type} onChange={(event) => setType(event.target.value as WorkItemType)}>{ITEM_TYPES.map((value) => <option key={value} value={value}>{typeLabel(value)}</option>)}</select></label>
+        <label>{t("priority")}<select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
       </div>
-      {mutation.isError && <InlineError message={errorMessage(mutation.error)} />}
-      <div className="form-footer"><span>It will land in Inbox.</span><button className="primary-button" disabled={mutation.isPending}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} Capture item</button></div>
+      {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
+      <div className="form-footer"><span>{t("landsInInbox")}</span><button className="primary-button" disabled={mutation.isPending}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {t("captureItem")}</button></div>
     </form>
   );
 }
 
 function ProductForm({ onCreated }: { onCreated: (product: Product) => void }) {
+  const { t } = useI18n();
   const [name, setName] = useState("");
   const [keyPrefix, setKeyPrefix] = useState("");
   const mutation = useMutation({ mutationFn: api.createProduct, onSuccess: onCreated });
   return (
     <form className="product-form" onSubmit={(event) => { event.preventDefault(); mutation.mutate({ name, keyPrefix }); }}>
-      <label>Product name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Hermes Go" required autoFocus /></label>
-      <label>Item prefix<input value={keyPrefix} onChange={(event) => setKeyPrefix(event.target.value.toUpperCase())} placeholder="HG" minLength={2} maxLength={10} required /><small>Used for item IDs, such as HG-128.</small></label>
-      {mutation.isError && <InlineError message={errorMessage(mutation.error)} />}
-      <button className="primary-button wide" disabled={mutation.isPending}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />} Create workspace</button>
+      <label>{t("productName")}<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Hermes Go" required autoFocus /></label>
+      <label>{t("itemPrefix")}<input value={keyPrefix} onChange={(event) => setKeyPrefix(event.target.value.toUpperCase())} placeholder="HG" minLength={2} maxLength={10} required /><small>{t("prefixHelp")}</small></label>
+      {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
+      <button className="primary-button wide" disabled={mutation.isPending}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />} {t("createWorkspace")}</button>
     </form>
   );
 }
 
 function TokenForm({ onSaved }: { onSaved: () => void | Promise<void> }) {
+  const { t } = useI18n();
   const [token, setToken] = useState(getAdminToken());
   return (
     <form className="token-form" onSubmit={(event) => { event.preventDefault(); setAdminToken(token); void onSaved(); }}>
-      <label>Administrator token<input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Paste token" autoComplete="off" /></label>
-      <p className="privacy-note"><KeyRound size={14} /> Stored only for this browser tab.</p>
-      <button className="primary-button wide"><Check size={17} /> Save & connect</button>
+      <label>{t("administratorToken")}<input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder={t("pasteToken")} autoComplete="off" /></label>
+      <p className="privacy-note"><KeyRound size={14} /> {t("tokenPrivacy")}</p>
+      <button className="primary-button wide"><Check size={17} /> {t("saveAndConnect")}</button>
     </form>
   );
 }
 
 function Modal({ title, subtitle, onClose, children }: { title: string; subtitle: string; onClose: () => void; children: ReactNode }) {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     dialogRef.current?.showModal();
@@ -642,7 +629,7 @@ function Modal({ title, subtitle, onClose, children }: { title: string; subtitle
   return (
     <dialog ref={dialogRef} className="modal-layer" onCancel={onClose} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="modal" role="dialog" aria-modal="true" aria-label={title}>
-        <header><div><p className="eyebrow">{subtitle}</p><h2>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={20} /></button></header>
+        <header><div><p className="eyebrow">{subtitle}</p><h2>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
         {children}
       </section>
     </dialog>
@@ -654,5 +641,6 @@ function InlineError({ message }: { message: string }) {
 }
 
 function ListSkeleton() {
-  return <div className="skeleton-list" aria-label="Loading items">{[0, 1, 2, 3].map((value) => <div className="skeleton-row" key={value}><i /><span /><small /></div>)}</div>;
+  const { t } = useI18n();
+  return <div className="skeleton-list" aria-label={t("loadingItems")}>{[0, 1, 2, 3].map((value) => <div className="skeleton-row" key={value}><i /><span /><small /></div>)}</div>;
 }

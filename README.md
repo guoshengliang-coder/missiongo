@@ -15,6 +15,7 @@ The core server foundation is now runnable. The repository currently contains:
 - a Fastify server backed by SQLite;
 - Product, Component, Work Item, and Timeline persistence;
 - a responsive Web Console for capture, filtering, editing, transitions, and timeline review;
+- Simplified Chinese and English interface languages, with Chinese as the first-run default;
 - a small browser-native WebMCP surface for listing, opening, and creating work items;
 - tests for persistence, validation, authentication, and the highest-risk transition rules.
 
