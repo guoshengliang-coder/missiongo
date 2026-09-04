@@ -46,6 +46,7 @@ import {
   ITEM_STATUSES,
   ITEM_TYPES,
   type Product,
+  type Component,
   type ComponentKind,
   type TransitionAction,
   type WorkItem,
@@ -202,6 +203,28 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
+  const listScrollTopRef = useRef(0);
+
+  const openItemPage = (itemKey: string) => {
+    const workspace = workspaceRef.current;
+    listScrollTopRef.current = workspace && workspace.scrollHeight > workspace.clientHeight
+      ? workspace.scrollTop
+      : window.scrollY;
+    setSelectedItemKey(itemKey);
+    requestAnimationFrame(() => {
+      workspaceRef.current?.scrollTo({ top: 0 });
+      window.scrollTo({ top: 0 });
+    });
+  };
+
+  const closeItemPage = () => {
+    setSelectedItemKey(null);
+    requestAnimationFrame(() => {
+      workspaceRef.current?.scrollTo({ top: listScrollTopRef.current });
+      window.scrollTo({ top: listScrollTopRef.current });
+    });
+  };
 
   const productsQuery = useQuery({ queryKey: ["products"], queryFn: api.listProducts });
   const products = productsQuery.data ?? [];
@@ -234,6 +257,15 @@ export function App() {
     enabled: Boolean(selectedProductId),
   });
   const items = itemsQuery.data?.items ?? [];
+  const componentsQuery = useQuery({
+    queryKey: ["components", selectedProductId],
+    queryFn: () => api.listComponents(selectedProductId),
+    enabled: Boolean(selectedProductId),
+  });
+  const componentsById = useMemo(
+    () => new Map((componentsQuery.data ?? []).map((component) => [component.id, component])),
+    [componentsQuery.data],
+  );
   const visibleItems = useMemo(() => {
     const query = search.trim().toLowerCase();
     return items.filter(
@@ -257,7 +289,7 @@ export function App() {
       activeFilters: { status: statusFilter, type: typeFilter, search },
       createItem: async (input) => {
         const item = await api.createItem({ productId: selectedProduct.id, ...input });
-        setSelectedItemKey(item.key);
+        openItemPage(item.key);
         setNotice(t("capturedInInbox", { key: item.key }));
         await queryClient.invalidateQueries({ queryKey: ["items", selectedProduct.id] });
         return item;
@@ -265,7 +297,7 @@ export function App() {
       openItem: (itemKey) => {
         const item = items.find((candidate) => candidate.key === itemKey);
         if (!item) throw new Error(t("itemNotLoaded", { key: itemKey }));
-        setSelectedItemKey(item.key);
+        openItemPage(item.key);
         return item;
       },
       reportError: (error) => setNotice(t("webToolError", { message: errorMessage(error, t("somethingWentWrong")) })),
@@ -401,45 +433,64 @@ export function App() {
       </aside>
       {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label={t("closeNavigation")} />}
 
-      <main className="workspace">
-        <section className="workspace-head">
-          <div>
-            <p className="eyebrow">{t("productWorkspace", { prefix: selectedProduct?.keyPrefix ?? "" })}</p>
-            <h1>{statusFilter === "all" ? t("allWork") : statusLabel(statusFilter)}</h1>
+      <main className="workspace" ref={workspaceRef}>
+        <section className="list-page" hidden={Boolean(selectedItemKey)}>
+          <section className="workspace-head">
+            <div>
+              <p className="eyebrow">{t("productWorkspace", { prefix: selectedProduct?.keyPrefix ?? "" })}</p>
+              <h1>{statusFilter === "all" ? t("allWork") : statusLabel(statusFilter)}</h1>
+            </div>
+            <div className="workspace-stats" aria-label={t("workspaceSummary")}>
+              <span><strong>{openCount}</strong> {t("open")}</span>
+              <span><strong>{verifyCount}</strong> {t("toVerify")}</span>
+            </div>
+          </section>
+
+          <div className="type-filters" aria-label={t("filterByType")}>
+            <button className={typeFilter === "all" ? "active" : ""} onClick={() => setTypeFilter("all")}>{t("allTypes")}</button>
+            {ITEM_TYPES.map((type) => (
+              <button key={type} className={typeFilter === type ? "active" : ""} onClick={() => setTypeFilter(type)}>
+                {typeLabel(type)}
+              </button>
+            ))}
           </div>
-          <div className="workspace-stats" aria-label={t("workspaceSummary")}>
-            <span><strong>{openCount}</strong> {t("open")}</span>
-            <span><strong>{verifyCount}</strong> {t("toVerify")}</span>
-          </div>
+
+          <section className="list-surface" aria-label={t("workItems")}>
+            <div className="list-columns" aria-hidden="true">
+              <span>{t("itemInformation")}</span>
+              <span>{t("capturedContext")}</span>
+              <span>{t("status")}</span>
+              <span>{t("quickAction")}</span>
+            </div>
+            <div className="item-list">
+              {itemsQuery.isLoading && <ListSkeleton />}
+              {itemsQuery.isError && <InlineError message={errorMessage(itemsQuery.error, t("somethingWentWrong"))} />}
+              {!itemsQuery.isLoading && visibleItems.length === 0 && (
+                <div className="empty-list">
+                  <div className="round-icon"><Lightbulb size={22} /></div>
+                  <h2>{items.length === 0 ? t("captureFirstSpark") : t("noMatchingItems")}</h2>
+                  <p>{items.length === 0 ? t("firstSparkHelp") : t("noMatchHelp")}</p>
+                  {items.length === 0 && <button className="primary-button" onClick={() => setCaptureOpen(true)}><Plus size={17} /> {t("captureItem")}</button>}
+                </div>
+              )}
+              {visibleItems.map((item) => (
+                <ItemRow
+                  key={item.id}
+                  item={item}
+                  sourceComponent={item.sourceComponentId ? componentsById.get(item.sourceComponentId) : undefined}
+                  onOpen={() => openItemPage(item.key)}
+                  onNotice={setNotice}
+                />
+              ))}
+            </div>
+          </section>
         </section>
 
-        <div className="type-filters" aria-label={t("filterByType")}>
-          <button className={typeFilter === "all" ? "active" : ""} onClick={() => setTypeFilter("all")}>{t("allTypes")}</button>
-          {ITEM_TYPES.map((type) => (
-            <button key={type} className={typeFilter === type ? "active" : ""} onClick={() => setTypeFilter(type)}>
-              {typeLabel(type)}
-            </button>
-          ))}
-        </div>
-
-        <div className="work-grid">
-          <section className="item-list" aria-label={t("workItems")}>
-            {itemsQuery.isLoading && <ListSkeleton />}
-            {itemsQuery.isError && <InlineError message={errorMessage(itemsQuery.error, t("somethingWentWrong"))} />}
-            {!itemsQuery.isLoading && visibleItems.length === 0 && (
-              <div className="empty-list">
-                <div className="round-icon"><Lightbulb size={22} /></div>
-                <h2>{items.length === 0 ? t("captureFirstSpark") : t("noMatchingItems")}</h2>
-                <p>{items.length === 0 ? t("firstSparkHelp") : t("noMatchHelp")}</p>
-                {items.length === 0 && <button className="primary-button" onClick={() => setCaptureOpen(true)}><Plus size={17} /> {t("captureItem")}</button>}
-              </div>
-            )}
-            {visibleItems.map((item) => (
-              <ItemRow key={item.id} item={item} selected={selectedItemKey === item.key} onClick={() => setSelectedItemKey(item.key)} />
-            ))}
-          </section>
-          <DetailPane itemKey={selectedItemKey} onClose={() => setSelectedItemKey(null)} onNotice={setNotice} />
-        </div>
+        {selectedItemKey && (
+          <div className="detail-page-shell">
+            <DetailPane itemKey={selectedItemKey} onClose={closeItemPage} onNotice={setNotice} />
+          </div>
+        )}
       </main>
 
       <button className="mobile-fab mobile-only" onClick={() => setCaptureOpen(true)} aria-label={t("captureNewItem")}><Plus size={24} /></button>
@@ -450,7 +501,7 @@ export function App() {
             product={selectedProduct}
             onCreated={(item, failedUploads) => {
               setCaptureOpen(false);
-              setSelectedItemKey(item.key);
+              openItemPage(item.key);
               setNotice(
                 failedUploads > 0
                   ? t("uploadPartial", { key: item.key, count: failedUploads })
@@ -512,24 +563,118 @@ function StatusNavItem({ children, label, count, active, onClick }: { children: 
   return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{children}<span>{label}</span><small>{count}</small></button>;
 }
 
-function ItemRow({ item, selected, onClick }: { item: WorkItem; selected: boolean; onClick: () => void }) {
-  const { formatTime, priorityLabel, statusLabel, typeLabel } = useI18n();
+function ItemRow({
+  item,
+  sourceComponent,
+  onOpen,
+  onNotice,
+}: {
+  item: WorkItem;
+  sourceComponent: Component | undefined;
+  onOpen: () => void;
+  onNotice: (message: string) => void;
+}) {
+  const { formatTime, priorityLabel, statusLabel, t, typeLabel } = useI18n();
   const TypeIcon = TYPE_ICONS[item.type];
+  const environment = item.environment;
+  const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
+  const contextDetails = [
+    environment?.appVersion ? `v${environment.appVersion}` : undefined,
+    environment?.deviceModel,
+    environment?.osVersion,
+  ].filter(Boolean).join(" · ");
   return (
-    <button className={`item-row ${selected ? "selected" : ""}`} onClick={onClick}>
-      <span className={`type-icon type-${item.type}`}><TypeIcon size={17} /></span>
-      <span className="item-copy">
-        <span className="item-title">{item.title}</span>
-        <span className="item-meta">
-          <code>{item.key}</code><span>·</span>{typeLabel(item.type)}<span>·</span>{formatTime(item.updatedAt)}
-          {(item.attachments?.length ?? 0) > 0 && <><span>·</span><Paperclip size={10} /> {item.attachments.length}</>}
+    <article className="item-row">
+      <button className="item-row-main" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
+        <span className={`type-icon type-${item.type}`}><TypeIcon size={17} /></span>
+        <span className="item-copy">
+          <span className="item-title-line"><code>{item.key}</code><span>{typeLabel(item.type)}</span></span>
+          <span className="item-title">{item.title}</span>
+          <span className={`item-description ${item.description ? "" : "muted"}`}>{item.description || t("noDescription")}</span>
+          <AttachmentSummary attachments={item.attachments} />
         </span>
+      </button>
+      <span className="item-context">
+        <strong>{contextPrimary}</strong>
+        <small>{contextDetails || t("noEnvironmentShort")}</small>
       </span>
-      <span className={`priority-dot priority-${item.priority}`} title={priorityLabel(item.priority)} />
-      <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
-      <ArrowRight className="row-arrow" size={17} />
+      <span className="item-state">
+        <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
+        <small><i className={`priority-dot priority-${item.priority}`} /> {priorityLabel(item.priority)}</small>
+        <small>{t("updated")} {formatTime(item.updatedAt)}</small>
+      </span>
+      <span className="item-row-actions">
+        <QuickTransitionButton item={item} onNotice={onNotice} />
+        <button className="icon-button open-detail-button" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
+          <ArrowRight size={17} />
+        </button>
+      </span>
+    </article>
+  );
+}
+
+function AttachmentSummary({ attachments }: { attachments: readonly WorkItemAttachment[] }) {
+  const { t } = useI18n();
+  if (attachments.length === 0) return <span className="item-attachments empty"><Paperclip size={11} /> {t("noAttachmentsShort")}</span>;
+  const images = attachments.filter((attachment) => attachment.kind === "image").length;
+  const videos = attachments.filter((attachment) => attachment.kind === "video").length;
+  const logs = attachments.filter((attachment) => attachment.kind === "log").length;
+  return (
+    <span className="item-attachments" aria-label={t("attachmentCount", { count: attachments.length })}>
+      {images > 0 && <span><ImageIcon size={11} /> {images}</span>}
+      {videos > 0 && <span><Video size={11} /> {videos}</span>}
+      {logs > 0 && <span><FileText size={11} /> {logs}</span>}
+    </span>
+  );
+}
+
+function QuickTransitionButton({ item, onNotice }: { item: WorkItem; onNotice: (message: string) => void }) {
+  const queryClient = useQueryClient();
+  const { statusLabel, t, transitionLabel } = useI18n();
+  const action = TRANSITIONS[item.status][0];
+  const mutation = useMutation({
+    mutationFn: () => api.transitionItem(item.key, action!),
+    onSuccess: async (updated) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["items"] }),
+        queryClient.invalidateQueries({ queryKey: ["item", item.key] }),
+        queryClient.invalidateQueries({ queryKey: ["timeline", item.key] }),
+      ]);
+      onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
+    },
+  });
+  if (!action) return null;
+  return (
+    <button
+      className={`quick-action-button ${action.tone === "positive" ? "positive" : ""}`}
+      disabled={mutation.isPending}
+      onClick={() => mutation.mutate()}
+      title={transitionLabel(action.label)}
+    >
+      {mutation.isPending ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}
+      {quickActionLabel(item.status, t)}
     </button>
   );
+}
+
+function platformName(platform: WorkItemEnvironment["platform"], t: ReturnType<typeof useI18n>["t"]): string {
+  if (platform === "android") return t("android");
+  if (platform === "macos") return t("macos");
+  if (platform === "web") return t("web");
+  return t("other");
+}
+
+function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>["t"]): string {
+  const keys = {
+    inbox: "quickReady",
+    ready: "quickStart",
+    in_progress: "quickVerify",
+    on_hold: "quickResume",
+    pending_verification: "quickComplete",
+    done: "quickReopen",
+    cancelled: "quickRestore",
+  } as const;
+  return t(keys[status]);
 }
 
 function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; onClose: () => void; onNotice: (message: string) => void }) {
@@ -599,10 +744,10 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
   });
 
   if (!itemKey) {
-    return <aside className="detail-pane detail-placeholder"><div className="round-icon"><ArrowLeft size={20} /></div><h2>{t("selectItem")}</h2><p>{t("selectItemHelp")}</p></aside>;
+    return null;
   }
   if (itemQuery.isLoading || !item) {
-    return <aside className="detail-pane detail-loading"><LoaderCircle className="spin" size={24} /></aside>;
+    return <section className="detail-pane detail-loading"><LoaderCircle className="spin" size={24} /></section>;
   }
 
   const PrimaryIcon = TYPE_ICONS[item.type];
@@ -610,9 +755,9 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
   const sourceComponent = componentsQuery.data?.find((component) => component.id === item.sourceComponentId);
   const affectedComponents = (componentsQuery.data ?? []).filter((component) => item.affectedComponentIds.includes(component.id));
   return (
-    <aside className="detail-pane">
+    <section className="detail-pane">
       <div className="detail-toolbar">
-        <button className="icon-button mobile-only" onClick={onClose} aria-label={t("backToList")}><ArrowLeft size={19} /></button>
+        <button className="secondary-button detail-back-button" onClick={onClose} aria-label={t("backToList")}><ArrowLeft size={17} /> {t("backToList")}</button>
         <code>{item.key}</code>
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <span className="toolbar-spacer" />
@@ -708,7 +853,7 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
           </>
         )}
       </div>
-    </aside>
+    </section>
   );
 }
 
