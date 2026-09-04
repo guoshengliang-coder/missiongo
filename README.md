@@ -40,6 +40,10 @@ npm run build
 
 Copy `.env.example` to a local `.env`. Never commit real deployment coordinates or secrets. See [docs/security-boundaries.md](docs/security-boundaries.md).
 
+## License
+
+MissionGo is licensed under the [Apache License 2.0](LICENSE).
+
 ## Planning documents
 
 - [Product requirements and technical plan](docs/product-and-technical-plan.md)

@@ -2,6 +2,7 @@
 
 ## Architecture
 
+- License the complete repository under Apache-2.0.
 - Start with a modular monolith, not microservices.
 - Keep REST and MCP adapters thin; both call the same domain services.
 - Use a monorepo for Web, server, shared contracts, Android shell, and SDKs.
@@ -27,7 +28,6 @@
 
 ## Deferred decisions
 
-- Open-source license.
 - Android automatic updates and system notifications.
 - Remote dispatch to Mac mini/server nodes.
 - Automated scheduling, iOS, crash capture, PostgreSQL, and object storage.
