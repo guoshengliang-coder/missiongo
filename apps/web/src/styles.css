@@ -368,7 +368,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .modal { width: min(560px, 100%); max-height: calc(100vh - 36px); overflow-y: auto; padding: 22px; background: var(--surface-strong); border: 1px solid rgba(255,255,255,0.4); border-radius: 18px; box-shadow: var(--shadow); }
 .modal > header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
 .modal h2 { margin: 0; font-size: 25px; letter-spacing: -0.035em; }
-.capture-form, .product-form, .token-form, .edit-form { display: flex; flex-direction: column; gap: 15px; }
+.capture-form, .product-form, .token-form { display: flex; flex-direction: column; gap: 15px; }
 .capture-type-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; }
 .capture-type {
   min-width: 0;

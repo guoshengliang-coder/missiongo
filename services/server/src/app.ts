@@ -290,6 +290,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(stringField(body, "description", false) !== undefined ? { description: body.description as string } : {}),
       ...(body.type !== undefined ? { type: enumField(body, "type", WORK_ITEM_TYPES)! } : {}),
       ...(body.priority !== undefined ? { priority: enumField(body, "priority", WORK_ITEM_PRIORITIES)! } : {}),
+      ...(body.sourceComponentId !== undefined
+        ? { sourceComponentId: body.sourceComponentId === null ? null : stringField(body, "sourceComponentId", false)! }
+        : {}),
       ...(body.environment !== undefined ? { environment: environmentBody(body.environment, true)! } : {}),
       ...(body.affectedComponentIds !== undefined
         ? { affectedComponentIds: stringArrayField(body, "affectedComponentIds")! }

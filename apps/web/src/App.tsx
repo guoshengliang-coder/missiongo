@@ -33,7 +33,6 @@ import {
 
 import { api, ApiError, getAdminToken, setAdminToken } from "./api";
 import {
-  EMPTY_ENVIRONMENT,
   captureDraftStorageKey,
   hasCaptureDraftContent,
   parseCaptureDraft,
@@ -159,8 +158,9 @@ function validateIncomingFiles(
   current: readonly File[],
   incoming: readonly File[],
   t: ReturnType<typeof useI18n>["t"],
+  totalLimit = 10,
 ): { files: readonly File[]; error?: string } {
-  const remaining = 10 - current.length;
+  const remaining = totalLimit - current.length;
   if (incoming.length > remaining) return { files: current, error: t("tooManyFiles", { count: remaining }) };
   const known = new Set(current.map((file) => `${file.name}:${file.size}:${file.lastModified}`));
   const accepted: File[] = [];
@@ -689,19 +689,9 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
     enabled: Boolean(item?.productId),
   });
   const [editing, setEditing] = useState(false);
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [type, setType] = useState<WorkItemType>("idea");
-  const [priority, setPriority] = useState<WorkItemPriority>("normal");
-  const [environment, setEnvironment] = useState<EnvironmentDraft>(EMPTY_ENVIRONMENT);
 
   useEffect(() => {
     if (!item) return;
-    setTitle(item.title);
-    setDescription(item.description);
-    setType(item.type);
-    setPriority(item.priority);
-    setEnvironment(environmentDraft(item.environment));
     setEditing(false);
   }, [item]);
 
@@ -713,20 +703,6 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
     ]);
   };
 
-  const updateMutation = useMutation({
-    mutationFn: () => api.updateItem(itemKey!, {
-      title,
-      description,
-      type,
-      priority,
-      environment: environmentPayload(environment) ?? null,
-    }),
-    onSuccess: async () => {
-      setEditing(false);
-      await refreshItem();
-      onNotice(t("itemUpdated", { key: itemKey ?? "" }));
-    },
-  });
   const transitionMutation = useMutation({
     mutationFn: (action: TransitionAction) => api.transitionItem(itemKey!, action),
     onSuccess: async (updated) => {
@@ -775,23 +751,10 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
             {quickActionLabel(item.status, t)}
           </button>
         )}
-        <button className="secondary-button" onClick={() => setEditing((value) => !value)}>{editing ? t("cancel") : t("edit")}</button>
+        <button className="secondary-button" onClick={() => setEditing(true)}>{t("edit")}</button>
       </div>
       <div className="detail-scroll">
-        {editing ? (
-          <form className="edit-form" onSubmit={(event) => { event.preventDefault(); updateMutation.mutate(); }}>
-            <label>{t("title")}<input value={title} onChange={(event) => setTitle(event.target.value)} required autoFocus /></label>
-            <div className="field-row">
-              <label>{t("type")}<select value={type} onChange={(event) => setType(event.target.value as WorkItemType)}>{ITEM_TYPES.map((value) => <option key={value} value={value}>{typeLabel(value)}</option>)}</select></label>
-              <label>{t("priority")}<select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
-            </div>
-            <label>{t("description")}<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={8} /></label>
-            <EnvironmentFields value={environment} onChange={setEnvironment} />
-            {updateMutation.isError && <InlineError message={errorMessage(updateMutation.error, t("somethingWentWrong"))} />}
-            <button className="primary-button" disabled={updateMutation.isPending}>{updateMutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />} {t("saveChanges")}</button>
-          </form>
-        ) : (
-          <>
+        <>
             <div className="detail-title-block">
               <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
               <div><p className="eyebrow">{typeLabel(item.type)} · {priorityLabel(item.priority)}</p><h2>{item.title}</h2></div>
@@ -855,9 +818,24 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
                 ))}
               </div>
             </section>
-          </>
-        )}
+        </>
       </div>
+      {editing && (
+        <Modal title={t("editItem", { key: item.key })} subtitle={t("editItemHelp")} onClose={() => setEditing(false)}>
+          <EditItemForm
+            item={item}
+            onSaved={async (failedUploads) => {
+              setEditing(false);
+              await refreshItem();
+              onNotice(
+                failedUploads > 0
+                  ? t("uploadPartial", { key: item.key, count: failedUploads })
+                  : t("itemUpdated", { key: item.key }),
+              );
+            }}
+          />
+        </Modal>
+      )}
     </section>
   );
 }
@@ -877,58 +855,223 @@ function AnalysisDetails({ payload }: { payload: Readonly<Record<string, unknown
   );
 }
 
-function CaptureForm({ product, onCreated }: { product: Product; onCreated: (item: WorkItem, failedUploads: number) => void }) {
+function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploads: number) => void }) {
+  const { t } = useI18n();
+  const [draft, setDraft] = useState<CaptureDraft>(() => ({
+    title: item.title,
+    description: item.description,
+    type: item.type,
+    priority: item.priority,
+    sourceComponentId: item.sourceComponentId ?? "",
+    environment: environmentDraft(item.environment),
+  }));
+  const [files, setFiles] = useState<readonly File[]>([]);
+  const [fileError, setFileError] = useState<string | null>(null);
+
+  const addIncomingFiles = (incoming: readonly File[]) => {
+    const result = validateIncomingFiles(files, incoming, t, Math.max(0, 10 - item.attachments.length));
+    setFiles(result.files);
+    setFileError(result.error ?? null);
+  };
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      await api.updateItem(item.key, {
+        title: draft.title,
+        description: draft.description,
+        type: draft.type,
+        priority: draft.priority,
+        sourceComponentId: draft.sourceComponentId || null,
+        affectedComponentIds: draft.sourceComponentId
+          ? [...new Set([draft.sourceComponentId, ...item.affectedComponentIds])]
+          : item.affectedComponentIds,
+        environment: environmentPayload(draft.environment) ?? null,
+      });
+      const uploads = await Promise.allSettled(files.map((file) => api.uploadAttachment(item.key, file)));
+      return uploads.filter((result) => result.status === "rejected").length;
+    },
+    onSuccess: onSaved,
+  });
+
+  return (
+    <form
+      className="capture-form quick-capture-form"
+      onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}
+      onKeyDown={(event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.requestSubmit();
+        }
+      }}
+      onPaste={(event) => {
+        const pastedFiles = Array.from(event.clipboardData.files);
+        if (pastedFiles.length > 0) {
+          event.preventDefault();
+          addIncomingFiles(pastedFiles);
+        }
+      }}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        addIncomingFiles(Array.from(event.dataTransfer.files));
+      }}
+    >
+      <WorkItemFields
+        productId={item.productId}
+        draft={draft}
+        onDraft={setDraft}
+        files={files}
+        onFiles={setFiles}
+        fileError={fileError}
+        attachmentLimit={Math.max(0, 10 - item.attachments.length)}
+      />
+      {item.attachments.length > 0 && (
+        <AttachmentSection itemKey={item.key} attachments={item.attachments} uploading={false} allowUpload={false} onUpload={() => undefined} />
+      )}
+      {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
+      <div className="draft-status"><span>{t("editingExistingItem")}</span><small>{t("captureShortcut")}</small></div>
+      <div className="form-footer">
+        <span>{t("existingAttachmentsKept")}</span>
+        <button className="primary-button" disabled={mutation.isPending || !draft.title.trim()}>
+          {mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />} {t("saveChanges")}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function WorkItemFields({
+  productId,
+  draft,
+  onDraft,
+  files,
+  onFiles,
+  fileError,
+  attachmentLimit = 10,
+}: {
+  productId: string;
+  draft: CaptureDraft;
+  onDraft: (draft: CaptureDraft) => void;
+  files: readonly File[];
+  onFiles: (files: readonly File[]) => void;
+  fileError: string | null;
+  attachmentLimit?: number;
+}) {
   const queryClient = useQueryClient();
   const { priorityLabel, t, typeLabel } = useI18n();
+  const [componentFormOpen, setComponentFormOpen] = useState(false);
+  const [componentName, setComponentName] = useState("");
+  const [componentKind, setComponentKind] = useState<ComponentKind>("android");
+  const componentsQuery = useQuery({ queryKey: ["components", productId], queryFn: () => api.listComponents(productId) });
+
+  const updateDraft = <Key extends keyof CaptureDraft>(key: Key, value: CaptureDraft[Key]) => {
+    onDraft({ ...draft, [key]: value });
+  };
+
+  useEffect(() => {
+    if (!draft.sourceComponentId || !componentsQuery.data) return;
+    if (!componentsQuery.data.some((component) => component.id === draft.sourceComponentId)) {
+      updateDraft("sourceComponentId", "");
+    }
+  }, [componentsQuery.data, draft.sourceComponentId]);
+
+  const componentMutation = useMutation({
+    mutationFn: () => api.createComponent(productId, { name: componentName, kind: componentKind }),
+    onSuccess: async (component) => {
+      await queryClient.invalidateQueries({ queryKey: ["components", productId] });
+      onDraft({
+        ...draft,
+        sourceComponentId: component.id,
+        environment: !draft.environment.platform && ["android", "macos", "web"].includes(component.kind)
+          ? { ...draft.environment, platform: component.kind as WorkItemEnvironment["platform"] }
+          : draft.environment,
+      });
+      setComponentName("");
+      setComponentFormOpen(false);
+    },
+  });
+
+  return (
+    <>
+      <div className="capture-type-grid" aria-label={t("type")}>
+        {ITEM_TYPES.map((value) => {
+          const Icon = TYPE_ICONS[value];
+          return (
+            <button key={value} type="button" className={`capture-type ${draft.type === value ? "active" : ""} type-${value}`} onClick={() => updateDraft("type", value)}>
+              <Icon size={16} /> {typeLabel(value)}
+            </button>
+          );
+        })}
+      </div>
+      <label>{t("whatNeedsAttention")}<input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
+      <label>{t("context")}<textarea value={draft.description} onChange={(event) => updateDraft("description", event.target.value)} placeholder={t("contextPlaceholder")} rows={4} /></label>
+      <div className="attachment-picker-block capture-attachment-block">
+        <div><strong>{t("attachments")}</strong><p>{t("pasteDropHelp")}</p></div>
+        <FilePicker files={files} onFiles={onFiles} remaining={attachmentLimit - files.length} showSelectedFiles={false} />
+      </div>
+      {files.length > 0 && <SelectedFilePreviews files={files} onFiles={onFiles} />}
+      {fileError && <InlineError message={fileError} />}
+      <details className="capture-optional" open={Boolean(draft.sourceComponentId || draft.priority !== "normal" || environmentPayload(draft.environment))}>
+        <summary><ChevronRight size={16} /> <span><strong>{t("optionalDetails")}</strong><small>{t("optionalDetailsHelp")}</small></span></summary>
+        <div className="capture-optional-body">
+          <div className="field-row">
+            <label>{t("sourceComponent")}
+              <select
+                value={draft.sourceComponentId}
+                onChange={(event) => {
+                  const sourceComponentId = event.target.value;
+                  const kind = componentsQuery.data?.find((component) => component.id === sourceComponentId)?.kind;
+                  onDraft({
+                    ...draft,
+                    sourceComponentId,
+                    environment: !draft.environment.platform && kind && ["android", "macos", "web"].includes(kind)
+                      ? { ...draft.environment, platform: kind as WorkItemEnvironment["platform"] }
+                      : draft.environment,
+                  });
+                }}
+                disabled={componentsQuery.isLoading}
+              >
+                <option value="">{t("notSpecified")}</option>
+                {(componentsQuery.data ?? []).map((component) => <option key={component.id} value={component.id}>{component.name}</option>)}
+              </select>
+            </label>
+            <label>{t("priority")}<select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
+          </div>
+          <button type="button" className="text-button inline-add-component" onClick={() => setComponentFormOpen((value) => !value)}><Plus size={14} /> {t("addComponent")}</button>
+          {componentFormOpen && (
+            <div className="component-quick-form">
+              <label>{t("componentName")}<input value={componentName} onChange={(event) => setComponentName(event.target.value)} placeholder={t("componentNamePlaceholder")} /></label>
+              <label>{t("componentKind")}<select value={componentKind} onChange={(event) => setComponentKind(event.target.value as ComponentKind)}>{COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</select></label>
+              <button type="button" className="secondary-button" disabled={!componentName.trim() || componentMutation.isPending} onClick={() => componentMutation.mutate()}>
+                {componentMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createComponent")}
+              </button>
+            </div>
+          )}
+          {componentMutation.isError && <InlineError message={errorMessage(componentMutation.error, t("somethingWentWrong"))} />}
+          <EnvironmentFields value={draft.environment} onChange={(value) => updateDraft("environment", value)} />
+        </div>
+      </details>
+    </>
+  );
+}
+
+function CaptureForm({ product, onCreated }: { product: Product; onCreated: (item: WorkItem, failedUploads: number) => void }) {
+  const { t } = useI18n();
   const storageKey = captureDraftStorageKey(product.id);
   const [draft, setDraft] = useState<CaptureDraft>(() => parseCaptureDraft(localStorage.getItem(storageKey)));
   const [files, setFiles] = useState<readonly File[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
-  const [componentFormOpen, setComponentFormOpen] = useState(false);
-  const [componentName, setComponentName] = useState("");
-  const [componentKind, setComponentKind] = useState<ComponentKind>("android");
-  const componentsQuery = useQuery({
-    queryKey: ["components", product.id],
-    queryFn: () => api.listComponents(product.id),
-  });
 
   useEffect(() => {
     if (hasCaptureDraftContent(draft)) localStorage.setItem(storageKey, JSON.stringify(draft));
     else localStorage.removeItem(storageKey);
   }, [draft, storageKey]);
 
-  useEffect(() => {
-    if (!draft.sourceComponentId || !componentsQuery.data) return;
-    if (!componentsQuery.data.some((component) => component.id === draft.sourceComponentId)) {
-      setDraft((value) => ({ ...value, sourceComponentId: "" }));
-    }
-  }, [componentsQuery.data, draft.sourceComponentId]);
-
-  const updateDraft = <Key extends keyof CaptureDraft>(key: Key, value: CaptureDraft[Key]) => {
-    setDraft((current) => ({ ...current, [key]: value }));
-  };
-
   const addIncomingFiles = (incoming: readonly File[]) => {
     const result = validateIncomingFiles(files, incoming, t);
     setFiles(result.files);
     setFileError(result.error ?? null);
   };
-
-  const componentMutation = useMutation({
-    mutationFn: () => api.createComponent(product.id, { name: componentName, kind: componentKind }),
-    onSuccess: async (component) => {
-      await queryClient.invalidateQueries({ queryKey: ["components", product.id] });
-      setDraft((current) => ({
-        ...current,
-        sourceComponentId: component.id,
-        environment: !current.environment.platform && ["android", "macos", "web"].includes(component.kind)
-          ? { ...current.environment, platform: component.kind as WorkItemEnvironment["platform"] }
-          : current.environment,
-      }));
-      setComponentName("");
-      setComponentFormOpen(false);
-    },
-  });
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -980,82 +1123,14 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
         addIncomingFiles(Array.from(event.dataTransfer.files));
       }}
     >
-      <div className="capture-type-grid" aria-label={t("type")}>
-        {ITEM_TYPES.map((value) => {
-          const Icon = TYPE_ICONS[value];
-          return (
-            <button
-              key={value}
-              type="button"
-              className={`capture-type ${draft.type === value ? "active" : ""} type-${value}`}
-              onClick={() => updateDraft("type", value)}
-            >
-              <Icon size={16} /> {typeLabel(value)}
-            </button>
-          );
-        })}
-      </div>
-      <label>{t("whatNeedsAttention")}<input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
-      <label>{t("context")}<textarea value={draft.description} onChange={(event) => updateDraft("description", event.target.value)} placeholder={t("contextPlaceholder")} rows={4} /></label>
-      <div className="attachment-picker-block capture-attachment-block">
-        <div><strong>{t("attachments")}</strong><p>{t("pasteDropHelp")}</p></div>
-        <FilePicker files={files} onFiles={setFiles} remaining={10 - files.length} showSelectedFiles={false} />
-      </div>
-      {files.length > 0 && <SelectedFilePreviews files={files} onFiles={setFiles} />}
-      {fileError && <InlineError message={fileError} />}
-      <details className="capture-optional" open={Boolean(draft.sourceComponentId || draft.priority !== "normal" || environmentPayload(draft.environment))}>
-        <summary><ChevronRight size={16} /> <span><strong>{t("optionalDetails")}</strong><small>{t("optionalDetailsHelp")}</small></span></summary>
-        <div className="capture-optional-body">
-          <div className="field-row">
-            <label>{t("sourceComponent")}
-              <select
-                value={draft.sourceComponentId}
-                onChange={(event) => {
-                  const sourceComponentId = event.target.value;
-                  const kind = componentsQuery.data?.find((component) => component.id === sourceComponentId)?.kind;
-                  setDraft((current) => ({
-                    ...current,
-                    sourceComponentId,
-                    environment: !current.environment.platform && kind && ["android", "macos", "web"].includes(kind)
-                      ? { ...current.environment, platform: kind as WorkItemEnvironment["platform"] }
-                      : current.environment,
-                  }));
-                }}
-                disabled={componentsQuery.isLoading}
-              >
-                <option value="">{t("notSpecified")}</option>
-                {(componentsQuery.data ?? []).map((component) => (
-                  <option key={component.id} value={component.id}>{component.name}</option>
-                ))}
-              </select>
-            </label>
-            <label>{t("priority")}<select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
-          </div>
-          <button type="button" className="text-button inline-add-component" onClick={() => setComponentFormOpen((value) => !value)}>
-            <Plus size={14} /> {t("addComponent")}
-          </button>
-          {componentFormOpen && (
-            <div className="component-quick-form">
-              <label>{t("componentName")}<input value={componentName} onChange={(event) => setComponentName(event.target.value)} placeholder={t("componentNamePlaceholder")} /></label>
-              <label>{t("componentKind")}
-                <select value={componentKind} onChange={(event) => setComponentKind(event.target.value as ComponentKind)}>
-                  {COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}
-                </select>
-              </label>
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={!componentName.trim() || componentMutation.isPending}
-                onClick={() => componentMutation.mutate()}
-              >
-                {componentMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createComponent")}
-              </button>
-            </div>
-          )}
-          {componentMutation.isError && <InlineError message={errorMessage(componentMutation.error, t("somethingWentWrong"))} />}
-          <EnvironmentFields value={draft.environment} onChange={(value) => updateDraft("environment", value)} />
-        </div>
-      </details>
+      <WorkItemFields
+        productId={product.id}
+        draft={draft}
+        onDraft={setDraft}
+        files={files}
+        onFiles={setFiles}
+        fileError={fileError}
+      />
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
       <div className="draft-status">
         <span>{hasCaptureDraftContent(draft) ? t("draftSaved") : t("landsInInbox")}</span>
@@ -1227,18 +1302,20 @@ function AttachmentSection({
   attachments,
   uploading,
   onUpload,
+  allowUpload = true,
 }: {
   itemKey: string;
   attachments: readonly WorkItemAttachment[];
   uploading: boolean;
   onUpload: (files: readonly File[]) => void;
+  allowUpload?: boolean;
 }) {
   const { t } = useI18n();
   return (
     <section className="attachment-block">
       <header>
         <div><h3>{t("attachments")}</h3><p>{t("attachmentHelp")}</p></div>
-        <FilePicker onFiles={onUpload} remaining={Math.max(0, 10 - attachments.length)} disabled={uploading} />
+        {allowUpload && <FilePicker onFiles={onUpload} remaining={Math.max(0, 10 - attachments.length)} disabled={uploading} />}
       </header>
       {attachments.length === 0 ? <p className="section-empty">{t("noAttachments")}</p> : (
         <div className="attachment-grid">

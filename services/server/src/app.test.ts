@@ -424,6 +424,13 @@ describe("MissionGo REST API", () => {
         payload: { name: "MissionGo", keyPrefix: "MG" },
       })
     ).json<{ id: string }>();
+    const component = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/products/${product.id}/components`,
+        payload: { name: "Web client", kind: "web" },
+      })
+    ).json<{ id: string }>();
     await app.inject({
       method: "POST",
       url: "/api/v1/items",
@@ -447,9 +454,20 @@ describe("MissionGo REST API", () => {
     const updateResponse = await app.inject({
       method: "PATCH",
       url: "/api/v1/items/MG-1",
-      payload: { title: "Refined requirement", type: "requirement", priority: "normal" },
+      payload: {
+        title: "Refined requirement",
+        type: "requirement",
+        priority: "normal",
+        sourceComponentId: component.id,
+        affectedComponentIds: [component.id],
+      },
     });
-    expect(updateResponse.json()).toMatchObject({ title: "Refined requirement", type: "requirement" });
+    expect(updateResponse.json()).toMatchObject({
+      title: "Refined requirement",
+      type: "requirement",
+      sourceComponentId: component.id,
+      affectedComponentIds: [component.id],
+    });
 
     const triageResponse = await app.inject({
       method: "POST",

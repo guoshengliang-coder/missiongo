@@ -337,6 +337,7 @@ export class MissionGoStore {
       ? [...new Set(input.affectedComponentIds)]
       : undefined;
     if (affectedComponentIds) this.assertComponentsBelongToProduct(current.product_id, affectedComponentIds);
+    if (input.sourceComponentId) this.assertComponentsBelongToProduct(current.product_id, [input.sourceComponentId]);
     if (input.type && !isOneOf(input.type, WORK_ITEM_TYPES)) throw invalidInput("Unsupported work-item type.");
     if (input.priority && !isOneOf(input.priority, WORK_ITEM_PRIORITIES)) throw invalidInput("Unsupported priority.");
 
@@ -357,6 +358,10 @@ export class MissionGoStore {
     if (input.priority !== undefined) {
       fields.push("priority = ?");
       values.push(input.priority);
+    }
+    if (input.sourceComponentId !== undefined) {
+      fields.push("source_component_id = ?");
+      values.push(input.sourceComponentId);
     }
     if (input.environment !== undefined) {
       fields.push("environment_json = ?");

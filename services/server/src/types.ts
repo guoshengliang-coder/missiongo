@@ -59,6 +59,7 @@ export interface UpdateWorkItemInput {
   readonly description?: string;
   readonly type?: WorkItemType;
   readonly priority?: WorkItemPriority;
+  readonly sourceComponentId?: string | null;
   readonly environment?: WorkItemEnvironment | null;
   readonly affectedComponentIds?: readonly string[];
 }
