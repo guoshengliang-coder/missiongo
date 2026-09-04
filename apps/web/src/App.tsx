@@ -433,7 +433,7 @@ export function App() {
       </aside>
       {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label={t("closeNavigation")} />}
 
-      <main className="workspace" ref={workspaceRef}>
+      <main className={`workspace ${selectedItemKey ? "detail-open" : ""}`} ref={workspaceRef}>
         <section className="list-page" hidden={Boolean(selectedItemKey)}>
           <section className="workspace-head">
             <div>
