@@ -21,7 +21,6 @@ import {
   ListTodo,
   LoaderCircle,
   Menu,
-  MoreHorizontal,
   Paperclip,
   Plus,
   Rocket,
@@ -617,7 +616,16 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
         <code>{item.key}</code>
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <span className="toolbar-spacer" />
-        <button className="icon-button" aria-label={t("moreActions")}><MoreHorizontal size={19} /></button>
+        {item.status === "inbox" && (
+          <button
+            className="secondary-button toolbar-ready-button"
+            disabled={transitionMutation.isPending}
+            onClick={() => transitionMutation.mutate(TRANSITIONS.inbox[0]!)}
+          >
+            {transitionMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
+            {t("markReady")}
+          </button>
+        )}
         <button className="secondary-button" onClick={() => setEditing((value) => !value)}>{editing ? t("cancel") : t("edit")}</button>
       </div>
       <div className="detail-scroll">
