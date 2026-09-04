@@ -1122,7 +1122,16 @@ function Modal({ title, subtitle, onClose, children }: { title: string; subtitle
     return () => dialogRef.current?.close();
   }, []);
   return (
-    <dialog ref={dialogRef} className="modal-layer" onCancel={onClose} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <dialog
+      ref={dialogRef}
+      className="modal-layer"
+      onCancel={(event) => {
+        if (event.target !== event.currentTarget) return;
+        event.preventDefault();
+        onClose();
+      }}
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
       <section className="modal" role="dialog" aria-modal="true" aria-label={title}>
         <header><div><p className="eyebrow">{subtitle}</p><h2>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
         {children}
