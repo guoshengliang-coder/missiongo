@@ -411,7 +411,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .component-empty-state { min-height: 118px; display: grid; place-items: center; padding: 18px; }
 .component-empty-state .primary-button { min-width: 150px; min-height: 44px; font-size: 12px; }
 .component-add-panel { margin-top: 14px; padding: 14px; background: #f3f2ed; border: 1px solid var(--line); border-radius: 11px; }
-.component-add-panel h4 { margin: 0 0 12px; font-size: 13px; }
+.component-add-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.component-add-panel h4 { margin: 0; font-size: 13px; }
+.component-add-cancel { min-height: 32px; color: var(--muted); background: white; }
 .component-add-row { align-items: end; }
 .component-add-row .primary-button { height: 42px; white-space: nowrap; }
 .capture-form, .product-form, .token-form { display: flex; flex-direction: column; gap: 15px; }

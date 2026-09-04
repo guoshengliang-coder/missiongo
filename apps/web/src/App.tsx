@@ -1502,6 +1502,13 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
   const componentsQuery = useQuery({ queryKey: ["components", product.id], queryFn: () => api.listComponents(product.id) });
   const componentEntries = useMemo(() => componentTreeEntries(componentsQuery.data ?? []), [componentsQuery.data]);
 
+  const closeComponentForm = () => {
+    setAddingComponent(false);
+    setNewComponentName("");
+    setNewComponentKind("android");
+    setNewComponentParentId("");
+  };
+
   useEffect(() => setName(product.name), [product.id, product.name]);
 
   const productMutation = useMutation({
@@ -1518,9 +1525,7 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
       ...(newComponentParentId ? { parentComponentId: newComponentParentId } : {}),
     }),
     onSuccess: async () => {
-      setNewComponentName("");
-      setNewComponentParentId("");
-      setAddingComponent(false);
+      closeComponentForm();
       await queryClient.invalidateQueries({ queryKey: ["components", product.id] });
     },
   });
@@ -1568,7 +1573,10 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
         </div>
         {addingComponent && (
           <div className="component-add-panel">
-            <h4>{t("newComponent")}</h4>
+            <header>
+              <h4>{t("newComponent")}</h4>
+              <button className="secondary-button component-add-cancel" disabled={componentMutation.isPending} onClick={closeComponentForm}><X size={15} /> {t("cancel")}</button>
+            </header>
             <div className="component-add-row">
               <label>{t("componentName")}<input value={newComponentName} onChange={(event) => setNewComponentName(event.target.value)} placeholder={t("componentNamePlaceholder")} autoFocus /></label>
               <label>{t("componentKind")}<select value={newComponentKind} onChange={(event) => setNewComponentKind(event.target.value as ComponentKind)}>{COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</select></label>
