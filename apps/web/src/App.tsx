@@ -429,7 +429,7 @@ export function App() {
           <p>{t("aiDispatchNext")}</p>
           <span>{t("aiDispatchDescription")}</span>
         </div>
-        <button className="text-button add-product" onClick={() => setProductOpen(true)}><Plus size={15} /> {t("addProduct")}</button>
+        <button className="text-button add-product" onClick={() => setProductOpen(true)}><Settings2 size={15} /> {t("manageProductsEntry")}</button>
       </aside>
       {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label={t("closeNavigation")} />}
 
@@ -459,6 +459,7 @@ export function App() {
             <div className="list-columns" aria-hidden="true">
               <span>{t("itemInformation")}</span>
               <span>{t("capturedContext")}</span>
+              <span>{t("attachments")}</span>
               <span>{t("status")}</span>
               <span>{t("quickAction")}</span>
             </div>
@@ -513,13 +514,13 @@ export function App() {
         </Modal>
       )}
       {productOpen && (
-        <Modal title={t("addProduct")} subtitle={t("createProductWorkspace")} onClose={() => setProductOpen(false)}>
-          <ProductForm
-            onCreated={(product) => {
-              setProductOpen(false);
+        <Modal title={t("manageProducts")} subtitle={t("productManagementHelp")} onClose={() => setProductOpen(false)} wide>
+          <ProductManager
+            products={products}
+            selectedProductId={selectedProductId}
+            onSelectProduct={(product) => {
               setSelectedProductId(product.id);
               setSelectedItemKey(null);
-              void queryClient.invalidateQueries({ queryKey: ["products"] });
             }}
           />
         </Modal>
@@ -579,6 +580,7 @@ function ItemRow({
   const environment = item.environment;
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
   const contextDetails = [
+    sourceComponent && environment ? platformName(environment.platform, t) : undefined,
     environment?.appVersion ? `v${environment.appVersion}` : undefined,
     environment?.deviceModel,
     environment?.osVersion,
@@ -591,13 +593,13 @@ function ItemRow({
           <span className="item-title-line"><code>{item.key}</code><span>{typeLabel(item.type)}</span></span>
           <span className="item-title">{item.title}</span>
           <span className={`item-description ${item.description ? "" : "muted"}`}>{item.description || t("noDescription")}</span>
-          <AttachmentSummary attachments={item.attachments} />
         </span>
       </button>
       <span className="item-context">
         <strong>{contextPrimary}</strong>
         <small>{contextDetails || t("noEnvironmentShort")}</small>
       </span>
+      <ItemMediaStrip itemKey={item.key} attachments={item.attachments} onOpen={onOpen} />
       <span className="item-state">
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <small><i className={`priority-dot priority-${item.priority}`} /> {priorityLabel(item.priority)}</small>
@@ -613,18 +615,52 @@ function ItemRow({
   );
 }
 
-function AttachmentSummary({ attachments }: { attachments: readonly WorkItemAttachment[] }) {
+function ItemMediaStrip({ itemKey, attachments, onOpen }: { itemKey: string; attachments: readonly WorkItemAttachment[]; onOpen: () => void }) {
   const { t } = useI18n();
-  if (attachments.length === 0) return <span className="item-attachments empty"><Paperclip size={11} /> {t("noAttachmentsShort")}</span>;
-  const images = attachments.filter((attachment) => attachment.kind === "image").length;
-  const videos = attachments.filter((attachment) => attachment.kind === "video").length;
-  const logs = attachments.filter((attachment) => attachment.kind === "log").length;
+  const visible = attachments.slice(0, 3);
+  if (visible.length === 0) return <span className="item-media-strip empty"><Paperclip size={15} /> {t("noAttachmentsShort")}</span>;
   return (
-    <span className="item-attachments" aria-label={t("attachmentCount", { count: attachments.length })}>
-      {images > 0 && <span><ImageIcon size={11} /> {images}</span>}
-      {videos > 0 && <span><Video size={11} /> {videos}</span>}
-      {logs > 0 && <span><FileText size={11} /> {logs}</span>}
+    <span className="item-media-strip" aria-label={t("attachmentCount", { count: attachments.length })}>
+      {visible.map((attachment, index) => (
+        <ItemMediaThumbnail key={attachment.id} itemKey={itemKey} attachment={attachment} onOpen={onOpen} overflowCount={index === 2 ? attachments.length - visible.length : 0} />
+      ))}
     </span>
+  );
+}
+
+function ItemMediaThumbnail({
+  itemKey,
+  attachment,
+  onOpen,
+  overflowCount,
+}: {
+  itemKey: string;
+  attachment: WorkItemAttachment;
+  onOpen: () => void;
+  overflowCount: number;
+}) {
+  const contentQuery = useQuery({
+    queryKey: ["attachment-content", itemKey, attachment.id],
+    queryFn: () => api.downloadAttachment(itemKey, attachment.id),
+    enabled: attachment.kind === "image",
+    staleTime: Infinity,
+  });
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!contentQuery.data) return undefined;
+    const url = URL.createObjectURL(contentQuery.data);
+    setObjectUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [contentQuery.data]);
+
+  const Icon = attachment.kind === "video" ? Video : attachment.kind === "log" ? FileText : ImageIcon;
+  return (
+    <button className={`item-media-thumb media-${attachment.kind}`} onClick={onOpen} title={attachment.filename}>
+      {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt="" />}
+      {!objectUrl && <span className="media-file-tile"><Icon size={18} /><small>{attachment.filename.split(".").pop()?.toUpperCase()}</small></span>}
+      {overflowCount > 0 && <span className="media-overflow">+{overflowCount}</span>}
+    </button>
   );
 }
 
@@ -1381,7 +1417,145 @@ function AttachmentCard({ itemKey, attachment }: { itemKey: string; attachment: 
   );
 }
 
-function ProductForm({ onCreated }: { onCreated: (product: Product) => void }) {
+function ProductManager({
+  products,
+  selectedProductId,
+  onSelectProduct,
+}: {
+  products: readonly Product[];
+  selectedProductId: string;
+  onSelectProduct: (product: Product) => void;
+}) {
+  const queryClient = useQueryClient();
+  const { t } = useI18n();
+  const [activeProductId, setActiveProductId] = useState(selectedProductId || products[0]?.id || "");
+  const [adding, setAdding] = useState(false);
+  const activeProduct = products.find((product) => product.id === activeProductId);
+
+  return (
+    <div className="product-manager">
+      <aside className="product-manager-list">
+        <p className="sidebar-label">{t("existingProducts")}</p>
+        {products.map((product) => (
+          <button
+            key={product.id}
+            className={activeProductId === product.id && !adding ? "active" : ""}
+            onClick={() => { setActiveProductId(product.id); setAdding(false); }}
+          >
+            <span><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
+            <ChevronRight size={16} />
+          </button>
+        ))}
+        <button className={`product-manager-add ${adding ? "active" : ""}`} onClick={() => setAdding(true)}><Plus size={15} /> {t("addProduct")}</button>
+      </aside>
+      <section className="product-manager-content">
+        {adding || !activeProduct ? (
+          <div className="product-create-panel">
+            <p className="eyebrow">{t("newProduct")}</p>
+            <h3>{t("createProductWorkspace")}</h3>
+            <ProductForm
+              onCreated={async (product) => {
+                await queryClient.invalidateQueries({ queryKey: ["products"] });
+                setActiveProductId(product.id);
+                setAdding(false);
+                onSelectProduct(product);
+              }}
+            />
+          </div>
+        ) : (
+          <ProductSettings key={activeProduct.id} product={activeProduct} onSelected={() => onSelectProduct(activeProduct)} />
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ProductSettings({ product, onSelected }: { product: Product; onSelected: () => void }) {
+  const queryClient = useQueryClient();
+  const { t } = useI18n();
+  const [name, setName] = useState(product.name);
+  const [newComponentName, setNewComponentName] = useState("");
+  const [newComponentKind, setNewComponentKind] = useState<ComponentKind>("android");
+  const componentsQuery = useQuery({ queryKey: ["components", product.id], queryFn: () => api.listComponents(product.id) });
+
+  useEffect(() => setName(product.name), [product.id, product.name]);
+
+  const productMutation = useMutation({
+    mutationFn: () => api.updateProduct(product.id, { name }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["products"] });
+      onSelected();
+    },
+  });
+  const componentMutation = useMutation({
+    mutationFn: () => api.createComponent(product.id, { name: newComponentName, kind: newComponentKind }),
+    onSuccess: async () => {
+      setNewComponentName("");
+      await queryClient.invalidateQueries({ queryKey: ["components", product.id] });
+    },
+  });
+
+  return (
+    <div className="product-settings">
+      <section className="product-settings-section">
+        <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("productSettings")}</h3></div></header>
+        <div className="product-settings-grid">
+          <label>{t("productName")}<input value={name} onChange={(event) => setName(event.target.value)} /></label>
+          <label>{t("itemPrefix")}<input value={product.keyPrefix} readOnly /><small>{t("prefixLockedHelp")}</small></label>
+        </div>
+        {productMutation.isError && <InlineError message={errorMessage(productMutation.error, t("somethingWentWrong"))} />}
+        <button className="primary-button settings-save" disabled={!name.trim() || name.trim() === product.name || productMutation.isPending} onClick={() => productMutation.mutate()}>
+          {productMutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {t("saveProduct")}
+        </button>
+      </section>
+      <section className="product-settings-section component-management">
+        <header><div><p className="eyebrow">{t("productComponents")}</p><h3>{t("manageComponents")}</h3></div><span>{componentsQuery.data?.length ?? 0}</span></header>
+        <div className="component-manager-list">
+          {(componentsQuery.data ?? []).map((component) => <ComponentSettingsRow key={component.id} component={component} />)}
+          {!componentsQuery.isLoading && (componentsQuery.data?.length ?? 0) === 0 && <p className="section-empty">{t("noComponents")}</p>}
+        </div>
+        <div className="component-add-row">
+          <label>{t("componentName")}<input value={newComponentName} onChange={(event) => setNewComponentName(event.target.value)} placeholder={t("componentNamePlaceholder")} /></label>
+          <label>{t("componentKind")}<select value={newComponentKind} onChange={(event) => setNewComponentKind(event.target.value as ComponentKind)}>{COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</select></label>
+          <button className="secondary-button" disabled={!newComponentName.trim() || componentMutation.isPending} onClick={() => componentMutation.mutate()}>
+            {componentMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("addComponent")}
+          </button>
+        </div>
+        {componentMutation.isError && <InlineError message={errorMessage(componentMutation.error, t("somethingWentWrong"))} />}
+      </section>
+    </div>
+  );
+}
+
+function ComponentSettingsRow({ component }: { component: Component }) {
+  const queryClient = useQueryClient();
+  const { t } = useI18n();
+  const [name, setName] = useState(component.name);
+  const [kind, setKind] = useState<ComponentKind>(component.kind);
+  useEffect(() => {
+    setName(component.name);
+    setKind(component.kind);
+  }, [component.kind, component.name]);
+  const mutation = useMutation({
+    mutationFn: () => api.updateComponent(component.productId, component.id, { name, kind }),
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["components", component.productId] }),
+  });
+  const changed = name.trim() !== component.name || kind !== component.kind;
+  return (
+    <div className="component-settings-row">
+      <input value={name} onChange={(event) => setName(event.target.value)} aria-label={t("componentName")} />
+      <select value={kind} onChange={(event) => setKind(event.target.value as ComponentKind)} aria-label={t("componentKind")}>
+        {COMPONENT_KINDS.map((value) => <option key={value} value={value}>{t(value)}</option>)}
+      </select>
+      <button className="secondary-button" disabled={!changed || !name.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
+        {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
+      </button>
+      {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
+    </div>
+  );
+}
+
+function ProductForm({ onCreated }: { onCreated: (product: Product) => void | Promise<void> }) {
   const { t } = useI18n();
   const [name, setName] = useState("");
   const [keyPrefix, setKeyPrefix] = useState("");
@@ -1408,7 +1582,7 @@ function TokenForm({ onSaved }: { onSaved: () => void | Promise<void> }) {
   );
 }
 
-function Modal({ title, subtitle, onClose, children }: { title: string; subtitle: string; onClose: () => void; children: ReactNode }) {
+function Modal({ title, subtitle, onClose, children, wide = false }: { title: string; subtitle: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -1426,7 +1600,7 @@ function Modal({ title, subtitle, onClose, children }: { title: string; subtitle
       }}
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
-      <section className="modal" role="dialog" aria-modal="true" aria-label={title}>
+      <section className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}>
         <header><div><p className="eyebrow">{subtitle}</p><h2>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
         {children}
       </section>

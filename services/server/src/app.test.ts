@@ -377,6 +377,22 @@ describe("MissionGo REST API", () => {
     const android = androidResponse.json<{ id: string }>();
     expect(androidResponse.statusCode).toBe(201);
 
+    const productUpdateResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/products/${product.id}`,
+      payload: { name: "Hermes Go Next" },
+    });
+    expect(productUpdateResponse.statusCode).toBe(200);
+    expect(productUpdateResponse.json()).toMatchObject({ name: "Hermes Go Next", keyPrefix: "HG" });
+
+    const componentUpdateResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/products/${product.id}/components/${android.id}`,
+      payload: { name: "Android client", kind: "android" },
+    });
+    expect(componentUpdateResponse.statusCode).toBe(200);
+    expect(componentUpdateResponse.json()).toMatchObject({ id: android.id, name: "Android client", kind: "android" });
+
     const firstResponse = await app.inject({
       method: "POST",
       url: "/api/v1/items",

@@ -219,6 +219,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.status(201).send(product);
   });
 
+  app.patch("/api/v1/products/:productId", async (request) => {
+    const { productId } = request.params as { productId: string };
+    const body = objectBody(request.body);
+    return store.updateProduct(productId, { name: stringField(body, "name")! });
+  });
+
   app.get("/api/v1/products/:productId/components", async (request) => {
     const { productId } = request.params as { productId: string };
     return store.listComponents(productId);
@@ -233,6 +239,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       kind: enumField(body, "kind", COMPONENT_KINDS)! as ComponentKind,
     });
     return reply.status(201).send(component);
+  });
+
+  app.patch("/api/v1/products/:productId/components/:componentId", async (request) => {
+    const { productId, componentId } = request.params as { productId: string; componentId: string };
+    const body = objectBody(request.body);
+    return store.updateComponent(productId, componentId, {
+      name: stringField(body, "name")!,
+      kind: enumField(body, "kind", COMPONENT_KINDS)! as ComponentKind,
+    });
   });
 
   app.get("/api/v1/items", async (request) => {

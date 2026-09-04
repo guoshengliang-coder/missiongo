@@ -191,6 +191,14 @@ export class MissionGoStore {
     return this.mapProduct(row);
   }
 
+  updateProduct(productId: string, input: { name: string }): ProductSnapshot {
+    this.getProduct(productId);
+    const name = requiredText(input.name, "Product name");
+    const now = new Date().toISOString();
+    this.database.connection.prepare("UPDATE products SET name = ?, updated_at = ? WHERE id = ?").run(name, now, productId);
+    return this.getProduct(productId);
+  }
+
   createComponent(input: { productId: string; name: string; kind: ComponentKind }): ComponentSnapshot {
     this.getProduct(input.productId);
     const name = requiredText(input.name, "Component name");
@@ -226,6 +234,30 @@ export class MissionGoStore {
       )
       .all(productId) as unknown as ComponentRow[];
     return rows.map((row) => this.mapComponent(row));
+  }
+
+  updateComponent(
+    productId: string,
+    componentId: string,
+    input: { name: string; kind: ComponentKind },
+  ): ComponentSnapshot {
+    this.getProduct(productId);
+    const current = this.getComponent(componentId);
+    if (current.productId !== productId) throw notFound("Component");
+    const name = requiredText(input.name, "Component name");
+    if (!isOneOf(input.kind, COMPONENT_KINDS)) throw invalidInput(`Unsupported component kind: ${String(input.kind)}.`);
+    const now = new Date().toISOString();
+    try {
+      this.database.connection
+        .prepare("UPDATE components SET name = ?, kind = ?, updated_at = ? WHERE id = ?")
+        .run(name, input.kind, now, componentId);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
+        throw conflict("component_name_conflict", `Component ${name} already exists in this product.`);
+      }
+      throw error;
+    }
+    return this.getComponent(componentId);
   }
 
   createWorkItem(input: CreateWorkItemInput): WorkItemSnapshot {
