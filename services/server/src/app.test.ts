@@ -753,7 +753,26 @@ describe("MissionGo REST API", () => {
     });
     expect(contentResponse.statusCode).toBe(200);
     expect(contentResponse.headers["content-type"]).toContain("text/plain");
+    expect(contentResponse.headers["accept-ranges"]).toBe("bytes");
     expect(contentResponse.body).toBe(log.toString());
+
+    const rangeResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/HG-1/attachments/${attachment.id}/content`,
+      headers: { range: "bytes=6-14" },
+    });
+    expect(rangeResponse.statusCode).toBe(206);
+    expect(rangeResponse.headers["content-range"]).toBe(`bytes 6-14/${log.length}`);
+    expect(rangeResponse.headers["content-length"]).toBe("9");
+    expect(rangeResponse.body).toBe("exception");
+
+    const invalidRangeResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/HG-1/attachments/${attachment.id}/content`,
+      headers: { range: "bytes=999-1000" },
+    });
+    expect(invalidRangeResponse.statusCode).toBe(416);
+    expect(invalidRangeResponse.headers["content-range"]).toBe(`bytes */${log.length}`);
 
     const unsafeResponse = await app.inject({
       method: "POST",
@@ -766,5 +785,39 @@ describe("MissionGo REST API", () => {
       payload: "unsafe",
     });
     expect(unsafeResponse.statusCode).toBe(400);
+  });
+
+  it("paginates and searches items while returning complete status counts", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "MissionGo", keyPrefix: "MG" } })
+    ).json<{ id: string }>();
+    for (const title of ["Offline shell", "Mobile layout", "Attachment streaming"]) {
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/items",
+        payload: { productId: product.id, type: "task", priority: "normal", title, description: "H5 iteration", environment: { platform: "web" } },
+      });
+    }
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items/MG-2/transitions",
+      payload: { to: "ready", reason: "triaged" },
+    });
+
+    const firstPage = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&limit=2` });
+    expect(firstPage.statusCode).toBe(200);
+    expect(firstPage.json()).toMatchObject({
+      items: [{ key: "MG-3" }, { key: "MG-2" }],
+      nextBeforeSequence: 2,
+      summary: { total: 3, byStatus: { inbox: 2, ready: 1 } },
+    });
+
+    const nextPage = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&limit=2&beforeSequence=2` });
+    expect(nextPage.json()).toMatchObject({ items: [{ key: "MG-1" }], summary: { total: 3 } });
+    expect(nextPage.json()).not.toHaveProperty("nextBeforeSequence");
+
+    const searchResponse = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&search=mobile` });
+    expect(searchResponse.json()).toMatchObject({ items: [{ key: "MG-2", title: "Mobile layout" }], summary: { total: 3 } });
   });
 });

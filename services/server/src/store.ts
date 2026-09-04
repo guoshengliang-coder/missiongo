@@ -37,6 +37,7 @@ import {
   type TransitionWorkItemInput,
   type UpdateWorkItemInput,
   type WorkItemEventSnapshot,
+  type WorkItemListSummary,
 } from "./types.js";
 
 interface ProductRow {
@@ -341,6 +342,13 @@ export class MissionGoStore {
       clauses.push("type = ?");
       values.push(input.type);
     }
+    const search = input.search?.trim();
+    if (search) {
+      if (search.length > 200) throw invalidInput("search must be 200 characters or fewer.");
+      const escaped = `%${search.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+      clauses.push("(item_key LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')");
+      values.push(escaped, escaped, escaped);
+    }
     if (input.beforeSequence !== undefined) {
       clauses.push("sequence < ?");
       values.push(input.beforeSequence);
@@ -356,6 +364,19 @@ export class MissionGoStore {
       )
       .all(...values) as unknown as WorkItemRow[];
     return rows.map((row) => this.mapWorkItem(row));
+  }
+
+  getWorkItemListSummary(productId: string): WorkItemListSummary {
+    this.getProduct(productId);
+    const rows = this.database.connection
+      .prepare("SELECT status, COUNT(*) AS count FROM work_items WHERE product_id = ? GROUP BY status")
+      .all(productId) as unknown as Array<{ status: WorkItemStatus; count: number }>;
+    const byStatus = Object.fromEntries(WORK_ITEM_STATUSES.map((status) => [status, 0])) as Record<WorkItemStatus, number>;
+    for (const row of rows) byStatus[row.status] = row.count;
+    return {
+      total: Object.values(byStatus).reduce((sum, count) => sum + count, 0),
+      byStatus,
+    };
   }
 
   getWorkItem(itemKey: string): WorkItemSnapshot {

@@ -96,6 +96,12 @@ paths:
           schema:
             $ref: "#/components/schemas/WorkItemType"
         - in: query
+          name: search
+          description: Case-insensitive search across item ID, title, and description.
+          schema:
+            type: string
+            maxLength: 200
+        - in: query
           name: limit
           schema:
             type: integer
@@ -114,12 +120,23 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [items]
+                required: [items, summary]
                 properties:
                   items:
                     type: array
                     items:
                       $ref: "#/components/schemas/WorkItem"
+                  nextBeforeSequence:
+                    type: integer
+                    minimum: 1
+                  summary:
+                    type: object
+                    required: [total, byStatus]
+                    properties:
+                      total: { type: integer, minimum: 0 }
+                      byStatus:
+                        type: object
+                        additionalProperties: { type: integer, minimum: 0 }
     post:
       operationId: createItem
       requestBody:
@@ -256,9 +273,18 @@ paths:
         schema: { type: string }
     get:
       operationId: downloadItemAttachment
+      parameters:
+        - in: header
+          name: Range
+          description: Optional single byte range, for example bytes=0-65535.
+          schema: { type: string }
       responses:
         "200":
           description: Authenticated attachment content using its recorded media type.
+        "206":
+          description: Requested attachment byte range.
+        "416":
+          description: Requested byte range is invalid or outside the attachment.
 components:
   securitySchemes:
     bearerAuth:
@@ -335,7 +361,7 @@ components:
       type: object
       required: [platform]
       properties:
-        platform: { enum: [android, macos, web, other] }
+        platform: { enum: [android, macos, web, server, shared, other] }
         appVersion: { type: string }
         buildNumber: { type: string }
         sourceRevision: { type: string }

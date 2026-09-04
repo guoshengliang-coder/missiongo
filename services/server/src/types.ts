@@ -50,8 +50,14 @@ export interface ListWorkItemsInput {
   readonly productId: string;
   readonly status?: WorkItemStatus;
   readonly type?: WorkItemType;
+  readonly search?: string;
   readonly limit?: number;
   readonly beforeSequence?: number;
+}
+
+export interface WorkItemListSummary {
+  readonly total: number;
+  readonly byStatus: Readonly<Record<WorkItemStatus, number>>;
 }
 
 export interface UpdateWorkItemInput {

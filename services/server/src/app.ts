@@ -28,6 +28,29 @@ export interface BuildAppOptions {
 
 const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "server", "shared", "other"] as const;
 
+function sequenceFromItemKey(itemKey: string | undefined): number | undefined {
+  const match = itemKey?.match(/-(\d+)$/);
+  if (!match) return undefined;
+  const sequence = Number(match[1]);
+  return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : undefined;
+}
+
+function requestedByteRange(value: string, size: number): { start: number; end: number } | undefined {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
+  if (!match || (!match[1] && !match[2])) return undefined;
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength < 1) return undefined;
+    return { start: Math.max(0, size - suffixLength), end: size - 1 };
+  }
+  const start = Number(match[1]);
+  const requestedEnd = match[2] ? Number(match[2]) : size - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0 || start >= size || requestedEnd < start) {
+    return undefined;
+  }
+  return { start, end: Math.min(requestedEnd, size - 1) };
+}
+
 function objectBody(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidInput("A JSON object is required.");
   return value as Record<string, unknown>;
@@ -263,14 +286,23 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       throw invalidInput("beforeSequence must be a positive integer.");
     }
 
+    const effectiveLimit = limit ?? 50;
     const items = store.listWorkItems({
       productId,
       ...(typeof query.status === "string" ? { status: query.status as never } : {}),
       ...(typeof query.type === "string" ? { type: query.type as never } : {}),
-      ...(limit !== undefined ? { limit } : {}),
+      ...(typeof query.search === "string" ? { search: query.search } : {}),
+      limit: effectiveLimit,
       ...(beforeSequence !== undefined ? { beforeSequence } : {}),
     });
-    return { items };
+    const nextBeforeSequence = items.length === effectiveLimit
+      ? sequenceFromItemKey(items.at(-1)?.key)
+      : undefined;
+    return {
+      items,
+      summary: store.getWorkItemListSummary(productId),
+      ...(nextBeforeSequence !== undefined ? { nextBeforeSequence } : {}),
+    };
   });
 
   app.post("/api/v1/items", async (request, reply) => {
@@ -354,13 +386,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const details = await stat(path);
     const disposition = attachment.kind === "log" ? "attachment" : "inline";
     const encodedFilename = encodeURIComponent(attachment.filename).replaceAll("'", "%27");
+    const rangeHeader = request.headers.range;
+    const range = rangeHeader ? requestedByteRange(rangeHeader, details.size) : undefined;
+    if (rangeHeader && !range) {
+      return reply
+        .status(416)
+        .header("content-range", `bytes */${details.size}`)
+        .header("accept-ranges", "bytes")
+        .send();
+    }
+    const contentLength = range ? range.end - range.start + 1 : details.size;
     reply
+      .status(range ? 206 : 200)
       .type(attachment.contentType)
-      .header("content-length", details.size)
+      .header("content-length", contentLength)
       .header("content-disposition", `${disposition}; filename*=UTF-8''${encodedFilename}`)
       .header("cache-control", "private, no-store")
+      .header("accept-ranges", "bytes")
       .header("x-content-type-options", "nosniff");
-    return reply.send(createReadStream(path));
+    if (range) reply.header("content-range", `bytes ${range.start}-${range.end}/${details.size}`);
+    return reply.send(createReadStream(path, range));
   });
 
   return app;

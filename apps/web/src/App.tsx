@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowRight,
   Bug,
+  Camera,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -28,6 +29,7 @@ import {
   Settings2,
   Sparkles,
   Video,
+  WifiOff,
   X,
 } from "lucide-react";
 
@@ -39,6 +41,7 @@ import {
   type CaptureDraft,
   type EnvironmentDraft,
 } from "./capture-draft";
+import { clearDraftFiles, loadDraftFiles, saveDraftFiles } from "./draft-files";
 import {
   COMPONENT_KINDS,
   ITEM_PRIORITIES,
@@ -56,6 +59,7 @@ import {
   type WorkItemType,
 } from "./types";
 import { useI18n } from "./i18n";
+import { ITEM_HISTORY_MARKER, itemDetailUrl, itemKeyFromUrl, itemListUrl } from "./navigation";
 import { registerMissionGoWebMcp } from "./webmcp";
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
@@ -199,11 +203,48 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
+async function uploadAttachmentsSequentially(itemKey: string, files: readonly File[]): Promise<number> {
+  let failed = 0;
+  for (const file of files) {
+    try {
+      await api.uploadAttachment(itemKey, file);
+    } catch {
+      failed += 1;
+    }
+  }
+  return failed;
+}
+
+function useNearViewport<ElementType extends HTMLElement>(rootMargin = "160px"): [RefObject<ElementType | null>, boolean] {
+  const ref = useRef<ElementType>(null);
+  const [isNearViewport, setIsNearViewport] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return undefined;
+    if (!("IntersectionObserver" in window)) {
+      setIsNearViewport(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) {
+          setIsNearViewport(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [rootMargin]);
+  return [ref, isNearViewport];
+}
+
 export function App() {
   const queryClient = useQueryClient();
   const { statusLabel, t, typeLabel } = useI18n();
   const [selectedProductId, setSelectedProductId] = useState(() => localStorage.getItem("missiongo.product") ?? "");
-  const [selectedItemKey, setSelectedItemKey] = useState<string | null>(null);
+  const [selectedItemKey, setSelectedItemKey] = useState<string | null>(() => itemKeyFromUrl());
   const [statusFilter, setStatusFilter] = useState<WorkItemStatus | "all">("all");
   const [typeFilter, setTypeFilter] = useState<WorkItemType | "all">("all");
   const [search, setSearch] = useState("");
@@ -211,30 +252,66 @@ export function App() {
   const [productOpen, setProductOpen] = useState(false);
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [notice, setNotice] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
 
-  const openItemPage = (itemKey: string) => {
+  const restoreListScroll = useCallback(() => {
+    requestAnimationFrame(() => {
+      workspaceRef.current?.scrollTo({ top: listScrollTopRef.current });
+      window.scrollTo({ top: listScrollTopRef.current });
+    });
+  }, []);
+
+  const openItemPage = useCallback((itemKey: string) => {
+    if (selectedItemKey === itemKey) return;
     const workspace = workspaceRef.current;
     listScrollTopRef.current = workspace && workspace.scrollHeight > workspace.clientHeight
       ? workspace.scrollTop
       : window.scrollY;
+    const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
+    history.pushState({ ...state, [ITEM_HISTORY_MARKER]: true }, "", itemDetailUrl(itemKey));
     setSelectedItemKey(itemKey);
     requestAnimationFrame(() => {
       workspaceRef.current?.scrollTo({ top: 0 });
       window.scrollTo({ top: 0 });
     });
-  };
+  }, [selectedItemKey]);
 
   const closeItemPage = () => {
+    if (history.state?.[ITEM_HISTORY_MARKER]) {
+      history.back();
+      return;
+    }
+    history.replaceState(history.state, "", itemListUrl());
     setSelectedItemKey(null);
-    requestAnimationFrame(() => {
-      workspaceRef.current?.scrollTo({ top: listScrollTopRef.current });
-      window.scrollTo({ top: listScrollTopRef.current });
-    });
+    restoreListScroll();
   };
+
+  const clearItemPage = () => {
+    history.replaceState(history.state, "", itemListUrl());
+    setSelectedItemKey(null);
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const itemKey = itemKeyFromUrl();
+      setSelectedItemKey(itemKey);
+      if (itemKey) {
+        requestAnimationFrame(() => {
+          workspaceRef.current?.scrollTo({ top: 0 });
+          window.scrollTo({ top: 0 });
+        });
+      } else {
+        restoreListScroll();
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [restoreListScroll]);
 
   const productsQuery = useQuery({ queryKey: ["products"], queryFn: api.listProducts });
   const products = productsQuery.data ?? [];
@@ -251,22 +328,43 @@ export function App() {
   }, [selectedProductId]);
 
   useEffect(() => {
+    const updateOnlineState = () => setIsOnline(navigator.onLine);
+    window.addEventListener("online", updateOnlineState);
+    window.addEventListener("offline", updateOnlineState);
+    return () => {
+      window.removeEventListener("online", updateOnlineState);
+      window.removeEventListener("offline", updateOnlineState);
+    };
+  }, []);
+
+  useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        searchInputRef.current?.focus();
+        setMobileSearchOpen(true);
+        requestAnimationFrame(() => searchInputRef.current?.focus());
       }
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
-  const itemsQuery = useQuery({
-    queryKey: ["items", selectedProductId],
-    queryFn: () => api.listItems(selectedProductId),
+  const deferredSearch = useDeferredValue(search.trim());
+  const itemsQuery = useInfiniteQuery({
+    queryKey: ["items", selectedProductId, statusFilter, typeFilter, deferredSearch],
+    queryFn: ({ pageParam }) => api.listItems(selectedProductId, {
+      ...(statusFilter !== "all" ? { status: statusFilter } : {}),
+      ...(typeFilter !== "all" ? { type: typeFilter } : {}),
+      ...(deferredSearch ? { search: deferredSearch } : {}),
+      limit: 30,
+      ...(pageParam ? { beforeSequence: pageParam } : {}),
+    }),
+    initialPageParam: null as number | null,
+    getNextPageParam: (page) => page.nextBeforeSequence ?? null,
     enabled: Boolean(selectedProductId),
   });
-  const items = itemsQuery.data?.items ?? [];
+  const items = itemsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const itemSummary = itemsQuery.data?.pages[0]?.summary;
   const componentsQuery = useQuery({
     queryKey: ["components", selectedProductId],
     queryFn: () => api.listComponents(selectedProductId),
@@ -276,19 +374,16 @@ export function App() {
     () => new Map((componentsQuery.data ?? []).map((component) => [component.id, component])),
     [componentsQuery.data],
   );
-  const visibleItems = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return items.filter(
-      (item) =>
-        (statusFilter === "all" || item.status === statusFilter) &&
-        (typeFilter === "all" || item.type === typeFilter) &&
-        (!query || `${item.key} ${item.title} ${item.description}`.toLowerCase().includes(query)),
-    );
-  }, [items, search, statusFilter, typeFilter]);
+  const visibleItems = items;
 
   const selectedProduct = products.find((product) => product.id === selectedProductId);
-  const openCount = items.filter((item) => !["done", "cancelled"].includes(item.status)).length;
-  const verifyCount = items.filter((item) => item.status === "pending_verification").length;
+  const selectItemProduct = useCallback((item: WorkItem) => {
+    if (item.productId !== selectedProductId) setSelectedProductId(item.productId);
+  }, [selectedProductId]);
+  const openCount = itemSummary
+    ? itemSummary.total - itemSummary.byStatus.done - itemSummary.byStatus.cancelled
+    : items.filter((item) => !["done", "cancelled"].includes(item.status)).length;
+  const verifyCount = itemSummary?.byStatus.pending_verification ?? items.filter((item) => item.status === "pending_verification").length;
   const needsConnection = productsQuery.error instanceof ApiError && productsQuery.error.status === 401;
 
   useEffect(() => {
@@ -375,7 +470,7 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <header className="topbar">
+      <header className={`topbar ${mobileSearchOpen ? "searching" : ""}`}>
         <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label={t("openNavigation")}>
           <Menu size={20} />
         </button>
@@ -387,7 +482,7 @@ export function App() {
             value={selectedProductId}
             onChange={(event) => {
               setSelectedProductId(event.target.value);
-              setSelectedItemKey(null);
+              clearItemPage();
             }}
             aria-label={t("selectedProduct")}
           >
@@ -397,9 +492,19 @@ export function App() {
         </div>
         <div className="header-search">
           <Search size={17} />
-          <input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("searchItems")} />
+          <input
+            ref={searchInputRef}
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setMobileSearchOpen(false);
+            }}
+            placeholder={t("searchItems")}
+          />
           <kbd>⌘ K</kbd>
+          <button className="icon-button mobile-only mobile-search-close" onClick={() => setMobileSearchOpen(false)} aria-label={t("closeSearch")}><X size={18} /></button>
         </div>
+        <button className="icon-button mobile-only mobile-search-trigger" onClick={() => setMobileSearchOpen(true)} aria-label={t("searchItems")}><Search size={19} /></button>
         <LanguageSwitch />
         <button className="icon-button" onClick={() => setConnectionOpen(true)} aria-label={t("connectionSettings")}>
           <Settings2 size={19} />
@@ -408,6 +513,7 @@ export function App() {
           <Plus size={18} /> <span>{t("capture")}</span>
         </button>
       </header>
+      {!isOnline && <div className="offline-banner" role="status"><WifiOff size={15} /> {t("offlineMode")}</div>}
 
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="sidebar-mobile-head mobile-only">
@@ -416,7 +522,7 @@ export function App() {
         </div>
         <nav aria-label={t("workspace")}>
           <p className="sidebar-label">{t("workspace")}</p>
-          <StatusNavItem label={t("allItems")} count={items.length} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
+          <StatusNavItem label={t("allItems")} count={itemSummary?.total ?? items.length} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
             <ListTodo size={17} />
           </StatusNavItem>
           {ITEM_STATUSES.filter((status) => status !== "cancelled").map((status) => {
@@ -425,7 +531,7 @@ export function App() {
               <StatusNavItem
                 key={status}
                 label={statusLabel(status)}
-                count={items.filter((item) => item.status === status).length}
+                count={itemSummary?.byStatus[status] ?? items.filter((item) => item.status === status).length}
                 active={statusFilter === status}
                 onClick={() => selectStatus(status)}
               >
@@ -441,6 +547,13 @@ export function App() {
           <span>{t("aiDispatchDescription")}</span>
         </div>
         <button className="text-button add-product" onClick={() => setProductOpen(true)}><Settings2 size={15} /> {t("manageProductsEntry")}</button>
+        <button
+          className="text-button add-product mobile-only"
+          onClick={() => {
+            setSidebarOpen(false);
+            setConnectionOpen(true);
+          }}
+        ><KeyRound size={15} /> {t("connectionSettings")}</button>
       </aside>
       {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label={t("closeNavigation")} />}
 
@@ -480,9 +593,9 @@ export function App() {
               {!itemsQuery.isLoading && visibleItems.length === 0 && (
                 <div className="empty-list">
                   <div className="round-icon"><Lightbulb size={22} /></div>
-                  <h2>{items.length === 0 ? t("captureFirstSpark") : t("noMatchingItems")}</h2>
-                  <p>{items.length === 0 ? t("firstSparkHelp") : t("noMatchHelp")}</p>
-                  {items.length === 0 && <button className="primary-button" onClick={() => setCaptureOpen(true)}><Plus size={17} /> {t("captureItem")}</button>}
+                  <h2>{(itemSummary?.total ?? 0) === 0 ? t("captureFirstSpark") : t("noMatchingItems")}</h2>
+                  <p>{(itemSummary?.total ?? 0) === 0 ? t("firstSparkHelp") : t("noMatchHelp")}</p>
+                  {(itemSummary?.total ?? 0) === 0 && <button className="primary-button" onClick={() => setCaptureOpen(true)}><Plus size={17} /> {t("captureItem")}</button>}
                 </div>
               )}
               {visibleItems.map((item) => (
@@ -494,18 +607,29 @@ export function App() {
                   onNotice={setNotice}
                 />
               ))}
+              {(items.length > 0 || itemsQuery.hasNextPage) && (
+                <div className="list-pagination">
+                  <span>{t("loadedItems", { loaded: items.length, total: itemSummary?.total ?? items.length })}</span>
+                  {itemsQuery.hasNextPage && (
+                    <button className="secondary-button" disabled={itemsQuery.isFetchingNextPage} onClick={() => void itemsQuery.fetchNextPage()}>
+                      {itemsQuery.isFetchingNextPage ? <LoaderCircle className="spin" size={16} /> : <ChevronDown size={16} />}
+                      {itemsQuery.isFetchingNextPage ? t("loadingMore") : t("loadMore")}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </section>
         </section>
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} onClose={closeItemPage} onNotice={setNotice} />
+            <DetailPane itemKey={selectedItemKey} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} />
           </div>
         )}
       </main>
 
-      <button className="mobile-fab mobile-only" onClick={() => setCaptureOpen(true)} aria-label={t("captureNewItem")}><Plus size={24} /></button>
+      {!selectedItemKey && <button className="mobile-fab mobile-only" onClick={() => setCaptureOpen(true)} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
 
       {captureOpen && selectedProduct && (
         <Modal title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={() => setCaptureOpen(false)}>
@@ -531,7 +655,7 @@ export function App() {
             selectedProductId={selectedProductId}
             onSelectProduct={(product) => {
               setSelectedProductId(product.id);
-              setSelectedItemKey(null);
+              clearItemPage();
             }}
           />
         </Modal>
@@ -650,10 +774,11 @@ function ItemMediaThumbnail({
   onOpen: () => void;
   overflowCount: number;
 }) {
+  const [thumbnailRef, isNearViewport] = useNearViewport<HTMLButtonElement>("80px");
   const contentQuery = useQuery({
     queryKey: ["attachment-content", itemKey, attachment.id],
     queryFn: () => api.downloadAttachment(itemKey, attachment.id),
-    enabled: attachment.kind === "image",
+    enabled: attachment.kind === "image" && isNearViewport,
     staleTime: Infinity,
   });
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
@@ -667,7 +792,7 @@ function ItemMediaThumbnail({
 
   const Icon = attachment.kind === "video" ? Video : attachment.kind === "log" ? FileText : ImageIcon;
   return (
-    <button className={`item-media-thumb media-${attachment.kind}`} onClick={onOpen} title={attachment.filename}>
+    <button ref={thumbnailRef} className={`item-media-thumb media-${attachment.kind}`} onClick={onOpen} title={attachment.filename}>
       {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt="" />}
       {!objectUrl && <span className="media-file-tile"><Icon size={18} /><small>{attachment.filename.split(".").pop()?.toUpperCase()}</small></span>}
       {overflowCount > 0 && <span className="media-overflow">+{overflowCount}</span>}
@@ -726,7 +851,17 @@ function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>[
   return t(keys[status]);
 }
 
-function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; onClose: () => void; onNotice: (message: string) => void }) {
+function DetailPane({
+  itemKey,
+  onClose,
+  onItemLoaded,
+  onNotice,
+}: {
+  itemKey: string | null;
+  onClose: () => void;
+  onItemLoaded: (item: WorkItem) => void;
+  onNotice: (message: string) => void;
+}) {
   const queryClient = useQueryClient();
   const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
   const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey) });
@@ -742,7 +877,8 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
   useEffect(() => {
     if (!item) return;
     setEditing(false);
-  }, [item]);
+    onItemLoaded(item);
+  }, [item, onItemLoaded]);
 
   const refreshItem = async () => {
     await Promise.all([
@@ -761,16 +897,23 @@ function DetailPane({ itemKey, onClose, onNotice }: { itemKey: string | null; on
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
   });
   const attachmentMutation = useMutation({
-    mutationFn: async (files: readonly File[]) => Promise.allSettled(files.map((file) => api.uploadAttachment(itemKey!, file))),
-    onSuccess: async (results) => {
+    mutationFn: async (files: readonly File[]) => uploadAttachmentsSequentially(itemKey!, files),
+    onSuccess: async (failed) => {
       await refreshItem();
-      const failed = results.filter((result) => result.status === "rejected").length;
       onNotice(failed > 0 ? t("uploadFailed", { count: failed }) : t("itemUpdated", { key: itemKey ?? "" }));
     },
   });
 
   if (!itemKey) {
     return null;
+  }
+  if (itemQuery.isError) {
+    return (
+      <section className="detail-pane detail-error-state">
+        <InlineError message={errorMessage(itemQuery.error, t("somethingWentWrong"))} />
+        <button className="secondary-button" onClick={onClose}><ArrowLeft size={17} /> {t("backToList")}</button>
+      </section>
+    );
   }
   if (itemQuery.isLoading || !item) {
     return <section className="detail-pane detail-loading"><LoaderCircle className="spin" size={24} /></section>;
@@ -936,8 +1079,7 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
           : item.affectedComponentIds,
         environment: environmentPayload(draft.environment) ?? null,
       });
-      const uploads = await Promise.allSettled(files.map((file) => api.uploadAttachment(item.key, file)));
-      return uploads.filter((result) => result.status === "rejected").length;
+      return uploadAttachmentsSequentially(item.key, files);
     },
     onSuccess: onSaved,
   });
@@ -1130,12 +1272,35 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
   const storageKey = captureDraftStorageKey(product.id);
   const [draft, setDraft] = useState<CaptureDraft>(() => parseCaptureDraft(localStorage.getItem(storageKey)));
   const [files, setFiles] = useState<readonly File[]>([]);
+  const [filesReady, setFilesReady] = useState(false);
+  const [filePersistenceWarning, setFilePersistenceWarning] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
 
   useEffect(() => {
     if (hasCaptureDraftContent(draft)) localStorage.setItem(storageKey, JSON.stringify(draft));
     else localStorage.removeItem(storageKey);
   }, [draft, storageKey]);
+
+  useEffect(() => {
+    let active = true;
+    void loadDraftFiles(product.id)
+      .catch(() => [])
+      .then((restored) => {
+        if (active) setFiles((current) => current.length > 0 ? current : restored);
+      })
+      .finally(() => {
+        if (active) setFilesReady(true);
+      });
+    return () => { active = false; };
+  }, [product.id]);
+
+  useEffect(() => {
+    if (!filesReady) return undefined;
+    void saveDraftFiles(product.id, files).then((result) => {
+      setFilePersistenceWarning(result === "too-large" ? t("largeDraftAttachments") : null);
+    });
+    return undefined;
+  }, [files, filesReady, product.id, t]);
 
   const addIncomingFiles = (incoming: readonly File[]) => {
     const result = validateIncomingFiles(files, incoming, t);
@@ -1156,11 +1321,12 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
           : {}),
         environment: environmentPayload(draft.environment)!,
       });
-      const uploads = await Promise.allSettled(files.map((file) => api.uploadAttachment(item.key, file)));
-      return { item, failedUploads: uploads.filter((result) => result.status === "rejected").length };
+      const failedUploads = await uploadAttachmentsSequentially(item.key, files);
+      return { item, failedUploads };
     },
     onSuccess: ({ item, failedUploads }) => {
       localStorage.removeItem(storageKey);
+      void clearDraftFiles(product.id);
       onCreated(item, failedUploads);
     },
   });
@@ -1202,6 +1368,7 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
         fileError={fileError}
       />
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
+      {filePersistenceWarning && <InlineError message={filePersistenceWarning} />}
       <div className="form-footer"><button className="primary-button" disabled={mutation.isPending || !draft.title.trim() || !draft.environment.platform}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {t("captureItem")}</button></div>
     </form>
   );
@@ -1269,20 +1436,35 @@ function FilePicker({
 
   return (
     <div className="file-picker">
-      <label className={`secondary-button file-picker-button ${disabled || remaining < 1 ? "disabled" : ""}`}>
-        {disabled ? <LoaderCircle className="spin" size={16} /> : <Paperclip size={16} />}
-        {t("addAttachments")}
-        <input
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.txt,.json"
-          disabled={disabled || remaining < 1}
-          onChange={(event) => {
-            addFiles(event.currentTarget.files);
-            event.currentTarget.value = "";
-          }}
-        />
-      </label>
+      <div className="file-picker-actions">
+        <label className={`secondary-button file-picker-button ${disabled || remaining < 1 ? "disabled" : ""}`}>
+          {disabled ? <LoaderCircle className="spin" size={16} /> : <Paperclip size={16} />}
+          {t("addAttachments")}
+          <input
+            type="file"
+            multiple
+            accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.txt,.json"
+            disabled={disabled || remaining < 1}
+            onChange={(event) => {
+              addFiles(event.currentTarget.files);
+              event.currentTarget.value = "";
+            }}
+          />
+        </label>
+        <label className={`secondary-button file-picker-button mobile-only ${disabled || remaining < 1 ? "disabled" : ""}`}>
+          <Camera size={16} /> {t("takePhoto")}
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            disabled={disabled || remaining < 1}
+            onChange={(event) => {
+              addFiles(event.currentTarget.files);
+              event.currentTarget.value = "";
+            }}
+          />
+        </label>
+      </div>
       {showSelectedFiles && files.length > 0 && (
         <div className="selected-files">
           {files.map((file, index) => (
@@ -1385,9 +1567,17 @@ function AttachmentSection({
 
 function AttachmentCard({ itemKey, attachment }: { itemKey: string; attachment: WorkItemAttachment }) {
   const { t } = useI18n();
+  const [cardRef, isNearViewport] = useNearViewport<HTMLElement>("180px");
+  const [previewRequested, setPreviewRequested] = useState(false);
+  const shouldLoad = attachment.kind === "image" ? isNearViewport : previewRequested;
   const contentQuery = useQuery({
     queryKey: ["attachment-content", itemKey, attachment.id],
-    queryFn: () => api.downloadAttachment(itemKey, attachment.id),
+    queryFn: () => api.downloadAttachment(
+      itemKey,
+      attachment.id,
+      attachment.kind === "log" ? { start: 0, end: 65_535 } : undefined,
+    ),
+    enabled: shouldLoad,
     staleTime: Infinity,
   });
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
@@ -1408,7 +1598,9 @@ function AttachmentCard({ itemKey, attachment }: { itemKey: string; attachment: 
   }, [attachment.kind, contentQuery.data]);
 
   const download = async () => {
-    const blob = contentQuery.data ?? await api.downloadAttachment(itemKey, attachment.id);
+    const blob = attachment.kind === "log"
+      ? await api.downloadAttachment(itemKey, attachment.id)
+      : contentQuery.data ?? await api.downloadAttachment(itemKey, attachment.id);
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -1421,10 +1613,16 @@ function AttachmentCard({ itemKey, attachment }: { itemKey: string; attachment: 
 
   const Icon = attachment.kind === "image" ? ImageIcon : attachment.kind === "video" ? Video : FileText;
   return (
-    <article className={`attachment-card attachment-${attachment.kind}`}>
+    <article ref={cardRef} className={`attachment-card attachment-${attachment.kind}`}>
       <div className="attachment-preview">
+        {!shouldLoad && attachment.kind !== "image" && (
+          <button type="button" className="attachment-load-button" onClick={() => setPreviewRequested(true)}>
+            <Icon size={22} /> {t("loadPreview")}
+          </button>
+        )}
+        {!shouldLoad && attachment.kind === "image" && <span><ImageIcon size={22} /></span>}
         {contentQuery.isLoading && <span><LoaderCircle className="spin" size={18} /> {t("attachmentLoading")}</span>}
-        {contentQuery.isError && <span className="attachment-error">{t("attachmentFailed")}</span>}
+        {contentQuery.isError && <button type="button" className="attachment-load-button attachment-error" onClick={() => void contentQuery.refetch()}>{t("retryAttachment")}</button>}
         {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
         {attachment.kind === "video" && objectUrl && <video src={objectUrl} controls preload="metadata" />}
         {attachment.kind === "log" && logText && <pre>{logText}</pre>}

@@ -57,5 +57,9 @@ export default defineConfig(({ mode }) => {
         "/health": { target: serverTarget, changeOrigin: false },
       },
     },
+    build: {
+      target: ["chrome90", "edge90", "firefox90", "safari15.4"],
+      cssTarget: "safari15.4",
+    },
   };
 });

@@ -12,6 +12,23 @@ import type {
   WorkItemType,
 } from "./types";
 
+export interface WorkItemListPage {
+  readonly items: WorkItem[];
+  readonly nextBeforeSequence?: number;
+  readonly summary: {
+    readonly total: number;
+    readonly byStatus: Readonly<Record<WorkItemStatus, number>>;
+  };
+}
+
+export interface ListItemsOptions {
+  readonly status?: WorkItemStatus;
+  readonly type?: WorkItemType;
+  readonly search?: string;
+  readonly limit?: number;
+  readonly beforeSequence?: number;
+}
+
 const TOKEN_KEY = "missiongo.admin-token";
 
 export class ApiError extends Error {
@@ -92,11 +109,14 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
-  listItems: (productId: string, status?: WorkItemStatus, type?: WorkItemType) => {
+  listItems: (productId: string, options: ListItemsOptions = {}) => {
     const params = new URLSearchParams({ productId });
-    if (status) params.set("status", status);
-    if (type) params.set("type", type);
-    return request<{ items: WorkItem[] }>(`/api/v1/items?${params}`);
+    if (options.status) params.set("status", options.status);
+    if (options.type) params.set("type", options.type);
+    if (options.search?.trim()) params.set("search", options.search.trim());
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.beforeSequence) params.set("beforeSequence", String(options.beforeSequence));
+    return request<WorkItemListPage>(`/api/v1/items?${params}`);
   },
   getItem: (itemKey: string) => request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}`),
   createItem: (input: CreateWorkItemInput) =>
@@ -118,9 +138,10 @@ export const api = {
     });
     return response.json() as Promise<WorkItemAttachment>;
   },
-  downloadAttachment: async (itemKey: string, attachmentId: string) => {
+  downloadAttachment: async (itemKey: string, attachmentId: string, range?: { start: number; end?: number }) => {
     const response = await attachmentRequest(
       `/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}/content`,
+      range ? { headers: { range: `bytes=${range.start}-${range.end ?? ""}` } } : {},
     );
     return response.blob();
   },
