@@ -478,6 +478,51 @@ describe("MissionGo REST API", () => {
     expect(authorized.statusCode).toBe(200);
   });
 
+  it("sets baseline security headers without duplicating them", async () => {
+    const { app } = await testApp();
+
+    const health = await app.inject({ method: "GET", url: "/health" });
+    expect(health.headers["x-content-type-options"]).toBe("nosniff");
+    expect(health.headers["x-frame-options"]).toBe("DENY");
+    expect(health.headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Hermes Go", keyPrefix: "HG" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "bug",
+        priority: "high",
+        title: "Crash",
+        description: "Fails on launch",
+        environment: { platform: "other" },
+      },
+    });
+    const uploaded = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/HG-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "text/plain",
+        "x-missiongo-filename": "launch.log",
+      },
+      payload: "Fatal exception at launch\n",
+    });
+
+    // The attachment route sets nosniff itself; the global hook must not turn
+    // that into a repeated header.
+    const content = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/HG-1/attachments/${uploaded.json<{ id: string }>().id}/content`,
+    });
+    expect(content.statusCode).toBe(200);
+    expect(content.headers["x-content-type-options"]).toBe("nosniff");
+    expect(content.headers["x-frame-options"]).toBe("DENY");
+  });
+
   it("keeps the sign-in rate limit effective when a client spoofs X-Forwarded-For", async () => {
     // buildApp defaults to trustProxy:false, so a forged X-Forwarded-For must not
     // give an attacker a fresh rate-limit bucket for every request.

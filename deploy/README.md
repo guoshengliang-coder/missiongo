@@ -43,6 +43,19 @@ The host reverse proxy should terminate HTTPS and proxy the public hostname to
 `http://127.0.0.1:${MISSIONGO_BIND_PORT}`. Keep the bound port on loopback so
 the application containers are not directly exposed to the Internet.
 
+### Security headers
+
+The server sends `X-Content-Type-Options`, `X-Frame-Options`, and
+`Referrer-Policy` itself, so they survive replacing the bundled web container
+with a different reverse proxy.
+
+Content-Security-Policy and HSTS stay with the proxy that terminates TLS. The
+bundled `nginx-container.conf` relaxes `form-action` under `/oauth/` so the
+sign-in page can redirect back to an AI client's local callback; a second CSP
+header emitted by the application would be intersected with that one and break
+the OAuth flow. If you replace the web container, carry that per-path CSP over,
+and set HSTS on the host proxy.
+
 ### Client addresses behind the proxy
 
 MissionGo rate-limits sign-in attempts per client address, so it has to know

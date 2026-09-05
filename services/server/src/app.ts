@@ -328,6 +328,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     store.close();
   });
 
+  // Baseline security headers, so they survive swapping the reverse proxy. CSP
+  // and HSTS deliberately stay in the TLS-terminating proxy: the app never sees
+  // TLS, and a second CSP header would be intersected with the proxy's, which
+  // would drop the form-action relaxation the OAuth callback needs.
+  app.addHook("onRequest", async (_request, reply) => {
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("x-frame-options", "DENY");
+    reply.header("referrer-policy", "strict-origin-when-cross-origin");
+  });
+
   app.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?", 1)[0]!;
     if (
