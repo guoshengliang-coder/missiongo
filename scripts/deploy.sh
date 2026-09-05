@@ -27,6 +27,7 @@ current_link="/opt/missiongo/current"
 data_dir="/srv/missiongo/data"
 backups_dir="/srv/missiongo/backups"
 public_url=""
+verify_host=""
 keep=10
 skip_backup=0
 verify=0
@@ -51,6 +52,10 @@ Usage: scripts/deploy.sh --host <ssh host> --env-file <remote env file> [options
                           the check makes 11 failed sign-in attempts, and it
                           should burn the calling address's own rate-limit
                           bucket rather than one shared by real visitors.
+  --verify-host <host>    Host header to send while verifying, for an origin
+                          addressed by IP behind a CDN. Certificate validation
+                          is skipped for those requests, since a certificate
+                          issued for the hostname cannot match the IP.
 USAGE
   exit 1
 }
@@ -67,6 +72,7 @@ while [ $# -gt 0 ]; do
     --keep) keep="${2-}"; shift 2 ;;
     --skip-backup) skip_backup=1; shift ;;
     --verify) public_url="${2-}"; verify=1; shift 2 ;;
+    --verify-host) verify_host="${2-}"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
@@ -146,17 +152,23 @@ if [ "$verify" -eq 1 ]; then
   origin="${public_url%/}"
   echo "==> Verifying ${origin}"
 
-  headers="$(curl -fsSI "${origin}/api/v1/auth/session" || true)"
+  # An origin addressed by IP cannot present a certificate matching it, so
+  # -k goes with --verify-host. The destination is still the address given here.
+  curl_args=(--max-time 15)
+  [ -n "$verify_host" ] && curl_args+=(-k -H "Host: ${verify_host}")
+
+  headers="$(curl -sSI "${curl_args[@]}" "${origin}/api/v1/auth/session" || true)"
   if grep -qi '^x-frame-options: DENY' <<<"$headers"; then
     echo "    The new build is serving its own security headers."
   else
-    echo "    No X-Frame-Options from the application: the new release is not live." >&2
+    echo "    Deployment finished, but verification could not confirm it." >&2
+    echo "    No X-Frame-Options came back from ${origin}." >&2
     exit 1
   fi
 
   codes=""
   for i in $(seq 1 11); do
-    codes="$codes $(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    codes="$codes $(curl -s -o /dev/null -w '%{http_code}' "${curl_args[@]}" \
       -X POST "${origin}/api/v1/auth/login" \
       -H 'Content-Type: application/json' \
       -H "X-Forwarded-For: 203.0.113.$i" \
