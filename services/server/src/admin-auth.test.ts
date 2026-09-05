@@ -87,8 +87,14 @@ describe("admin session tokens", () => {
       expiresAt: Math.floor(Date.now() / 1_000) + 10_000,
     })).toString("base64url");
 
+    // The final base64url character of a 32-byte HMAC encodes only four bits, so
+    // it takes one of sixteen values and is already "A" about 6% of the time.
+    // Appending a fixed "A" would leave the signature unchanged on those runs
+    // and the assertion would be handed a perfectly valid token.
+    const brokenSignature = `${signature.slice(0, -1)}${signature.endsWith("A") ? "B" : "A"}`;
+
     expect(readAdminSession(config, `${forged}.${signature}`)).toBeUndefined();
-    expect(readAdminSession(config, `${payload}.${signature.slice(0, -1)}A`)).toBeUndefined();
+    expect(readAdminSession(config, `${payload}.${brokenSignature}`)).toBeUndefined();
     expect(readAdminSession(account({ sessionSecret: "another-secret" }), token)).toBeUndefined();
     expect(readAdminSession(config, payload)).toBeUndefined();
     expect(readAdminSession(config, `${payload}.${signature}.extra`)).toBeUndefined();
@@ -154,7 +160,8 @@ describe("AI access tokens", () => {
     const body = token.slice("mgai_".length);
     const [payload, signature] = body.split(".") as [string, string];
 
-    expect(readAiAccessToken(config, `mgai_${payload}.${signature.slice(0, -1)}A`)).toBeUndefined();
+    const brokenSignature = `${signature.slice(0, -1)}${signature.endsWith("A") ? "B" : "A"}`;
+    expect(readAiAccessToken(config, `mgai_${payload}.${brokenSignature}`)).toBeUndefined();
     expect(readAiAccessToken(config, body)).toBeUndefined();
     expect(readAiAccessToken(account({ sessionSecret: "another-secret" }), token)).toBeUndefined();
   });
