@@ -18,6 +18,8 @@ ADMIN_PASSWORD_SCRYPT=replace-with-a-scrypt-password-digest
 SESSION_SECRET=replace-with-a-long-random-secret
 # Optional: comma-separated product IDs. Omit to let the initial administrator read all products.
 ADMIN_AUTHORIZED_PRODUCT_IDS=
+# Optional: peers allowed to set X-Forwarded-For. Defaults to loopback,uniquelocal.
+TRUST_PROXY=
 ```
 
 Generate `ADMIN_PASSWORD_SCRYPT` locally from the repository root. The prompt
@@ -40,6 +42,20 @@ docker compose --env-file /path/to/private.env up -d --build
 The host reverse proxy should terminate HTTPS and proxy the public hostname to
 `http://127.0.0.1:${MISSIONGO_BIND_PORT}`. Keep the bound port on loopback so
 the application containers are not directly exposed to the Internet.
+
+### Client addresses behind the proxy
+
+MissionGo rate-limits sign-in attempts per client address, so it has to know
+which peers may set `X-Forwarded-For`. `TRUST_PROXY` controls that and defaults
+to `loopback,uniquelocal`, which covers the container network and a reverse
+proxy running on the same host.
+
+Set `TRUST_PROXY` to `false` when the server is reached directly, and to the
+specific addresses or CIDR ranges of your proxies when they sit on public
+addresses. Do not set it to `true` on a public address: that trusts
+`X-Forwarded-For` from every peer, so any client can forge its own address and
+get an unlimited number of password attempts. Numeric hop counts are rejected,
+because Fastify treats them as trusting nothing at all.
 
 The read-only MCP endpoint uses the same account system as the website. On first
 connection, the AI client opens the MissionGo sign-in page, then stores a

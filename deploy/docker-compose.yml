@@ -20,6 +20,7 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
       MISSIONGO_PUBLIC_ORIGIN: ${MISSIONGO_PUBLIC_ORIGIN:?MISSIONGO_PUBLIC_ORIGIN is required}
       ADMIN_AUTHORIZED_PRODUCT_IDS: ${ADMIN_AUTHORIZED_PRODUCT_IDS:-}
+      TRUST_PROXY: ${TRUST_PROXY:-loopback,uniquelocal}
     volumes:
       - ${MISSIONGO_DATA_PATH:?MISSIONGO_DATA_PATH is required}:/data
     healthcheck:

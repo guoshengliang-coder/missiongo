@@ -39,7 +39,8 @@ export interface BuildAppOptions {
   readonly adminAccount?: AdminAccountConfig;
   readonly publicOrigin?: string;
   readonly attachmentsPath?: string;
-  readonly trustProxy?: boolean;
+  /** Fastify trust-proxy setting: false, true, or trusted addresses/CIDRs/named ranges. */
+  readonly trustProxy?: boolean | string;
   readonly sdkRateLimits?: Partial<Readonly<Record<SdkRateLimitBucket, SdkRateLimitRule>>>;
 }
 

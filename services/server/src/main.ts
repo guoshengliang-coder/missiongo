@@ -2,6 +2,7 @@ import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { buildApp } from "./app.js";
+import { trustProxySetting } from "./config.js";
 
 try {
   loadEnvFile(fileURLToPath(new URL("../../../.env", import.meta.url)));
@@ -14,6 +15,7 @@ const port = Number(process.env.HTTP_PORT || "8787");
 const databasePath = process.env.DATABASE_PATH || "./data/missiongo.sqlite";
 const attachmentsPath = process.env.ATTACHMENTS_PATH || "./data/attachments";
 const adminToken = process.env.ADMIN_API_TOKEN;
+const trustProxy = trustProxySetting(process.env.TRUST_PROXY);
 const publicOrigin = process.env.MISSIONGO_PUBLIC_ORIGIN?.trim();
 const authorizedProductIdsValue = process.env.ADMIN_AUTHORIZED_PRODUCT_IDS?.trim();
 const authorizedProductIds = authorizedProductIdsValue
@@ -59,7 +61,7 @@ const app = buildApp({
   databasePath,
   attachmentsPath,
   logger: true,
-  trustProxy: true,
+  trustProxy,
   ...(publicOrigin ? { publicOrigin } : {}),
   ...(adminToken ? { adminToken } : {}),
   ...(hasCompleteAdminAccount ? {
@@ -77,6 +79,13 @@ const app = buildApp({
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   app.log.info({ signal }, "Shutting down MissionGo Server");
   await app.close();
+}
+
+if (trustProxy === true) {
+  app.log.warn(
+    "TRUST_PROXY=true trusts X-Forwarded-For from any peer, so a client can spoof its own address. "
+    + "Set TRUST_PROXY to the trusted proxy addresses or ranges instead.",
+  );
 }
 
 process.once("SIGINT", () => void shutdown("SIGINT"));

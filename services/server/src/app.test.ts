@@ -478,6 +478,40 @@ describe("MissionGo REST API", () => {
     expect(authorized.statusCode).toBe(200);
   });
 
+  it("keeps the sign-in rate limit effective when a client spoofs X-Forwarded-For", async () => {
+    // buildApp defaults to trustProxy:false, so a forged X-Forwarded-For must not
+    // give an attacker a fresh rate-limit bucket for every request.
+    const app = buildApp({ adminAccount: testAdminAccount() });
+    apps.push(app);
+
+    const attempt = (index: number) => app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { "x-forwarded-for": `203.0.113.${index}` },
+      payload: { username: "mission-owner", password: "wrong password" },
+    });
+
+    for (let index = 1; index <= 10; index += 1) {
+      expect((await attempt(index)).statusCode).toBe(401);
+    }
+
+    const blocked = await attempt(11);
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.json()).toMatchObject({ code: "login_rate_limited" });
+
+    // The OAuth consent page shares the same limiter and must stay blocked too.
+    const oauthBlocked = await app.inject({
+      method: "POST",
+      url: "/oauth/authorize",
+      headers: {
+        "x-forwarded-for": "198.51.100.9",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      payload: "request=&username=mission-owner&password=wrong+password",
+    });
+    expect(oauthBlocked.statusCode).toBe(429);
+  });
+
   it("signs in the configured administrator with a secure account session", async () => {
     const app = buildApp({
       adminAccount: testAdminAccount(),
