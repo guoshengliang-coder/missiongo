@@ -39,6 +39,19 @@ Start or update the service from the `deploy` directory:
 docker compose --env-file /path/to/private.env up -d --build
 ```
 
+For routine updates, `scripts/deploy.sh` runs the whole sequence from the
+repository root: pull, back up, rebuild, and wait for the health check.
+
+```sh
+./scripts/deploy.sh --env-file /path/to/private.env
+```
+
+The backup step runs in a throwaway `node` container, so the host does not need
+Node installed. Add `--verify` to confirm afterwards that the sign-in rate limit
+cannot be bypassed with a forged `X-Forwarded-For` header; that check makes 11
+failed sign-in attempts, so it locks the calling address out of sign-in for 15
+minutes.
+
 The host reverse proxy should terminate HTTPS and proxy the public hostname to
 `http://127.0.0.1:${MISSIONGO_BIND_PORT}`. Keep the bound port on loopback so
 the application containers are not directly exposed to the Internet.
