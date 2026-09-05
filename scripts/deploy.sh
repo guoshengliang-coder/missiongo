@@ -27,6 +27,7 @@ current_link="/opt/missiongo/current"
 data_dir="/srv/missiongo/data"
 backups_dir="/srv/missiongo/backups"
 public_url=""
+keep=10
 skip_backup=0
 verify=0
 
@@ -41,6 +42,8 @@ Usage: scripts/deploy.sh --host <ssh host> --env-file <remote env file> [options
   --current-link <path>   Remote "current" symlink. Default: /opt/missiongo/current.
   --data-dir <path>       Remote data directory. Default: /srv/missiongo/data.
   --backups-dir <path>    Remote backup directory. Default: /srv/missiongo/backups.
+  --keep <n>              Release directories to retain, newest first. Default: 10.
+                          0 keeps everything. The live release is never removed.
   --skip-backup           Deploy without backing up first. Not recommended.
   --verify <origin url>   After deploying, check the release is live and that a
                           forged X-Forwarded-For cannot reset the sign-in rate
@@ -61,6 +64,7 @@ while [ $# -gt 0 ]; do
     --current-link) current_link="${2-}"; shift 2 ;;
     --data-dir) data_dir="${2-}"; shift 2 ;;
     --backups-dir) backups_dir="${2-}"; shift 2 ;;
+    --keep) keep="${2-}"; shift 2 ;;
     --skip-backup) skip_backup=1; shift ;;
     --verify) public_url="${2-}"; verify=1; shift 2 ;;
     -h|--help) usage ;;
@@ -69,6 +73,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$host" ] && [ -n "$env_file" ] || usage
+case "$keep" in ""|*[!0-9]*) echo "--keep takes a non-negative integer." >&2; exit 1 ;; esac
 
 cd "$(dirname "$0")/.."
 [ -f deploy/docker-compose.yml ] || { echo "Run this from a MissionGo checkout." >&2; exit 1; }
@@ -123,6 +128,19 @@ remote "cd '${target}/deploy' && sudo docker compose --env-file '${env_file}' up
 echo "==> Pointing ${current_link} at the new release"
 remote "sudo ln -sfn '${target}' '${current_link}'"
 remote "sudo docker ps --format '    {{.Names}} | {{.Status}}'"
+
+if [ "$keep" -gt 0 ]; then
+  echo "==> Keeping the newest ${keep} releases"
+  # Resolve the symlink first and skip that directory explicitly: the live
+  # release is normally the newest, but a rollback points `current` at an older
+  # one, and pruning by age alone would then delete what is actually running.
+  remote "live=\$(readlink -f '${current_link}'); \
+    ls -1d '${releases_dir}'/*/ 2>/dev/null | sed 's:/\$::' | sort -r | tail -n +$((keep + 1)) | \
+    while read -r dir; do \
+      [ \"\$dir\" = \"\$live\" ] && continue; \
+      sudo rm -rf \"\$dir\" && echo \"    removed \$(basename \"\$dir\")\"; \
+    done"
+fi
 
 if [ "$verify" -eq 1 ]; then
   origin="${public_url%/}"
