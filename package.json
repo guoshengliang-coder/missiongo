@@ -14,6 +14,8 @@
   ],
   "scripts": {
     "admin:hash-password": "node ./scripts/create-admin-password-hash.mjs",
+    "backup": "node ./scripts/backup.mjs",
+    "restore": "node ./scripts/restore.mjs",
     "build": "npm run build:types && npm run build:web",
     "build:types": "tsc -b",
     "build:web": "npm run build --workspace @missiongo/web",

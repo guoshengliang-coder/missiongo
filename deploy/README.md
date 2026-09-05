@@ -61,8 +61,34 @@ The read-only MCP endpoint uses the same account system as the website. On first
 connection, the AI client opens the MissionGo sign-in page, then stores a
 time-limited OAuth grant. MissionGo rechecks that grant and the account's
 product scope on every read; the AI client never receives the password.
-Back up the entire directory configured by `MISSIONGO_DATA_PATH`; it contains
-both the database and uploaded files.
+## Backup and restore
+
+The database and the attachment directory are two halves of one dataset and
+have to be captured together. Do not copy `missiongo.sqlite` with `cp`: it runs
+in WAL mode, so a plain copy can miss everything still in the `-wal` file. Use
+the bundled script, which takes a checkpointed snapshot with `VACUUM INTO`,
+copies the attachments, and records a manifest with a checksum and row counts:
+
+```sh
+npm run backup -- --out /path/to/backups
+```
+
+It is safe to run against a live server. It also cross-checks the two halves and
+warns about attachment rows whose file is missing. For a guaranteed-consistent
+archive, stop the server first.
+
+To restore, stop the server and point the script at one backup directory. It
+verifies the checksum, refuses to overwrite live data unless `--force` is given,
+and confirms afterwards that every attachment row has its file:
+
+```sh
+npm run restore -- --from /path/to/backups/missiongo-20260101T000000Z --force
+```
+
+Both scripts read `DATABASE_PATH` and `ATTACHMENTS_PATH` from the environment,
+and accept `--database` and `--attachments` to override them. Run a restore into
+a scratch directory after any upgrade that changes the schema, so the drill is
+rehearsed before an incident rather than during one.
 
 ## Publish the internal Android build
 
