@@ -48,6 +48,18 @@ function requireProductAccess(ctx: ServerContext, productId: string): void {
   if (!hasProductAccess(accountAccess(ctx), productId)) throw new Error("Product not found or access is not permitted.");
 }
 
+/** Authorize the caller for one work item and return its normalized key. */
+export function requireItemAccess(ctx: ServerContext, store: MissionGoStore, itemKey: string): string {
+  const normalizedKey = itemKey.toUpperCase();
+  requireProductAccess(ctx, store.getWorkItem(normalizedKey).productId);
+  return normalizedKey;
+}
+
+/** Authorize the caller for the work item an execution belongs to. */
+export function requireExecutionAccess(ctx: ServerContext, store: MissionGoStore, executionId: string): void {
+  requireProductAccess(ctx, store.getWorkItem(store.getExecution(executionId).itemKey).productId);
+}
+
 const executionReportSchema = z.object({
   conclusion: z.string().min(1).max(20_000),
   rootCause: z.string().min(1).max(20_000).optional(),
@@ -328,9 +340,9 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, conclusion, evidence, risks, agentName, idempotencyKey }) => {
+    async ({ itemKey, conclusion, evidence, risks, agentName, idempotencyKey }, ctx) => {
       const event = store.appendAnalysis({
-        itemKey: itemKey.toUpperCase(),
+        itemKey: requireItemAccess(ctx, store, itemKey),
         conclusion,
         evidence,
         risks,
@@ -352,7 +364,10 @@ export function createMissionGoMcpServer(
       inputSchema: z.object({ executionId: z.string().uuid() }),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ executionId }) => textResult({ execution: store.getExecution(executionId) }),
+    async ({ executionId }, ctx) => {
+      requireExecutionAccess(ctx, store, executionId);
+      return textResult({ execution: store.getExecution(executionId) });
+    },
   );
 
   server.registerTool(
@@ -369,8 +384,14 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, agentId, mode, leaseSeconds, idempotencyKey }) => {
-      const execution = store.claimExecution({ itemKey, agentId, mode, leaseSeconds, idempotencyKey });
+    async ({ itemKey, agentId, mode, leaseSeconds, idempotencyKey }, ctx) => {
+      const execution = store.claimExecution({
+        itemKey: requireItemAccess(ctx, store, itemKey),
+        agentId,
+        mode,
+        leaseSeconds,
+        idempotencyKey,
+      });
       const lease = execution.activeLease!;
       return textResult(
         { executionId: execution.id, leaseId: lease.id, leaseExpiresAt: lease.expiresAt },
@@ -392,7 +413,10 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (input) => textResult({ execution: store.renewExecutionLease(input) }),
+    async (input, ctx) => {
+      requireExecutionAccess(ctx, store, input.executionId);
+      return textResult({ execution: store.renewExecutionLease(input) });
+    },
   );
 
   server.registerTool(
@@ -408,7 +432,10 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (input) => textResult({ event: store.appendExecutionProgress(input) }),
+    async (input, ctx) => {
+      requireExecutionAccess(ctx, store, input.executionId);
+      return textResult({ event: store.appendExecutionProgress(input) });
+    },
   );
 
   server.registerTool(
@@ -424,7 +451,10 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (input) => textResult({ execution: store.requestExecutionHumanInput(input) }),
+    async (input, ctx) => {
+      requireExecutionAccess(ctx, store, input.executionId);
+      return textResult({ execution: store.requestExecutionHumanInput(input) });
+    },
   );
 
   server.registerTool(
@@ -440,14 +470,17 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ executionId, leaseId, report, idempotencyKey }) => textResult({
-      execution: store.submitExecutionResolution({
-        executionId,
-        leaseId,
-        report: report as ExecutionReport,
-        idempotencyKey,
-      }),
-    }),
+    async ({ executionId, leaseId, report, idempotencyKey }, ctx) => {
+      requireExecutionAccess(ctx, store, executionId);
+      return textResult({
+        execution: store.submitExecutionResolution({
+          executionId,
+          leaseId,
+          report: report as ExecutionReport,
+          idempotencyKey,
+        }),
+      });
+    },
   );
 
   server.registerTool(
@@ -462,7 +495,10 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (input) => textResult({ execution: store.markExecutionPendingVerification(input) }),
+    async (input, ctx) => {
+      requireExecutionAccess(ctx, store, input.executionId);
+      return textResult({ execution: store.markExecutionPendingVerification(input) });
+    },
   );
 
   server.registerTool(
@@ -478,14 +514,17 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ executionId, leaseId, note, idempotencyKey }) => textResult({
-      execution: store.releaseExecution({
-        executionId,
-        leaseId,
-        ...(note ? { note } : {}),
-        idempotencyKey,
-      }),
-    }),
+    async ({ executionId, leaseId, note, idempotencyKey }, ctx) => {
+      requireExecutionAccess(ctx, store, executionId);
+      return textResult({
+        execution: store.releaseExecution({
+          executionId,
+          leaseId,
+          ...(note ? { note } : {}),
+          idempotencyKey,
+        }),
+      });
+    },
   );
 
   server.registerTool(
@@ -500,7 +539,10 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (input) => textResult({ execution: store.resumeExecution(input) }),
+    async (input, ctx) => {
+      requireExecutionAccess(ctx, store, input.executionId);
+      return textResult({ execution: store.resumeExecution(input) });
+    },
   );
 
   return server;
