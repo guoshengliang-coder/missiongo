@@ -1,126 +1,150 @@
 #!/usr/bin/env bash
 #
-# Update a MissionGo deployment: back up, pull, rebuild, and check it came back.
-# Run this on the deployment host, from the repository checkout that sits next
-# to the private environment file.
+# Deploy MissionGo to a release-directory host.
 #
-#   ./scripts/deploy.sh --env-file /path/to/private.env
+#   ./scripts/deploy.sh --host missiongo-prod --env-file /etc/missiongo/production.env
 #
-# The backup runs in a throwaway node container rather than through npm, because
-# the host does not need Node installed and the server image does not carry
-# scripts/. That also means the first upgrade can back up with the scripts it
-# just pulled, instead of needing them to already be inside the running image.
+# Run this from a workstation checkout, not on the server. The deployment keeps
+# timestamped source snapshots under <releases>/ and points a `current` symlink
+# at the live one, so this pushes a new snapshot rather than pulling a branch.
+#
+# The backup runs in a throwaway node container, so the server needs neither Node
+# nor a copy of this repository's scripts already in place. That also lets the
+# first deployment back up with the scripts it is currently pushing.
+#
+# Excludes are explicit because rsync does not read .gitignore, and does not read
+# .git/info/exclude at all — a locally ignored directory reaches the server
+# otherwise.
 
 set -euo pipefail
 
 NODE_IMAGE="node:22-bookworm-slim"
+host=""
 env_file=""
-backup_dir=""
+label="deploy"
+releases_dir="/opt/missiongo/releases"
+current_link="/opt/missiongo/current"
+data_dir="/srv/missiongo/data"
+backups_dir="/srv/missiongo/backups"
+public_url=""
 skip_backup=0
 verify=0
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/deploy.sh --env-file <file> [options]
+Usage: scripts/deploy.sh --host <ssh host> --env-file <remote env file> [options]
 
-  --env-file <file>    Private environment file passed to docker compose (required).
-  --backup-dir <dir>   Where to write the backup. Defaults to <MISSIONGO_DATA_PATH>/backups.
-  --skip-backup        Deploy without taking a backup first. Not recommended.
-  --verify             After deploying, confirm the sign-in rate limit cannot be
-                       bypassed with a forged X-Forwarded-For header. This makes
-                       11 failed sign-in attempts, which locks this machine's
-                       public address out of sign-in for 15 minutes.
+  --host <ssh host>       SSH destination or ~/.ssh/config alias (required).
+  --env-file <path>       Environment file ON THE SERVER, passed to docker compose (required).
+  --label <text>          Suffix for the release directory name. Default: deploy.
+  --releases-dir <path>   Remote releases directory. Default: /opt/missiongo/releases.
+  --current-link <path>   Remote "current" symlink. Default: /opt/missiongo/current.
+  --data-dir <path>       Remote data directory. Default: /srv/missiongo/data.
+  --backups-dir <path>    Remote backup directory. Default: /srv/missiongo/backups.
+  --skip-backup           Deploy without backing up first. Not recommended.
+  --verify <origin url>   After deploying, check the release is live and that a
+                          forged X-Forwarded-For cannot reset the sign-in rate
+                          limit. Point this at the ORIGIN, not at a CDN edge:
+                          the check makes 11 failed sign-in attempts, and it
+                          should burn the calling address's own rate-limit
+                          bucket rather than one shared by real visitors.
 USAGE
   exit 1
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --host) host="${2-}"; shift 2 ;;
     --env-file) env_file="${2-}"; shift 2 ;;
-    --backup-dir) backup_dir="${2-}"; shift 2 ;;
+    --label) label="${2-}"; shift 2 ;;
+    --releases-dir) releases_dir="${2-}"; shift 2 ;;
+    --current-link) current_link="${2-}"; shift 2 ;;
+    --data-dir) data_dir="${2-}"; shift 2 ;;
+    --backups-dir) backups_dir="${2-}"; shift 2 ;;
     --skip-backup) skip_backup=1; shift ;;
-    --verify) verify=1; shift ;;
+    --verify) public_url="${2-}"; verify=1; shift 2 ;;
     -h|--help) usage ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
 done
 
-[ -n "$env_file" ] || usage
-[ -f "$env_file" ] || { echo "Environment file not found: $env_file" >&2; exit 1; }
+[ -n "$host" ] && [ -n "$env_file" ] || usage
 
 cd "$(dirname "$0")/.."
 [ -f deploy/docker-compose.yml ] || { echo "Run this from a MissionGo checkout." >&2; exit 1; }
-command -v docker >/dev/null || { echo "docker is required." >&2; exit 1; }
+command -v rsync >/dev/null || { echo "rsync is required." >&2; exit 1; }
 
-# Read one value from the environment file without sourcing it, so a stray
-# command substitution in there cannot run.
-read_env() {
-  sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$env_file" | tail -1 | sed 's/^"\(.*\)"$/\1/; s/^'"'"'\(.*\)'"'"'$/\1/'
-}
+# Paths are expanded here, on the client, which is intended: every value
+# interpolated into a remote command is built by this script, not taken from
+# the server or from untrusted input.
+# shellcheck disable=SC2029
+remote() { ssh "$host" "$@"; }
 
-data_path="$(read_env MISSIONGO_DATA_PATH)"
-bind_port="$(read_env MISSIONGO_BIND_PORT)"
-public_origin="$(read_env MISSIONGO_PUBLIC_ORIGIN)"
-bind_port="${bind_port:-8788}"
+release="$(remote date +%Y%m%d-%H%M%S)-${label}"
+target="${releases_dir}/${release}"
 
-[ -n "$data_path" ] || { echo "MISSIONGO_DATA_PATH is not set in $env_file" >&2; exit 1; }
-[ -d "$data_path" ] || { echo "Data directory not found: $data_path" >&2; exit 1; }
+echo "==> Pushing ${release}"
+rsync -az --delete \
+  --exclude='.git' --exclude='.private' \
+  --exclude='node_modules' --exclude='dist' --exclude='build' \
+  --exclude='.gradle' --exclude='.kotlin' --exclude='coverage' \
+  --exclude='.env' --exclude='data' \
+  --exclude='._*' --exclude='.DS_Store' --exclude='*.tsbuildinfo' \
+  --rsync-path='sudo rsync' \
+  ./ "${host}:${target}/"
 
-compose() { docker compose --env-file "$env_file" -f deploy/docker-compose.yml "$@"; }
-
-echo "==> Pulling the latest revision"
-git pull --ff-only
+# The APK is git-ignored, so a fresh clone cannot supply it. Losing it would
+# silently break the fixed download link that the Android app relies on.
+if ! remote "sudo test -s '${target}/apps/web/public/downloads/missiongo-android-latest.apk'"; then
+  echo "The release has no Android APK at apps/web/public/downloads/." >&2
+  echo "Run npm run publish:android-internal first, or restore it from the current release." >&2
+  exit 1
+fi
 
 if [ "$skip_backup" -eq 1 ]; then
   echo "==> Skipping the backup (--skip-backup)"
 else
-  backup_dir="${backup_dir:-$data_path/backups}"
-  mkdir -p "$backup_dir"
-  echo "==> Backing up into $backup_dir"
-  # Match the data directory's owner so the archive is not left root-owned.
-  owner="$(stat -c '%u:%g' "$data_path" 2>/dev/null || stat -f '%u:%g' "$data_path")"
-  # /data is mounted read-write on purpose. backup.mjs opens the database
-  # read-only, but a WAL reader still has to write the -shm file, and a read-only
+  echo "==> Backing up into ${backups_dir}"
+  # /data is mounted read-write on purpose: backup.mjs opens the database
+  # read-only, but a WAL reader still writes the -shm file, and a read-only
   # mount fails with "attempt to write a readonly database".
-  docker run --rm \
-    --user "$owner" \
-    -v "$data_path:/data" \
-    -v "$backup_dir:/backups" \
-    -v "$PWD/scripts:/scripts:ro" \
-    "$NODE_IMAGE" \
-    node /scripts/backup.mjs --out /backups --database /data/missiongo.sqlite --attachments /data/attachments
+  remote "sudo docker run --rm \
+    -v '${data_dir}:/data' \
+    -v '${backups_dir}:/backups' \
+    -v '${target}/scripts:/scripts:ro' \
+    ${NODE_IMAGE} \
+    node /scripts/backup.mjs --out /backups --database /data/missiongo.sqlite --attachments /data/attachments"
   echo "    Copy this off the machine; a backup beside the data does not survive a lost disk."
 fi
 
 echo "==> Rebuilding and restarting"
-compose up -d --build
+remote "cd '${target}/deploy' && sudo docker compose --env-file '${env_file}' up -d --build"
 
-echo "==> Waiting for the service to report healthy"
-for _ in $(seq 1 60); do
-  if curl -fsS -o /dev/null "http://127.0.0.1:${bind_port}/health"; then
-    echo "    Healthy."
-    break
-  fi
-  sleep 2
-done
-curl -fsS -o /dev/null "http://127.0.0.1:${bind_port}/health" || {
-  echo "Service did not become healthy. Recent logs:" >&2
-  compose logs --tail 40 >&2
-  exit 1
-}
+echo "==> Pointing ${current_link} at the new release"
+remote "sudo ln -sfn '${target}' '${current_link}'"
+remote "sudo docker ps --format '    {{.Names}} | {{.Status}}'"
 
 if [ "$verify" -eq 1 ]; then
-  [ -n "$public_origin" ] || { echo "MISSIONGO_PUBLIC_ORIGIN is not set, cannot verify." >&2; exit 1; }
-  echo "==> Verifying the sign-in rate limit ignores a forged X-Forwarded-For"
+  origin="${public_url%/}"
+  echo "==> Verifying ${origin}"
+
+  headers="$(curl -fsSI "${origin}/api/v1/auth/session" || true)"
+  if grep -qi '^x-frame-options: DENY' <<<"$headers"; then
+    echo "    The new build is serving its own security headers."
+  else
+    echo "    No X-Frame-Options from the application: the new release is not live." >&2
+    exit 1
+  fi
+
   codes=""
   for i in $(seq 1 11); do
-    codes="$codes $(curl -s -o /dev/null -w '%{http_code}' \
-      -X POST "${public_origin%/}/api/v1/auth/login" \
+    codes="$codes $(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+      -X POST "${origin}/api/v1/auth/login" \
       -H 'Content-Type: application/json' \
       -H "X-Forwarded-For: 203.0.113.$i" \
       -d '{"username":"deploy-check","password":"deploy-check"}')"
   done
-  echo "    Responses:$codes"
+  echo "    Sign-in attempts with rotating forged addresses:$codes"
   case "$codes" in
     *429*) echo "    Rate limiting holds against forged addresses." ;;
     *) echo "    Expected a 429 by the 11th attempt. TRUST_PROXY is trusting too much." >&2; exit 1 ;;

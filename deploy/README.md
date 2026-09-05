@@ -39,18 +39,34 @@ Start or update the service from the `deploy` directory:
 docker compose --env-file /path/to/private.env up -d --build
 ```
 
-For routine updates, `scripts/deploy.sh` runs the whole sequence from the
-repository root: pull, back up, rebuild, and wait for the health check.
+### Release-directory deployments
+
+A long-lived deployment is easier to roll back if each version is its own
+directory and a `current` symlink names the live one. `scripts/deploy.sh`
+automates that, run from a workstation checkout rather than on the server:
 
 ```sh
-./scripts/deploy.sh --env-file /path/to/private.env
+./scripts/deploy.sh --host <ssh host> --env-file /etc/missiongo/production.env
 ```
 
-The backup step runs in a throwaway `node` container, so the host does not need
-Node installed. Add `--verify` to confirm afterwards that the sign-in rate limit
-cannot be bypassed with a forged `X-Forwarded-For` header; that check makes 11
-failed sign-in attempts, so it locks the calling address out of sign-in for 15
-minutes.
+It pushes a timestamped snapshot, backs up the database and attachments,
+rebuilds, moves the symlink, and reports container status. The backup runs in a
+throwaway `node` container, so the server needs neither Node nor a copy of these
+scripts already in place.
+
+`rsync` does not read `.gitignore`, and does not read `.git/info/exclude` at
+all, so the script lists its excludes explicitly. Keep local-only notes under
+`.private/`, which it and `.dockerignore` both exclude.
+
+The Android APK is git-ignored, so a fresh clone cannot supply it. The script
+refuses to deploy a release without one rather than silently breaking the fixed
+download link; run `npm run publish:android-internal` first.
+
+Add `--verify <origin url>` to confirm afterwards that the new build is live and
+that a forged `X-Forwarded-For` cannot reset the sign-in rate limit. Point it at
+the origin rather than a CDN edge: it makes 11 failed sign-in attempts, and
+should burn its own address's rate-limit bucket rather than one shared by real
+visitors.
 
 The host reverse proxy should terminate HTTPS and proxy the public hostname to
 `http://127.0.0.1:${MISSIONGO_BIND_PORT}`. Keep the bound port on loopback so

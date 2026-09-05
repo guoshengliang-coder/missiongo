@@ -4,6 +4,9 @@
 .env
 .env.*
 !.env.example
+# Local-only notes and handover documents. Ignored via .git/info/exclude,
+# which rsync does not read, so name it here too.
+.private
 node_modules
 **/node_modules
 dist
