@@ -14,7 +14,8 @@ MissionGo MCP 当前只承担一件事：让经过鉴权的 AI 按用户给出�
 
 ## 已开放工具
 
-- `get_current_account`：确认当前连接账号及其全部产品或指定产品读取范围。
+- `get_current_account`：确认当前连接账号及其全部产品或指定产品读取范围，并返回服务端期望的
+  Skill 版本 `skill.expectedVersion`；已配置公开地址时同时返回 `skill.updateUrl`。
 - `list_products`：读取可见产品。
 - `list_components`：读取某个产品的一层组件。
 - `list_items`：按产品、状态或类型分页查找条目。
@@ -45,6 +46,18 @@ MCP 工具列表不得出现分析回写、领取、续租、进度、提交处�
 - 图片在读取时转换为 JPEG 预览，自动纠正方向，最长边不超过 2048 像素，不放大原图。响应同时保留原附件元数据。
 - 日志每页默认 32 KiB、最大 64 KiB，返回 `nextOffsetBytes` 时表示仍需继续读取。
 - 视频暂不返回二进制内容。响应必须明确说明“未查看视频内容”，客户端不得把元数据读取描述为视频已读。
+
+## Skill 版本
+
+Skill 与本契约共享同一份工具名、字段名和分页规则，因此过期的本地 Skill 副本会静默地按旧流程
+读取，并仍然报告“读取完整”。为此 `get_current_account` 返回服务端期望的 Skill 版本，Skill 负责
+与自身 frontmatter 的 `version` 比对。
+
+版本不一致只提示、不拦截：服务端照常返回数据，由 Skill 在输出中声明可能过期并给出更新地址。
+服务端无法验证客户端实际加载的是哪一份 Skill，所以这是提示而非保证。
+
+任何改变 AI 行为的 SKILL.md 修改都必须同时提升 `packages/contracts` 中的
+`MISSIONGO_SKILL_VERSION`；该约束由契约测试强制。
 
 ## 不可信数据
 

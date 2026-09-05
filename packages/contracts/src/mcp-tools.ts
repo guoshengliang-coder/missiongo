@@ -15,7 +15,7 @@ export interface McpToolDefinition {
 }
 
 export const MCP_TOOL_DEFINITIONS = [
-  { name: "get_current_account", access: "read", purpose: "Confirm the connected account and its product read scope." },
+  { name: "get_current_account", access: "read", purpose: "Confirm the connected account, its product read scope, and the expected Skill version." },
   { name: "list_products", access: "read", purpose: "List products visible to the connected account." },
   { name: "list_components", access: "read", purpose: "List components for a product." },
   { name: "list_items", access: "read", purpose: "Find work items using narrow product and status filters." },

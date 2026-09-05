@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { MISSIONGO_SKILL_DOWNLOAD_PATH, MISSIONGO_SKILL_VERSION } from "@missiongo/contracts";
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -298,6 +299,10 @@ describe("MissionGo REST API", () => {
     expect((await call(1, "get_current_account")).structuredContent).toMatchObject({
       account: { id: "account-test-1", username: "mission-owner" },
       permission: { allProducts: false, productIds: [allowed.id] },
+      skill: {
+        expectedVersion: MISSIONGO_SKILL_VERSION,
+        updateUrl: `https://missiongo.test${MISSIONGO_SKILL_DOWNLOAD_PATH}`,
+      },
     });
     expect((await call(2, "list_products")).structuredContent).toEqual({ products: [allowed] });
     const forbidden = await call(3, "get_item_context", { itemKey: "NO-1" });

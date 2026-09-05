@@ -281,7 +281,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const store = new MissionGoStore(options.databasePath ?? ":memory:");
   const attachmentStorage = new AttachmentStorage(options.attachmentsPath ?? "./data/attachments");
   const publicOrigin = new URL(options.publicOrigin ?? "http://127.0.0.1").origin;
-  const mcpHandler = options.adminAccount ? createMissionGoMcpHandler(store, attachmentStorage) : undefined;
+  const mcpHandler = options.adminAccount
+    // Only hand out an update URL when a real deployment origin was configured;
+    // the loopback fallback above is not an address a client can reinstall from.
+    ? createMissionGoMcpHandler(store, attachmentStorage, options.publicOrigin ? { publicOrigin } : {})
+    : undefined;
   const oauthProvider = options.adminAccount ? new MissionGoOAuthProvider(options.adminAccount, publicOrigin) : undefined;
   const sdkRateLimits = { ...DEFAULT_SDK_RATE_LIMITS, ...options.sdkRateLimits };
   const loginFailures = new Map<string, { count: number; resetAt: number }>();

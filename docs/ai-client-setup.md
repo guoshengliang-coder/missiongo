@@ -35,6 +35,23 @@ curl -fsSL "https://missiongo.example.com/downloads/missiongo-skill/SKILL.md" \
 
 安装或更新后，需要重新开始一次 AI 会话，让客户端重新发现 Skill。
 
+## 保持 Skill 最新
+
+Skill 内含工具名、字段名和分页规则，这些与服务端契约绑定。过期的本地副本不会报错，AI 会按旧
+流程读完并照常报告“读取完整”，因此需要一个显式的版本检查。
+
+`get_current_account` 会返回服务端期望的 Skill 版本，Skill 会与自身 frontmatter 中的 `version`
+比对。不一致时**不影响读取**，AI 会照常读完，但会在读取状态旁声明本 Skill 可能已过期并给出更新
+地址。看到该提示时，用同一条命令重新下载覆盖即可：
+
+```bash
+curl -fsSL "https://missiongo.example.com/downloads/missiongo-skill/SKILL.md" \
+  -o ~/.codex/skills/missiongo/SKILL.md
+```
+
+该地址始终返回当前部署对应的版本，并禁用缓存，所以不需要清理中间缓存。覆盖后重新开始一次
+AI 会话。
+
 ## 配置 MCP
 
 MCP 使用 Streamable HTTP，路径为 `/mcp`，并通过 OAuth 连接现有 MissionGo 账号。从互联网访问时必须经过 HTTPS。第一次连接会打开 MissionGo 登录页；账号密码只交给 MissionGo 服务端验证，不会传给 AI。验证成功后，AI 客户端保存限时授权，服务端在每次读取时继续校验账号及其产品权限。
@@ -91,6 +108,11 @@ codex mcp login missiongo --scopes missiongo:read
 - 视频当前只读取元数据，AI 会明确说没有查看视频内容。
 - AI 会报告“读取完整”或“读取部分”，并列出任何失败项。
 - MissionGo 条目、时间线和状态没有任何新增或变化。
+- Skill 版本与服务端一致时，输出中不出现过期提示。
+
+版本提示需要单独手工验证一次：把本地 SKILL.md 的 frontmatter `version` 临时改成 `0.0.1`，
+重新开始会话并读取同一条目，确认 AI 仍然完整读完，且在读取状态旁声明 Skill 可能已过期并给出
+更新地址；随后重新下载覆盖，确认提示消失。
 
 ## 当前边界
 

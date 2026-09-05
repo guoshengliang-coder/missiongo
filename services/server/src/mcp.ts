@@ -1,6 +1,7 @@
 import { open, readFile, stat } from "node:fs/promises";
 
 import { McpServer, createMcpHandler, type McpHttpHandler, type ServerContext } from "@modelcontextprotocol/server";
+import { skillVersionInfo } from "@missiongo/contracts";
 import { WORK_ITEM_STATUSES, WORK_ITEM_TYPES, type ExecutionReport } from "@missiongo/domain";
 import sharp from "sharp";
 import { z } from "zod";
@@ -21,6 +22,8 @@ export const MISSIONGO_MCP_INSTRUCTIONS =
 
 export interface MissionGoMcpOptions {
   readonly enableWriteTools?: boolean;
+  /** Deployment origin, used to tell clients where to reinstall an outdated Skill. */
+  readonly publicOrigin?: string;
 }
 
 interface McpAccountAccess {
@@ -98,7 +101,7 @@ export function createMissionGoMcpServer(
     "get_current_account",
     {
       title: "Get connected MissionGo account",
-      description: "Confirm which MissionGo account is connected and whether it has all-product or selected-product read access.",
+      description: "Confirm which MissionGo account is connected, whether it has all-product or selected-product read access, and which Skill version the server expects.",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -109,6 +112,7 @@ export function createMissionGoMcpServer(
         permission: access.productIds === "*"
           ? { allProducts: true }
           : { allProducts: false, productIds: access.productIds },
+        skill: skillVersionInfo(options.publicOrigin),
       });
     },
   );
@@ -548,8 +552,12 @@ export function createMissionGoMcpServer(
   return server;
 }
 
-export function createMissionGoMcpHandler(store: MissionGoStore, attachmentStorage: AttachmentStorage): McpHttpHandler {
-  return createMcpHandler(() => createMissionGoMcpServer(store, attachmentStorage), {
+export function createMissionGoMcpHandler(
+  store: MissionGoStore,
+  attachmentStorage: AttachmentStorage,
+  options: MissionGoMcpOptions = {},
+): McpHttpHandler {
+  return createMcpHandler(() => createMissionGoMcpServer(store, attachmentStorage, options), {
     responseMode: "json",
   });
 }

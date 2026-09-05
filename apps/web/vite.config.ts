@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
@@ -6,6 +8,11 @@ import react from "@vitejs/plugin-react";
 
 const repositoryRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const androidDownloadPath = "/downloads/missiongo-android-latest.apk";
+const skillDownloadPath = "/downloads/missiongo-skill/SKILL.md";
+const skillSourcePath = resolve(repositoryRoot, "skills/missiongo/SKILL.md");
+// Keep in sync with MISSIONGO_SKILL_ORIGIN_PLACEHOLDER in packages/contracts/src/skill.ts
+// and the sed substitution in deploy/Dockerfile.
+const skillOriginPlaceholder = "__MISSIONGO_PUBLIC_ORIGIN__";
 
 function androidDownloadHeaders(): Plugin {
   return {
@@ -29,6 +36,36 @@ function androidDownloadHeaders(): Plugin {
         }
         next();
       });
+    },
+  };
+}
+
+/**
+ * Serve the published AI Skill during dev and preview. Production publishes this file
+ * from deploy/Dockerfile, which substitutes the origin at image build time; the file is
+ * not in public/, so without this the documented install URL cannot be verified locally.
+ */
+function skillDownload(publicOrigin: string | undefined): Plugin {
+  const middleware = (request: IncomingMessage, response: ServerResponse, next: () => void): void => {
+    if (request.url?.split("?", 1)[0] !== skillDownloadPath) {
+      next();
+      return;
+    }
+
+    const skill = readFileSync(skillSourcePath, "utf8")
+      .replaceAll(skillOriginPlaceholder, publicOrigin ?? "http://127.0.0.1:5173");
+    response.setHeader("Content-Type", "text/markdown; charset=utf-8");
+    response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    response.end(skill);
+  };
+
+  return {
+    name: "missiongo-skill-download",
+    configureServer(server) {
+      server.middlewares.use(middleware);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(middleware);
     },
   };
 }
@@ -63,6 +100,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       androidDownloadHeaders(),
+      skillDownload(publicOrigin),
       {
         name: "missiongo-social-image",
         transformIndexHtml() {
