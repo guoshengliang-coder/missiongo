@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "rules": {
+    // `_` marks a binding that exists only to omit a field while destructuring.
+    "eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+
+    // Fastify awaits async route handlers and routes their rejections to the
+    // error handler. The rule targets frameworks that leave them unhandled.
+    "oxc/no-async-endpoint-handlers": "off",
+    // IndexedDB requests take exactly one `onsuccess`/`onerror` handler each.
+    "unicorn/prefer-add-event-listener": "off",
+    // Sequential requests are the point in tests and in the upload loop.
+    "eslint/no-await-in-loop": "off",
+    // Every call site already sorts or reverses a copy it just created.
+    "unicorn/no-array-sort": "off",
+    "unicorn/no-array-reverse": "off",
+    // Spreading reads better than mutation when building small DTOs.
+    "oxc/no-map-spread": "off",
+    // Short callback parameters deliberately reuse names such as `value`.
+    "eslint/no-shadow": "off",
+    // Local helpers stay next to the single method that uses them.
+    "unicorn/consistent-function-scoping": "off"
+  },
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/build/**",
+    "**/node_modules/**",
+    "apps/web/public/**"
+  ]
+}

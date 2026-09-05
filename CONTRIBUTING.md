@@ -14,6 +14,10 @@ npm ci
 npm run check
 ```
 
+`npm run check` 依次执行 lint、测试、类型检查和构建，CI 运行同一条命令。lint 使用
+[oxlint](https://oxc.rs)，规则在 `.oxlintrc.json` 中配置；关闭的每条规则都在该文件里
+写明了原因。它只做静态检查，不会重排代码格式。
+
 Android 相关改动还需运行：
 
 ```bash

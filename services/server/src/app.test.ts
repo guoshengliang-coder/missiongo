@@ -129,7 +129,7 @@ describe("MissionGo REST API", () => {
     expect(initialized.result).toMatchObject({ serverInfo: { name: "missiongo" } });
 
     const tools = await call(2, "tools/list");
-    const names = (tools.result?.tools as Array<{ name: string }>).map((tool) => tool.name);
+    const names = (tools.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name);
     expect(names).toEqual([
       "get_current_account",
       "list_products",
