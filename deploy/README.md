@@ -59,14 +59,28 @@ all, so the script lists its excludes explicitly. Keep local-only notes under
 `.private/`, which it and `.dockerignore` both exclude.
 
 The Android APK is git-ignored, so a fresh clone cannot supply it. The script
-refuses to deploy a release without one rather than silently breaking the fixed
-download link; run `npm run publish:android-internal` first.
+warns when a release carries none. Whether that matters depends on where the
+download is served from: a host proxy that aliases the file from its own
+directory keeps the public link working regardless.
 
-Add `--verify <origin url>` to confirm afterwards that the new build is live and
-that a forged `X-Forwarded-For` cannot reset the sign-in rate limit. Point it at
-the origin rather than a CDN edge: it makes 11 failed sign-in attempts, and
-should burn its own address's rate-limit bucket rather than one shared by real
-visitors.
+Add `--verify <url>` to confirm afterwards that the new build is live and that a
+forged `X-Forwarded-For` cannot reset the sign-in rate limit. It makes 11 failed
+sign-in attempts, so aim it where that burns the caller's own bucket rather than
+one shared by real visitors. Behind a CDN that rewrites `X-Forwarded-For` to the
+real visitor address the public hostname does that; behind one that only appends,
+use the origin, with `--verify-host` to supply the hostname.
+
+### Restricting the origin to a CDN
+
+A CDN protects nothing if the origin also answers on its own address. Anyone who
+learns it can bypass the CDN, and `CF-Connecting-IP` and similar headers become
+forgeable, so they cannot be trusted to identify the visitor.
+
+Allow only the CDN's published ranges plus loopback in the host proxy's server
+block for this site, and have it replace `X-Forwarded-For` with the header the
+CDN sets to the real visitor address rather than appending to it. Sign-in rate
+limiting then counts per visitor instead of per CDN edge, and a forged entry
+never reaches the application. Refresh the ranges when the CDN publishes changes.
 
 The host reverse proxy should terminate HTTPS and proxy the public hostname to
 `http://127.0.0.1:${MISSIONGO_BIND_PORT}`. Keep the bound port on loopback so

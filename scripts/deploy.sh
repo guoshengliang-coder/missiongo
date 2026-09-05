@@ -46,12 +46,15 @@ Usage: scripts/deploy.sh --host <ssh host> --env-file <remote env file> [options
   --keep <n>              Release directories to retain, newest first. Default: 10.
                           0 keeps everything. The live release is never removed.
   --skip-backup           Deploy without backing up first. Not recommended.
-  --verify <origin url>   After deploying, check the release is live and that a
+  --verify <url>          After deploying, check the release is live and that a
                           forged X-Forwarded-For cannot reset the sign-in rate
-                          limit. Point this at the ORIGIN, not at a CDN edge:
-                          the check makes 11 failed sign-in attempts, and it
-                          should burn the calling address's own rate-limit
-                          bucket rather than one shared by real visitors.
+                          limit. The check makes 11 failed sign-in attempts, so
+                          aim it where that burns the caller's own rate-limit
+                          bucket. Behind a CDN that rewrites X-Forwarded-For to
+                          the real visitor address, the public hostname does
+                          that. Behind one that only appends, the application
+                          attributes the attempts to the CDN edge and locks out
+                          every visitor sharing it, so use the origin instead.
   --verify-host <host>    Host header to send while verifying, for an origin
                           addressed by IP behind a CDN. Certificate validation
                           is skipped for those requests, since a certificate
@@ -104,12 +107,13 @@ rsync -az --delete \
   --rsync-path='sudo rsync' \
   ./ "${host}:${target}/"
 
-# The APK is git-ignored, so a fresh clone cannot supply it. Losing it would
-# silently break the fixed download link that the Android app relies on.
+# The APK is git-ignored, so a fresh clone cannot supply it. Whether that
+# matters depends on the deployment: if the host proxy serves the download from
+# its own directory, the public link keeps working and only the copy inside the
+# image is missing. Warn rather than refuse, and let the operator judge.
 if ! remote "sudo test -s '${target}/apps/web/public/downloads/missiongo-android-latest.apk'"; then
-  echo "The release has no Android APK at apps/web/public/downloads/." >&2
-  echo "Run npm run publish:android-internal first, or restore it from the current release." >&2
-  exit 1
+  echo "    Note: this release carries no Android APK under apps/web/public/downloads/." >&2
+  echo "    Run npm run publish:android-internal if the download link is served from the image." >&2
 fi
 
 if [ "$skip_backup" -eq 1 ]; then
