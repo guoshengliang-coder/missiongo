@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MissionGo</string>
+    <string name="loading_message">正在打开 MissionGo…</string>
+    <string name="load_error_title">暂时无法连接 MissionGo</string>
+    <string name="load_error_message">请检查网络连接后重试。</string>
+    <string name="retry">重新连接</string>
+    <string name="submit_feedback">提交反馈</string>
+    <string name="feedback_submitted">反馈已提交：%1$s</string>
+    <string name="feedback_failed">反馈打开失败：%1$s</string>
+    <string name="unknown_error">未知错误</string>
+    <string name="choose_gallery">从图库选择图片或视频</string>
+    <string name="choose_files">选择日志或其他文件</string>
+</resources>

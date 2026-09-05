@@ -23,3 +23,9 @@ data/
 .vscode/
 DerivedData/
 .build/
+.gradle/
+**/build/
+local.properties
+
+# Locally published internal APK. It may contain environment-specific configuration.
+apps/web/public/downloads/*.apk

@@ -1,0 +1,70 @@
+name: missiongo
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: server
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: 8787
+      DATABASE_PATH: /data/missiongo.sqlite
+      ATTACHMENTS_PATH: /data/attachments
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:?ADMIN_API_TOKEN is required}
+      ADMIN_ACCOUNT_ID: ${ADMIN_ACCOUNT_ID:?ADMIN_ACCOUNT_ID is required}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME is required}
+      ADMIN_PASSWORD_SCRYPT: ${ADMIN_PASSWORD_SCRYPT:?ADMIN_PASSWORD_SCRYPT is required}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      MISSIONGO_PUBLIC_ORIGIN: ${MISSIONGO_PUBLIC_ORIGIN:?MISSIONGO_PUBLIC_ORIGIN is required}
+      ADMIN_AUTHORIZED_PRODUCT_IDS: ${ADMIN_AUTHORIZED_PRODUCT_IDS:-}
+    volumes:
+      - ${MISSIONGO_DATA_PATH:?MISSIONGO_DATA_PATH is required}:/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: web
+      args:
+        MISSIONGO_PUBLIC_ORIGIN: ${MISSIONGO_PUBLIC_ORIGIN:?MISSIONGO_PUBLIC_ORIGIN is required}
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:${MISSIONGO_BIND_PORT:-8788}:8080
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --tries=1
+        - --spider
+        - http://127.0.0.1:8080/health
+      interval: 15s
+      timeout: 5s
+      start_period: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

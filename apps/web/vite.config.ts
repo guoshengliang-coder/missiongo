@@ -1,10 +1,37 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
 const repositoryRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
+const androidDownloadPath = "/downloads/missiongo-android-latest.apk";
+
+function androidDownloadHeaders(): Plugin {
+  return {
+    name: "missiongo-android-download-headers",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (request.url?.split("?", 1)[0] === androidDownloadPath) {
+          response.setHeader("Content-Type", "application/vnd.android.package-archive");
+          response.setHeader("Content-Disposition", 'attachment; filename="missiongo-android-latest.apk"');
+          response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        }
+        next();
+      });
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (request.url?.split("?", 1)[0] === androidDownloadPath) {
+          response.setHeader("Content-Type", "application/vnd.android.package-archive");
+          response.setHeader("Content-Disposition", 'attachment; filename="missiongo-android-latest.apk"');
+          response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        }
+        next();
+      });
+    },
+  };
+}
 
 function readPublicOrigin(value: string | undefined): string | undefined {
   if (!value) {
@@ -35,6 +62,7 @@ export default defineConfig(({ mode }) => {
     envDir: repositoryRoot,
     plugins: [
       react(),
+      androidDownloadHeaders(),
       {
         name: "missiongo-social-image",
         transformIndexHtml() {

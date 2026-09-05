@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 
 import {
@@ -6,6 +6,7 @@ import {
   assertWorkItemTransition,
   createWorkItemKey,
   EXECUTION_MODES,
+  WORK_ITEM_OCCURRENCE_FREQUENCIES,
   WORK_ITEM_PRIORITIES,
   WORK_ITEM_STATUSES,
   WORK_ITEM_TYPES,
@@ -15,12 +16,13 @@ import {
   type ExecutionStatus,
   type WorkItemEnvironment,
   type WorkItemPriority,
+  type WorkItemReport,
   type WorkItemSnapshot,
   type WorkItemStatus,
   type WorkItemType,
 } from "@missiongo/domain";
 
-import { conflict, invalidInput, notFound } from "./errors.js";
+import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { MissionGoDatabase } from "./storage/database.js";
 import {
   COMPONENT_KINDS,
@@ -31,10 +33,17 @@ import {
   type ComponentSnapshot,
   type CreateWorkItemInput,
   type ExecutionSnapshot,
+  type FeedbackDraftSnapshot,
+  type FeedbackLogEntry,
+  type FeedbackWebSession,
   type CreateAttachmentMetadataInput,
   type ListWorkItemsInput,
   type ProductSnapshot,
+  type CreatedSdkToken,
+  type SdkPrincipal,
+  type SdkTokenSnapshot,
   type TransitionWorkItemInput,
+  type UpsertFeedbackDraftInput,
   type UpdateWorkItemInput,
   type WorkItemEventSnapshot,
   type WorkItemListSummary,
@@ -70,6 +79,7 @@ interface WorkItemRow {
   status: WorkItemStatus;
   title: string;
   description: string;
+  report_json: string | null;
   environment_json: string | null;
   created_at: string;
   updated_at: string;
@@ -90,6 +100,7 @@ interface AttachmentRow {
   id: string;
   item_key: string;
   kind: AttachmentKind;
+  display_number: number;
   original_filename: string;
   storage_filename: string;
   content_type: string;
@@ -123,6 +134,38 @@ interface LeaseRow {
   execution_status: ExecutionStatus;
 }
 
+interface SdkTokenRow {
+  id: string;
+  name: string;
+  token_hash: string;
+  product_id: string;
+  platform: "android";
+  source_component_id: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+interface FeedbackDraftRow {
+  id: string;
+  client_draft_id: string;
+  product_id: string;
+  source_component_id: string | null;
+  status: "editing" | "submitted" | "expired";
+  type: WorkItemType;
+  priority: WorkItemPriority;
+  title: string;
+  description: string;
+  environment_json: string;
+  context_json: string;
+  logs_json: string;
+  item_key: string | null;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 const PRODUCT_PREFIX_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
 
 function requiredText(value: string, field: string): string {
@@ -140,6 +183,15 @@ function isOneOf<T extends string>(value: string, choices: readonly T[]): value 
 function parseEnvironment(value: string | null): WorkItemEnvironment | undefined {
   if (value === null) return undefined;
   return JSON.parse(value) as WorkItemEnvironment;
+}
+
+function parseReport(value: string | null): WorkItemReport | undefined {
+  if (value === null) return undefined;
+  return JSON.parse(value) as WorkItemReport;
+}
+
+function sdkTokenHash(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
 export class MissionGoStore {
@@ -260,63 +312,347 @@ export class MissionGoStore {
     return this.getComponent(componentId);
   }
 
+  createSdkToken(input: {
+    name: string;
+    productId: string;
+    sourceComponentId?: string;
+    expiresAt?: string;
+  }): CreatedSdkToken {
+    const name = requiredText(input.name, "Token name");
+    if (name.length > 100) throw invalidInput("Token name must be 100 characters or fewer.");
+    this.getProduct(input.productId);
+    if (input.sourceComponentId) {
+      this.assertComponentsBelongToProduct(input.productId, [input.sourceComponentId]);
+      if (this.getComponent(input.sourceComponentId).kind !== "android") {
+        throw invalidInput("An Android SDK token can only target an Android module.");
+      }
+    }
+    const now = new Date().toISOString();
+    let expiresAt: string | undefined;
+    if (input.expiresAt) {
+      const parsedExpiresAt = new Date(input.expiresAt);
+      if (Number.isNaN(parsedExpiresAt.valueOf())) {
+        throw invalidInput("expiresAt must be a future ISO 8601 timestamp.");
+      }
+      expiresAt = parsedExpiresAt.toISOString();
+      if (expiresAt <= now) throw invalidInput("expiresAt must be a future ISO 8601 timestamp.");
+    }
+
+    const id = randomUUID();
+    const token = `mg_sdk_${randomBytes(32).toString("base64url")}`;
+    this.database.connection
+      .prepare(
+        `INSERT INTO access_tokens
+           (id, kind, name, token_hash, product_id, platform, source_component_id, expires_at, created_at)
+         VALUES (?, 'sdk', ?, ?, ?, 'android', ?, ?, ?)`,
+      )
+      .run(
+        id,
+        name,
+        sdkTokenHash(token),
+        input.productId,
+        input.sourceComponentId ?? null,
+        expiresAt ?? null,
+        now,
+      );
+    return { ...this.getSdkToken(id), token };
+  }
+
+  listSdkTokens(): readonly SdkTokenSnapshot[] {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT id, name, token_hash, product_id, platform, source_component_id,
+                expires_at, revoked_at, last_used_at, created_at
+         FROM access_tokens WHERE kind = 'sdk' ORDER BY created_at DESC`,
+      )
+      .all() as unknown as SdkTokenRow[];
+    return rows.map((row) => this.mapSdkToken(row));
+  }
+
+  revokeSdkToken(tokenId: string): SdkTokenSnapshot {
+    const current = this.getSdkToken(tokenId);
+    if (!current.revokedAt) {
+      this.database.connection
+        .prepare("UPDATE access_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+        .run(new Date().toISOString(), tokenId);
+    }
+    return this.getSdkToken(tokenId);
+  }
+
+  authenticateSdkToken(token: string): SdkPrincipal | undefined {
+    if (!/^mg_sdk_[A-Za-z0-9_-]{43}$/.test(token)) return undefined;
+    const row = this.database.connection
+      .prepare(
+        `SELECT id, name, token_hash, product_id, platform, source_component_id,
+                expires_at, revoked_at, last_used_at, created_at
+         FROM access_tokens WHERE kind = 'sdk' AND token_hash = ?`,
+      )
+      .get(sdkTokenHash(token)) as unknown as SdkTokenRow | undefined;
+    const now = new Date().toISOString();
+    if (!row || row.revoked_at || (row.expires_at && row.expires_at <= now)) return undefined;
+    this.database.connection.prepare("UPDATE access_tokens SET last_used_at = ? WHERE id = ?").run(now, row.id);
+    return {
+      tokenId: row.id,
+      productId: row.product_id,
+      platform: row.platform,
+      ...(row.source_component_id ? { sourceComponentId: row.source_component_id } : {}),
+    };
+  }
+
+  upsertFeedbackDraft(input: UpsertFeedbackDraftInput): FeedbackDraftSnapshot {
+    const clientDraftId = requiredText(input.clientDraftId, "Client draft ID");
+    if (!/^[A-Za-z0-9_-]{8,100}$/.test(clientDraftId)) {
+      throw invalidInput("Client draft ID must contain 8-100 URL-safe characters.");
+    }
+    if (!isOneOf(input.type, WORK_ITEM_TYPES)) throw invalidInput("Unsupported work-item type.");
+    if (!isOneOf(input.priority, WORK_ITEM_PRIORITIES)) throw invalidInput("Unsupported priority.");
+    if (input.environment.platform !== "android") throw invalidInput("Android SDK drafts must use the Android platform.");
+    const title = input.title.trim();
+    const description = input.description.trim();
+    if (title.length > 500) throw invalidInput("Title must be 500 characters or fewer.");
+    if (description.length > 20_000) throw invalidInput("Description must be 20,000 characters or fewer.");
+    const context = this.validateFeedbackStringMap(input.context, "Context", 50, 2_000);
+    const logs = this.validateFeedbackLogs(input.logs);
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.parse(now) + 24 * 60 * 60 * 1_000).toISOString();
+
+    return this.database.transaction(() => {
+      const existing = this.getFeedbackDraftRowByClientId(input.principal.tokenId, clientDraftId);
+      if (existing?.status === "submitted") {
+        throw conflict("draft_already_submitted", "This feedback draft has already been submitted.");
+      }
+      if (existing?.status === "expired" || (existing && existing.expires_at <= now)) {
+        if (existing.status !== "expired") {
+          this.database.connection.prepare("UPDATE feedback_drafts SET status = 'expired', updated_at = ? WHERE id = ?")
+            .run(now, existing.id);
+        }
+        throw conflict("draft_expired", "This feedback draft has expired.");
+      }
+
+      if (existing) {
+        this.database.connection
+          .prepare(
+            `UPDATE feedback_drafts
+             SET type = ?, priority = ?, title = ?, description = ?, environment_json = ?,
+                 context_json = ?, logs_json = ?, expires_at = ?, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(
+            input.type,
+            input.priority,
+            title,
+            description,
+            JSON.stringify(input.environment),
+            JSON.stringify(context),
+            JSON.stringify(logs),
+            expiresAt,
+            now,
+            existing.id,
+          );
+        return this.mapFeedbackDraft(this.getFeedbackDraftRow(existing.id, input.principal.tokenId)!);
+      }
+
+      const id = randomUUID();
+      this.database.connection
+        .prepare(
+          `INSERT INTO feedback_drafts
+             (id, access_token_id, client_draft_id, product_id, source_component_id, status,
+              type, priority, title, description, environment_json, context_json, logs_json,
+              expires_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'editing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          input.principal.tokenId,
+          clientDraftId,
+          input.principal.productId,
+          input.principal.sourceComponentId ?? null,
+          input.type,
+          input.priority,
+          title,
+          description,
+          JSON.stringify(input.environment),
+          JSON.stringify(context),
+          JSON.stringify(logs),
+          expiresAt,
+          now,
+          now,
+        );
+      return this.mapFeedbackDraft(this.getFeedbackDraftRow(id, input.principal.tokenId)!);
+    });
+  }
+
+  getFeedbackDraft(draftId: string, principal: SdkPrincipal): FeedbackDraftSnapshot {
+    const row = this.getFeedbackDraftRow(draftId, principal.tokenId);
+    if (!row) throw notFound("Feedback draft");
+    if (row.status === "editing" && row.expires_at <= new Date().toISOString()) {
+      const now = new Date().toISOString();
+      this.database.connection.prepare("UPDATE feedback_drafts SET status = 'expired', updated_at = ? WHERE id = ?")
+        .run(now, row.id);
+      return this.mapFeedbackDraft({ ...row, status: "expired", updated_at: now });
+    }
+    return this.mapFeedbackDraft(row);
+  }
+
+  finalizeFeedbackDraft(
+    draftId: string,
+    principal: SdkPrincipal,
+    workItemStatus: "inbox" | "ready" = "inbox",
+  ): FeedbackDraftSnapshot {
+    return this.database.transaction(() => {
+      const row = this.getFeedbackDraftRow(draftId, principal.tokenId);
+      if (!row) throw notFound("Feedback draft");
+      if (row.status === "submitted") return this.mapFeedbackDraft(row);
+      const now = new Date().toISOString();
+      if (row.status === "expired" || row.expires_at <= now) {
+        this.database.connection.prepare("UPDATE feedback_drafts SET status = 'expired', updated_at = ? WHERE id = ?")
+          .run(now, row.id);
+        throw conflict("draft_expired", "This feedback draft has expired.");
+      }
+      const title = requiredText(row.title, "Title");
+      const environment = JSON.parse(row.environment_json) as WorkItemEnvironment;
+      const itemId = randomUUID();
+      const itemKey = this.insertWorkItem(
+        {
+          productId: row.product_id,
+          ...(row.source_component_id ? {
+            sourceComponentId: row.source_component_id,
+            affectedComponentIds: [row.source_component_id],
+          } : {}),
+          type: row.type,
+          priority: row.priority,
+          title,
+          description: row.description,
+          environment,
+          status: workItemStatus,
+        },
+        title,
+        row.description,
+        itemId,
+        now,
+        {
+          type: row.type,
+          source: "android_sdk",
+          feedbackDraftId: row.id,
+          context: JSON.parse(row.context_json) as Readonly<Record<string, string>>,
+          logs: JSON.parse(row.logs_json) as readonly FeedbackLogEntry[],
+        },
+      );
+      this.database.connection
+        .prepare("UPDATE feedback_drafts SET status = 'submitted', submitted_item_id = ?, updated_at = ? WHERE id = ?")
+        .run(itemId, now, row.id);
+      return this.mapFeedbackDraft(this.getFeedbackDraftRow(row.id, principal.tokenId)!, itemKey);
+    });
+  }
+
+  createFeedbackWebSession(draftId: string, principal: SdkPrincipal): FeedbackWebSession {
+    const draft = this.getFeedbackDraft(draftId, principal);
+    if (draft.status !== "editing") {
+      throw conflict("draft_not_editable", "Only an active feedback draft can open an editing session.");
+    }
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.parse(now) + 15 * 60 * 1_000).toISOString();
+    const token = `mg_ws_${randomBytes(32).toString("base64url")}`;
+    this.database.connection
+      .prepare(
+        `INSERT INTO feedback_web_sessions
+           (id, token_hash, access_token_id, draft_id, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(randomUUID(), sdkTokenHash(token), principal.tokenId, draftId, expiresAt, now);
+    return { token, expiresAt };
+  }
+
+  authenticateFeedbackWebSession(token: string, draftId: string): SdkPrincipal | undefined {
+    if (!/^mg_ws_[A-Za-z0-9_-]{43}$/.test(token)) return undefined;
+    const now = new Date().toISOString();
+    const row = this.database.connection
+      .prepare(
+        `SELECT a.id AS token_id, a.product_id, a.platform, a.source_component_id,
+                a.expires_at AS token_expires_at, a.revoked_at
+         FROM feedback_web_sessions s
+         JOIN access_tokens a ON a.id = s.access_token_id
+         WHERE s.token_hash = ? AND s.draft_id = ? AND s.expires_at > ? AND a.kind = 'sdk'`,
+      )
+      .get(sdkTokenHash(token), draftId, now) as unknown as {
+        token_id: string;
+        product_id: string;
+        platform: "android";
+        source_component_id: string | null;
+        token_expires_at: string | null;
+        revoked_at: string | null;
+      } | undefined;
+    if (!row || row.revoked_at || (row.token_expires_at && row.token_expires_at <= now)) return undefined;
+    return {
+      tokenId: row.token_id,
+      productId: row.product_id,
+      platform: row.platform,
+      ...(row.source_component_id ? { sourceComponentId: row.source_component_id } : {}),
+    };
+  }
+
+  consumeSdkRateLimit(
+    principal: SdkPrincipal,
+    bucket: string,
+    limit: number,
+    windowMilliseconds: number,
+  ): { readonly limit: number; readonly remaining: number; readonly resetAt: string } {
+    if (!/^[a-z_]{1,50}$/.test(bucket)) throw invalidInput("Rate-limit bucket is invalid.");
+    if (!Number.isSafeInteger(limit) || limit < 1 || !Number.isSafeInteger(windowMilliseconds) || windowMilliseconds < 1_000) {
+      throw invalidInput("Rate-limit configuration is invalid.");
+    }
+    const now = Date.now();
+    return this.database.transaction(() => {
+      const current = this.database.connection
+        .prepare(
+          `SELECT window_started_at_ms, request_count
+           FROM sdk_rate_limits WHERE access_token_id = ? AND bucket = ?`,
+        )
+        .get(principal.tokenId, bucket) as unknown as { window_started_at_ms: number; request_count: number } | undefined;
+      const startsNewWindow = !current || now - current.window_started_at_ms >= windowMilliseconds;
+      const windowStartedAt = startsNewWindow ? now : current.window_started_at_ms;
+      const requestCount = startsNewWindow ? 0 : current.request_count;
+      if (requestCount >= limit) {
+        throw new MissionGoError("rate_limit_exceeded", "The SDK request limit has been reached. Please retry later.", 429);
+      }
+      const nextCount = requestCount + 1;
+      this.database.connection
+        .prepare(
+          `INSERT INTO sdk_rate_limits (access_token_id, bucket, window_started_at_ms, request_count)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(access_token_id, bucket) DO UPDATE SET
+             window_started_at_ms = excluded.window_started_at_ms,
+             request_count = excluded.request_count`,
+        )
+        .run(principal.tokenId, bucket, windowStartedAt, nextCount);
+      return {
+        limit,
+        remaining: limit - nextCount,
+        resetAt: new Date(windowStartedAt + windowMilliseconds).toISOString(),
+      };
+    });
+  }
+
   createWorkItem(input: CreateWorkItemInput): WorkItemSnapshot {
     const title = requiredText(input.title, "Title");
     const description = input.description.trim();
+    if (description.length > 20_000) throw invalidInput("Description must be 20,000 characters or fewer.");
+    if (input.status !== undefined && !isOneOf(input.status, ["inbox", "ready"] as const)) {
+      throw invalidInput("A work item can only be created as a draft or ready for processing.");
+    }
+    if (input.status === "ready" && !input.environment) {
+      throw invalidInput("environment.platform is required when submitting an item for processing.");
+    }
     if (!isOneOf(input.type, WORK_ITEM_TYPES)) throw invalidInput(`Unsupported work-item type: ${String(input.type)}.`);
     if (!isOneOf(input.priority, WORK_ITEM_PRIORITIES)) {
       throw invalidInput(`Unsupported priority: ${String(input.priority)}.`);
     }
 
-    const affectedComponentIds = [...new Set(input.affectedComponentIds ?? [])];
     const now = new Date().toISOString();
     const id = randomUUID();
-
-    const itemKey = this.database.transaction(() => {
-      const product = this.getProductRow(input.productId);
-      if (!product) throw notFound("Product");
-      this.assertComponentsBelongToProduct(
-        input.productId,
-        input.sourceComponentId ? [input.sourceComponentId, ...affectedComponentIds] : affectedComponentIds,
-      );
-      if (input.sourceComponentId && this.getComponent(input.sourceComponentId).kind !== input.environment.platform) {
-        throw invalidInput("The source module must belong to the selected platform.");
-      }
-
-      const key = createWorkItemKey(product.key_prefix, product.next_item_sequence);
-      this.database.connection
-        .prepare("UPDATE products SET next_item_sequence = next_item_sequence + 1, updated_at = ? WHERE id = ?")
-        .run(now, input.productId);
-      this.database.connection
-        .prepare(
-          `INSERT INTO work_items (
-             id, item_key, sequence, product_id, source_component_id, area_id,
-             type, priority, status, title, description, environment_json, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'inbox', ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          id,
-          key,
-          product.next_item_sequence,
-          input.productId,
-          input.sourceComponentId ?? null,
-          input.areaId ?? null,
-          input.type,
-          input.priority,
-          title,
-          description,
-          input.environment ? JSON.stringify(input.environment) : null,
-          now,
-          now,
-        );
-
-      const insertAffected = this.database.connection.prepare(
-        "INSERT INTO work_item_affected_components (item_id, component_id) VALUES (?, ?)",
-      );
-      for (const componentId of affectedComponentIds) insertAffected.run(id, componentId);
-      this.insertEvent(id, "item_created", "human", null, "inbox", { type: input.type }, now);
-      return key;
-    });
+    const itemKey = this.database.transaction(() => this.insertWorkItem(input, title, description, id, now, {
+      type: input.type,
+    }));
 
     return this.getWorkItem(itemKey);
   }
@@ -346,8 +682,8 @@ export class MissionGoStore {
     if (search) {
       if (search.length > 200) throw invalidInput("search must be 200 characters or fewer.");
       const escaped = `%${search.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
-      clauses.push("(item_key LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')");
-      values.push(escaped, escaped, escaped);
+      clauses.push("(item_key LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR report_json LIKE ? ESCAPE '\\')");
+      values.push(escaped, escaped, escaped, escaped);
     }
     if (input.beforeSequence !== undefined) {
       clauses.push("sequence < ?");
@@ -395,6 +731,11 @@ export class MissionGoStore {
     if (input.sourceComponentId) this.assertComponentsBelongToProduct(current.product_id, [input.sourceComponentId]);
     if (input.type && !isOneOf(input.type, WORK_ITEM_TYPES)) throw invalidInput("Unsupported work-item type.");
     if (input.priority && !isOneOf(input.priority, WORK_ITEM_PRIORITIES)) throw invalidInput("Unsupported priority.");
+    const report = input.report !== undefined
+      ? this.validateWorkItemReport(input.report)
+      : input.description !== undefined && current.report_json
+        ? { ...parseReport(current.report_json)!, overview: input.description.trim() }
+        : undefined;
 
     const fields: string[] = [];
     const values: SQLInputValue[] = [];
@@ -403,8 +744,13 @@ export class MissionGoStore {
       values.push(requiredText(input.title, "Title"));
     }
     if (input.description !== undefined) {
+      if (input.description.trim().length > 20_000) throw invalidInput("Description must be 20,000 characters or fewer.");
       fields.push("description = ?");
       values.push(input.description.trim());
+    }
+    if (report !== undefined) {
+      fields.push("report_json = ?");
+      values.push(JSON.stringify(report));
     }
     if (input.type !== undefined) {
       fields.push("type = ?");
@@ -450,6 +796,13 @@ export class MissionGoStore {
     if (!item) throw notFound("Work item");
     if (!isOneOf(input.kind, ATTACHMENT_KINDS)) throw invalidInput("Unsupported attachment kind.");
     if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 1) throw invalidInput("Attachment size is invalid.");
+    const feedbackIdempotencyFields = [input.feedbackDraftId, input.clientAttachmentId, input.contentSha256];
+    if (feedbackIdempotencyFields.some((value) => value !== undefined) && feedbackIdempotencyFields.some((value) => value === undefined)) {
+      throw invalidInput("Feedback attachment idempotency fields must be provided together.");
+    }
+    if (input.clientAttachmentId && !/^[A-Za-z0-9_-]{8,100}$/.test(input.clientAttachmentId)) {
+      throw invalidInput("Client attachment ID must contain 8-100 URL-safe characters.");
+    }
 
     const count = this.database.connection
       .prepare("SELECT COUNT(*) AS count FROM work_item_attachments WHERE item_id = ?")
@@ -459,32 +812,69 @@ export class MissionGoStore {
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.transaction(() => {
+      const counter = this.database.connection
+        .prepare(
+          `INSERT INTO work_item_attachment_counters (item_id, kind, next_number)
+           VALUES (?, ?, 2)
+           ON CONFLICT (item_id, kind) DO UPDATE SET next_number = next_number + 1
+           RETURNING next_number - 1 AS display_number`,
+        )
+        .get(item.id, input.kind) as unknown as { display_number: number };
+      const displayNumber = counter.display_number;
       this.database.connection
         .prepare(
           `INSERT INTO work_item_attachments
-             (id, item_id, kind, original_filename, storage_filename, content_type, size_bytes, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id, item_id, kind, display_number, original_filename, storage_filename, content_type, size_bytes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
           item.id,
           input.kind,
+          displayNumber,
           input.filename,
           input.storageFilename,
           input.contentType,
           input.sizeBytes,
           now,
         );
+      if (input.feedbackDraftId && input.clientAttachmentId && input.contentSha256) {
+        this.database.connection
+          .prepare(
+            `INSERT INTO feedback_attachment_uploads
+               (draft_id, client_attachment_id, attachment_id, content_sha256, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(input.feedbackDraftId, input.clientAttachmentId, id, input.contentSha256, now);
+      }
       this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
       this.insertEvent(item.id, "attachment_added", "human", null, null, {
         attachmentId: id,
         kind: input.kind,
+        displayNumber,
         filename: input.filename,
         contentType: input.contentType,
         sizeBytes: input.sizeBytes,
       }, now);
     });
     return this.getAttachmentRecord(input.itemKey, id);
+  }
+
+  getFeedbackAttachmentUpload(
+    draftId: string,
+    clientAttachmentId: string,
+  ): { readonly attachment: AttachmentRecord; readonly contentSha256: string } | undefined {
+    const row = this.database.connection
+      .prepare(
+        `SELECT a.id, w.item_key, a.kind, a.display_number, a.original_filename, a.storage_filename,
+                a.content_type, a.size_bytes, a.created_at, u.content_sha256
+         FROM feedback_attachment_uploads u
+         JOIN work_item_attachments a ON a.id = u.attachment_id
+         JOIN work_items w ON w.id = a.item_id
+         WHERE u.draft_id = ? AND u.client_attachment_id = ?`,
+      )
+      .get(draftId, clientAttachmentId) as unknown as (AttachmentRow & { content_sha256: string }) | undefined;
+    return row ? { attachment: this.mapAttachment(row), contentSha256: row.content_sha256 } : undefined;
   }
 
   listAttachments(itemKey: string): readonly AttachmentRecord[] {
@@ -496,7 +886,7 @@ export class MissionGoStore {
   getAttachmentRecord(itemKey: string, attachmentId: string): AttachmentRecord {
     const row = this.database.connection
       .prepare(
-        `SELECT a.id, w.item_key, a.kind, a.original_filename, a.storage_filename,
+        `SELECT a.id, w.item_key, a.kind, a.display_number, a.original_filename, a.storage_filename,
                 a.content_type, a.size_bytes, a.created_at
          FROM work_item_attachments a
          JOIN work_items w ON w.id = a.item_id
@@ -505,6 +895,22 @@ export class MissionGoStore {
       .get(itemKey, attachmentId) as unknown as AttachmentRow | undefined;
     if (!row) throw notFound("Attachment");
     return this.mapAttachment(row);
+  }
+
+  deleteAttachmentMetadata(itemKey: string, attachmentId: string): AttachmentRecord {
+    const attachment = this.getAttachmentRecord(itemKey, attachmentId);
+    const item = this.getWorkItemRow(itemKey)!;
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database.connection.prepare("DELETE FROM work_item_attachments WHERE id = ? AND item_id = ?").run(attachmentId, item.id);
+      this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
+      this.insertEvent(item.id, "attachment_removed", "human", null, null, {
+        attachmentId,
+        kind: attachment.kind,
+        filename: attachment.filename,
+      }, now);
+    });
+    return attachment;
   }
 
   transitionWorkItem(input: TransitionWorkItemInput): WorkItemSnapshot {
@@ -1006,6 +1412,64 @@ export class MissionGoStore {
     return item;
   }
 
+  private insertWorkItem(
+    input: CreateWorkItemInput,
+    title: string,
+    description: string,
+    id: string,
+    now: string,
+    createdPayload: Readonly<Record<string, unknown>>,
+  ): string {
+    const status = input.status ?? "inbox";
+    const affectedComponentIds = [...new Set(input.affectedComponentIds ?? [])];
+    const report = this.validateWorkItemReport(input.report ?? { overview: description });
+    const product = this.getProductRow(input.productId);
+    if (!product) throw notFound("Product");
+    this.assertComponentsBelongToProduct(
+      input.productId,
+      input.sourceComponentId ? [input.sourceComponentId, ...affectedComponentIds] : affectedComponentIds,
+    );
+    if (input.sourceComponentId && input.environment && this.getComponent(input.sourceComponentId).kind !== input.environment.platform) {
+      throw invalidInput("The source module must belong to the selected platform.");
+    }
+
+    const key = createWorkItemKey(product.key_prefix, product.next_item_sequence);
+    this.database.connection
+      .prepare("UPDATE products SET next_item_sequence = next_item_sequence + 1, updated_at = ? WHERE id = ?")
+      .run(now, input.productId);
+    this.database.connection
+      .prepare(
+        `INSERT INTO work_items (
+           id, item_key, sequence, product_id, source_component_id, area_id,
+           type, priority, status, title, description, report_json, environment_json, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        key,
+        product.next_item_sequence,
+        input.productId,
+        input.sourceComponentId ?? null,
+        input.areaId ?? null,
+        input.type,
+        input.priority,
+        status,
+        title,
+        description,
+        JSON.stringify(report),
+        input.environment ? JSON.stringify(input.environment) : null,
+        now,
+        now,
+      );
+
+    const insertAffected = this.database.connection.prepare(
+      "INSERT INTO work_item_affected_components (item_id, component_id) VALUES (?, ?)",
+    );
+    for (const componentId of affectedComponentIds) insertAffected.run(id, componentId);
+    this.insertEvent(id, "item_created", "human", null, status, createdPayload, now);
+    return key;
+  }
+
   private applyTransition(
     current: WorkItemRow,
     to: WorkItemStatus,
@@ -1035,6 +1499,44 @@ export class MissionGoStore {
     return this.database.connection
       .prepare("SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at FROM products WHERE id = ?")
       .get(productId) as unknown as ProductRow | undefined;
+  }
+
+  private getSdkToken(tokenId: string): SdkTokenSnapshot {
+    const row = this.database.connection
+      .prepare(
+        `SELECT id, name, token_hash, product_id, platform, source_component_id,
+                expires_at, revoked_at, last_used_at, created_at
+         FROM access_tokens WHERE kind = 'sdk' AND id = ?`,
+      )
+      .get(tokenId) as unknown as SdkTokenRow | undefined;
+    if (!row) throw notFound("SDK token");
+    return this.mapSdkToken(row);
+  }
+
+  private getFeedbackDraftRow(draftId: string, tokenId: string): FeedbackDraftRow | undefined {
+    return this.database.connection
+      .prepare(
+        `SELECT d.id, d.client_draft_id, d.product_id, d.source_component_id, d.status,
+                d.type, d.priority, d.title, d.description, d.environment_json,
+                d.context_json, d.logs_json, w.item_key, d.expires_at, d.created_at, d.updated_at
+         FROM feedback_drafts d
+         LEFT JOIN work_items w ON w.id = d.submitted_item_id
+         WHERE d.id = ? AND d.access_token_id = ?`,
+      )
+      .get(draftId, tokenId) as unknown as FeedbackDraftRow | undefined;
+  }
+
+  private getFeedbackDraftRowByClientId(tokenId: string, clientDraftId: string): FeedbackDraftRow | undefined {
+    return this.database.connection
+      .prepare(
+        `SELECT d.id, d.client_draft_id, d.product_id, d.source_component_id, d.status,
+                d.type, d.priority, d.title, d.description, d.environment_json,
+                d.context_json, d.logs_json, w.item_key, d.expires_at, d.created_at, d.updated_at
+         FROM feedback_drafts d
+         LEFT JOIN work_items w ON w.id = d.submitted_item_id
+         WHERE d.access_token_id = ? AND d.client_draft_id = ?`,
+      )
+      .get(tokenId, clientDraftId) as unknown as FeedbackDraftRow | undefined;
   }
 
   private getComponent(componentId: string): ComponentSnapshot {
@@ -1073,7 +1575,7 @@ export class MissionGoStore {
   private listAttachmentsByItemId(itemId: string): readonly AttachmentRecord[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT a.id, w.item_key, a.kind, a.original_filename, a.storage_filename,
+        `SELECT a.id, w.item_key, a.kind, a.display_number, a.original_filename, a.storage_filename,
                 a.content_type, a.size_bytes, a.created_at
          FROM work_item_attachments a
          JOIN work_items w ON w.id = a.item_id
@@ -1082,6 +1584,33 @@ export class MissionGoStore {
       )
       .all(itemId) as unknown as AttachmentRow[];
     return rows.map((row) => this.mapAttachment(row));
+  }
+
+  private getDiagnosticSummary(itemId: string, attachments: readonly AttachmentRecord[]): WorkItemSnapshot["diagnosticSummary"] {
+    const createdEvent = this.database.connection
+      .prepare(
+        `SELECT payload_json FROM work_item_events
+         WHERE item_id = ? AND event_type = 'item_created'
+         ORDER BY created_at, rowid LIMIT 1`,
+      )
+      .get(itemId) as unknown as { payload_json: string } | undefined;
+    let structuredLogCount = 0;
+    let contextEntryCount = 0;
+    if (createdEvent) {
+      try {
+        const payload = JSON.parse(createdEvent.payload_json) as Record<string, unknown>;
+        structuredLogCount = Array.isArray(payload.logs) ? payload.logs.length : 0;
+        contextEntryCount = payload.context && typeof payload.context === "object" && !Array.isArray(payload.context)
+          ? Object.keys(payload.context).length
+          : 0;
+      } catch {
+        // Historical event payloads are untrusted; an invalid payload contributes no summary counts.
+      }
+    }
+    return {
+      logCount: structuredLogCount + attachments.filter((attachment) => attachment.kind === "log").length,
+      contextEntryCount,
+    };
   }
 
   private insertEvent(
@@ -1134,11 +1663,110 @@ export class MissionGoStore {
     };
   }
 
+  private mapSdkToken(row: SdkTokenRow): SdkTokenSnapshot {
+    return {
+      id: row.id,
+      name: row.name,
+      productId: row.product_id,
+      platform: row.platform,
+      ...(row.source_component_id ? { sourceComponentId: row.source_component_id } : {}),
+      ...(row.expires_at ? { expiresAt: row.expires_at } : {}),
+      ...(row.revoked_at ? { revokedAt: row.revoked_at } : {}),
+      ...(row.last_used_at ? { lastUsedAt: row.last_used_at } : {}),
+      createdAt: row.created_at,
+    };
+  }
+
+  private mapFeedbackDraft(row: FeedbackDraftRow, itemKey?: string): FeedbackDraftSnapshot {
+    return {
+      id: row.id,
+      clientDraftId: row.client_draft_id,
+      productId: row.product_id,
+      ...(row.source_component_id ? { sourceComponentId: row.source_component_id } : {}),
+      status: row.status,
+      type: row.type,
+      priority: row.priority,
+      title: row.title,
+      description: row.description,
+      environment: JSON.parse(row.environment_json) as WorkItemEnvironment,
+      context: JSON.parse(row.context_json) as Readonly<Record<string, string>>,
+      logs: JSON.parse(row.logs_json) as readonly FeedbackLogEntry[],
+      ...(itemKey || row.item_key ? { itemKey: itemKey ?? row.item_key! } : {}),
+      expiresAt: row.expires_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private validateFeedbackStringMap(
+    value: Readonly<Record<string, string>>,
+    field: string,
+    maxEntries: number,
+    maxValueLength: number,
+  ): Readonly<Record<string, string>> {
+    const entries = Object.entries(value);
+    if (entries.length > maxEntries) throw invalidInput(`${field} can contain at most ${maxEntries} entries.`);
+    for (const [key, entry] of entries) {
+      if (!key.trim() || key.length > 100 || typeof entry !== "string" || entry.length > maxValueLength) {
+        throw invalidInput(`${field} contains an invalid key or value.`);
+      }
+    }
+    return Object.fromEntries(entries);
+  }
+
+  private validateFeedbackLogs(value: readonly FeedbackLogEntry[]): readonly FeedbackLogEntry[] {
+    if (value.length > 500) throw invalidInput("Logs can contain at most 500 entries.");
+    let totalBytes = 0;
+    const logs = value.map((entry) => {
+      if (!isOneOf(entry.level, ["debug", "info", "warn", "error"] as const)) {
+        throw invalidInput("A log entry has an unsupported level.");
+      }
+      if (Number.isNaN(Date.parse(entry.timestamp))) throw invalidInput("A log entry has an invalid timestamp.");
+      const message = requiredText(entry.message, "Log message");
+      if (message.length > 4_000) throw invalidInput("Log messages must be 4,000 characters or fewer.");
+      const attributes = entry.attributes
+        ? this.validateFeedbackStringMap(entry.attributes, "Log attributes", 20, 1_000)
+        : undefined;
+      const normalized = { timestamp: new Date(entry.timestamp).toISOString(), level: entry.level, message, ...(attributes ? { attributes } : {}) };
+      totalBytes += Buffer.byteLength(JSON.stringify(normalized), "utf8");
+      return normalized;
+    });
+    if (totalBytes > 256 * 1024) throw invalidInput("Logs must be 256 KiB or smaller.");
+    return logs;
+  }
+
+  private validateWorkItemReport(value: WorkItemReport): WorkItemReport {
+    const normalize = (text: string | undefined, field: string, maxLength: number): string | undefined => {
+      const normalized = text?.trim();
+      if (normalized && normalized.length > maxLength) {
+        throw invalidInput(`${field} must be ${maxLength.toLocaleString("en-US")} characters or fewer.`);
+      }
+      return normalized || undefined;
+    };
+    const overview = normalize(value.overview, "Report overview", 20_000) ?? "";
+    const reproductionSteps = normalize(value.reproductionSteps, "Reproduction steps", 20_000);
+    const expectedOutcome = normalize(value.expectedOutcome, "Expected outcome", 20_000);
+    const impact = normalize(value.impact, "Impact", 10_000);
+    if (value.occurrenceFrequency !== undefined && !isOneOf(value.occurrenceFrequency, WORK_ITEM_OCCURRENCE_FREQUENCIES)) {
+      throw invalidInput("Unsupported occurrence frequency.");
+    }
+    return {
+      overview,
+      ...(reproductionSteps ? { reproductionSteps } : {}),
+      ...(expectedOutcome ? { expectedOutcome } : {}),
+      ...(impact ? { impact } : {}),
+      ...(value.occurrenceFrequency && value.occurrenceFrequency !== "unknown"
+        ? { occurrenceFrequency: value.occurrenceFrequency }
+        : {}),
+    };
+  }
+
   private mapAttachment(row: AttachmentRow): AttachmentRecord {
     return {
       id: row.id,
       itemKey: row.item_key,
       kind: row.kind,
+      displayNumber: row.display_number,
       filename: row.original_filename,
       storageFilename: row.storage_filename,
       contentType: row.content_type,
@@ -1149,6 +1777,8 @@ export class MissionGoStore {
 
   private mapWorkItem(row: WorkItemRow): WorkItemSnapshot {
     const environment = parseEnvironment(row.environment_json);
+    const report = parseReport(row.report_json);
+    const attachments = this.listAttachmentsByItemId(row.id);
     return {
       id: row.id,
       key: row.item_key,
@@ -1161,8 +1791,10 @@ export class MissionGoStore {
       status: row.status,
       title: row.title,
       description: row.description,
+      ...(report ? { report } : {}),
+      diagnosticSummary: this.getDiagnosticSummary(row.id, attachments),
       ...(environment ? { environment } : {}),
-      attachments: this.listAttachmentsByItemId(row.id).map(({ storageFilename: _, ...attachment }) => attachment),
+      attachments: attachments.map(({ storageFilename: _, ...attachment }) => attachment),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

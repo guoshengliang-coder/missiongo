@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -21,27 +21,39 @@ import {
   Lightbulb,
   ListTodo,
   LoaderCircle,
+  LogOut,
+  Maximize2,
   Menu,
+  MoreHorizontal,
   Paperclip,
   Plus,
   Rocket,
   Search,
   Settings2,
   Sparkles,
+  Trash2,
+  UserRound,
   Video,
   WifiOff,
   X,
 } from "lucide-react";
 
-import { api, ApiError, getAdminToken, setAdminToken } from "./api";
+import { api, ApiError, type AuthSession, type AuthenticatedUser } from "./api";
 import {
   captureDraftStorageKey,
   hasCaptureDraftContent,
   parseCaptureDraft,
+  workItemReportPayload,
   type CaptureDraft,
   type EnvironmentDraft,
 } from "./capture-draft";
 import { clearDraftFiles, loadDraftFiles, saveDraftFiles } from "./draft-files";
+import {
+  MAX_DIAGNOSTIC_LOG_BYTES,
+  collectWebContext,
+  diagnosticLogBytes,
+  diagnosticLogFile,
+} from "./diagnostics";
 import {
   COMPONENT_KINDS,
   ITEM_PRIORITIES,
@@ -54,7 +66,10 @@ import {
   type WorkItem,
   type WorkItemAttachment,
   type WorkItemEnvironment,
+  type WorkItemEvent,
+  type WorkItemOccurrenceFrequency,
   type WorkItemPriority,
+  type WorkItemReport,
   type WorkItemStatus,
   type WorkItemType,
 } from "./types";
@@ -79,6 +94,21 @@ const TYPE_ICONS: Record<WorkItemType, typeof Inbox> = {
   task: ListTodo,
   note: FileText,
 };
+
+const ANDROID_APK_DOWNLOAD_PATH = "/downloads/missiongo-android-latest.apk";
+
+const REPORT_COPY = {
+  idea: { title: "ideaDetails", help: "ideaDetailsHelp", overview: "ideaOverview", placeholder: "ideaOverviewPlaceholder" },
+  requirement: { title: "requirementDetails", help: "requirementDetailsHelp", overview: "requirementOverview", placeholder: "requirementOverviewPlaceholder" },
+  bug: { title: "bugDetails", help: "bugDetailsHelp", overview: "bugOverview", placeholder: "bugOverviewPlaceholder" },
+  task: { title: "taskDetails", help: "taskDetailsHelp", overview: "taskOverview", placeholder: "taskOverviewPlaceholder" },
+  note: { title: "noteDetails", help: "noteDetailsHelp", overview: "noteOverview", placeholder: "noteOverviewPlaceholder" },
+} as const satisfies Record<WorkItemType, {
+  readonly title: "ideaDetails" | "requirementDetails" | "bugDetails" | "taskDetails" | "noteDetails";
+  readonly help: "ideaDetailsHelp" | "requirementDetailsHelp" | "bugDetailsHelp" | "taskDetailsHelp" | "noteDetailsHelp";
+  readonly overview: "ideaOverview" | "requirementOverview" | "bugOverview" | "taskOverview" | "noteOverview";
+  readonly placeholder: "ideaOverviewPlaceholder" | "requirementOverviewPlaceholder" | "bugOverviewPlaceholder" | "taskOverviewPlaceholder" | "noteOverviewPlaceholder";
+}>;
 
 const TRANSITIONS: Record<WorkItemStatus, readonly TransitionAction[]> = {
   inbox: [{ label: "Move to ready", to: "ready", reason: "triaged", tone: "primary" }],
@@ -124,6 +154,18 @@ const FILE_LIMITS_MIB: Readonly<Record<string, number>> = {
   json: 10,
 };
 
+const DIAGNOSTIC_FILE_EXTENSIONS = new Set(["log", "txt", "json"]);
+const VIDEO_FILE_EXTENSIONS = new Set(["mp4", "mov", "webm"]);
+
+function isDiagnosticFile(file: File): boolean {
+  return DIAGNOSTIC_FILE_EXTENSIONS.has(file.name.split(".").pop()?.toLowerCase() ?? "");
+}
+
+function mediaKindForFile(file: File): "image" | "video" {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return file.type.startsWith("video/") || VIDEO_FILE_EXTENSIONS.has(extension) ? "video" : "image";
+}
+
 function environmentDraft(environment?: WorkItemEnvironment): EnvironmentDraft {
   return {
     platform: environment?.platform ?? "",
@@ -135,12 +177,17 @@ function environmentDraft(environment?: WorkItemEnvironment): EnvironmentDraft {
   };
 }
 
-function environmentPayload(draft: EnvironmentDraft): WorkItemEnvironment | undefined {
+function environmentPayload(
+  draft: EnvironmentDraft,
+  existingMetadata?: Readonly<Record<string, string>>,
+  collectCurrentWeb = false,
+): WorkItemEnvironment | undefined {
   const appVersion = draft.appVersion.trim();
   const buildNumber = draft.buildNumber.trim();
   const sourceRevision = draft.sourceRevision.trim();
   const osVersion = draft.osVersion.trim();
   const deviceModel = draft.deviceModel.trim();
+  const metadata = draft.platform === "web" && collectCurrentWeb ? collectWebContext() : existingMetadata;
   if (!draft.platform) return undefined;
   return {
     platform: draft.platform,
@@ -149,7 +196,49 @@ function environmentPayload(draft: EnvironmentDraft): WorkItemEnvironment | unde
     ...(sourceRevision ? { sourceRevision } : {}),
     ...(osVersion ? { osVersion } : {}),
     ...(deviceModel ? { deviceModel } : {}),
+    ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
   };
+}
+
+function FieldLabel({ children, required = false }: { children: ReactNode; required?: boolean }) {
+  const { t } = useI18n();
+  return (
+    <span className="field-label">
+      {children}
+      <small className={`field-requirement ${required ? "required" : "optional"}`}>
+        {t(required ? "requiredField" : "optionalField")}
+      </small>
+    </span>
+  );
+}
+
+function resizeTextarea(textarea: HTMLTextAreaElement): void {
+  const maximumHeight = 480;
+  textarea.style.height = "auto";
+  const nextHeight = Math.min(textarea.scrollHeight, maximumHeight);
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = textarea.scrollHeight > maximumHeight ? "auto" : "hidden";
+}
+
+function AutoGrowTextarea({ className, onInput, value, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (textareaRef.current) resizeTextarea(textareaRef.current);
+  }, [value]);
+
+  return (
+    <textarea
+      {...props}
+      ref={textareaRef}
+      className={`auto-grow-textarea ${className ?? ""}`.trim()}
+      value={value}
+      onInput={(event) => {
+        resizeTextarea(event.currentTarget);
+        onInput?.(event);
+      }}
+    />
+  );
 }
 
 function hasOptionalEnvironmentDetails(draft: EnvironmentDraft): boolean {
@@ -215,6 +304,11 @@ async function uploadAttachmentsSequentially(itemKey: string, files: readonly Fi
   return failed;
 }
 
+function filesWithDiagnosticLog(files: readonly File[], log: string): readonly File[] {
+  const generatedLog = diagnosticLogFile(log);
+  return generatedLog ? [...files, generatedLog] : files;
+}
+
 function useNearViewport<ElementType extends HTMLElement>(rootMargin = "160px"): [RefObject<ElementType | null>, boolean] {
   const ref = useRef<ElementType>(null);
   const [isNearViewport, setIsNearViewport] = useState(false);
@@ -245,6 +339,7 @@ export function App() {
   const { statusLabel, t, typeLabel } = useI18n();
   const [selectedProductId, setSelectedProductId] = useState(() => localStorage.getItem("missiongo.product") ?? "");
   const [selectedItemKey, setSelectedItemKey] = useState<string | null>(() => itemKeyFromUrl());
+  const [detailOpenInEdit, setDetailOpenInEdit] = useState(false);
   const [statusFilter, setStatusFilter] = useState<WorkItemStatus | "all">("all");
   const [typeFilter, setTypeFilter] = useState<WorkItemType | "all">("all");
   const [search, setSearch] = useState("");
@@ -266,7 +361,7 @@ export function App() {
     });
   }, []);
 
-  const openItemPage = useCallback((itemKey: string) => {
+  const openItemPage = useCallback((itemKey: string, edit = false) => {
     if (selectedItemKey === itemKey) return;
     const workspace = workspaceRef.current;
     listScrollTopRef.current = workspace && workspace.scrollHeight > workspace.clientHeight
@@ -274,6 +369,7 @@ export function App() {
       : window.scrollY;
     const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
     history.pushState({ ...state, [ITEM_HISTORY_MARKER]: true }, "", itemDetailUrl(itemKey));
+    setDetailOpenInEdit(edit);
     setSelectedItemKey(itemKey);
     requestAnimationFrame(() => {
       workspaceRef.current?.scrollTo({ top: 0 });
@@ -282,6 +378,7 @@ export function App() {
   }, [selectedItemKey]);
 
   const closeItemPage = () => {
+    setDetailOpenInEdit(false);
     if (history.state?.[ITEM_HISTORY_MARKER]) {
       history.back();
       return;
@@ -293,12 +390,14 @@ export function App() {
 
   const clearItemPage = () => {
     history.replaceState(history.state, "", itemListUrl());
+    setDetailOpenInEdit(false);
     setSelectedItemKey(null);
   };
 
   useEffect(() => {
     const handlePopState = () => {
       const itemKey = itemKeyFromUrl();
+      setDetailOpenInEdit(false);
       setSelectedItemKey(itemKey);
       if (itemKey) {
         requestAnimationFrame(() => {
@@ -313,7 +412,17 @@ export function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, [restoreListScroll]);
 
-  const productsQuery = useQuery({ queryKey: ["products"], queryFn: api.listProducts });
+  const authQuery = useQuery({
+    queryKey: ["auth-session"],
+    queryFn: api.getSession,
+    retry: false,
+    staleTime: Infinity,
+  });
+  const productsQuery = useQuery({
+    queryKey: ["products"],
+    queryFn: api.listProducts,
+    enabled: authQuery.isSuccess,
+  });
   const products = productsQuery.data ?? [];
 
   useEffect(() => {
@@ -336,6 +445,12 @@ export function App() {
       window.removeEventListener("offline", updateOnlineState);
     };
   }, []);
+
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timeout = window.setTimeout(() => setNotice(null), 4_000);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -361,20 +476,21 @@ export function App() {
     }),
     initialPageParam: null as number | null,
     getNextPageParam: (page) => page.nextBeforeSequence ?? null,
-    enabled: Boolean(selectedProductId),
+    enabled: authQuery.isSuccess && Boolean(selectedProductId),
   });
   const items = itemsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const itemSummary = itemsQuery.data?.pages[0]?.summary;
   const componentsQuery = useQuery({
     queryKey: ["components", selectedProductId],
     queryFn: () => api.listComponents(selectedProductId),
-    enabled: Boolean(selectedProductId),
+    enabled: authQuery.isSuccess && Boolean(selectedProductId),
   });
   const componentsById = useMemo(
     () => new Map((componentsQuery.data ?? []).map((component) => [component.id, component])),
     [componentsQuery.data],
   );
   const visibleItems = items;
+  const showAttachmentColumn = visibleItems.some((item) => item.attachments.some((attachment) => attachment.kind !== "log"));
 
   const selectedProduct = products.find((product) => product.id === selectedProductId);
   const selectItemProduct = useCallback((item: WorkItem) => {
@@ -384,8 +500,6 @@ export function App() {
     ? itemSummary.total - itemSummary.byStatus.done - itemSummary.byStatus.cancelled
     : items.filter((item) => !["done", "cancelled"].includes(item.status)).length;
   const verifyCount = itemSummary?.byStatus.pending_verification ?? items.filter((item) => item.status === "pending_verification").length;
-  const needsConnection = productsQuery.error instanceof ApiError && productsQuery.error.status === 401;
-
   useEffect(() => {
     if (!selectedProduct) return undefined;
     return registerMissionGoWebMcp(document.modelContext, {
@@ -415,22 +529,18 @@ export function App() {
     setSidebarOpen(false);
   };
 
-  const refresh = async () => {
-    await queryClient.invalidateQueries();
-  };
-
-  if (productsQuery.isLoading) {
+  if (authQuery.isPending) {
     return (
       <main className="centered-state">
         <div className="page-language"><LanguageSwitch /></div>
         <Brand />
         <LoaderCircle className="spin" size={26} />
-        <p>{t("openingWorkspace")}</p>
+        <p>{t("checkingSession")}</p>
       </main>
     );
   }
 
-  if (needsConnection) {
+  if (authQuery.isError || !authQuery.data) {
     return (
       <main className="connection-page">
         <div className="page-language"><LanguageSwitch /></div>
@@ -440,8 +550,26 @@ export function App() {
           <p className="eyebrow">{t("privateWorkspace")}</p>
           <h1>{t("connectTitle")}</h1>
           <p>{t("connectBody")}</p>
-          <TokenForm onSaved={refresh} />
+          <LoginForm
+            onAuthenticated={(session) => {
+              queryClient.removeQueries({ queryKey: ["items"] });
+              queryClient.removeQueries({ queryKey: ["components"] });
+              queryClient.setQueryData(["auth-session"], session);
+              void queryClient.invalidateQueries({ queryKey: ["products"] });
+            }}
+          />
         </section>
+      </main>
+    );
+  }
+
+  if (productsQuery.isLoading) {
+    return (
+      <main className="centered-state">
+        <div className="page-language"><LanguageSwitch /></div>
+        <Brand />
+        <LoaderCircle className="spin" size={26} />
+        <p>{t("openingWorkspace")}</p>
       </main>
     );
   }
@@ -505,10 +633,6 @@ export function App() {
           <button className="icon-button mobile-only mobile-search-close" onClick={() => setMobileSearchOpen(false)} aria-label={t("closeSearch")}><X size={18} /></button>
         </div>
         <button className="icon-button mobile-only mobile-search-trigger" onClick={() => setMobileSearchOpen(true)} aria-label={t("searchItems")}><Search size={19} /></button>
-        <LanguageSwitch />
-        <button className="icon-button" onClick={() => setConnectionOpen(true)} aria-label={t("connectionSettings")}>
-          <Settings2 size={19} />
-        </button>
         <button className="primary-button capture-button" onClick={() => setCaptureOpen(true)}>
           <Plus size={18} /> <span>{t("capture")}</span>
         </button>
@@ -546,19 +670,45 @@ export function App() {
           <p>{t("aiDispatchNext")}</p>
           <span>{t("aiDispatchDescription")}</span>
         </div>
+        <a
+          className="text-button add-product"
+          href={ANDROID_APK_DOWNLOAD_PATH}
+          download
+          onClick={() => setSidebarOpen(false)}
+        ><Download size={15} /> {t("downloadAndroid")}</a>
         <button className="text-button add-product" onClick={() => setProductOpen(true)}><Settings2 size={15} /> {t("manageProductsEntry")}</button>
-        <button
-          className="text-button add-product mobile-only"
-          onClick={() => {
-            setSidebarOpen(false);
-            setConnectionOpen(true);
-          }}
-        ><KeyRound size={15} /> {t("connectionSettings")}</button>
+        <div className="sidebar-utilities">
+          <LanguageSwitch sidebar />
+          <button
+            className="text-button sidebar-utility-button"
+            onClick={() => {
+              setSidebarOpen(false);
+              setConnectionOpen(true);
+            }}
+          ><Settings2 size={15} /> {t("connectionSettings")}</button>
+        </div>
       </aside>
       {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label={t("closeNavigation")} />}
 
       <main className={`workspace ${selectedItemKey ? "detail-open" : ""}`} ref={workspaceRef}>
         <section className="list-page" hidden={Boolean(selectedItemKey)}>
+          <nav className="mobile-status-nav mobile-only" aria-label={t("workspace")}>
+            <button className={statusFilter === "all" ? "active" : ""} aria-pressed={statusFilter === "all"} onClick={() => selectStatus("all")}>
+              <ListTodo size={16} />
+              <span>{t("allItems")}</span>
+              <small>{itemSummary?.total ?? items.length}</small>
+            </button>
+            {ITEM_STATUSES.filter((status) => status !== "cancelled").map((status) => {
+              const Icon = STATUS_ICONS[status];
+              return (
+                <button key={status} className={statusFilter === status ? "active" : ""} aria-pressed={statusFilter === status} onClick={() => selectStatus(status)}>
+                  <Icon size={16} />
+                  <span>{statusLabel(status)}</span>
+                  <small>{itemSummary?.byStatus[status] ?? items.filter((item) => item.status === status).length}</small>
+                </button>
+              );
+            })}
+          </nav>
           <section className="workspace-head">
             <div>
               <p className="eyebrow">{t("productWorkspace", { prefix: selectedProduct?.keyPrefix ?? "" })}</p>
@@ -579,11 +729,11 @@ export function App() {
             ))}
           </div>
 
-          <section className="list-surface" aria-label={t("workItems")}>
+          <section className={`list-surface ${showAttachmentColumn ? "with-media" : "without-media"}`} aria-label={t("workItems")}>
             <div className="list-columns" aria-hidden="true">
               <span>{t("itemInformation")}</span>
               <span>{t("capturedContext")}</span>
-              <span>{t("attachments")}</span>
+              {showAttachmentColumn && <span>{t("attachments")}</span>}
               <span>{t("status")}</span>
               <span>{t("quickAction")}</span>
             </div>
@@ -603,7 +753,9 @@ export function App() {
                   key={item.id}
                   item={item}
                   sourceComponent={item.sourceComponentId ? componentsById.get(item.sourceComponentId) : undefined}
+                  showAttachmentColumn={showAttachmentColumn}
                   onOpen={() => openItemPage(item.key)}
+                  onEdit={() => openItemPage(item.key, true)}
                   onNotice={setNotice}
                 />
               ))}
@@ -624,7 +776,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} />
+            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} />
           </div>
         )}
       </main>
@@ -637,11 +789,12 @@ export function App() {
             product={selectedProduct}
             onCreated={(item, failedUploads) => {
               setCaptureOpen(false);
-              openItemPage(item.key);
+              clearItemPage();
+              restoreListScroll();
               setNotice(
                 failedUploads > 0
                   ? t("uploadPartial", { key: item.key, count: failedUploads })
-                  : t("capturedInInbox", { key: item.key }),
+                  : t(item.status === "ready" ? "submittedForProcessing" : "capturedInInbox", { key: item.key }),
               );
               void queryClient.invalidateQueries({ queryKey: ["items", selectedProduct.id] });
             }}
@@ -661,13 +814,10 @@ export function App() {
         </Modal>
       )}
       {connectionOpen && (
-        <Modal title={t("connection")} subtitle={t("administratorAccess")} onClose={() => setConnectionOpen(false)}>
-          <TokenForm
-            onSaved={async () => {
-              setConnectionOpen(false);
-              await refresh();
-              setNotice(t("connectionUpdated"));
-            }}
+        <Modal title={t("accountSettings")} subtitle={t("accountSettingsHelp")} onClose={() => setConnectionOpen(false)}>
+          <AccountPanel
+            user={authQuery.data.user}
+            onLoggedOut={() => window.location.reload()}
           />
         </Modal>
       )}
@@ -676,11 +826,17 @@ export function App() {
   );
 }
 
-function LanguageSwitch() {
+function LanguageSwitch({ sidebar = false }: { sidebar?: boolean }) {
   const { locale, t, toggleLocale } = useI18n();
   return (
-    <button className="language-button" onClick={toggleLocale} aria-label={t("switchLanguage")} title={t("switchLanguage")}>
-      <Languages size={17} /><span>{locale === "zh-CN" ? "EN" : "中"}</span>
+    <button
+      className={sidebar ? "text-button sidebar-utility-button" : "language-button"}
+      onClick={toggleLocale}
+      aria-label={t("switchLanguage")}
+      title={t("switchLanguage")}
+    >
+      <Languages size={sidebar ? 15 : 17} />
+      <span>{sidebar ? t("switchLanguage") : locale === "zh-CN" ? "EN" : "中"}</span>
     </button>
   );
 }
@@ -702,17 +858,25 @@ function StatusNavItem({ children, label, count, active, onClick }: { children: 
 function ItemRow({
   item,
   sourceComponent,
+  showAttachmentColumn,
   onOpen,
+  onEdit,
   onNotice,
 }: {
   item: WorkItem;
   sourceComponent: Component | undefined;
+  showAttachmentColumn: boolean;
   onOpen: () => void;
+  onEdit: () => void;
   onNotice: (message: string) => void;
 }) {
   const { formatTime, priorityLabel, statusLabel, t, typeLabel } = useI18n();
   const TypeIcon = TYPE_ICONS[item.type];
   const environment = item.environment;
+  const overview = item.report?.overview ?? item.description;
+  const logAttachmentCount = item.attachments.filter((attachment) => attachment.kind === "log").length;
+  const logCount = Math.max(logAttachmentCount, item.diagnosticSummary?.logCount ?? 0);
+  const mediaCount = item.attachments.length - logAttachmentCount;
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
   const contextDetails = [
     sourceComponent && environment ? platformName(environment.platform, t) : undefined,
@@ -721,64 +885,87 @@ function ItemRow({
     environment?.osVersion,
   ].filter(Boolean).join(" · ");
   return (
-    <article className="item-row">
+    <article
+      className="item-row"
+      onClick={(event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest("button, a, input, select, textarea, summary, details, video, [role='dialog']")) return;
+        onOpen();
+      }}
+    >
       <button className="item-row-main" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
         <span className={`type-icon type-${item.type}`}><TypeIcon size={17} /></span>
         <span className="item-copy">
           <span className="item-title-line"><code>{item.key}</code><span>{typeLabel(item.type)}</span></span>
           <span className="item-title">{item.title}</span>
-          <span className={`item-description ${item.description ? "" : "muted"}`}>{item.description || t("noDescription")}</span>
+          <span className={`item-description ${overview ? "" : "muted"}`}>{overview || t("noDescription")}</span>
+          <span className="item-evidence-summary">
+            {item.type === "bug" && item.report?.reproductionSteps && <small>{t("hasReproduction")}</small>}
+            {logCount > 0 && <small>{t("logCount", { count: logCount })}</small>}
+            {(item.diagnosticSummary?.contextEntryCount ?? 0) > 0 && <small>{t("contextCount", { count: item.diagnosticSummary.contextEntryCount })}</small>}
+            {mediaCount > 0 && <small>{t("mediaCount", { count: mediaCount })}</small>}
+          </span>
         </span>
       </button>
       <span className="item-context">
         <strong>{contextPrimary}</strong>
         <small>{contextDetails || t("noEnvironmentShort")}</small>
       </span>
-      <ItemMediaStrip itemKey={item.key} attachments={item.attachments} onOpen={onOpen} />
+      <ItemMediaStrip itemKey={item.key} attachments={item.attachments} preserveColumn={showAttachmentColumn} />
       <span className="item-state">
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <small><i className={`priority-dot priority-${item.priority}`} /> {priorityLabel(item.priority)}</small>
         <small>{t("updated")} {formatTime(item.updatedAt)}</small>
       </span>
       <span className="item-row-actions">
-        <QuickTransitionButton item={item} onNotice={onNotice} />
-        <button className="icon-button open-detail-button" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
-          <ArrowRight size={17} />
-        </button>
+        <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} />
       </span>
     </article>
   );
 }
 
-function ItemMediaStrip({ itemKey, attachments, onOpen }: { itemKey: string; attachments: readonly WorkItemAttachment[]; onOpen: () => void }) {
+function ItemMediaStrip({
+  itemKey,
+  attachments,
+  preserveColumn,
+}: {
+  itemKey: string;
+  attachments: readonly WorkItemAttachment[];
+  preserveColumn: boolean;
+}) {
   const { t } = useI18n();
-  const visible = attachments.slice(0, 3);
-  if (visible.length === 0) return <span className="item-media-strip empty"><Paperclip size={15} /> {t("noAttachmentsShort")}</span>;
+  const mediaAttachments = attachments.filter(
+    (attachment): attachment is WorkItemAttachment & { readonly kind: "image" | "video" } => attachment.kind !== "log",
+  );
+  const visible = mediaAttachments.slice(0, 3);
+  if (visible.length === 0) return preserveColumn ? <div className="item-media-strip empty-slot" aria-hidden="true" /> : null;
   return (
-    <span className="item-media-strip" aria-label={t("attachmentCount", { count: attachments.length })}>
+    <div className="item-media-strip" aria-label={t("mediaCount", { count: mediaAttachments.length })}>
       {visible.map((attachment, index) => (
-        <ItemMediaThumbnail key={attachment.id} itemKey={itemKey} attachment={attachment} onOpen={onOpen} overflowCount={index === 2 ? attachments.length - visible.length : 0} />
+        <ItemMediaThumbnail key={attachment.id} itemKey={itemKey} attachment={attachment} overflowCount={index === 2 ? mediaAttachments.length - visible.length : 0} />
       ))}
-    </span>
+    </div>
   );
 }
 
 function ItemMediaThumbnail({
   itemKey,
   attachment,
-  onOpen,
   overflowCount,
 }: {
   itemKey: string;
-  attachment: WorkItemAttachment;
-  onOpen: () => void;
+  attachment: WorkItemAttachment & { readonly kind: "image" | "video" };
   overflowCount: number;
 }) {
+  const { t } = useI18n();
+  const referenceLabel = mediaNumberLabel(attachment.kind, attachment.displayNumber, t);
   const [thumbnailRef, isNearViewport] = useNearViewport<HTMLButtonElement>("80px");
+  const [previewRequested, setPreviewRequested] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const contentQuery = useQuery({
     queryKey: ["attachment-content", itemKey, attachment.id],
     queryFn: () => api.downloadAttachment(itemKey, attachment.id),
-    enabled: attachment.kind === "image" && isNearViewport,
+    enabled: (attachment.kind === "image" && isNearViewport) || previewRequested,
     staleTime: Infinity,
   });
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
@@ -790,22 +977,65 @@ function ItemMediaThumbnail({
     return () => URL.revokeObjectURL(url);
   }, [contentQuery.data]);
 
-  const Icon = attachment.kind === "video" ? Video : attachment.kind === "log" ? FileText : ImageIcon;
+  useEffect(() => {
+    if (!viewerOpen) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setViewerOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [viewerOpen]);
+
+  const Icon = attachment.kind === "video" ? Video : ImageIcon;
   return (
-    <button ref={thumbnailRef} className={`item-media-thumb media-${attachment.kind}`} onClick={onOpen} title={attachment.filename}>
-      {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt="" />}
-      {!objectUrl && <span className="media-file-tile"><Icon size={18} /><small>{attachment.filename.split(".").pop()?.toUpperCase()}</small></span>}
-      {overflowCount > 0 && <span className="media-overflow">+{overflowCount}</span>}
-    </button>
+    <div className="item-media-thumb-wrap">
+      <button
+        ref={thumbnailRef}
+        className={`item-media-thumb media-${attachment.kind}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          setPreviewRequested(true);
+          setViewerOpen(true);
+        }}
+        title={attachment.filename}
+        aria-label={t("previewAttachment", { filename: attachment.filename })}
+      >
+        {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt="" loading="lazy" decoding="async" />}
+        {!objectUrl && <span className="media-file-tile">{contentQuery.isLoading ? <LoaderCircle className="spin" size={18} /> : <Icon size={18} />}<small>{attachment.filename.split(".").pop()?.toUpperCase()}</small></span>}
+        {overflowCount > 0 && <span className="media-overflow">+{overflowCount}</span>}
+      </button>
+      <small className="item-media-caption">{referenceLabel}</small>
+      {viewerOpen && (
+        <div
+          className="selected-media-lightbox"
+          role="presentation"
+          onMouseDown={(event) => {
+            event.stopPropagation();
+            if (event.target === event.currentTarget) setViewerOpen(false);
+          }}
+        >
+          <section role="dialog" aria-modal="true" aria-label={attachment.filename}>
+            <header><strong>{referenceLabel} · {attachment.filename}</strong><button type="button" onClick={(event) => { event.stopPropagation(); setViewerOpen(false); }} aria-label={t("closePreview")}><X size={20} /></button></header>
+            {contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
+            {contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
+            {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
+            {attachment.kind === "video" && objectUrl && <video src={objectUrl} controls autoPlay playsInline preload="metadata" />}
+          </section>
+        </div>
+      )}
+    </div>
   );
 }
 
-function QuickTransitionButton({ item, onNotice }: { item: WorkItem; onNotice: (message: string) => void }) {
+function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: () => void; onNotice: (message: string) => void }) {
   const queryClient = useQueryClient();
   const { statusLabel, t, transitionLabel } = useI18n();
-  const action = TRANSITIONS[item.status][0];
+  const actions = TRANSITIONS[item.status];
+  const primaryAction = actions[0];
+  const secondaryActions = actions.slice(1);
+  const moreActionsRef = useRef<HTMLDetailsElement>(null);
   const mutation = useMutation({
-    mutationFn: () => api.transitionItem(item.key, action!),
+    mutationFn: (action: TransitionAction) => api.transitionItem(item.key, action),
     onSuccess: async (updated) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["items"] }),
@@ -814,18 +1044,58 @@ function QuickTransitionButton({ item, onNotice }: { item: WorkItem; onNotice: (
       ]);
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
+    onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
   });
-  if (!action) return null;
+
+  useEffect(() => {
+    const closeMoreActions = (event: MouseEvent) => {
+      if (!moreActionsRef.current?.contains(event.target as Node)) moreActionsRef.current?.removeAttribute("open");
+    };
+    const closeMoreActionsOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") moreActionsRef.current?.removeAttribute("open");
+    };
+    document.addEventListener("mousedown", closeMoreActions);
+    document.addEventListener("keydown", closeMoreActionsOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeMoreActions);
+      document.removeEventListener("keydown", closeMoreActionsOnEscape);
+    };
+  }, []);
+
   return (
-    <button
-      className={`quick-action-button ${action.tone === "positive" ? "positive" : ""}`}
-      disabled={mutation.isPending}
-      onClick={() => mutation.mutate()}
-      title={transitionLabel(action.label)}
-    >
-      {mutation.isPending ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}
-      {quickActionLabel(item.status, t)}
-    </button>
+    <>
+      {primaryAction && (
+        <button
+          className={`quick-action-button ${primaryAction.tone === "positive" ? "positive" : ""}`}
+          disabled={mutation.isPending}
+          onClick={() => mutation.mutate(primaryAction)}
+          title={transitionLabel(primaryAction.label)}
+        >
+          {mutation.isPending ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}
+          {quickActionLabel(item.status, t)}
+        </button>
+      )}
+      <button className="secondary-button row-edit-button" onClick={onEdit}>{t("edit")}</button>
+      <details className="detail-more-menu row-more-menu" ref={moreActionsRef}>
+        <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={18} /></summary>
+        <div className="detail-more-menu-popover">
+          {secondaryActions.length === 0 && <span>{t("noMoreActions")}</span>}
+          {secondaryActions.map((action) => (
+            <button
+              key={`${action.to}-${action.reason}`}
+              type="button"
+              disabled={mutation.isPending}
+              onClick={() => {
+                moreActionsRef.current?.removeAttribute("open");
+                mutation.mutate(action);
+              }}
+            >
+              {transitionLabel(action.label)}
+            </button>
+          ))}
+        </div>
+      </details>
+    </>
   );
 }
 
@@ -836,6 +1106,10 @@ function platformName(platform: WorkItemEnvironment["platform"], t: ReturnType<t
   if (platform === "server") return t("server");
   if (platform === "shared") return t("shared");
   return t("other");
+}
+
+function mediaNumberLabel(kind: "image" | "video", displayNumber: number, t: ReturnType<typeof useI18n>["t"]): string {
+  return t(kind === "image" ? "imageNumber" : "videoNumber", { number: displayNumber });
 }
 
 function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>["t"]): string {
@@ -853,11 +1127,13 @@ function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>[
 
 function DetailPane({
   itemKey,
+  openInEdit,
   onClose,
   onItemLoaded,
   onNotice,
 }: {
   itemKey: string | null;
+  openInEdit: boolean;
   onClose: () => void;
   onItemLoaded: (item: WorkItem) => void;
   onNotice: (message: string) => void;
@@ -873,12 +1149,31 @@ function DetailPane({
     enabled: Boolean(item?.productId),
   });
   const [editing, setEditing] = useState(false);
+  const moreActionsRef = useRef<HTMLDetailsElement>(null);
 
   useEffect(() => {
     if (!item) return;
-    setEditing(false);
     onItemLoaded(item);
   }, [item, onItemLoaded]);
+
+  useEffect(() => {
+    setEditing(openInEdit);
+  }, [itemKey, openInEdit]);
+
+  useEffect(() => {
+    const closeMoreActions = (event: MouseEvent) => {
+      if (!moreActionsRef.current?.contains(event.target as Node)) moreActionsRef.current?.removeAttribute("open");
+    };
+    const closeMoreActionsOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") moreActionsRef.current?.removeAttribute("open");
+    };
+    document.addEventListener("mousedown", closeMoreActions);
+    document.addEventListener("keydown", closeMoreActionsOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeMoreActions);
+      document.removeEventListener("keydown", closeMoreActionsOnEscape);
+    };
+  }, []);
 
   const refreshItem = async () => {
     await Promise.all([
@@ -896,14 +1191,6 @@ function DetailPane({
     },
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
   });
-  const attachmentMutation = useMutation({
-    mutationFn: async (files: readonly File[]) => uploadAttachmentsSequentially(itemKey!, files),
-    onSuccess: async (failed) => {
-      await refreshItem();
-      onNotice(failed > 0 ? t("uploadFailed", { count: failed }) : t("itemUpdated", { key: itemKey ?? "" }));
-    },
-  });
-
   if (!itemKey) {
     return null;
   }
@@ -925,6 +1212,10 @@ function DetailPane({
   const secondaryActions = actions.slice(1);
   const sourceComponent = componentsQuery.data?.find((component) => component.id === item.sourceComponentId);
   const affectedComponents = (componentsQuery.data ?? []).filter((component) => item.affectedComponentIds.includes(component.id));
+  const createdEvent = timelineQuery.data?.events.find((event) => event.eventType === "item_created");
+  const sdkDiagnostics = diagnosticsFromEvent(createdEvent);
+  const logAttachments = item.attachments.filter((attachment) => attachment.kind === "log");
+  const mediaAttachments = item.attachments.filter((attachment) => attachment.kind !== "log");
   return (
     <section className="detail-pane">
       <div className="detail-toolbar">
@@ -932,18 +1223,39 @@ function DetailPane({
         <code>{item.key}</code>
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <span className="toolbar-spacer" />
-        {primaryAction && (
-          <button
-            className={`secondary-button toolbar-primary-action ${primaryAction.tone === "positive" ? "positive" : ""}`}
-            disabled={transitionMutation.isPending}
-            onClick={() => transitionMutation.mutate(primaryAction)}
-            title={transitionLabel(primaryAction.label)}
-          >
-            {transitionMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
-            {quickActionLabel(item.status, t)}
-          </button>
-        )}
-        <button className="secondary-button" onClick={() => setEditing(true)}>{t("edit")}</button>
+        <div className="detail-toolbar-actions">
+          {primaryAction && (
+            <button
+              className={`primary-button toolbar-primary-action ${primaryAction.tone === "positive" ? "positive" : ""}`}
+              disabled={transitionMutation.isPending}
+              onClick={() => transitionMutation.mutate(primaryAction)}
+              title={transitionLabel(primaryAction.label)}
+            >
+              {transitionMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
+              {quickActionLabel(item.status, t)}
+            </button>
+          )}
+          <button className="secondary-button" onClick={() => setEditing(true)}>{t("edit")}</button>
+          <details className="detail-more-menu" ref={moreActionsRef}>
+            <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={19} /></summary>
+            <div className="detail-more-menu-popover">
+              {secondaryActions.length === 0 && <span>{t("noMoreActions")}</span>}
+              {secondaryActions.map((action) => (
+                <button
+                  key={`${action.to}-${action.reason}`}
+                  type="button"
+                  disabled={transitionMutation.isPending}
+                  onClick={() => {
+                    moreActionsRef.current?.removeAttribute("open");
+                    transitionMutation.mutate(action);
+                  }}
+                >
+                  {transitionLabel(action.label)}
+                </button>
+              ))}
+            </div>
+          </details>
+        </div>
       </div>
       <div className="detail-scroll">
         <>
@@ -951,10 +1263,14 @@ function DetailPane({
               <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
               <div><p className="eyebrow">{typeLabel(item.type)} · {priorityLabel(item.priority)}</p><h2>{item.title}</h2></div>
             </div>
-            <section className="description-block">
-              <h3>{t("description")}</h3>
-              <p className={!item.description ? "muted" : ""}>{item.description || t("noDescription")}</p>
-            </section>
+            <AttachmentSection
+              itemKey={item.key}
+              attachments={mediaAttachments}
+              title={t("mediaAttachments")}
+              help={t("mediaAttachmentsHelp")}
+              emptyMessage={t("noMediaAttachments")}
+            />
+            <ReportDetails type={item.type} report={item.report} fallbackDescription={item.description} />
             <section className="environment-block">
               <h3>{t("capturedContext")}</h3>
               {item.environment || sourceComponent || affectedComponents.length > 0 ? (
@@ -971,29 +1287,12 @@ function DetailPane({
                 </div>
               ) : <p className="section-empty">{t("noEnvironment")}</p>}
             </section>
-            <AttachmentSection
+            <DiagnosticDetails
               itemKey={item.key}
-              attachments={item.attachments ?? []}
-              uploading={attachmentMutation.isPending}
-              onUpload={(files) => attachmentMutation.mutate(files)}
+              logs={sdkDiagnostics.logs}
+              context={sdkDiagnostics.context}
+              attachments={logAttachments}
             />
-            {secondaryActions.length > 0 && (
-              <section className="next-action-block secondary-actions-block">
-                <div><h3>{t("moreActions")}</h3></div>
-                <div className="action-row">
-                  {secondaryActions.map((action) => (
-                  <button
-                    key={`${action.to}-${action.reason}`}
-                    className="secondary-button"
-                    disabled={transitionMutation.isPending}
-                    onClick={() => transitionMutation.mutate(action)}
-                  >
-                    {transitionMutation.isPending ? <LoaderCircle className="spin" size={16} /> : null}{transitionLabel(action.label)}
-                  </button>
-                  ))}
-                </div>
-              </section>
-            )}
             <section className="timeline-block">
               <h3>{t("timeline")}</h3>
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
@@ -1047,11 +1346,128 @@ function AnalysisDetails({ payload }: { payload: Readonly<Record<string, unknown
   );
 }
 
+interface DiagnosticEventLog {
+  readonly timestamp: string;
+  readonly level: "debug" | "info" | "warn" | "error";
+  readonly message: string;
+  readonly attributes: Readonly<Record<string, string>>;
+}
+
+function diagnosticsFromEvent(event: WorkItemEvent | undefined): {
+  context: Readonly<Record<string, string>>;
+  logs: readonly DiagnosticEventLog[];
+} {
+  if (!event) return { context: {}, logs: [] };
+  const rawContext = event.payload.context;
+  const context = rawContext && typeof rawContext === "object" && !Array.isArray(rawContext)
+    ? Object.fromEntries(Object.entries(rawContext).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+    : {};
+  const rawLogs = Array.isArray(event.payload.logs) ? event.payload.logs : [];
+  const logs = rawLogs.flatMap((entry): DiagnosticEventLog[] => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const value = entry as Record<string, unknown>;
+    if (typeof value.timestamp !== "string" || typeof value.message !== "string" || !["debug", "info", "warn", "error"].includes(String(value.level))) return [];
+    const rawAttributes = value.attributes;
+    const attributes = rawAttributes && typeof rawAttributes === "object" && !Array.isArray(rawAttributes)
+      ? Object.fromEntries(Object.entries(rawAttributes).filter((attribute): attribute is [string, string] => typeof attribute[1] === "string"))
+      : {};
+    return [{
+      timestamp: value.timestamp,
+      level: value.level as DiagnosticEventLog["level"],
+      message: value.message,
+      attributes,
+    }];
+  });
+  return { context, logs };
+}
+
+function ReportDetails({ type, report, fallbackDescription }: { type: WorkItemType; report: WorkItemReport | undefined; fallbackDescription: string }) {
+  const { t } = useI18n();
+  const copy = REPORT_COPY[type];
+  const overview = report?.overview ?? fallbackDescription;
+  const frequencyLabels: Record<WorkItemOccurrenceFrequency, string> = {
+    unknown: t("frequencyUnknown"),
+    once: t("frequencyOnce"),
+    intermittent: t("frequencyIntermittent"),
+    frequent: t("frequencyFrequent"),
+    always: t("frequencyAlways"),
+  };
+  const hasBugDetails = type === "bug";
+  const hasDetails = Boolean(overview || (hasBugDetails && (report?.reproductionSteps || report?.expectedOutcome || report?.impact || report?.occurrenceFrequency)));
+  return (
+    <section className="description-block report-detail-block">
+      <h3>{t(copy.title)}</h3>
+      {!hasDetails ? <p className="section-empty">{t("noDescription")}</p> : (
+        <div className="report-detail-grid">
+          {overview && <article className="wide"><small>{t(copy.overview)}</small><p>{overview}</p></article>}
+          {hasBugDetails && report?.reproductionSteps && <article><small>{t("reproductionSteps")}</small><p>{report.reproductionSteps}</p></article>}
+          {hasBugDetails && report?.expectedOutcome && <article><small>{t("expectedOutcome")}</small><p>{report.expectedOutcome}</p></article>}
+          {hasBugDetails && report?.impact && <article><small>{t("impact")}</small><p>{report.impact}</p></article>}
+          {hasBugDetails && report?.occurrenceFrequency && <article><small>{t("occurrenceFrequency")}</small><p>{frequencyLabels[report.occurrenceFrequency]}</p></article>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DiagnosticDetails({
+  itemKey,
+  logs,
+  context,
+  attachments,
+}: {
+  itemKey: string;
+  logs: readonly DiagnosticEventLog[];
+  context: Readonly<Record<string, string>>;
+  attachments: readonly WorkItemAttachment[];
+}) {
+  const { formatTime, t } = useI18n();
+  const hasDiagnostics = logs.length > 0 || attachments.length > 0 || Object.keys(context).length > 0;
+  return (
+    <section className="attachment-block diagnostic-detail-block">
+      <header>
+        <div><h3>{t("diagnostics")}</h3><p>{t("diagnosticDetailHelp")}</p></div>
+      </header>
+      {!hasDiagnostics ? <p className="section-empty">{t("noDiagnostics")}</p> : (
+        <div className="diagnostic-detail-content">
+          {Object.keys(context).length > 0 && (
+            <details className="diagnostic-context-details">
+              <summary>{t("runtimeContext")}<small>{t("entryCount", { count: Object.keys(context).length })}</small></summary>
+              <div className="diagnostic-context-grid">{Object.entries(context).map(([key, value]) => <span key={key}><small>{key}</small>{value}</span>)}</div>
+            </details>
+          )}
+          {logs.length > 0 && (
+            <details className="structured-log-details" open>
+              <summary>{t("sdkLogs")}<small>{t("logCount", { count: logs.length })}</small></summary>
+              <div className="structured-log-list">
+                {logs.map((log, index) => (
+                  <article key={`${log.timestamp}-${index}`} className={`log-${log.level}`}>
+                    <header><strong>{log.level.toUpperCase()}</strong><time>{formatTime(log.timestamp)}</time></header>
+                    <pre>{log.message}</pre>
+                    {Object.keys(log.attributes).length > 0 && <dl>{Object.entries(log.attributes).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>}
+                  </article>
+                ))}
+              </div>
+            </details>
+          )}
+          {attachments.length > 0 && <div className="attachment-grid">{attachments.map((attachment) => <AttachmentCard key={attachment.id} itemKey={itemKey} attachment={attachment} />)}</div>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploads: number) => void }) {
+  const queryClient = useQueryClient();
   const { t } = useI18n();
   const [draft, setDraft] = useState<CaptureDraft>(() => ({
     title: item.title,
-    description: item.description,
+    description: item.report?.overview ?? item.description,
+    reproductionSteps: item.report?.reproductionSteps ?? "",
+    expectedOutcome: item.report?.expectedOutcome ?? "",
+    impact: item.report?.impact ?? "",
+    occurrenceFrequency: item.report?.occurrenceFrequency ?? "unknown",
+    diagnosticLog: "",
     type: item.type,
     priority: item.priority,
     sourceComponentId: item.sourceComponentId ?? "",
@@ -1060,26 +1476,51 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
   const [files, setFiles] = useState<readonly File[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
 
+  const deleteAttachmentMutation = useMutation({
+    mutationFn: (attachmentId: string) => api.deleteAttachment(item.key, attachmentId),
+    onSuccess: async () => {
+      setFileError(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["item", item.key] }),
+        queryClient.invalidateQueries({ queryKey: ["items"] }),
+        queryClient.invalidateQueries({ queryKey: ["timeline", item.key] }),
+      ]);
+    },
+    onError: (error) => setFileError(errorMessage(error, t("somethingWentWrong"))),
+  });
+
   const addIncomingFiles = (incoming: readonly File[]) => {
-    const result = validateIncomingFiles(files, incoming, t, Math.max(0, 10 - item.attachments.length));
+    const diagnosticSlots = draft.diagnosticLog.trim() ? 1 : 0;
+    const result = validateIncomingFiles(files, incoming, t, Math.max(0, 10 - item.attachments.length - diagnosticSlots));
     setFiles(result.files);
     setFileError(result.error ?? null);
   };
 
   const mutation = useMutation({
     mutationFn: async () => {
+      const attachmentLimit = Math.max(0, 10 - item.attachments.length);
+      if (files.length + (draft.diagnosticLog.trim() ? 1 : 0) > attachmentLimit) {
+        throw new Error(t("tooManyFiles", { count: attachmentLimit }));
+      }
+      if (diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES) {
+        throw new Error(t("diagnosticTooLarge"));
+      }
       await api.updateItem(item.key, {
         title: draft.title,
         description: draft.description,
+        report: workItemReportPayload(draft),
         type: draft.type,
         priority: draft.priority,
         sourceComponentId: draft.sourceComponentId || null,
         affectedComponentIds: draft.sourceComponentId
           ? [...new Set([draft.sourceComponentId, ...item.affectedComponentIds])]
           : item.affectedComponentIds,
-        environment: environmentPayload(draft.environment) ?? null,
+        environment: environmentPayload(
+          draft.environment,
+          draft.environment.platform === item.environment?.platform ? item.environment?.metadata : undefined,
+        ) ?? null,
       });
-      return uploadAttachmentsSequentially(item.key, files);
+      return uploadAttachmentsSequentially(item.key, filesWithDiagnosticLog(files, draft.diagnosticLog));
     },
     onSuccess: onSaved,
   });
@@ -1117,10 +1558,12 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
         attachmentLimit={Math.max(0, 10 - item.attachments.length)}
         existingItemKey={item.key}
         existingAttachments={item.attachments}
+        onDeleteExistingAttachment={(attachmentId) => deleteAttachmentMutation.mutate(attachmentId)}
+        deletingExistingAttachmentId={deleteAttachmentMutation.isPending ? deleteAttachmentMutation.variables : undefined}
       />
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
       <div className="form-footer">
-        <button className="primary-button" disabled={mutation.isPending || !draft.title.trim() || !draft.environment.platform}>
+        <button className="primary-button" disabled={mutation.isPending || !draft.title.trim() || !draft.description.trim() || !draft.environment.platform || diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES || files.length + (draft.diagnosticLog.trim() ? 1 : 0) > Math.max(0, 10 - item.attachments.length)}>
           {mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />} {t("saveChanges")}
         </button>
       </div>
@@ -1138,6 +1581,8 @@ function WorkItemFields({
   attachmentLimit = 10,
   existingItemKey,
   existingAttachments = [],
+  onDeleteExistingAttachment,
+  deletingExistingAttachmentId,
 }: {
   productId: string;
   draft: CaptureDraft;
@@ -1148,13 +1593,21 @@ function WorkItemFields({
   attachmentLimit?: number;
   existingItemKey?: string;
   existingAttachments?: readonly WorkItemAttachment[];
+  onDeleteExistingAttachment?: ((attachmentId: string) => void) | undefined;
+  deletingExistingAttachmentId?: string | undefined;
 }) {
-  const queryClient = useQueryClient();
   const { priorityLabel, t, typeLabel } = useI18n();
-  const [componentFormOpen, setComponentFormOpen] = useState(false);
-  const [componentName, setComponentName] = useState("");
-  const [componentKind, setComponentKind] = useState<ComponentKind>("android");
   const componentsQuery = useQuery({ queryKey: ["components", productId], queryFn: () => api.listComponents(productId) });
+  const logBytes = diagnosticLogBytes(draft.diagnosticLog);
+  const diagnosticSlots = draft.diagnosticLog.trim() ? 1 : 0;
+  const remainingAttachments = Math.max(0, attachmentLimit - files.length - diagnosticSlots);
+  const attachmentOverflow = files.length + diagnosticSlots > attachmentLimit;
+  const existingLogAttachments = existingAttachments.filter((attachment) => attachment.kind === "log");
+  const existingMediaAttachments = existingAttachments.filter((attachment) => attachment.kind !== "log");
+  const selectedLogFiles = files.filter(isDiagnosticFile);
+  const selectedMediaFiles = files.filter((file) => !isDiagnosticFile(file));
+  const reportCopy = REPORT_COPY[draft.type];
+  const showsBugFields = draft.type === "bug";
 
   const updateDraft = <Key extends keyof CaptureDraft>(key: Key, value: CaptureDraft[Key]) => {
     onDraft({ ...draft, [key]: value });
@@ -1167,20 +1620,6 @@ function WorkItemFields({
       updateDraft("sourceComponentId", "");
     }
   }, [componentsQuery.data, draft.environment.platform, draft.sourceComponentId]);
-
-  const componentMutation = useMutation({
-    mutationFn: () => api.createComponent(productId, { name: componentName, kind: componentKind }),
-    onSuccess: async (component) => {
-      await queryClient.invalidateQueries({ queryKey: ["components", productId] });
-      onDraft({
-        ...draft,
-        sourceComponentId: component.id,
-        environment: { ...draft.environment, platform: component.kind },
-      });
-      setComponentName("");
-      setComponentFormOpen(false);
-    },
-  });
 
   return (
     <>
@@ -1195,7 +1634,7 @@ function WorkItemFields({
         })}
       </div>
       <div className="classification-row">
-        <label><span className="field-label">{t("platform")}<em>*</em></span>
+        <label><FieldLabel required>{t("platform")}</FieldLabel>
           <select
             value={draft.environment.platform}
             onChange={(event) => {
@@ -1213,7 +1652,7 @@ function WorkItemFields({
             {COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}
           </select>
         </label>
-        <label>{t("sourceComponent")}
+        <label><FieldLabel>{t("sourceComponent")}</FieldLabel>
           <select
             value={draft.sourceComponentId}
             onChange={(event) => {
@@ -1233,34 +1672,111 @@ function WorkItemFields({
             {(componentsQuery.data ?? []).filter((component) => component.kind === draft.environment.platform).map((component) => <option key={component.id} value={component.id}>{component.name}</option>)}
           </select>
         </label>
-        <label>{t("priority")}<select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
+        <label><FieldLabel>{t("priority")}</FieldLabel><select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
       </div>
-      <button type="button" className="text-button inline-add-component" onClick={() => setComponentFormOpen((value) => !value)}><Plus size={14} /> {t("addComponent")}</button>
-      {componentFormOpen && (
-        <div className="component-quick-form">
-          <label>{t("componentName")}<input value={componentName} onChange={(event) => setComponentName(event.target.value)} placeholder={t("componentNamePlaceholder")} /></label>
-          <label>{t("componentKind")}<select value={componentKind} onChange={(event) => setComponentKind(event.target.value as ComponentKind)}>{COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</select></label>
-          <button type="button" className="secondary-button" disabled={!componentName.trim() || componentMutation.isPending} onClick={() => componentMutation.mutate()}>
-            {componentMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createComponent")}
-          </button>
+      <label><FieldLabel required>{t("whatNeedsAttention")}</FieldLabel><input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
+      <section className="attachment-picker-block capture-attachment-block">
+        <div className="capture-attachment-heading">
+          <div className="capture-attachment-copy"><strong><FieldLabel>{t("mediaAttachments")}</FieldLabel></strong><p>{t("mediaAttachmentsHelp")}</p></div>
+          <FilePicker
+            files={selectedMediaFiles}
+            onFiles={(nextMediaFiles) => onFiles([...selectedLogFiles, ...nextMediaFiles])}
+            remaining={remainingAttachments}
+            showSelectedFiles={false}
+            accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm"
+            allowedExtensions={["png", "jpg", "jpeg", "webp", "gif", "heic", "mp4", "mov", "webm"]}
+            buttonLabel={t("add")}
+          />
         </div>
-      )}
-      {componentMutation.isError && <InlineError message={errorMessage(componentMutation.error, t("somethingWentWrong"))} />}
-      <label>{t("whatNeedsAttention")}<input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
-      <label>{t("context")}<textarea value={draft.description} onChange={(event) => updateDraft("description", event.target.value)} placeholder={t("contextPlaceholder")} rows={4} /></label>
-      <div className="attachment-picker-block capture-attachment-block">
-        <div><strong>{t("attachments")}</strong><p>{t("pasteDropHelp")}</p></div>
-        <FilePicker files={files} onFiles={onFiles} remaining={attachmentLimit - files.length} showSelectedFiles={false} />
-      </div>
-      {files.length > 0 && <SelectedFilePreviews files={files} onFiles={onFiles} />}
+        {existingItemKey && existingMediaAttachments.length > 0 && (
+          <div className="attachment-grid compact-attachment-grid">{existingMediaAttachments.map((attachment) => (
+            <AttachmentCard
+              key={attachment.id}
+              itemKey={existingItemKey}
+              attachment={attachment}
+              onDelete={onDeleteExistingAttachment}
+              deleting={deletingExistingAttachmentId === attachment.id}
+            />
+          ))}</div>
+        )}
+        {selectedMediaFiles.length > 0 && (
+          <SelectedFilePreviews
+            files={selectedMediaFiles}
+            onFiles={(nextMediaFiles) => onFiles([...selectedLogFiles, ...nextMediaFiles])}
+            startingNumbers={{
+              image: Math.max(0, ...existingMediaAttachments.filter((attachment) => attachment.kind === "image").map((attachment) => attachment.displayNumber)),
+              video: Math.max(0, ...existingMediaAttachments.filter((attachment) => attachment.kind === "video").map((attachment) => attachment.displayNumber)),
+            }}
+          />
+        )}
+      </section>
+      {attachmentOverflow && <InlineError message={t("tooManyFiles", { count: attachmentLimit })} />}
       {fileError && <InlineError message={fileError} />}
-      {existingItemKey && existingAttachments.length > 0 && (
-        <AttachmentSection itemKey={existingItemKey} attachments={existingAttachments} uploading={false} allowUpload={false} onUpload={() => undefined} />
-      )}
-      <details className="capture-optional" open={hasOptionalEnvironmentDetails(draft.environment)}>
+      <section className="report-input-block">
+        <header><strong>{t(reportCopy.title)}</strong><small>{t(reportCopy.help)}</small></header>
+        <label><FieldLabel required>{t(reportCopy.overview)}</FieldLabel><AutoGrowTextarea value={draft.description} onChange={(event) => updateDraft("description", event.target.value)} placeholder={t(reportCopy.placeholder)} rows={4} maxLength={20_000} required /></label>
+        {showsBugFields && (
+          <div className="report-field-grid">
+            <label><FieldLabel>{t("reproductionSteps")}</FieldLabel><AutoGrowTextarea value={draft.reproductionSteps} onChange={(event) => updateDraft("reproductionSteps", event.target.value)} placeholder={t("reproductionStepsPlaceholder")} rows={5} maxLength={20_000} /></label>
+            <label><FieldLabel>{t("expectedOutcome")}</FieldLabel><AutoGrowTextarea value={draft.expectedOutcome} onChange={(event) => updateDraft("expectedOutcome", event.target.value)} placeholder={t("expectedOutcomePlaceholder")} rows={5} maxLength={20_000} /></label>
+            <label><FieldLabel>{t("impact")}</FieldLabel><AutoGrowTextarea value={draft.impact} onChange={(event) => updateDraft("impact", event.target.value)} placeholder={t("impactPlaceholder")} rows={3} maxLength={10_000} /></label>
+            <label><FieldLabel>{t("occurrenceFrequency")}</FieldLabel>
+              <select value={draft.occurrenceFrequency} onChange={(event) => updateDraft("occurrenceFrequency", event.target.value as WorkItemOccurrenceFrequency)}>
+                <option value="unknown">{t("frequencyUnknown")}</option>
+                <option value="once">{t("frequencyOnce")}</option>
+                <option value="intermittent">{t("frequencyIntermittent")}</option>
+                <option value="frequent">{t("frequencyFrequent")}</option>
+                <option value="always">{t("frequencyAlways")}</option>
+              </select>
+            </label>
+          </div>
+        )}
+      </section>
+      <section className="diagnostic-input-block">
+        <div className="diagnostic-input-heading">
+          <span><strong>{t("diagnostics")}</strong><small>{t("diagnosticsHelp")}</small></span>
+          <FilePicker
+            files={selectedLogFiles}
+            onFiles={(nextLogFiles) => onFiles([...nextLogFiles, ...selectedMediaFiles])}
+            remaining={remainingAttachments}
+            showCamera={false}
+            accept=".log,.txt,.json,text/plain,application/json"
+            allowedExtensions={["log", "txt", "json"]}
+            buttonLabel={t("uploadLog")}
+          />
+        </div>
+        <label><FieldLabel>{t("diagnosticLog")}</FieldLabel>
+          <textarea
+            className="diagnostic-log-input"
+            value={draft.diagnosticLog}
+            onChange={(event) => updateDraft("diagnosticLog", event.target.value)}
+            placeholder={t("diagnosticLogPlaceholder")}
+            rows={5}
+            spellCheck={false}
+          />
+        </label>
+        <footer>
+          <small className={logBytes > MAX_DIAGNOSTIC_LOG_BYTES ? "over-limit" : ""}>{t("pastedLogSize", { size: formatBytes(logBytes), limit: formatBytes(MAX_DIAGNOSTIC_LOG_BYTES) })}</small>
+          {draft.diagnosticLog && <button type="button" className="text-button" onClick={() => updateDraft("diagnosticLog", "")}><X size={13} /> {t("clearLog")}</button>}
+        </footer>
+        {logBytes > MAX_DIAGNOSTIC_LOG_BYTES && <InlineError message={t("diagnosticTooLarge")} />}
+        {existingItemKey && existingLogAttachments.length > 0 && (
+          <div className="attachment-grid compact-attachment-grid">{existingLogAttachments.map((attachment) => (
+            <AttachmentCard
+              key={attachment.id}
+              itemKey={existingItemKey}
+              attachment={attachment}
+              onDelete={onDeleteExistingAttachment}
+              deleting={deletingExistingAttachmentId === attachment.id}
+            />
+          ))}</div>
+        )}
+      </section>
+      <details className="capture-optional" open={hasOptionalEnvironmentDetails(draft.environment) || draft.environment.platform === "web"}>
         <summary><ChevronRight size={16} /> <span><strong>{t("optionalDetails")}</strong><small>{t("optionalDetailsHelp")}</small></span></summary>
         <div className="capture-optional-body">
           <EnvironmentFields value={draft.environment} onChange={(value) => updateDraft("environment", value)} />
+          {draft.environment.platform === "web" && <p className="auto-context-note">{t("autoWebContext")}</p>}
         </div>
       </details>
     </>
@@ -1303,25 +1819,35 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
   }, [files, filesReady, product.id, t]);
 
   const addIncomingFiles = (incoming: readonly File[]) => {
-    const result = validateIncomingFiles(files, incoming, t);
+    const diagnosticSlots = draft.diagnosticLog.trim() ? 1 : 0;
+    const result = validateIncomingFiles(files, incoming, t, 10 - diagnosticSlots);
     setFiles(result.files);
     setFileError(result.error ?? null);
   };
 
   const mutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (status: "inbox" | "ready") => {
+      if (files.length + (draft.diagnosticLog.trim() ? 1 : 0) > 10) {
+        throw new Error(t("tooManyFiles", { count: 10 }));
+      }
+      if (diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES) {
+        throw new Error(t("diagnosticTooLarge"));
+      }
+      const environment = environmentPayload(draft.environment, undefined, true);
       const item = await api.createItem({
         productId: product.id,
+        status,
         title: draft.title,
         description: draft.description,
+        report: workItemReportPayload(draft),
         type: draft.type,
         priority: draft.priority,
         ...(draft.sourceComponentId
           ? { sourceComponentId: draft.sourceComponentId, affectedComponentIds: [draft.sourceComponentId] }
           : {}),
-        environment: environmentPayload(draft.environment)!,
+        ...(environment ? { environment } : {}),
       });
-      const failedUploads = await uploadAttachmentsSequentially(item.key, files);
+      const failedUploads = await uploadAttachmentsSequentially(item.key, filesWithDiagnosticLog(files, draft.diagnosticLog));
       return { item, failedUploads };
     },
     onSuccess: ({ item, failedUploads }) => {
@@ -1333,7 +1859,7 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    mutation.mutate();
+    mutation.mutate("ready");
   };
 
   return (
@@ -1369,7 +1895,19 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
       />
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
       {filePersistenceWarning && <InlineError message={filePersistenceWarning} />}
-      <div className="form-footer"><button className="primary-button" disabled={mutation.isPending || !draft.title.trim() || !draft.environment.platform}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {t("captureItem")}</button></div>
+      <div className="form-footer">
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={mutation.isPending || !draft.title.trim() || diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES || files.length + (draft.diagnosticLog.trim() ? 1 : 0) > 10}
+          onClick={() => mutation.mutate("inbox")}
+        >
+          {mutation.isPending && mutation.variables === "inbox" ? <LoaderCircle className="spin" size={17} /> : <FileText size={17} />} {t("saveDraft")}
+        </button>
+        <button className="primary-button" disabled={mutation.isPending || !draft.title.trim() || !draft.description.trim() || !draft.environment.platform || diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES || files.length + (draft.diagnosticLog.trim() ? 1 : 0) > 10}>
+          {mutation.isPending && mutation.variables === "ready" ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {t("submitForProcessing")}
+        </button>
+      </div>
     </form>
   );
 }
@@ -1382,11 +1920,11 @@ function EnvironmentFields({ value, onChange }: { value: EnvironmentDraft; onCha
       <legend>{t("environmentDetails")}</legend>
       <p>{t("environmentHelp")}</p>
       <div className="field-row">
-        <label>{t("appVersion")}<input value={value.appVersion} onChange={(event) => update("appVersion", event.target.value)} placeholder="1.4.0" maxLength={500} /></label>
-        <label>{t("buildNumber")}<input value={value.buildNumber} onChange={(event) => update("buildNumber", event.target.value)} placeholder="10400" maxLength={500} /></label>
-        <label>{t("osVersion")}<input value={value.osVersion} onChange={(event) => update("osVersion", event.target.value)} placeholder="Android 16 / macOS 16" maxLength={500} /></label>
-        <label>{t("deviceModel")}<input value={value.deviceModel} onChange={(event) => update("deviceModel", event.target.value)} placeholder="Pixel 9 / Mac mini" maxLength={500} /></label>
-        <label>{t("sourceRevision")}<input value={value.sourceRevision} onChange={(event) => update("sourceRevision", event.target.value)} placeholder="abc123" maxLength={500} /></label>
+        <label>{t("appVersion")}<input value={value.appVersion} onChange={(event) => update("appVersion", event.target.value)} placeholder={t("notAvailableYet")} maxLength={500} /></label>
+        <label>{t("buildNumber")}<input value={value.buildNumber} onChange={(event) => update("buildNumber", event.target.value)} placeholder={t("notAvailableYet")} maxLength={500} /></label>
+        <label>{t("osVersion")}<input value={value.osVersion} onChange={(event) => update("osVersion", event.target.value)} placeholder={t("notAvailableYet")} maxLength={500} /></label>
+        <label>{t("deviceModel")}<input value={value.deviceModel} onChange={(event) => update("deviceModel", event.target.value)} placeholder={t("notAvailableYet")} maxLength={500} /></label>
+        <label>{t("sourceRevision")}<input value={value.sourceRevision} onChange={(event) => update("sourceRevision", event.target.value)} placeholder={t("notAvailableYet")} maxLength={500} /></label>
       </div>
     </fieldset>
   );
@@ -1398,12 +1936,20 @@ function FilePicker({
   remaining,
   disabled = false,
   showSelectedFiles = true,
+  showCamera = true,
+  accept = "image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.txt,.json",
+  allowedExtensions,
+  buttonLabel,
 }: {
   files?: readonly File[];
   onFiles: (files: readonly File[]) => void;
   remaining: number;
   disabled?: boolean;
   showSelectedFiles?: boolean;
+  showCamera?: boolean;
+  accept?: string;
+  allowedExtensions?: readonly string[];
+  buttonLabel?: string;
 }) {
   const { t } = useI18n();
   const [error, setError] = useState<string | null>(null);
@@ -1420,7 +1966,7 @@ function FilePicker({
     for (const file of incoming) {
       const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
       const limit = FILE_LIMITS_MIB[extension];
-      if (!limit) {
+      if (!limit || (allowedExtensions && !allowedExtensions.includes(extension))) {
         nextError ??= t("unsupportedFile", { filename: file.name });
         continue;
       }
@@ -1439,11 +1985,11 @@ function FilePicker({
       <div className="file-picker-actions">
         <label className={`secondary-button file-picker-button ${disabled || remaining < 1 ? "disabled" : ""}`}>
           {disabled ? <LoaderCircle className="spin" size={16} /> : <Paperclip size={16} />}
-          {t("addAttachments")}
+          {buttonLabel ?? t("addAttachments")}
           <input
             type="file"
             multiple
-            accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.txt,.json"
+            accept={accept}
             disabled={disabled || remaining < 1}
             onChange={(event) => {
               addFiles(event.currentTarget.files);
@@ -1451,7 +1997,7 @@ function FilePicker({
             }}
           />
         </label>
-        <label className={`secondary-button file-picker-button mobile-only ${disabled || remaining < 1 ? "disabled" : ""}`}>
+        {showCamera && <label className={`secondary-button file-picker-button mobile-only ${disabled || remaining < 1 ? "disabled" : ""}`}>
           <Camera size={16} /> {t("takePhoto")}
           <input
             type="file"
@@ -1463,7 +2009,7 @@ function FilePicker({
               event.currentTarget.value = "";
             }}
           />
-        </label>
+        </label>}
       </div>
       {showSelectedFiles && files.length > 0 && (
         <div className="selected-files">
@@ -1480,13 +2026,25 @@ function FilePicker({
   );
 }
 
-function SelectedFilePreviews({ files, onFiles }: { files: readonly File[]; onFiles: (files: readonly File[]) => void }) {
+function SelectedFilePreviews({
+  files,
+  onFiles,
+  startingNumbers = { image: 0, video: 0 },
+}: {
+  files: readonly File[];
+  onFiles: (files: readonly File[]) => void;
+  startingNumbers?: Readonly<Record<"image" | "video", number>>;
+}) {
   const { t } = useI18n();
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
-  const previews = useMemo(
-    () => files.map((file) => ({ file, url: URL.createObjectURL(file) })),
-    [files],
-  );
+  const previews = useMemo(() => {
+    const nextNumber = { image: startingNumbers.image, video: startingNumbers.video };
+    return files.map((file) => {
+      const kind = mediaKindForFile(file);
+      nextNumber[kind] += 1;
+      return { file, kind, displayNumber: nextNumber[kind], url: URL.createObjectURL(file) };
+    });
+  }, [files, startingNumbers.image, startingNumbers.video]);
 
   useEffect(() => () => {
     for (const preview of previews) URL.revokeObjectURL(preview.url);
@@ -1501,19 +2059,20 @@ function SelectedFilePreviews({ files, onFiles }: { files: readonly File[]; onFi
     <div className="selected-preview-section">
       <p>{t("selectedAttachments", { count: files.length })}</p>
       <div className="selected-preview-grid">
-        {previews.map(({ file, url }, index) => {
-          const isImage = file.type.startsWith("image/");
-          const isVideo = file.type.startsWith("video/");
+        {previews.map(({ file, url, kind, displayNumber }, index) => {
+          const isImage = kind === "image";
+          const isVideo = kind === "video";
+          const referenceLabel = mediaNumberLabel(kind, displayNumber, t);
           return (
             <article className="selected-preview-card" key={`${file.name}-${file.size}-${file.lastModified}`}>
               <button type="button" className="selected-preview-media" onClick={() => setPreviewIndex(index)} aria-label={t("previewAttachment", { filename: file.name })}>
+                <small className="media-number-badge">{referenceLabel}</small>
                 {isImage && <img src={url} alt="" />}
                 {isVideo && <video src={url} muted playsInline preload="metadata" />}
-                {!isImage && !isVideo && <span><FileText size={25} /><small>{file.name.split(".").pop()?.toUpperCase()}</small></span>}
                 <em>{t("preview")}</em>
               </button>
               <footer>
-                <span><strong>{file.name}</strong><small>{formatBytes(file.size)}</small></span>
+                <span><strong>{referenceLabel} · {file.name}</strong><small>{formatBytes(file.size)}</small></span>
                 <button type="button" onClick={() => onFiles(files.filter((_, fileIndex) => fileIndex !== index))} aria-label={t("removeFile", { filename: file.name })}><X size={14} /></button>
               </footer>
             </article>
@@ -1523,12 +2082,9 @@ function SelectedFilePreviews({ files, onFiles }: { files: readonly File[]; onFi
       {activePreview && (
         <div className="selected-media-lightbox" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPreviewIndex(null); }}>
           <section role="dialog" aria-modal="true" aria-label={activePreview.file.name}>
-            <header><strong>{activePreview.file.name}</strong><button type="button" onClick={() => setPreviewIndex(null)} aria-label={t("closePreview")}><X size={20} /></button></header>
-            {activePreview.file.type.startsWith("image/") && <img src={activePreview.url} alt={activePreview.file.name} />}
-            {activePreview.file.type.startsWith("video/") && <video src={activePreview.url} controls playsInline preload="metadata" />}
-            {!activePreview.file.type.startsWith("image/") && !activePreview.file.type.startsWith("video/") && (
-              <div className="selected-log-preview"><FileText size={34} /><p>{activePreview.file.name}</p><small>{formatBytes(activePreview.file.size)}</small></div>
-            )}
+            <header><strong>{mediaNumberLabel(activePreview.kind, activePreview.displayNumber, t)} · {activePreview.file.name}</strong><button type="button" onClick={() => setPreviewIndex(null)} aria-label={t("closePreview")}><X size={20} /></button></header>
+            {activePreview.kind === "image" && <img src={activePreview.url} alt={activePreview.file.name} />}
+            {activePreview.kind === "video" && <video src={activePreview.url} controls playsInline preload="metadata" />}
           </section>
         </div>
       )}
@@ -1539,24 +2095,23 @@ function SelectedFilePreviews({ files, onFiles }: { files: readonly File[]; onFi
 function AttachmentSection({
   itemKey,
   attachments,
-  uploading,
-  onUpload,
-  allowUpload = true,
+  title,
+  help,
+  emptyMessage,
 }: {
   itemKey: string;
   attachments: readonly WorkItemAttachment[];
-  uploading: boolean;
-  onUpload: (files: readonly File[]) => void;
-  allowUpload?: boolean;
+  title?: string;
+  help?: string;
+  emptyMessage?: string;
 }) {
   const { t } = useI18n();
   return (
     <section className="attachment-block">
       <header>
-        <div><h3>{t("attachments")}</h3><p>{t("attachmentHelp")}</p></div>
-        {allowUpload && <FilePicker onFiles={onUpload} remaining={Math.max(0, 10 - attachments.length)} disabled={uploading} />}
+        <div><h3>{title ?? t("attachments")}</h3><p>{help ?? t("attachmentHelp")}</p></div>
       </header>
-      {attachments.length === 0 ? <p className="section-empty">{t("noAttachments")}</p> : (
+      {attachments.length === 0 ? <p className="section-empty">{emptyMessage ?? t("noAttachments")}</p> : (
         <div className="attachment-grid">
           {attachments.map((attachment) => <AttachmentCard key={attachment.id} itemKey={itemKey} attachment={attachment} />)}
         </div>
@@ -1565,10 +2120,21 @@ function AttachmentSection({
   );
 }
 
-function AttachmentCard({ itemKey, attachment }: { itemKey: string; attachment: WorkItemAttachment }) {
+function AttachmentCard({
+  itemKey,
+  attachment,
+  onDelete,
+  deleting = false,
+}: {
+  itemKey: string;
+  attachment: WorkItemAttachment;
+  onDelete?: ((attachmentId: string) => void) | undefined;
+  deleting?: boolean;
+}) {
   const { t } = useI18n();
   const [cardRef, isNearViewport] = useNearViewport<HTMLElement>("180px");
   const [previewRequested, setPreviewRequested] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const shouldLoad = attachment.kind === "image" ? isNearViewport : previewRequested;
   const contentQuery = useQuery({
     queryKey: ["attachment-content", itemKey, attachment.id],
@@ -1582,6 +2148,9 @@ function AttachmentCard({ itemKey, attachment }: { itemKey: string; attachment: 
   });
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [logText, setLogText] = useState("");
+  const referenceLabel = attachment.kind === "log"
+    ? null
+    : mediaNumberLabel(attachment.kind, attachment.displayNumber, t);
 
   useEffect(() => {
     if (!contentQuery.data) return undefined;
@@ -1596,6 +2165,15 @@ function AttachmentCard({ itemKey, attachment }: { itemKey: string; attachment: 
     setObjectUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [attachment.kind, contentQuery.data]);
+
+  useEffect(() => {
+    if (!viewerOpen) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setViewerOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [viewerOpen]);
 
   const download = async () => {
     const blob = attachment.kind === "log"
@@ -1615,6 +2193,7 @@ function AttachmentCard({ itemKey, attachment }: { itemKey: string; attachment: 
   return (
     <article ref={cardRef} className={`attachment-card attachment-${attachment.kind}`}>
       <div className="attachment-preview">
+        {referenceLabel && <small className="media-number-badge">{referenceLabel}</small>}
         {!shouldLoad && attachment.kind !== "image" && (
           <button type="button" className="attachment-load-button" onClick={() => setPreviewRequested(true)}>
             <Icon size={22} /> {t("loadPreview")}
@@ -1623,15 +2202,43 @@ function AttachmentCard({ itemKey, attachment }: { itemKey: string; attachment: 
         {!shouldLoad && attachment.kind === "image" && <span><ImageIcon size={22} /></span>}
         {contentQuery.isLoading && <span><LoaderCircle className="spin" size={18} /> {t("attachmentLoading")}</span>}
         {contentQuery.isError && <button type="button" className="attachment-load-button attachment-error" onClick={() => void contentQuery.refetch()}>{t("retryAttachment")}</button>}
-        {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
-        {attachment.kind === "video" && objectUrl && <video src={objectUrl} controls preload="metadata" />}
+        {attachment.kind === "image" && objectUrl && (
+          <button type="button" className="attachment-media-open" onClick={() => setViewerOpen(true)} aria-label={t("previewAttachment", { filename: attachment.filename })}>
+            <img src={objectUrl} alt={attachment.filename} />
+            <span><Maximize2 size={15} /> {t("preview")}</span>
+          </button>
+        )}
+        {attachment.kind === "video" && objectUrl && (
+          <div className="attachment-video-preview">
+            <video src={objectUrl} controls preload="metadata" />
+            <button type="button" onClick={() => setViewerOpen(true)} aria-label={t("previewAttachment", { filename: attachment.filename })} title={t("preview")}><Maximize2 size={16} /></button>
+          </div>
+        )}
         {attachment.kind === "log" && logText && <pre>{logText}</pre>}
       </div>
       <footer>
         <Icon size={15} />
-        <span><strong>{attachment.filename}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span>
-        <button type="button" onClick={() => void download()} aria-label={`${t("download")} ${attachment.filename}`} title={t("download")}><Download size={15} /></button>
+        <span><strong>{referenceLabel ? `${referenceLabel} · ` : ""}{attachment.filename}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span>
+        <span className="attachment-actions">
+          <button type="button" onClick={() => void download()} aria-label={`${t("download")} ${attachment.filename}`} title={t("download")}><Download size={15} /></button>
+          {onDelete && <button
+            type="button"
+            disabled={deleting}
+            onClick={() => { if (window.confirm(t("confirmDeleteAttachment", { filename: attachment.filename }))) onDelete(attachment.id); }}
+            aria-label={t("deleteAttachment", { filename: attachment.filename })}
+            title={t("delete")}
+          >{deleting ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}</button>}
+        </span>
       </footer>
+      {viewerOpen && objectUrl && attachment.kind !== "log" && (
+        <div className="selected-media-lightbox" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setViewerOpen(false); }}>
+          <section role="dialog" aria-modal="true" aria-label={attachment.filename}>
+            <header><strong>{referenceLabel} · {attachment.filename}</strong><button type="button" onClick={() => setViewerOpen(false)} aria-label={t("closePreview")}><X size={20} /></button></header>
+            {attachment.kind === "image" && <img src={objectUrl} alt={attachment.filename} />}
+            {attachment.kind === "video" && <video src={objectUrl} controls autoPlay playsInline preload="metadata" />}
+          </section>
+        </div>
+      )}
     </article>
   );
 }
@@ -1859,15 +2466,52 @@ function ProductForm({ onCreated }: { onCreated: (product: Product) => void | Pr
   );
 }
 
-function TokenForm({ onSaved }: { onSaved: () => void | Promise<void> }) {
+function LoginForm({ onAuthenticated }: { onAuthenticated: (session: AuthSession) => void }) {
   const { t } = useI18n();
-  const [token, setToken] = useState(getAdminToken());
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const mutation = useMutation({
+    mutationFn: () => api.login({ username: username.trim(), password }),
+    onSuccess: onAuthenticated,
+  });
+  const loginError = mutation.error instanceof ApiError
+    ? mutation.error.code === "invalid_credentials"
+      ? t("invalidCredentials")
+      : mutation.error.code === "login_rate_limited"
+        ? t("loginRateLimited")
+        : mutation.error.code === "authentication_unavailable"
+          ? t("accountUnavailable")
+          : mutation.error.message
+    : mutation.isError
+      ? t("somethingWentWrong")
+      : null;
   return (
-    <form className="token-form" onSubmit={(event) => { event.preventDefault(); setAdminToken(token); void onSaved(); }}>
-      <label>{t("administratorToken")}<input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder={t("pasteToken")} autoComplete="off" /></label>
-      <p className="privacy-note"><KeyRound size={14} /> {t("tokenPrivacy")}</p>
-      <button className="primary-button wide"><Check size={17} /> {t("saveAndConnect")}</button>
+    <form className="login-form" onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}>
+      <label>{t("username")}<input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("usernamePlaceholder")} autoComplete="username" autoCapitalize="none" spellCheck={false} required autoFocus /></label>
+      <label>{t("password")}<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("passwordPlaceholder")} autoComplete="current-password" required /></label>
+      {loginError && <InlineError message={loginError} />}
+      <p className="privacy-note"><KeyRound size={14} /> {t("noRegistration")}</p>
+      <button className="primary-button wide" disabled={mutation.isPending || !username.trim() || !password}>
+        {mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />} {t("signIn")}
+      </button>
     </form>
+  );
+}
+
+function AccountPanel({ user, onLoggedOut }: { user: AuthenticatedUser; onLoggedOut: () => void }) {
+  const { t } = useI18n();
+  const mutation = useMutation({ mutationFn: api.logout, onSuccess: onLoggedOut });
+  return (
+    <div className="account-panel">
+      <div className="account-identity">
+        <span><UserRound size={21} /></span>
+        <div><small>{t("signedInAs")}</small><strong>{user.username}</strong><em>{t("administratorRole")}</em></div>
+      </div>
+      {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
+      <button className="secondary-button wide" disabled={mutation.isPending} onClick={() => mutation.mutate()}>
+        {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <LogOut size={16} />} {t("signOut")}
+      </button>
+    </div>
   );
 }
 

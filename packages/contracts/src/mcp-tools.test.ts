@@ -16,8 +16,10 @@ describe("MCP tool catalog", () => {
     expect(names).not.toContain("complete_item");
   });
 
-  it("marks claims and resolution submission as writes", () => {
-    expect(findMcpTool("claim_item")?.access).toBe("write");
-    expect(findMcpTool("submit_resolution")?.access).toBe("write");
+  it("publishes only the seven stage-one read tools", () => {
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(7);
+    expect(MCP_TOOL_DEFINITIONS.every((tool) => tool.access === "read")).toBe(true);
+    expect(findMcpTool("get_item_context")?.access).toBe("read");
+    expect(findMcpTool("claim_item")).toBeUndefined();
   });
 });

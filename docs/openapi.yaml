@@ -5,6 +5,7 @@ info:
   description: Core REST contract for products, components, work items, and their timelines.
 servers: []
 security:
+  - adminSessionCookie: []
   - bearerAuth: []
 paths:
   /health:
@@ -22,6 +23,51 @@ paths:
                 properties:
                   status:
                     const: ok
+  /api/v1/auth/login:
+    post:
+      operationId: loginAdministrator
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, minLength: 1, maxLength: 128 }
+                password: { type: string, minLength: 1, maxLength: 1024, format: password }
+      responses:
+        "200":
+          description: Administrator session created.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/session:
+    get:
+      operationId: getAdministratorSession
+      security:
+        - adminSessionCookie: []
+      responses:
+        "200":
+          description: Current administrator session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/auth/logout:
+    post:
+      operationId: logoutAdministrator
+      security:
+        - adminSessionCookie: []
+      responses:
+        "200":
+          description: Browser session cookie cleared.
   /api/v1/products:
     get:
       operationId: listProducts
@@ -49,6 +95,209 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Product"
+  /api/v1/sdk-tokens:
+    get:
+      operationId: listSdkTokens
+      responses:
+        "200":
+          description: SDK token metadata. Token plaintext is never returned after creation.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SdkToken" }
+    post:
+      operationId: createSdkToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSdkTokenRequest" }
+      responses:
+        "201":
+          description: SDK token created. The plaintext token is returned exactly once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedSdkToken" }
+  /api/v1/sdk-tokens/{tokenId}:
+    parameters:
+      - in: path
+        name: tokenId
+        required: true
+        schema: { type: string }
+    delete:
+      operationId: revokeSdkToken
+      responses:
+        "200":
+          description: SDK token revoked. Repeating the operation is safe.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SdkToken" }
+  /api/v1/sdk/drafts:
+    post:
+      operationId: upsertSdkFeedbackDraft
+      security:
+        - sdkBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpsertFeedbackDraftRequest" }
+      responses:
+        "201":
+          description: Draft created or updated using its client draft ID.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedbackDraft" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/sdk/editor-session:
+    post:
+      operationId: prepareSdkFeedbackEditor
+      description: Creates or updates a feedback draft and issues its 15-minute Web editing session in one request.
+      security:
+        - sdkBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpsertFeedbackDraftRequest" }
+      responses:
+        "201":
+          description: Draft and draft-scoped Web session created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PreparedFeedbackEditor" }
+        "200":
+          description: The idempotent draft was already submitted, so no editing session is issued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedbackDraft" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/sdk/drafts/{draftId}:
+    parameters:
+      - $ref: "#/components/parameters/FeedbackDraftId"
+    get:
+      operationId: getSdkFeedbackDraft
+      security:
+        - sdkBearerAuth: []
+        - feedbackSessionCookie: []
+      responses:
+        "200":
+          description: The draft scoped to the current SDK token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedbackDraft" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    patch:
+      operationId: updateSdkFeedbackDraft
+      description: Updates editable draft fields using either its SDK bearer token or draft-scoped Web session cookie.
+      security:
+        - sdkBearerAuth: []
+        - feedbackSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateFeedbackDraftRequest" }
+      responses:
+        "200":
+          description: Draft updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedbackDraft" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/sdk/drafts/{draftId}/finalize:
+    parameters:
+      - $ref: "#/components/parameters/FeedbackDraftId"
+    post:
+      operationId: finalizeSdkFeedbackDraft
+      security:
+        - sdkBearerAuth: []
+        - feedbackSessionCookie: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  enum: [inbox, ready]
+                  default: inbox
+      responses:
+        "200":
+          description: Draft submitted as a work item. Repeating the request returns the same item key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedbackDraft" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/sdk/drafts/{draftId}/web-session:
+    parameters:
+      - $ref: "#/components/parameters/FeedbackDraftId"
+    post:
+      operationId: createFeedbackWebSession
+      description: Creates a 15-minute credential scoped to one active draft. Plaintext is returned only once.
+      security:
+        - sdkBearerAuth: []
+      responses:
+        "200":
+          description: Draft-scoped Web session created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedbackWebSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/sdk/drafts/{draftId}/attachments:
+    parameters:
+      - $ref: "#/components/parameters/FeedbackDraftId"
+    post:
+      operationId: uploadSdkFeedbackAttachment
+      description: Uploads one attachment to the work item created from this submitted draft. Maximum 10 attachments per item.
+      security:
+        - sdkBearerAuth: []
+        - feedbackSessionCookie: []
+      parameters:
+        - in: header
+          name: X-MissionGo-Filename
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-MissionGo-Content-Type
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-MissionGo-Client-Attachment-ID
+          required: true
+          description: URL-safe idempotency key for this attachment within the draft.
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{8,100}$" }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: Attachment uploaded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkItemAttachment" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/products/{productId}/components:
     parameters:
       - $ref: "#/components/parameters/ProductId"
@@ -147,7 +396,7 @@ paths:
               $ref: "#/components/schemas/CreateWorkItemRequest"
       responses:
         "201":
-          description: Work item created in Inbox.
+          description: Work item created as a draft or ready for processing.
           content:
             application/json:
               schema:
@@ -264,6 +513,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkItemAttachment"
+  /api/v1/items/{itemKey}/attachments/{attachmentId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkItemKey"
+      - in: path
+        name: attachmentId
+        required: true
+        schema: { type: string }
+    delete:
+      operationId: deleteItemAttachment
+      responses:
+        "204":
+          description: Attachment metadata and stored content deleted.
   /api/v1/items/{itemKey}/attachments/{attachmentId}/content:
     parameters:
       - $ref: "#/components/parameters/WorkItemKey"
@@ -287,9 +548,23 @@ paths:
           description: Requested byte range is invalid or outside the attachment.
 components:
   securitySchemes:
+    adminSessionCookie:
+      type: apiKey
+      in: cookie
+      name: missiongo_session
+      description: Signed, HTTP-only administrator browser session.
     bearerAuth:
       type: http
       scheme: bearer
+    sdkBearerAuth:
+      type: http
+      scheme: bearer
+      description: Product-scoped Android submission token. It does not grant management or read access.
+    feedbackSessionCookie:
+      type: apiKey
+      in: cookie
+      name: missiongo_feedback_session
+      description: Short-lived session scoped to one feedback draft.
   parameters:
     ProductId:
       in: path
@@ -304,7 +579,18 @@ components:
       schema:
         type: string
         pattern: "^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$"
+    FeedbackDraftId:
+      in: path
+      name: draftId
+      required: true
+      schema: { type: string }
   responses:
+    Unauthorized:
+      description: Authentication is missing, invalid, expired, or revoked.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     NotFound:
       description: Resource not found.
       content:
@@ -317,7 +603,25 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Problem"
+    RateLimited:
+      description: The applicable request or sign-in attempt limit has been reached.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
   schemas:
+    AuthSession:
+      type: object
+      required: [user]
+      properties:
+        user: { $ref: "#/components/schemas/AuthUser" }
+    AuthUser:
+      type: object
+      required: [id, username, role]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        role: { const: admin }
     Product:
       type: object
       required: [id, keyPrefix, name, createdAt, updatedAt]
@@ -357,6 +661,15 @@ components:
       enum: [urgent, high, normal, low]
     WorkItemStatus:
       enum: [inbox, ready, in_progress, on_hold, pending_verification, done, cancelled]
+    WorkItemReport:
+      type: object
+      required: [overview]
+      properties:
+        overview: { type: string, maxLength: 20000 }
+        reproductionSteps: { type: string, maxLength: 20000 }
+        expectedOutcome: { type: string, maxLength: 20000 }
+        impact: { type: string, maxLength: 10000 }
+        occurrenceFrequency: { enum: [unknown, once, intermittent, frequent, always] }
     WorkItemEnvironment:
       type: object
       required: [platform]
@@ -372,7 +685,7 @@ components:
           additionalProperties: { type: string }
     WorkItem:
       type: object
-      required: [id, key, productId, affectedComponentIds, type, priority, status, title, description, attachments, createdAt, updatedAt]
+      required: [id, key, productId, affectedComponentIds, type, priority, status, title, description, diagnosticSummary, attachments, createdAt, updatedAt]
       properties:
         id: { type: string }
         key: { type: string }
@@ -388,6 +701,13 @@ components:
         status: { $ref: "#/components/schemas/WorkItemStatus" }
         title: { type: string }
         description: { type: string }
+        report: { $ref: "#/components/schemas/WorkItemReport" }
+        diagnosticSummary:
+          type: object
+          required: [logCount, contextEntryCount]
+          properties:
+            logCount: { type: integer, minimum: 0 }
+            contextEntryCount: { type: integer, minimum: 0 }
         environment: { $ref: "#/components/schemas/WorkItemEnvironment" }
         attachments:
           type: array
@@ -396,9 +716,12 @@ components:
         updatedAt: { type: string, format: date-time }
     CreateWorkItemRequest:
       type: object
-      required: [productId, type, priority, title, description]
+      required: [productId, type, priority, title, description, environment]
       properties:
         productId: { type: string }
+        status:
+          enum: [inbox, ready]
+          default: inbox
         sourceComponentId: { type: string }
         affectedComponentIds:
           type: array
@@ -409,13 +732,140 @@ components:
         priority: { $ref: "#/components/schemas/WorkItemPriority" }
         title: { type: string, minLength: 1 }
         description: { type: string }
+        report: { $ref: "#/components/schemas/WorkItemReport" }
         environment: { $ref: "#/components/schemas/WorkItemEnvironment" }
+    SdkToken:
+      type: object
+      required: [id, name, productId, platform, createdAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        productId: { type: string }
+        platform: { const: android }
+        sourceComponentId: { type: string }
+        expiresAt: { type: string, format: date-time }
+        revokedAt: { type: string, format: date-time }
+        lastUsedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+    CreatedSdkToken:
+      allOf:
+        - $ref: "#/components/schemas/SdkToken"
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              pattern: "^mg_sdk_[A-Za-z0-9_-]{43}$"
+              description: Plaintext credential shown only in this response.
+    CreateSdkTokenRequest:
+      type: object
+      required: [name, productId]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        productId: { type: string }
+        sourceComponentId: { type: string }
+        expiresAt: { type: string, format: date-time }
+    FeedbackLogEntry:
+      type: object
+      required: [timestamp, level, message]
+      properties:
+        timestamp: { type: string, format: date-time }
+        level: { enum: [debug, info, warn, error] }
+        message: { type: string, minLength: 1, maxLength: 4000 }
+        attributes:
+          type: object
+          maxProperties: 20
+          additionalProperties: { type: string, maxLength: 1000 }
+    UpsertFeedbackDraftRequest:
+      type: object
+      required: [clientDraftId, environment]
+      properties:
+        clientDraftId:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{8,100}$"
+        type:
+          allOf: [{ $ref: "#/components/schemas/WorkItemType" }]
+          default: bug
+        priority:
+          allOf: [{ $ref: "#/components/schemas/WorkItemPriority" }]
+          default: normal
+        title: { type: string, maxLength: 500 }
+        description: { type: string, maxLength: 20000 }
+        environment: { $ref: "#/components/schemas/WorkItemEnvironment" }
+        context:
+          type: object
+          maxProperties: 50
+          additionalProperties: { type: string, maxLength: 2000 }
+        logs:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/FeedbackLogEntry" }
+    FeedbackDraft:
+      type: object
+      required: [id, clientDraftId, productId, status, type, priority, title, description, environment, context, logs, expiresAt, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        clientDraftId: { type: string }
+        productId: { type: string }
+        sourceComponentId: { type: string }
+        status: { enum: [editing, submitted, expired] }
+        type: { $ref: "#/components/schemas/WorkItemType" }
+        priority: { $ref: "#/components/schemas/WorkItemPriority" }
+        title: { type: string }
+        description: { type: string }
+        environment: { $ref: "#/components/schemas/WorkItemEnvironment" }
+        context:
+          type: object
+          additionalProperties: { type: string }
+        logs:
+          type: array
+          items: { $ref: "#/components/schemas/FeedbackLogEntry" }
+        itemKey: { type: string }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    UpdateFeedbackDraftRequest:
+      type: object
+      minProperties: 1
+      properties:
+        type: { $ref: "#/components/schemas/WorkItemType" }
+        priority: { $ref: "#/components/schemas/WorkItemPriority" }
+        title: { type: string, maxLength: 500 }
+        description: { type: string, maxLength: 20000 }
+        environment: { $ref: "#/components/schemas/WorkItemEnvironment" }
+        context:
+          type: object
+          maxProperties: 50
+          additionalProperties: { type: string, maxLength: 2000 }
+        logs:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/FeedbackLogEntry" }
+    FeedbackWebSession:
+      type: object
+      required: [token, expiresAt]
+      properties:
+        token:
+          type: string
+          pattern: "^mg_ws_[A-Za-z0-9_-]{43}$"
+        expiresAt: { type: string, format: date-time }
+    PreparedFeedbackEditor:
+      allOf:
+        - $ref: "#/components/schemas/FeedbackDraft"
+        - type: object
+          required: [sessionToken, sessionExpiresAt]
+          properties:
+            sessionToken:
+              type: string
+              pattern: "^mg_ws_[A-Za-z0-9_-]{43}$"
+            sessionExpiresAt: { type: string, format: date-time }
     UpdateWorkItemRequest:
       type: object
       minProperties: 1
       properties:
         title: { type: string, minLength: 1 }
         description: { type: string }
+        report: { $ref: "#/components/schemas/WorkItemReport" }
         type: { $ref: "#/components/schemas/WorkItemType" }
         priority: { $ref: "#/components/schemas/WorkItemPriority" }
         environment:
@@ -428,11 +878,12 @@ components:
           items: { type: string }
     WorkItemAttachment:
       type: object
-      required: [id, itemKey, kind, filename, contentType, sizeBytes, createdAt]
+      required: [id, itemKey, kind, displayNumber, filename, contentType, sizeBytes, createdAt]
       properties:
         id: { type: string }
         itemKey: { type: string }
         kind: { enum: [image, video, log] }
+        displayNumber: { type: integer, minimum: 1 }
         filename: { type: string }
         contentType: { type: string }
         sizeBytes: { type: integer, minimum: 1 }

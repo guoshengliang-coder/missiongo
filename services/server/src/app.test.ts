@@ -1,3 +1,4 @@
+import { createHash, scryptSync } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,10 +7,23 @@ import { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
 import { buildApp } from "./app.js";
 
 const apps: FastifyInstance[] = [];
 const temporaryDirectories: string[] = [];
+
+function testAdminAccount(authorizedProductIds?: readonly string[]): AdminAccountConfig {
+  const salt = Buffer.from("missiongo-test-salt");
+  return {
+    id: "account-test-1",
+    username: "mission-owner",
+    passwordScrypt: `scrypt:${salt.toString("base64url")}:${scryptSync("correct horse", salt, 64).toString("base64url")}`,
+    sessionSecret: "test-session-secret-that-is-not-used-in-production",
+    cookieSecure: true,
+    ...(authorizedProductIds ? { authorizedProductIds } : {}),
+  };
+}
 
 async function testApp(): Promise<{ app: FastifyInstance; databasePath: string; attachmentsPath: string }> {
   const directory = await mkdtemp(join(tmpdir(), "missiongo-server-"));
@@ -27,13 +41,17 @@ afterEach(async () => {
 });
 
 describe("MissionGo REST API", () => {
-  it("serves an authenticated MCP analysis loop without exposing SQL or changing status", async () => {
+  it("serves an authenticated, complete, read-only MCP item context", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-mcp-"));
     temporaryDirectories.push(directory);
+    const adminAccount = testAdminAccount();
+    const mcpAccessToken = createAiAccessToken(adminAccount, "missiongo-test-client").token;
     const app = buildApp({
       databasePath: join(directory, "missiongo.sqlite"),
       attachmentsPath: join(directory, "attachments"),
-      mcpToken: "mcp-test-token",
+      adminToken: "management-test-token",
+      adminAccount,
+      publicOrigin: "https://missiongo.test",
     });
     apps.push(app);
 
@@ -46,17 +64,19 @@ describe("MissionGo REST API", () => {
     expect(unauthorized.statusCode).toBe(401);
 
     const product = (
-      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Hermes Go", keyPrefix: "HG" } })
+      await app.inject({ method: "POST", url: "/api/v1/products", headers: { authorization: "Bearer management-test-token" }, payload: { name: "Hermes Go", keyPrefix: "HG" } })
     ).json<{ id: string }>();
     await app.inject({
       method: "POST",
       url: "/api/v1/items",
+      headers: { authorization: "Bearer management-test-token" },
       payload: { productId: product.id, type: "bug", priority: "high", title: "Crash", description: "Fails on launch", environment: { platform: "other" } },
     });
     const uploadedLog = await app.inject({
       method: "POST",
       url: "/api/v1/items/HG-1/attachments",
       headers: {
+        authorization: "Bearer management-test-token",
         "content-type": "application/octet-stream",
         "x-missiongo-content-type": "text/plain",
         "x-missiongo-filename": "launch.log",
@@ -64,13 +84,30 @@ describe("MissionGo REST API", () => {
       payload: "Fatal exception at launch\n",
     });
     const attachmentId = uploadedLog.json<{ id: string }>().id;
+    const uploadedImage = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/HG-1/attachments",
+      headers: {
+        authorization: "Bearer management-test-token",
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "image/png",
+        "x-missiongo-filename": "launch.png",
+      },
+      payload: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    });
+    expect(uploadedImage.statusCode).toBe(201);
+    const imageAttachmentId = uploadedImage.json<{ id: string }>().id;
+    const timelineCountBeforeRead = app.missionGoStore.getTimeline("HG-1").length;
 
     const call = async (id: number, method: string, params: Readonly<Record<string, unknown>> = {}) => {
       const response = await app.inject({
         method: "POST",
         url: "/mcp",
         headers: {
-          authorization: "Bearer mcp-test-token",
+          authorization: `Bearer ${mcpAccessToken}`,
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
         },
@@ -93,17 +130,33 @@ describe("MissionGo REST API", () => {
 
     const tools = await call(2, "tools/list");
     const names = (tools.result?.tools as Array<{ name: string }>).map((tool) => tool.name);
-    expect(names).toContain("get_item_context");
-    expect(names).toContain("append_analysis");
-    expect(names).toContain("claim_item");
-    expect(names).toContain("submit_resolution");
-    expect(names).toContain("mark_pending_verification");
+    expect(names).toEqual([
+      "get_current_account",
+      "list_products",
+      "list_components",
+      "list_items",
+      "get_item_context",
+      "get_item_timeline",
+      "get_attachment",
+    ]);
     expect(names.some((name) => name.toLowerCase().includes("sql"))).toBe(false);
 
     const context = await call(3, "tools/call", { name: "get_item_context", arguments: { itemKey: "HG-1" } });
     expect(context.error).toBeUndefined();
     expect(context.result?.structuredContent).toMatchObject({
-      item: { key: "HG-1", status: "inbox", attachments: [{ id: attachmentId, kind: "log" }] },
+      item: {
+        key: "HG-1",
+        status: "inbox",
+        attachments: [
+          { id: attachmentId, kind: "log", displayNumber: 1 },
+          { id: imageAttachmentId, kind: "image", displayNumber: 1 },
+        ],
+      },
+      product: { id: product.id, name: "Hermes Go", keyPrefix: "HG" },
+      sourceComponent: null,
+      affectedComponents: [],
+      attachmentCount: 2,
+      timelineEventCount: timelineCountBeforeRead,
     });
 
     const attachment = await call(4, "tools/call", {
@@ -111,81 +164,145 @@ describe("MissionGo REST API", () => {
       arguments: { itemKey: "HG-1", attachmentId, maxBytes: 8 },
     });
     expect(attachment.result?.structuredContent).toMatchObject({ text: "Fatal ex", nextOffsetBytes: 8 });
+    const finalLogChunk = await call(5, "tools/call", {
+      name: "get_attachment",
+      arguments: { itemKey: "HG-1", attachmentId, offsetBytes: 8, maxBytes: 64 },
+    });
+    expect(finalLogChunk.result?.structuredContent).toMatchObject({ text: "ception at launch\n" });
+    expect(finalLogChunk.result?.structuredContent).not.toHaveProperty("nextOffsetBytes");
 
-    const analysisArguments = {
-      itemKey: "HG-1",
-      conclusion: "The launch path needs a guarded fallback.",
-      evidence: ["The report says it fails on launch."],
-      risks: ["No log attachment is available yet."],
-      agentName: "Codex",
-      idempotencyKey: "91ec22f8-a969-4139-b830-58a15c9ec818",
-    };
-    const firstAppend = await call(5, "tools/call", { name: "append_analysis", arguments: analysisArguments });
-    const repeatedAppend = await call(6, "tools/call", { name: "append_analysis", arguments: analysisArguments });
-    expect(firstAppend.result?.structuredContent).toEqual(repeatedAppend.result?.structuredContent);
+    const image = await call(6, "tools/call", {
+      name: "get_attachment",
+      arguments: { itemKey: "HG-1", attachmentId: imageAttachmentId },
+    });
+    expect(image.result?.structuredContent).toMatchObject({
+      attachment: { id: imageAttachmentId, kind: "image" },
+      inline: true,
+      representation: "scaled_preview",
+      preview: { contentType: "image/jpeg", width: 1, height: 1 },
+    });
+    expect(image.result?.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image" })]));
 
-    const item = await app.inject({ method: "GET", url: "/api/v1/items/HG-1" });
-    expect(item.json()).toMatchObject({ status: "inbox" });
-    const timeline = await app.inject({ method: "GET", url: "/api/v1/items/HG-1/timeline" });
-    expect(
-      timeline.json<{ events: Array<{ eventType: string }> }>().events.filter((event) => event.eventType === "analysis_appended"),
-    ).toHaveLength(1);
+    expect((await app.inject({ method: "GET", url: "/api/v1/items/HG-1", headers: { authorization: "Bearer management-test-token" } })).json()).toMatchObject({ status: "inbox" });
+    expect(app.missionGoStore.getTimeline("HG-1")).toHaveLength(timelineCountBeforeRead);
+  });
 
-    await app.inject({
+  it("uses first-time account login and limits AI reads to authorized products", async () => {
+    const allowedProductIds: string[] = [];
+    const adminAccount = testAdminAccount(allowedProductIds);
+    const app = buildApp({ adminAccount, publicOrigin: "https://missiongo.test" });
+    apps.push(app);
+
+    const allowed = app.missionGoStore.createProduct({ name: "Allowed", keyPrefix: "OK" });
+    const blocked = app.missionGoStore.createProduct({ name: "Blocked", keyPrefix: "NO" });
+    allowedProductIds.push(allowed.id);
+    app.missionGoStore.createWorkItem({
+      productId: blocked.id,
+      type: "bug",
+      priority: "normal",
+      title: "Must stay private",
+      description: "Account cannot read this item",
+    });
+
+    const protectedMetadata = await app.inject({ method: "GET", url: "/.well-known/oauth-protected-resource/mcp" });
+    expect(protectedMetadata.statusCode).toBe(200);
+    expect(protectedMetadata.json()).toMatchObject({
+      resource: "https://missiongo.test/mcp",
+      authorization_servers: ["https://missiongo.test"],
+      scopes_supported: ["missiongo:read"],
+    });
+
+    const registration = await app.inject({
       method: "POST",
-      url: "/api/v1/items",
+      url: "/oauth/register",
       payload: {
-        productId: product.id,
-        type: "task",
-        priority: "normal",
-        title: "Process through MCP",
-        description: "Exercise the controlled processing tools.",
-        environment: { platform: "other" },
+        client_name: "Test AI",
+        redirect_uris: ["http://127.0.0.1:49152/callback"],
+        token_endpoint_auth_method: "none",
       },
     });
-    await app.inject({
+    expect(registration.statusCode).toBe(201);
+    const clientId = registration.json<{ client_id: string }>().client_id;
+    const verifier = "a".repeat(64);
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const authorize = await app.inject({
+      method: "GET",
+      url: "/oauth/authorize",
+      query: {
+        client_id: clientId,
+        redirect_uri: "http://127.0.0.1:49152/callback",
+        response_type: "code",
+        state: "state-123",
+        scope: "missiongo:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      },
+    });
+    expect(authorize.statusCode).toBe(200);
+    const requestToken = /name="request" value="([^"]+)"/.exec(authorize.body)?.[1];
+    expect(requestToken).toBeTruthy();
+
+    const invalidLogin = await app.inject({
       method: "POST",
-      url: "/api/v1/items/HG-2/transitions",
-      payload: { to: "ready", reason: "triaged" },
+      url: "/oauth/authorize",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ request: requestToken!, username: "mission-owner", password: "wrong" }).toString(),
     });
-    const claimed = await call(7, "tools/call", {
-      name: "claim_item",
-      arguments: {
-        itemKey: "HG-2",
-        agentId: "codex-mcp-test",
-        mode: "process",
-        leaseSeconds: 900,
-        idempotencyKey: "mcp-claim-hg-2",
-      },
+    expect(invalidLogin.statusCode).toBe(401);
+    expect(invalidLogin.body).toContain("用户名或密码不正确");
+
+    const login = await app.inject({
+      method: "POST",
+      url: "/oauth/authorize",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ request: requestToken!, username: "mission-owner", password: "correct horse" }).toString(),
     });
-    const execution = claimed.result?.structuredContent as { executionId: string; leaseId: string };
-    await call(8, "tools/call", {
-      name: "submit_resolution",
-      arguments: {
-        executionId: execution.executionId,
-        leaseId: execution.leaseId,
-        report: {
-          conclusion: "Processing completed.",
-          changeSummary: "Verified the MCP processing lifecycle.",
-          affectedFiles: [],
-          checks: [{ name: "contract", outcome: "passed", summary: "The MCP calls succeeded." }],
-          remainingRisks: [],
-          manualVerificationSteps: ["Confirm the item is pending verification."],
+    expect(login.statusCode).toBe(302);
+    const callback = new URL(login.headers.location!);
+    expect(callback.searchParams.get("state")).toBe("state-123");
+
+    const token = await app.inject({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: callback.searchParams.get("code")!,
+        client_id: clientId,
+        redirect_uri: "http://127.0.0.1:49152/callback",
+        code_verifier: verifier,
+      }).toString(),
+    });
+    expect(token.statusCode, token.body).toBe(200);
+    const accessToken = token.json<{ access_token: string }>().access_token;
+
+    const call = async (id: number, name: string, args: Record<string, unknown> = {}) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/mcp",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
         },
-        idempotencyKey: "mcp-resolution-hg-2",
-      },
+        payload: { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      const payload = response.headers["content-type"]?.includes("text/event-stream")
+        ? response.body.split("\n").find((line) => line.startsWith("data: "))?.slice(6)
+        : response.body;
+      if (!payload) throw new Error("MCP response did not contain a JSON payload.");
+      return (JSON.parse(payload) as { result: { structuredContent?: unknown; isError?: boolean; content?: unknown } }).result;
+    };
+
+    expect((await call(1, "get_current_account")).structuredContent).toMatchObject({
+      account: { id: "account-test-1", username: "mission-owner" },
+      permission: { allProducts: false, productIds: [allowed.id] },
     });
-    await call(9, "tools/call", {
-      name: "mark_pending_verification",
-      arguments: {
-        executionId: execution.executionId,
-        leaseId: execution.leaseId,
-        idempotencyKey: "mcp-pending-hg-2",
-      },
-    });
-    expect((await app.inject({ method: "GET", url: "/api/v1/items/HG-2" })).json()).toMatchObject({
-      status: "pending_verification",
-    });
+    expect((await call(2, "list_products")).structuredContent).toEqual({ products: [allowed] });
+    const forbidden = await call(3, "get_item_context", { itemKey: "NO-1" });
+    expect(forbidden.isError).toBe(true);
+    expect(JSON.stringify(forbidden)).not.toContain("Must stay private");
   });
 
   it("runs an idempotent AI processing lease through pending human verification", async () => {
@@ -361,6 +478,58 @@ describe("MissionGo REST API", () => {
     expect(authorized.statusCode).toBe(200);
   });
 
+  it("signs in the configured administrator with a secure account session", async () => {
+    const app = buildApp({
+      adminAccount: testAdminAccount(),
+    });
+    apps.push(app);
+
+    const unauthorized = await app.inject({ method: "GET", url: "/api/v1/products" });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const invalidLogin = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: "mission-owner", password: "wrong password" },
+    });
+    expect(invalidLogin.statusCode).toBe(401);
+    expect(invalidLogin.json()).toMatchObject({ code: "invalid_credentials" });
+
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: "mission-owner", password: "correct horse" },
+    });
+    expect(login.statusCode).toBe(200);
+    expect(login.json()).toEqual({
+      user: { id: "account-test-1", username: "mission-owner", role: "admin" },
+    });
+    expect(login.headers["set-cookie"]).toContain("missiongo_session=");
+    expect(login.headers["set-cookie"]).toContain("HttpOnly");
+    expect(login.headers["set-cookie"]).toContain("SameSite=Strict");
+    expect(login.headers["set-cookie"]).toContain("Secure");
+    const cookie = login.headers["set-cookie"]!.split(";", 1)[0]!;
+
+    const session = await app.inject({ method: "GET", url: "/api/v1/auth/session", headers: { cookie } });
+    expect(session.statusCode).toBe(200);
+    expect(session.json()).toEqual({
+      user: { id: "account-test-1", username: "mission-owner", role: "admin" },
+    });
+    const authorized = await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie } });
+    expect(authorized.statusCode).toBe(200);
+
+    const tamperedSession = await app.inject({
+      method: "GET",
+      url: "/api/v1/auth/session",
+      headers: { cookie: `${cookie}tampered` },
+    });
+    expect(tamperedSession.statusCode).toBe(401);
+
+    const logout = await app.inject({ method: "POST", url: "/api/v1/auth/logout", headers: { cookie } });
+    expect(logout.statusCode).toBe(200);
+    expect(logout.headers["set-cookie"]).toContain("Max-Age=0");
+  });
+
   it("flattens legacy component hierarchies without removing modules", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-legacy-components-"));
     temporaryDirectories.push(directory);
@@ -416,6 +585,79 @@ describe("MissionGo REST API", () => {
     expect(columns.map((column) => column.name)).not.toContain("parent_component_id");
   });
 
+  it("adds structured report storage when opening an existing database", async () => {
+    const { app, databasePath, attachmentsPath } = await testApp();
+    await app.close();
+    apps.splice(apps.indexOf(app), 1);
+
+    const legacyDatabase = new DatabaseSync(databasePath);
+    legacyDatabase.exec("ALTER TABLE work_items DROP COLUMN report_json;");
+    legacyDatabase.prepare("DELETE FROM schema_migrations WHERE version = ?").run(8);
+    legacyDatabase.close();
+
+    const restarted = buildApp({ databasePath, attachmentsPath });
+    apps.push(restarted);
+    const columns = restarted.missionGoStore.database.connection
+      .prepare("PRAGMA table_info(work_items)")
+      .all() as unknown as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain("report_json");
+    const migration = restarted.missionGoStore.database.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = ?")
+      .get(8) as unknown as { version: number };
+    expect(migration.version).toBe(8);
+  });
+
+  it("adds stable attachment numbers when opening an existing database", async () => {
+    const { app, databasePath, attachmentsPath } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Legacy media", keyPrefix: "LM" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: { productId: product.id, type: "bug", priority: "normal", title: "Legacy item", description: "Has media", environment: { platform: "web" } },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items/LM-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "image/jpeg",
+        "x-missiongo-filename": "legacy.jpg",
+      },
+      payload: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    await app.close();
+    apps.splice(apps.indexOf(app), 1);
+
+    const legacyDatabase = new DatabaseSync(databasePath);
+    legacyDatabase.exec("DROP INDEX IF EXISTS idx_work_item_attachments_item_kind_number;");
+    legacyDatabase.exec("DROP TABLE work_item_attachment_counters;");
+    legacyDatabase.exec("ALTER TABLE work_item_attachments DROP COLUMN display_number;");
+    legacyDatabase.prepare("DELETE FROM schema_migrations WHERE version = ?").run(11);
+    legacyDatabase.close();
+
+    const restarted = buildApp({ databasePath, attachmentsPath });
+    apps.push(restarted);
+    const detail = await restarted.inject({ method: "GET", url: "/api/v1/items/LM-1" });
+    expect(detail.json()).toMatchObject({ attachments: [expect.objectContaining({ displayNumber: 1 })] });
+    const nextImage = await restarted.inject({
+      method: "POST",
+      url: "/api/v1/items/LM-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "image/jpeg",
+        "x-missiongo-filename": "next.jpg",
+      },
+      payload: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    expect(nextImage.json()).toMatchObject({ displayNumber: 2 });
+    const migration = restarted.missionGoStore.database.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = ?")
+      .get(11) as unknown as { version: number };
+    expect(migration.version).toBe(11);
+  });
+
   it("creates a product, components, and sequential work items", async () => {
     const { app } = await testApp();
 
@@ -433,6 +675,7 @@ describe("MissionGo REST API", () => {
       url: "/api/v1/items",
       payload: {
         productId: product.id,
+        status: "ready",
         type: "idea",
         priority: "normal",
         title: "Missing platform",
@@ -510,6 +753,7 @@ describe("MissionGo REST API", () => {
       url: "/api/v1/items",
       payload: {
         productId: product.id,
+        status: "ready",
         type: "requirement",
         priority: "high",
         title: "Read an item through MCP",
@@ -517,7 +761,7 @@ describe("MissionGo REST API", () => {
         environment: { platform: "shared" },
       },
     });
-    expect(secondResponse.json()).toMatchObject({ key: "HG-2", status: "inbox", type: "requirement" });
+    expect(secondResponse.json()).toMatchObject({ key: "HG-2", status: "ready", type: "requirement" });
 
     const listResponse = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}` });
     expect(listResponse.statusCode).toBe(200);
@@ -525,6 +769,63 @@ describe("MissionGo REST API", () => {
       "HG-2",
       "HG-1",
     ]);
+  });
+
+  it("creates incomplete drafts and only accepts complete items as ready", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/products",
+        payload: { name: "MissionGo", keyPrefix: "MG" },
+      })
+    ).json<{ id: string }>();
+
+    const draftResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        status: "inbox",
+        type: "idea",
+        priority: "normal",
+        title: "An incomplete thought",
+        description: "",
+      },
+    });
+    expect(draftResponse.statusCode).toBe(201);
+    expect(draftResponse.json()).toMatchObject({ key: "MG-1", status: "inbox" });
+    expect(draftResponse.json()).not.toHaveProperty("environment");
+
+    const incompleteReadyResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        status: "ready",
+        type: "idea",
+        priority: "normal",
+        title: "Still incomplete",
+        description: "",
+      },
+    });
+    expect(incompleteReadyResponse.statusCode).toBe(400);
+
+    const readyResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        status: "ready",
+        type: "idea",
+        priority: "normal",
+        title: "Ready to process",
+        description: "Enough context",
+        environment: { platform: "web" },
+      },
+    });
+    expect(readyResponse.statusCode).toBe(201);
+    expect(readyResponse.json()).toMatchObject({ key: "MG-2", status: "ready" });
   });
 
   it("updates an item, enforces transitions, and records its timeline", async () => {
@@ -740,11 +1041,11 @@ describe("MissionGo REST API", () => {
     });
     expect(uploadResponse.statusCode).toBe(201);
     const attachment = uploadResponse.json<{ id: string; filename: string; kind: string; sizeBytes: number }>();
-    expect(attachment).toMatchObject({ filename: "launch.log", kind: "log", sizeBytes: log.length });
+    expect(attachment).toMatchObject({ filename: "launch.log", kind: "log", displayNumber: 1, sizeBytes: log.length });
 
     const detailResponse = await app.inject({ method: "GET", url: "/api/v1/items/HG-1" });
     expect(detailResponse.json()).toMatchObject({
-      attachments: [{ id: attachment.id, filename: "launch.log", kind: "log" }],
+      attachments: [{ id: attachment.id, filename: "launch.log", kind: "log", displayNumber: 1 }],
     });
 
     const contentResponse = await app.inject({
@@ -785,6 +1086,122 @@ describe("MissionGo REST API", () => {
       payload: "unsafe",
     });
     expect(unsafeResponse.statusCode).toBe(400);
+
+    const imageUploadResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/HG-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "image/jpeg",
+        "x-missiongo-filename": "evidence.jpg",
+      },
+      payload: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    expect(imageUploadResponse.statusCode).toBe(201);
+    const imageAttachment = imageUploadResponse.json<{ id: string }>();
+    const deleteImageResponse = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/items/HG-1/attachments/${imageAttachment.id}`,
+    });
+    expect(deleteImageResponse.statusCode).toBe(204);
+    const deletedImageContent = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/HG-1/attachments/${imageAttachment.id}/content`,
+    });
+    expect(deletedImageContent.statusCode).toBe(404);
+
+    const replacementImageResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/HG-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "image/jpeg",
+        "x-missiongo-filename": "replacement.jpg",
+      },
+      payload: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    expect(replacementImageResponse.statusCode).toBe(201);
+    const replacementImage = replacementImageResponse.json<{ id: string; displayNumber: number }>();
+    expect(replacementImage.displayNumber).toBe(2);
+    const deleteReplacementImage = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/items/HG-1/attachments/${replacementImage.id}`,
+    });
+    expect(deleteReplacementImage.statusCode).toBe(204);
+
+    const deleteResponse = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/items/HG-1/attachments/${attachment.id}`,
+    });
+    expect(deleteResponse.statusCode).toBe(204);
+    const deletedContent = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/HG-1/attachments/${attachment.id}/content`,
+    });
+    expect(deletedContent.statusCode).toBe(404);
+    const detailAfterDelete = await app.inject({ method: "GET", url: "/api/v1/items/HG-1" });
+    expect(detailAfterDelete.json()).toMatchObject({ attachments: [], diagnosticSummary: { logCount: 0 } });
+    const timelineAfterDelete = await app.inject({ method: "GET", url: "/api/v1/items/HG-1/timeline" });
+    expect(timelineAfterDelete.json()).toMatchObject({
+      events: expect.arrayContaining([expect.objectContaining({ eventType: "attachment_removed" })]),
+    });
+  });
+
+  it("stores, returns, edits, and searches structured report details", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Reports", keyPrefix: "RP" } })
+    ).json<{ id: string }>();
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "bug",
+        priority: "high",
+        title: "Search loses its filters",
+        description: "Filters disappear after returning to the list.",
+        report: {
+          overview: "Filters disappear after returning to the list.",
+          reproductionSteps: "Open search, select Recent, open a result, then go back.",
+          expectedOutcome: "The Recent filter remains selected.",
+          impact: "Users repeat the same filtering work.",
+          occurrenceFrequency: "always",
+        },
+        environment: { platform: "web" },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      report: {
+        reproductionSteps: expect.stringContaining("select Recent"),
+        expectedOutcome: "The Recent filter remains selected.",
+        occurrenceFrequency: "always",
+      },
+    });
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/items/RP-1",
+      payload: {
+        description: "Filters and sorting disappear after returning.",
+        report: {
+          overview: "Filters and sorting disappear after returning.",
+          reproductionSteps: "Open search, change sorting, open a result, then go back.",
+          expectedOutcome: "Filters and sorting remain selected.",
+          impact: "Repeated navigation becomes slow.",
+          occurrenceFrequency: "frequent",
+        },
+      },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({
+      description: "Filters and sorting disappear after returning.",
+      report: { impact: "Repeated navigation becomes slow.", occurrenceFrequency: "frequent" },
+    });
+
+    const searched = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&search=sorting` });
+    expect(searched.json()).toMatchObject({ items: [{ key: "RP-1" }] });
   });
 
   it("paginates and searches items while returning complete status counts", async () => {
@@ -819,5 +1236,301 @@ describe("MissionGo REST API", () => {
 
     const searchResponse = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&search=mobile` });
     expect(searchResponse.json()).toMatchObject({ items: [{ key: "MG-2", title: "Mobile layout" }], summary: { total: 3 } });
+  });
+
+  it("creates a scoped Android SDK token and submits an idempotent feedback draft", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-sdk-"));
+    temporaryDirectories.push(directory);
+    const app = buildApp({
+      databasePath: join(directory, "missiongo.sqlite"),
+      attachmentsPath: join(directory, "attachments"),
+      adminToken: "admin-test-token",
+    });
+    apps.push(app);
+    const adminHeaders = { authorization: "Bearer admin-test-token" };
+
+    const product = (
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/products",
+        headers: adminHeaders,
+        payload: { name: "Search App", keyPrefix: "SA" },
+      })
+    ).json<{ id: string }>();
+    const component = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/products/${product.id}/components`,
+        headers: adminHeaders,
+        payload: { name: "Android search", kind: "android" },
+      })
+    ).json<{ id: string }>();
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/sdk-tokens",
+      headers: adminHeaders,
+      payload: { name: "Search debug", productId: product.id, sourceComponentId: component.id },
+    });
+    expect(tokenResponse.statusCode).toBe(201);
+    const issued = tokenResponse.json<{ id: string; token: string }>();
+    expect(issued.token).toMatch(/^mg_sdk_/);
+
+    const listed = await app.inject({ method: "GET", url: "/api/v1/sdk-tokens", headers: adminHeaders });
+    expect(listed.json()).toEqual([
+      expect.objectContaining({ id: issued.id, productId: product.id, sourceComponentId: component.id }),
+    ]);
+    expect(listed.body).not.toContain(issued.token);
+
+    const payload = {
+      clientDraftId: "search-app-draft-0001",
+      type: "bug",
+      priority: "high",
+      title: "Search results are empty",
+      description: "The cached result list disappears after retry.",
+      environment: {
+        platform: "android",
+        appVersion: "1.2.0",
+        buildNumber: "42",
+        osVersion: "Android 16",
+        deviceModel: "Example device",
+      },
+      context: { screen: "search_result", queryLength: "12" },
+      logs: [{ timestamp: "2026-09-04T10:00:00.000Z", level: "error", message: "Search request timed out" }],
+    };
+    const unauthorized = await app.inject({ method: "POST", url: "/api/v1/sdk/drafts", payload });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const sdkHeaders = { authorization: `Bearer ${issued.token}` };
+    const createdResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/sdk/drafts",
+      headers: sdkHeaders,
+      payload,
+    });
+    expect(createdResponse.statusCode).toBe(201);
+    const created = createdResponse.json<{ id: string }>();
+
+    const repeatedResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/sdk/drafts",
+      headers: sdkHeaders,
+      payload: { ...payload, description: "Updated before submission." },
+    });
+    expect(repeatedResponse.json()).toMatchObject({ id: created.id, description: "Updated before submission." });
+
+    const otherDraftResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/sdk/drafts",
+      headers: sdkHeaders,
+      payload: { ...payload, clientDraftId: "search-app-draft-0002" },
+    });
+    const otherDraft = otherDraftResponse.json<{ id: string }>();
+
+    const preparedEditorResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/sdk/editor-session",
+      headers: sdkHeaders,
+      payload: { ...payload, clientDraftId: "search-app-draft-0003" },
+    });
+    expect(preparedEditorResponse.statusCode).toBe(201);
+    const preparedEditor = preparedEditorResponse.json<{ id: string; sessionToken: string }>();
+    expect(preparedEditor.id).toBeTruthy();
+    expect(preparedEditor.sessionToken).toMatch(/^mg_ws_/);
+    const preparedEditorDraft = await app.inject({
+      method: "GET",
+      url: `/api/v1/sdk/drafts/${preparedEditor.id}`,
+      headers: { cookie: `missiongo_feedback_session=${preparedEditor.sessionToken}` },
+    });
+    expect(preparedEditorDraft.statusCode).toBe(200);
+    expect(preparedEditorDraft.json()).toMatchObject({ id: preparedEditor.id, title: payload.title });
+    const preparedReady = await app.inject({
+      method: "POST",
+      url: `/api/v1/sdk/drafts/${preparedEditor.id}/finalize`,
+      headers: { cookie: `missiongo_feedback_session=${preparedEditor.sessionToken}` },
+      payload: { status: "ready" },
+    });
+    expect(preparedReady.statusCode).toBe(200);
+    const preparedReadyKey = preparedReady.json<{ itemKey: string }>().itemKey;
+    const preparedReadyItem = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/${preparedReadyKey}`,
+      headers: adminHeaders,
+    });
+    expect(preparedReadyItem.json()).toMatchObject({ key: preparedReadyKey, status: "ready" });
+
+    const webSessionResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/sdk/drafts/${created.id}/web-session`,
+      headers: sdkHeaders,
+    });
+    expect(webSessionResponse.statusCode).toBe(200);
+    const webSession = webSessionResponse.json<{ token: string }>();
+    expect(webSession.token).toMatch(/^mg_ws_/);
+    const sessionHeaders = { cookie: `missiongo_feedback_session=${webSession.token}` };
+    const deniedOtherDraft = await app.inject({
+      method: "GET",
+      url: `/api/v1/sdk/drafts/${otherDraft.id}`,
+      headers: sessionHeaders,
+    });
+    expect(deniedOtherDraft.statusCode).toBe(401);
+    const edited = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/sdk/drafts/${created.id}`,
+      headers: sessionHeaders,
+      payload: { title: "Search results disappear after retry" },
+    });
+    expect(edited.statusCode).toBe(200);
+    expect(edited.json()).toMatchObject({ id: created.id, title: "Search results disappear after retry" });
+
+    const finalized = await app.inject({
+      method: "POST",
+      url: `/api/v1/sdk/drafts/${created.id}/finalize`,
+      headers: sessionHeaders,
+    });
+    expect(finalized.statusCode).toBe(200);
+    const finalizedKey = finalized.json<{ itemKey: string }>().itemKey;
+    expect(finalized.json()).toMatchObject({ status: "submitted", itemKey: finalizedKey });
+    const defaultDraftItem = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/${finalizedKey}`,
+      headers: adminHeaders,
+    });
+    expect(defaultDraftItem.json()).toMatchObject({ key: finalizedKey, status: "inbox" });
+    const repeatedFinalize = await app.inject({
+      method: "POST",
+      url: `/api/v1/sdk/drafts/${created.id}/finalize`,
+      headers: sdkHeaders,
+    });
+    expect(repeatedFinalize.json()).toMatchObject({ status: "submitted", itemKey: finalizedKey });
+
+    const sdkAttachment = await app.inject({
+      method: "POST",
+      url: `/api/v1/sdk/drafts/${created.id}/attachments`,
+      headers: {
+        ...sessionHeaders,
+        "content-type": "application/octet-stream",
+        "x-missiongo-filename": "search-retry.log",
+        "x-missiongo-content-type": "text/plain",
+        "x-missiongo-client-attachment-id": "search-retry-log-0001",
+      },
+      payload: Buffer.from("Search request timed out after retry."),
+    });
+    expect(sdkAttachment.statusCode).toBe(201);
+    const uploadedAttachment = sdkAttachment.json<{ id: string; filename: string; kind: string }>();
+    expect(uploadedAttachment).toMatchObject({ filename: "search-retry.log", kind: "log" });
+    const repeatedAttachment = await app.inject({
+      method: "POST",
+      url: `/api/v1/sdk/drafts/${created.id}/attachments`,
+      headers: {
+        ...sessionHeaders,
+        "content-type": "application/octet-stream",
+        "x-missiongo-filename": "search-retry.log",
+        "x-missiongo-content-type": "text/plain",
+        "x-missiongo-client-attachment-id": "search-retry-log-0001",
+      },
+      payload: Buffer.from("Search request timed out after retry."),
+    });
+    expect(repeatedAttachment.statusCode).toBe(201);
+    expect(repeatedAttachment.json()).toMatchObject({ id: uploadedAttachment.id });
+    const reusedAttachmentId = await app.inject({
+      method: "POST",
+      url: `/api/v1/sdk/drafts/${created.id}/attachments`,
+      headers: {
+        ...sessionHeaders,
+        "content-type": "application/octet-stream",
+        "x-missiongo-filename": "search-retry.log",
+        "x-missiongo-content-type": "text/plain",
+        "x-missiongo-client-attachment-id": "search-retry-log-0001",
+      },
+      payload: Buffer.from("X".repeat(37)),
+    });
+    expect(reusedAttachmentId.statusCode).toBe(400);
+
+    const item = await app.inject({ method: "GET", url: `/api/v1/items/${finalizedKey}`, headers: adminHeaders });
+    expect(item.json()).toMatchObject({
+      productId: product.id,
+      sourceComponentId: component.id,
+      affectedComponentIds: [component.id],
+      title: "Search results disappear after retry",
+      report: { overview: "Updated before submission." },
+      diagnosticSummary: { logCount: 2, contextEntryCount: 2 },
+      environment: { platform: "android", appVersion: "1.2.0" },
+      attachments: [expect.objectContaining({ filename: "search-retry.log", kind: "log" })],
+    });
+    const timeline = await app.inject({ method: "GET", url: `/api/v1/items/${finalizedKey}/timeline`, headers: adminHeaders });
+    expect(timeline.json()).toMatchObject({
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          eventType: "item_created",
+          payload: expect.objectContaining({ source: "android_sdk", context: payload.context, logs: payload.logs }),
+        }),
+        expect.objectContaining({ eventType: "attachment_added" }),
+      ]),
+    });
+
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/sdk-tokens/${issued.id}`,
+      headers: adminHeaders,
+    });
+    expect(revoked.json()).toMatchObject({ id: issued.id, revokedAt: expect.any(String) });
+    const rejectedAfterRevoke = await app.inject({
+      method: "GET",
+      url: `/api/v1/sdk/drafts/${created.id}`,
+      headers: sdkHeaders,
+    });
+    expect(rejectedAfterRevoke.statusCode).toBe(401);
+    const rejectedSessionAfterRevoke = await app.inject({
+      method: "GET",
+      url: `/api/v1/sdk/drafts/${created.id}`,
+      headers: sessionHeaders,
+    });
+    expect(rejectedSessionAfterRevoke.statusCode).toBe(401);
+  });
+
+  it("rate limits SDK traffic per token and operation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-sdk-limit-"));
+    temporaryDirectories.push(directory);
+    const app = buildApp({
+      databasePath: join(directory, "missiongo.sqlite"),
+      attachmentsPath: join(directory, "attachments"),
+      adminToken: "admin-test-token",
+      sdkRateLimits: { draft_read: { limit: 2, windowMilliseconds: 60_000 } },
+    });
+    apps.push(app);
+    const adminHeaders = { authorization: "Bearer admin-test-token" };
+    const product = (await app.inject({
+      method: "POST",
+      url: "/api/v1/products",
+      headers: adminHeaders,
+      payload: { name: "Rate limited app", keyPrefix: "RL" },
+    })).json<{ id: string }>();
+    const issued = (await app.inject({
+      method: "POST",
+      url: "/api/v1/sdk-tokens",
+      headers: adminHeaders,
+      payload: { name: "Rate limit test", productId: product.id },
+    })).json<{ token: string }>();
+    const sdkHeaders = { authorization: `Bearer ${issued.token}` };
+    const draft = (await app.inject({
+      method: "POST",
+      url: "/api/v1/sdk/drafts",
+      headers: sdkHeaders,
+      payload: {
+        clientDraftId: "rate-limit-draft-0001",
+        title: "Rate limit",
+        environment: { platform: "android" },
+      },
+    })).json<{ id: string }>();
+
+    const first = await app.inject({ method: "GET", url: `/api/v1/sdk/drafts/${draft.id}`, headers: sdkHeaders });
+    const second = await app.inject({ method: "GET", url: `/api/v1/sdk/drafts/${draft.id}`, headers: sdkHeaders });
+    const limited = await app.inject({ method: "GET", url: `/api/v1/sdk/drafts/${draft.id}`, headers: sdkHeaders });
+    expect(first.statusCode).toBe(200);
+    expect(first.headers["x-ratelimit-remaining"]).toBe("1");
+    expect(second.statusCode).toBe(200);
+    expect(second.headers["x-ratelimit-remaining"]).toBe("0");
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ code: "rate_limit_exceeded" });
   });
 });

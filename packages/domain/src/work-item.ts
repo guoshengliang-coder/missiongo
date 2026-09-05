@@ -1,4 +1,4 @@
-export const WORK_ITEM_TYPES = ["idea", "requirement", "bug", "task", "note"] as const;
+export const WORK_ITEM_TYPES = ["bug", "requirement", "idea", "task", "note"] as const;
 export type WorkItemType = (typeof WORK_ITEM_TYPES)[number];
 
 export const WORK_ITEM_PRIORITIES = ["urgent", "high", "normal", "low"] as const;
@@ -14,6 +14,22 @@ export const WORK_ITEM_STATUSES = [
   "cancelled",
 ] as const;
 export type WorkItemStatus = (typeof WORK_ITEM_STATUSES)[number];
+
+export const WORK_ITEM_OCCURRENCE_FREQUENCIES = ["unknown", "once", "intermittent", "frequent", "always"] as const;
+export type WorkItemOccurrenceFrequency = (typeof WORK_ITEM_OCCURRENCE_FREQUENCIES)[number];
+
+export interface WorkItemReport {
+  readonly overview: string;
+  readonly reproductionSteps?: string;
+  readonly expectedOutcome?: string;
+  readonly impact?: string;
+  readonly occurrenceFrequency?: WorkItemOccurrenceFrequency;
+}
+
+export interface WorkItemDiagnosticSummary {
+  readonly logCount: number;
+  readonly contextEntryCount: number;
+}
 
 export interface WorkItemEnvironment {
   readonly platform: "android" | "macos" | "web" | "server" | "shared" | "other";
@@ -32,6 +48,7 @@ export interface WorkItemAttachment {
   readonly id: string;
   readonly itemKey: string;
   readonly kind: AttachmentKind;
+  readonly displayNumber: number;
   readonly filename: string;
   readonly contentType: string;
   readonly sizeBytes: number;
@@ -50,6 +67,8 @@ export interface WorkItemSnapshot {
   readonly status: WorkItemStatus;
   readonly title: string;
   readonly description: string;
+  readonly report?: WorkItemReport;
+  readonly diagnosticSummary: WorkItemDiagnosticSummary;
   readonly environment?: WorkItemEnvironment;
   readonly attachments: readonly WorkItemAttachment[];
   readonly createdAt: string;

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 
@@ -59,6 +59,7 @@ export class AttachmentStorage {
     encodedFilename: string,
     suppliedContentType: string,
     bytes: Buffer,
+    feedbackUpload?: { readonly draftId: string; readonly clientAttachmentId: string },
   ): Promise<AttachmentRecord> {
     store.getWorkItem(itemKey);
     const filename = safeFilename(encodedFilename);
@@ -67,6 +68,21 @@ export class AttachmentStorage {
     if (!rule) throw invalidInput("Unsupported attachment extension.");
     if (bytes.length < 1) throw invalidInput("Attachment cannot be empty.");
     if (bytes.length > rule.maxBytes) throw invalidInput(`Attachment exceeds the ${rule.maxBytes / MEBIBYTE} MiB limit.`);
+
+    const contentSha256 = feedbackUpload ? createHash("sha256").update(bytes).digest("hex") : undefined;
+    const existing = feedbackUpload
+      ? store.getFeedbackAttachmentUpload(feedbackUpload.draftId, feedbackUpload.clientAttachmentId)
+      : undefined;
+    if (existing) {
+      if (
+        existing.attachment.filename !== filename
+        || existing.attachment.sizeBytes !== bytes.length
+        || existing.contentSha256 !== contentSha256
+      ) {
+        throw invalidInput("Client attachment ID has already been used for a different file.");
+      }
+      return existing.attachment;
+    }
 
     const normalizedType = suppliedContentType.split(";", 1)[0]!.trim().toLowerCase();
     if (normalizedType && normalizedType !== "application/octet-stream" && !rule.acceptedContentTypes.includes(normalizedType)) {
@@ -85,11 +101,25 @@ export class AttachmentStorage {
         storageFilename,
         contentType: normalizedType && normalizedType !== "application/octet-stream" ? normalizedType : rule.contentType,
         sizeBytes: bytes.length,
+        ...(feedbackUpload ? {
+          feedbackDraftId: feedbackUpload.draftId,
+          clientAttachmentId: feedbackUpload.clientAttachmentId,
+          contentSha256: contentSha256!,
+        } : {}),
       });
     } catch (error) {
       await unlink(path).catch(() => undefined);
       throw error;
     }
+  }
+
+  async remove(store: MissionGoStore, itemKey: string, attachmentId: string): Promise<AttachmentRecord> {
+    const attachment = store.getAttachmentRecord(itemKey, attachmentId);
+    const path = this.resolveStoredFile(attachment.storageFilename);
+    await unlink(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    return store.deleteAttachmentMetadata(itemKey, attachmentId);
   }
 
   resolveStoredFile(storageFilename: string): string {

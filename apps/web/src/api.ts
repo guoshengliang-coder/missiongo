@@ -29,7 +29,15 @@ export interface ListItemsOptions {
   readonly beforeSequence?: number;
 }
 
-const TOKEN_KEY = "missiongo.admin-token";
+export interface AuthenticatedUser {
+  readonly id: string;
+  readonly username: string;
+  readonly role: "admin";
+}
+
+export interface AuthSession {
+  readonly user: AuthenticatedUser;
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -43,23 +51,13 @@ export class ApiError extends Error {
   }
 }
 
-export function getAdminToken(): string {
-  return sessionStorage.getItem(TOKEN_KEY) ?? "";
-}
-
-export function setAdminToken(token: string): void {
-  if (token.trim()) sessionStorage.setItem(TOKEN_KEY, token.trim());
-  else sessionStorage.removeItem(TOKEN_KEY);
-}
-
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = getAdminToken();
   const response = await fetch(path, {
     ...init,
+    credentials: "same-origin",
     headers: {
       accept: "application/json",
       ...(init.body ? { "content-type": "application/json" } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...init.headers,
     },
   });
@@ -72,12 +70,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 async function attachmentRequest(path: string, init: RequestInit = {}): Promise<Response> {
-  const token = getAdminToken();
   const response = await fetch(path, {
     ...init,
+    credentials: "same-origin",
     headers: {
       accept: "application/json",
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...init.headers,
     },
   });
@@ -89,6 +86,10 @@ async function attachmentRequest(path: string, init: RequestInit = {}): Promise<
 }
 
 export const api = {
+  getSession: () => request<AuthSession>("/api/v1/auth/session"),
+  login: (input: { username: string; password: string }) =>
+    request<AuthSession>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(input) }),
+  logout: () => request<{ ok: true }>("/api/v1/auth/logout", { method: "POST" }),
   listProducts: () => request<Product[]>("/api/v1/products"),
   createProduct: (input: { name: string; keyPrefix: string }) =>
     request<Product>("/api/v1/products", { method: "POST", body: JSON.stringify(input) }),
@@ -144,6 +145,11 @@ export const api = {
       range ? { headers: { range: `bytes=${range.start}-${range.end ?? ""}` } } : {},
     );
     return response.blob();
+  },
+  deleteAttachment: async (itemKey: string, attachmentId: string) => {
+    await attachmentRequest(`/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}`, {
+      method: "DELETE",
+    });
   },
   transitionItem: (itemKey: string, action: TransitionAction) =>
     request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transitions`, {

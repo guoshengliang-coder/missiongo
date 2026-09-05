@@ -3,7 +3,9 @@ import {
   ITEM_TYPES,
   type WorkItemEnvironment,
   type WorkItemPriority,
+  type WorkItemOccurrenceFrequency,
   type WorkItemType,
+  type WorkItemReport,
 } from "./types";
 
 export type EnvironmentPlatform = WorkItemEnvironment["platform"] | "";
@@ -20,6 +22,11 @@ export interface EnvironmentDraft {
 export interface CaptureDraft {
   readonly title: string;
   readonly description: string;
+  readonly reproductionSteps: string;
+  readonly expectedOutcome: string;
+  readonly impact: string;
+  readonly occurrenceFrequency: WorkItemOccurrenceFrequency;
+  readonly diagnosticLog: string;
   readonly type: WorkItemType;
   readonly priority: WorkItemPriority;
   readonly sourceComponentId: string;
@@ -38,7 +45,12 @@ export const EMPTY_ENVIRONMENT: EnvironmentDraft = {
 export const EMPTY_CAPTURE_DRAFT: CaptureDraft = {
   title: "",
   description: "",
-  type: "idea",
+  reproductionSteps: "",
+  expectedOutcome: "",
+  impact: "",
+  occurrenceFrequency: "unknown",
+  diagnosticLog: "",
+  type: "bug",
   priority: "normal",
   sourceComponentId: "",
   environment: EMPTY_ENVIRONMENT,
@@ -52,11 +64,31 @@ export function hasCaptureDraftContent(draft: CaptureDraft): boolean {
   return Boolean(
     draft.title.trim() ||
     draft.description.trim() ||
+    draft.reproductionSteps.trim() ||
+    draft.expectedOutcome.trim() ||
+    draft.impact.trim() ||
+    draft.occurrenceFrequency !== "unknown" ||
+    draft.diagnosticLog.trim() ||
     draft.sourceComponentId ||
-    draft.type !== "idea" ||
+    draft.type !== "bug" ||
     draft.priority !== "normal" ||
     Object.values(draft.environment).some((value) => value.trim()),
   );
+}
+
+export function workItemReportPayload(draft: CaptureDraft): WorkItemReport {
+  const overview = draft.description.trim();
+  if (draft.type !== "bug") return { overview };
+  const reproductionSteps = draft.reproductionSteps.trim();
+  const expectedOutcome = draft.expectedOutcome.trim();
+  const impact = draft.impact.trim();
+  return {
+    overview,
+    ...(reproductionSteps ? { reproductionSteps } : {}),
+    ...(expectedOutcome ? { expectedOutcome } : {}),
+    ...(impact ? { impact } : {}),
+    ...(draft.occurrenceFrequency !== "unknown" ? { occurrenceFrequency: draft.occurrenceFrequency } : {}),
+  };
 }
 
 export function parseCaptureDraft(raw: string | null): CaptureDraft {
@@ -72,7 +104,14 @@ export function parseCaptureDraft(raw: string | null): CaptureDraft {
     return {
       title: typeof value.title === "string" ? value.title : "",
       description: typeof value.description === "string" ? value.description : "",
-      type: ITEM_TYPES.includes(value.type as WorkItemType) ? value.type as WorkItemType : "idea",
+      reproductionSteps: typeof value.reproductionSteps === "string" ? value.reproductionSteps : "",
+      expectedOutcome: typeof value.expectedOutcome === "string" ? value.expectedOutcome : "",
+      impact: typeof value.impact === "string" ? value.impact : "",
+      occurrenceFrequency: ["unknown", "once", "intermittent", "frequent", "always"].includes(value.occurrenceFrequency ?? "")
+        ? value.occurrenceFrequency as WorkItemOccurrenceFrequency
+        : "unknown",
+      diagnosticLog: typeof value.diagnosticLog === "string" ? value.diagnosticLog : "",
+      type: ITEM_TYPES.includes(value.type as WorkItemType) ? value.type as WorkItemType : "bug",
       priority: ITEM_PRIORITIES.includes(value.priority as WorkItemPriority)
         ? value.priority as WorkItemPriority
         : "normal",

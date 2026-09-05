@@ -8,7 +8,7 @@ describe("createWorkItemKey", () => {
   });
 
   it("supports every confirmed work item type", () => {
-    expect(WORK_ITEM_TYPES).toEqual(["idea", "requirement", "bug", "task", "note"]);
+    expect(WORK_ITEM_TYPES).toEqual(["bug", "requirement", "idea", "task", "note"]);
   });
 
   it("classifies the supported attachment kinds", () => {

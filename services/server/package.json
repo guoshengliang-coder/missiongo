@@ -22,6 +22,7 @@
     "@missiongo/domain": "0.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "fastify": "^5.12.1",
+    "sharp": "^0.35.4",
     "zod": "^4.5.4"
   }
 }

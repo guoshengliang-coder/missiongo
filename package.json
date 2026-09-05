@@ -13,11 +13,14 @@
     "services/*"
   ],
   "scripts": {
+    "admin:hash-password": "node ./scripts/create-admin-password-hash.mjs",
     "build": "npm run build:types && npm run build:web",
     "build:types": "tsc -b",
     "build:web": "npm run build --workspace @missiongo/web",
+    "publish:android-internal": "./scripts/publish-android-internal.sh",
     "dev:server": "npm run dev --workspace @missiongo/server",
     "dev:web": "npm run dev --workspace @missiongo/web",
+    "check": "npm run test && npm run typecheck && npm run build",
     "test": "npm run build:types && npm run test --workspaces --if-present",
     "typecheck": "tsc -b --pretty false"
   },

@@ -8,6 +8,7 @@ import type {
   TransitionReason,
   WorkItemEnvironment,
   WorkItemPriority,
+  WorkItemReport,
   WorkItemAttachment,
   WorkItemSnapshot,
   WorkItemStatus,
@@ -36,6 +37,7 @@ export interface ComponentSnapshot {
 
 export interface CreateWorkItemInput {
   readonly productId: string;
+  readonly status?: "inbox" | "ready";
   readonly sourceComponentId?: string;
   readonly affectedComponentIds?: readonly string[];
   readonly areaId?: string;
@@ -43,7 +45,8 @@ export interface CreateWorkItemInput {
   readonly priority: WorkItemPriority;
   readonly title: string;
   readonly description: string;
-  readonly environment: WorkItemEnvironment;
+  readonly report?: WorkItemReport;
+  readonly environment?: WorkItemEnvironment;
 }
 
 export interface ListWorkItemsInput {
@@ -63,6 +66,7 @@ export interface WorkItemListSummary {
 export interface UpdateWorkItemInput {
   readonly title?: string;
   readonly description?: string;
+  readonly report?: WorkItemReport;
   readonly type?: WorkItemType;
   readonly priority?: WorkItemPriority;
   readonly sourceComponentId?: string | null;
@@ -77,6 +81,9 @@ export interface CreateAttachmentMetadataInput {
   readonly storageFilename: string;
   readonly contentType: string;
   readonly sizeBytes: number;
+  readonly feedbackDraftId?: string;
+  readonly clientAttachmentId?: string;
+  readonly contentSha256?: string;
 }
 
 export interface AttachmentRecord extends WorkItemAttachment {
@@ -135,6 +142,72 @@ export interface WorkItemEventSnapshot {
   readonly toStatus?: WorkItemStatus;
   readonly payload: Readonly<Record<string, unknown>>;
   readonly createdAt: string;
+}
+
+export interface SdkTokenSnapshot {
+  readonly id: string;
+  readonly name: string;
+  readonly productId: string;
+  readonly platform: "android";
+  readonly sourceComponentId?: string;
+  readonly expiresAt?: string;
+  readonly revokedAt?: string;
+  readonly lastUsedAt?: string;
+  readonly createdAt: string;
+}
+
+export interface CreatedSdkToken extends SdkTokenSnapshot {
+  readonly token: string;
+}
+
+export interface SdkPrincipal {
+  readonly tokenId: string;
+  readonly productId: string;
+  readonly platform: "android";
+  readonly sourceComponentId?: string;
+}
+
+export interface FeedbackLogEntry {
+  readonly timestamp: string;
+  readonly level: "debug" | "info" | "warn" | "error";
+  readonly message: string;
+  readonly attributes?: Readonly<Record<string, string>>;
+}
+
+export interface FeedbackDraftSnapshot {
+  readonly id: string;
+  readonly clientDraftId: string;
+  readonly productId: string;
+  readonly sourceComponentId?: string;
+  readonly status: "editing" | "submitted" | "expired";
+  readonly type: WorkItemType;
+  readonly priority: WorkItemPriority;
+  readonly title: string;
+  readonly description: string;
+  readonly environment: WorkItemEnvironment;
+  readonly context: Readonly<Record<string, string>>;
+  readonly logs: readonly FeedbackLogEntry[];
+  readonly itemKey?: string;
+  readonly expiresAt: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface UpsertFeedbackDraftInput {
+  readonly principal: SdkPrincipal;
+  readonly clientDraftId: string;
+  readonly type: WorkItemType;
+  readonly priority: WorkItemPriority;
+  readonly title: string;
+  readonly description: string;
+  readonly environment: WorkItemEnvironment;
+  readonly context: Readonly<Record<string, string>>;
+  readonly logs: readonly FeedbackLogEntry[];
+}
+
+export interface FeedbackWebSession {
+  readonly token: string;
+  readonly expiresAt: string;
 }
 
 export type { WorkItemSnapshot };

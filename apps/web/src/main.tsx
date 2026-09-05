@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { App } from "./App";
+import { SdkFeedbackPage } from "./SdkFeedback";
 import { I18nProvider } from "./i18n";
 import "./styles.css";
 
@@ -16,11 +17,13 @@ const queryClient = new QueryClient({
   },
 });
 
+const RootPage = window.location.pathname.startsWith("/sdk/feedback") ? SdkFeedbackPage : App;
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <I18nProvider>
-        <App />
+        <RootPage />
       </I18nProvider>
     </QueryClientProvider>
   </StrictMode>,

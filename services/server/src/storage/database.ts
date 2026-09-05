@@ -71,6 +71,79 @@ export class MissionGoDatabase {
           .run(6, new Date().toISOString());
       });
     }
+    this.connection
+      .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+      .run(7, new Date().toISOString());
+
+    const structuredReportMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 8")
+      .get() as unknown as { version: number } | undefined;
+    if (!structuredReportMigration) {
+      this.transaction(() => {
+        const workItemColumns = this.connection
+          .prepare("PRAGMA table_info(work_items)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!workItemColumns.some((column) => column.name === "report_json")) {
+          this.connection.exec("ALTER TABLE work_items ADD COLUMN report_json TEXT;");
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(8, new Date().toISOString());
+      });
+    }
+    this.connection
+      .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+      .run(9, new Date().toISOString());
+    this.connection
+      .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+      .run(10, new Date().toISOString());
+
+    const attachmentNumberMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 11")
+      .get() as unknown as { version: number } | undefined;
+    if (!attachmentNumberMigration) {
+      this.transaction(() => {
+        const attachmentColumns = this.connection
+          .prepare("PRAGMA table_info(work_item_attachments)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!attachmentColumns.some((column) => column.name === "display_number")) {
+          this.connection.exec("ALTER TABLE work_item_attachments ADD COLUMN display_number INTEGER;");
+        }
+        this.connection.exec(`
+          WITH ranked AS (
+            SELECT id, ROW_NUMBER() OVER (
+              PARTITION BY item_id, kind
+              ORDER BY created_at, rowid
+            ) AS number
+            FROM work_item_attachments
+          )
+          UPDATE work_item_attachments
+          SET display_number = (SELECT number FROM ranked WHERE ranked.id = work_item_attachments.id)
+          WHERE display_number IS NULL;
+        `);
+        this.connection.exec(`
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_work_item_attachments_item_kind_number
+          ON work_item_attachments(item_id, kind, display_number);
+        `);
+        this.connection.exec(`
+          CREATE TABLE IF NOT EXISTS work_item_attachment_counters (
+            item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'log')),
+            next_number INTEGER NOT NULL CHECK (next_number > 0),
+            PRIMARY KEY (item_id, kind)
+          ) STRICT;
+        `);
+        this.connection.exec(`
+          INSERT OR IGNORE INTO work_item_attachment_counters (item_id, kind, next_number)
+          SELECT item_id, kind, MAX(display_number) + 1
+          FROM work_item_attachments
+          GROUP BY item_id, kind;
+        `);
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(11, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

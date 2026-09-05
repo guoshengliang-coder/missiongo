@@ -1,4 +1,4 @@
-export const ITEM_TYPES = ["idea", "requirement", "bug", "task", "note"] as const;
+export const ITEM_TYPES = ["bug", "requirement", "idea", "task", "note"] as const;
 export type WorkItemType = (typeof ITEM_TYPES)[number];
 
 export const ITEM_PRIORITIES = ["urgent", "high", "normal", "low"] as const;
@@ -15,6 +15,22 @@ export const ITEM_STATUSES = [
 ] as const;
 export type WorkItemStatus = (typeof ITEM_STATUSES)[number];
 
+export const OCCURRENCE_FREQUENCIES = ["unknown", "once", "intermittent", "frequent", "always"] as const;
+export type WorkItemOccurrenceFrequency = (typeof OCCURRENCE_FREQUENCIES)[number];
+
+export interface WorkItemReport {
+  readonly overview: string;
+  readonly reproductionSteps?: string;
+  readonly expectedOutcome?: string;
+  readonly impact?: string;
+  readonly occurrenceFrequency?: WorkItemOccurrenceFrequency;
+}
+
+export interface WorkItemDiagnosticSummary {
+  readonly logCount: number;
+  readonly contextEntryCount: number;
+}
+
 export interface WorkItemEnvironment {
   readonly platform: "android" | "macos" | "web" | "server" | "shared" | "other";
   readonly appVersion?: string;
@@ -29,6 +45,7 @@ export interface WorkItemAttachment {
   readonly id: string;
   readonly itemKey: string;
   readonly kind: "image" | "video" | "log";
+  readonly displayNumber: number;
   readonly filename: string;
   readonly contentType: string;
   readonly sizeBytes: number;
@@ -67,6 +84,8 @@ export interface WorkItem {
   readonly status: WorkItemStatus;
   readonly title: string;
   readonly description: string;
+  readonly report?: WorkItemReport;
+  readonly diagnosticSummary: WorkItemDiagnosticSummary;
   readonly environment?: WorkItemEnvironment;
   readonly attachments: readonly WorkItemAttachment[];
   readonly createdAt: string;
@@ -86,18 +105,21 @@ export interface WorkItemEvent {
 
 export interface CreateWorkItemInput {
   readonly productId: string;
+  readonly status?: "inbox" | "ready";
   readonly sourceComponentId?: string;
   readonly affectedComponentIds?: readonly string[];
   readonly type: WorkItemType;
   readonly priority: WorkItemPriority;
   readonly title: string;
   readonly description: string;
-  readonly environment: WorkItemEnvironment;
+  readonly report?: WorkItemReport;
+  readonly environment?: WorkItemEnvironment;
 }
 
 export interface UpdateWorkItemInput {
   readonly title?: string;
   readonly description?: string;
+  readonly report?: WorkItemReport;
   readonly type?: WorkItemType;
   readonly priority?: WorkItemPriority;
   readonly sourceComponentId?: string | null;

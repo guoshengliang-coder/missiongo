@@ -1,104 +1,101 @@
 # AI 客户端接入说明
 
-服务端配置 `MCP_API_TOKEN` 后，MissionGo 会在 `/mcp` 提供带鉴权的 Streamable HTTP MCP 端点。当前工具支持按需读取、分析和处理用户指定的条目，不提供 SQL、任意字段修改、自动扫描队列或最终人工验收能力。
+当前阶段只开放“按编号完整读取 MissionGo 条目”。目标是让 AI 收到“查看 HG-8”后，可以读取条目正文、分类字段、组件、环境、完整时间线、全部日志和图片，再把实际读取范围明确告诉用户。
 
-真实服务地址和 Token 必须只保存在本地配置中。下面全部使用示例值。
+分析回写、领取任务、修改状态和自动处理暂不开放。
 
-## 服务端配置
+真实服务地址、账号和授权只能保存在服务器或 AI 客户端的安全存储中，不能提交到 Git。下面均为示例值。
 
-生成一个强随机、可撤销的 Token，并写入服务端未被 Git 跟踪的 `.env`：
+## 组成
 
-```dotenv
-MCP_API_TOKEN=replace-with-a-long-random-token
+接入需要两个部分：
+
+1. **MissionGo Skill**：告诉 AI 何时读取、必须读取哪些信息、怎样核对完整性。
+2. **MissionGo MCP**：向 AI 提供经过鉴权的只读数据工具。
+
+只安装 Skill 而不配置 MCP，AI 知道流程但拿不到数据；只配置 MCP 而不安装 Skill，AI 能调用工具，但不一定会自动读完时间线和附件。
+
+## 安装 Skill
+
+部署后的 Skill 固定地址为：
+
+```text
+https://missiongo.example.com/downloads/missiongo-skill/SKILL.md
 ```
 
-从互联网访问时，必须先通过 HTTPS 反向代理暴露服务。不要直接公开开发端口。
-
-## Codex
-
-在启动 Codex 的本地环境中设置 Token：
+Codex 用户级安装示例：
 
 ```bash
-export MISSIONGO_MCP_TOKEN="replace-with-your-local-token"
+mkdir -p ~/.codex/skills/missiongo
+curl -fsSL "https://missiongo.example.com/downloads/missiongo-skill/SKILL.md" \
+  -o ~/.codex/skills/missiongo/SKILL.md
 ```
 
-将下面的配置加入本机 `~/.codex/config.toml`，或未被 Git 跟踪的项目级 `.codex/config.toml`：
+也可以把仓库中的 [`skills/missiongo/SKILL.md`](../skills/missiongo/SKILL.md) 复制到 AI 客户端支持的 Skill 目录。不同客户端的目录和重载方式可能不同，应以该客户端当前文档为准；Skill 内容本身保持为一个可移植的 `SKILL.md`。
+
+安装或更新后，需要重新开始一次 AI 会话，让客户端重新发现 Skill。
+
+## 配置 MCP
+
+MCP 使用 Streamable HTTP，路径为 `/mcp`，并通过 OAuth 连接现有 MissionGo 账号。从互联网访问时必须经过 HTTPS。第一次连接会打开 MissionGo 登录页；账号密码只交给 MissionGo 服务端验证，不会传给 AI。验证成功后，AI 客户端保存限时授权，服务端在每次读取时继续校验账号及其产品权限。
+
+### Codex
+
+把下面配置加入本机 `~/.codex/config.toml`，或未被 Git 跟踪的项目级 `.codex/config.toml`：
 
 ```toml
 [mcp_servers.missiongo]
 url = "https://missiongo.example.com/mcp"
-bearer_token_env_var = "MISSIONGO_MCP_TOKEN"
 enabled_tools = [
+  "get_current_account",
   "list_products",
   "list_components",
   "list_items",
   "get_item_context",
   "get_item_timeline",
   "get_attachment",
-  "get_execution",
-  "append_analysis",
-  "claim_item",
-  "renew_item_lease",
-  "append_progress",
-  "request_human_input",
-  "submit_resolution",
-  "mark_pending_verification",
-  "release_item",
-  "resume_execution",
 ]
-default_tools_approval_mode = "writes"
+default_tools_approval_mode = "approve"
 ```
 
-把仓库中的 [`skills/missiongo`](../skills/missiongo) 安装或链接到本机 Codex Skill 目录。之后可以直接这样说：
+然后执行首次连接：
 
-> 分析 MissionGo 条目 HG-12，把结论回写到条目中，不要修改代码。
-
-或在条目已经由人工整理为 `ready` 后：
-
-> 处理 MissionGo 条目 HG-12，完成代码修改和验证后，把结果转为待人工验证；不要 push 或 merge。
-
-## Claude Code
-
-Claude Code 支持带请求头的 HTTP MCP 服务。如果部署地址属于隐私信息，请只把配置保存在本地：
-
-```json
-{
-  "mcpServers": {
-    "missiongo": {
-      "type": "http",
-      "url": "https://missiongo.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ${MISSIONGO_MCP_TOKEN}"
-      }
-    }
-  }
-}
+```bash
+codex mcp login missiongo --scopes missiongo:read
 ```
 
-启动 Claude Code 前先设置 `MISSIONGO_MCP_TOKEN`。不要把 Token 明文写进 `.mcp.json`，也不要提交真实的私有服务地址。
+浏览器会打开 MissionGo 登录页。登录成功后重新开始一次 AI 会话，让客户端重新发现连接和 Skill。
 
-## Hermes 和其他 MCP 客户端
+### Claude Code 和其他 MCP 客户端
 
-选择客户端的 Streamable HTTP 传输方式，并填写：
+选择支持 OAuth 的 Streamable HTTP 传输，并配置：
 
 - URL：`https://missiongo.example.com/mcp`
-- 请求头：`Authorization: Bearer <本地 Token>`
-- 工具：允许使用 Codex 示例中列出的工具
+- 授权范围：`missiongo:read`
+- 允许工具：只允许本页列出的七个只读工具
 
-如果客户端支持可复用指令或 Skill，请使用 [`skills/missiongo/SKILL.md`](../skills/missiongo/SKILL.md) 中的工作流。MCP 配置负责提供数据访问，Skill 负责约束安全的分析流程。
+如果客户端不支持标准 OAuth 登录，当前阶段不要把账号密码写入客户端配置或 AI 对话；应改用支持 OAuth 的客户端。
 
-## 当前可用工具
+## 验收
 
-- `list_products`、`list_components`、`list_items`：查找产品、组件和工作条目。
-- `get_item_context`：读取完整结构化上下文，包括设备、版本信息和附件元数据。
-- `get_item_timeline`：分页读取历史事件。
-- `get_attachment`：分页读取日志；小型图片可以直接交给 AI 查看；视频和大型图片暂时只返回元数据。
-- `append_analysis`：把结论、依据和风险写入时间线，不改变条目状态。重复使用同一个幂等键时会返回原结果，不会创建重复记录。
-- `claim_item`、`renew_item_lease`：按编号原子领取条目，并维持有时限的处理租约。
-- `append_progress`、`request_human_input`、`resume_execution`：记录关键进度，或安全暂停并恢复等待人工信息的处理。
-- `submit_resolution`：回写代码改动、检查结果、剩余风险和人工验证步骤。
-- `mark_pending_verification`：仅在处理报告已保存后，把条目转为“待验证”；AI 不能转为“已完成”。
-- `release_item`：未完成时释放租约并让条目回到可处理状态。
-- `get_execution`：读取一次 AI 处理的状态、报告和当前租约信息。
+接入完成后，用一个同时包含正文、图片和日志的测试条目验证：
 
-当前是按需模式：必须由用户给出条目编号并明确要求处理，不会自动扫描或领取待办队列。
+> 查看 MissionGo 的 HG-8，先完整读取，不要分析或修改。
+
+合格结果必须满足：
+
+- AI 自动触发 MissionGo Skill，并调用 `get_item_context`。
+- AI 先调用 `get_current_account`；未连接时先完成 MissionGo 登录验证。
+- 若时间线被截断，AI 会继续翻页直到结束。
+- 每张图片都实际读取，每份日志都分页读完。
+- 视频当前只读取元数据，AI 会明确说没有查看视频内容。
+- AI 会报告“读取完整”或“读取部分”，并列出任何失败项。
+- MissionGo 条目、时间线和状态没有任何新增或变化。
+
+## 当前边界
+
+- 图片会由服务端转换成适合 AI 查看、最长边不超过 2048 像素的预览；原始文件的名称、类型和大小仍会保留。
+- 日志每次最多读取 64 KiB，Skill 会根据 `nextOffsetBytes` 自动翻页。
+- 视频内容暂不交给 AI，只提供编号、名称、格式、大小和时间；视频抽帧或理解放到后续阶段。
+- 不提供任意 SQL、任意字段修改、写回分析、任务领取、状态变更或自动扫描队列。
+- 列表、条目详情、时间线和附件都会执行同一套产品权限校验，不能通过猜测编号绕过。
