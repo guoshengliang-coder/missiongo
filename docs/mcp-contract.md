@@ -41,7 +41,11 @@ MissionGo MCP 承担两件事：让经过鉴权的 AI 按用户给出的编号�
 - `get_attachment`：分页读取日志、返回可供 AI 查看的一张图片预览，或返回视频元数据。
 - `append_comment`（`comments` 档位起，需 `missiongo:write`）：在条目上追加一条评论。
   `bodyKind: "free"` 配 `text` 用于提问、回答和零散发现；`bodyKind: "structured"` 配
-  `conclusion`、`evidence`、`risks` 用于正式分析结论。必须带 `idempotencyKey`。不改变条目状态。
+  `understanding`、`finding`、`evidence`、可选 `proposal`、`openQuestions` 用于正式分析。
+  `evidence` 至少一条。必须带 `idempotencyKey`。不改变条目状态。
+
+  分析字段刻意不是诊断形状：MissionGo 里有 Bug、需求、任务、灵感和备注五种类型，只有 Bug 需要
+  回答「根因是什么」。五种类型共有的是「我理解你要什么、我发现了什么、我定不了什么」。
 
 MCP 工具列表不得出现领取、续租、进度、提交处理结果、修改状态、删除、条目字段更新或任意 SQL 工具。评论之外的写入一律不开放。
 

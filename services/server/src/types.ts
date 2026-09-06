@@ -178,11 +178,24 @@ export interface EventAttribution {
 export const COMMENT_BODY_KINDS = ["structured", "free"] as const;
 export type CommentBodyKind = (typeof COMMENT_BODY_KINDS)[number];
 
-/** An agent's formal analysis: fixed fields so it can be scanned and filtered. */
+/**
+ * An agent's formal analysis. The fields are deliberately not diagnosis-shaped:
+ * MissionGo holds ideas, requirements, tasks and notes as well as bugs, and
+ * "root cause" is not the question to answer for most of them. What is common
+ * across all five is: here is what I understood you want, here is what I found,
+ * here is what I cannot decide without you.
+ */
 export interface StructuredCommentBody {
-  readonly conclusion: string;
+  /** What the agent understood the item to be asking for. */
+  readonly understanding: string;
+  /** What it found: confirmed, not reproducible, already exists, conflicts with a prior decision. */
+  readonly finding: string;
+  /** What the finding rests on. Must point at something actually read. */
   readonly evidence: readonly string[];
-  readonly risks: readonly string[];
+  /** Suggested way forward. Absent for notes and some ideas, where there is nothing to do. */
+  readonly proposal?: string;
+  /** What the agent could not settle alone. Answering these is the user's call. */
+  readonly openQuestions: readonly string[];
   readonly agentName?: string;
 }
 

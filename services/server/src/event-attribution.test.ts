@@ -39,7 +39,12 @@ describe("work-item event attribution", () => {
       itemKey: item.key,
       actorKind: "agent",
       bodyKind: "structured",
-      body: { conclusion: "The crash is in the launch path.", evidence: ["stack trace"], risks: [] },
+      body: {
+        understanding: "启动崩溃，要定位",
+        finding: "The crash is in the launch path.",
+        evidence: ["stack trace"],
+        openQuestions: [],
+      },
       attribution: { accountId: "account-1", clientId: "client-9" },
       idempotencyKey: "analysis-1",
     });

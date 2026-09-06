@@ -305,6 +305,41 @@ export class MissionGoDatabase {
           .run(16, new Date().toISOString());
       });
     }
+    // The analysis fields were bug-shaped -- conclusion, evidence, risks -- but
+    // MissionGo holds ideas, requirements, tasks and notes too, and "root cause"
+    // is not the question for most of them. The shape becomes what an analysis of
+    // any item actually has: what was understood, what was found, and what could
+    // not be settled alone.
+    //
+    // Done in JS rather than SQL because the JSON1 rewrite for a nested array is
+    // considerably harder to read than the two lines it replaces.
+    const analysisShapeMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 17")
+      .get() as unknown as { version: number } | undefined;
+    if (!analysisShapeMigration) {
+      this.transaction(() => {
+        const rows = this.connection
+          .prepare("SELECT id, body_json FROM work_item_comments WHERE body_kind = 'structured'")
+          .all() as unknown as Array<{ id: string; body_json: string }>;
+        const update = this.connection.prepare("UPDATE work_item_comments SET body_json = ? WHERE id = ?");
+        for (const row of rows) {
+          const body = JSON.parse(row.body_json) as Record<string, unknown>;
+          if (body.conclusion === undefined) continue;
+          const { conclusion, risks, ...rest } = body;
+          update.run(JSON.stringify({
+            // These predate the field, and inventing one would put words in the
+            // agent's mouth. Say so instead.
+            understanding: "（迁移自旧格式，当时未记录对条目的理解）",
+            finding: conclusion,
+            openQuestions: Array.isArray(risks) ? risks : [],
+            ...rest,
+          }), row.id);
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(17, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

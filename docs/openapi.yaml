@@ -1003,14 +1003,22 @@ components:
         withdrawnBy: { type: string }
     StructuredCommentBody:
       type: object
-      required: [conclusion, evidence, risks]
+      description: >-
+        An analysis of any work-item type, not just a bug. MissionGo holds ideas,
+        requirements, tasks and notes too, where "root cause" is not the question
+        to answer; what all five share is what was understood, what was found,
+        and what could not be settled without the user.
+      required: [understanding, finding, evidence, openQuestions]
       properties:
-        conclusion: { type: string, maxLength: 20000 }
+        understanding: { type: string, maxLength: 20000 }
+        finding: { type: string, maxLength: 20000 }
         evidence:
           type: array
+          minItems: 1
           items: { type: string, maxLength: 2000 }
           maxItems: 50
-        risks:
+        proposal: { type: string, maxLength: 20000 }
+        openQuestions:
           type: array
           items: { type: string, maxLength: 2000 }
           maxItems: 50
@@ -1028,12 +1036,14 @@ components:
       properties:
         bodyKind: { enum: [structured, free] }
         text: { type: string, maxLength: 20000 }
-        conclusion: { type: string, maxLength: 20000 }
+        understanding: { type: string, maxLength: 20000 }
+        finding: { type: string, maxLength: 20000 }
         evidence:
           type: array
           items: { type: string, maxLength: 2000 }
           maxItems: 50
-        risks:
+        proposal: { type: string, maxLength: 20000 }
+        openQuestions:
           type: array
           items: { type: string, maxLength: 2000 }
           maxItems: 50

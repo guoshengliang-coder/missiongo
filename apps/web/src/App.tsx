@@ -1752,15 +1752,27 @@ function CommentBody({
 
 function AnalysisDetails({ payload }: { payload: Readonly<Record<string, unknown>> }) {
   const { t } = useI18n();
-  const conclusion = typeof payload.conclusion === "string" ? payload.conclusion : "";
-  const evidence = Array.isArray(payload.evidence) ? payload.evidence.filter((entry): entry is string => typeof entry === "string") : [];
-  const risks = Array.isArray(payload.risks) ? payload.risks.filter((entry): entry is string => typeof entry === "string") : [];
-  if (!conclusion && evidence.length === 0 && risks.length === 0) return null;
+  const text = (key: string) => (typeof payload[key] === "string" ? (payload[key] as string) : "");
+  const list = (key: string) => (Array.isArray(payload[key])
+    ? (payload[key] as unknown[]).filter((entry): entry is string => typeof entry === "string")
+    : []);
+  const understanding = text("understanding");
+  const finding = text("finding");
+  const proposal = text("proposal");
+  const evidence = list("evidence");
+  const openQuestions = list("openQuestions");
+  if (!understanding && !finding && !proposal && evidence.length === 0 && openQuestions.length === 0) return null;
+  const section = (label: string, body: string) => (body ? <div><span>{label}</span><p>{body}</p></div> : null);
+  const bullets = (label: string, entries: readonly string[]) => (entries.length > 0
+    ? <div><span>{label}</span><ul>{entries.map((entry, index) => <li key={`${index}-${entry}`}>{entry}</li>)}</ul></div>
+    : null);
   return (
     <div className="analysis-details">
-      {conclusion && <div><span>{t("analysisConclusion")}</span><p>{conclusion}</p></div>}
-      {evidence.length > 0 && <div><span>{t("analysisEvidence")}</span><ul>{evidence.map((entry, index) => <li key={`${index}-${entry}`}>{entry}</li>)}</ul></div>}
-      {risks.length > 0 && <div><span>{t("analysisRisks")}</span><ul>{risks.map((entry, index) => <li key={`${index}-${entry}`}>{entry}</li>)}</ul></div>}
+      {section(t("analysisUnderstanding"), understanding)}
+      {section(t("analysisFinding"), finding)}
+      {bullets(t("analysisEvidence"), evidence)}
+      {section(t("analysisProposal"), proposal)}
+      {bullets(t("analysisOpenQuestions"), openQuestions)}
     </div>
   );
 }

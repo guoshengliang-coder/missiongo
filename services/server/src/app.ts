@@ -1013,9 +1013,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       body: bodyKind === "free"
         ? { text: stringField(body, "text")! }
         : {
-          conclusion: stringField(body, "conclusion")!,
+          understanding: stringField(body, "understanding")!,
+          finding: stringField(body, "finding")!,
           evidence: stringArrayField(body, "evidence") ?? [],
-          risks: stringArrayField(body, "risks") ?? [],
+          ...(stringField(body, "proposal", false) !== undefined ? { proposal: body.proposal as string } : {}),
+          openQuestions: stringArrayField(body, "openQuestions") ?? [],
         },
       ...(sessionUser(request) ? { attribution: { accountId: sessionUser(request)!.id } } : {}),
     });

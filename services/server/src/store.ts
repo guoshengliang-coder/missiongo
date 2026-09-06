@@ -1289,14 +1289,22 @@ export class MissionGoStore {
       return { text };
     }
     const structured = body as StructuredCommentBody;
-    const conclusion = requiredText(structured.conclusion, "Conclusion");
-    if (conclusion.length > 20_000) throw invalidInput("Conclusion must be 20,000 characters or fewer.");
+    const understanding = requiredText(structured.understanding, "Understanding");
+    if (understanding.length > 20_000) throw invalidInput("Understanding must be 20,000 characters or fewer.");
+    const finding = requiredText(structured.finding, "Finding");
+    if (finding.length > 20_000) throw invalidInput("Finding must be 20,000 characters or fewer.");
+    const proposal = structured.proposal?.trim();
+    if (proposal && proposal.length > 20_000) throw invalidInput("Proposal must be 20,000 characters or fewer.");
+    const evidence = this.validateAnalysisList(structured.evidence ?? [], "Evidence");
+    if (evidence.length === 0) throw invalidInput("A structured comment needs at least one piece of evidence.");
     const agentName = structured.agentName?.trim();
     if (agentName && agentName.length > 100) throw invalidInput("Agent name must be 100 characters or fewer.");
     return {
-      conclusion,
-      evidence: this.validateAnalysisList(structured.evidence ?? [], "Evidence"),
-      risks: this.validateAnalysisList(structured.risks ?? [], "Risks"),
+      understanding,
+      finding,
+      evidence,
+      ...(proposal ? { proposal } : {}),
+      openQuestions: this.validateAnalysisList(structured.openQuestions ?? [], "Open questions"),
       ...(agentName ? { agentName } : {}),
     };
   }
