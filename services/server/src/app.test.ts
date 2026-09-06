@@ -41,6 +41,83 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
+describe("Work-item comments over REST", () => {
+  async function itemApp() {
+    const { app } = await testApp();
+    const product = (await app.inject({
+      method: "POST",
+      url: "/api/v1/products",
+      payload: { name: "Hermes Go", keyPrefix: "HG" },
+    })).json<{ id: string }>();
+    const item = (await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: { productId: product.id, type: "bug", priority: "high", title: "Crash", description: "On launch" },
+    })).json<{ key: string }>();
+    return { app, itemKey: item.key };
+  }
+
+  it("posts, lists and withdraws a comment", async () => {
+    const { app, itemKey } = await itemApp();
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${itemKey}/comments`,
+      payload: { text: "Reproduced on a Pixel 8." },
+    });
+    expect(created.statusCode).toBe(201);
+    const comment = created.json<{ id: string; actorKind: string; bodyKind: string }>();
+    expect(comment).toMatchObject({ actorKind: "human", bodyKind: "free" });
+
+    const listed = (await app.inject({ method: "GET", url: `/api/v1/items/${itemKey}/comments` }))
+      .json<{ comments: Array<{ id: string; withdrawnAt?: string }> }>().comments;
+    expect(listed).toHaveLength(1);
+
+    const withdrawn = await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${itemKey}/comments/${comment.id}/withdraw`,
+    });
+    expect(withdrawn.statusCode).toBe(200);
+    expect(withdrawn.json()).toMatchObject({ id: comment.id });
+
+    // Kept and marked rather than removed, so the web can show that something
+    // was said and taken back.
+    const afterWithdrawal = (await app.inject({ method: "GET", url: `/api/v1/items/${itemKey}/comments` }))
+      .json<{ comments: Array<{ id: string; withdrawnAt?: string }> }>().comments;
+    expect(afterWithdrawal).toHaveLength(1);
+    expect(afterWithdrawal[0]!.withdrawnAt).toBeTruthy();
+  });
+
+  it("puts comments in the timeline alongside the events", async () => {
+    const { app, itemKey } = await itemApp();
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${itemKey}/comments`,
+      payload: { text: "Looks like a launch-path regression." },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${itemKey}/transitions`,
+      payload: { to: "ready", reason: "triaged" },
+    });
+
+    const events = (await app.inject({ method: "GET", url: `/api/v1/items/${itemKey}/timeline` }))
+      .json<{ events: Array<{ eventType: string }> }>().events;
+    expect(events.map((event) => event.eventType)).toEqual(["item_created", "comment_added", "status_changed"]);
+  });
+
+  it("rejects a comment with no body", async () => {
+    const { app, itemKey } = await itemApp();
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${itemKey}/comments`,
+      payload: { text: "   " },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: "validation_failed" });
+  });
+});
+
 describe("MissionGo REST API", () => {
   it("serves an authenticated, complete, read-only MCP item context", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-mcp-"));

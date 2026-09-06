@@ -458,7 +458,11 @@ paths:
       operationId: getItemTimeline
       responses:
         "200":
-          description: Immutable events for the work item.
+          description: >-
+            The work item's history: immutable events merged with comments, in
+            the order they happened. Comments appear as entries whose eventType
+            is comment_added. Withdrawn comments are included here so a reader
+            can see that something was said and taken back.
           content:
             application/json:
               schema:
@@ -469,6 +473,68 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/WorkItemEvent"
+  /api/v1/items/{itemKey}/comments:
+    parameters:
+      - $ref: "#/components/parameters/WorkItemKey"
+    get:
+      operationId: listItemComments
+      responses:
+        "200":
+          description: Comments on the work item, withdrawn ones included and marked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [comments]
+                properties:
+                  comments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkItemComment"
+    post:
+      operationId: createItemComment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkItemComment"
+      responses:
+        "201":
+          description: The stored comment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkItemComment"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /api/v1/items/{itemKey}/comments/{commentId}/withdraw:
+    parameters:
+      - $ref: "#/components/parameters/WorkItemKey"
+      - name: commentId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: withdrawItemComment
+      description: >-
+        Take a comment down without deleting it. Only a person can withdraw, and
+        an agent cannot withdraw its own: an AI rereads an item before it acts,
+        so a wrong analysis has to be retractable, but deleting is the one
+        irreversible action here and it stays with the human.
+      responses:
+        "200":
+          description: The withdrawn comment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkItemComment"
+        "409":
+          description: The comment was already withdrawn.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/items/{itemKey}/attachments:
     parameters:
       - $ref: "#/components/parameters/WorkItemKey"
@@ -909,7 +975,68 @@ components:
         payload:
           type: object
           additionalProperties: true
+        accountId:
+          type: string
+          description: Which account authorized an agent's write. Absent on human events.
+        clientId:
+          type: string
+          description: Which OAuth client an agent wrote through.
+        executionId: { type: string }
         createdAt: { type: string, format: date-time }
+    WorkItemComment:
+      type: object
+      required: [id, itemKey, actorKind, bodyKind, body, createdAt]
+      properties:
+        id: { type: string }
+        itemKey: { type: string }
+        actorKind: { enum: [human, agent, system] }
+        bodyKind: { enum: [structured, free] }
+        body:
+          oneOf:
+            - $ref: "#/components/schemas/StructuredCommentBody"
+            - $ref: "#/components/schemas/FreeCommentBody"
+        accountId: { type: string }
+        clientId: { type: string }
+        executionId: { type: string }
+        createdAt: { type: string, format: date-time }
+        withdrawnAt: { type: string, format: date-time }
+        withdrawnBy: { type: string }
+    StructuredCommentBody:
+      type: object
+      required: [conclusion, evidence, risks]
+      properties:
+        conclusion: { type: string, maxLength: 20000 }
+        evidence:
+          type: array
+          items: { type: string, maxLength: 2000 }
+          maxItems: 50
+        risks:
+          type: array
+          items: { type: string, maxLength: 2000 }
+          maxItems: 50
+        agentName: { type: string, maxLength: 100 }
+    FreeCommentBody:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string, maxLength: 20000 }
+    CreateWorkItemComment:
+      type: object
+      description: >-
+        Omit bodyKind for a free-text comment. A structured comment takes the
+        conclusion, evidence and risks fields instead of text.
+      properties:
+        bodyKind: { enum: [structured, free] }
+        text: { type: string, maxLength: 20000 }
+        conclusion: { type: string, maxLength: 20000 }
+        evidence:
+          type: array
+          items: { type: string, maxLength: 2000 }
+          maxItems: 50
+        risks:
+          type: array
+          items: { type: string, maxLength: 2000 }
+          maxItems: 50
     Problem:
       type: object
       required: [type, title, status, code]

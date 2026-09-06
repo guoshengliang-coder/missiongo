@@ -31,7 +31,7 @@ import { invalidInput, MissionGoError } from "./errors.js";
 import { createMissionGoMcpHandler } from "./mcp.js";
 import { MISSIONGO_READ_SCOPE, MissionGoOAuthProvider, type OAuthAuthorizationInput } from "./oauth.js";
 import { MissionGoStore } from "./store.js";
-import { COMPONENT_KINDS, type ComponentKind } from "./types.js";
+import { COMMENT_BODY_KINDS, COMPONENT_KINDS, type ComponentKind } from "./types.js";
 import type { FeedbackLogEntry, SdkPrincipal } from "./types.js";
 
 export interface BuildAppOptions {
@@ -966,7 +966,43 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/items/:itemKey/timeline", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
-    return { events: store.getTimeline(itemKey) };
+    // The web folds withdrawn comments rather than hiding them, so a reader can
+    // see that something was said and taken back. MCP gets the pruned view.
+    return { events: store.getTimeline(itemKey, { includeWithdrawn: true }) };
+  });
+
+  app.get("/api/v1/items/:itemKey/comments", async (request) => {
+    const { itemKey } = request.params as { itemKey: string };
+    return { comments: store.listComments(itemKey, { includeWithdrawn: true }) };
+  });
+
+  app.post("/api/v1/items/:itemKey/comments", async (request, reply) => {
+    const { itemKey } = request.params as { itemKey: string };
+    const body = objectBody(request.body);
+    const bodyKind = body.bodyKind === undefined ? "free" : enumField(body, "bodyKind", COMMENT_BODY_KINDS)!;
+    const comment = store.createComment({
+      itemKey,
+      actorKind: "human",
+      bodyKind,
+      body: bodyKind === "free"
+        ? { text: stringField(body, "text")! }
+        : {
+          conclusion: stringField(body, "conclusion")!,
+          evidence: stringArrayField(body, "evidence") ?? [],
+          risks: stringArrayField(body, "risks") ?? [],
+        },
+      ...(sessionUser(request) ? { attribution: { accountId: sessionUser(request)!.id } } : {}),
+    });
+    return reply.status(201).send(comment);
+  });
+
+  app.post("/api/v1/items/:itemKey/comments/:commentId/withdraw", async (request) => {
+    const { itemKey, commentId } = request.params as { itemKey: string; commentId: string };
+    return store.withdrawComment({
+      itemKey,
+      commentId,
+      ...(sessionUser(request) ? { accountId: sessionUser(request)!.id } : {}),
+    });
   });
 
   app.post("/api/v1/items/:itemKey/attachments", async (request, reply) => {
