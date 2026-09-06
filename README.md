@@ -2,7 +2,7 @@
 
 > From idea to shipped.
 
-MissionGo 是面向个人开发者的开源、自托管工作记录中心。它把灵感、需求、Bug、任务和备注集中到同一套结构化记录中，并让 Web、Android 和只读 AI 客户端共享完整上下文。
+MissionGo 是面向个人开发者的开源、自托管工作记录中心。它把灵感、需求、Bug、任务和备注集中到同一套结构化记录中，并让 Web、Android 和 AI 客户端共享完整上下文。
 
 项目目前适合单管理员自行部署和内部试用。它不是面向公众开放注册的 SaaS，也不会把工作内容交给第三方服务。
 
@@ -18,16 +18,16 @@ MissionGo 是面向个人开发者的开源、自托管工作记录中心。它�
 - SQLite 元数据与服务器本地附件存储；
 - 正式 Android 管理 App（WebView 外壳），网页更新无需重新发版即可生效；
 - Android 反馈 SDK：环境与日志采集、H5 编辑、附件重试、草稿恢复和 WorkManager 后台提交；
-- OAuth 保护的只读 MCP，以及可移植的 MissionGo Skill；
+- OAuth 保护的 MCP（读取，以及可选开启的评论写入），以及可移植的 MissionGo Skill；
 - 浏览器原生 WebMCP 的条目列表、打开和创建入口。
 
-AI 接入当前只负责按编号完整读取条目、时间线、日志和图片，不开放领取、回写、修改状态或任意数据库访问。视频只提供元数据。详见 [AI 客户端接入说明](docs/ai-client-setup.md) 和 [MCP 契约](docs/mcp-contract.md)。
+AI 接入负责按编号完整读取条目、时间线、日志和图片；在部署开启写入档位、且用户授予 `missiongo:write` 后，还可以在条目上发表评论。不开放修改条目内容与字段、创建或删除条目、撤回评论、领取任务、修改状态或任意数据库访问。视频只提供元数据。详见 [AI 客户端接入说明](docs/ai-client-setup.md) 和 [MCP 契约](docs/mcp-contract.md)。
 
 ## 尚未开放
 
 - 公开注册、多用户、团队和角色管理；
 - macOS/iOS 反馈 SDK；
-- AI 自动领取、修改代码、回写结论或改变条目状态；
+- AI 自动领取、修改代码或改变条目状态；AI 修改条目内容与字段（评论之外的写入一律不开放）；
 - 定时扫描、无人值守任务队列和管理端远程调度 AI；
 - 公共 Maven Central 发布、多实例部署和对象存储。
 
@@ -40,7 +40,7 @@ Web / H5 ───────────────┐
 Android 管理 App ───────┼── REST API ── SQLite + 本地附件
 Android 反馈 SDK ───────┘
 
-Codex / Claude Code / 其他客户端 ── OAuth + MCP（只读）
+Codex / Claude Code / 其他客户端 ── OAuth + MCP（读取 + 评论）
 ```
 
 | 目录 | 职责 |
@@ -51,7 +51,7 @@ Codex / Claude Code / 其他客户端 ── OAuth + MCP（只读）
 | `packages/domain` | 状态机和领域规则 |
 | `packages/contracts` | 跨端类型与公开 MCP 工具契约 |
 | `sdks/android-feedback` | Android 反馈 SDK、示例和验证宿主 |
-| `skills/missiongo` | AI 只读工作流 Skill |
+| `skills/missiongo` | AI 读取与评论工作流 Skill |
 | `deploy` | Docker Compose 与反向代理示例 |
 | `docs` | 架构、契约、接入和路线图文档 |
 

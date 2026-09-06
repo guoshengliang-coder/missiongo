@@ -16,7 +16,7 @@ AI 客户端 ── OAuth 授权 ── Streamable HTTP MCP ────┘
 - Android 反馈 SDK 只用产品范围内的 SDK Token 创建和提交反馈草稿。
 - 服务端是数据、权限和状态流转的唯一入口。
 - SQLite 保存结构化数据，文件系统保存附件正文；两者必须一起备份。
-- AI 客户端通过账号登录换取限时授权，MCP 当前仅暴露七个只读工具。
+- AI 客户端通过账号登录换取限时授权。MCP 暴露七个读取工具；部署开启写入档位且用户授予 `missiongo:write` 后，另加一个追加评论的工具。
 
 ## 代码分层
 
@@ -27,7 +27,7 @@ AI 客户端 ── OAuth 授权 ── Streamable HTTP MCP ────┘
 | 领域层 | `packages/domain` | 条目类型、状态机和业务约束 |
 | 契约层 | `packages/contracts` | 跨端 DTO、验证结构和 MCP 工具目录 |
 | SDK | `sdks/android-feedback` | Android 现场采集、草稿和可靠提交 |
-| AI 工作流 | `skills/missiongo` | 只读触发条件、读取顺序和完整性核对 |
+| AI 工作流 | `skills/missiongo` | 触发条件、读取顺序、完整性核对和评论回写规则 |
 
 领域规则不得复制到页面或 MCP 实现中；状态流转以 `packages/domain` 为唯一事实来源。公开 MCP 工具目录以 `packages/contracts` 为准。
 
@@ -55,7 +55,7 @@ AI 客户端先完成 OAuth 登录，再由 Skill 指导调用 `get_current_acco
 
 - 单管理员账号，无注册和账号管理页面；
 - 模块只有一层，不存在父子模块；
-- MCP 只读，不提供任意 SQL 或任意字段修改；
+- MCP 的写入面只有追加评论，不提供任意 SQL、条目字段修改、状态流转或删除；
 - 工作条目状态与未来的 AI 执行记录状态必须独立；
 - 只有人工可以从 `pending_verification` 进入 `done`；
 - macOS/iOS SDK、AI 写回和自动调度仍是路线图内容。

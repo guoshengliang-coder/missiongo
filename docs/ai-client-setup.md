@@ -1,8 +1,10 @@
 # AI 客户端接入说明
 
-当前阶段只开放“按编号完整读取 MissionGo 条目”。目标是让 AI 收到“查看 HG-8”后，可以读取条目正文、分类字段、组件、环境、完整时间线、全部日志和图片，再把实际读取范围明确告诉用户。
+当前开放两件事：按编号完整读取 MissionGo 条目，以及在条目上发表评论。目标是让 AI 收到“查看 HG-8”后，可以读取条目正文、分类字段、组件、环境、完整时间线、全部日志和图片，再把实际读取范围明确告诉用户；收到“分析 HG-8 并写回结论”后，把结论作为评论追加到条目上。
 
-分析回写、领取任务、修改状态和自动处理暂不开放。
+评论之外的写入不开放：AI 不修改条目内容与字段、不创建或删除条目、不撤回评论、不领取任务、不修改状态、不自动处理。
+
+写入需要两个条件同时满足——服务端开启写入档位，且用户在登录页授予写入权限。任一不满足时 AI 只能读取，`get_current_account` 会明确告知。
 
 真实服务地址、账号和授权只能保存在服务器或 AI 客户端的安全存储中，不能提交到 Git。下面均为示例值。
 
@@ -11,7 +13,7 @@
 接入需要两个部分：
 
 1. **MissionGo Skill**：告诉 AI 何时读取、必须读取哪些信息、怎样核对完整性。
-2. **MissionGo MCP**：向 AI 提供经过鉴权的只读数据工具。
+2. **MissionGo MCP**：向 AI 提供经过鉴权的数据工具，以及在授权后可用的评论写入工具。
 
 只安装 Skill 而不配置 MCP，AI 知道流程但拿不到数据；只配置 MCP 而不安装 Skill，AI 能调用工具，但不一定会自动读完时间线和附件。
 
@@ -71,6 +73,8 @@ enabled_tools = [
   "get_item_context",
   "get_item_timeline",
   "get_attachment",
+  # 只在需要 AI 回写评论时加入；不加则连接保持只读。
+  "append_comment",
 ]
 default_tools_approval_mode = "approve"
 ```
@@ -81,6 +85,14 @@ default_tools_approval_mode = "approve"
 codex mcp login missiongo --scopes missiongo:read
 ```
 
+需要 AI 回写评论时改为：
+
+```bash
+codex mcp login missiongo --scopes "missiongo:read missiongo:write"
+```
+
+登录页会列出本次申请的权限。写入权限只允许发表评论，不允许修改条目内容、创建或删除条目、撤回评论或修改状态。
+
 浏览器会打开 MissionGo 登录页。登录成功后重新开始一次 AI 会话，让客户端重新发现连接和 Skill。
 
 ### Claude Code 和其他 MCP 客户端
@@ -88,8 +100,8 @@ codex mcp login missiongo --scopes missiongo:read
 选择支持 OAuth 的 Streamable HTTP 传输，并配置：
 
 - URL：`https://missiongo.example.com/mcp`
-- 授权范围：`missiongo:read`
-- 允许工具：只允许本页列出的七个只读工具
+- 授权范围：只读接入用 `missiongo:read`；需要回写评论时用 `missiongo:read missiongo:write`
+- 允许工具：只允许本页列出的工具。不需要回写时不要放行 `append_comment`
 
 如果客户端不支持标准 OAuth 登录，当前阶段不要把账号密码写入客户端配置或 AI 对话；应改用支持 OAuth 的客户端。
 
@@ -108,6 +120,18 @@ codex mcp login missiongo --scopes missiongo:read
 - 视频当前只读取元数据，AI 会明确说没有查看视频内容。
 - AI 会报告“读取完整”或“读取部分”，并列出任何失败项。
 - MissionGo 条目、时间线和状态没有任何新增或变化。
+
+开启写入后，再用一句验证回写：
+
+> 分析 MissionGo 的 HG-8，并把结论写回条目。
+
+合格结果必须满足：
+
+- AI 先完成完整读取，再写入；不会在读完之前下结论。
+- 写入前把要写的内容复述给你确认。
+- 条目上出现一条 AI 评论，正文、分类字段和状态都没有变化。
+- 你可以在 Web 上撤回这条评论；撤回后 AI 重新读取时不再看到它。
+- 未授予写入权限时，AI 说明当前连接不能回写，而不是反复重试。
 - Skill 版本与服务端一致时，输出中不出现过期提示。
 
 版本提示需要单独手工验证一次：把本地 SKILL.md 的 frontmatter `version` 临时改成 `0.0.1`，
