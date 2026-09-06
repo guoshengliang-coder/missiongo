@@ -37,6 +37,7 @@ keep=10
 skip_backup=0
 publish_apk=1
 allow_dirty=0
+skip_ci_check=0
 release_branch="main"
 verify=0
 
@@ -65,6 +66,8 @@ Usage: scripts/deploy.sh --host <ssh host> --env-file <remote env file> [options
   --allow-dirty           Deploy this working tree even when it is not a clean
                           checkout of an already-pushed main. The release records
                           that it was dirty, so the state is never silently lost.
+  --skip-ci-check         Deploy a commit whose CI is not green. Implied by
+                          --allow-dirty, which has no commit CI could describe.
   --verify <url>          After deploying, check the release is live and that a
                           forged X-Forwarded-For cannot reset the sign-in rate
                           limit. The check makes 11 failed sign-in attempts, so
@@ -96,6 +99,7 @@ while [ $# -gt 0 ]; do
     --skip-backup) skip_backup=1; shift ;;
     --no-publish-apk) publish_apk=0; shift ;;
     --allow-dirty) allow_dirty=1; shift ;;
+    --skip-ci-check) skip_ci_check=1; shift ;;
     --verify) public_url="${2-}"; verify=1; shift 2 ;;
     --verify-host) verify_host="${2-}"; shift 2 ;;
     -h|--help) usage ;;
@@ -132,6 +136,27 @@ deploy_refusal() {
   exit 1
 }
 
+ci_state="not checked"
+
+# CI runs on push, so by the time a deploy happens the answer already exists.
+# Asking for it costs one request and turns "main is green, probably" into a
+# fact -- main is not protected, so a red commit sitting on it is possible.
+check_ci() {
+  command -v gh >/dev/null || deploy_refusal "gh is not installed, so CI cannot be confirmed."
+  local runs
+  runs="$(gh api "repos/:owner/:repo/commits/${commit}/check-runs" \
+    --jq '[.check_runs[] | select(.name != "deploy") | .status + "/" + (.conclusion // "pending")] | join(" ")' 2>/dev/null)" \
+    || deploy_refusal "GitHub could not be asked about CI for ${short_commit}."
+  [ -n "$runs" ] || deploy_refusal "no CI has run for ${short_commit} yet."
+  case "$runs" in
+    *pending*|*queued*|*in_progress*) deploy_refusal "CI for ${short_commit} has not finished (${runs})." ;;
+  esac
+  case "$runs" in
+    *failure*|*cancelled*|*timed_out*|*action_required*) deploy_refusal "CI for ${short_commit} did not pass (${runs})." ;;
+  esac
+  ci_state="passed"
+}
+
 if [ "$allow_dirty" -eq 1 ]; then
   echo "==> --allow-dirty: deploying this working tree (${branch} ${short_commit}, ${tree_state})"
 else
@@ -142,6 +167,12 @@ else
   remote_commit="$(git rev-parse "origin/${release_branch}")"
   [ "$commit" = "$remote_commit" ] || deploy_refusal \
     "HEAD ${short_commit} is not origin/${release_branch} ($(git rev-parse --short "origin/${release_branch}")). Push or pull first."
+  if [ "$skip_ci_check" -eq 1 ]; then
+    ci_state="skipped"
+  else
+    check_ci
+    echo "==> CI passed for ${short_commit}"
+  fi
 fi
 
 local_apk="apps/web/public/downloads/missiongo-android-latest.apk"
@@ -245,6 +276,7 @@ remote "sudo tee '${target}/RELEASE' >/dev/null" <<PROVENANCE
 commit=${commit}
 branch=${branch}
 tree=${tree_state}
+ci=${ci_state}
 release=${release}
 deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 deployed_from=$(id -un)@$(hostname -s)

@@ -22,8 +22,9 @@
     "publish:android-internal": "./scripts/publish-android-internal.sh",
     "dev:server": "npm run dev --workspace @missiongo/server",
     "dev:web": "npm run dev --workspace @missiongo/web",
-    "check": "npm run lint && npm run check:identity && npm run test && npm run typecheck && npm run build",
+    "check": "npm run lint && npm run check:identity && npm run check:migrations && npm run test && npm run typecheck && npm run build",
     "check:identity": "node ./scripts/check-product-identity.mjs",
+    "check:migrations": "node ./scripts/check-migrations.mjs",
     "lint": "oxlint .",
     "test": "npm run build:types && npm run test --workspaces --if-present",
     "typecheck": "tsc -b --pretty false"

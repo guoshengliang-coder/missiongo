@@ -36,6 +36,14 @@ export class MissionGoDatabase {
     }
   }
 
+  /**
+   * Number a new migration with a UTC timestamp, YYYYMMDDHHMM, not the next
+   * integer. Two branches both reaching for "the next number" collide, and the
+   * collision is silent: after the merge the second migration finds the first
+   * one's row, concludes it has already run, and never applies. The small
+   * numbers below shipped before this rule and keep their identity forever.
+   * scripts/check-migrations.mjs enforces it.
+   */
   private migrate(): void {
     this.connection.exec(INITIAL_SCHEMA);
     this.connection
