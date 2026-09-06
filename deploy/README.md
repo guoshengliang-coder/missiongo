@@ -50,18 +50,13 @@ automates that, run from a workstation checkout rather than on the server:
 ```
 
 It pushes a timestamped snapshot, backs up the database and attachments,
-rebuilds, moves the symlink, and reports container status. The backup runs in a
-throwaway `node` container, so the server needs neither Node nor a copy of these
-scripts already in place.
+rebuilds, moves the symlink, publishes the Android APK, and reports container
+status. The backup runs in a throwaway `node` container, so the server needs
+neither Node nor a copy of these scripts already in place.
 
 `rsync` does not read `.gitignore`, and does not read `.git/info/exclude` at
 all, so the script lists its excludes explicitly. Keep local-only notes under
 `.private/`, which it and `.dockerignore` both exclude.
-
-The Android APK is git-ignored, so a fresh clone cannot supply it. The script
-warns when a release carries none. Whether that matters depends on where the
-download is served from: a host proxy that aliases the file from its own
-directory keeps the public link working regardless.
 
 Add `--verify <url>` to confirm afterwards that the new build is live and that a
 forged `X-Forwarded-For` cannot reset the sign-in rate limit. It makes 11 failed
@@ -69,6 +64,30 @@ sign-in attempts, so aim it where that burns the caller's own bucket rather than
 one shared by real visitors. Behind a CDN that rewrites `X-Forwarded-For` to the
 real visitor address the public hostname does that; behind one that only appends,
 use the origin, with `--verify-host` to supply the hostname.
+
+### Publishing the Android download
+
+The host proxy serves `/downloads/missiongo-android-latest.apk` from its own
+directory rather than from the release snapshot, so that path outlives any one
+release. The script publishes into it: it copies the APK to
+`MissionGo-Android-<release>.apk`, compares the sha256 of the published file
+against the local build, and only then repoints `missiongo-android-latest.apk`
+by creating a temporary link and renaming it over the live one, so a download in
+flight never finds the link missing. A digest that does not match removes the
+copy, leaves the link on the previous build, and fails the deploy.
+
+Naming each published APK after the release that shipped it says which deploy a
+downloaded file came from, and makes the names sort by age, so `--keep` prunes
+them exactly as it prunes release directories. The live APK is never removed.
+
+`--downloads-dir` names that directory, defaulting to `/srv/missiongo/releases`.
+Pass `--no-publish-apk` for a deployment that serves the download from the image
+instead.
+
+The APK itself is git-ignored, so a fresh clone cannot supply it. When the
+checkout carries none, publishing is skipped with a note and the previous build
+stays downloadable; run `npm run publish:android-internal` first to ship a new
+one.
 
 ### Restricting the origin to a CDN
 
@@ -158,4 +177,10 @@ docker compose --env-file /path/to/private.env up -d --build web
 The website download button uses the fixed path
 `/downloads/missiongo-android-latest.apk`. The generated APK is intentionally
 ignored by Git. It is included in the Web image built from the local checkout,
-so run the publish command again whenever the Android SDK or validation host changes.
+so run the publish command again whenever the Android SDK or validation host
+changes.
+
+When deploying with `scripts/deploy.sh`, publish the APK before the deploy: the
+script ships whatever the checkout holds and publishes it to the host download
+directory, so a stale APK ships as the public download just as readily as a
+fresh one.

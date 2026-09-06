@@ -15,6 +15,10 @@
 # Excludes are explicit because rsync does not read .gitignore, and does not read
 # .git/info/exclude at all — a locally ignored directory reaches the server
 # otherwise.
+#
+# The public Android download is served by the host proxy from its own directory,
+# outside the release snapshots, so a deploy has to publish the APK there as well
+# or the download link keeps serving the previous build.
 
 set -euo pipefail
 
@@ -26,10 +30,12 @@ releases_dir="/opt/missiongo/releases"
 current_link="/opt/missiongo/current"
 data_dir="/srv/missiongo/data"
 backups_dir="/srv/missiongo/backups"
+downloads_dir="/srv/missiongo/releases"
 public_url=""
 verify_host=""
 keep=10
 skip_backup=0
+publish_apk=1
 verify=0
 
 usage() {
@@ -43,9 +49,16 @@ Usage: scripts/deploy.sh --host <ssh host> --env-file <remote env file> [options
   --current-link <path>   Remote "current" symlink. Default: /opt/missiongo/current.
   --data-dir <path>       Remote data directory. Default: /srv/missiongo/data.
   --backups-dir <path>    Remote backup directory. Default: /srv/missiongo/backups.
-  --keep <n>              Release directories to retain, newest first. Default: 10.
-                          0 keeps everything. The live release is never removed.
+  --downloads-dir <path>  Remote directory the host proxy serves the public APK
+                          download from, holding the versioned APKs and the
+                          missiongo-android-latest.apk symlink that names the
+                          live one. Default: /srv/missiongo/releases.
+  --keep <n>              Release directories and published APKs to retain,
+                          newest first. Default: 10. 0 keeps everything. The
+                          live release and the published APK are never removed.
   --skip-backup           Deploy without backing up first. Not recommended.
+  --no-publish-apk        Leave the host download directory alone, for a
+                          deployment that serves the APK from the image instead.
   --verify <url>          After deploying, check the release is live and that a
                           forged X-Forwarded-For cannot reset the sign-in rate
                           limit. The check makes 11 failed sign-in attempts, so
@@ -72,8 +85,10 @@ while [ $# -gt 0 ]; do
     --current-link) current_link="${2-}"; shift 2 ;;
     --data-dir) data_dir="${2-}"; shift 2 ;;
     --backups-dir) backups_dir="${2-}"; shift 2 ;;
+    --downloads-dir) downloads_dir="${2-}"; shift 2 ;;
     --keep) keep="${2-}"; shift 2 ;;
     --skip-backup) skip_backup=1; shift ;;
+    --no-publish-apk) publish_apk=0; shift ;;
     --verify) public_url="${2-}"; verify=1; shift 2 ;;
     --verify-host) verify_host="${2-}"; shift 2 ;;
     -h|--help) usage ;;
@@ -87,6 +102,14 @@ case "$keep" in ""|*[!0-9]*) echo "--keep takes a non-negative integer." >&2; ex
 cd "$(dirname "$0")/.."
 [ -f deploy/docker-compose.yml ] || { echo "Run this from a MissionGo checkout." >&2; exit 1; }
 command -v rsync >/dev/null || { echo "rsync is required." >&2; exit 1; }
+
+local_apk="apps/web/public/downloads/missiongo-android-latest.apk"
+apk_link="${downloads_dir}/missiongo-android-latest.apk"
+
+# macOS ships shasum without sha256sum; a minimal Linux host ships the reverse.
+sha256_of() {
+  if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'
+}
 
 # Paths are expanded here, on the client, which is intended: every value
 # interpolated into a remote command is built by this script, not taken from
@@ -107,13 +130,16 @@ rsync -az --delete \
   --rsync-path='sudo rsync' \
   ./ "${host}:${target}/"
 
-# The APK is git-ignored, so a fresh clone cannot supply it. Whether that
-# matters depends on the deployment: if the host proxy serves the download from
-# its own directory, the public link keeps working and only the copy inside the
-# image is missing. Warn rather than refuse, and let the operator judge.
-if ! remote "sudo test -s '${target}/apps/web/public/downloads/missiongo-android-latest.apk'"; then
+# The APK is git-ignored, so a fresh clone cannot supply it, and rsync sends
+# whatever this checkout has. Warn rather than refuse, and let the operator
+# judge: the previous build stays downloadable either way.
+if [ ! -s "$local_apk" ]; then
   echo "    Note: this release carries no Android APK under apps/web/public/downloads/." >&2
-  echo "    Run npm run publish:android-internal if the download link is served from the image." >&2
+  if [ "$publish_apk" -eq 1 ]; then
+    publish_apk=0
+    echo "    Leaving ${apk_link} on the build it already serves." >&2
+  fi
+  echo "    Run npm run publish:android-internal to ship a new one." >&2
 fi
 
 if [ "$skip_backup" -eq 1 ]; then
@@ -139,6 +165,36 @@ echo "==> Pointing ${current_link} at the new release"
 remote "sudo ln -sfn '${target}' '${current_link}'"
 remote "sudo docker ps --format '    {{.Names}} | {{.Status}}'"
 
+if [ "$publish_apk" -eq 1 ]; then
+  # The APK is named after the release rather than after the Android version, so
+  # the file the host serves says which deploy produced it, and so the names sort
+  # by age for pruning the way the release directories do.
+  release_apk="${downloads_dir}/MissionGo-Android-${release}.apk"
+  echo "==> Publishing $(basename "$release_apk") into ${downloads_dir}"
+  remote "sudo mkdir -p '${downloads_dir}' && \
+    sudo install -m 0644 '${target}/${local_apk}' '${release_apk}'"
+
+  # Compare digests before the symlink moves: a truncated copy must never become
+  # the public download, and an unverified one is worth less than the old build.
+  local_sha="$(sha256_of "$local_apk")"
+  remote_sha="$(remote "sudo sha256sum '${release_apk}'" | awk '{print $1}')"
+  if [ "$local_sha" != "$remote_sha" ]; then
+    echo "    The published APK does not match the local build, so the link was left alone." >&2
+    echo "    local  ${local_sha}" >&2
+    echo "    remote ${remote_sha}" >&2
+    remote "sudo rm -f '${release_apk}'"
+    exit 1
+  fi
+  echo "    sha256 ${local_sha}"
+
+  # ln -sfn writes a temporary name and mv -T replaces the live link in a single
+  # rename, so a visitor never finds the download missing. Without -T, mv would
+  # follow the existing link when it happens to name a directory.
+  remote "sudo ln -sfn '${release_apk}' '${downloads_dir}/.missiongo-android-latest.apk.tmp' && \
+    sudo mv -Tf '${downloads_dir}/.missiongo-android-latest.apk.tmp' '${apk_link}'"
+  echo "    ${apk_link} now serves this release."
+fi
+
 if [ "$keep" -gt 0 ]; then
   echo "==> Keeping the newest ${keep} releases"
   # Resolve the symlink first and skip that directory explicitly: the live
@@ -150,6 +206,18 @@ if [ "$keep" -gt 0 ]; then
       [ \"\$dir\" = \"\$live\" ] && continue; \
       sudo rm -rf \"\$dir\" && echo \"    removed \$(basename \"\$dir\")\"; \
     done"
+
+  if [ "$publish_apk" -eq 1 ]; then
+    echo "==> Keeping the newest ${keep} published APKs"
+    # Same reasoning as the release directories, and the same protection for the
+    # live one. The glob also catches APKs named before deploys published them.
+    remote "live=\$(readlink -f '${apk_link}'); \
+      ls -1 '${downloads_dir}'/MissionGo-Android-*.apk 2>/dev/null | sort -r | tail -n +$((keep + 1)) | \
+      while read -r apk; do \
+        [ \"\$(readlink -f \"\$apk\")\" = \"\$live\" ] && continue; \
+        sudo rm -f \"\$apk\" && echo \"    removed \$(basename \"\$apk\")\"; \
+      done"
+  fi
 fi
 
 if [ "$verify" -eq 1 ]; then
