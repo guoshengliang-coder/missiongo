@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
 }
@@ -13,6 +15,29 @@ val missionGoVersionCode = providers.gradleProperty("missiongoAndroidVersionCode
 // sdks/android-feedback/gradle.properties. A literal default here would stamp a
 // different version on any build that forgot to pass the property.
 val missionGoVersionName = providers.gradleProperty("missiongoAndroidVersionName")
+
+// Android identifies an app by package name *and* signing key, so a build signed
+// with a different key cannot upgrade one already installed. The default debug
+// keystore is generated per machine, which makes every workstation produce a
+// mutually incompatible APK. Sign with a shared key kept beside the rest of the
+// private publishing configuration instead; copying that directory to another
+// machine is all it takes for its builds to upgrade in place.
+//
+// AGENTS.md forbids committing signing keys, so this only ever reads a path.
+// A checkout without the key still builds and still runs on a device, falling
+// back to the machine's debug key: scripts/publish-android-internal.sh is what
+// insists on the shared one, because only published builds have to interoperate.
+val missionGoSigningPath = providers.gradleProperty("missiongoAndroidSigningProperties")
+    .orElse(providers.environmentVariable("MISSIONGO_ANDROID_SIGNING_PROPERTIES"))
+    .orElse(
+        providers.environmentVariable("XDG_CONFIG_HOME")
+            .orElse(providers.systemProperty("user.home").map { "$it/.config" })
+            .map { "$it/missiongo/android-signing.properties" },
+    )
+val missionGoSigningFile = file(missionGoSigningPath.get())
+val missionGoSigning: Properties? = missionGoSigningFile.takeIf { it.isFile }?.let { source ->
+    Properties().apply { source.inputStream().use { load(it) } }
+}
 
 fun buildConfigString(value: String): String =
     "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
@@ -36,9 +61,25 @@ android {
         buildConfigField("String", "MISSIONGO_SDK_TOKEN", buildConfigString(missionGoSdkToken.get()))
     }
 
+    signingConfigs {
+        if (missionGoSigning != null) {
+            create("missiongo") {
+                // Resolved against the properties file so the whole private
+                // configuration directory stays portable as one unit.
+                storeFile = missionGoSigningFile.parentFile.resolve(missionGoSigning.getProperty("storeFile"))
+                storePassword = missionGoSigning.getProperty("storePassword")
+                keyAlias = missionGoSigning.getProperty("keyAlias")
+                keyPassword = missionGoSigning.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
-        debug {}
+        debug {
+            if (missionGoSigning != null) signingConfig = signingConfigs.getByName("missiongo")
+        }
         release {
+            if (missionGoSigning != null) signingConfig = signingConfigs.getByName("missiongo")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

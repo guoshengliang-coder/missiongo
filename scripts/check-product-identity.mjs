@@ -15,6 +15,7 @@
 // artwork, so it catches recolouring and a half-finished edit, not a redrawn
 // path that keeps the palette.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -136,6 +137,30 @@ check(
 check(
   !sameSet(iconOf(sample.path).launcherColours, webIconColours),
   "the SDK sample icon must be visibly different from the product icon",
+);
+
+// --- Signing ---------------------------------------------------------------
+// Android identifies an app by package name and signing key together, so the key
+// is part of the identity this file guards. AGENTS.md forbids committing one:
+// the published APK is downloadable by anyone, and a key in the repository would
+// let anyone sign an upgrade for it. The build reads a path, never a literal.
+for (const target of [app, sample]) {
+  const buildFile = read(`${target.path}/build.gradle.kts`);
+  check(
+    !/(storePassword|keyPassword|keyAlias|storeFile)\s*=\s*"/.test(buildFile),
+    `${target.path}/build.gradle.kts must read signing values from a file outside the repository, not literals`,
+  );
+}
+
+const trackedKeys = execFileSync("git", ["ls-files", "*.jks", "*.keystore", "*.p12", "*.pepk", "*.pem"], {
+  cwd: root,
+  encoding: "utf8",
+})
+  .split("\n")
+  .filter(Boolean);
+check(
+  trackedKeys.length === 0,
+  `signing keys must not be tracked by git, found: ${trackedKeys.join(", ")}`,
 );
 
 // --- Report --------------------------------------------------------------
