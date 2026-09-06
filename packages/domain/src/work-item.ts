@@ -41,7 +41,9 @@ export interface WorkItemEnvironment {
   readonly metadata?: Readonly<Record<string, string>>;
 }
 
-export const ATTACHMENT_KINDS = ["image", "video", "log"] as const;
+// `document` is material a person reads -- a spec, a note, a CSV -- as opposed
+// to `log`, which is machine output the diagnostics panel presents as evidence.
+export const ATTACHMENT_KINDS = ["image", "video", "log", "document"] as const;
 export type AttachmentKind = (typeof ATTACHMENT_KINDS)[number];
 
 export interface WorkItemAttachment {

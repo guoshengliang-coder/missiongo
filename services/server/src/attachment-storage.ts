@@ -29,8 +29,14 @@ const RULES: Readonly<Record<string, AttachmentRule>> = {
   ".mov": { kind: "video", contentType: "video/quicktime", acceptedContentTypes: ["video/quicktime"], maxBytes: MAX_ATTACHMENT_BYTES },
   ".webm": { kind: "video", contentType: "video/webm", acceptedContentTypes: ["video/webm"], maxBytes: MAX_ATTACHMENT_BYTES },
   ".log": { kind: "log", contentType: "text/plain", acceptedContentTypes: ["text/plain"], maxBytes: 10 * MEBIBYTE },
-  ".txt": { kind: "log", contentType: "text/plain", acceptedContentTypes: ["text/plain"], maxBytes: 10 * MEBIBYTE },
-  ".json": { kind: "log", contentType: "application/json", acceptedContentTypes: ["application/json"], maxBytes: 10 * MEBIBYTE },
+  // A .txt or .json someone attaches is far more often a note or an exported
+  // payload than a log, and filing it under diagnostics buried it. Only .log
+  // still means "machine output"; everything else readable is a document.
+  ".txt": { kind: "document", contentType: "text/plain", acceptedContentTypes: ["text/plain"], maxBytes: 10 * MEBIBYTE },
+  ".json": { kind: "document", contentType: "application/json", acceptedContentTypes: ["application/json"], maxBytes: 10 * MEBIBYTE },
+  ".md": { kind: "document", contentType: "text/markdown", acceptedContentTypes: ["text/markdown", "text/plain", "text/x-markdown"], maxBytes: 10 * MEBIBYTE },
+  ".csv": { kind: "document", contentType: "text/csv", acceptedContentTypes: ["text/csv", "text/plain", "application/csv"], maxBytes: 10 * MEBIBYTE },
+  ".pdf": { kind: "document", contentType: "application/pdf", acceptedContentTypes: ["application/pdf"], maxBytes: 20 * MEBIBYTE },
 };
 
 function safeFilename(encodedFilename: string): string {

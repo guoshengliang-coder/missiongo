@@ -144,11 +144,28 @@ const FILE_LIMITS_MIB: Readonly<Record<string, number>> = {
   json: 10,
 };
 
-const DIAGNOSTIC_FILE_EXTENSIONS = new Set(["log", "txt", "json"]);
+// Only a .log is machine output. Everything else readable is material a
+// person wrote or exported, and belongs beside the report rather than in
+// the diagnostics panel.
+const LOG_FILE_EXTENSIONS = new Set(["log"]);
+const DOCUMENT_FILE_EXTENSIONS = new Set(["md", "txt", "csv", "json", "pdf"]);
 const VIDEO_FILE_EXTENSIONS = new Set(["mp4", "mov", "webm"]);
 
+function fileExtension(file: File): string {
+  return file.name.split(".").pop()?.toLowerCase() ?? "";
+}
+
 function isDiagnosticFile(file: File): boolean {
-  return DIAGNOSTIC_FILE_EXTENSIONS.has(file.name.split(".").pop()?.toLowerCase() ?? "");
+  return LOG_FILE_EXTENSIONS.has(fileExtension(file));
+}
+
+function isDocumentFile(file: File): boolean {
+  return DOCUMENT_FILE_EXTENSIONS.has(fileExtension(file));
+}
+
+/** Images and videos: the attachments that are shown rather than read. */
+function isMediaAttachment(attachment: WorkItemAttachment): boolean {
+  return attachment.kind === "image" || attachment.kind === "video";
 }
 
 function mediaKindForFile(file: File): "image" | "video" {
@@ -492,7 +509,7 @@ export function App() {
     [componentsQuery.data],
   );
   const visibleItems = items;
-  const showAttachmentColumn = visibleItems.some((item) => item.attachments.some((attachment) => attachment.kind !== "log"));
+  const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(isMediaAttachment));
 
   const selectedProduct = products.find((product) => product.id === selectedProductId);
   const selectItemProduct = useCallback((item: WorkItem) => {
@@ -1008,7 +1025,7 @@ function ItemMediaStrip({
   const { t } = useI18n();
   const narrow = useNarrowViewport();
   const mediaAttachments = attachments.filter(
-    (attachment): attachment is WorkItemAttachment & { readonly kind: "image" | "video" } => attachment.kind !== "log",
+    (attachment): attachment is WorkItemAttachment & { readonly kind: "image" | "video" } => isMediaAttachment(attachment),
   );
   // Two thumbnails cover the common "before and after" pair; the rest are
   // counted on the last one rather than shrinking every tile. A phone puts the
@@ -1311,7 +1328,8 @@ function DetailPane({
   const createdEvent = timelineQuery.data?.events.find((event) => event.eventType === "item_created");
   const sdkDiagnostics = diagnosticsFromEvent(createdEvent);
   const logAttachments = item.attachments.filter((attachment) => attachment.kind === "log");
-  const mediaAttachments = item.attachments.filter((attachment) => attachment.kind !== "log");
+  const documentAttachments = item.attachments.filter((attachment) => attachment.kind === "document");
+  const mediaAttachments = item.attachments.filter(isMediaAttachment);
   return (
     <section className="detail-pane">
       <div className="detail-toolbar">
@@ -1422,6 +1440,14 @@ function DetailPane({
               help={t("mediaAttachmentsHelp")}
               emptyMessage={t("noMediaAttachments")}
             />
+            {documentAttachments.length > 0 && (
+              <AttachmentSection
+                itemKey={item.key}
+                attachments={documentAttachments}
+                title={t("documentAttachments")}
+                help={t("documentAttachmentsHelp")}
+              />
+            )}
             <DiagnosticDetails
               itemKey={item.key}
               logs={sdkDiagnostics.logs}
@@ -1758,9 +1784,14 @@ function WorkItemFields({
   const remainingAttachments = Math.max(0, attachmentLimit - files.length - diagnosticSlots);
   const attachmentOverflow = files.length + diagnosticSlots > attachmentLimit;
   const existingLogAttachments = existingAttachments.filter((attachment) => attachment.kind === "log");
-  const existingMediaAttachments = existingAttachments.filter((attachment) => attachment.kind !== "log");
+  const existingDocumentAttachments = existingAttachments.filter((attachment) => attachment.kind === "document");
+  const existingMediaAttachments = existingAttachments.filter(isMediaAttachment);
   const selectedLogFiles = files.filter(isDiagnosticFile);
-  const selectedMediaFiles = files.filter((file) => !isDiagnosticFile(file));
+  const selectedDocumentFiles = files.filter(isDocumentFile);
+  const selectedMediaFiles = files.filter((file) => !isDiagnosticFile(file) && !isDocumentFile(file));
+  const withMediaFiles = (next: readonly File[]) => [...selectedLogFiles, ...selectedDocumentFiles, ...next];
+  const withDocumentFiles = (next: readonly File[]) => [...selectedLogFiles, ...next, ...selectedMediaFiles];
+  const withLogFiles = (next: readonly File[]) => [...next, ...selectedDocumentFiles, ...selectedMediaFiles];
   const reportCopy = REPORT_COPY[draft.type];
   const showsBugFields = draft.type === "bug";
   const platformRequired = draft.type === "bug" || draft.type === "task";
@@ -1842,7 +1873,7 @@ function WorkItemFields({
           <div className="capture-attachment-copy"><strong><FieldLabel>{t("mediaAttachments")}</FieldLabel></strong><p>{t("mediaAttachmentsHelp")}</p></div>
           <FilePicker
             files={selectedMediaFiles}
-            onFiles={(nextMediaFiles) => onFiles([...selectedLogFiles, ...nextMediaFiles])}
+            onFiles={(nextMediaFiles) => onFiles(withMediaFiles(nextMediaFiles))}
             remaining={remainingAttachments}
             showSelectedFiles={false}
             accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm"
@@ -1865,12 +1896,39 @@ function WorkItemFields({
         {selectedMediaFiles.length > 0 && (
           <SelectedFilePreviews
             files={selectedMediaFiles}
-            onFiles={(nextMediaFiles) => onFiles([...selectedLogFiles, ...nextMediaFiles])}
+            onFiles={(nextMediaFiles) => onFiles(withMediaFiles(nextMediaFiles))}
             startingNumbers={{
               image: Math.max(0, ...existingMediaAttachments.filter((attachment) => attachment.kind === "image").map((attachment) => attachment.displayNumber)),
               video: Math.max(0, ...existingMediaAttachments.filter((attachment) => attachment.kind === "video").map((attachment) => attachment.displayNumber)),
             }}
           />
+        )}
+      </section>
+      <section className="attachment-picker-block capture-attachment-block">
+        <div className="capture-attachment-heading">
+          <div className="capture-attachment-copy"><strong><FieldLabel>{t("documentAttachments")}</FieldLabel></strong><p>{t("documentAttachmentsHelp")}</p></div>
+          <FilePicker
+            files={selectedDocumentFiles}
+            onFiles={(nextDocumentFiles) => onFiles(withDocumentFiles(nextDocumentFiles))}
+            remaining={remainingAttachments}
+            showCamera={false}
+            showSelectedFiles
+            accept=".md,.txt,.csv,.json,.pdf,text/markdown,text/plain,text/csv,application/json,application/pdf"
+            allowedExtensions={["md", "txt", "csv", "json", "pdf"]}
+            buttonLabel={t("add")}
+          />
+        </div>
+        {existingItemKey && existingDocumentAttachments.length > 0 && (
+          <div className="attachment-grid compact-attachment-grid">{existingDocumentAttachments.map((attachment) => (
+            <AttachmentCard
+              key={attachment.id}
+              itemKey={existingItemKey}
+              attachment={attachment}
+              onDelete={onDeleteExistingAttachment}
+              onReplaced={onExistingAttachmentReplaced}
+              deleting={deletingExistingAttachmentId === attachment.id}
+            />
+          ))}</div>
         )}
       </section>
       {attachmentOverflow && <InlineError message={t("tooManyFiles", { count: attachmentLimit })} />}
@@ -1900,11 +1958,11 @@ function WorkItemFields({
           <span><strong>{t("diagnostics")}</strong><small>{t("diagnosticsHelp")}</small></span>
           <FilePicker
             files={selectedLogFiles}
-            onFiles={(nextLogFiles) => onFiles([...nextLogFiles, ...selectedMediaFiles])}
+            onFiles={(nextLogFiles) => onFiles(withLogFiles(nextLogFiles))}
             remaining={remainingAttachments}
             showCamera={false}
-            accept=".log,.txt,.json,text/plain,application/json"
-            allowedExtensions={["log", "txt", "json"]}
+            accept=".log,text/plain"
+            allowedExtensions={["log"]}
             buttonLabel={t("uploadLog")}
           />
         </summary>
@@ -2319,25 +2377,29 @@ function AttachmentCard({
   const [previewRequested, setPreviewRequested] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const shouldLoad = attachment.kind === "image" ? isNearViewport : previewRequested;
+  // A log and a text document are both read as text, and only their head is
+  // worth fetching for a preview. A PDF is neither: it can only be downloaded.
+  const readsAsText = attachment.kind === "log"
+    || (attachment.kind === "document" && attachment.contentType !== "application/pdf");
   const contentQuery = useQuery({
     queryKey: ["attachment-content", itemKey, attachment.id],
     queryFn: () => api.downloadAttachment(
       itemKey,
       attachment.id,
-      attachment.kind === "log" ? { start: 0, end: 65_535 } : undefined,
+      readsAsText ? { start: 0, end: 65_535 } : undefined,
     ),
     enabled: shouldLoad,
     staleTime: Infinity,
   });
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [logText, setLogText] = useState("");
-  const referenceLabel = attachment.kind === "log"
-    ? null
-    : mediaNumberLabel(attachment.kind, attachment.displayNumber, t);
+  const referenceLabel = attachment.kind === "image" || attachment.kind === "video"
+    ? mediaNumberLabel(attachment.kind, attachment.displayNumber, t)
+    : null;
 
   useEffect(() => {
     if (!contentQuery.data) return undefined;
-    if (attachment.kind === "log") {
+    if (readsAsText) {
       let active = true;
       void contentQuery.data.text().then((value) => {
         if (active) setLogText(value.slice(0, 4_000));
@@ -2347,10 +2409,10 @@ function AttachmentCard({
     const url = URL.createObjectURL(contentQuery.data);
     setObjectUrl(url);
     return () => URL.revokeObjectURL(url);
-  }, [attachment.kind, contentQuery.data]);
+  }, [contentQuery.data, readsAsText]);
 
   const download = async () => {
-    const blob = attachment.kind === "log"
+    const blob = readsAsText
       ? await api.downloadAttachment(itemKey, attachment.id)
       : contentQuery.data ?? await api.downloadAttachment(itemKey, attachment.id);
     const url = URL.createObjectURL(blob);
@@ -2413,7 +2475,7 @@ function AttachmentCard({
             <button type="button" onClick={() => setViewerOpen(true)} aria-label={t("previewAttachment", { filename: attachment.filename })} title={t("preview")}><Maximize2 size={16} /></button>
           </div>
         )}
-        {attachment.kind === "log" && logText && <pre>{logText}</pre>}
+        {readsAsText && logText && <pre>{logText}</pre>}
       </div>
       <footer>
         <Icon size={15} />

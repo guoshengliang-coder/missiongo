@@ -55,7 +55,7 @@ export const INITIAL_SCHEMA = `
   CREATE TABLE IF NOT EXISTS work_item_attachments (
     id TEXT PRIMARY KEY,
     item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'log')),
+    kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'log', 'document')),
     display_number INTEGER NOT NULL CHECK (display_number > 0),
     original_filename TEXT NOT NULL,
     storage_filename TEXT NOT NULL UNIQUE,
@@ -66,7 +66,7 @@ export const INITIAL_SCHEMA = `
 
   CREATE TABLE IF NOT EXISTS work_item_attachment_counters (
     item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'log')),
+    kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'log', 'document')),
     next_number INTEGER NOT NULL CHECK (next_number > 0),
     PRIMARY KEY (item_id, kind)
   ) STRICT;

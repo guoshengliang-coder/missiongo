@@ -12,7 +12,7 @@ describe("createWorkItemKey", () => {
   });
 
   it("classifies the supported attachment kinds", () => {
-    expect(ATTACHMENT_KINDS).toEqual(["image", "video", "log"]);
+    expect(ATTACHMENT_KINDS).toEqual(["image", "video", "log", "document"]);
   });
 
   it("rejects unsafe or ambiguous product prefixes", () => {

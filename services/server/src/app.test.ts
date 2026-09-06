@@ -1870,4 +1870,118 @@ describe("MissionGo REST API", () => {
     expect(limited.statusCode).toBe(429);
     expect(limited.json()).toMatchObject({ code: "rate_limit_exceeded" });
   });
+
+  // A requirements doc is not machine output. Filing a .md or a .txt under
+  // "log" buried it in the diagnostics panel; only .log means log now.
+  it("files readable material as a document and keeps .log as the only log", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/products",
+        headers: { authorization: "Bearer management-test-token" },
+        payload: { name: "Hermes Go", keyPrefix: "HG" },
+      })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      headers: { authorization: "Bearer management-test-token" },
+      payload: { productId: product.id, type: "requirement", priority: "normal", title: "Spec", description: "Needs a doc" },
+    });
+
+    const upload = (filename: string, contentType: string, payload: Buffer | string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/items/HG-1/attachments",
+        headers: {
+          authorization: "Bearer management-test-token",
+          "content-type": "application/octet-stream",
+          "x-missiongo-content-type": contentType,
+          "x-missiongo-filename": filename,
+        },
+        payload,
+      });
+
+    expect((await upload("spec.md", "text/markdown", "# Spec\n")).json()).toMatchObject({ kind: "document" });
+    expect((await upload("notes.txt", "text/plain", "a note\n")).json()).toMatchObject({ kind: "document" });
+    expect((await upload("rows.csv", "text/csv", "a,b\n1,2\n")).json()).toMatchObject({ kind: "document" });
+    expect((await upload("payload.json", "application/json", "{}\n")).json()).toMatchObject({ kind: "document" });
+    expect((await upload("brief.pdf", "application/pdf", Buffer.from("%PDF-1.4\n"))).json()).toMatchObject({ kind: "document" });
+    expect((await upload("launch.log", "text/plain", "boom\n")).json()).toMatchObject({ kind: "log" });
+
+    const rejected = await upload("deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "x");
+    expect(rejected.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  // The kind CHECK lives inside the table definition, so widening it means
+  // rebuilding the table. What must survive is the rows already in it.
+  it("widens the attachment kinds of an existing database without losing attachments", async () => {
+    const { app, databasePath, attachmentsPath } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Legacy docs", keyPrefix: "LD" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: { productId: product.id, type: "bug", priority: "normal", title: "Legacy item", description: "Has a log", environment: { platform: "web" } },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items/LD-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "text/plain",
+        "x-missiongo-filename": "old.log",
+      },
+      payload: "already here\n",
+    });
+    await app.close();
+    apps.splice(apps.indexOf(app), 1);
+
+    // Put the database back the way it looked before this change.
+    const legacyDatabase = new DatabaseSync(databasePath);
+    legacyDatabase.exec("PRAGMA foreign_keys = OFF;");
+    legacyDatabase.exec(`
+      ALTER TABLE work_item_attachments RENAME TO work_item_attachments_old;
+      CREATE TABLE work_item_attachments (
+        id TEXT PRIMARY KEY,
+        item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'log')),
+        display_number INTEGER NOT NULL CHECK (display_number > 0),
+        original_filename TEXT NOT NULL,
+        storage_filename TEXT NOT NULL UNIQUE,
+        content_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+        created_at TEXT NOT NULL
+      ) STRICT;
+      INSERT INTO work_item_attachments SELECT * FROM work_item_attachments_old;
+      DROP TABLE work_item_attachments_old;
+    `);
+    legacyDatabase.prepare("DELETE FROM schema_migrations WHERE version = ?").run(15);
+    legacyDatabase.close();
+
+    const restarted = buildApp({ databasePath, attachmentsPath });
+    apps.push(restarted);
+
+    const item = await restarted.inject({ method: "GET", url: "/api/v1/items/LD-1" });
+    expect(item.json<{ attachments: Array<{ filename: string; kind: string }> }>().attachments).toEqual([
+      expect.objectContaining({ filename: "old.log", kind: "log" }),
+    ]);
+
+    const document = await restarted.inject({
+      method: "POST",
+      url: "/api/v1/items/LD-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "text/markdown",
+        "x-missiongo-filename": "spec.md",
+      },
+      payload: "# Spec\n",
+    });
+    expect(document.statusCode).toBe(201);
+    expect(document.json()).toMatchObject({ kind: "document" });
+  });
 });

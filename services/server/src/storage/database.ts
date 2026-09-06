@@ -166,6 +166,62 @@ export class MissionGoDatabase {
           .run(12, new Date().toISOString());
       });
     }
+
+    // 13 and 14 belong to the comment work on feat/ai-write-comments; this one
+    // takes 15 so the two branches do not both claim a number.
+    // Readable material that is not machine output became its own kind, and the
+    // CHECK constraint above lives inside the table definition, so SQLite can
+    // only widen it by rebuilding. Existing rows keep the kind they were filed
+    // under -- a .txt already stored as a log stays a log, because moving it
+    // would rewrite history the diagnostics panel already showed.
+    const documentKindMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 15")
+      .get() as unknown as { version: number } | undefined;
+    if (!documentKindMigration) {
+      this.connection.exec("PRAGMA foreign_keys = OFF;");
+      try {
+        this.transaction(() => {
+          this.connection.exec(`
+            CREATE TABLE work_item_attachments_new (
+              id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+              kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'log', 'document')),
+              display_number INTEGER NOT NULL CHECK (display_number > 0),
+              original_filename TEXT NOT NULL,
+              storage_filename TEXT NOT NULL UNIQUE,
+              content_type TEXT NOT NULL,
+              size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+              created_at TEXT NOT NULL
+            ) STRICT;
+            INSERT INTO work_item_attachments_new
+              SELECT id, item_id, kind, display_number, original_filename, storage_filename, content_type, size_bytes, created_at
+              FROM work_item_attachments;
+            DROP TABLE work_item_attachments;
+            ALTER TABLE work_item_attachments_new RENAME TO work_item_attachments;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_work_item_attachments_item_kind_number
+              ON work_item_attachments(item_id, kind, display_number);
+
+            CREATE TABLE work_item_attachment_counters_new (
+              item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+              kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'log', 'document')),
+              next_number INTEGER NOT NULL CHECK (next_number > 0),
+              PRIMARY KEY (item_id, kind)
+            ) STRICT;
+            INSERT INTO work_item_attachment_counters_new
+              SELECT item_id, kind, next_number FROM work_item_attachment_counters;
+            DROP TABLE work_item_attachment_counters;
+            ALTER TABLE work_item_attachment_counters_new RENAME TO work_item_attachment_counters;
+          `);
+          const violations = this.connection.prepare("PRAGMA foreign_key_check").all();
+          if (violations.length > 0) throw new Error("Rebuilding the attachment tables broke a foreign key.");
+          this.connection
+            .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+            .run(15, new Date().toISOString());
+        });
+      } finally {
+        this.connection.exec("PRAGMA foreign_keys = ON;");
+      }
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }
