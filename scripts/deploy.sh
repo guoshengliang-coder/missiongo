@@ -215,8 +215,8 @@ fi
 # in someone else's CI.
 if [ ! -d "$local_maven" ]; then
   echo "Note: this checkout carries no SDK Maven artifacts under ${local_maven}/." >&2
-  echo "      /maven will 404 until a deploy runs from a checkout that has them." >&2
-  echo "      Publish with: (cd sdks/android-feedback && ./gradlew \\" >&2
+  echo "      Carrying the live ones over, so /maven keeps serving what it serves now." >&2
+  echo "      To publish new ones: (cd sdks/android-feedback && ./gradlew \\" >&2
   echo "        :missiongo-feedback:publishReleasePublicationToWebsiteRepository)" >&2
 fi
 
@@ -270,6 +270,28 @@ rsync -az --delete \
   --exclude='._*' --exclude='.DS_Store' --exclude='*.tsbuildinfo' \
   --rsync-path='sudo rsync' \
   ./ "${host}:${target}/"
+
+# Carry the published SDK artifacts over from the release that is live now, when this
+# checkout has none of its own.
+#
+# They are git-ignored, so only the workstation that ran the Gradle publish has them, while
+# any checkout can deploy. Without this, a deploy for an unrelated reason silently ships a
+# site with an empty /maven -- and unlike the APK, which just keeps serving its previous
+# build, that breaks every host app pinned to a version: Gradle gets a 404 and the build
+# fails somewhere with no connection to this repository. It happened once; a printed note
+# was not enough, because someone deploying for another reason has no reason to read it as
+# a stop sign.
+#
+# Copied after the push so --delete cannot remove it again, and only when this checkout
+# would otherwise replace it with nothing: a checkout that carries artifacts still
+# publishes exactly what it carries.
+if [ ! -d "$local_maven" ]; then
+  echo "==> Carrying /maven over from the live release"
+  remote "if [ -d '${current_link}/${local_maven}' ]; then \
+      sudo mkdir -p '${target}/apps/web/public' && \
+      sudo cp -a '${current_link}/${local_maven}' '${target}/apps/web/public/'; \
+    else echo '    nothing to carry over: the live release has no /maven either'; fi"
+fi
 
 # Written after the push so --delete cannot remove it, and inside the snapshot so
 # it travels with the code it describes.

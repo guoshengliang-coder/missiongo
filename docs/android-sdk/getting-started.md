@@ -58,7 +58,9 @@ cd sdks/android-feedback
 ```
 
 制品写入 `apps/web/public/maven/`，随下一次 `npm run build:web` 和网站部署上线。该目录和内部
-APK 一样不进 Git。网站的 nginx 需要 `location ^~ /maven/ { try_files $uri =404; }`：Maven 客户端
+APK 一样不进 Git，所以只有跑过发布的那台机器有它。`scripts/deploy.sh` 会在部署方的 checkout
+没有该目录时，把线上正在服务的那份原样带过去——否则一次为别的目的进行的部署就会静默清空
+`/maven`，让所有钉住版本的宿主构建失败。网站的 nginx 需要 `location ^~ /maven/ { try_files $uri =404; }`：Maven 客户端
 必须在制品缺失时看到真正的 404，SPA 回落会给出 200 的 HTML 并让 Gradle 报出难以定位的错误。
 
 本机联调可以先发到 Maven Local：
