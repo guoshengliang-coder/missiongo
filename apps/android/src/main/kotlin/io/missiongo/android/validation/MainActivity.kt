@@ -175,7 +175,7 @@ class MainActivity : ComponentActivity() {
                 if (current?.scheme == "https" && current.host == home.host) {
                     openSdkFeedback()
                 } else {
-                    Log.w(TAG, "Ignored a feedback request from \${current?.host}")
+                    Log.w(TAG, "Ignored a feedback request from ${current?.host}")
                 }
             }
         }
@@ -255,7 +255,7 @@ class MainActivity : ComponentActivity() {
                     title = "MissionGo Android 使用反馈",
                     type = FeedbackType.Bug,
                     priority = FeedbackPriority.Normal,
-                    context = mapOf("hostApp" to "MissionGo", "entry" to "native_bottom_action"),
+                    context = mapOf("hostApp" to "MissionGo", "entry" to "web_sidebar"),
                 ),
             ) { result ->
                 when (result) {
