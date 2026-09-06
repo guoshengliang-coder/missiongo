@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="missiongo_icon_background">#67E3B4</color>
+    <!-- Deliberately not the product's #67E3B4: this app must not be mistaken
+         for MissionGo on a launcher. Enforced by scripts/check-product-identity.mjs. -->
+    <color name="missiongo_icon_background">#F2B441</color>
 </resources>

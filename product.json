@@ -1,0 +1,17 @@
+{
+  "name": "MissionGo",
+  "icon": "apps/web/public/icon.svg",
+  "versionNameSource": "sdks/android-feedback/gradle.properties#missiongoAndroidVersionName",
+  "android": {
+    "app": {
+      "path": "apps/android",
+      "applicationId": "io.missiongo.android",
+      "label": "MissionGo"
+    },
+    "feedbackSample": {
+      "path": "sdks/android-feedback/sample",
+      "applicationId": "io.missiongo.feedback.sample",
+      "label": "MissionGo SDK 验证"
+    }
+  }
+}
