@@ -4,7 +4,7 @@ set -eu
 SCRIPT_DIRECTORY=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPOSITORY_ROOT=$(CDPATH= cd -- "$SCRIPT_DIRECTORY/.." && pwd)
 GRADLE_ROOT="$REPOSITORY_ROOT/sdks/android-feedback"
-SOURCE_APK="$REPOSITORY_ROOT/apps/android/build/outputs/apk/debug/missiongo-android-app-debug.apk"
+SOURCE_APK="$REPOSITORY_ROOT/apps/android/build/outputs/apk/release/missiongo-android-app-release.apk"
 DOWNLOAD_DIRECTORY="$REPOSITORY_ROOT/apps/web/public/downloads"
 LATEST_APK="$DOWNLOAD_DIRECTORY/missiongo-android-latest.apk"
 TEMPORARY_APK="$DOWNLOAD_DIRECTORY/.missiongo-android-latest.apk.tmp"
@@ -41,6 +41,12 @@ MISSIONGO_ANDROID_ENDPOINT=${MISSIONGO_PUBLIC_ORIGIN:?Missing MISSIONGO_PUBLIC_O
 MISSIONGO_ANDROID_SDK_TOKEN=$(jq -er '.token | select(type == "string" and length > 0)' "$SDK_TOKEN_FILE")
 export MISSIONGO_ANDROID_ENDPOINT MISSIONGO_ANDROID_SDK_TOKEN
 
+# The published APK is a release build. A debug build carries
+# android:debuggable="true", which lets anyone holding the phone read the app's
+# private data with run-as and attach a debugger to the signed-in WebView — too
+# much for an APK on a public download link. Release builds became possible only
+# once a shared signing key existed; before that they could not be installed as
+# an upgrade.
 BUILD_TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
 VERSION_CODE=$(date -u +%s)
 # Declared once, in gradle.properties, so this script and a plain ./gradlew
@@ -56,7 +62,7 @@ cd "$GRADLE_ROOT"
   -PmissiongoAndroidVersionCode="$VERSION_CODE" \
   -PmissiongoAndroidVersionName="$VERSION_NAME" \
   -PmissiongoAndroidSigningProperties="$SIGNING_PROPERTIES" \
-  :missiongo-android-app:assembleDebug
+  :missiongo-android-app:assembleRelease
 
 mkdir -p "$DOWNLOAD_DIRECTORY"
 trap 'rm -f "$TEMPORARY_APK"' EXIT HUP INT TERM

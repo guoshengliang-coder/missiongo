@@ -48,7 +48,7 @@ apps/android/build/outputs/apk/debug/missiongo-android-app-debug.apk
 npm run publish:android-internal
 ```
 
-该命令读取开发机私密配置，生成递增 `versionCode` 的内部签名 APK，原子替换网站的固定下载文件，把版本号记录到同目录的 `missiongo-android-latest.release`，并重新构建 Web。版本名只在 `sdks/android-feedback/gradle.properties` 的 `missiongoAndroidVersionName` 里声明一次，Gradle 和发布脚本都读它，改版本只改那一处。APK 被 Git 忽略；网站的“下载安卓版”始终指向 `/downloads/missiongo-android-latest.apk`。
+该命令读取开发机私密配置，生成递增 `versionCode` 的 **release** 签名 APK，原子替换网站的固定下载文件，把版本号记录到同目录的 `missiongo-android-latest.release`，并重新构建 Web。版本名只在 `sdks/android-feedback/gradle.properties` 的 `missiongoAndroidVersionName` 里声明一次，Gradle 和发布脚本都读它，改版本只改那一处。APK 被 Git 忽略；网站的“下载安卓版”始终指向 `/downloads/missiongo-android-latest.apk`。
 
 生产环境的下载文件由宿主机反向代理从自己的目录提供，`scripts/deploy.sh` 会在部署时把本次快照携带的 APK 发布到那里并原子切换软链接。因此请先执行上面的发布命令，再执行部署；否则部署会把过期的 APK 当作最新版发布出去。详见[部署说明](../../deploy/README.md)。
 
@@ -82,7 +82,9 @@ cce2861e3f9ee67f2c164c1cec818537342cddcaa11b8327dbee149b700ddea0
 
 **换一台机器打包**：把上面整个目录拷过去即可，`storeFile` 按相对路径解析，不依赖绝对路径。
 
-**没有这把密钥时**：`./gradlew` 仍可正常构建和真机调试，自动回退到本机默认 debug 密钥；只有 `npm run publish:android-internal` 会拒绝执行，因为只有对外发布的包才需要互相兼容。
+**没有这把密钥时**：`assembleDebug` 仍可正常构建和真机调试，自动回退到本机默认 debug 密钥；`assembleRelease` 则产出 `-unsigned.apk`，根本装不上——所以不可能误用错误的密钥发布。`npm run publish:android-internal` 更是在构建之前就拒绝执行。
+
+签名不一致的后果是实测过的：用另一把密钥、更高 `versionCode` 的包覆盖安装，得到 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`；把共享密钥拷过去重新打包，同样的覆盖安装成功。
 
 > ⚠️ **这把密钥丢了就换不回来**：届时所有已安装的手机都必须卸载重装，且此后签名再次改变。请离线备份 `missiongo-android.jks` 和 `android-signing.properties`。密钥**不得进入 Git**（AGENTS.md 规则，`npm run check` 会校验仓库里没有被跟踪的密钥文件，也不允许 `build.gradle.kts` 里出现密码字面量）。
 
@@ -99,5 +101,19 @@ umask 077 && printf 'storeFile=missiongo-android.jks\nkeyAlias=missiongo\nstoreP
 ```
 
 该密钥面向内部分发。将来若要上架应用商店，还需另行处理商店的签名托管方案。
+
+## 为什么发布 release 而不是 debug
+
+debug 构建带 `android:debuggable="true"`：任何人拿到装了它的手机，无需 root 就能用 `run-as` 读取应用私有目录、附加调试器 dump 出 WebView 里已登录的会话和内嵌的 SDK Token。对一个挂在公开下载链接上的包，这个面太大。
+
+release 构建此前无法使用——没有固定签名时它装不上任何已有安装。共享密钥到位后才具备条件。切换后包体从 3.1M 降到约 320K。
+
+R8 会裁剪和混淆代码，而网页是靠 `MissionGoAndroid.openFeedback` 这个**方法名**调用原生反馈入口的；名字被混淆则按钮静默失效。`missiongo-feedback` 的 consumer rules 已覆盖 WorkManager 的 Worker，`proguard-android-optimize.txt` 默认保留 `@JavascriptInterface` 方法。改动 SDK 或桥接接口后，请重新确认 release 包里这些符号仍然存在：
+
+```bash
+unzip -o -q -d /tmp/dex <APK> 'classes*.dex' && "$ANDROID_HOME"/build-tools/*/dexdump /tmp/dex/classes*.dex | grep -c openFeedback
+```
+
+另外，反馈上报里的 `buildFlavor` 字段会从 `debug` 变为 `release`。
 
 SDK 的独立验证入口保留在 `sdks/android-feedback/sample`，不得发布到 MissionGo 正式下载链接。
