@@ -7,7 +7,7 @@
  * Bump MISSIONGO_SKILL_VERSION together with any change to skills/missiongo/SKILL.md
  * that alters AI behaviour. The contract guard in skill.test.ts enforces this.
  */
-export const MISSIONGO_SKILL_VERSION = "3.0.0";
+export const MISSIONGO_SKILL_VERSION = "3.1.0";
 
 /** Public path of the published Skill, relative to MISSIONGO_PUBLIC_ORIGIN. */
 export const MISSIONGO_SKILL_DOWNLOAD_PATH = "/downloads/missiongo-skill/SKILL.md";
