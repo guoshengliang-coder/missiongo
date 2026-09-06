@@ -10,6 +10,25 @@ import {
 const AUTHORIZATION_REQUEST_SECONDS = 10 * 60;
 const AUTHORIZATION_CODE_SECONDS = 5 * 60;
 export const MISSIONGO_READ_SCOPE = "missiongo:read";
+export const MISSIONGO_WRITE_SCOPE = "missiongo:write";
+export const MISSIONGO_SUPPORTED_SCOPES = [MISSIONGO_READ_SCOPE, MISSIONGO_WRITE_SCOPE] as const;
+
+/**
+ * Normalize a requested scope string, or throw.
+ *
+ * Reading is always included: an agent that writes to a work item has to have
+ * read it first, and a token that could write what it cannot read would be a
+ * way to touch items outside the account's product scope.
+ */
+export function parseRequestedScopes(raw: string | undefined): readonly string[] {
+  const requested = (raw ?? "").split(/\s+/).filter(Boolean);
+  if (requested.some((scope) => !MISSIONGO_SUPPORTED_SCOPES.includes(scope as typeof MISSIONGO_SUPPORTED_SCOPES[number]))) {
+    throw new Error("invalid_scope");
+  }
+  const granted = new Set(requested);
+  granted.add(MISSIONGO_READ_SCOPE);
+  return MISSIONGO_SUPPORTED_SCOPES.filter((scope) => granted.has(scope));
+}
 
 export interface RegisteredClient {
   readonly id: string;
@@ -32,6 +51,7 @@ interface AuthorizationCode {
   readonly clientId: string;
   readonly redirectUri: string;
   readonly codeChallenge: string;
+  readonly scopes: readonly string[];
   readonly expiresAt: number;
 }
 
@@ -55,6 +75,7 @@ export interface OAuthTokenResult {
   readonly accessToken: string;
   readonly principal: AiAccessPrincipal;
   readonly expiresIn: number;
+  readonly scope: string;
 }
 
 function safeEqual(left: string, right: string): boolean {
@@ -137,16 +158,18 @@ export class MissionGoOAuthProvider {
     return { id: clientId, name: payload.name, redirectUris: payload.redirectUris };
   }
 
-  beginAuthorization(input: OAuthAuthorizationInput, now = Date.now()): { requestToken: string; clientName: string } {
+  beginAuthorization(
+    input: OAuthAuthorizationInput,
+    now = Date.now(),
+  ): { requestToken: string; clientName: string; scopes: readonly string[] } {
     const client = this.readClient(input.clientId);
-    const scope = input.scope?.trim() || MISSIONGO_READ_SCOPE;
+    const scopes = parseRequestedScopes(input.scope?.trim());
     if (
       !client
       || !client.redirectUris.includes(input.redirectUri)
       || input.responseType !== "code"
       || input.codeChallengeMethod !== "S256"
       || !/^[A-Za-z0-9_-]{43,128}$/.test(input.codeChallenge)
-      || scope !== MISSIONGO_READ_SCOPE
     ) throw new Error("invalid_authorization_request");
     const issuedAt = Math.floor(now / 1_000);
     const request: AuthorizationRequest = {
@@ -154,17 +177,27 @@ export class MissionGoOAuthProvider {
       clientId: client.id,
       redirectUri: input.redirectUri,
       ...(input.state ? { state: input.state } : {}),
-      scope,
+      scope: scopes.join(" "),
       codeChallenge: input.codeChallenge,
       issuedAt,
       expiresAt: issuedAt + AUTHORIZATION_REQUEST_SECONDS,
     };
-    return { requestToken: signedValue(request, this.account.sessionSecret), clientName: client.name };
+    return { requestToken: signedValue(request, this.account.sessionSecret), clientName: client.name, scopes };
   }
 
   authorizationClientName(requestToken: string): string {
     const request = readSignedValue<Partial<AuthorizationRequest>>(requestToken, this.account.sessionSecret);
     return typeof request?.clientId === "string" ? this.readClient(request.clientId)?.name ?? "AI client" : "AI client";
+  }
+
+  /** Scopes a pending request asked for, so a re-rendered consent page still shows them. */
+  authorizationScopes(requestToken: string): readonly string[] {
+    const request = readSignedValue<Partial<AuthorizationRequest>>(requestToken, this.account.sessionSecret);
+    try {
+      return parseRequestedScopes(typeof request?.scope === "string" ? request.scope : undefined);
+    } catch {
+      return [MISSIONGO_READ_SCOPE];
+    }
   }
 
   finishAuthorization(requestToken: string, now = Date.now()): { redirectUri: string; code: string; state?: string } {
@@ -175,7 +208,7 @@ export class MissionGoOAuthProvider {
       || typeof request.clientId !== "string"
       || typeof request.redirectUri !== "string"
       || typeof request.codeChallenge !== "string"
-      || request.scope !== MISSIONGO_READ_SCOPE
+      || typeof request.scope !== "string"
       || !Number.isSafeInteger(request.issuedAt)
       || !Number.isSafeInteger(request.expiresAt)
       || request.expiresAt! <= nowSeconds
@@ -183,12 +216,14 @@ export class MissionGoOAuthProvider {
     ) throw new Error("invalid_authorization_request");
     const client = this.readClient(request.clientId);
     if (!client?.redirectUris.includes(request.redirectUri)) throw new Error("invalid_authorization_request");
+    const scopes = parseRequestedScopes(request.scope);
 
     const code = randomBytes(32).toString("base64url");
     this.authorizationCodes.set(code, {
       clientId: request.clientId,
       redirectUri: request.redirectUri,
       codeChallenge: request.codeChallenge,
+      scopes,
       expiresAt: nowSeconds + AUTHORIZATION_CODE_SECONDS,
     });
     return {
@@ -218,7 +253,12 @@ export class MissionGoOAuthProvider {
       || !/^[A-Za-z0-9._~-]{43,128}$/.test(input.codeVerifier)
       || !safeEqual(calculatedChallenge, record.codeChallenge)
     ) throw new Error("invalid_grant");
-    const issued = createAiAccessToken(this.account, input.clientId, [MISSIONGO_READ_SCOPE], now);
-    return { accessToken: issued.token, principal: issued.principal, expiresIn: AI_ACCESS_SESSION_SECONDS };
+    const issued = createAiAccessToken(this.account, input.clientId, record.scopes, now);
+    return {
+      accessToken: issued.token,
+      principal: issued.principal,
+      expiresIn: AI_ACCESS_SESSION_SECONDS,
+      scope: record.scopes.join(" "),
+    };
   }
 }

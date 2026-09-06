@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { z } from "zod";
 
 import type { AttachmentStorage } from "./attachment-storage.js";
+import { MISSIONGO_WRITE_SCOPE } from "./oauth.js";
 import type { MissionGoStore } from "./store.js";
 
 const DEFAULT_LOG_CHUNK_BYTES = 32 * 1024;
@@ -61,6 +62,21 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
     ...(typeof clientId === "string" && clientId ? { clientId } : {}),
     productIds: productIds as "*" | string[],
   };
+}
+
+/**
+ * Reject a write from a token that was only granted reading.
+ *
+ * The tier decides what this deployment offers at all; the scope decides what
+ * this connection was allowed to do. A client that connected before writing was
+ * opened, or one the user consented to for reading only, keeps a read-only
+ * token and has to ask again.
+ */
+export function requireWriteScope(ctx: ServerContext): void {
+  const scopes = ctx.http?.authInfo?.scopes;
+  if (!Array.isArray(scopes) || !scopes.includes(MISSIONGO_WRITE_SCOPE)) {
+    throw new Error("This MissionGo authorization does not include write access.");
+  }
 }
 
 function hasProductAccess(access: McpAccountAccess, productId: string): boolean {
@@ -382,6 +398,7 @@ export function createMissionGoMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ itemKey, conclusion, evidence, risks, agentName, idempotencyKey }, ctx) => {
+      requireWriteScope(ctx);
       const access = accountAccess(ctx);
       const comment = store.createComment({
         itemKey: requireItemAccess(ctx, store, itemKey),
@@ -433,6 +450,7 @@ export function createMissionGoMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ itemKey, agentId, mode, leaseSeconds, idempotencyKey }, ctx) => {
+      requireWriteScope(ctx);
       const execution = store.claimExecution({
         itemKey: requireItemAccess(ctx, store, itemKey),
         agentId,
@@ -462,6 +480,7 @@ export function createMissionGoMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (input, ctx) => {
+      requireWriteScope(ctx);
       requireExecutionAccess(ctx, store, input.executionId);
       return textResult({ execution: store.renewExecutionLease(input) });
     },
@@ -481,6 +500,7 @@ export function createMissionGoMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (input, ctx) => {
+      requireWriteScope(ctx);
       requireExecutionAccess(ctx, store, input.executionId);
       return textResult({ event: store.appendExecutionProgress(input) });
     },
@@ -500,6 +520,7 @@ export function createMissionGoMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (input, ctx) => {
+      requireWriteScope(ctx);
       requireExecutionAccess(ctx, store, input.executionId);
       return textResult({ execution: store.requestExecutionHumanInput(input) });
     },
@@ -519,6 +540,7 @@ export function createMissionGoMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ executionId, leaseId, report, idempotencyKey }, ctx) => {
+      requireWriteScope(ctx);
       requireExecutionAccess(ctx, store, executionId);
       return textResult({
         execution: store.submitExecutionResolution({
@@ -544,6 +566,7 @@ export function createMissionGoMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (input, ctx) => {
+      requireWriteScope(ctx);
       requireExecutionAccess(ctx, store, input.executionId);
       return textResult({ execution: store.markExecutionPendingVerification(input) });
     },
@@ -563,6 +586,7 @@ export function createMissionGoMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ executionId, leaseId, note, idempotencyKey }, ctx) => {
+      requireWriteScope(ctx);
       requireExecutionAccess(ctx, store, executionId);
       return textResult({
         execution: store.releaseExecution({
@@ -588,6 +612,7 @@ export function createMissionGoMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (input, ctx) => {
+      requireWriteScope(ctx);
       requireExecutionAccess(ctx, store, input.executionId);
       return textResult({ execution: store.resumeExecution(input) });
     },

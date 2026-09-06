@@ -73,14 +73,13 @@ describe("client registration", () => {
 });
 
 describe("authorization request", () => {
-  it("requires PKCE with S256, a code response, and the read scope", () => {
+  it("requires PKCE with S256 and a code response", () => {
     expect(provider.beginAuthorization(authorizationInput()).clientName).toBe("Codex");
 
     const rejected = [
       { codeChallengeMethod: "plain" },
       { codeChallengeMethod: "" },
       { responseType: "token" },
-      { scope: "missiongo:write" },
       { codeChallenge: "too-short" },
       { codeChallenge: `${challenge}!!` },
       { redirectUri: "https://attacker.example/callback" },
@@ -89,6 +88,27 @@ describe("authorization request", () => {
       expect(() => provider.beginAuthorization(authorizationInput(overrides)))
         .toThrowError(/invalid_authorization_request/);
     }
+  });
+
+  it("grants read alone unless writing is asked for", () => {
+    expect(provider.beginAuthorization(authorizationInput()).scopes).toEqual(["missiongo:read"]);
+    expect(provider.beginAuthorization(authorizationInput({ scope: "missiongo:read" })).scopes)
+      .toEqual(["missiongo:read"]);
+  });
+
+  it("always includes reading when writing is granted", () => {
+    // Writing to an item the token cannot read would be a way around the
+    // account's product scope, so read comes along whether or not it was asked
+    // for.
+    expect(provider.beginAuthorization(authorizationInput({ scope: "missiongo:write" })).scopes)
+      .toEqual(["missiongo:read", "missiongo:write"]);
+    expect(provider.beginAuthorization(authorizationInput({ scope: "missiongo:write missiongo:read" })).scopes)
+      .toEqual(["missiongo:read", "missiongo:write"]);
+  });
+
+  it("rejects a scope it does not define", () => {
+    expect(() => provider.beginAuthorization(authorizationInput({ scope: "missiongo:admin" })))
+      .toThrowError(/invalid_scope/);
   });
 
   it("rejects an expired or tampered authorization request", () => {
@@ -132,6 +152,14 @@ describe("code exchange", () => {
     expect(result.principal).toMatchObject({ clientId: expect.stringContaining("mgc_"), scopes: [MISSIONGO_READ_SCOPE] });
     expect(result.accessToken.startsWith("mgai_")).toBe(true);
     expect(result.expiresIn).toBeGreaterThan(0);
+  });
+
+  it("carries the granted scope from the consent onto the token", () => {
+    const { requestToken } = provider.beginAuthorization(authorizationInput({ scope: "missiongo:write" }));
+    const { code } = provider.finishAuthorization(requestToken);
+    const result = exchange({ code });
+    expect(result.principal.scopes).toEqual(["missiongo:read", "missiongo:write"]);
+    expect(result.scope).toBe("missiongo:read missiongo:write");
   });
 
   it("burns the authorization code after one attempt", () => {

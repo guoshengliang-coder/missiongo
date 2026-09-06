@@ -7,7 +7,13 @@ import type { ServerContext } from "@modelcontextprotocol/server";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AttachmentStorage } from "./attachment-storage.js";
-import { createMissionGoMcpServer, requireExecutionAccess, requireItemAccess, type McpWriteTier } from "./mcp.js";
+import {
+  createMissionGoMcpServer,
+  requireExecutionAccess,
+  requireItemAccess,
+  requireWriteScope,
+  type McpWriteTier,
+} from "./mcp.js";
 import { MissionGoStore } from "./store.js";
 
 const stores: MissionGoStore[] = [];
@@ -119,6 +125,18 @@ describe("MCP write-tool authorization", () => {
     expect(unauthorized).toEqual([]);
   });
 
+  it("makes every mutating tool check the write scope", () => {
+    // The tier says what this deployment offers; the scope says what this
+    // connection was allowed to do. A client that connected while the server was
+    // read-only holds a read-only token, and it has to stay read-only.
+    const withoutScopeCheck = writeSection()
+      .split(/^  server\.registerTool\($/m)
+      .slice(1)
+      .filter((block) => /readOnlyHint: false/.test(block) && !/requireWriteScope\(/.test(block))
+      .map((block) => block.match(/"([a-z_]+)"/)?.[1] ?? "unknown");
+    expect(withoutScopeCheck).toEqual([]);
+  });
+
   it("keeps each write tool in the tier it belongs to", () => {
     // The tiers exist so that opening comment writing does not also open
     // claiming, leases, and status transitions. Naming the members explicitly
@@ -136,6 +154,23 @@ describe("MCP write-tool authorization", () => {
       "release_item",
       "resume_execution",
     ]);
+  });
+});
+
+describe("MCP write scope", () => {
+  function contextWithScopes(scopes: readonly string[]): ServerContext {
+    return { http: { authInfo: { scopes } } } as unknown as ServerContext;
+  }
+
+  it("accepts a connection the user granted writing to", () => {
+    expect(() => requireWriteScope(contextWithScopes(["missiongo:read", "missiongo:write"]))).not.toThrow();
+  });
+
+  it("rejects a read-only or unauthorized connection", () => {
+    expect(() => requireWriteScope(contextWithScopes(["missiongo:read"])))
+      .toThrowError(/does not include write access/);
+    expect(() => requireWriteScope(contextWithScopes([]))).toThrowError(/does not include write access/);
+    expect(() => requireWriteScope({} as ServerContext)).toThrowError(/does not include write access/);
   });
 });
 

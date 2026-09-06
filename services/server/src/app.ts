@@ -29,7 +29,13 @@ import sharp from "sharp";
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
 import { invalidInput, MissionGoError } from "./errors.js";
 import { createMissionGoMcpHandler } from "./mcp.js";
-import { MISSIONGO_READ_SCOPE, MissionGoOAuthProvider, type OAuthAuthorizationInput } from "./oauth.js";
+import {
+  MISSIONGO_READ_SCOPE,
+  MISSIONGO_SUPPORTED_SCOPES,
+  MISSIONGO_WRITE_SCOPE,
+  MissionGoOAuthProvider,
+  type OAuthAuthorizationInput,
+} from "./oauth.js";
 import { MissionGoStore } from "./store.js";
 import { COMMENT_BODY_KINDS, COMPONENT_KINDS, type ComponentKind } from "./types.js";
 import type { FeedbackLogEntry, SdkPrincipal } from "./types.js";
@@ -264,7 +270,13 @@ function escapedHtml(value: string): string {
   })[character]!);
 }
 
-function oauthLoginPage(clientName: string, requestToken: string, invalidCredentials = false): string {
+function oauthLoginPage(
+  clientName: string,
+  requestToken: string,
+  scopes: readonly string[],
+  invalidCredentials = false,
+): string {
+  const writes = scopes.includes(MISSIONGO_WRITE_SCOPE);
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -274,8 +286,12 @@ function oauthLoginPage(clientName: string, requestToken: string, invalidCredent
   <link rel="stylesheet" href="/oauth/login.css">
 </head>
 <body><main class="card">
-  <div class="mark">🚀</div><p class="eyebrow">AI 读取授权</p><h1 class="title">连接 MissionGo</h1>
-  <p class="copy"><span class="client">${escapedHtml(clientName)}</span> 请求读取你有权限查看的 MissionGo 内容。首次连接请验证账号。</p>
+  <div class="mark">🚀</div><p class="eyebrow">${writes ? "AI 读写授权" : "AI 读取授权"}</p><h1 class="title">连接 MissionGo</h1>
+  <p class="copy"><span class="client">${escapedHtml(clientName)}</span> 请求以下权限。首次连接请验证账号。</p>
+  <ul class="scopes">
+    <li>读取你有权限查看的 MissionGo 内容</li>
+    ${writes ? "<li><strong>发表评论，并推进任务的处理阶段</strong>。不能修改你写的内容，不能创建或删除条目，不能撤回评论。</li>" : ""}
+  </ul>
   ${invalidCredentials ? '<p class="error">用户名或密码不正确，请重新输入。</p>' : ""}
   <form method="post" action="/oauth/authorize">
     <input type="hidden" name="request" value="${escapedHtml(requestToken)}">
@@ -401,14 +417,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.get("/oauth/login.css", async (_request, reply) => reply
       .header("cache-control", "public, max-age=3600")
       .type("text/css; charset=utf-8")
-      .send(`*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f3ed;color:#172033;font-family:system-ui,-apple-system,"PingFang SC",sans-serif;padding:20px}.card{width:min(100%,440px);background:#fff;border:1px solid #dedbd2;border-radius:24px;padding:32px;box-shadow:0 20px 55px rgba(23,32,51,.12)}.mark{display:grid;place-items:center;width:54px;height:54px;border-radius:17px;background:#61dfb3;font-size:27px}.eyebrow{margin:24px 0 8px;color:#72798a;font-size:13px;font-weight:700}.title{margin:0;font-size:30px;line-height:1.15}.copy{color:#697183;line-height:1.65}.client{font-weight:700;color:#172033}.error{padding:11px 13px;border-radius:12px;background:#fff0f0;color:#ad2e2e;font-size:14px}label{display:block;margin:18px 0 7px;font-size:14px;font-weight:700}input{width:100%;height:48px;border:1px solid #cbc8c0;border-radius:12px;padding:0 13px;font:inherit}button{width:100%;height:50px;margin-top:24px;border:0;border-radius:13px;background:#172033;color:#fff;font:inherit;font-weight:750;cursor:pointer}.note{margin:16px 0 0;color:#7a8190;font-size:12px;line-height:1.55}@media(max-width:520px){.card{padding:24px;border-radius:20px}.title{font-size:27px}}`));
+      .send(`*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f3ed;color:#172033;font-family:system-ui,-apple-system,"PingFang SC",sans-serif;padding:20px}.card{width:min(100%,440px);background:#fff;border:1px solid #dedbd2;border-radius:24px;padding:32px;box-shadow:0 20px 55px rgba(23,32,51,.12)}.mark{display:grid;place-items:center;width:54px;height:54px;border-radius:17px;background:#61dfb3;font-size:27px}.eyebrow{margin:24px 0 8px;color:#72798a;font-size:13px;font-weight:700}.title{margin:0;font-size:30px;line-height:1.15}.copy{color:#697183;line-height:1.65}.scopes{margin:0 0 4px;padding-left:20px;color:#697183;line-height:1.7;font-size:14px}.scopes strong{color:#172033}.client{font-weight:700;color:#172033}.error{padding:11px 13px;border-radius:12px;background:#fff0f0;color:#ad2e2e;font-size:14px}label{display:block;margin:18px 0 7px;font-size:14px;font-weight:700}input{width:100%;height:48px;border:1px solid #cbc8c0;border-radius:12px;padding:0 13px;font:inherit}button{width:100%;height:50px;margin-top:24px;border:0;border-radius:13px;background:#172033;color:#fff;font:inherit;font-weight:750;cursor:pointer}.note{margin:16px 0 0;color:#7a8190;font-size:12px;line-height:1.55}@media(max-width:520px){.card{padding:24px;border-radius:20px}.title{font-size:27px}}`));
 
     app.get("/.well-known/oauth-protected-resource/mcp", async (_request, reply) => reply
       .header("cache-control", "public, max-age=300")
       .send({
         resource: `${publicOrigin}/mcp`,
         authorization_servers: [publicOrigin],
-        scopes_supported: [MISSIONGO_READ_SCOPE],
+        scopes_supported: [...MISSIONGO_SUPPORTED_SCOPES],
         bearer_methods_supported: ["header"],
       }));
 
@@ -423,7 +439,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         grant_types_supported: ["authorization_code"],
         code_challenge_methods_supported: ["S256"],
         token_endpoint_auth_methods_supported: ["none"],
-        scopes_supported: [MISSIONGO_READ_SCOPE],
+        scopes_supported: [...MISSIONGO_SUPPORTED_SCOPES],
       }));
 
     app.post("/oauth/register", async (request, reply) => {
@@ -465,7 +481,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           codeChallengeMethod: singleQueryValue(query.code_challenge_method),
         } satisfies OAuthAuthorizationInput);
         return reply.header("cache-control", "no-store").type("text/html; charset=utf-8").send(
-          oauthLoginPage(started.clientName, started.requestToken),
+          oauthLoginPage(started.clientName, started.requestToken, started.scopes),
         );
       } catch {
         return reply.header("cache-control", "no-store").status(400).send({
@@ -485,7 +501,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (!verifyAdminCredentials(options.adminAccount!, username, password)) {
         recordLoginFailure(request, now);
         return reply.header("cache-control", "no-store").type("text/html; charset=utf-8").status(401).send(
-          oauthLoginPage(oauthProvider.authorizationClientName(requestToken), requestToken, true),
+          oauthLoginPage(
+            oauthProvider.authorizationClientName(requestToken),
+            requestToken,
+            oauthProvider.authorizationScopes(requestToken),
+            true,
+          ),
         );
       }
       loginFailures.delete(request.ip);
@@ -517,7 +538,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           access_token: issued.accessToken,
           token_type: "Bearer",
           expires_in: issued.expiresIn,
-          scope: MISSIONGO_READ_SCOPE,
+          scope: issued.scope,
         });
       } catch {
         return reply.header("cache-control", "no-store").status(400).send({
