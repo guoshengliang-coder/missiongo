@@ -19,6 +19,8 @@ const adminToken = process.env.ADMIN_API_TOKEN;
 const trustProxy = trustProxySetting(process.env.TRUST_PROXY);
 const publicOrigin = process.env.MISSIONGO_PUBLIC_ORIGIN?.trim();
 const authorizedProductIdsValue = process.env.ADMIN_AUTHORIZED_PRODUCT_IDS?.trim();
+// Stamped by scripts/deploy.sh. A checkout run by hand simply reports "unknown".
+const release = process.env.MISSIONGO_RELEASE?.trim();
 const writeToolsValue = process.env.MISSIONGO_WRITE_TOOLS?.trim() || "none";
 if (!MCP_WRITE_TIERS.includes(writeToolsValue as (typeof MCP_WRITE_TIERS)[number])) {
   throw new Error(`MISSIONGO_WRITE_TOOLS must be one of ${MCP_WRITE_TIERS.join(", ")}.`);
@@ -71,6 +73,7 @@ const app = buildApp({
   ...(publicOrigin ? { publicOrigin } : {}),
   ...(adminToken ? { adminToken } : {}),
   writeTools,
+  ...(release ? { release } : {}),
   ...(hasCompleteAdminAccount ? {
     adminAccount: {
       id: adminAccountId!,

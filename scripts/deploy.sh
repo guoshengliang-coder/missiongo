@@ -25,7 +25,7 @@ set -euo pipefail
 NODE_IMAGE="node:22-bookworm-slim"
 host=""
 env_file=""
-label="deploy"
+label=""
 releases_dir="/opt/missiongo/releases"
 current_link="/opt/missiongo/current"
 data_dir="/srv/missiongo/data"
@@ -36,6 +36,8 @@ verify_host=""
 keep=10
 skip_backup=0
 publish_apk=1
+allow_dirty=0
+release_branch="main"
 verify=0
 
 usage() {
@@ -44,7 +46,8 @@ Usage: scripts/deploy.sh --host <ssh host> --env-file <remote env file> [options
 
   --host <ssh host>       SSH destination or ~/.ssh/config alias (required).
   --env-file <path>       Environment file ON THE SERVER, passed to docker compose (required).
-  --label <text>          Suffix for the release directory name. Default: deploy.
+  --label <text>          Optional suffix for the release directory name. The
+                          name already carries the timestamp and the commit.
   --releases-dir <path>   Remote releases directory. Default: /opt/missiongo/releases.
   --current-link <path>   Remote "current" symlink. Default: /opt/missiongo/current.
   --data-dir <path>       Remote data directory. Default: /srv/missiongo/data.
@@ -59,6 +62,9 @@ Usage: scripts/deploy.sh --host <ssh host> --env-file <remote env file> [options
   --skip-backup           Deploy without backing up first. Not recommended.
   --no-publish-apk        Leave the host download directory alone, for a
                           deployment that serves the APK from the image instead.
+  --allow-dirty           Deploy this working tree even when it is not a clean
+                          checkout of an already-pushed main. The release records
+                          that it was dirty, so the state is never silently lost.
   --verify <url>          After deploying, check the release is live and that a
                           forged X-Forwarded-For cannot reset the sign-in rate
                           limit. The check makes 11 failed sign-in attempts, so
@@ -89,6 +95,7 @@ while [ $# -gt 0 ]; do
     --keep) keep="${2-}"; shift 2 ;;
     --skip-backup) skip_backup=1; shift ;;
     --no-publish-apk) publish_apk=0; shift ;;
+    --allow-dirty) allow_dirty=1; shift ;;
     --verify) public_url="${2-}"; verify=1; shift 2 ;;
     --verify-host) verify_host="${2-}"; shift 2 ;;
     -h|--help) usage ;;
@@ -102,6 +109,40 @@ case "$keep" in ""|*[!0-9]*) echo "--keep takes a non-negative integer." >&2; ex
 cd "$(dirname "$0")/.."
 [ -f deploy/docker-compose.yml ] || { echo "Run this from a MissionGo checkout." >&2; exit 1; }
 command -v rsync >/dev/null || { echo "rsync is required." >&2; exit 1; }
+command -v git >/dev/null || { echo "git is required." >&2; exit 1; }
+
+# What goes to the server is this directory, not a branch: rsync sends whatever
+# is on disk. So the commit is only an honest description of the release when the
+# tree is clean and matches something already pushed. Establish that first, and
+# record what was found either way — a release whose contents cannot be named is
+# the one thing that makes an incident unresolvable.
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+  echo "Not a git checkout, so this deploy could not be identified afterwards." >&2
+  exit 1
+}
+commit="$(git rev-parse HEAD)"
+short_commit="$(git rev-parse --short HEAD)"
+branch="$(git rev-parse --abbrev-ref HEAD)"
+tree_state=clean
+[ -z "$(git status --porcelain)" ] || tree_state=dirty
+
+deploy_refusal() {
+  echo "Refusing to deploy: $1" >&2
+  echo "Fix it, or pass --allow-dirty to deploy this tree as it is." >&2
+  exit 1
+}
+
+if [ "$allow_dirty" -eq 1 ]; then
+  echo "==> --allow-dirty: deploying this working tree (${branch} ${short_commit}, ${tree_state})"
+else
+  [ "$tree_state" = clean ] || deploy_refusal "the working tree has uncommitted changes."
+  [ "$branch" = "$release_branch" ] || deploy_refusal "on branch '${branch}', not '${release_branch}'."
+  git fetch --quiet origin "$release_branch" 2>/dev/null || \
+    deploy_refusal "origin/${release_branch} could not be fetched, so this commit cannot be confirmed as pushed."
+  remote_commit="$(git rev-parse "origin/${release_branch}")"
+  [ "$commit" = "$remote_commit" ] || deploy_refusal \
+    "HEAD ${short_commit} is not origin/${release_branch} ($(git rev-parse --short "origin/${release_branch}")). Push or pull first."
+fi
 
 local_apk="apps/web/public/downloads/missiongo-android-latest.apk"
 local_apk_meta="apps/web/public/downloads/missiongo-android-latest.release"
@@ -180,7 +221,11 @@ if [ "$publish_apk" -eq 1 ]; then
   apk_name="MissionGo-Android-${apk_version_name}-${apk_version_code}.apk"
 fi
 
-release="$(remote date +%Y%m%d-%H%M%S)-${label}"
+# The commit is in the name so the live release can be identified from a
+# directory listing alone, without reading anything inside it.
+release="$(remote date +%Y%m%d-%H%M%S)-${short_commit}"
+[ "$tree_state" = clean ] || release="${release}-dirty"
+[ -z "$label" ] || release="${release}-${label}"
 target="${releases_dir}/${release}"
 
 echo "==> Pushing ${release}"
@@ -192,6 +237,18 @@ rsync -az --delete \
   --exclude='._*' --exclude='.DS_Store' --exclude='*.tsbuildinfo' \
   --rsync-path='sudo rsync' \
   ./ "${host}:${target}/"
+
+# Written after the push so --delete cannot remove it, and inside the snapshot so
+# it travels with the code it describes.
+echo "==> Recording provenance in ${target}/RELEASE"
+remote "sudo tee '${target}/RELEASE' >/dev/null" <<PROVENANCE
+commit=${commit}
+branch=${branch}
+tree=${tree_state}
+release=${release}
+deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+deployed_from=$(id -un)@$(hostname -s)
+PROVENANCE
 
 if [ "$skip_backup" -eq 1 ]; then
   echo "==> Skipping the backup (--skip-backup)"
@@ -210,7 +267,9 @@ else
 fi
 
 echo "==> Rebuilding and restarting"
-remote "cd '${target}/deploy' && sudo docker compose --env-file '${env_file}' up -d --build"
+# sudo drops the environment, so the value is handed over explicitly. The
+# server reports it on /health, which is how a running deployment names itself.
+remote "cd '${target}/deploy' && sudo env MISSIONGO_RELEASE='${commit}' docker compose --env-file '${env_file}' up -d --build"
 
 echo "==> Pointing ${current_link} at the new release"
 remote "sudo ln -sfn '${target}' '${current_link}'"

@@ -23,6 +23,10 @@ services:
       # none | comments | all. The env file only feeds compose interpolation, so a
       # variable missing from this block never reaches the container at all.
       MISSIONGO_WRITE_TOOLS: ${MISSIONGO_WRITE_TOOLS:-none}
+      # Stamped by scripts/deploy.sh with the commit it pushed, and reported by
+      # /health. Compose takes the shell environment over the env file, so the
+      # deploy passes it without the env file having to carry it.
+      MISSIONGO_RELEASE: ${MISSIONGO_RELEASE:-unknown}
       TRUST_PROXY: ${TRUST_PROXY:-loopback,uniquelocal}
     volumes:
       - ${MISSIONGO_DATA_PATH:?MISSIONGO_DATA_PATH is required}:/data

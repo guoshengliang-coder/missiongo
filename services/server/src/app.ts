@@ -52,6 +52,8 @@ export interface BuildAppOptions {
   readonly sdkRateLimits?: Partial<Readonly<Record<SdkRateLimitBucket, SdkRateLimitRule>>>;
   /** How much of the MCP write surface to expose. Defaults to none. */
   readonly writeTools?: McpWriteTier;
+  /** Commit this build came from, reported by /health so a deployment can name itself. */
+  readonly release?: string;
 }
 
 type SdkRateLimitBucket = "draft_read" | "draft_write" | "finalize" | "web_session" | "attachment_upload";
@@ -432,7 +434,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   });
 
-  app.get("/health", async () => ({ status: "ok" }));
+  // A running deployment has to be able to say which commit it is. The only
+  // record used to be a timestamped directory name on the host, so "what is
+  // live right now" could not be answered without guessing.
+  app.get("/health", async () => ({ status: "ok", release: options.release ?? "unknown" }));
 
   if (oauthProvider && options.adminAccount) {
     app.get("/oauth/login.css", async (_request, reply) => reply

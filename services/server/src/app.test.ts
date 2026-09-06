@@ -2284,4 +2284,22 @@ describe("MissionGo REST API", () => {
 
     await app.close();
   });
+
+  it("names the build it is running so a deployment can be identified", async () => {
+    const stamped = buildApp({ release: "0123456789abcdef0123456789abcdef01234567" });
+    apps.push(stamped);
+    expect((await stamped.inject({ method: "GET", url: "/health" })).json()).toEqual({
+      status: "ok",
+      release: "0123456789abcdef0123456789abcdef01234567",
+    });
+
+    // A checkout someone runs by hand has no commit stamped into it, and saying
+    // so is the point: silence would read as "this is the build you expect".
+    const plain = buildApp({});
+    apps.push(plain);
+    expect((await plain.inject({ method: "GET", url: "/health" })).json()).toEqual({
+      status: "ok",
+      release: "unknown",
+    });
+  });
 });

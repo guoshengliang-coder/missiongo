@@ -62,6 +62,31 @@ rebuilds, moves the symlink, publishes the Android APK, and reports container
 status. The backup runs in a throwaway `node` container, so the server needs
 neither Node nor a copy of these scripts already in place.
 
+#### Knowing what is live
+
+The script sends this directory, not a branch, so before pushing anything it
+checks that the directory is a clean checkout of `main` at the same commit as
+`origin/main`. Otherwise the commit it records would not describe what actually
+shipped. `--allow-dirty` deploys the tree as it is and marks the release so the
+difference stays visible instead of being lost.
+
+Three things then say what a release is, and they agree:
+
+- the directory name carries the short commit — `20260906-224542-8a46c96`, plus
+  `-dirty` when it was not a clean checkout;
+- a `RELEASE` file inside the snapshot records the full commit, branch, tree
+  state, deploy time and who ran it;
+- the running server reports the commit at `/health`, so the live build can be
+  identified with one request and without server access:
+
+```sh
+curl -s https://<host>/health
+{"status":"ok","release":"8a46c96..."}
+```
+
+A server started by hand reports `"release":"unknown"` rather than implying it
+is something it is not.
+
 `rsync` does not read `.gitignore`, and does not read `.git/info/exclude` at
 all, so the script lists its excludes explicitly. Keep local-only notes under
 `.private/`, which it and `.dockerignore` both exclude.
