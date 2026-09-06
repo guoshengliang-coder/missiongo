@@ -27,6 +27,7 @@ import {
   LogOut,
   Maximize2,
   Menu,
+  MessageSquarePlus,
   MoreHorizontal,
   Paperclip,
   Plus,
@@ -684,6 +685,15 @@ export function App() {
           <p>{t("aiDispatchNext")}</p>
           <span>{t("aiDispatchDescription")}</span>
         </div>
+        {androidFeedbackBridge() && (
+          <button
+            className="text-button add-product"
+            onClick={() => {
+              setSidebarOpen(false);
+              androidFeedbackBridge()?.openFeedback();
+            }}
+          ><MessageSquarePlus size={15} /> {t("submitFeedback")}</button>
+        )}
         <a
           className="text-button add-product"
           href={ANDROID_APK_DOWNLOAD_PATH}
@@ -965,6 +975,16 @@ function ItemRow({
     </article>
   );
 }
+/**
+ * The Android shell exposes its native feedback flow here. Only that shell has
+ * it, so the sidebar entry appears there and nowhere else; the SDK is what
+ * collects the version, device and recent logs a browser cannot see.
+ */
+function androidFeedbackBridge(): { openFeedback: () => void } | undefined {
+  const bridge = (window as { MissionGoAndroid?: { openFeedback?: () => void } }).MissionGoAndroid;
+  return typeof bridge?.openFeedback === "function" ? (bridge as { openFeedback: () => void }) : undefined;
+}
+
 function useNarrowViewport(): boolean {
   const [narrow, setNarrow] = useState(() => window.matchMedia("(max-width: 520px)").matches);
   useEffect(() => {

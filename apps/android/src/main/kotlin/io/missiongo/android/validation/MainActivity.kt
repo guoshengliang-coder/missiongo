@@ -5,7 +5,6 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -13,6 +12,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -95,6 +95,10 @@ class MainActivity : ComponentActivity() {
             CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
 
+            // The page asks for the native feedback flow through this, which is
+            // what lets the entry point live in the web sidebar instead of a
+            // permanent bar across the bottom of every screen.
+            addJavascriptInterface(FeedbackBridge(), "MissionGoAndroid")
             webViewClient = MissionGoWebViewClient()
             webChromeClient = object : WebChromeClient() {
                 override fun onProgressChanged(view: WebView, newProgress: Int) {
@@ -152,23 +156,28 @@ class MainActivity : ComponentActivity() {
             ),
         )
         }
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(251, 250, 247))
-            addView(
-                webContainer,
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
-            )
-            addView(Button(this@MainActivity).apply {
-                text = getString(R.string.submit_feedback)
-                textSize = 16f
-                isAllCaps = false
-                setTextColor(Color.WHITE)
-                backgroundTintList = ColorStateList.valueOf(Color.rgb(23, 32, 51))
-                setOnClickListener { openSdkFeedback() }
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)).apply {
-                setMargins(dp(16), dp(8), dp(16), dp(8))
-            })
+        return webContainer
+    }
+
+    /**
+     * Exposed to the page as `MissionGoAndroid`. addJavascriptInterface hands the
+     * object to every document the WebView loads, so the call is only honoured
+     * when the page asking is the configured MissionGo origin. The host is read
+     * on the UI thread, because WebView.getUrl() may only be touched there and it
+     * is the value the check depends on.
+     */
+    private inner class FeedbackBridge {
+        @JavascriptInterface
+        fun openFeedback() {
+            runOnUiThread {
+                val home = Uri.parse(BuildConfig.MISSIONGO_ENDPOINT)
+                val current = webView.url?.let(Uri::parse)
+                if (current?.scheme == "https" && current.host == home.host) {
+                    openSdkFeedback()
+                } else {
+                    Log.w(TAG, "Ignored a feedback request from \${current?.host}")
+                }
+            }
         }
     }
 
