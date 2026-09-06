@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
+import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -75,6 +75,7 @@ import {
   type WorkItemType,
 } from "./types";
 import { useI18n } from "./i18n";
+import { TRANSITIONS } from "./work-item-transitions";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { isAnnotatableImage } from "./image-annotation";
 import { ITEM_HISTORY_MARKER, itemDetailUrl, itemKeyFromUrl, itemListUrl } from "./navigation";
@@ -112,35 +113,6 @@ const REPORT_COPY = {
   readonly overview: "ideaOverview" | "requirementOverview" | "bugOverview" | "taskOverview" | "noteOverview";
   readonly placeholder: "ideaOverviewPlaceholder" | "requirementOverviewPlaceholder" | "bugOverviewPlaceholder" | "taskOverviewPlaceholder" | "noteOverviewPlaceholder";
 }>;
-
-const TRANSITIONS: Record<WorkItemStatus, readonly TransitionAction[]> = {
-  inbox: [{ label: "Move to ready", to: "ready", reason: "triaged", tone: "primary" }],
-  ready: [
-    { label: "Start work", to: "in_progress", reason: "claim", tone: "primary" },
-    { label: "Put on hold", to: "on_hold", reason: "request_human_input" },
-    { label: "Move to inbox", to: "inbox", reason: "reopened" },
-  ],
-  in_progress: [
-    {
-      label: "Submit for verification",
-      to: "pending_verification",
-      reason: "resolution_submitted",
-      tone: "primary",
-    },
-    { label: "Put on hold", to: "on_hold", reason: "request_human_input" },
-    { label: "Release", to: "ready", reason: "released" },
-  ],
-  on_hold: [
-    { label: "Resume work", to: "in_progress", reason: "resume", tone: "primary" },
-    { label: "Return to ready", to: "ready", reason: "reopened" },
-  ],
-  pending_verification: [
-    { label: "Verify & close", to: "done", reason: "verification_passed", tone: "positive" },
-    { label: "Needs more work", to: "ready", reason: "verification_failed" },
-  ],
-  done: [{ label: "Reopen", to: "ready", reason: "reopened", tone: "primary" }],
-  cancelled: [{ label: "Restore", to: "inbox", reason: "restored", tone: "primary" }],
-};
 
 const FILE_LIMITS_MIB: Readonly<Record<string, number>> = {
   png: 20,
@@ -652,7 +624,7 @@ export function App() {
           <StatusNavItem label={t("allItems")} count={itemSummary?.total ?? items.length} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
             <ListTodo size={17} />
           </StatusNavItem>
-          {ITEM_STATUSES.filter((status) => status !== "cancelled").map((status) => {
+          {ITEM_STATUSES.map((status) => {
             const Icon = STATUS_ICONS[status];
             return (
               <StatusNavItem
@@ -701,7 +673,7 @@ export function App() {
               <span>{t("allItems")}</span>
               <small>{itemSummary?.total ?? items.length}</small>
             </button>
-            {ITEM_STATUSES.filter((status) => status !== "cancelled").map((status) => {
+            {ITEM_STATUSES.map((status) => {
               const Icon = STATUS_ICONS[status];
               return (
                 <button key={status} className={statusFilter === status ? "active" : ""} aria-pressed={statusFilter === status} onClick={() => selectStatus(status)}>
@@ -1087,6 +1059,7 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
             <button
               key={`${action.to}-${action.reason}`}
               type="button"
+              className={action.tone === "danger" ? "danger" : undefined}
               disabled={mutation.isPending}
               onClick={() => {
                 moreActionsRef.current?.removeAttribute("open");
@@ -1247,6 +1220,7 @@ function DetailPane({
                 <button
                   key={`${action.to}-${action.reason}`}
                   type="button"
+                  className={action.tone === "danger" ? "danger" : undefined}
                   disabled={transitionMutation.isPending}
                   onClick={() => {
                     moreActionsRef.current?.removeAttribute("open");
@@ -1266,13 +1240,8 @@ function DetailPane({
               <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
               <div><p className="eyebrow">{typeLabel(item.type)} · {priorityLabel(item.priority)}</p><h2>{item.title}</h2></div>
             </div>
-            <AttachmentSection
-              itemKey={item.key}
-              attachments={mediaAttachments}
-              title={t("mediaAttachments")}
-              help={t("mediaAttachmentsHelp")}
-              emptyMessage={t("noMediaAttachments")}
-            />
+            {/* Read the item before looking at the evidence: the report comes first,
+                then the captured context, and the attachments back both of them up. */}
             <ReportDetails type={item.type} report={item.report} fallbackDescription={item.description} />
             <section className="environment-block">
               <h3>{t("capturedContext")}</h3>
@@ -1290,6 +1259,13 @@ function DetailPane({
                 </div>
               ) : <p className="section-empty">{t("noEnvironment")}</p>}
             </section>
+            <AttachmentSection
+              itemKey={item.key}
+              attachments={mediaAttachments}
+              title={t("mediaAttachments")}
+              help={t("mediaAttachmentsHelp")}
+              emptyMessage={t("noMediaAttachments")}
+            />
             <DiagnosticDetails
               itemKey={item.key}
               logs={sdkDiagnostics.logs}
@@ -1684,7 +1660,7 @@ function WorkItemFields({
         </label>
         <label><FieldLabel>{t("priority")}</FieldLabel><select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
       </div>
-      <label><FieldLabel required>{t("whatNeedsAttention")}</FieldLabel><input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
+      <label><FieldLabel required>{t("whatNeedsAttention")}</FieldLabel><input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus data-initial-focus /></label>
       <section className="attachment-picker-block capture-attachment-block">
         <div className="capture-attachment-heading">
           <div className="capture-attachment-copy"><strong><FieldLabel>{t("mediaAttachments")}</FieldLabel></strong><p>{t("mediaAttachmentsHelp")}</p></div>
@@ -2591,14 +2567,22 @@ function AccountPanel({ user, onLoggedOut }: { user: AuthenticatedUser; onLogged
 function Modal({ title, subtitle, onClose, children, wide = false }: { title: string; subtitle: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   useEffect(() => {
-    dialogRef.current?.showModal();
-    return () => dialogRef.current?.close();
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    // showModal() runs the dialog focusing steps synchronously, after React has
+    // already honoured autoFocus, so it lands on the dialog itself and the
+    // caret never reaches the field. Claim it back in the same tick: deferring
+    // to a frame would leave the modal unfocused in a background tab.
+    dialog?.querySelector<HTMLElement>("[data-initial-focus]")?.focus();
+    return () => dialog?.close();
   }, []);
   return (
     <dialog
       ref={dialogRef}
       className="modal-layer"
+      aria-labelledby={titleId}
       onCancel={(event) => {
         if (event.target !== event.currentTarget) return;
         event.preventDefault();
@@ -2606,8 +2590,8 @@ function Modal({ title, subtitle, onClose, children, wide = false }: { title: st
       }}
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
-      <section className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}>
-        <header><div><p className="eyebrow">{subtitle}</p><h2>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
+      <section className={`modal ${wide ? "wide" : ""}`}>
+        <header><div><p className="eyebrow">{subtitle}</p><h2 id={titleId}>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
         {children}
       </section>
     </dialog>
