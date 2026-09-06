@@ -13,9 +13,22 @@ GRADLE_PROPERTIES="$GRADLE_ROOT/gradle.properties"
 MISSIONGO_CONFIG_DIRECTORY="${XDG_CONFIG_HOME:-"${HOME:?}/.config"}/missiongo"
 PRODUCTION_ENV_FILE="$MISSIONGO_CONFIG_DIRECTORY/production.env"
 SDK_TOKEN_FILE="$MISSIONGO_CONFIG_DIRECTORY/android-sdk-token.json"
+SIGNING_PROPERTIES="$MISSIONGO_CONFIG_DIRECTORY/android-signing.properties"
 
 if [ ! -f "$PRODUCTION_ENV_FILE" ] || [ ! -f "$SDK_TOKEN_FILE" ]; then
   echo "Missing private MissionGo Android publishing configuration." >&2
+  exit 1
+fi
+
+# A published APK must be signed with the shared key, never with the machine's
+# own debug keystore: Android refuses to upgrade an installed app across a
+# change of signing key, so a build from a second workstation would strand
+# everyone who installed the first one. Gradle falls back to the debug key for
+# local development; publishing does not get that fallback.
+if [ ! -f "$SIGNING_PROPERTIES" ]; then
+  echo "Missing $SIGNING_PROPERTIES." >&2
+  echo "Copy the private configuration directory from a machine that has it," >&2
+  echo "or see apps/android/README.md to create the key for the first time." >&2
   exit 1
 fi
 
@@ -42,6 +55,7 @@ cd "$GRADLE_ROOT"
 ./gradlew \
   -PmissiongoAndroidVersionCode="$VERSION_CODE" \
   -PmissiongoAndroidVersionName="$VERSION_NAME" \
+  -PmissiongoAndroidSigningProperties="$SIGNING_PROPERTIES" \
   :missiongo-android-app:assembleDebug
 
 mkdir -p "$DOWNLOAD_DIRECTORY"

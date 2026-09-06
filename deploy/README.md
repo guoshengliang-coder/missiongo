@@ -182,6 +182,11 @@ npm run publish:android-internal
 docker compose --env-file /path/to/private.env up -d --build web
 ```
 
+Publishing requires the shared signing key in the private configuration
+directory: Android cannot upgrade an installed app across a change of signing
+key, and the default debug keystore differs on every machine. See
+[apps/android/README.md](../apps/android/README.md#签名).
+
 The website download button uses the fixed path
 `/downloads/missiongo-android-latest.apk`. The generated APK is intentionally
 ignored by Git. It is included in the Web image built from the local checkout,

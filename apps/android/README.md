@@ -62,6 +62,42 @@ npm run publish:android-internal
 >
 > 网页下载入口已加了对应提示（`androidReinstallNotice`）。确认试用者都已切到新包名后，可以把该提示、它的两个文案键和 `.download-note` 一并删掉——`apps/web/src/App.tsx` 里有标注。此后原地升级恢复正常。
 
-调试签名仍未迁移：正式对外分发前，需要另行改用仓库外保存的发布签名。
+## 签名
+
+Android 用**包名 + 签名密钥**共同标识一个应用：签名密钥变了，已安装的版本就无法原地升级，只能卸载重装。而 Android SDK 默认的 `~/.android/debug.keystore` 是**每台机器各自生成**的——换台机器打包，签名就变了。
+
+所以 MissionGo 使用一把共享密钥，放在私密配置目录里，与 `production.env`、`android-sdk-token.json` 同处：
+
+```text
+${XDG_CONFIG_HOME:-~/.config}/missiongo/
+├── missiongo-android.jks           # 密钥库
+└── android-signing.properties      # storeFile / keyAlias / storePassword / keyPassword
+```
+
+当前密钥证书指纹（SHA-256，公开信息，可用于核对下载到的 APK）：
+
+```text
+cce2861e3f9ee67f2c164c1cec818537342cddcaa11b8327dbee149b700ddea0
+```
+
+**换一台机器打包**：把上面整个目录拷过去即可，`storeFile` 按相对路径解析，不依赖绝对路径。
+
+**没有这把密钥时**：`./gradlew` 仍可正常构建和真机调试，自动回退到本机默认 debug 密钥；只有 `npm run publish:android-internal` 会拒绝执行，因为只有对外发布的包才需要互相兼容。
+
+> ⚠️ **这把密钥丢了就换不回来**：届时所有已安装的手机都必须卸载重装，且此后签名再次改变。请离线备份 `missiongo-android.jks` 和 `android-signing.properties`。密钥**不得进入 Git**（AGENTS.md 规则，`npm run check` 会校验仓库里没有被跟踪的密钥文件，也不允许 `build.gradle.kts` 里出现密码字面量）。
+
+首次创建（仅在没有任何一台机器持有密钥时）：
+
+```bash
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}/missiongo"
+PW=$(openssl rand -base64 24 | tr -d '\n')
+keytool -genkeypair -keystore "$CFG/missiongo-android.jks" -storetype PKCS12 \
+  -alias missiongo -keyalg RSA -keysize 2048 -validity 10000 \
+  -storepass "$PW" -keypass "$PW" -dname "CN=MissionGo Internal, O=MissionGo, C=CN"
+umask 077 && printf 'storeFile=missiongo-android.jks\nkeyAlias=missiongo\nstorePassword=%s\nkeyPassword=%s\n' "$PW" "$PW" \
+  > "$CFG/android-signing.properties"
+```
+
+该密钥面向内部分发。将来若要上架应用商店，还需另行处理商店的签名托管方案。
 
 SDK 的独立验证入口保留在 `sdks/android-feedback/sample`，不得发布到 MissionGo 正式下载链接。
