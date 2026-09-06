@@ -1148,15 +1148,25 @@ function ProductSwitcher({
   );
 }
 
-function useNarrowViewport(): boolean {
-  const [narrow, setNarrow] = useState(() => window.matchMedia("(max-width: 520px)").matches);
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
   useEffect(() => {
-    const query = window.matchMedia("(max-width: 520px)");
-    const update = () => setNarrow(query.matches);
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
-  return narrow;
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+  return matches;
+}
+
+function useNarrowViewport(): boolean {
+  return useMediaQuery("(max-width: 520px)");
+}
+
+/** Below this the workspace shows one pane at a time, and so should the manager. */
+function useSinglePaneLayout(): boolean {
+  return useMediaQuery("(max-width: 1023px)");
 }
 
 function ItemMediaStrip({
@@ -2678,25 +2688,40 @@ function ProductManager({
   const [activeProductId, setActiveProductId] = useState(selectedProductId || products[0]?.id || "");
   const [adding, setAdding] = useState(false);
   const activeProduct = products.find((product) => product.id === activeProductId);
+  // A phone has room for one thing at a time. Stacking both panes put a
+  // scrolling list, a tab strip and a form inside one scrolling dialog, and
+  // nothing said which product the tabs belonged to.
+  const stacked = useSinglePaneLayout();
+  const [openOnPhone, setOpenOnPhone] = useState(false);
+  const showingSettings = !stacked || openOnPhone;
 
   return (
-    <div className="product-manager">
-      <aside className="product-manager-list">
-        <p className="sidebar-label">{t("existingProducts")}</p>
-        {products.map((product) => (
-          <button
-            key={product.id}
-            className={activeProductId === product.id && !adding ? "active" : ""}
-            onClick={() => { setActiveProductId(product.id); setAdding(false); }}
-          >
-            <ProductBadge product={product} size={26} />
-            <span><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
-            <ChevronRight size={16} />
-          </button>
-        ))}
-        <button className={`product-manager-add ${adding ? "active" : ""}`} onClick={() => setAdding(true)}><Plus size={15} /> {t("addProduct")}</button>
-      </aside>
+    <div className={`product-manager ${stacked ? "stacked" : ""}`}>
+      {(!stacked || !openOnPhone) && (
+        <aside className="product-manager-list">
+          <p className="sidebar-label">{t("existingProducts")}</p>
+          {products.map((product) => (
+            <button
+              key={product.id}
+              className={!stacked && activeProductId === product.id && !adding ? "active" : ""}
+              onClick={() => { setActiveProductId(product.id); setAdding(false); setOpenOnPhone(true); }}
+            >
+              <ProductBadge product={product} size={26} />
+              <span><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
+              <ChevronRight size={16} />
+            </button>
+          ))}
+          <button className={`product-manager-add ${!stacked && adding ? "active" : ""}`} onClick={() => { setAdding(true); setOpenOnPhone(true); }}><Plus size={15} /> {t("addProduct")}</button>
+        </aside>
+      )}
+      {showingSettings && (
       <section className="product-manager-content">
+        {stacked && (
+          <button type="button" className="product-manager-back" onClick={() => setOpenOnPhone(false)}>
+            <ArrowLeft size={16} />
+            {adding || !activeProduct ? t("addProduct") : <><ProductBadge product={activeProduct} size={22} /><span>{activeProduct.name}</span></>}
+          </button>
+        )}
         {adding || !activeProduct ? (
           <div className="product-create-panel">
             <p className="eyebrow">{t("newProduct")}</p>
@@ -2714,6 +2739,7 @@ function ProductManager({
           <ProductSettings key={activeProduct.id} product={activeProduct} onSelected={() => onSelectProduct(activeProduct)} />
         )}
       </section>
+      )}
     </div>
   );
 }

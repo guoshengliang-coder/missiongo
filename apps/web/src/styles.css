@@ -676,6 +676,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .product-manager-list small { margin-top: 3px; color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-xs); }
 .product-manager-list .product-manager-add { justify-content: flex-start; margin-top: 7px; border: 1px dashed var(--line-dark); }
 .product-manager-content { min-width: 0; overflow-y: auto; padding: 22px; }
+.product-manager-back { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; margin-bottom: 14px; padding: 0 10px 0 6px; color: var(--ink); background: var(--surface-inset); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-sm); font-weight: 700; cursor: pointer; }
+.product-manager-back > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .product-create-panel { width: min(460px, 100%); margin: 30px auto; }
 .product-create-panel h3 { margin: 0 0 20px; font-size: 20px; }
 .product-settings { display: flex; flex-direction: column; gap: 22px; }
@@ -937,9 +939,13 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .mobile-fab { right: calc(18px + var(--safe-right)); bottom: calc(18px + var(--safe-bottom)); display: grid; place-items: center; }
   .toast { left: calc(15px + var(--safe-left)); right: calc(15px + var(--safe-right)); bottom: calc(82px + var(--safe-bottom)); }
   .modal.wide { overflow-y: auto; }
+  /* One level at a time: the list, or one product's settings behind a back bar. */
   .product-manager { height: auto; min-height: 0; display: block; overflow: visible; border: 0; }
-  .product-manager-list { max-height: 190px; border: 1px solid var(--line); border-radius: var(--radius-md); }
-  .product-manager-content { overflow: visible; padding: 20px 0 0; }
+  .product-manager-list { padding: 0; overflow: visible; background: transparent; border: 0; }
+  .product-manager-list > button { min-height: 56px; background: var(--surface-inset); }
+  .product-manager-content { overflow: visible; padding: 0; }
+  /* The back bar already names the product; the eyebrow would say it twice. */
+  .product-manager.stacked .product-settings-section > header .eyebrow { display: none; }
 }
 
 @media (max-width: 520px) {
