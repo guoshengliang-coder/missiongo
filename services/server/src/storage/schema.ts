@@ -87,8 +87,34 @@ export const INITIAL_SCHEMA = `
     account_id TEXT,
     client_id TEXT,
     execution_id TEXT,
+    timeline_seq INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
   ) STRICT;
+
+  -- Comments are people and agents talking on an item, so unlike an event they
+  -- have state: one can be withdrawn. Events stay append-only and never update,
+  -- which is what makes them worth reading as an audit trail.
+  --
+  -- A withdrawn comment is kept and hidden rather than deleted. An AI reads an
+  -- item back before it acts, so a wrong analysis that cannot be taken down gets
+  -- quoted as evidence on every later read.
+  CREATE TABLE IF NOT EXISTS work_item_comments (
+    id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    actor_kind TEXT NOT NULL CHECK (actor_kind IN ('human', 'agent', 'system')),
+    account_id TEXT,
+    client_id TEXT,
+    execution_id TEXT,
+    body_kind TEXT NOT NULL CHECK (body_kind IN ('structured', 'free')),
+    body_json TEXT NOT NULL,
+    timeline_seq INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    withdrawn_at TEXT,
+    withdrawn_by TEXT
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS idx_work_item_comments_item
+  ON work_item_comments(item_id, timeline_seq);
 
   CREATE TABLE IF NOT EXISTS idempotency_keys (
     key TEXT PRIMARY KEY,

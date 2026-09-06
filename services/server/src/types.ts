@@ -175,6 +175,51 @@ export interface EventAttribution {
   readonly executionId?: string;
 }
 
+export const COMMENT_BODY_KINDS = ["structured", "free"] as const;
+export type CommentBodyKind = (typeof COMMENT_BODY_KINDS)[number];
+
+/** An agent's formal analysis: fixed fields so it can be scanned and filtered. */
+export interface StructuredCommentBody {
+  readonly conclusion: string;
+  readonly evidence: readonly string[];
+  readonly risks: readonly string[];
+  readonly agentName?: string;
+}
+
+/** Everything else people and agents say: questions, answers, side findings. */
+export interface FreeCommentBody {
+  readonly text: string;
+}
+
+export type CommentBody = StructuredCommentBody | FreeCommentBody;
+
+export interface WorkItemCommentSnapshot extends EventAttribution {
+  readonly id: string;
+  readonly itemKey: string;
+  readonly actorKind: ActorKind;
+  readonly bodyKind: CommentBodyKind;
+  readonly body: CommentBody;
+  readonly createdAt: string;
+  readonly withdrawnAt?: string;
+  readonly withdrawnBy?: string;
+}
+
+export interface CreateCommentInput {
+  readonly itemKey: string;
+  readonly actorKind: ActorKind;
+  readonly bodyKind: CommentBodyKind;
+  readonly body: CommentBody;
+  readonly attribution?: EventAttribution;
+  /** Required for agent writes, which are retried; a person pressing send is not. */
+  readonly idempotencyKey?: string;
+}
+
+export interface WithdrawCommentInput {
+  readonly itemKey: string;
+  readonly commentId: string;
+  readonly accountId?: string;
+}
+
 export interface WorkItemEventSnapshot extends EventAttribution {
   readonly id: string;
   readonly itemKey: string;

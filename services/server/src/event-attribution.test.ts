@@ -35,19 +35,19 @@ async function seed() {
 describe("work-item event attribution", () => {
   it("records which account and client an agent wrote through", async () => {
     const { store, item } = await seed();
-    store.appendAnalysis({
+    store.createComment({
       itemKey: item.key,
-      conclusion: "The crash is in the launch path.",
-      evidence: ["stack trace"],
-      risks: [],
+      actorKind: "agent",
+      bodyKind: "structured",
+      body: { conclusion: "The crash is in the launch path.", evidence: ["stack trace"], risks: [] },
       attribution: { accountId: "account-1", clientId: "client-9" },
       idempotencyKey: "analysis-1",
     });
 
-    const event = store.getTimeline(item.key).find((entry) => entry.eventType === "analysis_appended");
-    expect(event?.actorKind).toBe("agent");
-    expect(event?.accountId).toBe("account-1");
-    expect(event?.clientId).toBe("client-9");
+    const entry = store.getTimeline(item.key).find((event) => event.eventType === "comment_added");
+    expect(entry?.actorKind).toBe("agent");
+    expect(entry?.accountId).toBe("account-1");
+    expect(entry?.clientId).toBe("client-9");
   });
 
   it("leaves the attribution off events that carry none", async () => {

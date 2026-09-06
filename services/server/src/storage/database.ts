@@ -187,6 +187,48 @@ export class MissionGoDatabase {
           .run(13, new Date().toISOString());
       });
     }
+    // Analyses used to be events. They are comments: an agent writes one to be
+    // read and answered, and a wrong one has to be withdrawable. Move them across
+    // rather than leaving the timeline with two ways to say the same thing.
+    const commentMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 14")
+      .get() as unknown as { version: number } | undefined;
+    if (!commentMigration) {
+      this.transaction(() => {
+        // Two tables cannot be ordered against each other by an ISO timestamp:
+        // a comment and the status change it explains are usually written in the
+        // same millisecond, and the tie then resolves by whichever table the
+        // merge happened to read first. A per-item sequence settles it.
+        const eventColumns = this.connection
+          .prepare("PRAGMA table_info(work_item_events)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!eventColumns.some((column) => column.name === "timeline_seq")) {
+          this.connection.exec("ALTER TABLE work_item_events ADD COLUMN timeline_seq INTEGER NOT NULL DEFAULT 0;");
+        }
+        this.connection.exec(`
+          WITH ranked AS (
+            SELECT id, ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY created_at, rowid) AS seq
+            FROM work_item_events
+          )
+          UPDATE work_item_events
+          SET timeline_seq = (SELECT seq FROM ranked WHERE ranked.id = work_item_events.id)
+          WHERE timeline_seq = 0;
+        `);
+        this.connection.exec(`
+          INSERT INTO work_item_comments
+            (id, item_id, actor_kind, account_id, client_id, execution_id, body_kind, body_json,
+             timeline_seq, created_at)
+          SELECT id, item_id, actor_kind, account_id, client_id, execution_id, 'structured', payload_json,
+                 timeline_seq, created_at
+          FROM work_item_events
+          WHERE event_type = 'analysis_appended';
+        `);
+        this.connection.exec("DELETE FROM work_item_events WHERE event_type = 'analysis_appended';");
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(14, new Date().toISOString());
+      });
+    }
 
     // 13 and 14 belong to the comment work on feat/ai-write-comments; this one
     // takes 15 so the two branches do not both claim a number.

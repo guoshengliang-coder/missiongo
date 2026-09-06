@@ -383,12 +383,11 @@ export function createMissionGoMcpServer(
     },
     async ({ itemKey, conclusion, evidence, risks, agentName, idempotencyKey }, ctx) => {
       const access = accountAccess(ctx);
-      const event = store.appendAnalysis({
+      const comment = store.createComment({
         itemKey: requireItemAccess(ctx, store, itemKey),
-        conclusion,
-        evidence,
-        risks,
-        ...(agentName ? { agentName } : {}),
+        actorKind: "agent",
+        bodyKind: "structured",
+        body: { conclusion, evidence, risks, ...(agentName ? { agentName } : {}) },
         attribution: {
           accountId: access.accountId,
           ...(access.clientId ? { clientId: access.clientId } : {}),
@@ -396,8 +395,8 @@ export function createMissionGoMcpServer(
         idempotencyKey,
       });
       return textResult(
-        { event, statusChanged: false },
-        `Analysis appended to ${event.itemKey}. The work-item status was not changed.`,
+        { comment, statusChanged: false },
+        `Analysis appended to ${comment.itemKey}. The work-item status was not changed.`,
       );
     },
   );

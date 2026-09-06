@@ -26,9 +26,15 @@ import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { MissionGoDatabase } from "./storage/database.js";
 import {
   COMPONENT_KINDS,
-  type AppendAnalysisInput,
   type AttachmentRecord,
   type ClaimExecutionInput,
+  type CommentBody,
+  type CommentBodyKind,
+  type CreateCommentInput,
+  type FreeCommentBody,
+  type StructuredCommentBody,
+  type WithdrawCommentInput,
+  type WorkItemCommentSnapshot,
   type ComponentKind,
   type ComponentSnapshot,
   type CreateWorkItemInput,
@@ -102,7 +108,22 @@ interface EventRow {
   account_id: string | null;
   client_id: string | null;
   execution_id: string | null;
+  timeline_seq: number;
   created_at: string;
+}
+
+interface CommentRow {
+  id: string;
+  actor_kind: ActorKind;
+  account_id: string | null;
+  client_id: string | null;
+  execution_id: string | null;
+  body_kind: CommentBodyKind;
+  body_json: string;
+  timeline_seq: number;
+  created_at: string;
+  withdrawn_at: string | null;
+  withdrawn_by: string | null;
 }
 
 interface AttachmentRow {
@@ -1066,20 +1087,32 @@ export class MissionGoStore {
     return this.getWorkItem(input.itemKey);
   }
 
-  getTimeline(itemKey: string): readonly WorkItemEventSnapshot[] {
+  /**
+   * Events and comments in one ordered stream. They live in separate tables --
+   * an event is an immutable fact, a comment can be withdrawn -- but a reader
+   * wants the item's history in the order it happened, not two lists to merge.
+   *
+   * Withdrawn comments are omitted unless asked for. The web asks, so it can
+   * show them folded; MCP does not, so a retracted analysis stops being quoted
+   * back as evidence on the next read.
+   */
+  getTimeline(itemKey: string, options: { includeWithdrawn?: boolean } = {}): readonly WorkItemEventSnapshot[] {
     const item = this.getWorkItemRow(itemKey);
     if (!item) throw notFound("Work item");
     const rows = this.database.connection
       .prepare(
         `SELECT e.id, w.item_key, e.event_type, e.actor_kind, e.from_status, e.to_status, e.payload_json,
-                e.account_id, e.client_id, e.execution_id, e.created_at
+                e.account_id, e.client_id, e.execution_id, e.timeline_seq, e.created_at
          FROM work_item_events e
          JOIN work_items w ON w.id = e.item_id
          WHERE e.item_id = ?
-         ORDER BY e.created_at, e.rowid`,
+         ORDER BY e.timeline_seq`,
       )
       .all(item.id) as unknown as EventRow[];
-    return rows.map((row) => ({
+    const sequences = new Map<string, number>();
+    const events: WorkItemEventSnapshot[] = rows.map((row) => {
+      sequences.set(row.id, row.timeline_seq);
+      return {
       id: row.id,
       itemKey: row.item_key,
       eventType: row.event_type,
@@ -1089,59 +1122,183 @@ export class MissionGoStore {
       payload: JSON.parse(row.payload_json) as Readonly<Record<string, unknown>>,
       ...(row.account_id ? { accountId: row.account_id } : {}),
       ...(row.client_id ? { clientId: row.client_id } : {}),
-      ...(row.execution_id ? { executionId: row.execution_id } : {}),
-      createdAt: row.created_at,
-    }));
+        ...(row.execution_id ? { executionId: row.execution_id } : {}),
+        createdAt: row.created_at,
+      };
+    });
+
+    const comments = this
+      .readCommentRows(item.id, options.includeWithdrawn ?? false)
+      .map((row) => {
+        const entry = this.commentAsTimelineEntry(this.mapComment(row, item.item_key));
+        sequences.set(entry.id, row.timeline_seq);
+        return entry;
+      });
+
+    return [...events, ...comments].sort((left, right) => sequences.get(left.id)! - sequences.get(right.id)!);
   }
 
-  appendAnalysis(input: AppendAnalysisInput): WorkItemEventSnapshot {
-    const conclusion = requiredText(input.conclusion, "Conclusion");
-    if (conclusion.length > 20_000) throw invalidInput("Conclusion must be 20,000 characters or fewer.");
-    const evidence = this.validateAnalysisList(input.evidence, "Evidence");
-    const risks = this.validateAnalysisList(input.risks, "Risks");
-    const agentName = input.agentName?.trim();
-    if (agentName && agentName.length > 100) throw invalidInput("Agent name must be 100 characters or fewer.");
-    const idempotencyKey = requiredText(input.idempotencyKey, "Idempotency key");
-    if (idempotencyKey.length > 200) throw invalidInput("Idempotency key must be 200 characters or fewer.");
-    const operation = `append_analysis:${input.itemKey}`;
+  private commentAsTimelineEntry(comment: WorkItemCommentSnapshot): WorkItemEventSnapshot {
+    return {
+      id: comment.id,
+      itemKey: comment.itemKey,
+      eventType: "comment_added",
+      actorKind: comment.actorKind,
+      payload: {
+        bodyKind: comment.bodyKind,
+        body: comment.body,
+        ...(comment.withdrawnAt ? { withdrawnAt: comment.withdrawnAt } : {}),
+      },
+      ...(comment.accountId ? { accountId: comment.accountId } : {}),
+      ...(comment.clientId ? { clientId: comment.clientId } : {}),
+      ...(comment.executionId ? { executionId: comment.executionId } : {}),
+      createdAt: comment.createdAt,
+    };
+  }
+
+  createComment(input: CreateCommentInput): WorkItemCommentSnapshot {
+    const body = this.validateCommentBody(input.bodyKind, input.body);
+    const idempotencyKey = input.idempotencyKey ? this.validateIdempotencyKey(input.idempotencyKey) : undefined;
+    const operation = `create_comment:${input.itemKey.toUpperCase()}`;
 
     return this.database.transaction(() => {
-      const existing = this.database.connection
-        .prepare("SELECT operation, result_json FROM idempotency_keys WHERE key = ?")
-        .get(idempotencyKey) as unknown as { operation: string; result_json: string } | undefined;
-      if (existing) {
-        if (existing.operation !== operation) {
-          throw conflict("idempotency_conflict", "This idempotency key was already used for another operation.");
-        }
-        return JSON.parse(existing.result_json) as WorkItemEventSnapshot;
+      if (idempotencyKey) {
+        const repeated = this.getIdempotentResult<WorkItemCommentSnapshot>(idempotencyKey, operation);
+        if (repeated) return repeated;
       }
 
       const item = this.getWorkItemRow(input.itemKey);
       if (!item) throw notFound("Work item");
       const now = new Date().toISOString();
-      const payload = {
-        conclusion,
-        evidence,
-        risks,
-        ...(agentName ? { agentName } : {}),
-      };
-      const eventId = this.insertEvent(item.id, "analysis_appended", "agent", null, null, payload, now, input.attribution);
+      const id = randomUUID();
+      const attribution = input.attribution ?? {};
+      this.database.connection
+        .prepare(
+          `INSERT INTO work_item_comments
+             (id, item_id, actor_kind, account_id, client_id, execution_id, body_kind, body_json,
+              timeline_seq, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          item.id,
+          input.actorKind,
+          attribution.accountId ?? null,
+          attribution.clientId ?? null,
+          attribution.executionId ?? null,
+          input.bodyKind,
+          JSON.stringify(body),
+          this.nextTimelineSequence(item.id),
+          now,
+        );
       this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
-      const result: WorkItemEventSnapshot = {
-        id: eventId,
+      const result: WorkItemCommentSnapshot = {
+        id,
         itemKey: item.item_key,
-        eventType: "analysis_appended",
-        actorKind: "agent",
-        payload,
-        ...(input.attribution?.accountId ? { accountId: input.attribution.accountId } : {}),
-        ...(input.attribution?.clientId ? { clientId: input.attribution.clientId } : {}),
+        actorKind: input.actorKind,
+        bodyKind: input.bodyKind,
+        body,
+        ...(attribution.accountId ? { accountId: attribution.accountId } : {}),
+        ...(attribution.clientId ? { clientId: attribution.clientId } : {}),
+        ...(attribution.executionId ? { executionId: attribution.executionId } : {}),
         createdAt: now,
       };
-      this.database.connection
-        .prepare("INSERT INTO idempotency_keys (key, operation, result_json, created_at) VALUES (?, ?, ?, ?)")
-        .run(idempotencyKey, operation, JSON.stringify(result), now);
+      if (idempotencyKey) this.saveIdempotentResult(idempotencyKey, operation, result, now);
       return result;
     });
+  }
+
+  listComments(itemKey: string, options: { includeWithdrawn?: boolean } = {}): readonly WorkItemCommentSnapshot[] {
+    const item = this.getWorkItemRow(itemKey);
+    if (!item) throw notFound("Work item");
+    return this.readComments(item.id, item.item_key, options.includeWithdrawn ?? false);
+  }
+
+  /**
+   * Withdrawing is deliberately one-sided: a person can take down any comment,
+   * an agent cannot take down its own. Deleting is the only irreversible action
+   * here, and an agent that can erase what it said can erase the record of
+   * having said it.
+   */
+  withdrawComment(input: WithdrawCommentInput): WorkItemCommentSnapshot {
+    return this.database.transaction(() => {
+      const item = this.getWorkItemRow(input.itemKey);
+      if (!item) throw notFound("Work item");
+      const row = this.database.connection
+        .prepare("SELECT id, withdrawn_at FROM work_item_comments WHERE id = ? AND item_id = ?")
+        .get(input.commentId, item.id) as unknown as { id: string; withdrawn_at: string | null } | undefined;
+      if (!row) throw notFound("Comment");
+      if (row.withdrawn_at) throw conflict("comment_already_withdrawn", "This comment was already withdrawn.");
+
+      const now = new Date().toISOString();
+      this.database.connection
+        .prepare("UPDATE work_item_comments SET withdrawn_at = ?, withdrawn_by = ? WHERE id = ?")
+        .run(now, input.accountId ?? null, input.commentId);
+      this.insertEvent(
+        item.id,
+        "comment_withdrawn",
+        "human",
+        null,
+        null,
+        { commentId: input.commentId },
+        now,
+        input.accountId ? { accountId: input.accountId } : {},
+      );
+      this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
+      return this.readComments(item.id, item.item_key, true).find((comment) => comment.id === input.commentId)!;
+    });
+  }
+
+  private readComments(itemId: string, itemKey: string, includeWithdrawn: boolean): readonly WorkItemCommentSnapshot[] {
+    return this.readCommentRows(itemId, includeWithdrawn).map((row) => this.mapComment(row, itemKey));
+  }
+
+  private readCommentRows(itemId: string, includeWithdrawn: boolean): readonly CommentRow[] {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT id, actor_kind, account_id, client_id, execution_id, body_kind, body_json,
+                timeline_seq, created_at, withdrawn_at, withdrawn_by
+         FROM work_item_comments
+         WHERE item_id = ?${includeWithdrawn ? "" : " AND withdrawn_at IS NULL"}
+         ORDER BY timeline_seq`,
+      )
+      .all(itemId) as unknown as CommentRow[];
+    return rows;
+  }
+
+  private mapComment(row: CommentRow, itemKey: string): WorkItemCommentSnapshot {
+    return {
+      id: row.id,
+      itemKey,
+      actorKind: row.actor_kind,
+      bodyKind: row.body_kind,
+      body: JSON.parse(row.body_json) as CommentBody,
+      ...(row.account_id ? { accountId: row.account_id } : {}),
+      ...(row.client_id ? { clientId: row.client_id } : {}),
+      ...(row.execution_id ? { executionId: row.execution_id } : {}),
+      createdAt: row.created_at,
+      ...(row.withdrawn_at ? { withdrawnAt: row.withdrawn_at } : {}),
+      ...(row.withdrawn_by ? { withdrawnBy: row.withdrawn_by } : {}),
+    };
+  }
+
+  private validateCommentBody(bodyKind: CommentBodyKind, body: CommentBody): CommentBody {
+    if (bodyKind === "free") {
+      const text = requiredText((body as FreeCommentBody).text, "Comment text");
+      if (text.length > 20_000) throw invalidInput("A comment must be 20,000 characters or fewer.");
+      return { text };
+    }
+    const structured = body as StructuredCommentBody;
+    const conclusion = requiredText(structured.conclusion, "Conclusion");
+    if (conclusion.length > 20_000) throw invalidInput("Conclusion must be 20,000 characters or fewer.");
+    const agentName = structured.agentName?.trim();
+    if (agentName && agentName.length > 100) throw invalidInput("Agent name must be 100 characters or fewer.");
+    return {
+      conclusion,
+      evidence: this.validateAnalysisList(structured.evidence ?? [], "Evidence"),
+      risks: this.validateAnalysisList(structured.risks ?? [], "Risks"),
+      ...(agentName ? { agentName } : {}),
+    };
   }
 
   claimExecution(input: ClaimExecutionInput): ExecutionSnapshot {
@@ -1755,6 +1912,24 @@ export class MissionGoStore {
     };
   }
 
+  /**
+   * The next position in one item's timeline, counted across both tables.
+   * Callers are already inside a transaction, so the read and the insert that
+   * follows it cannot interleave with another writer.
+   */
+  private nextTimelineSequence(itemId: string): number {
+    const row = this.database.connection
+      .prepare(
+        `SELECT MAX(seq) AS seq FROM (
+           SELECT timeline_seq AS seq FROM work_item_events WHERE item_id = ?
+           UNION ALL
+           SELECT timeline_seq AS seq FROM work_item_comments WHERE item_id = ?
+         )`,
+      )
+      .get(itemId, itemId) as unknown as { seq: number | null };
+    return (row.seq ?? 0) + 1;
+  }
+
   private insertEvent(
     itemId: string,
     eventType: string,
@@ -1770,8 +1945,8 @@ export class MissionGoStore {
       .prepare(
         `INSERT INTO work_item_events
            (id, item_id, event_type, actor_kind, from_status, to_status, payload_json,
-            account_id, client_id, execution_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            account_id, client_id, execution_id, timeline_seq, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -1784,6 +1959,7 @@ export class MissionGoStore {
         attribution.accountId ?? null,
         attribution.clientId ?? null,
         attribution.executionId ?? null,
+        this.nextTimelineSequence(itemId),
         createdAt,
       );
     return id;
