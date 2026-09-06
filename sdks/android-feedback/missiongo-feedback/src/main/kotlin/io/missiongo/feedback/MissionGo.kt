@@ -56,6 +56,11 @@ public object MissionGo {
     @Volatile
     private var runtime: SdkRuntime? = null
 
+    // Deliberately outside SdkRuntime: changing it must not cost the host its accumulated
+    // context. See setEditorAppearance.
+    @Volatile
+    private var appearanceOverride: MissionGoAppearance? = null
+
     /** True once [initialize] has succeeded. Hosts use it to decide whether to offer a feedback entry. */
     @JvmStatic
     public val isInitialized: Boolean
@@ -82,8 +87,26 @@ public object MissionGo {
         }
     }
 
+    /**
+     * Changes which light/dark appearance the editor opens with, after [initialize].
+     *
+     * A host whose theme is a setting the user can change at any time needs this: re-running
+     * [initialize] with a different appearance would build a fresh runtime, and with it a fresh
+     * context store, so the screen, business context, breadcrumbs and logs gathered so far would
+     * be gone — wiped moments before the user reports the very problem they describe. The
+     * appearance is read only when the editor opens, so it never had to be part of the immutable
+     * options in the first place.
+     *
+     * Safe to call before [initialize]; once called it takes precedence over
+     * [MissionGoOptions.editorAppearance] for the rest of the process.
+     */
+    @JvmStatic
+    public fun setEditorAppearance(appearance: MissionGoAppearance) {
+        appearanceOverride = appearance
+    }
+
     internal fun editorAppearance(): MissionGoAppearance =
-        runtime?.options?.editorAppearance ?: MissionGoAppearance.FollowSystem
+        appearanceOverride ?: runtime?.options?.editorAppearance ?: MissionGoAppearance.FollowSystem
 
     @JvmStatic
     public fun setCurrentScreen(name: String?) {

@@ -7,7 +7,7 @@ self-contained contract, published for host developers and coding agents at
 `<origin>/downloads/missiongo-android-sdk/INTEGRATION.md`. Everything below is for people
 working on the SDK itself.
 
-The current `0.2.2` release includes:
+The current `0.2.3` release includes:
 
 - Android application, version, OS, device, locale, time-zone, ABI, and display-density collection;
 - host-provided screen, context, log, breadcrumb, and exception data;

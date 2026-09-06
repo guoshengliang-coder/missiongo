@@ -70,3 +70,28 @@ class UninitializedMissionGoTest {
         assertFalse(missionGoFailure.retryable)
     }
 }
+
+/**
+ * The appearance is the one setting a host changes while the app runs, and the first version of
+ * it lived in the immutable options — so the documented way to change it was to initialize
+ * again, which builds a fresh context store and throws away the screen, context, breadcrumbs and
+ * logs gathered so far. These pin the setter that replaced that advice.
+ */
+class EditorAppearanceTest {
+    @Test
+    fun defaultsToFollowingTheSystem() {
+        MissionGo.setEditorAppearance(MissionGoAppearance.FollowSystem)
+        assertEquals(MissionGoAppearance.FollowSystem, MissionGo.editorAppearance())
+    }
+
+    @Test
+    fun canBeChangedWithoutInitializing() {
+        MissionGo.setEditorAppearance(MissionGoAppearance.Dark)
+        assertEquals(MissionGoAppearance.Dark, MissionGo.editorAppearance())
+
+        MissionGo.setEditorAppearance(MissionGoAppearance.Light)
+        assertEquals(MissionGoAppearance.Light, MissionGo.editorAppearance())
+
+        MissionGo.setEditorAppearance(MissionGoAppearance.FollowSystem)
+    }
+}

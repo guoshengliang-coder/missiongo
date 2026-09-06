@@ -4,7 +4,7 @@
 > 读完它就足以完成接入，不需要 MissionGo 的源码，也不需要读 MissionGo 的其他文档。
 >
 > 固定地址：`__MISSIONGO_PUBLIC_ORIGIN__/downloads/missiongo-android-sdk/INTEGRATION.md`
-> 对应 SDK 版本：**0.2.2**
+> 对应 SDK 版本：**0.2.3**
 
 ## 0. 这是什么
 
@@ -20,7 +20,7 @@
 | | 内容 | 从哪来 |
 |---|---|---|
 | 1 | Maven 仓库地址 `__MISSIONGO_PUBLIC_ORIGIN__/maven` | 本文档 |
-| 2 | 坐标 `io.missiongo:missiongo-feedback:0.2.2` | 本文档 |
+| 2 | 坐标 `io.missiongo:missiongo-feedback:0.2.3` | 本文档 |
 | 3 | 服务地址（endpoint）`__MISSIONGO_PUBLIC_ORIGIN__` | 本文档 |
 | 4 | SDK Token | **由人在 MissionGo 管理端创建后，直接写入本机私密文件** |
 
@@ -84,7 +84,7 @@ dependencyResolutionManagement {
 ```kotlin
 // gradle/libs.versions.toml
 [versions]
-missiongoFeedback = "0.2.2"
+missiongoFeedback = "0.2.3"
 
 [libraries]
 missiongo-feedback = { module = "io.missiongo:missiongo-feedback", version.ref = "missiongoFeedback" }
@@ -183,8 +183,24 @@ editorAppearance = when (hostTheme) {
 }
 ```
 
-这个值同时决定编辑器 Activity 的窗口主题和 H5 页面的明暗，两者一致。它在
-`initialize()` 时固定；宿主主题变更后需要用新值再调一次 `initialize()`。
+这个值同时决定编辑器 Activity 的窗口主题和 H5 页面的明暗，两者一致。
+
+**主题是用户随时能改的设置时，用 setter，不要重新 `initialize()`：**
+
+```kotlin
+MissionGo.setEditorAppearance(MissionGoAppearance.Dark)
+```
+
+> ⚠️ **不要为了换主题重新调用 `initialize()`。** 传入不同的 options 会重建整个运行时，
+> 连同内存里的现场一起：当前页面、各命名空间的上下文、面包屑和日志缓冲全部清空。用户往往
+> 是「遇到问题 → 顺手改了个设置 → 去报 bug」，那样恰好会在提交前把要报的现场擦掉。草稿和
+> 后台队列是落盘的，不受影响。
+>
+> 同理，任何需要重新 `initialize()` 的场景（例如轮换 Token）都会清空内存现场，宿主要挑
+> 合适的时机。
+
+`setEditorAppearance` 在 `initialize()` 之前调用也安全；一旦调用过，它就一直优先于
+options 里的初始值。
 
 生产构建只接受 HTTPS。本机开发若必须连 HTTP，需显式设置 `allowInsecureHttp = true`，不得在
 生产构建中开启。重复用相同 options 调用 `initialize` 是安全的。
