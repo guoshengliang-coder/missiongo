@@ -79,6 +79,7 @@ import {
   type WorkItemStatus,
   type WorkItemType,
 } from "./types";
+import { androidFeedbackBridge, androidMediaDeletion } from "./android-bridge";
 import { environmentSummary, platformName } from "./environment-summary";
 import { useI18n } from "./i18n";
 import { groupTimeline } from "./timeline";
@@ -986,16 +987,6 @@ function ItemRow({
     </article>
   );
 }
-/**
- * The Android shell exposes its native feedback flow here. Only that shell has
- * it, so the sidebar entry appears there and nowhere else; the SDK is what
- * collects the version, device and recent logs a browser cannot see.
- */
-function androidFeedbackBridge(): { openFeedback: () => void } | undefined {
-  const bridge = (window as { MissionGoAndroid?: { openFeedback?: () => void } }).MissionGoAndroid;
-  return typeof bridge?.openFeedback === "function" ? (bridge as { openFeedback: () => void }) : undefined;
-}
-
 /**
  * Products are told apart at a glance. An uploaded icon wins; otherwise the item
  * prefix -- the same AND / HG that labels every key in the list -- sits on a
@@ -2168,6 +2159,8 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
   const [filesReady, setFilesReady] = useState(false);
   const [filePersistenceWarning, setFilePersistenceWarning] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [clearGalleryCopies, setClearGalleryCopies] = useState(false);
+  const [mediaDeletion] = useState(androidMediaDeletion);
 
   useEffect(() => {
     if (hasCaptureDraftContent(draft)) localStorage.setItem(storageKey, JSON.stringify(draft));
@@ -2225,6 +2218,9 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
         ...(environment ? { environment } : {}),
       });
       const failedUploads = await uploadAttachmentsSequentially(item.key, filesWithDiagnosticLog(files, draft.diagnosticLog));
+      // Only once the item exists and the uploads are done -- the copies on the
+      // phone are the only remaining ones until then.
+      if (clearGalleryCopies && failedUploads === 0) mediaDeletion?.deletePickedMedia();
       return { item, failedUploads };
     },
     onSuccess: ({ item, failedUploads }) => {
@@ -2272,6 +2268,12 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
       />
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
       {filePersistenceWarning && <InlineError message={filePersistenceWarning} />}
+      {mediaDeletion && files.some((file) => !isDiagnosticFile(file) && !isDocumentFile(file)) && (
+        <label className="clear-gallery-option">
+          <input type="checkbox" checked={clearGalleryCopies} onChange={(event) => setClearGalleryCopies(event.target.checked)} />
+          <span><strong>{t("clearGalleryCopies")}</strong><small>{t("clearGalleryCopiesHelp")}</small></span>
+        </label>
+      )}
       <div className="form-footer">
         <button
           type="button"

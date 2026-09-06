@@ -1,6 +1,5 @@
 package io.missiongo.android
 
-import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Bitmap
@@ -26,39 +25,28 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import io.missiongo.feedback.FeedbackOptions
 import io.missiongo.feedback.FeedbackPriority
 import io.missiongo.feedback.FeedbackResult
 import io.missiongo.feedback.FeedbackType
 import io.missiongo.feedback.MissionGo
+import io.missiongo.feedback.WebViewFilePicker
 import android.widget.Toast
 
 class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var loadingView: LinearLayout
     private lateinit var errorView: LinearLayout
-    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
-    private val fileChooserLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val uris = if (result.resultCode == RESULT_OK) {
-            result.data?.clipData?.let { clips ->
-                Array(clips.itemCount) { clips.getItemAt(it).uri }
-            } ?: result.data?.data?.let { arrayOf(it) }
-        } else {
-            null
-        }
-        completeFileSelection(uris)
-    }
-    private val singleMediaPicker = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        completeFileSelection(uri?.let { arrayOf(it) })
-    }
-    private val multipleMediaPicker = registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris ->
-        completeFileSelection(uris.takeIf { it.isNotEmpty() }?.toTypedArray())
-    }
+    // Registered in onCreate: activity results have to be registered before the
+    // activity is started, and the labels need a context that only exists then.
+    private lateinit var filePicker: WebViewFilePicker
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Debug builds only: lets the WebView be inspected over adb while working
+        // on the page it hosts. A release build is not debuggable, so this is off.
+        if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
+        filePicker = WebViewFilePicker(this, getString(R.string.choose_gallery), getString(R.string.choose_files))
         setContentView(buildContent())
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -110,9 +98,7 @@ class MainActivity : ComponentActivity() {
                     filePathCallback: ValueCallback<Array<Uri>>,
                     fileChooserParams: FileChooserParams,
                 ): Boolean {
-                    fileChooserCallback?.onReceiveValue(null)
-                    fileChooserCallback = filePathCallback
-                    return launchFileChooser(fileChooserParams)
+                    return filePicker.onShowFileChooser(filePathCallback, fileChooserParams)
                 }
             }
         }
@@ -170,81 +156,35 @@ class MainActivity : ComponentActivity() {
         @JavascriptInterface
         fun openFeedback() {
             runOnUiThread {
-                val home = Uri.parse(BuildConfig.MISSIONGO_ENDPOINT)
-                val current = webView.url?.let(Uri::parse)
-                if (current?.scheme == "https" && current.host == home.host) {
-                    openSdkFeedback()
-                } else {
-                    Log.w(TAG, "Ignored a feedback request from ${current?.host}")
+                if (isMissionGoPage()) openSdkFeedback()
+                else Log.w(TAG, "Ignored a feedback request from ${webView.url}")
+            }
+        }
+
+        /** Whether the page may offer to clear the gallery copies after uploading. */
+        @JavascriptInterface
+        fun supportsMediaDeletion(): Boolean = filePicker.supportsMediaDeletion()
+
+        @JavascriptInterface
+        fun deletePickedMedia() {
+            runOnUiThread {
+                if (!isMissionGoPage()) {
+                    Log.w(TAG, "Ignored a delete request from ${webView.url}")
+                    return@runOnUiThread
+                }
+                filePicker.deletePickedMedia { deleted ->
+                    if (deleted) {
+                        Toast.makeText(this@MainActivity, getString(R.string.media_deleted), Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         }
     }
 
-    private fun launchFileChooser(params: WebChromeClient.FileChooserParams): Boolean {
-        val acceptedTypes = params.acceptTypes
-            .flatMap { it.split(',') }
-            .map(String::trim)
-            .filter(String::isNotBlank)
-        val acceptsImages = acceptedTypes.any { it.startsWith("image/") }
-        val acceptsVideos = acceptedTypes.any { it.startsWith("video/") }
-        val acceptsOnlyMedia = acceptedTypes.isNotEmpty() && acceptedTypes.all {
-            it.startsWith("image/") || it.startsWith("video/")
-        }
-
-        return try {
-            if (acceptsOnlyMedia) {
-                launchMediaPicker(acceptsImages, acceptsVideos, params.mode)
-            } else if (acceptsImages || acceptsVideos) {
-                AlertDialog.Builder(this)
-                    .setItems(arrayOf(getString(R.string.choose_gallery), getString(R.string.choose_files))) { _, choice ->
-                        runCatching {
-                            if (choice == 0) {
-                                launchMediaPicker(acceptsImages, acceptsVideos, params.mode)
-                            } else {
-                                launchDocumentPicker(acceptedTypes, params.mode)
-                            }
-                        }.onFailure { completeFileSelection(null) }
-                    }
-                    .setOnCancelListener { completeFileSelection(null) }
-                    .show()
-            } else {
-                launchDocumentPicker(acceptedTypes, params.mode)
-            }
-            true
-        } catch (_: ActivityNotFoundException) {
-            completeFileSelection(null)
-            false
-        }
-    }
-
-    private fun launchMediaPicker(acceptsImages: Boolean, acceptsVideos: Boolean, mode: Int) {
-        val mediaType = when {
-            acceptsImages && acceptsVideos -> ActivityResultContracts.PickVisualMedia.ImageAndVideo
-            acceptsVideos -> ActivityResultContracts.PickVisualMedia.VideoOnly
-            else -> ActivityResultContracts.PickVisualMedia.ImageOnly
-        }
-        val request = PickVisualMediaRequest(mediaType)
-        if (mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
-            multipleMediaPicker.launch(request)
-        } else {
-            singleMediaPicker.launch(request)
-        }
-    }
-
-    private fun launchDocumentPicker(acceptedTypes: List<String>, mode: Int) {
-        val mimeTypes = acceptedTypes.filter { '/' in it && !it.startsWith("image/") && !it.startsWith("video/") }
-        fileChooserLauncher.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = mimeTypes.firstOrNull() ?: "*/*"
-            if (mimeTypes.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes.toTypedArray())
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE)
-        })
-    }
-
-    private fun completeFileSelection(uris: Array<Uri>?) {
-        fileChooserCallback?.onReceiveValue(uris)
-        fileChooserCallback = null
+    private fun isMissionGoPage(): Boolean {
+        val home = Uri.parse(BuildConfig.MISSIONGO_ENDPOINT)
+        val current = webView.url?.let(Uri::parse) ?: return false
+        return current.scheme == "https" && current.host == home.host
     }
 
     private fun openSdkFeedback() {
@@ -353,8 +293,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        fileChooserCallback?.onReceiveValue(null)
-        fileChooserCallback = null
+        if (::filePicker.isInitialized) filePicker.dispose()
         webView.apply {
             stopLoading()
             webChromeClient = null

@@ -1,16 +1,15 @@
 package io.missiongo.feedback
 
 import android.annotation.SuppressLint
-import android.app.AlertDialog
-import android.content.ActivityNotFoundException
-import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -23,10 +22,9 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,27 +35,13 @@ import kotlinx.coroutines.launch
 public class MissionGoFeedbackActivity : ComponentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var webView: WebView? = null
+    /** The origin the editor was opened on; the bridge only answers pages from it. */
+    private var editorOrigin: Uri? = null
     private var launchId: String? = null
     private var completed = false
     private var lastFailure: MissionGoException? = null
     private var loadingOverlay: View? = null
-    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
-    private val fileChooserLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val uris = if (result.resultCode == RESULT_OK) {
-            result.data?.clipData?.let { clips ->
-                Array(clips.itemCount) { clips.getItemAt(it).uri }
-            } ?: result.data?.data?.let { arrayOf(it) }
-        } else {
-            null
-        }
-        completeFileSelection(uris)
-    }
-    private val singleMediaPicker = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        completeFileSelection(uri?.let { arrayOf(it) })
-    }
-    private val multipleMediaPicker = registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris ->
-        completeFileSelection(uris.takeIf { it.isNotEmpty() }?.toTypedArray())
-    }
+    private val filePicker = WebViewFilePicker(this, "从图库选择图片或视频", "选择日志或其他文件")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -102,6 +86,7 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun showEditor(session: io.missiongo.feedback.internal.FeedbackEditorSession) {
         val origin = Uri.parse(session.endpoint)
+        editorOrigin = origin
         val sessionToken = requireNotNull(session.token)
         val editor = WebView(this).apply {
             setBackgroundColor(Color.WHITE)
@@ -111,15 +96,16 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
             settings.allowContentAccess = true
             settings.setSupportMultipleWindows(false)
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            // The form is a page on the configured endpoint, and this is how it
+            // offers to clear the gallery copies of what it just uploaded.
+            addJavascriptInterface(MediaBridge(), "MissionGoAndroid")
             webChromeClient = object : WebChromeClient() {
                 override fun onShowFileChooser(
                     webView: WebView,
                     filePathCallback: ValueCallback<Array<Uri>>,
                     fileChooserParams: FileChooserParams,
                 ): Boolean {
-                    fileChooserCallback?.onReceiveValue(null)
-                    fileChooserCallback = filePathCallback
-                    return launchFileChooser(fileChooserParams)
+                    return filePicker.onShowFileChooser(filePathCallback, fileChooserParams)
                 }
             }
             webViewClient = object : WebViewClient() {
@@ -270,72 +256,6 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
         finish()
     }
 
-    private fun launchFileChooser(params: WebChromeClient.FileChooserParams): Boolean {
-        val acceptedTypes = params.acceptTypes
-            .flatMap { it.split(',') }
-            .map(String::trim)
-            .filter(String::isNotBlank)
-        val acceptsImages = acceptedTypes.any { it.startsWith("image/") }
-        val acceptsVideos = acceptedTypes.any { it.startsWith("video/") }
-        val acceptsOnlyMedia = acceptedTypes.isNotEmpty() && acceptedTypes.all {
-            it.startsWith("image/") || it.startsWith("video/")
-        }
-
-        return try {
-            if (acceptsOnlyMedia) {
-                launchMediaPicker(acceptsImages, acceptsVideos, params.mode)
-            } else if (acceptsImages || acceptsVideos) {
-                AlertDialog.Builder(this)
-                    .setItems(arrayOf("从图库选择图片或视频", "选择日志或其他文件")) { _, choice ->
-                        runCatching {
-                            if (choice == 0) {
-                                launchMediaPicker(acceptsImages, acceptsVideos, params.mode)
-                            } else {
-                                launchDocumentPicker(acceptedTypes, params.mode)
-                            }
-                        }.onFailure { completeFileSelection(null) }
-                    }
-                    .setOnCancelListener { completeFileSelection(null) }
-                    .show()
-            } else {
-                launchDocumentPicker(acceptedTypes, params.mode)
-            }
-            true
-        } catch (_: ActivityNotFoundException) {
-            completeFileSelection(null)
-            false
-        }
-    }
-
-    private fun launchMediaPicker(acceptsImages: Boolean, acceptsVideos: Boolean, mode: Int) {
-        val mediaType = when {
-            acceptsImages && acceptsVideos -> ActivityResultContracts.PickVisualMedia.ImageAndVideo
-            acceptsVideos -> ActivityResultContracts.PickVisualMedia.VideoOnly
-            else -> ActivityResultContracts.PickVisualMedia.ImageOnly
-        }
-        val request = PickVisualMediaRequest(mediaType)
-        if (mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
-            multipleMediaPicker.launch(request)
-        } else {
-            singleMediaPicker.launch(request)
-        }
-    }
-
-    private fun launchDocumentPicker(acceptedTypes: List<String>, mode: Int) {
-        val mimeTypes = acceptedTypes.filter { '/' in it && !it.startsWith("image/") && !it.startsWith("video/") }
-        fileChooserLauncher.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = mimeTypes.firstOrNull() ?: "*/*"
-            if (mimeTypes.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes.toTypedArray())
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE)
-        })
-    }
-
-    private fun completeFileSelection(uris: Array<Uri>?) {
-        fileChooserCallback?.onReceiveValue(uris)
-        fileChooserCallback = null
-    }
-
     private fun destroyWebView() {
         loadingOverlay = null
         webView?.apply {
@@ -348,10 +268,43 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
         webView = null
     }
 
+    /**
+     * Exposed to the form as `MissionGoAndroid`. addJavascriptInterface hands
+     * this to every document the WebView loads, so both calls check that the
+     * page asking is the endpoint the SDK was configured with.
+     */
+    private inner class MediaBridge {
+        @JavascriptInterface
+        fun supportsMediaDeletion(): Boolean = filePicker.supportsMediaDeletion()
+
+        @JavascriptInterface
+        fun deletePickedMedia() {
+            runOnUiThread {
+                if (!isConfiguredPage()) {
+                    Log.w(LOG_TAG, "Ignored a delete request from ${webView?.url}")
+                    return@runOnUiThread
+                }
+                filePicker.deletePickedMedia { deleted ->
+                    if (deleted) Toast.makeText(this@MissionGoFeedbackActivity, "已从手机删除上传的截图", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun isConfiguredPage(): Boolean {
+        val endpoint = editorOrigin ?: return false
+        val current = webView?.url?.let(Uri::parse) ?: return false
+        return current.scheme == endpoint.scheme && current.host == endpoint.host && current.port == endpoint.port
+    }
+
     override fun onDestroy() {
         scope.cancel()
-        completeFileSelection(null)
+        filePicker.dispose()
         destroyWebView()
         super.onDestroy()
+    }
+
+    private companion object {
+        const val LOG_TAG = "MissionGoFeedback"
     }
 }

@@ -1,5 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Only so the app can offer to clear the screenshots it just uploaded. It
+         asks at the moment the offer is accepted, never on launch. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
 
     <application
         android:name="io.missiongo.android.MissionGoApplication"

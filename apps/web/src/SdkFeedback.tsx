@@ -2,6 +2,7 @@ import { type ChangeEvent, type FormEvent, useEffect, useState } from "react";
 import { Bug, Check, ChevronRight, FileText, Highlighter, Image as ImageIcon, Lightbulb, ListTodo, LoaderCircle, Paperclip, StickyNote } from "lucide-react";
 
 import "./sdk-feedback.css";
+import { androidMediaDeletion } from "./android-bridge";
 import { loadSdkAttachments, replaceSdkAttachments, type StoredSdkAttachment } from "./sdk-attachment-store";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { isAnnotatableImage } from "./image-annotation";
@@ -111,6 +112,8 @@ export function SdkFeedbackPage() {
   const [failedFiles, setFailedFiles] = useState<readonly StoredSdkAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [annotatingId, setAnnotatingId] = useState<string | null>(null);
+  const [clearGalleryCopies, setClearGalleryCopies] = useState(false);
+  const [mediaDeletion] = useState(androidMediaDeletion);
 
   useEffect(() => {
     if (completedItemKey) return;
@@ -155,6 +158,8 @@ export function SdkFeedbackPage() {
       await replaceSdkAttachments(draft.id, failed).catch(() => undefined);
       setFailedFiles(failed);
       setAttachmentError(failed.length > 0 ? t("sdkUploadsFailed", { count: failed.length }) : "");
+      // Only once every upload landed: until then the phone holds the only copy.
+      if (clearGalleryCopies && failed.length === 0) mediaDeletion?.deletePickedMedia();
       setItemKey(submitted.itemKey);
       if (failed.length === 0) {
         window.location.replace(`/sdk/feedback/complete?item=${encodeURIComponent(submitted.itemKey)}&destination=${target}`);
@@ -267,6 +272,12 @@ export function SdkFeedbackPage() {
               <summary><ChevronRight size={16} /><span><strong>{t("sdkAutoIncluded")}</strong><small>{t("sdkAutoIncludedHelp")}</small></span></summary>
               <div className="capture-optional-body"><dl className="sdk-feedback-context">{contextEntries.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl></div>
             </details>
+            {mediaDeletion && files.some(({ file }) => !isDiagnosticFile(file)) && (
+              <label className="clear-gallery-option">
+                <input type="checkbox" checked={clearGalleryCopies} onChange={(event) => setClearGalleryCopies(event.target.checked)} />
+                <span><strong>{t("clearGalleryCopies")}</strong><small>{t("clearGalleryCopiesHelp")}</small></span>
+              </label>
+            )}
             <p className="privacy-note">{t("sdkPrivacyNote")}</p>
             <div className="form-footer sdk-feedback-actions">
               <button className="secondary-button" type="submit" disabled={submitting || !title.trim()}>{submitting && destination === "inbox" ? <LoaderCircle className="spin" size={17} /> : <FileText size={17} />}{t(submitting && destination === "inbox" ? "sdkSaving" : "sdkSaveDraft")}</button>
