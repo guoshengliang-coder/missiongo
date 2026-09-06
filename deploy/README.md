@@ -70,15 +70,23 @@ use the origin, with `--verify-host` to supply the hostname.
 The host proxy serves `/downloads/missiongo-android-latest.apk` from its own
 directory rather than from the release snapshot, so that path outlives any one
 release. The script publishes into it: it copies the APK to
-`MissionGo-Android-<release>.apk`, compares the sha256 of the published file
-against the local build, and only then repoints `missiongo-android-latest.apk`
-by creating a temporary link and renaming it over the live one, so a download in
-flight never finds the link missing. A digest that does not match removes the
-copy, leaves the link on the previous build, and fails the deploy.
+`MissionGo-Android-<versionName>-<versionCode>.apk`, compares the sha256 of the
+published file against the local build, and only then repoints
+`missiongo-android-latest.apk` by creating a temporary link and renaming it over
+the live one, so a download in flight never finds the link missing. A digest
+that does not match removes the copy, leaves the link on the previous build, and
+fails the deploy.
 
-Naming each published APK after the release that shipped it says which deploy a
-downloaded file came from, and makes the names sort by age, so `--keep` prunes
-them exactly as it prunes release directories. The live APK is never removed.
+Published names carry the version, so `--keep` prunes them with a version-aware
+sort — `0.1.10` ranks above `0.1.9` rather than below it — and the live APK is
+never removed.
+
+The download itself has a fixed name, so nothing in the file says which version
+it holds. `npm run publish:android-internal` records that beside it in
+`missiongo-android-latest.release`, and the deploy reads it. Publishing refuses
+to guess: an APK with no metadata, or metadata whose sha256 no longer matches
+the APK because something rebuilt it directly, stops the deploy **before**
+anything is pushed, with `npm run publish:android-internal` as the fix.
 
 `--downloads-dir` names that directory, defaulting to `/srv/missiongo/releases`.
 Pass `--no-publish-apk` for a deployment that serves the download from the image

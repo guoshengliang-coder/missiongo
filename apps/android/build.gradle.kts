@@ -9,7 +9,10 @@ val missionGoSdkToken = providers.gradleProperty("missiongoAndroidSdkToken")
     .orElse(providers.environmentVariable("MISSIONGO_ANDROID_SDK_TOKEN"))
     .orElse("mg_sdk_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 val missionGoVersionCode = providers.gradleProperty("missiongoAndroidVersionCode").orElse("1")
-val missionGoVersionName = providers.gradleProperty("missiongoAndroidVersionName").orElse("0.1.0")
+// No fallback on purpose: the version name is declared once, in
+// sdks/android-feedback/gradle.properties. A literal default here would stamp a
+// different version on any build that forgot to pass the property.
+val missionGoVersionName = providers.gradleProperty("missiongoAndroidVersionName")
 
 fun buildConfigString(value: String): String =
     "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""

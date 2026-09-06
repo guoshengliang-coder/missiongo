@@ -27,3 +27,6 @@ data
 *.p12
 *.mobileprovision
 local.properties
+
+# Build metadata for the deploy script. It must never reach /downloads/.
+apps/web/public/downloads/*.release

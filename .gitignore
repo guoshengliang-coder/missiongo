@@ -29,3 +29,6 @@ local.properties
 
 # Locally published internal APK. It may contain environment-specific configuration.
 apps/web/public/downloads/*.apk
+
+# Metadata recorded beside the APK by scripts/publish-android-internal.sh.
+apps/web/public/downloads/*.release

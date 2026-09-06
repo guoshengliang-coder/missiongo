@@ -104,6 +104,7 @@ cd "$(dirname "$0")/.."
 command -v rsync >/dev/null || { echo "rsync is required." >&2; exit 1; }
 
 local_apk="apps/web/public/downloads/missiongo-android-latest.apk"
+local_apk_meta="apps/web/public/downloads/missiongo-android-latest.release"
 apk_link="${downloads_dir}/missiongo-android-latest.apk"
 
 # macOS ships shasum without sha256sum; a minimal Linux host ships the reverse.
@@ -117,6 +118,55 @@ sha256_of() {
 # shellcheck disable=SC2029
 remote() { ssh "$host" "$@"; }
 
+# Settle the APK before anything is pushed. It is all local, and a stale build
+# is better caught now than after a release directory exists on the server.
+#
+# The APK is git-ignored, so a fresh clone cannot supply it, and rsync sends
+# whatever this checkout has. A missing one is not an error: the previous build
+# stays downloadable, and only this deploy declines to touch it.
+if [ ! -s "$local_apk" ]; then
+  echo "Note: this checkout carries no Android APK under apps/web/public/downloads/." >&2
+  if [ "$publish_apk" -eq 1 ]; then
+    publish_apk=0
+    echo "      Leaving ${apk_link} on the build it already serves." >&2
+  fi
+  echo "      Run npm run publish:android-internal to ship a new one." >&2
+fi
+
+if [ "$publish_apk" -eq 1 ]; then
+  # The APK has a fixed name, so only the metadata beside it knows which version
+  # it holds. Refuse rather than invent a name: publishing the download under a
+  # version it is not is worse than stopping before the push.
+  [ -s "$local_apk_meta" ] || {
+    echo "No build metadata beside the APK: ${local_apk_meta}" >&2
+    echo "Run npm run publish:android-internal to rebuild and record it." >&2
+    exit 1
+  }
+
+  # Parsed field by field rather than sourced: this file is generated, but a
+  # deploy script should not execute a file just to read four values out of it.
+  apk_field() { sed -n "s/^$1=//p" "$local_apk_meta" | head -n 1; }
+  apk_version_name="$(apk_field version_name)"
+  apk_version_code="$(apk_field version_code)"
+  apk_meta_sha="$(apk_field sha256)"
+
+  case "$apk_version_name" in ""|*[!0-9.]*) echo "Bad version_name in ${local_apk_meta}: '${apk_version_name}'" >&2; exit 1 ;; esac
+  case "$apk_version_code" in ""|*[!0-9]*) echo "Bad version_code in ${local_apk_meta}: '${apk_version_code}'" >&2; exit 1 ;; esac
+
+  # A rebuild that skipped the publish script leaves the metadata describing an
+  # APK that no longer exists, which would publish the wrong version number.
+  local_sha="$(sha256_of "$local_apk")"
+  if [ "$local_sha" != "$apk_meta_sha" ]; then
+    echo "The APK does not match the metadata beside it, so its version is unknown." >&2
+    echo "  apk      ${local_sha}" >&2
+    echo "  metadata ${apk_meta_sha}" >&2
+    echo "Run npm run publish:android-internal to rebuild and record it." >&2
+    exit 1
+  fi
+
+  apk_name="MissionGo-Android-${apk_version_name}-${apk_version_code}.apk"
+fi
+
 release="$(remote date +%Y%m%d-%H%M%S)-${label}"
 target="${releases_dir}/${release}"
 
@@ -129,18 +179,6 @@ rsync -az --delete \
   --exclude='._*' --exclude='.DS_Store' --exclude='*.tsbuildinfo' \
   --rsync-path='sudo rsync' \
   ./ "${host}:${target}/"
-
-# The APK is git-ignored, so a fresh clone cannot supply it, and rsync sends
-# whatever this checkout has. Warn rather than refuse, and let the operator
-# judge: the previous build stays downloadable either way.
-if [ ! -s "$local_apk" ]; then
-  echo "    Note: this release carries no Android APK under apps/web/public/downloads/." >&2
-  if [ "$publish_apk" -eq 1 ]; then
-    publish_apk=0
-    echo "    Leaving ${apk_link} on the build it already serves." >&2
-  fi
-  echo "    Run npm run publish:android-internal to ship a new one." >&2
-fi
 
 if [ "$skip_backup" -eq 1 ]; then
   echo "==> Skipping the backup (--skip-backup)"
@@ -166,17 +204,13 @@ remote "sudo ln -sfn '${target}' '${current_link}'"
 remote "sudo docker ps --format '    {{.Names}} | {{.Status}}'"
 
 if [ "$publish_apk" -eq 1 ]; then
-  # The APK is named after the release rather than after the Android version, so
-  # the file the host serves says which deploy produced it, and so the names sort
-  # by age for pruning the way the release directories do.
-  release_apk="${downloads_dir}/MissionGo-Android-${release}.apk"
-  echo "==> Publishing $(basename "$release_apk") into ${downloads_dir}"
+  release_apk="${downloads_dir}/${apk_name}"
+  echo "==> Publishing ${apk_name} into ${downloads_dir}"
   remote "sudo mkdir -p '${downloads_dir}' && \
     sudo install -m 0644 '${target}/${local_apk}' '${release_apk}'"
 
   # Compare digests before the symlink moves: a truncated copy must never become
   # the public download, and an unverified one is worth less than the old build.
-  local_sha="$(sha256_of "$local_apk")"
   remote_sha="$(remote "sudo sha256sum '${release_apk}'" | awk '{print $1}')"
   if [ "$local_sha" != "$remote_sha" ]; then
     echo "    The published APK does not match the local build, so the link was left alone." >&2
@@ -192,7 +226,7 @@ if [ "$publish_apk" -eq 1 ]; then
   # follow the existing link when it happens to name a directory.
   remote "sudo ln -sfn '${release_apk}' '${downloads_dir}/.missiongo-android-latest.apk.tmp' && \
     sudo mv -Tf '${downloads_dir}/.missiongo-android-latest.apk.tmp' '${apk_link}'"
-  echo "    ${apk_link} now serves this release."
+  echo "    ${apk_link} now serves ${apk_version_name} (${apk_version_code})."
 fi
 
 if [ "$keep" -gt 0 ]; then
@@ -210,9 +244,11 @@ if [ "$keep" -gt 0 ]; then
   if [ "$publish_apk" -eq 1 ]; then
     echo "==> Keeping the newest ${keep} published APKs"
     # Same reasoning as the release directories, and the same protection for the
-    # live one. The glob also catches APKs named before deploys published them.
+    # live one. The glob also catches APKs published by hand before the script
+    # did it. Sorted by version and then by the epoch version code, so 0.1.10
+    # ranks above 0.1.9 rather than below it the way a plain sort would have it.
     remote "live=\$(readlink -f '${apk_link}'); \
-      ls -1 '${downloads_dir}'/MissionGo-Android-*.apk 2>/dev/null | sort -r | tail -n +$((keep + 1)) | \
+      ls -1 '${downloads_dir}'/MissionGo-Android-*.apk 2>/dev/null | sort -rV | tail -n +$((keep + 1)) | \
       while read -r apk; do \
         [ \"\$(readlink -f \"\$apk\")\" = \"\$live\" ] && continue; \
         sudo rm -f \"\$apk\" && echo \"    removed \$(basename \"\$apk\")\"; \
