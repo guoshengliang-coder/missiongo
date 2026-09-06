@@ -144,6 +144,28 @@ export class MissionGoDatabase {
           .run(11, new Date().toISOString());
       });
     }
+
+    // Products and modules are only ever soft-retired: work items reference a
+    // module by id, so deleting one would strand the context on every item that
+    // came from it.
+    const archiveMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 12")
+      .get() as unknown as { version: number } | undefined;
+    if (!archiveMigration) {
+      this.transaction(() => {
+        for (const table of ["products", "components"]) {
+          const columns = this.connection
+            .prepare(`PRAGMA table_info(${table})`)
+            .all() as unknown as Array<{ name: string }>;
+          if (!columns.some((column) => column.name === "archived_at")) {
+            this.connection.exec(`ALTER TABLE ${table} ADD COLUMN archived_at TEXT;`);
+          }
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(12, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

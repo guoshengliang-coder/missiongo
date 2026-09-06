@@ -83,6 +83,12 @@ function requestedByteRange(value: string, size: number): { start: number; end: 
   return { start, end: Math.min(requestedEnd, size - 1) };
 }
 
+function booleanField(body: Record<string, unknown>, field: string): boolean {
+  const value = body[field];
+  if (typeof value !== "boolean") throw invalidInput(`${field} must be true or false.`);
+  return value;
+}
+
 function objectBody(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidInput("A JSON object is required.");
   return value as Record<string, unknown>;
@@ -627,7 +633,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   }
 
-  app.get("/api/v1/products", async () => store.listProducts());
+  const includeArchived = (query: unknown): boolean =>
+    typeof query === "object" && query !== null && (query as Record<string, unknown>).includeArchived === "true";
+
+  app.get("/api/v1/products", async (request) =>
+    store.listProducts({ includeArchived: includeArchived(request.query) }));
 
   app.get("/api/v1/sdk-tokens", async () => store.listSdkTokens());
 
@@ -799,12 +809,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.patch("/api/v1/products/:productId", async (request) => {
     const { productId } = request.params as { productId: string };
     const body = objectBody(request.body);
-    return store.updateProduct(productId, { name: stringField(body, "name")! });
+    return store.updateProduct(productId, {
+      ...(body.name !== undefined ? { name: stringField(body, "name")! } : {}),
+      ...(body.archived !== undefined ? { archived: booleanField(body, "archived") } : {}),
+    });
   });
 
   app.get("/api/v1/products/:productId/components", async (request) => {
     const { productId } = request.params as { productId: string };
-    return store.listComponents(productId);
+    return store.listComponents(productId, { includeArchived: includeArchived(request.query) });
   });
 
   app.post("/api/v1/products/:productId/components", async (request, reply) => {
@@ -822,8 +835,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { productId, componentId } = request.params as { productId: string; componentId: string };
     const body = objectBody(request.body);
     return store.updateComponent(productId, componentId, {
-      name: stringField(body, "name")!,
-      kind: enumField(body, "kind", COMPONENT_KINDS)! as ComponentKind,
+      ...(body.name !== undefined ? { name: stringField(body, "name")! } : {}),
+      ...(body.kind !== undefined ? { kind: enumField(body, "kind", COMPONENT_KINDS)! as ComponentKind } : {}),
+      ...(body.archived !== undefined ? { archived: booleanField(body, "archived") } : {}),
     });
   });
 

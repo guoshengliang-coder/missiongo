@@ -1414,6 +1414,92 @@ describe("MissionGo REST API", () => {
     expect(searched.json()).toMatchObject({ items: [{ key: "RP-1" }] });
   });
 
+  it("retires a product and a module without touching the items that reference them", async () => {
+    const { app } = await testApp();
+    const keep = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Keep", keyPrefix: "KP" } })
+    ).json<{ id: string }>();
+    const retire = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Retire", keyPrefix: "RT" } })
+    ).json<{ id: string }>();
+    const module = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/products/${retire.id}/components`,
+        payload: { name: "Sync", kind: "android" },
+      })
+    ).json<{ id: string }>();
+    const item = (
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/items",
+        payload: {
+          productId: retire.id,
+          type: "bug",
+          priority: "normal",
+          title: "Sync stalls",
+          description: "Uploads never finish.",
+          sourceComponentId: module.id,
+          environment: { platform: "android" },
+        },
+      })
+    ).json<{ key: string }>();
+
+    const archivedModule = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/products/${retire.id}/components/${module.id}`,
+      payload: { archived: true },
+    });
+    expect(archivedModule.statusCode).toBe(200);
+    expect(archivedModule.json()).toMatchObject({ name: "Sync", kind: "android" });
+    expect(archivedModule.json<{ archivedAt?: string }>().archivedAt).toBeTypeOf("string");
+
+    // Gone from the pickers, still there when the settings screen asks for it.
+    expect((await app.inject({ method: "GET", url: `/api/v1/products/${retire.id}/components` })).json()).toEqual([]);
+    expect(
+      (await app.inject({ method: "GET", url: `/api/v1/products/${retire.id}/components?includeArchived=true` }))
+        .json<unknown[]>(),
+    ).toHaveLength(1);
+    // The item keeps pointing at it rather than losing where it came from.
+    expect((await app.inject({ method: "GET", url: `/api/v1/items/${item.key}` })).json())
+      .toMatchObject({ sourceComponentId: module.id });
+
+    const archivedProduct = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/products/${retire.id}`,
+      payload: { archived: true },
+    });
+    expect(archivedProduct.statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/v1/products" })).json()).toEqual([
+      expect.objectContaining({ id: keep.id }),
+    ]);
+    expect((await app.inject({ method: "GET", url: "/api/v1/products?includeArchived=true" })).json<unknown[]>())
+      .toHaveLength(2);
+
+    // Restoring puts it back, and the archive flag is the only thing that moved.
+    const restored = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/products/${retire.id}`,
+      payload: { archived: false },
+    });
+    expect(restored.json()).toMatchObject({ name: "Retire", keyPrefix: "RT" });
+    expect(restored.json<{ archivedAt?: string }>().archivedAt).toBeUndefined();
+  });
+
+  it("refuses to archive the only product left to switch to", async () => {
+    const { app } = await testApp();
+    const only = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Only", keyPrefix: "ON" } })
+    ).json<{ id: string }>();
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/products/${only.id}`,
+      payload: { archived: true },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: "validation_failed" });
+  });
+
   it("paginates items and narrows the status counts to the active filters", async () => {
     const { app } = await testApp();
     const product = (

@@ -58,6 +58,8 @@ export interface Product {
   readonly name: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** Set when the product is retired; it leaves the switcher but keeps its items. */
+  readonly archivedAt?: string;
 }
 
 export const COMPONENT_KINDS = ["android", "macos", "web", "server", "shared", "other"] as const;
@@ -70,6 +72,8 @@ export interface Component {
   readonly kind: ComponentKind;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** Set when the module is retired; existing items still resolve it. */
+  readonly archivedAt?: string;
 }
 
 export interface WorkItem {

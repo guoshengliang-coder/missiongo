@@ -2,6 +2,7 @@ import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useSt
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
+  Archive,
   ArrowRight,
   Bug,
   Camera,
@@ -30,6 +31,7 @@ import {
   Paperclip,
   Plus,
   Rocket,
+  RotateCcw,
   Search,
   Settings2,
   Sparkles,
@@ -407,7 +409,7 @@ export function App() {
   });
   const productsQuery = useQuery({
     queryKey: ["products"],
-    queryFn: api.listProducts,
+    queryFn: () => api.listProducts(),
     enabled: authQuery.isSuccess,
   });
   const products = productsQuery.data ?? [];
@@ -479,8 +481,8 @@ export function App() {
   const items = itemsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const itemSummary = itemsQuery.data?.pages[0]?.summary;
   const componentsQuery = useQuery({
-    queryKey: ["components", selectedProductId],
-    queryFn: () => api.listComponents(selectedProductId),
+    queryKey: ["components", selectedProductId, "with-archived"],
+    queryFn: () => api.listComponents(selectedProductId, { includeArchived: true }),
     enabled: authQuery.isSuccess && Boolean(selectedProductId),
   });
   const componentsById = useMemo(
@@ -1206,8 +1208,8 @@ function DetailPane({
   const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey) });
   const item = itemQuery.data;
   const componentsQuery = useQuery({
-    queryKey: ["components", item?.productId],
-    queryFn: () => api.listComponents(item!.productId),
+    queryKey: ["components", item?.productId, "with-archived"],
+    queryFn: () => api.listComponents(item!.productId, { includeArchived: true }),
     enabled: Boolean(item?.productId),
   });
   const [editing, setEditing] = useState(false);
@@ -1333,7 +1335,12 @@ function DetailPane({
               <h3>{t("capturedContext")}</h3>
               {item.environment || sourceComponent || affectedComponents.length > 0 ? (
                 <div className="context-grid">
-                  {sourceComponent && <span><small>{t("sourceComponent")}</small>{sourceComponent.name}</span>}
+                  {sourceComponent && (
+                    <span>
+                      <small>{t("sourceComponent")}</small>
+                      {sourceComponent.name}{sourceComponent.archivedAt ? ` · ${t("archived")}` : ""}
+                    </span>
+                  )}
                   {affectedComponents.length > 0 && <span><small>{t("affectedComponents")}</small>{affectedComponents.map((component) => component.name).join("、")}</span>}
                   {item.environment && <span><small>{t("platform")}</small>{t(item.environment.platform)}</span>}
                   {item.environment?.appVersion && <span><small>{t("version")}</small>{item.environment.appVersion}</span>}
@@ -2445,8 +2452,8 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
   const [newComponentKind, setNewComponentKind] = useState<ComponentKind>("android");
   const [addingComponent, setAddingComponent] = useState(false);
   const componentsQuery = useQuery({
-    queryKey: ["components", product.id],
-    queryFn: () => api.listComponents(product.id),
+    queryKey: ["components", product.id, "with-archived"],
+    queryFn: () => api.listComponents(product.id, { includeArchived: true }),
     enabled: activeSettingsTab === "components",
   });
   const components = componentsQuery.data ?? [];
@@ -2466,6 +2473,10 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
       await queryClient.invalidateQueries({ queryKey: ["products"] });
       onSelected();
     },
+  });
+  const archiveMutation = useMutation({
+    mutationFn: (archived: boolean) => api.updateProduct(product.id, { archived }),
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["products"] }),
   });
   const componentMutation = useMutation({
     mutationFn: () => api.createComponent(product.id, {
@@ -2519,9 +2530,25 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
             <label>{t("itemPrefix")}<input value={product.keyPrefix} readOnly /><small>{t("prefixLockedHelp")}</small></label>
           </div>
           {productMutation.isError && <InlineError message={errorMessage(productMutation.error, t("somethingWentWrong"))} />}
+          {archiveMutation.isError && <InlineError message={errorMessage(archiveMutation.error, t("somethingWentWrong"))} />}
           <button className="primary-button settings-save" disabled={!name.trim() || name.trim() === product.name || productMutation.isPending} onClick={() => productMutation.mutate()}>
             {productMutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {t("saveProduct")}
           </button>
+          <div className="archive-row">
+            <p>{t("archiveProductHelp")}</p>
+            <button
+              type="button"
+              className="secondary-button archive-button"
+              disabled={archiveMutation.isPending}
+              onClick={() => {
+                if (product.archivedAt) archiveMutation.mutate(false);
+                else if (window.confirm(t("confirmArchiveProduct", { name: product.name }))) archiveMutation.mutate(true);
+              }}
+            >
+              {archiveMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Archive size={15} />}
+              {product.archivedAt ? t("restore") : t("archive")}
+            </button>
+          </div>
         </section>
       ) : (
         <section className="product-settings-section component-management" role="tabpanel">
@@ -2690,25 +2717,50 @@ function ComponentSettingsRow({ component }: { component: Component }) {
   const { t } = useI18n();
   const [name, setName] = useState(component.name);
   const [kind, setKind] = useState<ComponentKind>(component.kind);
+  const archived = Boolean(component.archivedAt);
   useEffect(() => {
     setName(component.name);
     setKind(component.kind);
   }, [component.kind, component.name]);
+  const refresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["components", component.productId] });
+  };
   const mutation = useMutation({
     mutationFn: () => api.updateComponent(component.productId, component.id, { name, kind }),
-    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["components", component.productId] }),
+    onSuccess: refresh,
+  });
+  const archiveMutation = useMutation({
+    mutationFn: (next: boolean) => api.updateComponent(component.productId, component.id, { archived: next }),
+    onSuccess: refresh,
   });
   const changed = name.trim() !== component.name || kind !== component.kind;
   return (
-    <div className="component-settings-row">
-      <input value={name} onChange={(event) => setName(event.target.value)} aria-label={t("componentName")} />
-      <select value={kind} onChange={(event) => setKind(event.target.value as ComponentKind)} aria-label={t("componentKind")}>
+    <div className={`component-settings-row ${archived ? "archived" : ""}`}>
+      <input value={name} onChange={(event) => setName(event.target.value)} aria-label={t("componentName")} disabled={archived} />
+      <select value={kind} onChange={(event) => setKind(event.target.value as ComponentKind)} aria-label={t("componentKind")} disabled={archived}>
         {COMPONENT_KINDS.map((value) => <option key={value} value={value}>{t(value)}</option>)}
       </select>
-      <button className="secondary-button" disabled={!changed || !name.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
-        {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
-      </button>
+      {archived ? (
+        <button className="secondary-button" disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate(false)}>
+          {archiveMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />} {t("restore")}
+        </button>
+      ) : changed ? (
+        <button className="secondary-button" disabled={!name.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
+          {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
+        </button>
+      ) : (
+        <button
+          className="secondary-button archive-button"
+          disabled={archiveMutation.isPending}
+          onClick={() => {
+            if (window.confirm(t("confirmArchiveComponent", { name: component.name }))) archiveMutation.mutate(true);
+          }}
+        >
+          {archiveMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Archive size={15} />} {t("archive")}
+        </button>
+      )}
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
+      {archiveMutation.isError && <InlineError message={errorMessage(archiveMutation.error, t("somethingWentWrong"))} />}
     </div>
   );
 }

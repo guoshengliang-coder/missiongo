@@ -12,7 +12,8 @@ export const INITIAL_SCHEMA = `
     name TEXT NOT NULL,
     next_item_sequence INTEGER NOT NULL DEFAULT 1 CHECK (next_item_sequence > 0),
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    archived_at TEXT
   ) STRICT;
 
   CREATE TABLE IF NOT EXISTS components (
@@ -22,6 +23,7 @@ export const INITIAL_SCHEMA = `
     kind TEXT NOT NULL CHECK (kind IN ('android', 'macos', 'web', 'server', 'shared', 'other')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    archived_at TEXT,
     UNIQUE (product_id, name)
   ) STRICT;
 

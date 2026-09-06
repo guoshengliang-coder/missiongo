@@ -58,6 +58,7 @@ interface ProductRow {
   next_item_sequence: number;
   created_at: string;
   updated_at: string;
+  archived_at: string | null;
 }
 
 interface ComponentRow {
@@ -67,6 +68,7 @@ interface ComponentRow {
   kind: ComponentKind;
   created_at: string;
   updated_at: string;
+  archived_at: string | null;
 }
 
 interface WorkItemRow {
@@ -233,9 +235,13 @@ export class MissionGoStore {
     return this.getProduct(id);
   }
 
-  listProducts(): readonly ProductSnapshot[] {
+  listProducts(options: { includeArchived?: boolean } = {}): readonly ProductSnapshot[] {
     const rows = this.database.connection
-      .prepare("SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at FROM products ORDER BY name")
+      .prepare(
+        `SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at
+         FROM products${options.includeArchived ? "" : " WHERE archived_at IS NULL"}
+         ORDER BY archived_at IS NOT NULL, name`,
+      )
       .all() as unknown as ProductRow[];
     return rows.map((row) => this.mapProduct(row));
   }
@@ -246,11 +252,25 @@ export class MissionGoStore {
     return this.mapProduct(row);
   }
 
-  updateProduct(productId: string, input: { name: string }): ProductSnapshot {
-    this.getProduct(productId);
-    const name = requiredText(input.name, "Product name");
+  updateProduct(productId: string, input: { name?: string; archived?: boolean }): ProductSnapshot {
+    const current = this.getProduct(productId);
     const now = new Date().toISOString();
-    this.database.connection.prepare("UPDATE products SET name = ?, updated_at = ? WHERE id = ?").run(name, now, productId);
+    const name = input.name === undefined ? current.name : requiredText(input.name, "Product name");
+    let archivedAt = current.archivedAt ?? null;
+    if (input.archived !== undefined) {
+      if (input.archived && !archivedAt) {
+        // Leaving no product to switch to would strand the workspace on an
+        // empty picker with no way back.
+        const remaining = this.listProducts().filter((product) => product.id !== productId);
+        if (remaining.length === 0) {
+          throw invalidInput("Archive is unavailable for the only active product.");
+        }
+      }
+      archivedAt = input.archived ? archivedAt ?? now : null;
+    }
+    this.database.connection
+      .prepare("UPDATE products SET name = ?, archived_at = ?, updated_at = ? WHERE id = ?")
+      .run(name, archivedAt, now, productId);
     return this.getProduct(productId);
   }
 
@@ -279,12 +299,14 @@ export class MissionGoStore {
     return this.getComponent(id);
   }
 
-  listComponents(productId: string): readonly ComponentSnapshot[] {
+  listComponents(productId: string, options: { includeArchived?: boolean } = {}): readonly ComponentSnapshot[] {
     this.getProduct(productId);
     const rows = this.database.connection
       .prepare(
-        `SELECT id, product_id, name, kind, created_at, updated_at
-         FROM components WHERE product_id = ? ORDER BY name`,
+        `SELECT id, product_id, name, kind, created_at, updated_at, archived_at
+         FROM components
+         WHERE product_id = ?${options.includeArchived ? "" : " AND archived_at IS NULL"}
+         ORDER BY archived_at IS NOT NULL, name`,
       )
       .all(productId) as unknown as ComponentRow[];
     return rows.map((row) => this.mapComponent(row));
@@ -293,18 +315,22 @@ export class MissionGoStore {
   updateComponent(
     productId: string,
     componentId: string,
-    input: { name: string; kind: ComponentKind },
+    input: { name?: string; kind?: ComponentKind; archived?: boolean },
   ): ComponentSnapshot {
     this.getProduct(productId);
     const current = this.getComponent(componentId);
     if (current.productId !== productId) throw notFound("Component");
-    const name = requiredText(input.name, "Component name");
-    if (!isOneOf(input.kind, COMPONENT_KINDS)) throw invalidInput(`Unsupported component kind: ${String(input.kind)}.`);
+    const name = input.name === undefined ? current.name : requiredText(input.name, "Component name");
+    const kind = input.kind === undefined ? current.kind : input.kind;
+    if (!isOneOf(kind, COMPONENT_KINDS)) throw invalidInput(`Unsupported component kind: ${String(kind)}.`);
     const now = new Date().toISOString();
+    const archivedAt = input.archived === undefined
+      ? current.archivedAt ?? null
+      : input.archived ? current.archivedAt ?? now : null;
     try {
       this.database.connection
-        .prepare("UPDATE components SET name = ?, kind = ?, updated_at = ? WHERE id = ?")
-        .run(name, input.kind, now, componentId);
+        .prepare("UPDATE components SET name = ?, kind = ?, archived_at = ?, updated_at = ? WHERE id = ?")
+        .run(name, kind, archivedAt, now, componentId);
     } catch (error) {
       if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
         throw conflict("component_name_conflict", `Component ${name} already exists in this product.`);
@@ -1570,7 +1596,7 @@ export class MissionGoStore {
 
   private getProductRow(productId: string): ProductRow | undefined {
     return this.database.connection
-      .prepare("SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at FROM products WHERE id = ?")
+      .prepare("SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at FROM products WHERE id = ?")
       .get(productId) as unknown as ProductRow | undefined;
   }
 
@@ -1614,7 +1640,7 @@ export class MissionGoStore {
 
   private getComponent(componentId: string): ComponentSnapshot {
     const row = this.database.connection
-      .prepare("SELECT id, product_id, name, kind, created_at, updated_at FROM components WHERE id = ?")
+      .prepare("SELECT id, product_id, name, kind, created_at, updated_at, archived_at FROM components WHERE id = ?")
       .get(componentId) as unknown as ComponentRow | undefined;
     if (!row) throw notFound("Component");
     return this.mapComponent(row);
@@ -1722,6 +1748,7 @@ export class MissionGoStore {
       name: row.name,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
     };
   }
 
@@ -1733,6 +1760,7 @@ export class MissionGoStore {
       kind: row.kind,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
     };
   }
 

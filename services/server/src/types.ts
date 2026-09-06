@@ -24,6 +24,8 @@ export interface ProductSnapshot {
   readonly name: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** Set when the product is retired. Its items stay readable; it leaves the pickers. */
+  readonly archivedAt?: string;
 }
 
 export interface ComponentSnapshot {
@@ -33,6 +35,8 @@ export interface ComponentSnapshot {
   readonly kind: ComponentKind;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** Set when the module is retired. Existing items keep resolving it. */
+  readonly archivedAt?: string;
 }
 
 export interface CreateWorkItemInput {

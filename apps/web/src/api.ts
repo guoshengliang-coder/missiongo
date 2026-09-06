@@ -96,22 +96,25 @@ export const api = {
   login: (input: { username: string; password: string }) =>
     request<AuthSession>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(input) }),
   logout: () => request<{ ok: true }>("/api/v1/auth/logout", { method: "POST" }),
-  listProducts: () => request<Product[]>("/api/v1/products"),
+  listProducts: (options: { includeArchived?: boolean } = {}) =>
+    request<Product[]>(`/api/v1/products${options.includeArchived ? "?includeArchived=true" : ""}`),
   createProduct: (input: { name: string; keyPrefix: string }) =>
     request<Product>("/api/v1/products", { method: "POST", body: JSON.stringify(input) }),
-  updateProduct: (productId: string, input: { name: string }) =>
+  updateProduct: (productId: string, input: { name?: string; archived?: boolean }) =>
     request<Product>(`/api/v1/products/${encodeURIComponent(productId)}`, {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
-  listComponents: (productId: string) =>
-    request<Component[]>(`/api/v1/products/${encodeURIComponent(productId)}/components`),
+  listComponents: (productId: string, options: { includeArchived?: boolean } = {}) =>
+    request<Component[]>(
+      `/api/v1/products/${encodeURIComponent(productId)}/components${options.includeArchived ? "?includeArchived=true" : ""}`,
+    ),
   createComponent: (productId: string, input: { name: string; kind: ComponentKind }) =>
     request<Component>(`/api/v1/products/${encodeURIComponent(productId)}/components`, {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  updateComponent: (productId: string, componentId: string, input: { name: string; kind: ComponentKind }) =>
+  updateComponent: (productId: string, componentId: string, input: { name?: string; kind?: ComponentKind; archived?: boolean }) =>
     request<Component>(`/api/v1/products/${encodeURIComponent(productId)}/components/${encodeURIComponent(componentId)}`, {
       method: "PATCH",
       body: JSON.stringify(input),
