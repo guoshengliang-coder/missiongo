@@ -64,6 +64,7 @@ import {
   type Product,
   type Component,
   type ComponentKind,
+  type CreatedSdkToken,
   type TransitionAction,
   type WorkItem,
   type WorkItemAttachment,
@@ -2463,7 +2464,7 @@ function ProductManager({
 function ProductSettings({ product, onSelected }: { product: Product; onSelected: () => void }) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
-  const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components">("product");
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components" | "tokens">("product");
   const [name, setName] = useState(product.name);
   const [newComponentName, setNewComponentName] = useState("");
   const [newComponentKind, setNewComponentKind] = useState<ComponentKind>("android");
@@ -2523,8 +2524,19 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
         >
           {t("moduleManagement")}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeSettingsTab === "tokens"}
+          className={activeSettingsTab === "tokens" ? "active" : ""}
+          onClick={() => setActiveSettingsTab("tokens")}
+        >
+          {t("sdkTokens")}
+        </button>
       </div>
-      {activeSettingsTab === "product" ? (
+      {activeSettingsTab === "tokens" ? (
+        <SdkTokenSettings product={product} />
+      ) : activeSettingsTab === "product" ? (
         <section className="product-settings-section" role="tabpanel">
           <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("productInformation")}</h3></div></header>
           <div className="product-settings-grid">
@@ -2584,6 +2596,117 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
         </section>
       )}
     </div>
+  );
+}
+
+function SdkTokenSettings({ product }: { product: Product }) {
+  const queryClient = useQueryClient();
+  const { formatTime, t } = useI18n();
+  const [name, setName] = useState("");
+  const [sourceComponentId, setSourceComponentId] = useState("");
+  // Shown once, held only in memory: the server never hands it back again.
+  const [createdToken, setCreatedToken] = useState<CreatedSdkToken | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const tokensQuery = useQuery({ queryKey: ["sdk-tokens"], queryFn: api.listSdkTokens });
+  const componentsQuery = useQuery({ queryKey: ["components", product.id], queryFn: () => api.listComponents(product.id) });
+  const androidComponents = (componentsQuery.data ?? []).filter((component) => component.kind === "android");
+  const tokens = (tokensQuery.data ?? []).filter((token) => token.productId === product.id);
+
+  const createMutation = useMutation({
+    mutationFn: () => api.createSdkToken({
+      name: name.trim(),
+      productId: product.id,
+      ...(sourceComponentId ? { sourceComponentId } : {}),
+    }),
+    onSuccess: async (token) => {
+      setCreatedToken(token);
+      setCopied(false);
+      setName("");
+      setSourceComponentId("");
+      await queryClient.invalidateQueries({ queryKey: ["sdk-tokens"] });
+    },
+  });
+  const revokeMutation = useMutation({
+    mutationFn: (tokenId: string) => api.revokeSdkToken(tokenId),
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["sdk-tokens"] }),
+  });
+
+  const copyToken = async () => {
+    if (!createdToken) return;
+    await navigator.clipboard.writeText(createdToken.token);
+    setCopied(true);
+  };
+
+  return (
+    <section className="product-settings-section" role="tabpanel">
+      <header>
+        <div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("sdkTokens")}</h3></div>
+        <div className="component-header-actions"><span>{tokens.filter((token) => !token.revokedAt).length}</span></div>
+      </header>
+      <p className="component-management-help">{t("sdkTokensHelp")}</p>
+
+      {createdToken && (
+        <div className="sdk-token-reveal">
+          <p><KeyRound size={15} /> {t("sdkTokenCreated")}</p>
+          <div>
+            <code>{createdToken.token}</code>
+            <button type="button" className="secondary-button" onClick={() => void copyToken()}>
+              {copied ? <Check size={15} /> : <ClipboardCheck size={15} />} {copied ? t("copied") : t("copyToken")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="component-add-panel">
+        <div className="component-add-row">
+          <label>{t("sdkTokenName")}<input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("sdkTokenNamePlaceholder")} maxLength={100} /></label>
+          <label>{t("sdkTokenScope")}
+            <select value={sourceComponentId} onChange={(event) => setSourceComponentId(event.target.value)}>
+              <option value="">{t("sdkTokenAnyModule")}</option>
+              {androidComponents.map((component) => <option key={component.id} value={component.id}>{component.name}</option>)}
+            </select>
+          </label>
+          <button className="primary-button" disabled={!name.trim() || createMutation.isPending} onClick={() => createMutation.mutate()}>
+            {createMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createSdkToken")}
+          </button>
+        </div>
+        {androidComponents.length === 0 && <p className="section-empty">{t("sdkTokenNeedsAndroidModule")}</p>}
+      </div>
+      {createMutation.isError && <InlineError message={errorMessage(createMutation.error, t("somethingWentWrong"))} />}
+      {revokeMutation.isError && <InlineError message={errorMessage(revokeMutation.error, t("somethingWentWrong"))} />}
+
+      <div className="sdk-token-list">
+        {!tokensQuery.isLoading && tokens.length === 0 && <p className="section-empty">{t("noSdkTokens")}</p>}
+        {tokens.map((token) => (
+          <div key={token.id} className={`sdk-token-row ${token.revokedAt ? "revoked" : ""}`}>
+            <span>
+              <strong>{token.name}</strong>
+              <small>
+                {token.revokedAt
+                  ? t("revoked")
+                  : token.lastUsedAt
+                    ? t("lastUsed", { time: formatTime(token.lastUsedAt) })
+                    : t("neverUsed")}
+                {token.sourceComponentId && ` · ${androidComponents.find((component) => component.id === token.sourceComponentId)?.name ?? ""}`}
+              </small>
+            </span>
+            {!token.revokedAt && (
+              <button
+                type="button"
+                className="secondary-button sdk-token-revoke"
+                disabled={revokeMutation.isPending}
+                onClick={() => {
+                  if (window.confirm(t("confirmRevokeToken", { name: token.name }))) revokeMutation.mutate(token.id);
+                }}
+              >
+                <Trash2 size={14} /> {t("revoke")}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

@@ -144,3 +144,20 @@ export interface TransitionAction {
     | "cancelled";
   readonly tone?: "primary" | "positive" | "danger";
 }
+
+export interface SdkToken {
+  readonly id: string;
+  readonly name: string;
+  readonly productId: string;
+  readonly platform: "android";
+  readonly sourceComponentId?: string;
+  readonly expiresAt?: string;
+  readonly revokedAt?: string;
+  readonly lastUsedAt?: string;
+  readonly createdAt: string;
+}
+
+/** The plaintext token is returned once, at creation, and never stored client-side. */
+export interface CreatedSdkToken extends SdkToken {
+  readonly token: string;
+}

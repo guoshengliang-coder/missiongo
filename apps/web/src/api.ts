@@ -1,5 +1,7 @@
 import type {
   Component,
+  CreatedSdkToken,
+  SdkToken,
   ComponentKind,
   CreateWorkItemInput,
   Product,
@@ -180,4 +182,9 @@ export const api = {
     }),
   getTimeline: (itemKey: string) =>
     request<{ events: WorkItemEvent[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/timeline`),
+  listSdkTokens: () => request<SdkToken[]>("/api/v1/sdk-tokens"),
+  createSdkToken: (input: { name: string; productId: string; sourceComponentId?: string }) =>
+    request<CreatedSdkToken>("/api/v1/sdk-tokens", { method: "POST", body: JSON.stringify(input) }),
+  revokeSdkToken: (tokenId: string) =>
+    request<SdkToken>(`/api/v1/sdk-tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" }),
 };
