@@ -48,7 +48,7 @@ apps/android/build/outputs/apk/debug/missiongo-android-app-debug.apk
 npm run publish:android-internal
 ```
 
-该命令读取开发机私密配置，生成递增 `versionCode` 的内部签名 APK，原子替换网站的固定下载文件，并重新构建 Web。APK 被 Git 忽略；网站的“下载安卓版”始终指向 `/downloads/missiongo-android-latest.apk`。
+该命令读取开发机私密配置，生成递增 `versionCode` 的内部签名 APK，原子替换网站的固定下载文件，把版本号记录到同目录的 `missiongo-android-latest.release`，并重新构建 Web。版本名只在 `sdks/android-feedback/gradle.properties` 的 `missiongoAndroidVersionName` 里声明一次，Gradle 和发布脚本都读它，改版本只改那一处。APK 被 Git 忽略；网站的“下载安卓版”始终指向 `/downloads/missiongo-android-latest.apk`。
 
 生产环境的下载文件由宿主机反向代理从自己的目录提供，`scripts/deploy.sh` 会在部署时把本次快照携带的 APK 发布到那里并原子切换软链接。因此请先执行上面的发布命令，再执行部署；否则部署会把过期的 APK 当作最新版发布出去。详见[部署说明](../../deploy/README.md)。
 
