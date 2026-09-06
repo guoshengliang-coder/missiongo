@@ -63,6 +63,21 @@ APK 一样不进 Git，所以只有跑过发布的那台机器有它。`scripts/
 `/maven`，让所有钉住版本的宿主构建失败。网站的 nginx 需要 `location ^~ /maven/ { try_files $uri =404; }`：Maven 客户端
 必须在制品缺失时看到真正的 404，SPA 回落会给出 200 的 HTML 并让 Gradle 报出难以定位的错误。
 
+### 发布后的冒烟检查
+
+拉 `maven-metadata.xml` 和 `.pom`，**不要只拉 `.jar`**。版本化的制品是不可变的，nginx 把它们
+标成 `immutable` 让 CDN 长期缓存；`maven-metadata.xml` 则明确禁止缓存。所以只有后两类必然回源，
+拉 `.jar` 可能命中边缘缓存，在源站已经空掉时依然返回 200。
+
+```bash
+BASE=https://<missiongo origin>/maven/io/missiongo/missiongo-feedback
+curl -sI "$BASE/maven-metadata.xml" | head -1
+curl -sI "$BASE/<version>/missiongo-feedback-<version>.pom" | head -1
+curl -so /dev/null -w '%{http_code}\n' "$BASE/9.9.9/nope.pom"   # 必须 404，不是 200
+```
+
+最后一条验证 SPA 回落没有劫持 `/maven`。
+
 本机联调可以先发到 Maven Local：
 
 ```bash

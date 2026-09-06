@@ -426,6 +426,7 @@ Logcat、宿主数据库、SharedPreferences、账号、Cookie、Token、页面�
 |---|---|
 | Gradle 报仓库不被允许 | 用了 `FAIL_ON_PROJECT_REPOS` 却把仓库加在了模块里，应加到 `settings.gradle.kts` |
 | Gradle 报制品解析/解析失败且信息难懂 | 服务端把缺失路径回落成了 HTML。仓库地址写错，或服务端未配置 `/maven` 返回真正的 404 |
+| 仓库修好了但构建仍报找不到制品 | Gradle 把「不存在」也缓存了（默认 24 小时）。跑一次 `./gradlew --refresh-dependencies` |
 | `IllegalArgumentException` 出现在 `initialize()` | endpoint 不是合法 origin，或 Token 格式不对（应形如 `mg_sdk_` + 43 位） |
 | `http_401`（所有提交都失败） | Token 已撤销、写错，或用了占位值 |
 | `http_429` | 触发按 Token 的频率限制。`retryable` 为 true，退避后可再试 |
