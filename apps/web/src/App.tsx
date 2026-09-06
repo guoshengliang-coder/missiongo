@@ -707,10 +707,11 @@ export function App() {
           <section className={`list-surface ${showAttachmentColumn ? "with-media" : "without-media"}`} aria-label={t("workItems")}>
             <div className="list-columns" aria-hidden="true">
               <span>{t("itemInformation")}</span>
-              <span>{t("capturedContext")}</span>
               {showAttachmentColumn && <span>{t("attachments")}</span>}
+              <span>{t("capturedContext")}</span>
               <span>{t("status")}</span>
-              <span>{t("quickAction")}</span>
+              <span>{t("updated")}</span>
+              <span />
             </div>
             <div className="item-list">
               {itemsQuery.isLoading && <ListSkeleton />}
@@ -851,7 +852,6 @@ function ItemRow({
   const overview = item.report?.overview ?? item.description;
   const logAttachmentCount = item.attachments.filter((attachment) => attachment.kind === "log").length;
   const logCount = Math.max(logAttachmentCount, item.diagnosticSummary?.logCount ?? 0);
-  const mediaCount = item.attachments.length - logAttachmentCount;
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
   const contextDetails = [
     sourceComponent && environment ? platformName(environment.platform, t) : undefined,
@@ -869,34 +869,45 @@ function ItemRow({
       }}
     >
       <button className="item-row-main" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
-        <span className={`type-icon type-${item.type}`}><TypeIcon size={17} /></span>
+        <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={15} /></span>
         <span className="item-copy">
-          <span className="item-title-line"><code>{item.key}</code><span>{typeLabel(item.type)}</span></span>
-          <span className="item-title">{item.title}</span>
-          <span className={`item-description ${overview ? "" : "muted"}`}>{overview || t("noDescription")}</span>
-          <span className="item-evidence-summary">
-            {item.type === "bug" && item.report?.reproductionSteps && <small>{t("hasReproduction")}</small>}
-            {logCount > 0 && <small>{t("logCount", { count: logCount })}</small>}
-            {(item.diagnosticSummary?.contextEntryCount ?? 0) > 0 && <small>{t("contextCount", { count: item.diagnosticSummary.contextEntryCount })}</small>}
-            {mediaCount > 0 && <small>{t("mediaCount", { count: mediaCount })}</small>}
+          <span className="item-title-line">
+            <code>{item.key}</code>
+            <span className="item-title">{item.title}</span>
+            <span className="item-evidence-summary">
+              {item.type === "bug" && item.report?.reproductionSteps && <small className="evidence-strong">{t("hasReproduction")}</small>}
+              {logCount > 0 && <small>{t("logCount", { count: logCount })}</small>}
+              {(item.diagnosticSummary?.contextEntryCount ?? 0) > 0 && <small>{t("contextCount", { count: item.diagnosticSummary.contextEntryCount })}</small>}
+            </span>
           </span>
+          <span className={`item-description ${overview ? "" : "muted"}`}>{overview || t("noDescription")}</span>
         </span>
       </button>
+      <ItemMediaStrip itemKey={item.key} attachments={item.attachments} preserveColumn={showAttachmentColumn} />
       <span className="item-context">
         <strong>{contextPrimary}</strong>
         <small>{contextDetails || t("noEnvironmentShort")}</small>
       </span>
-      <ItemMediaStrip itemKey={item.key} attachments={item.attachments} preserveColumn={showAttachmentColumn} />
       <span className="item-state">
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <small><i className={`priority-dot priority-${item.priority}`} /> {priorityLabel(item.priority)}</small>
-        <small>{t("updated")} {formatTime(item.updatedAt)}</small>
       </span>
+      <span className="item-updated">{formatTime(item.updatedAt)}</span>
       <span className="item-row-actions">
         <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} />
       </span>
     </article>
   );
+}
+function useNarrowViewport(): boolean {
+  const [narrow, setNarrow] = useState(() => window.matchMedia("(max-width: 520px)").matches);
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 520px)");
+    const update = () => setNarrow(query.matches);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return narrow;
 }
 
 function ItemMediaStrip({
@@ -909,20 +920,28 @@ function ItemMediaStrip({
   preserveColumn: boolean;
 }) {
   const { t } = useI18n();
+  const narrow = useNarrowViewport();
   const mediaAttachments = attachments.filter(
     (attachment): attachment is WorkItemAttachment & { readonly kind: "image" | "video" } => attachment.kind !== "log",
   );
-  const visible = mediaAttachments.slice(0, 3);
+  // Two thumbnails cover the common "before and after" pair; the rest are
+  // counted on the last one rather than shrinking every tile. A phone only has
+  // room for one before the title starts truncating mid-word.
+  const visible = mediaAttachments.slice(0, narrow ? 1 : 2);
   if (visible.length === 0) return preserveColumn ? <div className="item-media-strip empty-slot" aria-hidden="true" /> : null;
   return (
     <div className="item-media-strip" aria-label={t("mediaCount", { count: mediaAttachments.length })}>
       {visible.map((attachment, index) => (
-        <ItemMediaThumbnail key={attachment.id} itemKey={itemKey} attachment={attachment} overflowCount={index === 2 ? mediaAttachments.length - visible.length : 0} />
+        <ItemMediaThumbnail
+          key={attachment.id}
+          itemKey={itemKey}
+          attachment={attachment}
+          overflowCount={index === visible.length - 1 ? mediaAttachments.length - visible.length : 0}
+        />
       ))}
     </div>
   );
 }
-
 function ItemMediaThumbnail({
   itemKey,
   attachment,
@@ -979,7 +998,6 @@ function ItemMediaThumbnail({
         {!objectUrl && <span className="media-file-tile">{contentQuery.isLoading ? <LoaderCircle className="spin" size={18} /> : <Icon size={18} />}<small>{attachment.filename.split(".").pop()?.toUpperCase()}</small></span>}
         {overflowCount > 0 && <span className="media-overflow">+{overflowCount}</span>}
       </button>
-      <small className="item-media-caption">{referenceLabel}</small>
       {viewerOpen && (
         <div
           className="selected-media-lightbox"
@@ -1007,7 +1025,9 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
   const { statusLabel, t, transitionLabel } = useI18n();
   const actions = TRANSITIONS[item.status];
   const primaryAction = actions[0];
-  const secondaryActions = actions.slice(1);
+  // Destructive last, whatever order the table lists them in.
+  const secondaryActions = actions.slice(1).filter((action) => action.tone !== "danger");
+  const destructiveActions = actions.slice(1).filter((action) => action.tone === "danger");
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
   const mutation = useMutation({
     mutationFn: (action: TransitionAction) => api.transitionItem(item.key, action),
@@ -1038,43 +1058,65 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
   }, []);
 
   return (
-    <>
-      {primaryAction && (
+    <details className="detail-more-menu row-more-menu" ref={moreActionsRef}>
+      <summary className="secondary-button" aria-label={t("moreActionsFor", { key: item.key })} title={t("moreActions")}>
+        {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <MoreHorizontal size={18} />}
+      </summary>
+      <div className="detail-more-menu-popover">
+        {primaryAction && (
+          <button
+            type="button"
+            className={`menu-primary ${primaryAction.tone === "positive" ? "positive" : ""}`}
+            disabled={mutation.isPending}
+            onClick={() => {
+              moreActionsRef.current?.removeAttribute("open");
+              mutation.mutate(primaryAction);
+            }}
+          >
+            <Check size={14} /> {quickActionLabel(item.status, t)}
+          </button>
+        )}
+        {secondaryActions.map((action) => (
+          <button
+            key={`${action.to}-${action.reason}`}
+            type="button"
+            disabled={mutation.isPending}
+            onClick={() => {
+              moreActionsRef.current?.removeAttribute("open");
+              mutation.mutate(action);
+            }}
+          >
+            {transitionLabel(action.label)}
+          </button>
+        ))}
         <button
-          className={`quick-action-button ${primaryAction.tone === "positive" ? "positive" : ""}`}
-          disabled={mutation.isPending}
-          onClick={() => mutation.mutate(primaryAction)}
-          title={transitionLabel(primaryAction.label)}
+          type="button"
+          className="menu-plain"
+          onClick={() => {
+            moreActionsRef.current?.removeAttribute("open");
+            onEdit();
+          }}
         >
-          {mutation.isPending ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}
-          {quickActionLabel(item.status, t)}
+          {t("edit")}
         </button>
-      )}
-      <button className="secondary-button row-edit-button" onClick={onEdit}>{t("edit")}</button>
-      <details className="detail-more-menu row-more-menu" ref={moreActionsRef}>
-        <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={18} /></summary>
-        <div className="detail-more-menu-popover">
-          {secondaryActions.length === 0 && <span>{t("noMoreActions")}</span>}
-          {secondaryActions.map((action) => (
-            <button
-              key={`${action.to}-${action.reason}`}
-              type="button"
-              className={action.tone === "danger" ? "danger" : undefined}
-              disabled={mutation.isPending}
-              onClick={() => {
-                moreActionsRef.current?.removeAttribute("open");
-                mutation.mutate(action);
-              }}
-            >
-              {transitionLabel(action.label)}
-            </button>
-          ))}
-        </div>
-      </details>
-    </>
+        {destructiveActions.map((action) => (
+          <button
+            key={`${action.to}-${action.reason}`}
+            type="button"
+            className="danger"
+            disabled={mutation.isPending}
+            onClick={() => {
+              moreActionsRef.current?.removeAttribute("open");
+              mutation.mutate(action);
+            }}
+          >
+            {transitionLabel(action.label)}
+          </button>
+        ))}
+      </div>
+    </details>
   );
 }
-
 function platformName(platform: WorkItemEnvironment["platform"], t: ReturnType<typeof useI18n>["t"]): string {
   if (platform === "android") return t("android");
   if (platform === "macos") return t("macos");
