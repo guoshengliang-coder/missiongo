@@ -222,6 +222,26 @@ export class MissionGoDatabase {
         this.connection.exec("PRAGMA foreign_keys = ON;");
       }
     }
+
+    // A product can carry an uploaded icon. It is small enough (a 96px PNG) to
+    // live in the row rather than in the attachment store, which is scoped to
+    // work items.
+    const productIconMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 16")
+      .get() as unknown as { version: number } | undefined;
+    if (!productIconMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(products)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "icon_png")) {
+          this.connection.exec("ALTER TABLE products ADD COLUMN icon_png TEXT;");
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(16, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

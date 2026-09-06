@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
+import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -636,20 +636,14 @@ export function App() {
         </button>
         <Brand compact />
         <div className="topbar-divider" />
-        <div className="product-switcher-wrap">
-          <select
-            className="product-switcher"
-            value={selectedProductId}
-            onChange={(event) => {
-              setSelectedProductId(event.target.value);
-              clearItemPage();
-            }}
-            aria-label={t("selectedProduct")}
-          >
-            {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
-          </select>
-          <ChevronDown size={14} aria-hidden="true" />
-        </div>
+        <ProductSwitcher
+          products={products}
+          selectedProductId={selectedProductId}
+          onSelect={(productId) => {
+            setSelectedProductId(productId);
+            clearItemPage();
+          }}
+        />
         <div className="header-search">
           <Search size={17} />
           <input
@@ -1000,6 +994,158 @@ function ItemRow({
 function androidFeedbackBridge(): { openFeedback: () => void } | undefined {
   const bridge = (window as { MissionGoAndroid?: { openFeedback?: () => void } }).MissionGoAndroid;
   return typeof bridge?.openFeedback === "function" ? (bridge as { openFeedback: () => void }) : undefined;
+}
+
+/**
+ * Products are told apart at a glance. An uploaded icon wins; otherwise the item
+ * prefix -- the same AND / HG that labels every key in the list -- sits on a
+ * colour derived from the product id, so a product is distinguishable the moment
+ * it exists, with nothing to configure.
+ */
+function ProductBadge({ product, size = 22 }: { product: Product; size?: number }) {
+  if (product.icon) {
+    return (
+      <img
+        className="product-badge"
+        src={product.icon}
+        alt=""
+        aria-hidden="true"
+        style={{ width: size, height: size }}
+      />
+    );
+  }
+  const hue = [...product.id].reduce((total, character) => (total * 31 + character.charCodeAt(0)) % 360, 7);
+  return (
+    <span
+      className="product-badge generated"
+      aria-hidden="true"
+      style={{ width: size, height: size, background: `hsl(${hue} 55% 38%)`, fontSize: Math.round(size * 0.38) }}
+    >
+      {product.keyPrefix.slice(0, 3)}
+    </span>
+  );
+}
+
+/**
+ * A native <select> cannot carry an icon in its options, so this is the listbox
+ * pattern instead: a button that owns the value, and a list that behaves the way
+ * a select does under the keyboard.
+ */
+function ProductSwitcher({
+  products,
+  selectedProductId,
+  onSelect,
+}: {
+  products: readonly Product[];
+  selectedProductId: string;
+  onSelect: (productId: string) => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const selectedIndex = Math.max(0, products.findIndex((product) => product.id === selectedProductId));
+  const selected = products[selectedIndex];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutside = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutside);
+    return () => document.removeEventListener("mousedown", closeOnOutside);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    setActiveIndex(selectedIndex);
+    listRef.current?.focus();
+  }, [open, selectedIndex]);
+
+  const close = () => {
+    setOpen(false);
+    buttonRef.current?.focus();
+  };
+
+  const choose = (index: number) => {
+    const product = products[index];
+    if (product) onSelect(product.id);
+    close();
+  };
+
+  const onListKeyDown = (event: ReactKeyboardEvent<HTMLUListElement>) => {
+    const moves: Readonly<Record<string, number>> = { ArrowDown: 1, ArrowUp: -1 };
+    if (event.key in moves) {
+      event.preventDefault();
+      setActiveIndex((current) => Math.min(products.length - 1, Math.max(0, current + moves[event.key]!)));
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setActiveIndex(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setActiveIndex(products.length - 1);
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      choose(activeIndex);
+    } else if (event.key === "Escape" || event.key === "Tab") {
+      event.preventDefault();
+      close();
+    }
+  };
+
+  if (!selected) return null;
+  return (
+    <div className="product-switcher-wrap" ref={rootRef}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="product-switcher"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={t("selectedProduct")}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <ProductBadge product={selected} />
+        <span className="product-switcher-name">{selected.name}</span>
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>
+      {open && (
+        <ul
+          ref={listRef}
+          className="product-switcher-list"
+          role="listbox"
+          tabIndex={-1}
+          aria-label={t("selectedProduct")}
+          aria-activedescendant={`product-option-${products[activeIndex]?.id ?? ""}`}
+          onKeyDown={onListKeyDown}
+        >
+          {products.map((product, index) => (
+            <li
+              key={product.id}
+              id={`product-option-${product.id}`}
+              role="option"
+              aria-selected={product.id === selectedProductId}
+              className={`${index === activeIndex ? "active" : ""} ${product.id === selectedProductId ? "selected" : ""}`}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => choose(index)}
+            >
+              <ProductBadge product={product} />
+              <span><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
+              {product.id === selectedProductId && <Check size={15} aria-hidden="true" />}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 function useNarrowViewport(): boolean {
@@ -2543,6 +2689,7 @@ function ProductManager({
             className={activeProductId === product.id && !adding ? "active" : ""}
             onClick={() => { setActiveProductId(product.id); setAdding(false); }}
           >
+            <ProductBadge product={product} size={26} />
             <span><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
             <ChevronRight size={16} />
           </button>
@@ -2567,6 +2714,54 @@ function ProductManager({
           <ProductSettings key={activeProduct.id} product={activeProduct} onSelected={() => onSelectProduct(activeProduct)} />
         )}
       </section>
+    </div>
+  );
+}
+
+/** An uploaded icon replaces the generated badge; removing it brings the badge back. */
+function ProductIconField({ product }: { product: Product }) {
+  const queryClient = useQueryClient();
+  const { t } = useI18n();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState("");
+  const mutation = useMutation({
+    mutationFn: (file: File | null) => file ? api.setProductIcon(product.id, file) : api.removeProductIcon(product.id),
+    onSuccess: async () => {
+      setError("");
+      await queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+    onError: (mutationError) => setError(errorMessage(mutationError, t("somethingWentWrong"))),
+  });
+
+  return (
+    <div className="product-icon-field">
+      <ProductBadge product={product} size={48} />
+      <div>
+        <strong>{t("productIcon")}</strong>
+        <small>{t("productIconHelp")}</small>
+        <div className="product-icon-actions">
+          <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => inputRef.current?.click()}>
+            {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <ImageIcon size={15} />} {product.icon ? t("replaceIcon") : t("uploadIcon")}
+          </button>
+          {product.icon && (
+            <button type="button" className="text-button" disabled={mutation.isPending} onClick={() => mutation.mutate(null)}>
+              {t("useGeneratedIcon")}
+            </button>
+          )}
+        </div>
+        {error && <InlineError message={error} />}
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        hidden
+        accept="image/png,image/jpeg,image/webp"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (file) mutation.mutate(file);
+        }}
+      />
     </div>
   );
 }
@@ -2657,6 +2852,7 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
             <label>{t("productName")}<input value={name} onChange={(event) => setName(event.target.value)} /></label>
             <label>{t("itemPrefix")}<input value={product.keyPrefix} readOnly /><small>{t("prefixLockedHelp")}</small></label>
           </div>
+          <ProductIconField product={product} />
           {productMutation.isError && <InlineError message={errorMessage(productMutation.error, t("somethingWentWrong"))} />}
           {archiveMutation.isError && <InlineError message={errorMessage(archiveMutation.error, t("somethingWentWrong"))} />}
           <button className="primary-button settings-save" disabled={!name.trim() || name.trim() === product.name || productMutation.isPending} onClick={() => productMutation.mutate()}>

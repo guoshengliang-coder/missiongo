@@ -105,6 +105,14 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
+  setProductIcon: (productId: string, file: File) =>
+    request<Product>(`/api/v1/products/${encodeURIComponent(productId)}/icon`, {
+      method: "PUT",
+      headers: { "content-type": "application/octet-stream" },
+      body: file,
+    }),
+  removeProductIcon: (productId: string) =>
+    request<Product>(`/api/v1/products/${encodeURIComponent(productId)}/icon`, { method: "DELETE" }),
   listComponents: (productId: string, options: { includeArchived?: boolean } = {}) =>
     request<Component[]>(
       `/api/v1/products/${encodeURIComponent(productId)}/components${options.includeArchived ? "?includeArchived=true" : ""}`,

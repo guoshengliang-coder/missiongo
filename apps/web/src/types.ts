@@ -60,6 +60,8 @@ export interface Product {
   readonly updatedAt: string;
   /** Set when the product is retired; it leaves the switcher but keeps its items. */
   readonly archivedAt?: string;
+  /** An uploaded icon as a data URL. Absent when the product shows its generated badge. */
+  readonly icon?: string;
 }
 
 export const COMPONENT_KINDS = ["android", "macos", "web", "server", "shared", "other"] as const;

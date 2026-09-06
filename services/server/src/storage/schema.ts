@@ -13,7 +13,8 @@ export const INITIAL_SCHEMA = `
     next_item_sequence INTEGER NOT NULL DEFAULT 1 CHECK (next_item_sequence > 0),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    archived_at TEXT
+    archived_at TEXT,
+    icon_png TEXT
   ) STRICT;
 
   CREATE TABLE IF NOT EXISTS components (

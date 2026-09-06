@@ -59,6 +59,7 @@ interface ProductRow {
   created_at: string;
   updated_at: string;
   archived_at: string | null;
+  icon_png: string | null;
 }
 
 interface ComponentRow {
@@ -238,7 +239,7 @@ export class MissionGoStore {
   listProducts(options: { includeArchived?: boolean } = {}): readonly ProductSnapshot[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at
+        `SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at, icon_png
          FROM products${options.includeArchived ? "" : " WHERE archived_at IS NULL"}
          ORDER BY archived_at IS NOT NULL, name`,
       )
@@ -271,6 +272,15 @@ export class MissionGoStore {
     this.database.connection
       .prepare("UPDATE products SET name = ?, archived_at = ?, updated_at = ? WHERE id = ?")
       .run(name, archivedAt, now, productId);
+    return this.getProduct(productId);
+  }
+
+  /** `null` clears the icon and returns the product to its generated badge. */
+  setProductIcon(productId: string, pngBase64: string | null): ProductSnapshot {
+    this.getProduct(productId);
+    this.database.connection
+      .prepare("UPDATE products SET icon_png = ?, updated_at = ? WHERE id = ?")
+      .run(pngBase64, new Date().toISOString(), productId);
     return this.getProduct(productId);
   }
 
@@ -1608,7 +1618,7 @@ export class MissionGoStore {
 
   private getProductRow(productId: string): ProductRow | undefined {
     return this.database.connection
-      .prepare("SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at FROM products WHERE id = ?")
+      .prepare("SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at, icon_png FROM products WHERE id = ?")
       .get(productId) as unknown as ProductRow | undefined;
   }
 
@@ -1761,6 +1771,7 @@ export class MissionGoStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
+      ...(row.icon_png ? { icon: `data:image/png;base64,${row.icon_png}` } : {}),
     };
   }
 

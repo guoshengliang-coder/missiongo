@@ -1984,4 +1984,48 @@ describe("MissionGo REST API", () => {
     expect(document.statusCode).toBe(201);
     expect(document.json()).toMatchObject({ kind: "document" });
   });
+
+  it("re-encodes an uploaded product icon and falls back to none when it is removed", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Iconic", keyPrefix: "ICO" } })
+    ).json<{ id: string; icon?: string }>();
+    expect(product.icon).toBeUndefined();
+
+    const uploaded = await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${product.id}/icon`,
+      headers: { "content-type": "application/octet-stream" },
+      payload: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    });
+    expect(uploaded.statusCode).toBe(200);
+    const icon = uploaded.json<{ icon: string }>().icon;
+    expect(icon.startsWith("data:image/png;base64,")).toBe(true);
+
+    // A 1x1 source comes back as a 96px PNG, so the switcher only renders one format.
+    const decoded = Buffer.from(icon.slice("data:image/png;base64,".length), "base64");
+    expect(decoded.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+    expect(decoded.readUInt32BE(16)).toBe(96);
+    expect(decoded.readUInt32BE(20)).toBe(96);
+
+    const listed = await app.inject({ method: "GET", url: "/api/v1/products" });
+    expect(listed.json<Array<{ id: string; icon?: string }>>().find((entry) => entry.id === product.id)?.icon).toBe(icon);
+
+    const rejected = await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${product.id}/icon`,
+      headers: { "content-type": "application/octet-stream" },
+      payload: Buffer.from("not an image"),
+    });
+    expect(rejected.statusCode).toBe(400);
+
+    const removed = await app.inject({ method: "DELETE", url: `/api/v1/products/${product.id}/icon` });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json<{ icon?: string }>().icon).toBeUndefined();
+
+    await app.close();
+  });
 });

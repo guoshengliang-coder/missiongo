@@ -24,6 +24,8 @@ import {
   type AdminAccountConfig,
   type AdminSessionUser,
 } from "./admin-auth.js";
+import sharp from "sharp";
+
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
 import { invalidInput, MissionGoError } from "./errors.js";
 import { createMissionGoMcpHandler } from "./mcp.js";
@@ -57,6 +59,9 @@ const DEFAULT_SDK_RATE_LIMITS: Readonly<Record<SdkRateLimitBucket, SdkRateLimitR
   web_session: { limit: 60, windowMilliseconds: 60 * 60_000 },
   attachment_upload: { limit: 60, windowMilliseconds: 60 * 60_000 },
 };
+
+/** Square edge of a stored product icon, in pixels. Small enough to live in the row. */
+const PRODUCT_ICON_EDGE = 96;
 
 const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "server", "shared", "other"] as const;
 
@@ -804,6 +809,31 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       keyPrefix: stringField(body, "keyPrefix")!,
     });
     return reply.status(201).send(product);
+  });
+
+  // The icon is re-encoded rather than stored as uploaded: it bounds the size,
+  // strips whatever metadata the original carried, and means the switcher only
+  // ever renders one format.
+  app.put("/api/v1/products/:productId/icon", async (request) => {
+    const { productId } = request.params as { productId: string };
+    if (!Buffer.isBuffer(request.body)) throw invalidInput("Icon body must be binary image data.");
+    if (request.body.length === 0) throw invalidInput("Icon body is empty.");
+    let png: Buffer;
+    try {
+      png = await sharp(request.body, { animated: false })
+        .rotate()
+        .resize({ width: PRODUCT_ICON_EDGE, height: PRODUCT_ICON_EDGE, fit: "cover", position: "centre" })
+        .png({ compressionLevel: 9 })
+        .toBuffer();
+    } catch {
+      throw invalidInput("The icon could not be read as an image.");
+    }
+    return store.setProductIcon(productId, png.toString("base64"));
+  });
+
+  app.delete("/api/v1/products/:productId/icon", async (request) => {
+    const { productId } = request.params as { productId: string };
+    return store.setProductIcon(productId, null);
   });
 
   app.patch("/api/v1/products/:productId", async (request) => {

@@ -26,6 +26,8 @@ export interface ProductSnapshot {
   readonly updatedAt: string;
   /** Set when the product is retired. Its items stay readable; it leaves the pickers. */
   readonly archivedAt?: string;
+  /** An uploaded icon as a PNG data URL. Absent when the product uses its generated badge. */
+  readonly icon?: string;
 }
 
 export interface ComponentSnapshot {
