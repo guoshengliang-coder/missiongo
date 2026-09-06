@@ -167,6 +167,59 @@ describe("Commenting over MCP", () => {
   });
 });
 
+describe("The consent screen", () => {
+  async function consentPage(writeTools: "none" | "comments" | "all") {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-consent-"));
+    temporaryDirectories.push(directory);
+    const adminAccount = testAdminAccount();
+    const app = buildApp({
+      databasePath: join(directory, "missiongo.sqlite"),
+      attachmentsPath: join(directory, "attachments"),
+      adminAccount,
+      publicOrigin: "https://missiongo.test",
+      writeTools,
+    });
+    apps.push(app);
+
+    const client = (await app.inject({
+      method: "POST",
+      url: "/oauth/register",
+      payload: { client_name: "Codex", redirect_uris: ["http://127.0.0.1:9321/callback"] },
+    })).json<{ client_id: string }>();
+    const challenge = createHash("sha256").update("a".repeat(64), "utf8").digest("base64url");
+    const response = await app.inject({
+      method: "GET",
+      url: `/oauth/authorize?client_id=${encodeURIComponent(client.client_id)}`
+        + "&redirect_uri=http%3A%2F%2F127.0.0.1%3A9321%2Fcallback&response_type=code"
+        + `&scope=missiongo%3Aread%20missiongo%3Awrite&code_challenge=${challenge}&code_challenge_method=S256`,
+    });
+    expect(response.statusCode).toBe(200);
+    return response.body;
+  }
+
+  it("promises only commenting when only commenting is open", async () => {
+    const page = await consentPage("comments");
+    expect(page).toContain("在任务上发表评论");
+    // The tier exposes no transition at all, so the screen must not offer one.
+    expect(page).not.toContain("推进任务的处理阶段");
+    expect(page).toContain("限时读写授权");
+  });
+
+  it("names the stage transitions once the processing tier is open", async () => {
+    const page = await consentPage("all");
+    expect(page).toContain("推进任务的处理阶段");
+  });
+
+  it("promises nothing when the deployment has writing switched off", async () => {
+    // The client asked for write; this deployment does not offer it. Saying yes
+    // here would be consent given on terms the server cannot honour.
+    const page = await consentPage("none");
+    expect(page).not.toContain("发表评论");
+    expect(page).toContain("没有开放 AI 写入");
+    expect(page).toContain("AI 读取授权");
+  });
+});
+
 describe("Work-item comments over REST", () => {
   async function itemApp() {
     const { app } = await testApp();

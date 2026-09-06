@@ -272,13 +272,28 @@ function escapedHtml(value: string): string {
   })[character]!);
 }
 
+/**
+ * The consent screen has to describe what this deployment will actually let the
+ * client do, which is the granted scope *and* the write tier together. Naming a
+ * capability the tier does not expose asks for permission on false terms, and
+ * this is the one screen where that matters most.
+ */
 function oauthLoginPage(
   clientName: string,
   requestToken: string,
   scopes: readonly string[],
+  writeTools: McpWriteTier,
   invalidCredentials = false,
 ): string {
-  const writes = scopes.includes(MISSIONGO_WRITE_SCOPE);
+  const writes = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools !== "none";
+  const writeGrant = writeTools === "all"
+    ? "<strong>发表评论，并推进任务的处理阶段</strong>。不能修改你写的内容，不能创建或删除条目，不能撤回评论。"
+    : "<strong>在任务上发表评论</strong>。不能修改你写的内容，不能创建或删除条目，不能撤回评论，也不能改变任务状态。";
+  const scopeNote = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools === "none"
+    ? "本次只会签发读取授权：这个部署当前没有开放 AI 写入。"
+    : writes
+      ? "服务端会签发限时读写授权，并在每次请求时校验账号权限。"
+      : "服务端会签发限时读取授权，并在每次读取时校验账号权限。";
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -292,7 +307,7 @@ function oauthLoginPage(
   <p class="copy"><span class="client">${escapedHtml(clientName)}</span> 请求以下权限。首次连接请验证账号。</p>
   <ul class="scopes">
     <li>读取你有权限查看的 MissionGo 内容</li>
-    ${writes ? "<li><strong>发表评论，并推进任务的处理阶段</strong>。不能修改你写的内容，不能创建或删除条目，不能撤回评论。</li>" : ""}
+    ${writes ? `<li>${writeGrant}</li>` : ""}
   </ul>
   ${invalidCredentials ? '<p class="error">用户名或密码不正确，请重新输入。</p>' : ""}
   <form method="post" action="/oauth/authorize">
@@ -301,7 +316,7 @@ function oauthLoginPage(
     <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required>
     <button type="submit">确认并连接</button>
   </form>
-  <p class="note">密码只用于本次验证，不会交给 AI。服务端会签发限时读取授权，并在每次读取时校验账号权限。</p>
+  <p class="note">密码只用于本次验证，不会交给 AI。${scopeNote}</p>
 </main></body></html>`;
 }
 
@@ -310,6 +325,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const store = new MissionGoStore(options.databasePath ?? ":memory:");
   const attachmentStorage = new AttachmentStorage(options.attachmentsPath ?? "./data/attachments");
   const publicOrigin = new URL(options.publicOrigin ?? "http://127.0.0.1").origin;
+  const writeTools: McpWriteTier = options.writeTools ?? "none";
   const mcpHandler = options.adminAccount
     // Only hand out an update URL when a real deployment origin was configured;
     // the loopback fallback above is not an address a client can reinstall from.
@@ -486,7 +502,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           codeChallengeMethod: singleQueryValue(query.code_challenge_method),
         } satisfies OAuthAuthorizationInput);
         return reply.header("cache-control", "no-store").type("text/html; charset=utf-8").send(
-          oauthLoginPage(started.clientName, started.requestToken, started.scopes),
+          oauthLoginPage(started.clientName, started.requestToken, started.scopes, writeTools),
         );
       } catch {
         return reply.header("cache-control", "no-store").status(400).send({
@@ -510,6 +526,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             oauthProvider.authorizationClientName(requestToken),
             requestToken,
             oauthProvider.authorizationScopes(requestToken),
+            writeTools,
             true,
           ),
         );
