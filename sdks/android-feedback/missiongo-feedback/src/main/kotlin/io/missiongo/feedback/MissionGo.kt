@@ -192,7 +192,11 @@ public object MissionGo {
             // Not a crash: the host never configured MissionGo, which is a supported state. Say so
             // through the channel the caller already handles, and stay silent when there is none.
             callback?.onResult(
-                FeedbackResult.Failed("not_initialized", "MissionGo.initialize() was never called."),
+                FeedbackResult.Failed(
+                    "not_initialized",
+                    "MissionGo.initialize() was never called.",
+                    retryable = false,
+                ),
             )
             return
         }
@@ -208,7 +212,11 @@ public object MissionGo {
             current.launches.remove(launchId)
             FeedbackLaunchCallbacks.complete(
                 launchId,
-                FeedbackResult.Failed("activity_launch_failed", launchFailure.message ?: "Could not open feedback."),
+                FeedbackResult.Failed(
+                    "activity_launch_failed",
+                    launchFailure.message ?: "Could not open feedback.",
+                    retryable = false,
+                ),
             )
             if (callback == null) throw launchFailure
         }

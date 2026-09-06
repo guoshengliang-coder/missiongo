@@ -89,7 +89,7 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
         editorOrigin = origin
         val sessionToken = requireNotNull(session.token)
         val editor = WebView(this).apply {
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(themeColor(android.R.attr.colorBackground))
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.allowFileAccess = false
@@ -165,6 +165,19 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
         setContentView(loadingContent())
     }
 
+    // Resolved from the theme rather than written as a literal, so the pre-H5 screens follow
+    // the light/dark variant the system picked (see res/values-night/themes.xml).
+    private fun themeColor(attribute: Int): Int {
+        val resolved = android.util.TypedValue()
+        theme.resolveAttribute(attribute, resolved, true)
+        return if (resolved.resourceId != 0) {
+            @Suppress("DEPRECATION")
+            resources.getColor(resolved.resourceId, theme)
+        } else {
+            resolved.data
+        }
+    }
+
     private fun loadingContent(): LinearLayout {
         val density = resources.displayMetrics.density
         val spacing = (12 * density).toInt()
@@ -172,7 +185,7 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(spacing * 2, spacing * 2, spacing * 2, spacing * 2)
-            setBackgroundColor(Color.rgb(243, 241, 235))
+            setBackgroundColor(themeColor(android.R.attr.colorBackground))
             addView(ProgressBar(this@MissionGoFeedbackActivity), LinearLayout.LayoutParams(
                 (44 * density).toInt(),
                 (44 * density).toInt(),
@@ -180,7 +193,7 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
             addView(TextView(this@MissionGoFeedbackActivity).apply {
                 text = "正在打开反馈页面…"
                 textSize = 16f
-                setTextColor(Color.rgb(23, 32, 51))
+                setTextColor(themeColor(android.R.attr.textColorPrimary))
                 gravity = Gravity.CENTER
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
@@ -189,7 +202,7 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
             addView(TextView(this@MissionGoFeedbackActivity).apply {
                 text = "正在安全地准备运行环境和反馈表单"
                 textSize = 12f
-                setTextColor(Color.rgb(109, 116, 129))
+                setTextColor(themeColor(android.R.attr.textColorSecondary))
                 gravity = Gravity.CENTER
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
@@ -243,7 +256,11 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
         if (id != null && failure != null) {
             MissionGo.completeFeedbackLaunch(
                 id,
-                FeedbackResult.Failed(failure.code, failure.message ?: "Could not submit feedback."),
+                FeedbackResult.Failed(
+                    failure.code,
+                    failure.message ?: "Could not submit feedback.",
+                    failure.retryable,
+                ),
             )
         }
         finish()

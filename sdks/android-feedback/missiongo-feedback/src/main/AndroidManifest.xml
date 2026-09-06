@@ -4,6 +4,6 @@
         <activity
             android:name="io.missiongo.feedback.MissionGoFeedbackActivity"
             android:exported="false"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+            android:theme="@style/MissionGoFeedbackTheme" />
     </application>
 </manifest>

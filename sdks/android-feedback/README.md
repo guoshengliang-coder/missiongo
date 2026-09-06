@@ -7,7 +7,7 @@ self-contained contract, published for host developers and coding agents at
 `<origin>/downloads/missiongo-android-sdk/INTEGRATION.md`. Everything below is for people
 working on the SDK itself.
 
-The current `0.2.0` release includes:
+The current `0.2.1` release includes:
 
 - Android application, version, OS, device, locale, time-zone, ABI, and display-density collection;
 - host-provided screen, context, log, breadcrumb, and exception data;
@@ -20,7 +20,8 @@ The current `0.2.0` release includes:
 - submitted, cancelled, and terminal-failure callbacks;
 - WorkManager-backed headless delivery with connected-network constraints;
 - origin-scoped IndexedDB recovery for explicitly selected H5 attachments;
-- a sample APK, a publishable release AAR, and static Maven distribution from the website.
+- a sample APK, a publishable release AAR, and static Maven distribution from the website;
+- a light/dark editor theme, and a public `retryable` flag on failures.
 
 The interactive editor and queued headless submissions can recover after process recreation. Queue status notifications and optional screen capture remain later milestones.
 

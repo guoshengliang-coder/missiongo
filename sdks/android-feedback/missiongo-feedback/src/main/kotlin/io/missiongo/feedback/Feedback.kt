@@ -50,16 +50,32 @@ public sealed interface FeedbackResult {
 
     public data object Cancelled : FeedbackResult
 
-    public data class Failed(public val code: String, public val message: String) : FeedbackResult
+    /**
+     * @param code one of the SDK's own codes, a code the server sent, or `http_<status>`.
+     * @param retryable whether the same request could still succeed — the SDK already knows
+     *   this (it decides its own retries from it), so a host offering a "try again" button
+     *   should read it here rather than keep its own list of codes.
+     */
+    public data class Failed(
+        public val code: String,
+        public val message: String,
+        public val retryable: Boolean = false,
+    ) : FeedbackResult
 }
 
 public fun interface FeedbackResultCallback {
     public fun onResult(result: FeedbackResult)
 }
 
+/**
+ * @param code one of the SDK's own codes, a code the server sent, or `http_<status>`.
+ * @param retryable whether the same request could still succeed. Public because a host with an
+ *   error-handling policy has to decide whether to offer a retry, and the alternative — copying
+ *   the SDK's list of codes into the host — goes stale the moment the server adds one.
+ */
 public class MissionGoException(
     public val code: String,
     message: String,
     cause: Throwable? = null,
-    internal val retryable: Boolean = false,
+    public val retryable: Boolean = false,
 ) : Exception(message, cause)

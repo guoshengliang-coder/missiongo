@@ -4,7 +4,7 @@
 > 读完它就足以完成接入，不需要 MissionGo 的源码，也不需要读 MissionGo 的其他文档。
 >
 > 固定地址：`__MISSIONGO_PUBLIC_ORIGIN__/downloads/missiongo-android-sdk/INTEGRATION.md`
-> 对应 SDK 版本：**0.2.0**
+> 对应 SDK 版本：**0.2.1**
 
 ## 0. 这是什么
 
@@ -20,7 +20,7 @@
 | | 内容 | 从哪来 |
 |---|---|---|
 | 1 | Maven 仓库地址 `__MISSIONGO_PUBLIC_ORIGIN__/maven` | 本文档 |
-| 2 | 坐标 `io.missiongo:missiongo-feedback:0.2.0` | 本文档 |
+| 2 | 坐标 `io.missiongo:missiongo-feedback:0.2.1` | 本文档 |
 | 3 | 服务地址（endpoint）`__MISSIONGO_PUBLIC_ORIGIN__` | 本文档 |
 | 4 | SDK Token | **由人在 MissionGo 管理端创建后，直接写入本机私密文件** |
 
@@ -48,6 +48,9 @@ Token 最终会进入 APK，可以被反编译提取，所以它不是密码学�
 WorkManager 这一条值得单独确认：如果宿主已经使用了自定义 `WorkerFactory`（例如 Hilt 的
 `@HiltWorker` 配合 `Configuration.Provider`），必须保证默认 WorkerFactory 仍能实例化 SDK 自己的
 Worker，否则后台队列投递会失败。宿主此前没有 WorkManager 的话则无需任何处理。
+
+**混淆规则不用你写。** AAR 自带 consumer ProGuard 规则（保留后台 Worker 的构造器），R8 构建
+直接可用，不需要在宿主的 `proguard-rules.pro` 里加任何东西。
 
 ## 3. 声明仓库
 
@@ -81,7 +84,7 @@ dependencyResolutionManagement {
 ```kotlin
 // gradle/libs.versions.toml
 [versions]
-missiongoFeedback = "0.2.0"
+missiongoFeedback = "0.2.1"
 
 [libraries]
 missiongo-feedback = { module = "io.missiongo:missiongo-feedback", version.ref = "missiongoFeedback" }
@@ -186,7 +189,7 @@ class HostApplication : Application() {
 
 ## 7. 提供业务现场
 
-这一步决定了收到的反馈有没有用。SDK 自动采集的只有运行环境（见第 10 节），**业务信息必须由
+这一步决定了收到的反馈有没有用。SDK 自动采集的只有运行环境（见第 11 节），**业务信息必须由
 宿主主动给**。
 
 ```kotlin
@@ -202,6 +205,9 @@ MissionGo.setContext(
         "lastErrorCode" to "TIMEOUT",
     ),
 )
+
+// 业务现场失效时清掉整个命名空间（例如用户退出登录）
+MissionGo.clearContext("gateway")
 
 // 关键用户动作
 MissionGo.addBreadcrumb("session_opened", mapOf("source" to "notification"))
@@ -249,7 +255,8 @@ MissionGo.openFeedback(
     when (result) {
         is FeedbackResult.Submitted -> showMessage("已创建 ${result.submission.itemKey}")
         FeedbackResult.Cancelled -> Unit
-        is FeedbackResult.Failed -> showMessage(result.message)
+        // result.retryable 说明同一次请求是否还可能成功，据此决定要不要给「重试」按钮。
+        is FeedbackResult.Failed -> showError(result.message, canRetry = result.retryable)
     }
 }
 ```
@@ -280,6 +287,14 @@ queueId?.let {
 }
 ```
 
+需要「先存草稿、稍后再定稿」时，两步分开调用：
+
+```kotlin
+val draft = MissionGo.createDraft(FeedbackOptions(title = "索引同步失败"))
+// draft.id 可以保存下来，24 小时内有效
+val submission = MissionGo.finalizeDraft(draft.id)   // 重复调用返回同一个任务编号
+```
+
 `FeedbackOptions.clientDraftId` 是幂等键：同一个 options 重试不会产生多个草稿，重复 finalize
 同一草稿返回同一个任务编号。SDK 对连接失败、408、429、5xx 最多重试 2 次并指数退避；鉴权、
 参数和业务冲突错误不重试。
@@ -287,7 +302,52 @@ queueId?.let {
 队列快照存在 SDK 自己的禁止备份目录，24 小时过期，进程和设备重启后继续。当前版本**查询不到
 队列状态**（下个版本补），宿主可以保存 queueId 用于取消。
 
-## 10. SDK 采集什么、不采集什么
+## 10. 错误码与重试
+
+`MissionGoException.code` 和 `FeedbackResult.Failed.code` **都是字符串**，取值有三个来源。
+
+**SDK 自己的码：**
+
+| code | 场景 | `retryable` |
+|---|---|---|
+| `not_initialized` | 未调用 `initialize()` | false |
+| `network_error` | 连不上服务器 | **true** |
+| `invalid_server_response` | 响应不是合法 JSON，或缺少任务编号 | false |
+| `feedback_expired` | 本地草稿丢失或已过 24 小时 | false |
+| `queued_feedback_missing` | 队列快照丢失或已过期 | false |
+| `webview_load_failed` | H5 编辑器加载失败 | false |
+| `activity_launch_failed` | 无法启动编辑器 Activity | false |
+| `unexpected_error` | 兜底 | false |
+
+**服务端的码**：HTTP 错误响应体若是 JSON 且带 `code` 字段，原样透传。
+
+**兜底**：服务端没给 `code` 时，取 `http_<状态码>`。
+
+> ⚠️ **不要拿 HTTP 状态码当 code 匹配。** 鉴权失败和限流当前到宿主手里是 `http_401` /
+> `http_429`，不是 `"401"` / `"429"`。真正该判断的是下面的 `retryable`。
+
+### 用 `retryable`，不要自己维护码表
+
+```kotlin
+is FeedbackResult.Failed ->
+    if (result.retryable) showRetryableError(result.message) else showFinalError(result.message)
+```
+
+```kotlin
+runCatching { MissionGo.submitFeedback(options) }
+    .onFailure { error ->
+        val failure = error as? MissionGoException
+        if (failure?.retryable == true) scheduleRetry() else reportFinal(error)
+    }
+```
+
+`retryable` 就是 SDK 判断自己要不要重试时用的那个值（HTTP `408`、`429`、`5xx` 为 true）。
+宿主照抄一份 code 白名单来猜，会在服务端新增 code 时失效。
+
+SDK 默认对可重试失败最多退避重试 2 次；回调或异常拿到 `retryable = true`，意味着自动重试
+已经用完，是否再给用户一个「重试」按钮由宿主决定。
+
+## 11. SDK 采集什么、不采集什么
 
 **自动采集**（全部通过 Android 公开 API）：包名、版本名、版本号、Android 版本与 API Level、
 设备厂商与型号、主 CPU 架构、Locale、时区、屏幕密度，以及宿主初始化时显式传入的 revision /
@@ -309,7 +369,7 @@ Logcat、宿主数据库、SharedPreferences、账号、Cookie、Token、页面�
 
 宿主也不得把数据库、SharedPreferences、Logcat、请求头或用户输入整体倾倒给 SDK。
 
-## 11. 接入验收清单
+## 12. 接入验收清单
 
 逐条验证，不要跳过：
 
@@ -324,19 +384,19 @@ Logcat、宿主数据库、SharedPreferences、账号、Cookie、Token、页面�
 - [ ] 断网时打开入口，错误页可手动重试；杀进程后重进能恢复同一草稿；
 - [ ] SDK 的任何网络错误都不会导致宿主崩溃；未配置的构建里点不到入口，且不会崩。
 
-## 12. 常见问题
+## 13. 常见问题
 
 | 现象 | 原因 |
 |---|---|
 | Gradle 报仓库不被允许 | 用了 `FAIL_ON_PROJECT_REPOS` 却把仓库加在了模块里，应加到 `settings.gradle.kts` |
 | Gradle 报制品解析/解析失败且信息难懂 | 服务端把缺失路径回落成了 HTML。仓库地址写错，或服务端未配置 `/maven` 返回真正的 404 |
 | `IllegalArgumentException` 出现在 `initialize()` | endpoint 不是合法 origin，或 Token 格式不对（应形如 `mg_sdk_` + 43 位） |
-| 所有提交 401 | Token 已撤销、写错，或用了占位值 |
-| 提交 429 | 触发按 Token 的频率限制 |
+| `http_401`（所有提交都失败） | Token 已撤销、写错，或用了占位值 |
+| `http_429` | 触发按 Token 的频率限制。`retryable` 为 true，退避后可再试 |
 | 后台队列不投递 | 没有在 `Application.onCreate()` 同步初始化，或自定义 `WorkerFactory` 无法实例化 SDK 的 Worker |
 | 生产构建连不上 | endpoint 不是 HTTPS；生产环境不允许 HTTP |
 
-## 13. 当前版本不支持
+## 14. 当前版本不支持
 
 自动崩溃 / ANR 上报、完整 Logcat 采集、网络全量拦截、后台屏幕采集、录屏、打开反馈时自动截图、
 后台队列状态查询、附件上传进度与提交前删除。

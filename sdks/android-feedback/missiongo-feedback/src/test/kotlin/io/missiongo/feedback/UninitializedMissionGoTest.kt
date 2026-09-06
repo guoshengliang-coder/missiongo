@@ -40,6 +40,7 @@ class UninitializedMissionGoTest {
         val failure = result as? FeedbackResult.Failed
         assertTrue(failure != null, "expected a Failed result, got $result")
         assertEquals("not_initialized", failure.code)
+        assertFalse(failure.retryable, "a host that never configured MissionGo gains nothing by retrying")
     }
 
     @Test
@@ -66,5 +67,6 @@ class UninitializedMissionGoTest {
         val missionGoFailure = failure as? MissionGoException
         assertTrue(missionGoFailure != null, "expected a MissionGoException, got $failure")
         assertEquals("not_initialized", missionGoFailure.code)
+        assertFalse(missionGoFailure.retryable)
     }
 }

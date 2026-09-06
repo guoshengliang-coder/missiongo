@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The editor Activity used to hardcode Theme.Material.Light, so a host running in dark mode
+      dropped the user onto a white screen. The platform has no Material DayNight theme, so the
+      light and dark variants are declared here and picked by the -night resource qualifier.
+
+      Everything the Activity draws before the H5 loads reads its colours from this theme, which
+      is what makes the fix complete: switching the theme alone would still leave a light loading
+      screen, because those colours were literals in the code.
+    -->
+    <style name="MissionGoFeedbackTheme" parent="@android:style/Theme.Material.Light.NoActionBar" />
+</resources>
