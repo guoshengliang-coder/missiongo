@@ -9,6 +9,7 @@ import type {
   UpdateWorkItemInput,
   WorkItem,
   WorkItemAttachment,
+  WorkItemComment,
   WorkItemEvent,
   WorkItemStatus,
   WorkItemType,
@@ -193,6 +194,16 @@ export const api = {
     }),
   getTimeline: (itemKey: string) =>
     request<{ events: WorkItemEvent[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/timeline`),
+  createComment: (itemKey: string, input: { text: string }) =>
+    request<WorkItemComment>(`/api/v1/items/${encodeURIComponent(itemKey)}/comments`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  withdrawComment: (itemKey: string, commentId: string) =>
+    request<WorkItemComment>(
+      `/api/v1/items/${encodeURIComponent(itemKey)}/comments/${encodeURIComponent(commentId)}/withdraw`,
+      { method: "POST" },
+    ),
   listSdkTokens: () => request<SdkToken[]>("/api/v1/sdk-tokens"),
   createSdkToken: (input: { name: string; productId: string; sourceComponentId?: string }) =>
     request<CreatedSdkToken>("/api/v1/sdk-tokens", { method: "POST", body: JSON.stringify(input) }),

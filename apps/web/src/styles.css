@@ -649,7 +649,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .timeline-event p { margin: 3px 0 0; color: var(--muted); font-size: var(--text-xs); }
 /* An agent's entry reads as a different voice from a person's, so the dot changes. */
 .timeline-event--agent .timeline-dot { background: var(--ink-2); }
-.comment-body { margin-top: 8px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.comment-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; margin: 0 0 16px; }
+.comment-form textarea { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); font: inherit; font-size: var(--text-sm); line-height: 1.5; resize: vertical; }
+.comment-form textarea:focus-visible { outline: 2px solid var(--mint-dark); outline-offset: 1px; }
+.comment-body { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-top: 8px; }
+.comment-body > :first-child { flex: 1; min-width: 0; }
+.comment-withdraw { flex: none; padding: 2px 6px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: var(--text-xs); cursor: pointer; }
+.comment-withdraw:hover { color: var(--danger); text-decoration: underline; }
+@media (max-width: 640px) { .comment-form { grid-template-columns: 1fr; } }
 .comment-text { margin: 0; color: var(--ink); font-size: var(--text-sm); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .comment-withdrawn { margin-top: 8px; color: var(--muted); }
 .comment-withdrawn > summary { cursor: pointer; font-size: var(--text-xs); }

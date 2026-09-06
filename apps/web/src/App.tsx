@@ -1442,6 +1442,8 @@ function DetailPane({
     ]);
   };
 
+  const [commentDraft, setCommentDraft] = useState("");
+
   const transitionMutation = useMutation({
     mutationFn: (action: TransitionAction) => api.transitionItem(itemKey!, action),
     onSuccess: async (updated) => {
@@ -1450,6 +1452,26 @@ function DetailPane({
     },
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
   });
+
+  const commentMutation = useMutation({
+    mutationFn: (text: string) => api.createComment(itemKey!, { text }),
+    onSuccess: async () => {
+      setCommentDraft("");
+      await queryClient.invalidateQueries({ queryKey: ["timeline", itemKey] });
+      onNotice(t("commentPosted"));
+    },
+    onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
+  });
+
+  const withdrawMutation = useMutation({
+    mutationFn: (commentId: string) => api.withdrawComment(itemKey!, commentId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["timeline", itemKey] });
+      onNotice(t("commentWithdrawnToast"));
+    },
+    onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
+  });
+
   if (!itemKey) {
     return null;
   }
@@ -1607,6 +1629,26 @@ function DetailPane({
                 <small>{t("newestFirst")}</small>
               </header>
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
+              <form
+                className="comment-form"
+                onSubmit={(formEvent) => {
+                  formEvent.preventDefault();
+                  const text = commentDraft.trim();
+                  if (text) commentMutation.mutate(text);
+                }}
+              >
+                <label className="sr-only" htmlFor="comment-draft">{t("addComment")}</label>
+                <textarea
+                  id="comment-draft"
+                  value={commentDraft}
+                  onChange={(changeEvent) => setCommentDraft(changeEvent.target.value)}
+                  placeholder={t("commentPlaceholder")}
+                  rows={2}
+                />
+                <button type="submit" className="secondary-button" disabled={!commentDraft.trim() || commentMutation.isPending}>
+                  {t("postComment")}
+                </button>
+              </form>
               <div className="timeline">
                 {groupTimeline(timelineQuery.data?.events ?? []).map(({ id, event, count, filenames }) => (
                   <div
@@ -1629,7 +1671,14 @@ function DetailPane({
                       {event.payload?.reason === "manual_override" && <span className="timeline-tag">{t("movedDirectly")}</span>}
                       <p>{actorLabel(event.actorKind)} · {formatTime(event.createdAt)}</p>
                       {filenames.length > 0 && <p className="timeline-files">{filenames.join("、")}</p>}
-                      {event.eventType === "comment_added" && <CommentBody payload={event.payload} />}
+                      {event.eventType === "comment_added" && (
+                        <CommentBody
+                          payload={event.payload}
+                          onWithdraw={() => {
+                            if (window.confirm(t("withdrawCommentConfirm"))) withdrawMutation.mutate(event.id);
+                          }}
+                        />
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1662,7 +1711,13 @@ function commentHeading(event: WorkItemEvent, analysisLabel: string, commentLabe
   return event.actorKind === "agent" && event.payload.bodyKind === "structured" ? analysisLabel : commentLabel;
 }
 
-function CommentBody({ payload }: { readonly payload: Readonly<Record<string, unknown>> }) {
+function CommentBody({
+  payload,
+  onWithdraw,
+}: {
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly onWithdraw: () => void;
+}) {
   const { t } = useI18n();
   const body = (payload.body ?? {}) as Readonly<Record<string, unknown>>;
   const withdrawn = typeof payload.withdrawnAt === "string";
@@ -1685,7 +1740,14 @@ function CommentBody({ payload }: { readonly payload: Readonly<Record<string, un
     );
   }
 
-  return <div className="comment-body">{rendered}</div>;
+  return (
+    <div className="comment-body">
+      {rendered}
+      {/* Withdrawing is the person's alone: an agent that could take its own
+          words back could erase the record of having said them. */}
+      <button type="button" className="comment-withdraw" onClick={onWithdraw}>{t("withdrawComment")}</button>
+    </div>
+  );
 }
 
 function AnalysisDetails({ payload }: { payload: Readonly<Record<string, unknown>> }) {
