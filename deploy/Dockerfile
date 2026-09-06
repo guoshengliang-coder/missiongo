@@ -56,6 +56,9 @@ FROM nginx:1.29-alpine AS web
 ARG MISSIONGO_PUBLIC_ORIGIN
 
 COPY deploy/nginx-container.conf /etc/nginx/conf.d/default.conf
+# Outside conf.d: it holds add_header directives to include from locations, not a server
+# block, and nginx would fail to load it as one.
+COPY deploy/nginx-security-headers.conf /etc/nginx/missiongo-security-headers.conf
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 COPY skills/missiongo/SKILL.md /tmp/missiongo-SKILL.md
 COPY sdks/android-feedback/INTEGRATION.md /tmp/missiongo-sdk-INTEGRATION.md
