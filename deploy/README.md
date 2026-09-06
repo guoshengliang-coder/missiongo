@@ -65,8 +65,9 @@ neither Node nor a copy of these scripts already in place.
 #### Knowing what is live
 
 The script sends this directory, not a branch, so before pushing anything it
-checks that the directory is a clean checkout of `main` at the same commit as
-`origin/main`. Otherwise the commit it records would not describe what actually
+checks that the directory is clean and sits on the same commit as
+`origin/main`, and that CI passed for it. The branch's own name does not
+matter, so a worktree deploys like anything else. Otherwise the commit it records would not describe what actually
 shipped. `--allow-dirty` deploys the tree as it is and marks the release so the
 difference stays visible instead of being lost.
 

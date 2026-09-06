@@ -161,7 +161,9 @@ if [ "$allow_dirty" -eq 1 ]; then
   echo "==> --allow-dirty: deploying this working tree (${branch} ${short_commit}, ${tree_state})"
 else
   [ "$tree_state" = clean ] || deploy_refusal "the working tree has uncommitted changes."
-  [ "$branch" = "$release_branch" ] || deploy_refusal "on branch '${branch}', not '${release_branch}'."
+  # The branch's name is not the point and asking for it only gets in the way of
+  # working in a worktree: what matters is that this commit is the one on
+  # origin/main, which a branch called anything else can equally be.
   git fetch --quiet origin "$release_branch" 2>/dev/null || \
     deploy_refusal "origin/${release_branch} could not be fetched, so this commit cannot be confirmed as pushed."
   remote_commit="$(git rev-parse "origin/${release_branch}")"
