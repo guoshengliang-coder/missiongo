@@ -6,6 +6,8 @@
 > 依据：`feat/ui-iteration` @ `a725cee` 的代码通读 + 设计评审逐项定稿
 
 本文件定义 MissionGo 从「只读 AI」走向「可写 AI」的能力边界、分刀顺序和契约改动。
+每个环节允许写入哪些字段、哪些必填、哪些是服务端强制而哪些只是 Skill 承诺，见
+[AI 写入规则](ai-write-rules.md)。
 长期产品方向见 [产品与技术路线图](product-and-technical-plan.md);当前只读契约见
 [MCP 契约](mcp-contract.md),本文件落地后需同步替换其中的只读表述。
 
