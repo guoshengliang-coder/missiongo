@@ -20,8 +20,21 @@ export const MISSIONGO_MCP_INSTRUCTIONS =
   "Use get_item_context for the requested key, page the complete timeline when truncated, and inspect every attachment. " +
   "Report any attachment or timeline content that could not be read. This server exposes no SQL or mutation capability.";
 
+/**
+ * How much of the write surface this server exposes.
+ *
+ * The tiers are ordered rather than independent because the ladder itself is:
+ * an agent that pauses an item has to write down why it paused, so "processing
+ * without comments" is not a combination worth being able to express. Keeping
+ * it a single ordered value means the invalid combination cannot be configured
+ * at all, instead of being rejected by a check somebody can forget to write.
+ */
+export const MCP_WRITE_TIERS = ["none", "comments", "all"] as const;
+export type McpWriteTier = (typeof MCP_WRITE_TIERS)[number];
+
 export interface MissionGoMcpOptions {
-  readonly enableWriteTools?: boolean;
+  /** Defaults to "none": the read-only surface this deployment has always exposed. */
+  readonly writeTools?: McpWriteTier;
   /** Deployment origin, used to tell clients where to reinstall an outdated Skill. */
   readonly publicOrigin?: string;
 }
@@ -337,7 +350,13 @@ export function createMissionGoMcpServer(
     },
   );
 
-  if (!options.enableWriteTools) return server;
+  const writeTools = options.writeTools ?? "none";
+  if (writeTools === "none") return server;
+
+  // MCP_WRITE_SECTION: every tool below this line mutates MissionGo or reads an
+  // execution, so each one must authorize the caller itself. The guard in
+  // mcp-authorization.test.ts anchors on this marker.
+  // MCP_WRITE_TIER: comments
 
   server.registerTool(
     "append_analysis",
@@ -371,6 +390,9 @@ export function createMissionGoMcpServer(
     },
   );
 
+  if (writeTools !== "all") return server;
+
+  // MCP_WRITE_TIER: processing
   server.registerTool(
     "get_execution",
     {

@@ -6,7 +6,8 @@ import { readFileSync } from "node:fs";
 import type { ServerContext } from "@modelcontextprotocol/server";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { requireExecutionAccess, requireItemAccess } from "./mcp.js";
+import { AttachmentStorage } from "./attachment-storage.js";
+import { createMissionGoMcpServer, requireExecutionAccess, requireItemAccess, type McpWriteTier } from "./mcp.js";
 import { MissionGoStore } from "./store.js";
 
 const stores: MissionGoStore[] = [];
@@ -38,6 +39,29 @@ async function seed() {
     environment: { platform: "other" },
   });
   return { store, product, item };
+}
+
+const SECTION_MARKER = "// MCP_WRITE_SECTION:";
+const TIER_MARKER = "// MCP_WRITE_TIER:";
+
+function mcpSource(): string {
+  return readFileSync(new URL("./mcp.ts", import.meta.url), "utf8");
+}
+
+/** Everything registered after the write-section marker, which must be authorized. */
+function writeSection(): string {
+  const source = mcpSource();
+  const start = source.indexOf(SECTION_MARKER);
+  expect(start, `${SECTION_MARKER} is missing from mcp.ts`).toBeGreaterThan(-1);
+  return source.slice(start);
+}
+
+/** Tool names registered under one `// MCP_WRITE_TIER:` marker, in source order. */
+function toolNamesInTier(tier: string): readonly string[] {
+  const sections = writeSection().split(TIER_MARKER).slice(1);
+  const section = sections.find((part) => part.trimStart().startsWith(tier));
+  expect(section, `${TIER_MARKER} ${tier} is missing from mcp.ts`).toBeDefined();
+  return [...(section ?? "").matchAll(/^  server\.registerTool\(\n\s*"([a-z_]+)"/gm)].map((match) => match[1]!);
 }
 
 describe("MCP write-tool authorization", () => {
@@ -76,15 +100,16 @@ describe("MCP write-tool authorization", () => {
       .toThrowError(/not permitted/);
   });
 
-  it("keeps every gated tool handler behind an authorization check", () => {
-    // The write tools are unreachable today, so no integration test exercises
-    // them. Guard the invariant structurally instead: a new tool registered
-    // after the enableWriteTools gate must authorize the caller, or the product
-    // scope in ADMIN_AUTHORIZED_PRODUCT_IDS silently stops applying to writes.
-    const source = readFileSync(new URL("./mcp.ts", import.meta.url), "utf8");
-    const gated = source.slice(source.indexOf("if (!options.enableWriteTools) return server;"));
-    const handlers = gated.match(/^    async \(.*$/gm) ?? [];
-    expect(handlers.length).toBeGreaterThanOrEqual(10);
+  it("keeps every write-section tool handler behind an authorization check", () => {
+    // The write tools are unreachable in a default build, so no integration test
+    // exercises them. Guard the invariant structurally instead: a tool registered
+    // in the write section must authorize the caller, or the product scope in
+    // ADMIN_AUTHORIZED_PRODUCT_IDS silently stops applying to writes.
+    //
+    // Anchor on the section marker rather than on the tier check itself. Slicing
+    // from the literal source of a condition means renaming the option silently
+    // empties the slice, and an assertion over nothing passes.
+    const gated = writeSection();
 
     const unauthorized = gated
       .split(/^  server\.registerTool\($/m)
@@ -92,5 +117,57 @@ describe("MCP write-tool authorization", () => {
       .filter((block) => !/require(Item|Execution)Access\(/.test(block))
       .map((block) => block.match(/"([a-z_]+)"/)?.[1] ?? "unknown");
     expect(unauthorized).toEqual([]);
+  });
+
+  it("keeps each write tool in the tier it belongs to", () => {
+    // The tiers exist so that opening comment writing does not also open
+    // claiming, leases, and status transitions. Naming the members explicitly
+    // means a new tool has to be placed on purpose rather than by where it
+    // happened to be pasted.
+    expect(toolNamesInTier("comments")).toEqual(["append_analysis"]);
+    expect(toolNamesInTier("processing")).toEqual([
+      "get_execution",
+      "claim_item",
+      "renew_item_lease",
+      "append_progress",
+      "request_human_input",
+      "submit_resolution",
+      "mark_pending_verification",
+      "release_item",
+      "resume_execution",
+    ]);
+  });
+});
+
+describe("MCP write tiers", () => {
+  async function serverForTier(writeTools?: McpWriteTier) {
+    const { store } = await seed();
+    const directory = directories.at(-1)!;
+    return createMissionGoMcpServer(
+      store,
+      new AttachmentStorage(join(directory, "attachments")),
+      writeTools ? { writeTools } : {},
+    );
+  }
+
+  it("exposes no write tool by default", async () => {
+    const server = await serverForTier();
+    expect(server.toolInputSchemaJson("get_item_context")).toBeDefined();
+    expect(server.toolInputSchemaJson("append_analysis")).toBeUndefined();
+    expect(server.toolInputSchemaJson("claim_item")).toBeUndefined();
+  });
+
+  it("stops at comment writing on the comments tier", async () => {
+    const server = await serverForTier("comments");
+    expect(server.toolInputSchemaJson("append_analysis")).toBeDefined();
+    expect(server.toolInputSchemaJson("get_execution")).toBeUndefined();
+    expect(server.toolInputSchemaJson("claim_item")).toBeUndefined();
+  });
+
+  it("exposes the processing tools only on the all tier", async () => {
+    const server = await serverForTier("all");
+    expect(server.toolInputSchemaJson("append_analysis")).toBeDefined();
+    expect(server.toolInputSchemaJson("claim_item")).toBeDefined();
+    expect(server.toolInputSchemaJson("resume_execution")).toBeDefined();
   });
 });
