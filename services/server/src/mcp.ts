@@ -75,6 +75,41 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  * opened, or one the user consented to for reading only, keeps a read-only
  * token and has to ask again.
  */
+/**
+ * Write tools a tier registers, in the order they appear in the server.
+ * Exported so the guard can check it against what is actually registered: a new
+ * tool missing from here would never be announced, and clients would go on
+ * believing the server cannot do it.
+ */
+export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
+  none: [],
+  comments: ["append_comment"],
+  all: [
+    "append_comment",
+    "claim_item",
+    "renew_item_lease",
+    "append_progress",
+    "request_human_input",
+    "submit_resolution",
+    "mark_pending_verification",
+    "release_item",
+    "resume_execution",
+  ],
+};
+
+/**
+ * What this connection may actually do, which is the tier and the granted scope
+ * together. Reporting it from the server means a Skill never has to decide
+ * whether it can write from its own local copy: a stale Skill, a scope the user
+ * declined, and a deployment with writing switched off all arrive as the same
+ * answer.
+ */
+function connectionWriteTools(ctx: ServerContext, tier: McpWriteTier): readonly string[] {
+  const scopes = ctx.http?.authInfo?.scopes;
+  const mayWrite = Array.isArray(scopes) && scopes.includes(MISSIONGO_WRITE_SCOPE);
+  return mayWrite ? WRITE_TOOLS_BY_TIER[tier] : [];
+}
+
 export function requireWriteScope(ctx: ServerContext): void {
   const scopes = ctx.http?.authInfo?.scopes;
   if (!Array.isArray(scopes) || !scopes.includes(MISSIONGO_WRITE_SCOPE)) {
@@ -131,27 +166,36 @@ export function createMissionGoMcpServer(
   attachmentStorage: AttachmentStorage,
   options: MissionGoMcpOptions = {},
 ): McpServer {
-  const writeTools = options.writeTools ?? "none";
+  const writeToolsTier = options.writeTools ?? "none";
   const server = new McpServer(
     { name: "missiongo", version: "0.1.0" },
-    { instructions: missionGoMcpInstructions(writeTools) },
+    { instructions: missionGoMcpInstructions(writeToolsTier) },
   );
 
   server.registerTool(
     "get_current_account",
     {
       title: "Get connected MissionGo account",
-      description: "Confirm which MissionGo account is connected, whether it has all-product or selected-product read access, and which Skill version the server expects.",
+      description:
+        "Confirm which MissionGo account is connected, whether it has all-product or selected-product read access, "
+        + "what this connection is allowed to write, and which Skill version the server expects. "
+        + "Trust capabilities.writeTools over any local assumption about what this server offers.",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (_input, ctx) => {
       const access = accountAccess(ctx);
+      const writeTools = connectionWriteTools(ctx, writeToolsTier);
       return textResult({
         account: { id: access.accountId, username: access.username },
         permission: access.productIds === "*"
           ? { allProducts: true }
           : { allProducts: false, productIds: access.productIds },
+        capabilities: {
+          scopes: [...(ctx.http?.authInfo?.scopes ?? [])],
+          writeTools,
+          canComment: writeTools.includes("append_comment"),
+        },
         skill: skillVersionInfo(options.publicOrigin),
       });
     },
@@ -377,7 +421,7 @@ export function createMissionGoMcpServer(
     },
   );
 
-  if (writeTools === "none") return server;
+  if (writeToolsTier === "none") return server;
 
   // MCP_WRITE_SECTION: every tool below this line mutates MissionGo or reads an
   // execution, so each one must authorize the caller itself. The guard in
@@ -430,7 +474,7 @@ export function createMissionGoMcpServer(
     },
   );
 
-  if (writeTools !== "all") return server;
+  if (writeToolsTier !== "all") return server;
 
   // MCP_WRITE_TIER: processing
   server.registerTool(

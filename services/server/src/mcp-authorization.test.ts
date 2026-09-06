@@ -12,6 +12,7 @@ import {
   requireExecutionAccess,
   requireItemAccess,
   requireWriteScope,
+  WRITE_TOOLS_BY_TIER,
   type McpWriteTier,
 } from "./mcp.js";
 import { MissionGoStore } from "./store.js";
@@ -135,6 +136,25 @@ describe("MCP write-tool authorization", () => {
       .filter((block) => /readOnlyHint: false/.test(block) && !/requireWriteScope\(/.test(block))
       .map((block) => block.match(/"([a-z_]+)"/)?.[1] ?? "unknown");
     expect(withoutScopeCheck).toEqual([]);
+  });
+
+  it("announces exactly the write tools it registers", () => {
+    // get_current_account tells a client what it may write, and a Skill is told
+    // to trust that over its own copy. A tool missing from the announcement is
+    // therefore a tool no client will ever use.
+    const mutating = (tier: string) => writeSection()
+      .split(TIER_MARKER)
+      .slice(1)
+      .filter((part) => tier === "all" || part.trimStart().startsWith(tier))
+      .join(TIER_MARKER)
+      .split(/^  server\.registerTool\($/m)
+      .slice(1)
+      .filter((block) => /readOnlyHint: false/.test(block))
+      .map((block) => block.match(/"([a-z_]+)"/)?.[1] ?? "unknown");
+
+    expect(WRITE_TOOLS_BY_TIER.none).toEqual([]);
+    expect(WRITE_TOOLS_BY_TIER.comments).toEqual(mutating("comments"));
+    expect(WRITE_TOOLS_BY_TIER.all).toEqual(mutating("all"));
   });
 
   it("keeps each write tool in the tier it belongs to", () => {

@@ -127,6 +127,30 @@ describe("Commenting over MCP", () => {
     expect(comments).toHaveLength(0);
   });
 
+  it("tells a client what this connection may actually write", async () => {
+    const { call, readToken, writeToken } = await commentingApp();
+
+    const readOnly = await call(readToken, 1, "tools/call", { name: "get_current_account", arguments: {} });
+    expect(readOnly.result?.structuredContent).toMatchObject({
+      capabilities: { scopes: ["missiongo:read"], writeTools: [], canComment: false },
+    });
+
+    const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
+    expect(writer.result?.structuredContent).toMatchObject({
+      capabilities: { writeTools: ["append_comment"], canComment: true },
+    });
+  });
+
+  it("reports no write capability when the deployment has writing switched off", async () => {
+    // The scope was granted, but this server does not offer the surface. A Skill
+    // asking one question gets one answer either way.
+    const { call, writeToken } = await commentingApp("none");
+    const account = await call(writeToken, 1, "tools/call", { name: "get_current_account", arguments: {} });
+    expect(account.result?.structuredContent).toMatchObject({
+      capabilities: { writeTools: [], canComment: false },
+    });
+  });
+
   it("does not offer the tool at all on a read-only deployment", async () => {
     const { call, writeToken } = await commentingApp("none");
     const tools = await call(writeToken, 1, "tools/list");
