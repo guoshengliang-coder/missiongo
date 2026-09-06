@@ -145,7 +145,8 @@ export interface TransitionAction {
     | "released"
     | "reopened"
     | "restored"
-    | "cancelled";
+    | "cancelled"
+    | "manual_override";
   readonly tone?: "primary" | "positive" | "danger";
 }
 

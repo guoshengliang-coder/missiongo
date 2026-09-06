@@ -82,7 +82,7 @@ import {
 import { environmentSummary, platformName } from "./environment-summary";
 import { useI18n } from "./i18n";
 import { groupTimeline } from "./timeline";
-import { TRANSITIONS } from "./work-item-transitions";
+import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { isAnnotatableImage } from "./image-annotation";
 import {
@@ -1095,6 +1095,7 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
   // Destructive last, whatever order the table lists them in.
   const secondaryActions = actions.slice(1).filter((action) => action.tone !== "danger");
   const destructiveActions = actions.slice(1).filter((action) => action.tone === "danger");
+  const manualTargets = manualMoves(item.status);
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
   const mutation = useMutation({
     mutationFn: (action: TransitionAction) => api.transitionItem(item.key, action),
@@ -1156,6 +1157,24 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
             {transitionLabel(action.label)}
           </button>
         ))}
+        {manualTargets.length > 0 && (
+          <>
+            <p className="menu-section-label">{t("moveDirectlyTo")}</p>
+            {manualTargets.map((action) => (
+              <button
+                key={action.to}
+                type="button"
+                disabled={mutation.isPending}
+                onClick={() => {
+                  moreActionsRef.current?.removeAttribute("open");
+                  mutation.mutate(action);
+                }}
+              >
+                {statusLabel(action.to)}
+              </button>
+            ))}
+          </>
+        )}
         <button
           type="button"
           className="menu-plain"
@@ -1286,6 +1305,7 @@ function DetailPane({
   const actions = TRANSITIONS[item.status];
   const primaryAction = actions[0];
   const secondaryActions = actions.slice(1);
+  const manualTargets = manualMoves(item.status);
   const sourceComponent = componentsQuery.data?.find((component) => component.id === item.sourceComponentId);
   const affectedComponents = (componentsQuery.data ?? []).filter((component) => item.affectedComponentIds.includes(component.id));
   const createdEvent = timelineQuery.data?.events.find((event) => event.eventType === "item_created");
@@ -1315,12 +1335,43 @@ function DetailPane({
           <details className="detail-more-menu" ref={moreActionsRef}>
             <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={19} /></summary>
             <div className="detail-more-menu-popover">
-              {secondaryActions.length === 0 && <span>{t("noMoreActions")}</span>}
-              {secondaryActions.map((action) => (
+              {secondaryActions.length === 0 && manualTargets.length === 0 && <span>{t("noMoreActions")}</span>}
+              {secondaryActions.filter((action) => action.tone !== "danger").map((action) => (
                 <button
                   key={`${action.to}-${action.reason}`}
                   type="button"
-                  className={action.tone === "danger" ? "danger" : undefined}
+                  disabled={transitionMutation.isPending}
+                  onClick={() => {
+                    moreActionsRef.current?.removeAttribute("open");
+                    transitionMutation.mutate(action);
+                  }}
+                >
+                  {transitionLabel(action.label)}
+                </button>
+              ))}
+              {manualTargets.length > 0 && (
+                <>
+                  <p className="menu-section-label">{t("moveDirectlyTo")}</p>
+                  {manualTargets.map((action) => (
+                    <button
+                      key={action.to}
+                      type="button"
+                      disabled={transitionMutation.isPending}
+                      onClick={() => {
+                        moreActionsRef.current?.removeAttribute("open");
+                        transitionMutation.mutate(action);
+                      }}
+                    >
+                      {statusLabel(action.to)}
+                    </button>
+                  ))}
+                </>
+              )}
+              {secondaryActions.filter((action) => action.tone === "danger").map((action) => (
+                <button
+                  key={`${action.to}-${action.reason}`}
+                  type="button"
+                  className="danger"
                   disabled={transitionMutation.isPending}
                   onClick={() => {
                     moreActionsRef.current?.removeAttribute("open");
@@ -1395,6 +1446,9 @@ function DetailPane({
                             ? t("eventRepeated", { event: eventLabel(event.eventType), count })
                             : eventLabel(event.eventType)}
                       </strong>
+                      {/* A direct jump skipped the steps in between; say so, or the
+                          history reads as if the work went through them. */}
+                      {event.payload?.reason === "manual_override" && <span className="timeline-tag">{t("movedDirectly")}</span>}
                       <p>{actorLabel(event.actorKind)} · {formatTime(event.createdAt)}</p>
                       {filenames.length > 0 && <p className="timeline-files">{filenames.join("、")}</p>}
                       {event.eventType === "analysis_appended" && <AnalysisDetails payload={event.payload} />}

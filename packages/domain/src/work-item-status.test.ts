@@ -70,3 +70,40 @@ describe("work item state machine", () => {
     ).toMatchObject({ allowed: false, code: "reason_mismatch" });
   });
 });
+
+describe("manual override", () => {
+  it("lets a person move an item straight to a status the pipeline cannot reach", () => {
+    expect(
+      evaluateWorkItemTransition({ from: "ready", to: "done", actor: "human", reason: "manual_override" }),
+    ).toMatchObject({ allowed: true, code: "allowed" });
+    expect(
+      evaluateWorkItemTransition({ from: "inbox", to: "in_progress", actor: "human", reason: "manual_override" }),
+    ).toMatchObject({ allowed: true });
+    expect(
+      evaluateWorkItemTransition({ from: "cancelled", to: "done", actor: "human", reason: "manual_override" }),
+    ).toMatchObject({ allowed: true });
+  });
+
+  it("is closed to agents and to the system, so only a person can still close verification", () => {
+    for (const actor of ["agent", "system"] as const) {
+      expect(
+        evaluateWorkItemTransition({ from: "ready", to: "done", actor, reason: "manual_override" }),
+      ).toMatchObject({ allowed: false, code: "invalid_transition" });
+    }
+    expect(
+      evaluateWorkItemTransition({ from: "pending_verification", to: "done", actor: "agent", reason: "verification_passed" }),
+    ).toMatchObject({ allowed: false, code: "actor_not_allowed" });
+  });
+
+  it("refuses a move that goes nowhere", () => {
+    expect(
+      evaluateWorkItemTransition({ from: "ready", to: "ready", actor: "human", reason: "manual_override" }),
+    ).toMatchObject({ allowed: false, code: "invalid_transition" });
+  });
+
+  it("leaves the pipeline reasons alone, so a real step is never labelled an override", () => {
+    expect(
+      evaluateWorkItemTransition({ from: "ready", to: "done", actor: "human", reason: "verification_passed" }),
+    ).toMatchObject({ allowed: false, code: "invalid_transition" });
+  });
+});

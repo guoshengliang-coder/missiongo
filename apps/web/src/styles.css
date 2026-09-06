@@ -506,6 +506,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .detail-more-menu-popover button.danger { margin-top: 5px; padding-top: 5px; color: var(--danger); border-top: 1px solid var(--line); border-radius: 0 0 var(--radius-sm) var(--radius-sm); }
 .detail-more-menu-popover button.danger:hover { background: var(--danger-bg); }
 .detail-more-menu-popover > span { display: block; padding: 9px 10px; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+/* Separates the actions that describe what happened from the plain jumps. */
+.detail-more-menu-popover .menu-section-label { margin: 5px 0 1px; padding: 5px 10px 0; color: var(--muted); border-top: 1px solid var(--line); font-size: var(--text-xs); font-weight: 700; white-space: nowrap; }
 .row-more-menu .detail-more-menu-popover { z-index: 80; }
 .detail-scroll { width: 100%; min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 32px max(34px, calc((100% - 860px) / 2)) 48px; }
 .toolbar-primary-action { color: var(--primary-fg); border: 1px solid var(--primary-bg); background: var(--primary-bg); box-shadow: 0 5px 14px rgba(23, 32, 51, .18); }
@@ -883,7 +885,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .detail-pane { height: 100%; min-height: 0; }
   /* One row, like the desktop. The three actions need about 200px and even a
      360px phone has room for them beside the back button; wrapping them onto
-     a row of their own cost 54px of reading height. The row they used to sit
+     a row of their own cost 72px of reading height. The row they used to sit
      in also scrolled sideways, and a scroll container clips both axes, so the
      more-menu popover was cropped to nothing and clicks fell through to the
      page underneath. The key and the status pill give way first. */
@@ -989,6 +991,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 
 .timeline-head { display: flex; align-items: baseline; gap: 10px; }
 .timeline-head small { color: var(--muted); font-size: var(--text-xs); }
+.timeline-tag { display: inline-block; margin-left: 7px; padding: 1px 7px; color: var(--muted); background: var(--canvas); border: 1px solid var(--line); border-radius: 999px; font-size: var(--text-xs); font-weight: 680; vertical-align: 2px; }
 .timeline-files { margin: 3px 0 0; color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-xs); line-height: 1.6; overflow-wrap: anywhere; }
 
 .sdk-token-reveal { margin-top: 14px; padding: 13px 15px; background: var(--accent-bg); border: 1px solid var(--accent-line); border-radius: var(--radius-lg); }

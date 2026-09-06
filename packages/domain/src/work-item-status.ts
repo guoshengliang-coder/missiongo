@@ -16,6 +16,7 @@ export const TRANSITION_REASONS = [
   "cancelled",
   "reopened",
   "restored",
+  "manual_override",
 ] as const;
 export type TransitionReason = (typeof TRANSITION_REASONS)[number];
 
@@ -80,8 +81,26 @@ const TRANSITIONS: Readonly<
   },
 };
 
+/**
+ * The table above is the pipeline: it is what an agent may do, and it is how a
+ * person moves an item when the pipeline describes what actually happened. But
+ * a person also knows things the pipeline does not — an item was already fixed,
+ * or was filed under the wrong status — and making them walk three transitions
+ * to say so is busywork. `manual_override` lets a person move an item straight
+ * to any other status, and names itself in the timeline so a jump is never
+ * mistaken for a step that was really taken. Agents and the system stay bound
+ * by the table, so "only a person closes verification" still holds.
+ */
+function isManualOverride(request: WorkItemTransitionRequest): boolean {
+  return request.actor === "human" && request.reason === "manual_override" && request.from !== request.to;
+}
+
 export function evaluateWorkItemTransition(request: WorkItemTransitionRequest): WorkItemTransitionDecision {
   const transition = TRANSITIONS[request.from]?.[request.to];
+
+  if (isManualOverride(request)) {
+    return { allowed: true, code: "allowed", message: "Transition is allowed." };
+  }
 
   if (!transition) {
     return {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { evaluateWorkItemTransition } from "@missiongo/domain";
 
-import { TRANSITIONS } from "./work-item-transitions";
+import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import { ITEM_STATUSES, type WorkItemStatus } from "./types";
 
 // The web transition table is written by hand while the rules live in
@@ -62,6 +62,40 @@ describe("web transition table", () => {
     for (const from of ITEM_STATUSES) {
       const keys = TRANSITIONS[from].map((action) => `${action.to}:${action.reason}`);
       expect(new Set(keys).size, `${from} repeats a transition`).toBe(keys.length);
+    }
+  });
+});
+
+describe("manual moves", () => {
+  it("offers every status the curated table does not already reach", () => {
+    for (const from of ITEM_STATUSES) {
+      const offered = new Set(TRANSITIONS[from].map((action) => action.to));
+      const expected = ITEM_STATUSES.filter((status) => status !== from && !offered.has(status));
+      expect(manualMoves(from).map((action) => action.to)).toEqual(expected);
+    }
+  });
+
+  it("never repeats a target the pipeline already offers, and never targets the current status", () => {
+    for (const from of ITEM_STATUSES) {
+      const targets = manualMoves(from).map((action) => action.to);
+      expect(targets).not.toContain(from);
+      for (const action of TRANSITIONS[from]) expect(targets).not.toContain(action.to);
+    }
+  });
+
+  it("only asks for moves the domain accepts from a person", () => {
+    for (const from of ITEM_STATUSES) {
+      for (const action of manualMoves(from)) {
+        const decision = evaluateWorkItemTransition({ from, to: action.to, actor: "human", reason: action.reason });
+        expect(decision.allowed, `${from} \u2192 ${action.to}: ${decision.message}`).toBe(true);
+      }
+    }
+  });
+
+  it("together with the pipeline, reaches every other status from anywhere", () => {
+    for (const from of ITEM_STATUSES) {
+      const reachable = new Set([...TRANSITIONS[from].map((a) => a.to), ...manualMoves(from).map((a) => a.to)]);
+      expect([...reachable].sort()).toEqual(ITEM_STATUSES.filter((status) => status !== from).sort());
     }
   });
 });
