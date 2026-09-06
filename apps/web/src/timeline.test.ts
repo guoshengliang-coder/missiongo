@@ -71,4 +71,16 @@ describe("groupTimeline", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ count: 2, filenames: ["b.png"] });
   });
+
+  it("never folds comments together, however fast they arrive", () => {
+    // Attachment uploads fold because four identical lines carry nothing. Two
+    // comments are two different things somebody said.
+    const entries = groupTimeline([
+      event("1", "comment_added", "2026-09-06T10:00:00Z", { bodyKind: "free", body: { text: "First." } }),
+      event("2", "comment_added", "2026-09-06T10:00:01Z", { bodyKind: "free", body: { text: "Second." } }, "agent"),
+    ]);
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => entry.count)).toEqual([1, 1]);
+    expect(entries.map((entry) => entry.event.actorKind)).toEqual(["agent", "human"]);
+  });
 });

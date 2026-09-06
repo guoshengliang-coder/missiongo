@@ -647,6 +647,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .timeline-dot { position: relative; z-index: 1; width: 7px; height: 7px; margin-top: 4px; background: var(--mint-dark); border: 2px solid var(--surface); border-radius: 50%; box-sizing: content-box; }
 .timeline-event strong { display: block; font-size: var(--text-xs); }
 .timeline-event p { margin: 3px 0 0; color: var(--muted); font-size: var(--text-xs); }
+/* An agent's entry reads as a different voice from a person's, so the dot changes. */
+.timeline-event--agent .timeline-dot { background: var(--ink-2); }
+.comment-body { margin-top: 8px; }
+.comment-text { margin: 0; color: var(--ink); font-size: var(--text-sm); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.comment-withdrawn { margin-top: 8px; color: var(--muted); }
+.comment-withdrawn > summary { cursor: pointer; font-size: var(--text-xs); }
+.comment-withdrawn-help { margin: 6px 0; color: var(--muted); font-size: var(--text-xs); line-height: 1.55; }
+.comment-withdrawn .comment-text, .comment-withdrawn .analysis-details { opacity: .72; }
 .analysis-details { display: grid; gap: 10px; margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-soft); }
 .analysis-details span { display: block; margin-bottom: 4px; color: var(--muted); font-size: var(--text-xs); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .analysis-details p { color: var(--ink); font-size: var(--text-xs); line-height: 1.55; white-space: pre-wrap; }

@@ -1609,22 +1609,27 @@ function DetailPane({
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
               <div className="timeline">
                 {groupTimeline(timelineQuery.data?.events ?? []).map(({ id, event, count, filenames }) => (
-                  <div className="timeline-event" key={id}>
+                  <div
+                    className={event.actorKind === "agent" ? "timeline-event timeline-event--agent" : "timeline-event"}
+                    key={id}
+                  >
                     <span className="timeline-dot" />
                     <div>
                       <strong>
                         {event.eventType === "status_changed"
                           ? `${event.fromStatus ? statusLabel(event.fromStatus) : t("status")} → ${event.toStatus ? statusLabel(event.toStatus) : t("updated")}`
-                          : count > 1
-                            ? t("eventRepeated", { event: eventLabel(event.eventType), count })
-                            : eventLabel(event.eventType)}
+                          : event.eventType === "comment_added"
+                            ? commentHeading(event, t("agentAnalysis"), eventLabel("comment_added"))
+                            : count > 1
+                              ? t("eventRepeated", { event: eventLabel(event.eventType), count })
+                              : eventLabel(event.eventType)}
                       </strong>
                       {/* A direct jump skipped the steps in between; say so, or the
                           history reads as if the work went through them. */}
                       {event.payload?.reason === "manual_override" && <span className="timeline-tag">{t("movedDirectly")}</span>}
                       <p>{actorLabel(event.actorKind)} · {formatTime(event.createdAt)}</p>
                       {filenames.length > 0 && <p className="timeline-files">{filenames.join("、")}</p>}
-                      {event.eventType === "analysis_appended" && <AnalysisDetails payload={event.payload} />}
+                      {event.eventType === "comment_added" && <CommentBody payload={event.payload} />}
                     </div>
                   </div>
                 ))}
@@ -1650,6 +1655,37 @@ function DetailPane({
       )}
     </section>
   );
+}
+
+/** A structured analysis reads as an agent's formal finding, so it keeps its own heading. */
+function commentHeading(event: WorkItemEvent, analysisLabel: string, commentLabel: string): string {
+  return event.actorKind === "agent" && event.payload.bodyKind === "structured" ? analysisLabel : commentLabel;
+}
+
+function CommentBody({ payload }: { readonly payload: Readonly<Record<string, unknown>> }) {
+  const { t } = useI18n();
+  const body = (payload.body ?? {}) as Readonly<Record<string, unknown>>;
+  const withdrawn = typeof payload.withdrawnAt === "string";
+  const rendered = payload.bodyKind === "structured"
+    ? <AnalysisDetails payload={body} />
+    : typeof body.text === "string" && body.text
+      ? <p className="comment-text">{body.text}</p>
+      : null;
+  if (!rendered) return null;
+
+  // Withdrawn comments stay on the record but fold away: they are no longer sent
+  // to an AI reading the item, and leaving one open invites reading it as current.
+  if (withdrawn) {
+    return (
+      <details className="comment-withdrawn">
+        <summary>{t("commentWithdrawn")}</summary>
+        <p className="comment-withdrawn-help">{t("commentWithdrawnHelp")}</p>
+        {rendered}
+      </details>
+    );
+  }
+
+  return <div className="comment-body">{rendered}</div>;
 }
 
 function AnalysisDetails({ payload }: { payload: Readonly<Record<string, unknown>> }) {

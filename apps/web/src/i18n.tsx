@@ -225,6 +225,17 @@ const EN_MESSAGES = {
   analysisConclusion: "Conclusion",
   analysisEvidence: "Evidence",
   analysisRisks: "Risks / open questions",
+  agentAnalysis: "AI analysis",
+  commentWithdrawn: "Withdrawn",
+  commentWithdrawnHelp: "Withdrawn comments stay on the record but are no longer sent to an AI reading this item.",
+  showWithdrawnComment: "Show withdrawn comment",
+  withdrawComment: "Withdraw",
+  withdrawCommentConfirm: "Withdraw this comment? It stays on the record and stops being sent to an AI.",
+  commentWithdrawnToast: "Comment withdrawn.",
+  addComment: "Add a comment",
+  commentPlaceholder: "Ask a question, answer one, or note what you found.",
+  postComment: "Comment",
+  commentPosted: "Comment added.",
   status: "Status",
   updated: "Updated",
   whatNeedsAttention: "Title",
@@ -582,6 +593,17 @@ const ZH_MESSAGES: Record<MessageKey, string> = {
   analysisConclusion: "分析结论",
   analysisEvidence: "判断依据",
   analysisRisks: "风险与待确认项",
+  agentAnalysis: "AI 分析",
+  commentWithdrawn: "已撤回",
+  commentWithdrawnHelp: "已撤回的评论保留在记录里，但不再提供给读取本条目的 AI。",
+  showWithdrawnComment: "展开已撤回的评论",
+  withdrawComment: "撤回",
+  withdrawCommentConfirm: "撤回这条评论？它会保留在记录里，并不再提供给 AI。",
+  commentWithdrawnToast: "评论已撤回。",
+  addComment: "添加评论",
+  commentPlaceholder: "提出问题、回答问题，或记录你发现的情况。",
+  postComment: "发表评论",
+  commentPosted: "评论已发表。",
   status: "状态",
   updated: "已更新",
   whatNeedsAttention: "标题",
@@ -772,8 +794,8 @@ const ACTOR_LABELS: Record<Locale, Record<string, string>> = {
 };
 
 const EVENT_LABELS: Record<Locale, Record<string, string>> = {
-  en: { item_created: "Item created", item_updated: "Item updated", attachment_added: "Attachment added", attachment_removed: "Attachment deleted", analysis_appended: "AI analysis added" },
-  "zh-CN": { item_created: "已创建条目", item_updated: "已更新详情", attachment_added: "已添加附件", attachment_removed: "已删除附件", analysis_appended: "AI 已回写分析" },
+  en: { item_created: "Item created", item_updated: "Item updated", attachment_added: "Attachment added", attachment_removed: "Attachment deleted", comment_added: "Comment", comment_withdrawn: "Comment withdrawn" },
+  "zh-CN": { item_created: "已创建条目", item_updated: "已更新详情", attachment_added: "已添加附件", attachment_removed: "已删除附件", comment_added: "评论", comment_withdrawn: "已撤回评论" },
 };
 
 interface I18nValue {

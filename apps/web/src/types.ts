@@ -98,15 +98,36 @@ export interface WorkItem {
   readonly updatedAt: string;
 }
 
+export type ActorKind = "human" | "agent" | "system";
+
 export interface WorkItemEvent {
   readonly id: string;
   readonly itemKey: string;
   readonly eventType: string;
-  readonly actorKind: "human" | "agent" | "system";
+  readonly actorKind: ActorKind;
   readonly fromStatus?: WorkItemStatus;
   readonly toStatus?: WorkItemStatus;
   readonly payload: Readonly<Record<string, unknown>>;
+  /** Present on agent writes: which account authorized it and through which client. */
+  readonly accountId?: string;
+  readonly clientId?: string;
+  readonly executionId?: string;
   readonly createdAt: string;
+}
+
+export type CommentBodyKind = "structured" | "free";
+
+export interface WorkItemComment {
+  readonly id: string;
+  readonly itemKey: string;
+  readonly actorKind: ActorKind;
+  readonly bodyKind: CommentBodyKind;
+  readonly body: Readonly<Record<string, unknown>>;
+  readonly accountId?: string;
+  readonly clientId?: string;
+  readonly createdAt: string;
+  readonly withdrawnAt?: string;
+  readonly withdrawnBy?: string;
 }
 
 export interface CreateWorkItemInput {
