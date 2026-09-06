@@ -738,3 +738,28 @@ input::placeholder, textarea::placeholder { color: #a1a5ad; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* Image annotation editor. Full-screen because a screenshot needs room, and the
+   canvas has to keep its aspect ratio while fitting whatever space is left. */
+.annotator { position: fixed; inset: 0; z-index: 120; width: 100vw; max-width: none; height: 100vh; height: 100dvh; max-height: none; margin: 0; border: 0; color: var(--ink); display: grid; grid-template-rows: auto auto 1fr auto; gap: 10px; padding: max(12px, var(--safe-top)) max(12px, var(--safe-right)) max(12px, var(--safe-bottom)) max(12px, var(--safe-left)); background: var(--canvas); }
+.annotator::backdrop { background: rgba(17, 23, 35, 0.46); }
+.annotator-bar { display: flex; align-items: center; justify-content: space-between; }
+.annotator-bar strong { font-size: 17px; letter-spacing: -0.02em; }
+.annotator-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.annotator-group { display: flex; gap: 6px; padding: 4px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: 12px; }
+.annotator-tool { display: grid; place-items: center; width: 36px; height: 36px; color: var(--ink); background: transparent; border: 0; border-radius: 9px; cursor: pointer; }
+.annotator-tool:hover:not(:disabled) { background: var(--canvas); }
+.annotator-tool.active { color: #fff; background: var(--navy); }
+.annotator-tool:disabled { opacity: 0.4; cursor: default; }
+.annotator-swatch { width: 28px; height: 28px; border: 2px solid transparent; border-radius: 50%; cursor: pointer; }
+.annotator-swatch.active { border-color: var(--ink); box-shadow: 0 0 0 2px var(--surface-strong) inset; }
+.annotator-stage { display: grid; place-items: center; min-height: 0; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+/* touch-action keeps a drag drawing a line instead of scrolling the page. */
+.annotator-canvas { max-width: 100%; max-height: 100%; object-fit: contain; touch-action: none; cursor: crosshair; }
+.annotator-error { padding: 24px; color: var(--muted); text-align: center; }
+.annotator-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+/* The buttons keep their width and the hint takes what is left, wrapping to its
+   own line when there is not enough room. Without a basis the hint collapses to
+   one character per line. */
+.annotator-actions > div { display: flex; flex: 0 0 auto; gap: 8px; }
+.annotator-hint { flex: 1 1 220px; margin: 0; color: var(--muted); font-size: 13px; }

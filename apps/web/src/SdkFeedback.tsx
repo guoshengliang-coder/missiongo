@@ -1,8 +1,10 @@
 import { type ChangeEvent, type FormEvent, useEffect, useState } from "react";
-import { Bug, Check, ChevronRight, FileText, Image as ImageIcon, Lightbulb, ListTodo, LoaderCircle, Paperclip, StickyNote } from "lucide-react";
+import { Bug, Check, ChevronRight, FileText, Highlighter, Image as ImageIcon, Lightbulb, ListTodo, LoaderCircle, Paperclip, StickyNote } from "lucide-react";
 
 import "./sdk-feedback.css";
 import { loadSdkAttachments, replaceSdkAttachments, type StoredSdkAttachment } from "./sdk-attachment-store";
+import { ImageAnnotator } from "./ImageAnnotator";
+import { isAnnotatableImage } from "./image-annotation";
 
 type WorkItemType = "idea" | "requirement" | "bug" | "task" | "note";
 type WorkItemPriority = "urgent" | "high" | "normal" | "low";
@@ -120,6 +122,7 @@ export function SdkFeedbackPage() {
   const [files, setFiles] = useState<readonly StoredSdkAttachment[]>([]);
   const [failedFiles, setFailedFiles] = useState<readonly StoredSdkAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
+  const [annotatingId, setAnnotatingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (completedItemKey) return;
@@ -190,6 +193,18 @@ export function SdkFeedbackPage() {
     event.target.value = "";
   };
 
+  // Annotating happens before anything is uploaded, so it only has to swap the
+  // file held in state and mirror that into the recovery store.
+  const saveAnnotation = async (id: string, annotated: File) => {
+    const next = files.map((current) => current.id === id ? { ...current, file: annotated } : current);
+    setFiles(next);
+    setAnnotatingId(null);
+    if (draft) {
+      await replaceSdkAttachments(draft.id, next)
+        .catch(() => setAttachmentError("附件无法持久保存，请保持当前页面打开直至提交完成。"));
+    }
+  };
+
   const retryFailedAttachments = async () => {
     if (!draft || failedFiles.length === 0) return;
     setSubmitting(true);
@@ -238,7 +253,14 @@ export function SdkFeedbackPage() {
                 <div className="capture-attachment-copy"><strong><span className="field-label">图片与视频<span className="field-requirement optional">选填</span></span></strong><p>添加截图或录屏可以更快说明问题，最多 10 个附件。</p></div>
                 <label className="secondary-button sdk-feedback-picker"><ImageIcon size={16} /> 添加<input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm" onChange={selectFiles("media")} /></label>
               </div>
-              {selectedMedia.length > 0 && <div className="sdk-feedback-selected">{selectedMedia.map(({ id, file }) => <span key={id}><ImageIcon size={14} /><strong>{file.name}</strong></span>)}</div>}
+              {selectedMedia.length > 0 && <div className="sdk-feedback-selected">{selectedMedia.map(({ id, file }) => (
+                <span key={id}>
+                  <ImageIcon size={14} /><strong>{file.name}</strong>
+                  {isAnnotatableImage(file) && (
+                    <button type="button" onClick={() => setAnnotatingId(id)} aria-label="标注图片" title="标注"><Highlighter size={13} /></button>
+                  )}
+                </span>
+              ))}</div>}
             </section>
             <section className="report-input-block">
               <header><strong>问题说明</strong><small>请说明实际现象、发生条件、期望结果和影响范围。</small></header>
@@ -265,6 +287,13 @@ export function SdkFeedbackPage() {
           </form>
         )}
       </section>
+      {annotatingId && files.some((current) => current.id === annotatingId) && (
+        <ImageAnnotator
+          file={files.find((current) => current.id === annotatingId)!.file}
+          onCancel={() => setAnnotatingId(null)}
+          onSave={(annotated) => saveAnnotation(annotatingId, annotated)}
+        />
+      )}
     </main>
   );
 }

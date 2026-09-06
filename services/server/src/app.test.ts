@@ -1,5 +1,5 @@
 import { createHash, scryptSync } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -481,6 +481,132 @@ describe("MissionGo REST API", () => {
       headers: { authorization: "Bearer example-test-token" },
     });
     expect(authorized.statusCode).toBe(200);
+  });
+
+  it("replaces attachment content in place, keeping its number and recording the edit", async () => {
+    const { app, attachmentsPath } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Mission GO", keyPrefix: "AND" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "requirement",
+        priority: "normal",
+        title: "Annotate screenshots",
+        description: "Circle the problem area",
+        environment: { platform: "android" },
+      },
+    });
+
+    const upload = (kind: string, filename: string, contentType: string, payload: string | Buffer) => app.inject({
+      method: "POST",
+      url: "/api/v1/items/AND-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": contentType,
+        "x-missiongo-filename": filename,
+      },
+      payload,
+    });
+
+    const first = (await upload("image", "before.png", "image/png", "original-bytes")).json<{ id: string; displayNumber: number }>();
+    const second = (await upload("image", "other.png", "image/png", "second-bytes")).json<{ displayNumber: number }>();
+    expect(first.displayNumber).toBe(1);
+    expect(second.displayNumber).toBe(2);
+
+    const storedBefore = await readdir(attachmentsPath);
+    expect(storedBefore).toHaveLength(2);
+
+    const replaced = await app.inject({
+      method: "PUT",
+      url: `/api/v1/items/AND-1/attachments/${first.id}/content`,
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "image/jpeg",
+        "x-missiongo-filename": "before.jpg",
+      },
+      payload: "annotated-bytes",
+    });
+    expect(replaced.statusCode).toBe(200);
+
+    // The identity a reader cites has to survive the edit: deleting and
+    // re-uploading would have handed this image number 3.
+    expect(replaced.json()).toMatchObject({
+      id: first.id,
+      displayNumber: 1,
+      filename: "before.jpg",
+      contentType: "image/jpeg",
+    });
+
+    const content = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${first.id}/content` });
+    expect(content.body).toBe("annotated-bytes");
+
+    // The superseded file must not linger in the attachment directory.
+    expect(await readdir(attachmentsPath)).toHaveLength(2);
+
+    const timeline = (await app.inject({ method: "GET", url: "/api/v1/items/AND-1/timeline" }))
+      .json<{ events: readonly { eventType: string; payload: Record<string, unknown> }[] }>();
+    const edit = timeline.events.find((event) => event.eventType === "attachment_replaced");
+    expect(edit?.payload).toMatchObject({
+      attachmentId: first.id,
+      displayNumber: 1,
+      filename: "before.jpg",
+      previousFilename: "before.png",
+    });
+  });
+
+  it("refuses a replacement that would change the attachment kind or break its rules", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Mission GO", keyPrefix: "AND" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "requirement",
+        priority: "normal",
+        title: "Annotate screenshots",
+        description: "Circle the problem area",
+        environment: { platform: "android" },
+      },
+    });
+    const image = (
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/items/AND-1/attachments",
+        headers: {
+          "content-type": "application/octet-stream",
+          "x-missiongo-content-type": "image/png",
+          "x-missiongo-filename": "shot.png",
+        },
+        payload: "original-bytes",
+      })
+    ).json<{ id: string }>();
+
+    const replace = (filename: string, contentType: string, payload: string) => app.inject({
+      method: "PUT",
+      url: `/api/v1/items/AND-1/attachments/${image.id}/content`,
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": contentType,
+        "x-missiongo-filename": filename,
+      },
+      payload,
+    });
+
+    // An image numbered "image 1" must not quietly become a log.
+    expect((await replace("notes.log", "text/plain", "log-bytes")).statusCode).toBe(400);
+    expect((await replace("shot.png", "image/jpeg", "mismatched")).statusCode).toBe(400);
+    expect((await replace("shot.bmp", "image/bmp", "unsupported")).statusCode).toBe(400);
+
+    // The original content survived every rejection.
+    const content = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/content` });
+    expect(content.body).toBe("original-bytes");
   });
 
   it("sets baseline security headers without duplicating them", async () => {

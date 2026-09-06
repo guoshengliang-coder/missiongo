@@ -46,6 +46,39 @@ function safeFilename(encodedFilename: string): string {
   return filename;
 }
 
+interface ValidatedUpload {
+  readonly filename: string;
+  readonly extension: string;
+  readonly rule: AttachmentRule;
+  readonly contentType: string;
+}
+
+/**
+ * Apply the rules an incoming attachment has to satisfy, whether it is being
+ * added or replacing an existing one. Keeping this in one place stops the two
+ * paths drifting apart on limits or accepted types.
+ */
+function validateUpload(encodedFilename: string, suppliedContentType: string, bytes: Buffer): ValidatedUpload {
+  const filename = safeFilename(encodedFilename);
+  const extension = extname(filename).toLowerCase();
+  const rule = RULES[extension];
+  if (!rule) throw invalidInput("Unsupported attachment extension.");
+  if (bytes.length < 1) throw invalidInput("Attachment cannot be empty.");
+  if (bytes.length > rule.maxBytes) throw invalidInput(`Attachment exceeds the ${rule.maxBytes / MEBIBYTE} MiB limit.`);
+
+  const normalizedType = suppliedContentType.split(";", 1)[0]!.trim().toLowerCase();
+  if (normalizedType && normalizedType !== "application/octet-stream" && !rule.acceptedContentTypes.includes(normalizedType)) {
+    throw invalidInput("Attachment content type does not match its filename.");
+  }
+
+  return {
+    filename,
+    extension,
+    rule,
+    contentType: normalizedType && normalizedType !== "application/octet-stream" ? normalizedType : rule.contentType,
+  };
+}
+
 export class AttachmentStorage {
   readonly rootPath: string;
 
@@ -62,12 +95,7 @@ export class AttachmentStorage {
     feedbackUpload?: { readonly draftId: string; readonly clientAttachmentId: string },
   ): Promise<AttachmentRecord> {
     store.getWorkItem(itemKey);
-    const filename = safeFilename(encodedFilename);
-    const extension = extname(filename).toLowerCase();
-    const rule = RULES[extension];
-    if (!rule) throw invalidInput("Unsupported attachment extension.");
-    if (bytes.length < 1) throw invalidInput("Attachment cannot be empty.");
-    if (bytes.length > rule.maxBytes) throw invalidInput(`Attachment exceeds the ${rule.maxBytes / MEBIBYTE} MiB limit.`);
+    const { filename, extension, rule, contentType } = validateUpload(encodedFilename, suppliedContentType, bytes);
 
     const contentSha256 = feedbackUpload ? createHash("sha256").update(bytes).digest("hex") : undefined;
     const existing = feedbackUpload
@@ -84,11 +112,6 @@ export class AttachmentStorage {
       return existing.attachment;
     }
 
-    const normalizedType = suppliedContentType.split(";", 1)[0]!.trim().toLowerCase();
-    if (normalizedType && normalizedType !== "application/octet-stream" && !rule.acceptedContentTypes.includes(normalizedType)) {
-      throw invalidInput("Attachment content type does not match its filename.");
-    }
-
     await mkdir(this.rootPath, { recursive: true, mode: 0o700 });
     const storageFilename = `${randomUUID()}${extension}`;
     const path = this.resolveStoredFile(storageFilename);
@@ -99,7 +122,7 @@ export class AttachmentStorage {
         kind: rule.kind,
         filename,
         storageFilename,
-        contentType: normalizedType && normalizedType !== "application/octet-stream" ? normalizedType : rule.contentType,
+        contentType,
         sizeBytes: bytes.length,
         ...(feedbackUpload ? {
           feedbackDraftId: feedbackUpload.draftId,
@@ -111,6 +134,50 @@ export class AttachmentStorage {
       await unlink(path).catch(() => undefined);
       throw error;
     }
+  }
+
+  /**
+   * Replace an attachment's bytes in place, keeping its id and display number.
+   *
+   * The new file is written first and the old one removed only after the
+   * metadata swap commits. A failure then leaves an unreferenced file behind,
+   * which is harmless, rather than a row pointing at a file that is gone.
+   */
+  async replace(
+    store: MissionGoStore,
+    itemKey: string,
+    attachmentId: string,
+    encodedFilename: string,
+    suppliedContentType: string,
+    bytes: Buffer,
+  ): Promise<AttachmentRecord> {
+    const { filename, extension, rule, contentType } = validateUpload(encodedFilename, suppliedContentType, bytes);
+
+    await mkdir(this.rootPath, { recursive: true, mode: 0o700 });
+    const storageFilename = `${randomUUID()}${extension}`;
+    const path = this.resolveStoredFile(storageFilename);
+    await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+
+    let replaced;
+    try {
+      replaced = store.replaceAttachmentContent({
+        itemKey,
+        attachmentId,
+        kind: rule.kind,
+        filename,
+        storageFilename,
+        contentType,
+        sizeBytes: bytes.length,
+      });
+    } catch (error) {
+      await unlink(path).catch(() => undefined);
+      throw error;
+    }
+
+    await unlink(this.resolveStoredFile(replaced.replacedStorageFilename)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    return replaced.attachment;
   }
 
   async remove(store: MissionGoStore, itemKey: string, attachmentId: string): Promise<AttachmentRecord> {

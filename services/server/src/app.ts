@@ -964,6 +964,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.send(createReadStream(path, range));
   });
 
+  // Editing an image in the browser sends the result back here rather than
+  // deleting and re-uploading, so the attachment keeps the id and number that
+  // the item detail view and the MCP item context already refer to.
+  app.put("/api/v1/items/:itemKey/attachments/:attachmentId/content", async (request) => {
+    const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
+    if (!Buffer.isBuffer(request.body)) throw invalidInput("Attachment body must be binary data.");
+    const filename = headerText(request.headers["x-missiongo-filename"], "X-MissionGo-Filename");
+    const contentType = headerText(request.headers["x-missiongo-content-type"], "X-MissionGo-Content-Type");
+    const attachment = await attachmentStorage.replace(store, itemKey, attachmentId, filename, contentType, request.body);
+    return publicAttachment(attachment);
+  });
+
   app.delete("/api/v1/items/:itemKey/attachments/:attachmentId", async (request, reply) => {
     const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
     await attachmentStorage.remove(store, itemKey, attachmentId);

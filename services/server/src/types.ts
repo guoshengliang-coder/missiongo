@@ -86,6 +86,16 @@ export interface CreateAttachmentMetadataInput {
   readonly contentSha256?: string;
 }
 
+export interface ReplaceAttachmentContentInput {
+  readonly itemKey: string;
+  readonly attachmentId: string;
+  readonly kind: AttachmentKind;
+  readonly filename: string;
+  readonly storageFilename: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+}
+
 export interface AttachmentRecord extends WorkItemAttachment {
   readonly storageFilename: string;
 }

@@ -146,6 +146,24 @@ export const api = {
     );
     return response.blob();
   },
+  // Annotating an image sends the result back over the same attachment, so the
+  // number the detail view and the MCP item context cite stays put.
+  replaceAttachment: async (itemKey: string, attachmentId: string, file: File) => {
+    const response = await attachmentRequest(
+      `/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}/content`,
+      {
+        method: "PUT",
+        headers: {
+          "content-type": "application/octet-stream",
+          "x-missiongo-content-type": file.type || "application/octet-stream",
+          "x-missiongo-filename": encodeURIComponent(file.name),
+        },
+        body: file,
+      },
+    );
+    return response.json() as Promise<WorkItemAttachment>;
+  },
+
   deleteAttachment: async (itemKey: string, attachmentId: string) => {
     await attachmentRequest(`/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}`, {
       method: "DELETE",

@@ -14,6 +14,7 @@ import {
   ClipboardCheck,
   Download,
   FileText,
+  Highlighter,
   ImageIcon,
   Inbox,
   KeyRound,
@@ -74,6 +75,8 @@ import {
   type WorkItemType,
 } from "./types";
 import { useI18n } from "./i18n";
+import { ImageAnnotator } from "./ImageAnnotator";
+import { isAnnotatableImage } from "./image-annotation";
 import { ITEM_HISTORY_MARKER, itemDetailUrl, itemKeyFromUrl, itemListUrl } from "./navigation";
 import { registerMissionGoWebMcp } from "./webmcp";
 
@@ -1476,16 +1479,20 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
   const [files, setFiles] = useState<readonly File[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
 
+  // Annotating replaces an attachment's bytes, filename and size, and adds a
+  // timeline entry, so it refreshes exactly what deleting one does.
+  const refreshAfterAttachmentChange = async () => {
+    setFileError(null);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["item", item.key] }),
+      queryClient.invalidateQueries({ queryKey: ["items"] }),
+      queryClient.invalidateQueries({ queryKey: ["timeline", item.key] }),
+    ]);
+  };
+
   const deleteAttachmentMutation = useMutation({
     mutationFn: (attachmentId: string) => api.deleteAttachment(item.key, attachmentId),
-    onSuccess: async () => {
-      setFileError(null);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["item", item.key] }),
-        queryClient.invalidateQueries({ queryKey: ["items"] }),
-        queryClient.invalidateQueries({ queryKey: ["timeline", item.key] }),
-      ]);
-    },
+    onSuccess: refreshAfterAttachmentChange,
     onError: (error) => setFileError(errorMessage(error, t("somethingWentWrong"))),
   });
 
@@ -1559,6 +1566,7 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
         existingItemKey={item.key}
         existingAttachments={item.attachments}
         onDeleteExistingAttachment={(attachmentId) => deleteAttachmentMutation.mutate(attachmentId)}
+        onExistingAttachmentReplaced={refreshAfterAttachmentChange}
         deletingExistingAttachmentId={deleteAttachmentMutation.isPending ? deleteAttachmentMutation.variables : undefined}
       />
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
@@ -1582,6 +1590,7 @@ function WorkItemFields({
   existingItemKey,
   existingAttachments = [],
   onDeleteExistingAttachment,
+  onExistingAttachmentReplaced,
   deletingExistingAttachmentId,
 }: {
   productId: string;
@@ -1594,6 +1603,7 @@ function WorkItemFields({
   existingItemKey?: string;
   existingAttachments?: readonly WorkItemAttachment[];
   onDeleteExistingAttachment?: ((attachmentId: string) => void) | undefined;
+  onExistingAttachmentReplaced?: (() => void | Promise<void>) | undefined;
   deletingExistingAttachmentId?: string | undefined;
 }) {
   const { priorityLabel, t, typeLabel } = useI18n();
@@ -1695,6 +1705,7 @@ function WorkItemFields({
               itemKey={existingItemKey}
               attachment={attachment}
               onDelete={onDeleteExistingAttachment}
+              onReplaced={onExistingAttachmentReplaced}
               deleting={deletingExistingAttachmentId === attachment.id}
             />
           ))}</div>
@@ -2037,6 +2048,7 @@ function SelectedFilePreviews({
 }) {
   const { t } = useI18n();
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [annotatingIndex, setAnnotatingIndex] = useState<number | null>(null);
   const previews = useMemo(() => {
     const nextNumber = { image: startingNumbers.image, video: startingNumbers.video };
     return files.map((file) => {
@@ -2073,6 +2085,9 @@ function SelectedFilePreviews({
               </button>
               <footer>
                 <span><strong>{referenceLabel} · {file.name}</strong><small>{formatBytes(file.size)}</small></span>
+                {isImage && isAnnotatableImage(file) && (
+                  <button type="button" onClick={() => setAnnotatingIndex(index)} aria-label={t("annotateTitle")} title={t("annotate")}><Highlighter size={14} /></button>
+                )}
                 <button type="button" onClick={() => onFiles(files.filter((_, fileIndex) => fileIndex !== index))} aria-label={t("removeFile", { filename: file.name })}><X size={14} /></button>
               </footer>
             </article>
@@ -2087,6 +2102,16 @@ function SelectedFilePreviews({
             {activePreview.kind === "video" && <video src={activePreview.url} controls playsInline preload="metadata" />}
           </section>
         </div>
+      )}
+      {annotatingIndex !== null && files[annotatingIndex] && (
+        <ImageAnnotator
+          file={files[annotatingIndex]}
+          onCancel={() => setAnnotatingIndex(null)}
+          onSave={(annotated) => {
+            onFiles(files.map((current, fileIndex) => fileIndex === annotatingIndex ? annotated : current));
+            setAnnotatingIndex(null);
+          }}
+        />
       )}
     </div>
   );
@@ -2124,14 +2149,20 @@ function AttachmentCard({
   itemKey,
   attachment,
   onDelete,
+  onReplaced,
   deleting = false,
 }: {
   itemKey: string;
   attachment: WorkItemAttachment;
   onDelete?: ((attachmentId: string) => void) | undefined;
+  onReplaced?: (() => void | Promise<void>) | undefined;
   deleting?: boolean;
 }) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const [annotating, setAnnotating] = useState(false);
+  const [replacing, setReplacing] = useState(false);
+  const [replaceError, setReplaceError] = useState("");
   const [cardRef, isNearViewport] = useNearViewport<HTMLElement>("180px");
   const [previewRequested, setPreviewRequested] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -2189,6 +2220,31 @@ function AttachmentCard({
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
+  // The annotator keys its object URL off this file, so it has to keep the same
+  // identity across renders. A new File built inline would make that effect
+  // re-run and revoke the URL the image is still loading from.
+  const annotationSource = useMemo(
+    () => contentQuery.data ? new File([contentQuery.data], attachment.filename, { type: attachment.contentType }) : null,
+    [attachment.contentType, attachment.filename, contentQuery.data],
+  );
+
+  const saveAnnotation = async (annotated: File) => {
+    setReplacing(true);
+    setReplaceError("");
+    try {
+      await api.replaceAttachment(itemKey, attachment.id, annotated);
+      // The cached blob is keyed by attachment id and never goes stale on its
+      // own, so drop it or the card keeps showing the image before the marks.
+      queryClient.removeQueries({ queryKey: ["attachment-content", itemKey, attachment.id] });
+      setAnnotating(false);
+      await onReplaced?.();
+    } catch (error) {
+      setReplaceError(errorMessage(error, t("annotateSaveFailed")));
+    } finally {
+      setReplacing(false);
+    }
+  };
+
   const Icon = attachment.kind === "image" ? ImageIcon : attachment.kind === "video" ? Video : FileText;
   return (
     <article ref={cardRef} className={`attachment-card attachment-${attachment.kind}`}>
@@ -2221,6 +2277,15 @@ function AttachmentCard({
         <span><strong>{referenceLabel ? `${referenceLabel} · ` : ""}{attachment.filename}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span>
         <span className="attachment-actions">
           <button type="button" onClick={() => void download()} aria-label={`${t("download")} ${attachment.filename}`} title={t("download")}><Download size={15} /></button>
+          {onReplaced && attachment.kind === "image" && isAnnotatableImage({ name: attachment.filename, type: attachment.contentType }) && (
+            <button
+              type="button"
+              disabled={!contentQuery.data || replacing}
+              onClick={() => setAnnotating(true)}
+              aria-label={t("annotateTitle")}
+              title={t("annotate")}
+            >{replacing ? <LoaderCircle className="spin" size={15} /> : <Highlighter size={15} />}</button>
+          )}
           {onDelete && <button
             type="button"
             disabled={deleting}
@@ -2230,6 +2295,14 @@ function AttachmentCard({
           >{deleting ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}</button>}
         </span>
       </footer>
+      {replaceError && <InlineError message={replaceError} />}
+      {annotating && annotationSource && (
+        <ImageAnnotator
+          file={annotationSource}
+          onCancel={() => setAnnotating(false)}
+          onSave={saveAnnotation}
+        />
+      )}
       {viewerOpen && objectUrl && attachment.kind !== "log" && (
         <div className="selected-media-lightbox" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setViewerOpen(false); }}>
           <section role="dialog" aria-modal="true" aria-label={attachment.filename}>

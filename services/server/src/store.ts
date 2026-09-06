@@ -39,6 +39,7 @@ import {
   type CreateAttachmentMetadataInput,
   type ListWorkItemsInput,
   type ProductSnapshot,
+  type ReplaceAttachmentContentInput,
   type CreatedSdkToken,
   type SdkPrincipal,
   type SdkTokenSnapshot,
@@ -858,6 +859,57 @@ export class MissionGoStore {
       }, now);
     });
     return this.getAttachmentRecord(input.itemKey, id);
+  }
+
+  /**
+   * Swap an attachment's bytes while keeping the identity readers already cite.
+   *
+   * The display number comes from a counter that never reuses a value, so
+   * deleting and re-uploading would renumber the attachment: "image 1" would
+   * become "image 3" after one edit, and the MCP item context would show the
+   * gap. Editing in place keeps the id, the display number and the creation
+   * time, and records the change on the timeline instead.
+   */
+  replaceAttachmentContent(input: ReplaceAttachmentContentInput): {
+    readonly attachment: AttachmentRecord;
+    readonly replacedStorageFilename: string;
+  } {
+    const existing = this.getAttachmentRecord(input.itemKey, input.attachmentId);
+    const item = this.getWorkItemRow(input.itemKey)!;
+    if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 1) throw invalidInput("Attachment size is invalid.");
+    // The kind is part of that cited identity: "image 1" must not become a log.
+    if (input.kind !== existing.kind) throw invalidInput("A replacement must keep the original attachment kind.");
+
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database.connection
+        .prepare(
+          `UPDATE work_item_attachments
+           SET original_filename = ?, storage_filename = ?, content_type = ?, size_bytes = ?
+           WHERE id = ? AND item_id = ?`,
+        )
+        .run(input.filename, input.storageFilename, input.contentType, input.sizeBytes, existing.id, item.id);
+      this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
+      this.insertEvent(item.id, "attachment_replaced", "human", null, null, {
+        attachmentId: existing.id,
+        kind: existing.kind,
+        displayNumber: existing.displayNumber,
+        filename: input.filename,
+        previousFilename: existing.filename,
+        contentType: input.contentType,
+        sizeBytes: input.sizeBytes,
+        previousSizeBytes: existing.sizeBytes,
+      }, now);
+    });
+
+    // The feedback_attachment_uploads row keeps the digest the SDK uploaded and
+    // is deliberately left alone: it still records what that client sent, and a
+    // later retry of the same client attachment ID should fail loudly rather
+    // than return an attachment whose content has since been edited.
+    return {
+      attachment: this.getAttachmentRecord(input.itemKey, existing.id),
+      replacedStorageFilename: existing.storageFilename,
+    };
   }
 
   getFeedbackAttachmentUpload(
