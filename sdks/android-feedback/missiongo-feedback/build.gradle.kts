@@ -43,7 +43,7 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.11.0")
     implementation("androidx.work:work-runtime:2.11.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
-    testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.3.21")
+    testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.4.10")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
     testImplementation("org.json:json:20260814")
 }
