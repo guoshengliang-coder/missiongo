@@ -56,6 +56,8 @@ export interface CreateWorkItemInput {
 export interface ListWorkItemsInput {
   readonly productId: string;
   readonly status?: WorkItemStatus;
+  /** Without a status filter, cancelled items are left out unless this is set. */
+  readonly includeCancelled?: boolean;
   readonly type?: WorkItemType;
   readonly search?: string;
   readonly limit?: number;

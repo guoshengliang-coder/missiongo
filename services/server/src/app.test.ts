@@ -1486,6 +1486,31 @@ describe("MissionGo REST API", () => {
     expect(restored.json<{ archivedAt?: string }>().archivedAt).toBeUndefined();
   });
 
+  it("keeps cancelled items out of the unfiltered list but still counts them", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "MissionGo", keyPrefix: "MG" } })
+    ).json<{ id: string }>();
+    for (const title of ["Keep me", "Withdraw me"]) {
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/items",
+        payload: { productId: product.id, type: "task", priority: "normal", title, description: "x", environment: { platform: "web" } },
+      });
+    }
+    await app.inject({ method: "POST", url: "/api/v1/items/MG-2/transitions", payload: { to: "cancelled", reason: "cancelled" } });
+
+    // The default list is live work only.
+    const unfiltered = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}` });
+    expect(unfiltered.json<{ items: Array<{ key: string }> }>().items.map((item) => item.key)).toEqual(["MG-1"]);
+    // The sidebar bucket has to keep showing how many there are.
+    expect(unfiltered.json()).toMatchObject({ summary: { byStatus: { inbox: 1, cancelled: 1 }, productTotal: 2 } });
+
+    // Asking for them by status still returns them, which is the way back.
+    const cancelled = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&status=cancelled` });
+    expect(cancelled.json<{ items: Array<{ key: string }> }>().items.map((item) => item.key)).toEqual(["MG-2"]);
+  });
+
   it("refuses to archive the only product left to switch to", async () => {
     const { app } = await testApp();
     const only = (

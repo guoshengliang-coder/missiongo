@@ -686,7 +686,13 @@ export class MissionGoStore {
   }
 
   /** Filter clauses shared by the listing and its summary, so the two never disagree. */
-  private workItemFilter(input: { productId: string; status?: WorkItemStatus; type?: WorkItemType; search?: string }): {
+  private workItemFilter(input: {
+    productId: string;
+    status?: WorkItemStatus;
+    type?: WorkItemType;
+    search?: string;
+    includeCancelled?: boolean;
+  }): {
     clauses: string[];
     values: SQLInputValue[];
   } {
@@ -696,6 +702,11 @@ export class MissionGoStore {
       if (!isOneOf(input.status, WORK_ITEM_STATUSES)) throw invalidInput("Unsupported work-item status.");
       clauses.push("status = ?");
       values.push(input.status);
+    } else if (!input.includeCancelled) {
+      // Cancelling withdraws an item, so it does not belong in the unfiltered
+      // list beside live work. It stays reachable through its own status filter,
+      // and the summary still counts it so the sidebar bucket is honest.
+      clauses.push("status != 'cancelled'");
     }
     if (input.type) {
       if (!isOneOf(input.type, WORK_ITEM_TYPES)) throw invalidInput("Unsupported work-item type.");
@@ -745,6 +756,7 @@ export class MissionGoStore {
     // so the counts have to describe what the other filters left behind.
     const { clauses, values } = this.workItemFilter({
       productId: input.productId,
+      includeCancelled: true,
       ...(input.type !== undefined ? { type: input.type } : {}),
       ...(input.search !== undefined ? { search: input.search } : {}),
     });

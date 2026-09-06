@@ -78,6 +78,7 @@ import {
   type WorkItemStatus,
   type WorkItemType,
 } from "./types";
+import { environmentSummary, platformName } from "./environment-summary";
 import { useI18n } from "./i18n";
 import { groupTimeline } from "./timeline";
 import { TRANSITIONS } from "./work-item-transitions";
@@ -496,6 +497,11 @@ export function App() {
   const selectItemProduct = useCallback((item: WorkItem) => {
     if (item.productId !== selectedProductId) setSelectedProductId(item.productId);
   }, [selectedProductId]);
+  // The unfiltered list leaves cancelled items out, so the "all items" badge has
+  // to leave them out too or it disagrees with the rows underneath it.
+  const listedCount = itemSummary
+    ? itemSummary.total - itemSummary.byStatus.cancelled
+    : items.length;
   const openCount = itemSummary
     ? itemSummary.total - itemSummary.byStatus.done - itemSummary.byStatus.cancelled
     : items.filter((item) => !["done", "cancelled"].includes(item.status)).length;
@@ -654,7 +660,7 @@ export function App() {
         </div>
         <nav aria-label={t("workspace")}>
           <p className="sidebar-label">{t("workspace")}</p>
-          <StatusNavItem label={t("allItems")} count={itemSummary?.total ?? items.length} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
+          <StatusNavItem label={t("allItems")} count={listedCount} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
             <ListTodo size={17} />
           </StatusNavItem>
           {ITEM_STATUSES.map((status) => {
@@ -706,7 +712,7 @@ export function App() {
             <button className={statusFilter === "all" ? "active" : ""} aria-pressed={statusFilter === "all"} onClick={() => selectStatus("all")}>
               <ListTodo size={16} />
               <span>{t("allItems")}</span>
-              <small>{itemSummary?.total ?? items.length}</small>
+              <small>{listedCount}</small>
             </button>
             {ITEM_STATUSES.map((status) => {
               const Icon = STATUS_ICONS[status];
@@ -759,7 +765,7 @@ export function App() {
                 </button>
               )}
               <span className="active-filters-count">
-                {t("filterMatchCount", { matched: itemSummary?.total ?? items.length, total: itemSummary?.productTotal ?? items.length })}
+                {t("filterMatchCount", { matched: statusFilter === "all" ? listedCount : (itemSummary?.byStatus[statusFilter] ?? items.length), total: itemSummary?.productTotal ?? items.length })}
               </span>
               <button type="button" className="text-button active-filters-clear" onClick={clearFilters}>{t("clearFilters")}</button>
             </div>
@@ -917,12 +923,7 @@ function ItemRow({
   const logAttachmentCount = item.attachments.filter((attachment) => attachment.kind === "log").length;
   const logCount = Math.max(logAttachmentCount, item.diagnosticSummary?.logCount ?? 0);
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
-  const contextDetails = [
-    sourceComponent && environment ? platformName(environment.platform, t) : undefined,
-    environment?.appVersion ? `v${environment.appVersion}` : undefined,
-    environment?.deviceModel,
-    environment?.osVersion,
-  ].filter(Boolean).join(" · ");
+  const contextDetails = environmentSummary(environment, Boolean(sourceComponent), t);
   return (
     <article
       className={`item-row ${selected ? "selected" : ""}`}
@@ -990,9 +991,9 @@ function ItemMediaStrip({
     (attachment): attachment is WorkItemAttachment & { readonly kind: "image" | "video" } => attachment.kind !== "log",
   );
   // Two thumbnails cover the common "before and after" pair; the rest are
-  // counted on the last one rather than shrinking every tile. A phone only has
-  // room for one before the title starts truncating mid-word.
-  const visible = mediaAttachments.slice(0, narrow ? 1 : 2);
+  // counted on the last one rather than shrinking every tile. A phone puts the
+  // strip on its own full-width row, so it has room for three.
+  const visible = mediaAttachments.slice(0, narrow ? 3 : 2);
   if (visible.length === 0) return preserveColumn ? <div className="item-media-strip empty-slot" aria-hidden="true" /> : null;
   return (
     <div className="item-media-strip" aria-label={t("mediaCount", { count: mediaAttachments.length })}>
@@ -1119,7 +1120,7 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
               mutation.mutate(primaryAction);
             }}
           >
-            <Check size={14} /> {quickActionLabel(item.status, t)}
+            {quickActionLabel(item.status, t)}
           </button>
         )}
         {secondaryActions.map((action) => (
@@ -1163,15 +1164,6 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
     </details>
   );
 }
-function platformName(platform: WorkItemEnvironment["platform"], t: ReturnType<typeof useI18n>["t"]): string {
-  if (platform === "android") return t("android");
-  if (platform === "macos") return t("macos");
-  if (platform === "web") return t("web");
-  if (platform === "server") return t("server");
-  if (platform === "shared") return t("shared");
-  return t("other");
-}
-
 function mediaNumberLabel(kind: "image" | "video", displayNumber: number, t: ReturnType<typeof useI18n>["t"]): string {
   return t(kind === "image" ? "imageNumber" : "videoNumber", { number: displayNumber });
 }
@@ -1295,7 +1287,7 @@ function DetailPane({
               onClick={() => transitionMutation.mutate(primaryAction)}
               title={transitionLabel(primaryAction.label)}
             >
-              {transitionMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
+              {transitionMutation.isPending && <LoaderCircle className="spin" size={15} />}
               {quickActionLabel(item.status, t)}
             </button>
           )}
