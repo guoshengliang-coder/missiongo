@@ -50,6 +50,8 @@ npm run publish:android-internal
 
 该命令读取开发机私密配置，生成递增 `versionCode` 的内部签名 APK，原子替换网站的固定下载文件，并重新构建 Web。APK 被 Git 忽略；网站的“下载安卓版”始终指向 `/downloads/missiongo-android-latest.apk`。
 
+生产环境的下载文件由宿主机反向代理从自己的目录提供，`scripts/deploy.sh` 会在部署时把本次快照携带的 APK 发布到那里并原子切换软链接。因此请先执行上面的发布命令，再执行部署；否则部署会把过期的 APK 当作最新版发布出去。详见[部署说明](../../deploy/README.md)。
+
 当前保留早期 APK 的应用 ID 和调试签名，确保测试手机可以直接覆盖升级。正式对外分发前，需要另行迁移到正式应用 ID 和仓库外保存的发布签名。
 
 SDK 的独立验证入口保留在 `sdks/android-feedback/sample`，不得发布到 MissionGo 正式下载链接。
