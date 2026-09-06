@@ -76,6 +76,7 @@ import {
   type WorkItemType,
 } from "./types";
 import { useI18n } from "./i18n";
+import { groupTimeline } from "./timeline";
 import { TRANSITIONS } from "./work-item-transitions";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { isAnnotatableImage } from "./image-annotation";
@@ -189,9 +190,7 @@ function FieldLabel({ children, required = false }: { children: ReactNode; requi
   return (
     <span className="field-label">
       {children}
-      <small className={`field-requirement ${required ? "required" : "optional"}`}>
-        {t(required ? "requiredField" : "optionalField")}
-      </small>
+      {required && <small className="field-requirement required">{t("requiredField")}</small>}
     </span>
   );
 }
@@ -1372,15 +1371,25 @@ function DetailPane({
               attachments={logAttachments}
             />
             <section className="timeline-block">
-              <h3>{t("timeline")}</h3>
+              <header className="timeline-head">
+                <h3>{t("timeline")}</h3>
+                <small>{t("newestFirst")}</small>
+              </header>
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
               <div className="timeline">
-                {(timelineQuery.data?.events ?? []).map((event) => (
-                  <div className="timeline-event" key={event.id}>
+                {groupTimeline(timelineQuery.data?.events ?? []).map(({ id, event, count, filenames }) => (
+                  <div className="timeline-event" key={id}>
                     <span className="timeline-dot" />
                     <div>
-                      <strong>{event.eventType === "status_changed" ? `${event.fromStatus ? statusLabel(event.fromStatus) : t("status")} → ${event.toStatus ? statusLabel(event.toStatus) : t("updated")}` : eventLabel(event.eventType)}</strong>
+                      <strong>
+                        {event.eventType === "status_changed"
+                          ? `${event.fromStatus ? statusLabel(event.fromStatus) : t("status")} → ${event.toStatus ? statusLabel(event.toStatus) : t("updated")}`
+                          : count > 1
+                            ? t("eventRepeated", { event: eventLabel(event.eventType), count })
+                            : eventLabel(event.eventType)}
+                      </strong>
                       <p>{actorLabel(event.actorKind)} · {formatTime(event.createdAt)}</p>
+                      {filenames.length > 0 && <p className="timeline-files">{filenames.join("、")}</p>}
                       {event.eventType === "analysis_appended" && <AnalysisDetails payload={event.payload} />}
                     </div>
                   </div>
@@ -1693,6 +1702,13 @@ function WorkItemFields({
   const selectedMediaFiles = files.filter((file) => !isDiagnosticFile(file));
   const reportCopy = REPORT_COPY[draft.type];
   const showsBugFields = draft.type === "bug";
+  const platformRequired = draft.type === "bug" || draft.type === "task";
+  // Diagnostics belong to something that runs. Keep the block available for
+  // every type, but only unfolded where a log is part of the report.
+  const diagnosticsOpen = platformRequired
+    || Boolean(draft.diagnosticLog.trim())
+    || selectedLogFiles.length > 0
+    || existingLogAttachments.length > 0;
 
   const updateDraft = <Key extends keyof CaptureDraft>(key: Key, value: CaptureDraft[Key]) => {
     onDraft({ ...draft, [key]: value });
@@ -1719,7 +1735,7 @@ function WorkItemFields({
         })}
       </div>
       <div className="classification-row">
-        <label><FieldLabel required>{t("platform")}</FieldLabel>
+        <label><FieldLabel required={platformRequired}>{t("platform")}</FieldLabel>
           <select
             value={draft.environment.platform}
             onChange={(event) => {
@@ -1731,7 +1747,7 @@ function WorkItemFields({
                 environment: { ...draft.environment, platform },
               });
             }}
-            required
+            required={platformRequired}
           >
             <option value="">{t("selectPlatform")}</option>
             {COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}
@@ -1818,8 +1834,8 @@ function WorkItemFields({
           </div>
         )}
       </section>
-      <section className="diagnostic-input-block">
-        <div className="diagnostic-input-heading">
+      <details className="diagnostic-input-block" open={diagnosticsOpen}>
+        <summary className="diagnostic-input-heading">
           <span><strong>{t("diagnostics")}</strong><small>{t("diagnosticsHelp")}</small></span>
           <FilePicker
             files={selectedLogFiles}
@@ -1830,7 +1846,7 @@ function WorkItemFields({
             allowedExtensions={["log", "txt", "json"]}
             buttonLabel={t("uploadLog")}
           />
-        </div>
+        </summary>
         <label><FieldLabel>{t("diagnosticLog")}</FieldLabel>
           <textarea
             className="diagnostic-log-input"
@@ -1857,7 +1873,7 @@ function WorkItemFields({
             />
           ))}</div>
         )}
-      </section>
+      </details>
       <details className="capture-optional" open={hasOptionalEnvironmentDetails(draft.environment) || draft.environment.platform === "web"}>
         <summary><ChevronRight size={16} /> <span><strong>{t("optionalDetails")}</strong><small>{t("optionalDetailsHelp")}</small></span></summary>
         <div className="capture-optional-body">
