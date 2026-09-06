@@ -132,6 +132,7 @@ export interface AppendAnalysisInput {
   readonly evidence: readonly string[];
   readonly risks: readonly string[];
   readonly agentName?: string;
+  readonly attribution?: EventAttribution;
   readonly idempotencyKey: string;
 }
 
@@ -161,7 +162,20 @@ export interface ClaimExecutionInput {
   readonly idempotencyKey: string;
 }
 
-export interface WorkItemEventSnapshot {
+/**
+ * Which AI wrote an event. `actorKind` says a machine acted; this says which
+ * account authorized it, which OAuth client it came through, and which execution
+ * it belonged to. Absent on human events -- a single administrator owns this
+ * deployment, so `actorKind: "human"` already names the account -- and on every
+ * event written before migration 13.
+ */
+export interface EventAttribution {
+  readonly accountId?: string;
+  readonly clientId?: string;
+  readonly executionId?: string;
+}
+
+export interface WorkItemEventSnapshot extends EventAttribution {
   readonly id: string;
   readonly itemKey: string;
   readonly eventType: string;

@@ -72,6 +72,10 @@ export const INITIAL_SCHEMA = `
     PRIMARY KEY (item_id, kind)
   ) STRICT;
 
+  -- account_id / client_id / execution_id say which AI wrote an event, not just
+  -- that an AI did. They stay null for human events: this deployment has a single
+  -- administrator, so actor_kind = 'human' already names the account. They are also
+  -- null for events written before migration 13.
   CREATE TABLE IF NOT EXISTS work_item_events (
     id TEXT PRIMARY KEY,
     item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
@@ -80,6 +84,9 @@ export const INITIAL_SCHEMA = `
     from_status TEXT,
     to_status TEXT,
     payload_json TEXT NOT NULL DEFAULT '{}',
+    account_id TEXT,
+    client_id TEXT,
+    execution_id TEXT,
     created_at TEXT NOT NULL
   ) STRICT;
 

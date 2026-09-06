@@ -32,6 +32,7 @@ import {
   type ComponentKind,
   type ComponentSnapshot,
   type CreateWorkItemInput,
+  type EventAttribution,
   type ExecutionSnapshot,
   type FeedbackDraftSnapshot,
   type FeedbackLogEntry,
@@ -98,6 +99,9 @@ interface EventRow {
   from_status: WorkItemStatus | null;
   to_status: WorkItemStatus | null;
   payload_json: string;
+  account_id: string | null;
+  client_id: string | null;
+  execution_id: string | null;
   created_at: string;
 }
 
@@ -1067,7 +1071,8 @@ export class MissionGoStore {
     if (!item) throw notFound("Work item");
     const rows = this.database.connection
       .prepare(
-        `SELECT e.id, w.item_key, e.event_type, e.actor_kind, e.from_status, e.to_status, e.payload_json, e.created_at
+        `SELECT e.id, w.item_key, e.event_type, e.actor_kind, e.from_status, e.to_status, e.payload_json,
+                e.account_id, e.client_id, e.execution_id, e.created_at
          FROM work_item_events e
          JOIN work_items w ON w.id = e.item_id
          WHERE e.item_id = ?
@@ -1082,6 +1087,9 @@ export class MissionGoStore {
       ...(row.from_status ? { fromStatus: row.from_status } : {}),
       ...(row.to_status ? { toStatus: row.to_status } : {}),
       payload: JSON.parse(row.payload_json) as Readonly<Record<string, unknown>>,
+      ...(row.account_id ? { accountId: row.account_id } : {}),
+      ...(row.client_id ? { clientId: row.client_id } : {}),
+      ...(row.execution_id ? { executionId: row.execution_id } : {}),
       createdAt: row.created_at,
     }));
   }
@@ -1117,7 +1125,7 @@ export class MissionGoStore {
         risks,
         ...(agentName ? { agentName } : {}),
       };
-      const eventId = this.insertEvent(item.id, "analysis_appended", "agent", null, null, payload, now);
+      const eventId = this.insertEvent(item.id, "analysis_appended", "agent", null, null, payload, now, input.attribution);
       this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
       const result: WorkItemEventSnapshot = {
         id: eventId,
@@ -1125,6 +1133,8 @@ export class MissionGoStore {
         eventType: "analysis_appended",
         actorKind: "agent",
         payload,
+        ...(input.attribution?.accountId ? { accountId: input.attribution.accountId } : {}),
+        ...(input.attribution?.clientId ? { clientId: input.attribution.clientId } : {}),
         createdAt: now,
       };
       this.database.connection
@@ -1191,7 +1201,7 @@ export class MissionGoStore {
         leaseExpiresAt: expiresAt,
         agentId,
         mode: input.mode,
-      }, now);
+      }, now, { executionId });
       const result = this.getExecution(executionId);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
       return result;
@@ -1289,7 +1299,16 @@ export class MissionGoStore {
         .run(question, now, lease.execution_id);
       this.releaseLease(lease.id, now);
       this.applyTransition(item, "on_hold", "agent", "request_human_input", question, now);
-      this.insertEvent(item.id, "human_input_requested", "agent", null, null, { executionId: lease.execution_id, question }, now);
+      this.insertEvent(
+        item.id,
+        "human_input_requested",
+        "agent",
+        null,
+        null,
+        { executionId: lease.execution_id, question },
+        now,
+        { executionId: lease.execution_id },
+      );
       const result = this.getExecution(lease.execution_id);
       this.saveIdempotentResult(key, operation, result, now);
       return result;
@@ -1316,7 +1335,7 @@ export class MissionGoStore {
       this.insertEvent(item.id, "resolution_submitted", "agent", null, null, {
         executionId: lease.execution_id,
         report: input.report,
-      }, now);
+      }, now, { executionId: lease.execution_id });
       const result = this.getExecution(lease.execution_id);
       this.saveIdempotentResult(key, operation, result, now);
       return result;
@@ -1377,7 +1396,7 @@ export class MissionGoStore {
       this.insertEvent(item.id, "execution_released", "agent", null, null, {
         executionId: lease.execution_id,
         ...(input.note ? { note: input.note } : {}),
-      }, now);
+      }, now, { executionId: lease.execution_id });
       const result = this.getExecution(lease.execution_id);
       this.saveIdempotentResult(key, operation, result, now);
       return result;
@@ -1424,7 +1443,7 @@ export class MissionGoStore {
         executionId: execution.id,
         leaseId,
         leaseExpiresAt: expiresAt,
-      }, now);
+      }, now, { executionId: execution.id });
       const result = this.getExecution(execution.id);
       this.saveIdempotentResult(key, operation, result, now);
       return result;
@@ -1446,7 +1465,9 @@ export class MissionGoStore {
       const lease = this.requireActiveLease(input.executionId, input.leaseId, now);
       const item = this.getWorkItemRow(lease.item_key)!;
       const eventPayload = { executionId: lease.execution_id, ...payload };
-      const eventId = this.insertEvent(item.id, eventType, "agent", null, null, eventPayload, now);
+      const eventId = this.insertEvent(item.id, eventType, "agent", null, null, eventPayload, now, {
+        executionId: lease.execution_id,
+      });
       this.database.connection.prepare("UPDATE ai_executions SET updated_at = ? WHERE id = ?").run(now, lease.execution_id);
       this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
       const result: WorkItemEventSnapshot = {
@@ -1742,15 +1763,29 @@ export class MissionGoStore {
     toStatus: WorkItemStatus | null,
     payload: Readonly<Record<string, unknown>>,
     createdAt: string,
+    attribution: EventAttribution = {},
   ): string {
     const id = randomUUID();
     this.database.connection
       .prepare(
         `INSERT INTO work_item_events
-           (id, item_id, event_type, actor_kind, from_status, to_status, payload_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, item_id, event_type, actor_kind, from_status, to_status, payload_json,
+            account_id, client_id, execution_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, itemId, eventType, actorKind, fromStatus, toStatus, JSON.stringify(payload), createdAt);
+      .run(
+        id,
+        itemId,
+        eventType,
+        actorKind,
+        fromStatus,
+        toStatus,
+        JSON.stringify(payload),
+        attribution.accountId ?? null,
+        attribution.clientId ?? null,
+        attribution.executionId ?? null,
+        createdAt,
+      );
     return id;
   }
 

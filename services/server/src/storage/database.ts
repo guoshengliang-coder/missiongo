@@ -166,6 +166,27 @@ export class MissionGoDatabase {
           .run(12, new Date().toISOString());
       });
     }
+    // Events recorded that an agent acted but not which one. An AI reading an
+    // item back cannot then tell a fact a person supplied from a guess the
+    // previous agent wrote, and treats its own speculation as evidence.
+    const eventAttributionMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 13")
+      .get() as unknown as { version: number } | undefined;
+    if (!eventAttributionMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(work_item_events)")
+          .all() as unknown as Array<{ name: string }>;
+        for (const column of ["account_id", "client_id", "execution_id"]) {
+          if (!columns.some((existing) => existing.name === column)) {
+            this.connection.exec(`ALTER TABLE work_item_events ADD COLUMN ${column} TEXT;`);
+          }
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(13, new Date().toISOString());
+      });
+    }
 
     // 13 and 14 belong to the comment work on feat/ai-write-comments; this one
     // takes 15 so the two branches do not both claim a number.

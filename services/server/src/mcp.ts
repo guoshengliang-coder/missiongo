@@ -42,6 +42,7 @@ export interface MissionGoMcpOptions {
 interface McpAccountAccess {
   readonly accountId: string;
   readonly username: string;
+  readonly clientId?: string;
   readonly productIds: "*" | readonly string[];
 }
 
@@ -53,7 +54,13 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
     || typeof extra.username !== "string"
     || (productIds !== "*" && (!Array.isArray(productIds) || productIds.some((id) => typeof id !== "string")))
   ) throw new Error("MissionGo account authorization is required.");
-  return { accountId: extra.accountId, username: extra.username, productIds: productIds as "*" | string[] };
+  const clientId = ctx.http?.authInfo?.clientId;
+  return {
+    accountId: extra.accountId,
+    username: extra.username,
+    ...(typeof clientId === "string" && clientId ? { clientId } : {}),
+    productIds: productIds as "*" | string[],
+  };
 }
 
 function hasProductAccess(access: McpAccountAccess, productId: string): boolean {
@@ -375,12 +382,17 @@ export function createMissionGoMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ itemKey, conclusion, evidence, risks, agentName, idempotencyKey }, ctx) => {
+      const access = accountAccess(ctx);
       const event = store.appendAnalysis({
         itemKey: requireItemAccess(ctx, store, itemKey),
         conclusion,
         evidence,
         risks,
         ...(agentName ? { agentName } : {}),
+        attribution: {
+          accountId: access.accountId,
+          ...(access.clientId ? { clientId: access.clientId } : {}),
+        },
         idempotencyKey,
       });
       return textResult(
