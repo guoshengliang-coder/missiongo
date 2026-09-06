@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Not the product name: this is the SDK validation host, and a launcher
+         entry reading "MissionGo" would be indistinguishable from the real app. -->
+    <string name="app_name">MissionGo SDK 验证</string>
+</resources>

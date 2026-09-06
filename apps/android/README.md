@@ -52,6 +52,12 @@ npm run publish:android-internal
 
 生产环境的下载文件由宿主机反向代理从自己的目录提供，`scripts/deploy.sh` 会在部署时把本次快照携带的 APK 发布到那里并原子切换软链接。因此请先执行上面的发布命令，再执行部署；否则部署会把过期的 APK 当作最新版发布出去。详见[部署说明](../../deploy/README.md)。
 
-当前保留早期 APK 的应用 ID 和调试签名，确保测试手机可以直接覆盖升级。正式对外分发前，需要另行迁移到正式应用 ID 和仓库外保存的发布签名。
+## 应用身份
+
+正式 App 的 applicationId 是 `io.missiongo.android`，名称取自 `@string/app_name`，图标与 `apps/web/public/icon.svg` 同源。这些值在 `product.json` 里声明一次，`npm run check` 会校验各处没有跑偏。
+
+> **一次性升级中断**：该 ID 此前是 `io.missiongo.feedback.sample`，与 SDK 验证 Sample 相同，两者在同一台手机上会互相顶掉。改为正式 ID 后，**已安装旧版本的手机必须先卸载再安装**，这一次无法原地升级。工作条目都在服务端，卸载不会丢数据。此后原地升级恢复正常。
+
+调试签名仍未迁移：正式对外分发前，需要另行改用仓库外保存的发布签名。
 
 SDK 的独立验证入口保留在 `sdks/android-feedback/sample`，不得发布到 MissionGo 正式下载链接。

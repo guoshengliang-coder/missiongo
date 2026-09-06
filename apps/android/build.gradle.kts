@@ -22,8 +22,12 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        // Keep the first internal sample package ID so website downloads upgrade in place.
-        applicationId = "io.missiongo.feedback.sample"
+        // Declared in product.json and enforced by scripts/check-product-identity.mjs.
+        // This was io.missiongo.feedback.sample, shared with the SDK validation
+        // sample, so the two apps overwrote each other on a device and the
+        // product identified itself as the sample everywhere Android shows a
+        // package name. Changing it costs existing installs one uninstall.
+        applicationId = "io.missiongo.android"
         minSdk = 23
         targetSdk = 36
         versionCode = missionGoVersionCode.get().toInt()
