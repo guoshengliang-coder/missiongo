@@ -1,6 +1,6 @@
 # 宿主 App 接入
 
-> 当前 SDK 版本为 `0.2.1`。面向用户的入口使用短期、单草稿 Web 会话打开共用 H5 编辑器。
+> 当前 SDK 版本为 `0.2.2`。面向用户的入口使用短期、单草稿 Web 会话打开共用 H5 编辑器。
 
 ## 1. 创建受限 SDK Token
 
@@ -44,7 +44,7 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("io.missiongo:missiongo-feedback:0.2.1")
+    implementation("io.missiongo:missiongo-feedback:0.2.2")
 }
 ```
 

@@ -3,11 +3,22 @@
     <!--
       The editor Activity used to hardcode Theme.Material.Light, so a host running in dark mode
       dropped the user onto a white screen. The platform has no Material DayNight theme, so the
-      light and dark variants are declared here and picked by the -night resource qualifier.
+      light and dark variants are declared here.
 
-      Everything the Activity draws before the H5 loads reads its colours from this theme, which
-      is what makes the fix complete: switching the theme alone would still leave a light loading
-      screen, because those colours were literals in the code.
+      MissionGoFeedbackTheme follows the system, through the -night resource qualifier. That is
+      not enough on its own: a host with its own in-app light/dark setting (Compose apps
+      typically have one) does not change the resource configuration, so a user who picked dark
+      inside a light system would still land on a white page. Such a host sets
+      MissionGoOptions.editorAppearance and the Activity applies one of the two explicit themes
+      below instead.
+
+      Everything the Activity draws before the H5 loads reads its colours from the theme, which
+      is what makes the fix complete: switching the theme alone would still leave a light
+      loading screen, because those colours were literals in the code.
     -->
     <style name="MissionGoFeedbackTheme" parent="@android:style/Theme.Material.Light.NoActionBar" />
+
+    <style name="MissionGoFeedbackTheme.Light" parent="@android:style/Theme.Material.Light.NoActionBar" />
+
+    <style name="MissionGoFeedbackTheme.Dark" parent="@android:style/Theme.Material.NoActionBar" />
 </resources>

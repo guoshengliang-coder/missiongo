@@ -82,6 +82,9 @@ public object MissionGo {
         }
     }
 
+    internal fun editorAppearance(): MissionGoAppearance =
+        runtime?.options?.editorAppearance ?: MissionGoAppearance.FollowSystem
+
     @JvmStatic
     public fun setCurrentScreen(name: String?) {
         val current = runtime ?: return

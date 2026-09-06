@@ -4,7 +4,7 @@
 > 读完它就足以完成接入，不需要 MissionGo 的源码，也不需要读 MissionGo 的其他文档。
 >
 > 固定地址：`__MISSIONGO_PUBLIC_ORIGIN__/downloads/missiongo-android-sdk/INTEGRATION.md`
-> 对应 SDK 版本：**0.2.1**
+> 对应 SDK 版本：**0.2.2**
 
 ## 0. 这是什么
 
@@ -20,7 +20,7 @@
 | | 内容 | 从哪来 |
 |---|---|---|
 | 1 | Maven 仓库地址 `__MISSIONGO_PUBLIC_ORIGIN__/maven` | 本文档 |
-| 2 | 坐标 `io.missiongo:missiongo-feedback:0.2.1` | 本文档 |
+| 2 | 坐标 `io.missiongo:missiongo-feedback:0.2.2` | 本文档 |
 | 3 | 服务地址（endpoint）`__MISSIONGO_PUBLIC_ORIGIN__` | 本文档 |
 | 4 | SDK Token | **由人在 MissionGo 管理端创建后，直接写入本机私密文件** |
 
@@ -84,7 +84,7 @@ dependencyResolutionManagement {
 ```kotlin
 // gradle/libs.versions.toml
 [versions]
-missiongoFeedback = "0.2.1"
+missiongoFeedback = "0.2.2"
 
 [libraries]
 missiongo-feedback = { module = "io.missiongo:missiongo-feedback", version.ref = "missiongoFeedback" }
@@ -161,11 +161,30 @@ class HostApplication : Application() {
                 sourceRevision = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
                 buildFlavor = BuildConfig.BUILD_TYPE,
                 distributionChannel = "internal",
+                editorAppearance = MissionGoAppearance.FollowSystem,
             ),
         )
     }
 }
 ```
+
+### ⚠️ 宿主如果有自己的明暗设置，必须传 `editorAppearance`
+
+`FollowSystem`（默认）跟随的是 **Android 系统的** 深色模式。应用内的主题设置不会改变系统的
+资源配置，SDK 看不到它——所以「系统浅色 + 应用内选了深色」的用户会掉进一个白色的反馈页。
+
+有自己主题设置的宿主（Compose 应用通常都有），要把当前生效的明暗传进来：
+
+```kotlin
+editorAppearance = when (hostTheme) {
+    HostTheme.Light -> MissionGoAppearance.Light
+    HostTheme.Dark -> MissionGoAppearance.Dark
+    HostTheme.FollowSystem -> MissionGoAppearance.FollowSystem
+}
+```
+
+这个值同时决定编辑器 Activity 的窗口主题和 H5 页面的明暗，两者一致。它在
+`initialize()` 时固定；宿主主题变更后需要用新值再调一次 `initialize()`。
 
 生产构建只接受 HTTPS。本机开发若必须连 HTTP，需显式设置 `allowInsecureHttp = true`，不得在
 生产构建中开启。重复用相同 options 调用 `initialize` 是安全的。
@@ -247,6 +266,7 @@ MissionGo.openFeedback(
     activity = activity,
     options = FeedbackOptions(
         title = "",                      // 预填，用户可改
+        description = "",                // 现象描述，同样可预填
         type = FeedbackType.Bug,         // Idea / Requirement / Bug / Task / Note
         priority = FeedbackPriority.Normal,
         context = mapOf("queryLength" to query.length.toString()),  // 仅本次
@@ -399,6 +419,6 @@ Logcat、宿主数据库、SharedPreferences、账号、Cookie、Token、页面�
 ## 14. 当前版本不支持
 
 自动崩溃 / ANR 上报、完整 Logcat 采集、网络全量拦截、后台屏幕采集、录屏、打开反馈时自动截图、
-后台队列状态查询、附件上传进度与提交前删除。
+后台队列状态查询、附件上传进度与提交前删除。宿主也不能自定义编辑器的品牌色，`editorAppearance` 只决定明暗。
 
 其中「打开反馈时自动截图」和「队列状态查询」是下一个版本的内容。

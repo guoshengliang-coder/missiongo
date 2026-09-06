@@ -5,7 +5,7 @@
 - SDK Token 创建、摘要存储、列表和撤销；
 - 未初始化时不会让宿主崩溃的公开 API 契约；
 - 失败结果公开 `retryable`，宿主不必自建 code 白名单；
-- 编辑器 Activity 的浅色/深色主题；
+- 编辑器 Activity 与 H5 的浅色/深色主题，宿主可用 `editorAppearance` 覆盖系统偏好；
 - Token 产品/Android 模块范围；
 - 24 小时反馈草稿；
 - 客户端草稿 ID 幂等更新；

@@ -1,5 +1,6 @@
-:root {
-  color-scheme: light dark;
+:root,
+:root[data-appearance="light"] {
+  color-scheme: light;
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -105,68 +106,73 @@
 }
 
 /* Dark redefines the tokens only. Nothing below this block asks which theme
-   it is in, so a component styled through the tokens follows automatically. */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --canvas: #10161f;
-    --surface: #171f29;
-    --surface-strong: #1d2732;
-    --surface-sunken: #151d26;
-    --surface-inset: #1b242e;
-    --surface-field: #1b242e;
-    --sidebar-bg: #131a23;
-    --row-hover: #232e3a;
-    --tile-bg: #222c37;
-    --skeleton: #242f3a;
-    --badge-bg: #26313d;
+   it is in, so a component styled through the tokens follows automatically.
 
-    --ink: #e8ecef;
-    --ink-2: #c2ccd4;
-    --muted: #9aa6b1;
-    --muted-soft: #838f9a;
+   Selected by an attribute rather than a media query, so there is still exactly one dark
+   palette while an explicit choice can override the system: the Android SDK opens the
+   feedback editor with ?appearance=, because a host app's own light/dark setting never
+   reaches prefers-color-scheme. The attribute is set before first paint by the bootstrap
+   in index.html, which resolves the parameter or, without one, the system preference. */
+:root[data-appearance="dark"] {
+  color-scheme: dark;
+  --canvas: #10161f;
+  --surface: #171f29;
+  --surface-strong: #1d2732;
+  --surface-sunken: #151d26;
+  --surface-inset: #1b242e;
+  --surface-field: #1b242e;
+  --sidebar-bg: #131a23;
+  --row-hover: #232e3a;
+  --tile-bg: #222c37;
+  --skeleton: #242f3a;
+  --badge-bg: #26313d;
 
-    --line: #2b3641;
-    --line-dark: #3c4a57;
-    --line-soft: #232e39;
+  --ink: #e8ecef;
+  --ink-2: #c2ccd4;
+  --muted: #9aa6b1;
+  --muted-soft: #838f9a;
 
-    --mint-dark: #63dcae;
-    --primary-bg: #67e3b4;
-    --primary-fg: #10161f;
-    --primary-bg-hover: #7fe9c2;
-    --primary-fg-soft: #14493a;
-    --blue: #8fa8ff;
-    --amber: #f0c26e;
-    --red: #f0888c;
+  --line: #2b3641;
+  --line-dark: #3c4a57;
+  --line-soft: #232e39;
 
-    --accent-bg: #12302a;
-    --accent-line: #1e4d40;
-    --accent-text: #7fe0bb;
-    --accent-text-strong: #a3ecd0;
-    --danger: #f0888c;
-    --danger-bg: #2e191b;
-    --danger-bg-strong: #3a1f21;
-    --danger-line: #57302f;
-    --warn-bg: #33280f;
-    --warn-line: #574618;
-    --warn-text: #f0c26e;
+  --mint-dark: #63dcae;
+  --primary-bg: #67e3b4;
+  --primary-fg: #10161f;
+  --primary-bg-hover: #7fe9c2;
+  --primary-fg-soft: #14493a;
+  --blue: #8fa8ff;
+  --amber: #f0c26e;
+  --red: #f0888c;
 
-    --status-inbox-fg: #b3bcc7; --status-inbox-bg: #262f3a;
-    --status-ready-fg: #a3b4ff; --status-ready-bg: #1e2740;
-    --status-progress-fg: #6ddcb2; --status-progress-bg: #123329;
-    --status-hold-fg: #ecc072; --status-hold-bg: #33280f;
-    --status-verify-fg: #cfa6e8; --status-verify-bg: #2c1f3a;
-    --status-done-fg: #86c896; --status-done-bg: #17301e;
-    --status-cancelled-fg: #ef9a9d; --status-cancelled-bg: #331e20;
-    --type-idea-fg: #e8b866; --type-idea-bg: #33280f;
-    --type-requirement-fg: #a3aef5; --type-requirement-bg: #222a45;
-    --type-bug-fg: #ef9a9d; --type-bug-bg: #352022;
-    --type-task-fg: #6ecfa9; --type-task-bg: #133027;
-    --type-note-fg: #adb8c6; --type-note-bg: #262f3a;
-    --priority-low: #6d7885;
+  --accent-bg: #12302a;
+  --accent-line: #1e4d40;
+  --accent-text: #7fe0bb;
+  --accent-text-strong: #a3ecd0;
+  --danger: #f0888c;
+  --danger-bg: #2e191b;
+  --danger-bg-strong: #3a1f21;
+  --danger-line: #57302f;
+  --warn-bg: #33280f;
+  --warn-line: #574618;
+  --warn-text: #f0c26e;
 
-    --shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
-    --shadow-soft: 0 10px 35px rgba(0, 0, 0, 0.3);
-  }
+  --status-inbox-fg: #b3bcc7; --status-inbox-bg: #262f3a;
+  --status-ready-fg: #a3b4ff; --status-ready-bg: #1e2740;
+  --status-progress-fg: #6ddcb2; --status-progress-bg: #123329;
+  --status-hold-fg: #ecc072; --status-hold-bg: #33280f;
+  --status-verify-fg: #cfa6e8; --status-verify-bg: #2c1f3a;
+  --status-done-fg: #86c896; --status-done-bg: #17301e;
+  --status-cancelled-fg: #ef9a9d; --status-cancelled-bg: #331e20;
+  --type-idea-fg: #e8b866; --type-idea-bg: #33280f;
+  --type-requirement-fg: #a3aef5; --type-requirement-bg: #222a45;
+  --type-bug-fg: #ef9a9d; --type-bug-bg: #352022;
+  --type-task-fg: #6ecfa9; --type-task-bg: #133027;
+  --type-note-fg: #adb8c6; --type-note-bg: #262f3a;
+  --priority-low: #6d7885;
+
+  --shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
+  --shadow-soft: 0 10px 35px rgba(0, 0, 0, 0.3);
 }
 
 * { box-sizing: border-box; }

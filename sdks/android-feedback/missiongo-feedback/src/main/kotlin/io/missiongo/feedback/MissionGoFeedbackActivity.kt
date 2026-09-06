@@ -44,6 +44,14 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
     private val filePicker = WebViewFilePicker(this, "从图库选择图片或视频", "选择日志或其他文件")
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Before super, so the window is created with the right theme: a host with its own
+        // in-app light/dark setting does not change the resource configuration, and the
+        // -night qualifier alone would leave such a user on the wrong one.
+        when (MissionGo.editorAppearance()) {
+            MissionGoAppearance.Light -> setTheme(R.style.MissionGoFeedbackTheme_Light)
+            MissionGoAppearance.Dark -> setTheme(R.style.MissionGoFeedbackTheme_Dark)
+            MissionGoAppearance.FollowSystem -> Unit
+        }
         super.onCreate(savedInstanceState)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -156,7 +164,14 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
             setAcceptCookie(true)
             setCookie(session.endpoint, cookie) {
                 flush()
-                editor.loadUrl("${session.endpoint}/sdk/feedback?draft=${Uri.encode(session.draftId)}")
+                // The page decides its own light/dark from prefers-color-scheme, which follows
+                // the system just like the -night qualifier does. Passing the host's choice
+                // keeps the form from staying light inside a dark window.
+                val appearance = MissionGo.editorAppearance().wireValue
+                editor.loadUrl(
+                    "${session.endpoint}/sdk/feedback" +
+                        "?draft=${Uri.encode(session.draftId)}&appearance=${Uri.encode(appearance)}",
+                )
             }
         }
     }
