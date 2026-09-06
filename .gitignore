@@ -32,3 +32,7 @@ apps/web/public/downloads/*.apk
 
 # Metadata recorded beside the APK by scripts/publish-android-internal.sh.
 apps/web/public/downloads/*.release
+
+# Locally published SDK Maven artifacts. Built on demand and shipped with the next
+# website deployment; the repository keeps no binaries.
+apps/web/public/maven/

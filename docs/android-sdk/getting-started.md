@@ -1,6 +1,6 @@
 # 宿主 App 接入
 
-> 当前 SDK 版本为 `0.1.0-SNAPSHOT`。面向用户的入口使用短期、单草稿 Web 会话打开共用 H5 编辑器。
+> 当前 SDK 版本为 `0.2.0`。面向用户的入口使用短期、单草稿 Web 会话打开共用 H5 编辑器。
 
 ## 1. 创建受限 SDK Token
 
@@ -21,45 +21,69 @@ curl -X POST https://missiongo.example.invalid/api/v1/sdk-tokens \
 
 ## 2. 引入 SDK
 
-SDK 尚未发布到公共 Maven 仓库。仓库内示例直接使用项目依赖：
+SDK 由 MissionGo 网站以静态文件形式分发，读取匿名。AAR 里不含任何密钥——endpoint 和 Token
+由宿主在自己的构建期注入——所以宿主的 CI 不需要配置 Maven 凭据。
+
+在宿主的 `settings.gradle.kts` 中加入仓库：
 
 ```kotlin
-dependencies {
-    implementation(project(":missiongo-feedback"))
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven {
+            name = "missiongo"
+            url = uri("https://<missiongo origin>/maven")
+            content { includeGroup("io.missiongo") }
+        }
+    }
 }
 ```
 
-也可以先执行：
+然后钉死一个具体版本，不要使用 SNAPSHOT：
+
+```kotlin
+dependencies {
+    implementation("io.missiongo:missiongo-feedback:0.2.0")
+}
+```
+
+### 发布新版本
+
+版本号在 `sdks/android-feedback/gradle.properties` 的 `missiongoVersion` 单点定义。
+
+```bash
+cd sdks/android-feedback
+./gradlew :missiongo-feedback:publishReleasePublicationToWebsiteRepository
+```
+
+制品写入 `apps/web/public/maven/`，随下一次 `npm run build:web` 和网站部署上线。该目录和内部
+APK 一样不进 Git。网站的 nginx 需要 `location ^~ /maven/ { try_files $uri =404; }`：Maven 客户端
+必须在制品缺失时看到真正的 404，SPA 回落会给出 200 的 HTML 并让 Gradle 报出难以定位的错误。
+
+本机联调可以先发到 Maven Local：
 
 ```bash
 ./gradlew :missiongo-feedback:publishToMavenLocal
 ```
 
-然后在宿主 App 中使用本地快照：
+或者让宿主直接指向本地目录构建：
 
-```kotlin
-repositories {
-    mavenLocal()
-}
-
-dependencies {
-    implementation("io.missiongo:missiongo-feedback:0.1.0-SNAPSHOT")
-}
+```bash
+./gradlew :app:assembleDebug -PmissiongoMavenUrl=file:///path/to/missiongo/apps/web/public/maven
 ```
 
-正式版本会通过 Maven 仓库发布，不建议长期手工复制裸 AAR。
-
-私有 Maven 仓库发布参数必须从本机 Gradle 属性或 CI Secret 提供：
+私有 Maven 仓库（需要鉴权的那种）仍然可用，参数从本机 Gradle 属性或 CI Secret 提供：
 
 ```bash
 ./gradlew :missiongo-feedback:publish \
-  -PmissiongoVersion=0.1.0 \
   -PmissiongoMavenUrl=https://packages.example.invalid/releases \
   -PmissiongoMavenUsername="$MAVEN_USERNAME" \
   -PmissiongoMavenPassword="$MAVEN_PASSWORD"
 ```
 
-也可以使用 `MISSIONGO_MAVEN_URL`、`MISSIONGO_MAVEN_USERNAME` 和 `MISSIONGO_MAVEN_PASSWORD` 环境变量。仓库内不保存真实地址或凭据。
+也可以使用 `MISSIONGO_MAVEN_URL`、`MISSIONGO_MAVEN_USERNAME` 和 `MISSIONGO_MAVEN_PASSWORD`
+环境变量。仓库内不保存真实地址或凭据。
 
 ## 3. 在 Application 中初始化
 
@@ -67,6 +91,8 @@ dependencies {
 class SearchApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        // 配置缺失是受支持的状态，不是错误：跳过初始化并隐藏反馈入口。
+        if (BuildConfig.MISSIONGO_ENDPOINT.isBlank() || BuildConfig.MISSIONGO_SDK_TOKEN.isBlank()) return
         MissionGo.initialize(
             application = this,
             options = MissionGoOptions(
@@ -80,6 +106,13 @@ class SearchApplication : Application() {
     }
 }
 ```
+
+**不要用占位 Token 兜底。** 新克隆的仓库、别人的机器、没有 Secret 的 CI 都拿不到 endpoint 和
+Token，此时正确的行为是「没有这个功能」，而不是「带着一把必然 401 的 Token 初始化」。
+
+跳过初始化之后不需要再做防御性包装：记录类调用（`setCurrentScreen`、`setContext`、
+`addBreadcrumb`、`log`）静默丢弃，`openFeedback` 通过回调报 `not_initialized` 而不抛，
+`enqueueFeedback` 返回 null。宿主用 `MissionGo.isInitialized` 决定是否展示反馈入口。
 
 生产环境默认只允许 HTTPS。本机开发若必须连接 HTTP，需要显式设置 `allowInsecureHttp = true`，不得在生产构建中开启。
 

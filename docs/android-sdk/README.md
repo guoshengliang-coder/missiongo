@@ -4,11 +4,13 @@ Android 反馈 SDK 面向接入 MissionGo 的宿主 App。它不是 Android 管�
 
 ## 文档导航
 
-- [宿主 App 接入](getting-started.md)
+- [**宿主接入说明（交付给宿主的自包含契约）**](../../sdks/android-feedback/INTEGRATION.md)
+- [宿主 App 接入（仓库内视角，含发布流程）](getting-started.md)
 - [SDK 独立验证工具与第一阶段验收](validation-app.md)
 - [数据采集与业务上下文](data-collection.md)
 - [安全边界](security.md)
 - [当前能力与后续里程碑](status-and-roadmap.md)
+- [v0.2 方案](v0-2-plan.md)
 
 ## 接入层次
 

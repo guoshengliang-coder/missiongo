@@ -10,8 +10,10 @@ const repositoryRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..
 const androidDownloadPath = "/downloads/missiongo-android-latest.apk";
 const skillDownloadPath = "/downloads/missiongo-skill/SKILL.md";
 const skillSourcePath = resolve(repositoryRoot, "skills/missiongo/SKILL.md");
+const sdkIntegrationDownloadPath = "/downloads/missiongo-android-sdk/INTEGRATION.md";
+const sdkIntegrationSourcePath = resolve(repositoryRoot, "sdks/android-feedback/INTEGRATION.md");
 // Keep in sync with MISSIONGO_SKILL_ORIGIN_PLACEHOLDER in packages/contracts/src/skill.ts
-// and the sed substitution in deploy/Dockerfile.
+// and the sed substitutions in deploy/Dockerfile.
 const skillOriginPlaceholder = "__MISSIONGO_PUBLIC_ORIGIN__";
 
 function androidDownloadHeaders(): Plugin {
@@ -41,26 +43,36 @@ function androidDownloadHeaders(): Plugin {
 }
 
 /**
- * Serve the published AI Skill during dev and preview. Production publishes this file
- * from deploy/Dockerfile, which substitutes the origin at image build time; the file is
- * not in public/, so without this the documented install URL cannot be verified locally.
+ * Serve a published Markdown document during dev and preview: the AI Skill, and the Android
+ * SDK host-integration guide. Production publishes both from deploy/Dockerfile, which
+ * substitutes the origin at image build time; neither file lives in public/, so without this
+ * the documented URL cannot be verified locally.
+ *
+ * They stay two separate documents on purpose. The Skill is read on every work-item lookup;
+ * the integration guide is read once, by whoever wires the SDK into a host app. Merging them
+ * would load Gradle instructions into every agent that only wanted to read HG-8.
  */
-function skillDownload(publicOrigin: string | undefined): Plugin {
+function markdownDownload(
+  name: string,
+  downloadPath: string,
+  sourcePath: string,
+  publicOrigin: string | undefined,
+): Plugin {
   const middleware = (request: IncomingMessage, response: ServerResponse, next: () => void): void => {
-    if (request.url?.split("?", 1)[0] !== skillDownloadPath) {
+    if (request.url?.split("?", 1)[0] !== downloadPath) {
       next();
       return;
     }
 
-    const skill = readFileSync(skillSourcePath, "utf8")
+    const document = readFileSync(sourcePath, "utf8")
       .replaceAll(skillOriginPlaceholder, publicOrigin ?? "http://127.0.0.1:5173");
     response.setHeader("Content-Type", "text/markdown; charset=utf-8");
     response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    response.end(skill);
+    response.end(document);
   };
 
   return {
-    name: "missiongo-skill-download",
+    name,
     configureServer(server) {
       server.middlewares.use(middleware);
     },
@@ -100,7 +112,13 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       androidDownloadHeaders(),
-      skillDownload(publicOrigin),
+      markdownDownload("missiongo-skill-download", skillDownloadPath, skillSourcePath, publicOrigin),
+      markdownDownload(
+        "missiongo-sdk-integration-download",
+        sdkIntegrationDownloadPath,
+        sdkIntegrationSourcePath,
+        publicOrigin,
+      ),
       {
         name: "missiongo-social-image",
         transformIndexHtml() {

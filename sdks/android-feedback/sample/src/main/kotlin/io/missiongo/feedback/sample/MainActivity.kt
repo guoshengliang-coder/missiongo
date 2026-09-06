@@ -83,7 +83,7 @@ class MainActivity : Activity() {
                         context = mapOf("sample" to "true", "delivery" to "background"),
                     ),
                 )
-                status.text = "Queued $queueId"
+                status.text = if (queueId == null) "MissionGo is not configured" else "Queued $queueId"
             }
         }
         setContentView(

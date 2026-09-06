@@ -25,10 +25,41 @@ import io.missiongo.feedback.internal.utcTimestamp
 import java.io.File
 import java.util.concurrent.TimeUnit
 
-/** Process-wide entry point. Initialization is safe to call more than once with the same options. */
+/**
+ * Process-wide entry point. Initialization is safe to call more than once with the same options.
+ *
+ * ## Behaviour before [initialize]
+ *
+ * A host may legitimately never initialize: a fresh clone, another developer's machine, or a CI
+ * runner has no endpoint and no SDK token, and the documented contract is that such a build works
+ * normally with the feature simply absent. An SDK whose every method throws in that state forces
+ * each host to wrap all of it in defensive code, and a host that forgets crashes for a feature it
+ * never configured. So the uninitialized state is handled here, once, rather than by every caller:
+ *
+ * - **Recording** ([setCurrentScreen], [setContext], [clearContext], [addBreadcrumb], [log]) is
+ *   dropped silently. These are called from dozens of places across a host; requiring a guard at
+ *   each one buys nothing, because there is no report to attach the data to anyway.
+ * - **[openFeedback]** never throws. With a callback it reports
+ *   [FeedbackResult.Failed] `not_initialized`; without one there is nowhere to report, so it does
+ *   nothing. This differs from a failure to start the editor Activity, which stays loud: that is a
+ *   runtime anomaly, whereas not initializing is a configuration the host chose.
+ * - **[enqueueFeedback]** returns null instead of a queue id.
+ * - **[cancelQueuedFeedback]** and [retryQueuedFeedback] do nothing — with no runtime there is no
+ *   queued work to act on.
+ * - **Suspending submission** ([createDraft], [finalizeDraft], [submitFeedback]) throws
+ *   [MissionGoException] `not_initialized`. A coroutine caller is already handling failure, and
+ *   silently returning no work-item key would be worse than saying why.
+ *
+ * Hosts that want to hide their own entry point can read [isInitialized].
+ */
 public object MissionGo {
     @Volatile
     private var runtime: SdkRuntime? = null
+
+    /** True once [initialize] has succeeded. Hosts use it to decide whether to offer a feedback entry. */
+    @JvmStatic
+    public val isInitialized: Boolean
+        get() = runtime != null
 
     @JvmStatic
     public fun initialize(application: Application, options: MissionGoOptions) {
@@ -53,17 +84,20 @@ public object MissionGo {
 
     @JvmStatic
     public fun setCurrentScreen(name: String?) {
-        requireRuntime().context.setCurrentScreen(name)
+        val current = runtime ?: return
+        current.context.setCurrentScreen(name)
     }
 
     @JvmStatic
     public fun setContext(namespace: String, values: Map<String, String>) {
-        requireRuntime().context.setContext(namespace, values)
+        val current = runtime ?: return
+        current.context.setContext(namespace, values)
     }
 
     @JvmStatic
     public fun clearContext(namespace: String) {
-        requireRuntime().context.clearContext(namespace)
+        val current = runtime ?: return
+        current.context.clearContext(namespace)
     }
 
     @JvmStatic
@@ -113,10 +147,14 @@ public object MissionGo {
         return finalizeDraft(draft.id)
     }
 
-    /** Persists a headless submission and lets WorkManager deliver it when a network is available. */
+    /**
+     * Persists a headless submission and lets WorkManager deliver it when a network is available.
+     *
+     * Returns the queue id, or null when the SDK was never initialized.
+     */
     @JvmStatic
-    public fun enqueueFeedback(options: FeedbackOptions): String {
-        val current = requireRuntime()
+    public fun enqueueFeedback(options: FeedbackOptions): String? {
+        val current = runtime ?: return null
         val snapshot = current.context.snapshot(options.context)
         val queueId = current.queue.put(
             PendingFeedback(options.copy(context = emptyMap()), current.environment, snapshot.context, snapshot.logs),
@@ -128,7 +166,7 @@ public object MissionGo {
     /** Cancels pending background delivery and removes its app-private snapshot. */
     @JvmStatic
     public fun cancelQueuedFeedback(queueId: String) {
-        val current = requireRuntime()
+        val current = runtime ?: return
         WorkManager.getInstance(current.application).cancelUniqueWork(queueWorkName(queueId))
         current.queue.remove(queueId)
     }
@@ -136,7 +174,7 @@ public object MissionGo {
     /** Re-enqueues a still-present snapshot after a terminal worker/configuration failure was corrected. */
     @JvmStatic
     public fun retryQueuedFeedback(queueId: String) {
-        val current = requireRuntime()
+        val current = runtime ?: return
         require(current.queue.get(queueId) != null) { "Queued feedback is missing or expired." }
         scheduleQueuedFeedback(current, queueId, ExistingWorkPolicy.REPLACE)
     }
@@ -149,7 +187,15 @@ public object MissionGo {
         options: FeedbackOptions = FeedbackOptions(),
         callback: FeedbackResultCallback? = null,
     ) {
-        val current = requireRuntime()
+        val current = runtime
+        if (current == null) {
+            // Not a crash: the host never configured MissionGo, which is a supported state. Say so
+            // through the channel the caller already handles, and stay silent when there is none.
+            callback?.onResult(
+                FeedbackResult.Failed("not_initialized", "MissionGo.initialize() was never called."),
+            )
+            return
+        }
         val snapshot = current.context.snapshot(options.context)
         val launchId = current.launches.put(
             PendingFeedback(options.copy(context = emptyMap()), current.environment, snapshot.context, snapshot.logs),
@@ -196,15 +242,17 @@ public object MissionGo {
         return FeedbackEditorSession(current.options.endpoint, draft.id, session.token)
     }
 
-    internal fun hasFeedbackLaunch(launchId: String?): Boolean = requireRuntime().launches.get(launchId) != null
+    internal fun hasFeedbackLaunch(launchId: String?): Boolean = runtime?.launches?.get(launchId) != null
 
+    // The launch store may be gone (process recreated without initialization), but the in-process
+    // callback registry is not, so a waiting host still hears the outcome either way.
     internal fun completeFeedbackLaunch(launchId: String, result: FeedbackResult) {
-        requireRuntime().launches.remove(launchId)
+        runtime?.launches?.remove(launchId)
         FeedbackLaunchCallbacks.complete(launchId, result)
     }
 
     internal fun discardFeedbackLaunch(launchId: String) {
-        requireRuntime().launches.remove(launchId)
+        runtime?.launches?.remove(launchId)
         FeedbackLaunchCallbacks.discard(launchId)
     }
 
@@ -243,7 +291,7 @@ public object MissionGo {
         throwable: Throwable?,
         attributes: Map<String, String>,
     ) {
-        val current = requireRuntime()
+        val current = runtime ?: return
         val completeMessage = if (throwable == null) message else "$message\n${throwable.stackTraceToString()}"
         current.context.addLog(
             FeedbackLogEntry(
@@ -258,7 +306,7 @@ public object MissionGo {
     }
 
     private fun requireRuntime(): SdkRuntime = runtime
-        ?: throw IllegalStateException("MissionGo.initialize() must be called before using the SDK.")
+        ?: throw MissionGoException("not_initialized", "MissionGo.initialize() must be called before using the SDK.")
 }
 
 private fun MissionGoOptions.validate(): MissionGoOptions {
