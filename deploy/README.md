@@ -20,7 +20,15 @@ SESSION_SECRET=replace-with-a-long-random-secret
 ADMIN_AUTHORIZED_PRODUCT_IDS=
 # Optional: peers allowed to set X-Forwarded-For. Defaults to loopback,uniquelocal.
 TRUST_PROXY=
+# Optional: how much of the MCP write surface to expose -- none (default), comments, or all.
+# A client still needs the missiongo:write scope its user granted at sign-in, so opening
+# the surface and granting access stay two separate decisions.
+MISSIONGO_WRITE_TOOLS=
 ```
+
+Adding a variable here is not enough on its own: the environment file feeds compose
+interpolation, and only the keys listed under `environment:` in `deploy/docker-compose.yml`
+reach the container. A value set here but missing there is silently ignored.
 
 Generate `ADMIN_PASSWORD_SCRYPT` locally from the repository root. The prompt
 does not echo the password and the plaintext password is never written to disk:

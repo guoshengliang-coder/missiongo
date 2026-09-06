@@ -20,6 +20,9 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
       MISSIONGO_PUBLIC_ORIGIN: ${MISSIONGO_PUBLIC_ORIGIN:?MISSIONGO_PUBLIC_ORIGIN is required}
       ADMIN_AUTHORIZED_PRODUCT_IDS: ${ADMIN_AUTHORIZED_PRODUCT_IDS:-}
+      # none | comments | all. The env file only feeds compose interpolation, so a
+      # variable missing from this block never reaches the container at all.
+      MISSIONGO_WRITE_TOOLS: ${MISSIONGO_WRITE_TOOLS:-none}
       TRUST_PROXY: ${TRUST_PROXY:-loopback,uniquelocal}
     volumes:
       - ${MISSIONGO_DATA_PATH:?MISSIONGO_DATA_PATH is required}:/data
