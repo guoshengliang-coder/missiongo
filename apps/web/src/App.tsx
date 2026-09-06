@@ -14,6 +14,7 @@ import {
   ClipboardCheck,
   Download,
   FileText,
+  Filter,
   Highlighter,
   ImageIcon,
   Inbox,
@@ -78,7 +79,15 @@ import { useI18n } from "./i18n";
 import { TRANSITIONS } from "./work-item-transitions";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { isAnnotatableImage } from "./image-annotation";
-import { ITEM_HISTORY_MARKER, itemDetailUrl, itemKeyFromUrl, itemListUrl } from "./navigation";
+import {
+  ITEM_HISTORY_MARKER,
+  activeFilterCount,
+  filtersFromUrl,
+  filtersToUrl,
+  itemDetailUrl,
+  itemKeyFromUrl,
+  itemListUrl,
+} from "./navigation";
 import { registerMissionGoWebMcp } from "./webmcp";
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
@@ -312,12 +321,15 @@ function useNearViewport<ElementType extends HTMLElement>(rootMargin = "160px"):
 export function App() {
   const queryClient = useQueryClient();
   const { statusLabel, t, typeLabel } = useI18n();
-  const [selectedProductId, setSelectedProductId] = useState(() => localStorage.getItem("missiongo.product") ?? "");
+  const initialFilters = useRef(filtersFromUrl()).current;
+  const [selectedProductId, setSelectedProductId] = useState(
+    () => initialFilters.productId || localStorage.getItem("missiongo.product") || "",
+  );
   const [selectedItemKey, setSelectedItemKey] = useState<string | null>(() => itemKeyFromUrl());
   const [detailOpenInEdit, setDetailOpenInEdit] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<WorkItemStatus | "all">("all");
-  const [typeFilter, setTypeFilter] = useState<WorkItemType | "all">("all");
-  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<WorkItemStatus | "all">(initialFilters.status);
+  const [typeFilter, setTypeFilter] = useState<WorkItemType | "all">(initialFilters.type);
+  const [search, setSearch] = useState(initialFilters.search);
   const [captureOpen, setCaptureOpen] = useState(false);
   const [productOpen, setProductOpen] = useState(false);
   const [connectionOpen, setConnectionOpen] = useState(false);
@@ -411,6 +423,17 @@ export function App() {
     if (selectedProductId) localStorage.setItem("missiongo.product", selectedProductId);
   }, [selectedProductId]);
 
+  // Mirror the filters into the address bar so the view survives a refresh and
+  // can be handed to someone else. replaceState keeps them out of the back
+  // stack, which belongs to opening and closing items.
+  useEffect(() => {
+    if (!selectedProductId) return;
+    const next = filtersToUrl({ productId: selectedProductId, status: statusFilter, type: typeFilter, search });
+    if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+      history.replaceState(history.state, "", next);
+    }
+  }, [search, selectedProductId, statusFilter, typeFilter]);
+
   useEffect(() => {
     const updateOnlineState = () => setIsOnline(navigator.onLine);
     window.addEventListener("online", updateOnlineState);
@@ -502,6 +525,14 @@ export function App() {
   const selectStatus = (status: WorkItemStatus | "all") => {
     setStatusFilter(status);
     setSidebarOpen(false);
+  };
+
+  const filterCount = activeFilterCount({ productId: selectedProductId, status: statusFilter, type: typeFilter, search });
+  const clearFilters = () => {
+    setStatusFilter("all");
+    setTypeFilter("all");
+    setSearch("");
+    setMobileSearchOpen(false);
   };
 
   if (authQuery.isPending) {
@@ -696,13 +727,39 @@ export function App() {
           </section>
 
           <div className="type-filters" aria-label={t("filterByType")}>
-            <button className={typeFilter === "all" ? "active" : ""} onClick={() => setTypeFilter("all")}>{t("allTypes")}</button>
+            <button className={typeFilter === "all" ? "active" : ""} aria-pressed={typeFilter === "all"} onClick={() => setTypeFilter("all")}>{t("allTypes")}</button>
             {ITEM_TYPES.map((type) => (
-              <button key={type} className={typeFilter === type ? "active" : ""} onClick={() => setTypeFilter(type)}>
+              <button key={type} className={typeFilter === type ? "active" : ""} aria-pressed={typeFilter === type} onClick={() => setTypeFilter(type)}>
                 {typeLabel(type)}
               </button>
             ))}
           </div>
+
+          {filterCount > 0 && (
+            <div className="active-filters" role="status">
+              <Filter size={14} aria-hidden="true" />
+              <span className="active-filters-label">{t("filtersActive")}</span>
+              {statusFilter !== "all" && (
+                <button type="button" className="filter-chip" onClick={() => setStatusFilter("all")}>
+                  {statusLabel(statusFilter)}<X size={12} aria-hidden="true" />
+                </button>
+              )}
+              {typeFilter !== "all" && (
+                <button type="button" className="filter-chip" onClick={() => setTypeFilter("all")}>
+                  {typeLabel(typeFilter)}<X size={12} aria-hidden="true" />
+                </button>
+              )}
+              {search.trim() && (
+                <button type="button" className="filter-chip" onClick={() => setSearch("")}>
+                  {t("searchChip", { query: search.trim() })}<X size={12} aria-hidden="true" />
+                </button>
+              )}
+              <span className="active-filters-count">
+                {t("filterMatchCount", { matched: itemSummary?.total ?? items.length, total: itemSummary?.productTotal ?? items.length })}
+              </span>
+              <button type="button" className="text-button active-filters-clear" onClick={clearFilters}>{t("clearFilters")}</button>
+            </div>
+          )}
 
           <section className={`list-surface ${showAttachmentColumn ? "with-media" : "without-media"}`} aria-label={t("workItems")}>
             <div className="list-columns" aria-hidden="true">

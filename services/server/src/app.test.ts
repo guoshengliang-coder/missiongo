@@ -1414,7 +1414,7 @@ describe("MissionGo REST API", () => {
     expect(searched.json()).toMatchObject({ items: [{ key: "RP-1" }] });
   });
 
-  it("paginates and searches items while returning complete status counts", async () => {
+  it("paginates items and narrows the status counts to the active filters", async () => {
     const { app } = await testApp();
     const product = (
       await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "MissionGo", keyPrefix: "MG" } })
@@ -1437,15 +1437,31 @@ describe("MissionGo REST API", () => {
     expect(firstPage.json()).toMatchObject({
       items: [{ key: "MG-3" }, { key: "MG-2" }],
       nextBeforeSequence: 2,
-      summary: { total: 3, byStatus: { inbox: 2, ready: 1 } },
+      summary: { total: 3, productTotal: 3, byStatus: { inbox: 2, ready: 1 } },
     });
 
+    // Paging is not a filter, so the counts describe the whole product.
     const nextPage = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&limit=2&beforeSequence=2` });
-    expect(nextPage.json()).toMatchObject({ items: [{ key: "MG-1" }], summary: { total: 3 } });
+    expect(nextPage.json()).toMatchObject({ items: [{ key: "MG-1" }], summary: { total: 3, productTotal: 3 } });
     expect(nextPage.json()).not.toHaveProperty("nextBeforeSequence");
 
+    // Searching is: the sidebar counts have to agree with the list beside them.
     const searchResponse = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&search=mobile` });
-    expect(searchResponse.json()).toMatchObject({ items: [{ key: "MG-2", title: "Mobile layout" }], summary: { total: 3 } });
+    expect(searchResponse.json()).toMatchObject({
+      items: [{ key: "MG-2", title: "Mobile layout" }],
+      summary: { total: 1, productTotal: 3, byStatus: { inbox: 0, ready: 1 } },
+    });
+
+    // A status filter must not narrow the counts, or every sidebar entry but the
+    // selected one would read zero.
+    const statusFiltered = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&status=ready` });
+    expect(statusFiltered.json()).toMatchObject({
+      items: [{ key: "MG-2" }],
+      summary: { total: 3, productTotal: 3, byStatus: { inbox: 2, ready: 1 } },
+    });
+
+    const typeFiltered = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&type=bug` });
+    expect(typeFiltered.json()).toMatchObject({ items: [], summary: { total: 0, productTotal: 3 } });
   });
 
   it("creates a scoped Android SDK token and submits an idempotent feedback draft", async () => {

@@ -854,7 +854,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       : undefined;
     return {
       items,
-      summary: store.getWorkItemListSummary(productId),
+      summary: store.getWorkItemListSummary({
+        productId,
+        ...(typeof query.type === "string" ? { type: query.type as never } : {}),
+        ...(typeof query.search === "string" ? { search: query.search } : {}),
+      }),
       ...(nextBeforeSequence !== undefined ? { nextBeforeSequence } : {}),
     };
   });

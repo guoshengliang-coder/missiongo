@@ -58,9 +58,19 @@ export interface ListWorkItemsInput {
   readonly beforeSequence?: number;
 }
 
+export interface WorkItemListSummaryInput {
+  readonly productId: string;
+  readonly type?: WorkItemType;
+  readonly search?: string;
+}
+
 export interface WorkItemListSummary {
+  /** Items matching the active type and search filters, across every status. */
   readonly total: number;
+  /** Per-status counts under the same filters, so each sidebar entry stays honest. */
   readonly byStatus: Readonly<Record<WorkItemStatus, number>>;
+  /** Every item in the product, so the list can say "12 of 40". */
+  readonly productTotal: number;
 }
 
 export interface UpdateWorkItemInput {

@@ -48,6 +48,7 @@ import {
   type UpdateWorkItemInput,
   type WorkItemEventSnapshot,
   type WorkItemListSummary,
+  type WorkItemListSummaryInput,
 } from "./types.js";
 
 interface ProductRow {
@@ -658,15 +659,11 @@ export class MissionGoStore {
     return this.getWorkItem(itemKey);
   }
 
-  listWorkItems(input: ListWorkItemsInput): readonly WorkItemSnapshot[] {
-    this.getProduct(input.productId);
-    const limit = input.limit ?? 50;
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw invalidInput("limit must be an integer between 1 and 100.");
-    }
-    if (input.beforeSequence !== undefined && (!Number.isInteger(input.beforeSequence) || input.beforeSequence < 1)) {
-      throw invalidInput("beforeSequence must be a positive integer.");
-    }
+  /** Filter clauses shared by the listing and its summary, so the two never disagree. */
+  private workItemFilter(input: { productId: string; status?: WorkItemStatus; type?: WorkItemType; search?: string }): {
+    clauses: string[];
+    values: SQLInputValue[];
+  } {
     const clauses = ["product_id = ?"];
     const values: SQLInputValue[] = [input.productId];
     if (input.status) {
@@ -686,6 +683,19 @@ export class MissionGoStore {
       clauses.push("(item_key LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR report_json LIKE ? ESCAPE '\\')");
       values.push(escaped, escaped, escaped, escaped);
     }
+    return { clauses, values };
+  }
+
+  listWorkItems(input: ListWorkItemsInput): readonly WorkItemSnapshot[] {
+    this.getProduct(input.productId);
+    const limit = input.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw invalidInput("limit must be an integer between 1 and 100.");
+    }
+    if (input.beforeSequence !== undefined && (!Number.isInteger(input.beforeSequence) || input.beforeSequence < 1)) {
+      throw invalidInput("beforeSequence must be a positive integer.");
+    }
+    const { clauses, values } = this.workItemFilter(input);
     if (input.beforeSequence !== undefined) {
       clauses.push("sequence < ?");
       values.push(input.beforeSequence);
@@ -703,16 +713,27 @@ export class MissionGoStore {
     return rows.map((row) => this.mapWorkItem(row));
   }
 
-  getWorkItemListSummary(productId: string): WorkItemListSummary {
-    this.getProduct(productId);
+  getWorkItemListSummary(input: WorkItemListSummaryInput): WorkItemListSummary {
+    this.getProduct(input.productId);
+    // The status filter is deliberately left out: each sidebar entry is a status,
+    // so the counts have to describe what the other filters left behind.
+    const { clauses, values } = this.workItemFilter({
+      productId: input.productId,
+      ...(input.type !== undefined ? { type: input.type } : {}),
+      ...(input.search !== undefined ? { search: input.search } : {}),
+    });
     const rows = this.database.connection
-      .prepare("SELECT status, COUNT(*) AS count FROM work_items WHERE product_id = ? GROUP BY status")
-      .all(productId) as unknown as Array<{ status: WorkItemStatus; count: number }>;
+      .prepare(`SELECT status, COUNT(*) AS count FROM work_items WHERE ${clauses.join(" AND ")} GROUP BY status`)
+      .all(...values) as unknown as Array<{ status: WorkItemStatus; count: number }>;
     const byStatus = Object.fromEntries(WORK_ITEM_STATUSES.map((status) => [status, 0])) as Record<WorkItemStatus, number>;
     for (const row of rows) byStatus[row.status] = row.count;
+    const productTotal = (this.database.connection
+      .prepare("SELECT COUNT(*) AS count FROM work_items WHERE product_id = ?")
+      .get(input.productId) as unknown as { count: number }).count;
     return {
       total: Object.values(byStatus).reduce((sum, count) => sum + count, 0),
       byStatus,
+      productTotal,
     };
   }
 
