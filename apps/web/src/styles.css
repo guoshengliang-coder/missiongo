@@ -698,7 +698,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .selected-preview-card footer button, .selected-media-lightbox header button { display: grid; place-items: center; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; }
 .selected-preview-card footer button { width: 28px; height: 28px; }
 .selected-preview-card footer button:hover { color: var(--red); background: var(--danger-bg-strong); }
-.selected-media-lightbox { position: fixed; inset: 0; z-index: 180; display: grid; place-items: center; padding: 22px; background: rgba(11, 16, 27, .82); backdrop-filter: blur(5px); }
+.selected-media-lightbox { position: fixed; inset: 0; z-index: 180; width: 100vw; max-width: none; height: 100vh; height: 100dvh; max-height: none; display: grid; place-items: center; margin: 0; padding: 22px; background: transparent; border: 0; }
+.selected-media-lightbox::backdrop { background: rgba(11, 16, 27, .82); backdrop-filter: blur(5px); }
 .selected-media-lightbox > section { width: min(900px, 100%); max-height: calc(100vh - 44px); max-height: calc(100dvh - 44px); display: flex; flex-direction: column; overflow: hidden; background: var(--code-bg); border: 1px solid rgba(255,255,255,.16); border-radius: var(--radius-lg); box-shadow: 0 24px 80px rgba(0,0,0,.42); }
 .selected-media-lightbox header { height: 50px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 0 14px; color: white; background: var(--primary-bg); }
 .selected-media-lightbox header strong { overflow: hidden; font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }

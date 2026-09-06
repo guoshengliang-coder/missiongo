@@ -1028,15 +1028,6 @@ function ItemMediaThumbnail({
     return () => URL.revokeObjectURL(url);
   }, [contentQuery.data]);
 
-  useEffect(() => {
-    if (!viewerOpen) return undefined;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setViewerOpen(false);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [viewerOpen]);
-
   const Icon = attachment.kind === "video" ? Video : ImageIcon;
   return (
     <div className="item-media-thumb-wrap">
@@ -1056,22 +1047,12 @@ function ItemMediaThumbnail({
         {overflowCount > 0 && <span className="media-overflow">+{overflowCount}</span>}
       </button>
       {viewerOpen && (
-        <div
-          className="selected-media-lightbox"
-          role="presentation"
-          onMouseDown={(event) => {
-            event.stopPropagation();
-            if (event.target === event.currentTarget) setViewerOpen(false);
-          }}
-        >
-          <section role="dialog" aria-modal="true" aria-label={attachment.filename}>
-            <header><strong>{referenceLabel} · {attachment.filename}</strong><button type="button" onClick={(event) => { event.stopPropagation(); setViewerOpen(false); }} aria-label={t("closePreview")}><X size={20} /></button></header>
-            {contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
-            {contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
-            {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
-            {attachment.kind === "video" && objectUrl && <video src={objectUrl} controls autoPlay playsInline preload="metadata" />}
-          </section>
-        </div>
+        <MediaLightbox title={`${referenceLabel} · ${attachment.filename}`} onClose={() => setViewerOpen(false)}>
+          {contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
+          {contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
+          {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
+          {attachment.kind === "video" && objectUrl && <video src={objectUrl} controls autoPlay playsInline preload="metadata" />}
+        </MediaLightbox>
       )}
     </div>
   );
@@ -2187,13 +2168,13 @@ function SelectedFilePreviews({
         })}
       </div>
       {activePreview && (
-        <div className="selected-media-lightbox" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPreviewIndex(null); }}>
-          <section role="dialog" aria-modal="true" aria-label={activePreview.file.name}>
-            <header><strong>{mediaNumberLabel(activePreview.kind, activePreview.displayNumber, t)} · {activePreview.file.name}</strong><button type="button" onClick={() => setPreviewIndex(null)} aria-label={t("closePreview")}><X size={20} /></button></header>
-            {activePreview.kind === "image" && <img src={activePreview.url} alt={activePreview.file.name} />}
-            {activePreview.kind === "video" && <video src={activePreview.url} controls playsInline preload="metadata" />}
-          </section>
-        </div>
+        <MediaLightbox
+          title={`${mediaNumberLabel(activePreview.kind, activePreview.displayNumber, t)} · ${activePreview.file.name}`}
+          onClose={() => setPreviewIndex(null)}
+        >
+          {activePreview.kind === "image" && <img src={activePreview.url} alt={activePreview.file.name} />}
+          {activePreview.kind === "video" && <video src={activePreview.url} controls playsInline preload="metadata" />}
+        </MediaLightbox>
       )}
       {annotatingIndex !== null && files[annotatingIndex] && (
         <ImageAnnotator
@@ -2288,15 +2269,6 @@ function AttachmentCard({
     setObjectUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [attachment.kind, contentQuery.data]);
-
-  useEffect(() => {
-    if (!viewerOpen) return undefined;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setViewerOpen(false);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [viewerOpen]);
 
   const download = async () => {
     const blob = attachment.kind === "log"
@@ -2396,13 +2368,10 @@ function AttachmentCard({
         />
       )}
       {viewerOpen && objectUrl && attachment.kind !== "log" && (
-        <div className="selected-media-lightbox" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setViewerOpen(false); }}>
-          <section role="dialog" aria-modal="true" aria-label={attachment.filename}>
-            <header><strong>{referenceLabel} · {attachment.filename}</strong><button type="button" onClick={() => setViewerOpen(false)} aria-label={t("closePreview")}><X size={20} /></button></header>
-            {attachment.kind === "image" && <img src={objectUrl} alt={attachment.filename} />}
-            {attachment.kind === "video" && <video src={objectUrl} controls autoPlay playsInline preload="metadata" />}
-          </section>
-        </div>
+        <MediaLightbox title={`${referenceLabel} · ${attachment.filename}`} onClose={() => setViewerOpen(false)}>
+          {attachment.kind === "image" && <img src={objectUrl} alt={attachment.filename} />}
+          {attachment.kind === "video" && <video src={objectUrl} controls autoPlay playsInline preload="metadata" />}
+        </MediaLightbox>
       )}
     </article>
   );
@@ -2830,6 +2799,48 @@ function Modal({ title, subtitle, onClose, children, wide = false }: { title: st
     >
       <section className={`modal ${wide ? "wide" : ""}`}>
         <header><div><p className="eyebrow">{subtitle}</p><h2 id={titleId}>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
+        {children}
+      </section>
+    </dialog>
+  );
+}
+
+function MediaLightbox({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const { t } = useI18n();
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    return () => dialog?.close();
+  }, []);
+  return (
+    <dialog
+      ref={dialogRef}
+      className="selected-media-lightbox"
+      aria-label={title}
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+      onMouseDown={(event) => {
+        event.stopPropagation();
+        if (event.target === event.currentTarget) onClose();
+      }}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <section>
+        <header>
+          <strong>{title}</strong>
+          <button type="button" onClick={onClose} aria-label={t("closePreview")}><X size={20} /></button>
+        </header>
         {children}
       </section>
     </dialog>

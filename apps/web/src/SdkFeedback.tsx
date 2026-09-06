@@ -5,9 +5,9 @@ import "./sdk-feedback.css";
 import { loadSdkAttachments, replaceSdkAttachments, type StoredSdkAttachment } from "./sdk-attachment-store";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { isAnnotatableImage } from "./image-annotation";
+import { useI18n } from "./i18n";
+import type { WorkItemPriority, WorkItemType } from "./types";
 
-type WorkItemType = "idea" | "requirement" | "bug" | "task" | "note";
-type WorkItemPriority = "urgent" | "high" | "normal" | "low";
 type SubmissionTarget = "inbox" | "ready";
 
 interface FeedbackDraft {
@@ -25,19 +25,6 @@ interface FeedbackDraft {
 
 const TYPES: readonly WorkItemType[] = ["idea", "requirement", "bug", "task", "note"];
 const PRIORITIES: readonly WorkItemPriority[] = ["urgent", "high", "normal", "low"];
-const TYPE_LABELS: Readonly<Record<WorkItemType, string>> = {
-  idea: "想法",
-  requirement: "需求",
-  bug: "问题",
-  task: "任务",
-  note: "记录",
-};
-const PRIORITY_LABELS: Readonly<Record<WorkItemPriority, string>> = {
-  urgent: "紧急",
-  high: "高",
-  normal: "普通",
-  low: "低",
-};
 const TYPE_ICONS = {
   idea: Lightbulb,
   requirement: FileText,
@@ -105,6 +92,7 @@ async function uploadAttachment(draftId: string, attachment: StoredSdkAttachment
 }
 
 export function SdkFeedbackPage() {
+  const { priorityLabel, t, typeLabel } = useI18n();
   const parameters = new URL(window.location.href).searchParams;
   const draftId = parameters.get("draft")?.trim() ?? "";
   const completedItemKey = parameters.get("item")?.trim() ?? "";
@@ -139,7 +127,7 @@ export function SdkFeedbackPage() {
         setPriority(loaded.priority);
         void loadSdkAttachments(loaded.id)
           .then(setFiles)
-          .catch(() => setAttachmentError("无法恢复此前选择的附件，请重新选择。"));
+          .catch(() => setAttachmentError(t("sdkDraftFilesLost")));
         if (loaded.status === "submitted" && loaded.itemKey) {
           window.location.replace(`/sdk/feedback/complete?item=${encodeURIComponent(loaded.itemKey)}&destination=inbox`);
         }
@@ -166,7 +154,7 @@ export function SdkFeedbackPage() {
       const failed = files.filter((_file, index) => uploads[index]?.status === "rejected");
       await replaceSdkAttachments(draft.id, failed).catch(() => undefined);
       setFailedFiles(failed);
-      setAttachmentError(failed.length > 0 ? `${failed.length} 个附件上传失败，任务已创建，可在本页重试。` : "");
+      setAttachmentError(failed.length > 0 ? t("sdkUploadsFailed", { count: failed.length }) : "");
       setItemKey(submitted.itemKey);
       if (failed.length === 0) {
         window.location.replace(`/sdk/feedback/complete?item=${encodeURIComponent(submitted.itemKey)}&destination=${target}`);
@@ -185,10 +173,10 @@ export function SdkFeedbackPage() {
     const selected = incoming.map((file, index) => ({ id: attachmentId(index), file }));
     const next = kind === "media" ? [...selected, ...preserved] : [...preserved, ...selected];
     setFiles(next);
-    setAttachmentError((event.target.files?.length ?? 0) > available ? "每次反馈最多选择 10 个附件。" : "");
+    setAttachmentError((event.target.files?.length ?? 0) > available ? t("sdkTooManyFiles") : "");
     if (draft) {
       void replaceSdkAttachments(draft.id, next)
-        .catch(() => setAttachmentError("附件无法持久保存，请保持当前页面打开直至提交完成。"));
+        .catch(() => setAttachmentError(t("sdkAttachmentsNotPersisted")));
     }
     event.target.value = "";
   };
@@ -201,7 +189,7 @@ export function SdkFeedbackPage() {
     setAnnotatingId(null);
     if (draft) {
       await replaceSdkAttachments(draft.id, next)
-        .catch(() => setAttachmentError("附件无法持久保存，请保持当前页面打开直至提交完成。"));
+        .catch(() => setAttachmentError(t("sdkAttachmentsNotPersisted")));
     }
   };
 
@@ -213,16 +201,16 @@ export function SdkFeedbackPage() {
     const remaining = failedFiles.filter((_file, index) => uploads[index]?.status === "rejected");
     await replaceSdkAttachments(draft.id, remaining).catch(() => undefined);
     setFailedFiles(remaining);
-    setAttachmentError(remaining.length > 0 ? `${remaining.length} 个附件仍未上传成功，请稍后重试。` : "");
+    setAttachmentError(remaining.length > 0 ? t("sdkUploadsStillFailing", { count: remaining.length }) : "");
     setSubmitting(false);
     if (remaining.length === 0) {
       window.location.replace(`/sdk/feedback/complete?item=${encodeURIComponent(itemKey)}&destination=${destination}`);
     }
   };
 
-  if (itemKey) return <main className="sdk-feedback-page"><section className="sdk-feedback-dialog sdk-feedback-complete"><span><Check size={28} /></span><h1>{destination === "ready" ? "已提交到待处理" : "已保存到草稿"}</h1><p>任务编号</p><code>{itemKey}</code>{attachmentError && <div className="sdk-feedback-error" role="alert">{attachmentError}</div>}{failedFiles.length > 0 ? <button className="primary-button" type="button" disabled={submitting} onClick={() => void retryFailedAttachments()}>{submitting ? <LoaderCircle className="spin" size={17} /> : null}{submitting ? "正在重试…" : "重试失败附件"}</button> : <a className="primary-button sdk-feedback-return" href="missiongo-feedback://close">返回 MissionGo</a>}</section></main>;
+  if (itemKey) return <main className="sdk-feedback-page"><section className="sdk-feedback-dialog sdk-feedback-complete"><span><Check size={28} /></span><h1>{t(destination === "ready" ? "sdkSubmittedReady" : "sdkSavedDraft")}</h1><p>{t("sdkItemKey")}</p><code>{itemKey}</code>{attachmentError && <div className="sdk-feedback-error" role="alert">{attachmentError}</div>}{failedFiles.length > 0 ? <button className="primary-button" type="button" disabled={submitting} onClick={() => void retryFailedAttachments()}>{submitting ? <LoaderCircle className="spin" size={17} /> : null}{submitting ? t("sdkRetrying") : t("sdkRetryFailed")}</button> : <a className="primary-button sdk-feedback-return" href="missiongo-feedback://close">{t("sdkReturn")}</a>}</section></main>;
 
-  if (!draft && !error) return <main className="sdk-feedback-page"><section className="sdk-feedback-dialog sdk-feedback-loading"><LoaderCircle className="spin" size={22} /><p>正在准备反馈表单…</p></section></main>;
+  if (!draft && !error) return <main className="sdk-feedback-page"><section className="sdk-feedback-dialog sdk-feedback-loading"><LoaderCircle className="spin" size={22} /><p>{t("sdkPreparingForm")}</p></section></main>;
 
   const selectedMedia = files.filter(({ file }) => !isDiagnosticFile(file));
   const selectedLogs = files.filter(({ file }) => isDiagnosticFile(file));
@@ -231,58 +219,58 @@ export function SdkFeedbackPage() {
   return (
     <main className="sdk-feedback-page">
       <section className="sdk-feedback-dialog">
-        <header className="sdk-feedback-header"><p>MissionGo</p><h1>记录工作</h1><span>添加到 MissionGo。Android SDK 已经预填当前运行环境，请补充实际现象与期望结果。</span></header>
+        <header className="sdk-feedback-header"><p>MissionGo</p><h1>{t("sdkFeedbackTitle")}</h1><span>{t("sdkFeedbackIntro")}</span></header>
         {error && <div className="sdk-feedback-error" role="alert">{error}</div>}
         {attachmentError && <div className="sdk-feedback-error" role="alert">{attachmentError}</div>}
         {draft && (
           <form className="capture-form quick-capture-form sdk-feedback-form" onSubmit={(event: FormEvent) => { event.preventDefault(); void submit("inbox"); }}>
-            <div className="capture-type-grid" aria-label="类型">
+            <div className="capture-type-grid" aria-label={t("type")}>
               {TYPES.map((value) => {
                 const Icon = TYPE_ICONS[value];
-                return <button key={value} type="button" className={`capture-type ${type === value ? "active" : ""} type-${value}`} onClick={() => setType(value)}><Icon size={16} />{TYPE_LABELS[value]}</button>;
+                return <button key={value} type="button" className={`capture-type ${type === value ? "active" : ""} type-${value}`} onClick={() => setType(value)}><Icon size={16} />{typeLabel(value)}</button>;
               })}
             </div>
             <div className="classification-row">
-              <label><span className="field-label">平台<span className="field-requirement required">必填</span></span><input value="Android" readOnly /></label>
-              <label><span className="field-label">来源模块<span className="field-requirement optional">选填</span></span><input value="MissionGo" readOnly /></label>
-              <label><span className="field-label">优先级<span className="field-requirement optional">选填</span></span><select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{PRIORITIES.map((value) => <option key={value} value={value}>{PRIORITY_LABELS[value]}</option>)}</select></label>
+              <label><span className="field-label">{t("platform")}<span className="field-requirement required">{t("requiredField")}</span></span><input value="Android" readOnly /></label>
+              <label><span className="field-label">{t("sdkSourceModule")}</span><input value="MissionGo" readOnly /></label>
+              <label><span className="field-label">{t("priority")}</span><select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
             </div>
-            <label><span className="field-label">需要关注什么？<span className="field-requirement required">必填</span></span><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={500} placeholder="用一句清晰、具体的话描述问题" required autoFocus /></label>
+            <label><span className="field-label">{t("whatNeedsAttention")}<span className="field-requirement required">{t("requiredField")}</span></span><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={500} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
             <section className="attachment-picker-block capture-attachment-block">
               <div className="capture-attachment-heading">
-                <div className="capture-attachment-copy"><strong><span className="field-label">图片与视频<span className="field-requirement optional">选填</span></span></strong><p>添加截图或录屏可以更快说明问题，最多 10 个附件。</p></div>
-                <label className="secondary-button sdk-feedback-picker"><ImageIcon size={16} /> 添加<input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm" onChange={selectFiles("media")} /></label>
+                <div className="capture-attachment-copy"><strong><span className="field-label">{t("mediaAttachments")}</span></strong><p>{t("sdkMediaHelp")}</p></div>
+                <label className="secondary-button sdk-feedback-picker"><ImageIcon size={16} /> {t("add")}<input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm" onChange={selectFiles("media")} /></label>
               </div>
               {selectedMedia.length > 0 && <div className="sdk-feedback-selected">{selectedMedia.map(({ id, file }) => (
                 <span key={id}>
                   <ImageIcon size={14} /><strong>{file.name}</strong>
                   {isAnnotatableImage(file) && (
-                    <button type="button" onClick={() => setAnnotatingId(id)} aria-label="标注图片" title="标注"><Highlighter size={13} /></button>
+                    <button type="button" onClick={() => setAnnotatingId(id)} aria-label={t("annotateImage")} title={t("annotate")}><Highlighter size={13} /></button>
                   )}
                 </span>
               ))}</div>}
             </section>
             <section className="report-input-block">
-              <header><strong>问题说明</strong><small>请说明实际现象、发生条件、期望结果和影响范围。</small></header>
-              <label><span className="field-label">实际发生了什么？<span className="field-requirement required">必填</span></span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={20_000} rows={6} placeholder="实际发生了什么？如何复现？期望结果是什么？" required /></label>
+              <header><strong>{t("sdkReportHeading")}</strong><small>{t("sdkReportHelp")}</small></header>
+              <label><span className="field-label">{t("sdkWhatHappened")}<span className="field-requirement required">{t("requiredField")}</span></span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={20_000} rows={6} placeholder={t("sdkWhatHappenedPlaceholder")} required /></label>
             </section>
             <section className="diagnostic-input-block">
               <div className="diagnostic-input-heading">
-                <span><strong>诊断信息</strong><small>仅包含宿主 App 主动提供的日志，不读取 Android 系统日志。</small></span>
-                <label className="secondary-button sdk-feedback-picker"><Paperclip size={16} /> 上传日志<input type="file" multiple accept=".log,.txt,.json,text/plain,application/json" onChange={selectFiles("log")} /></label>
+                <span><strong>{t("diagnostics")}</strong><small>{t("sdkDiagnosticsHelp")}</small></span>
+                <label className="secondary-button sdk-feedback-picker"><Paperclip size={16} /> {t("uploadLog")}<input type="file" multiple accept=".log,.txt,.json,text/plain,application/json" onChange={selectFiles("log")} /></label>
               </div>
               {selectedLogs.length > 0 && <div className="sdk-feedback-selected">{selectedLogs.map(({ id, file }) => <span key={id}><FileText size={14} /><strong>{file.name}</strong></span>)}</div>}
-              {draft.logs.length > 0 && <label className="sdk-feedback-check"><input type="checkbox" checked={includeLogs} onChange={(event) => setIncludeLogs(event.target.checked)} /><span>附带宿主主动提供的最近 {draft.logs.length} 条诊断日志</span></label>}
-              {draft.logs.length === 0 && <p className="sdk-feedback-empty-log">当前没有宿主主动提供的诊断日志。</p>}
+              {draft.logs.length > 0 && <label className="sdk-feedback-check"><input type="checkbox" checked={includeLogs} onChange={(event) => setIncludeLogs(event.target.checked)} /><span>{t("sdkIncludeHostLogs", { count: draft.logs.length })}</span></label>}
+              {draft.logs.length === 0 && <p className="sdk-feedback-empty-log">{t("sdkNoHostLogs")}</p>}
             </section>
             <details className="capture-optional">
-              <summary><ChevronRight size={16} /><span><strong>自动附带的信息</strong><small>App 版本、Android 版本、设备型号和反馈入口等排查信息</small></span></summary>
+              <summary><ChevronRight size={16} /><span><strong>{t("sdkAutoIncluded")}</strong><small>{t("sdkAutoIncludedHelp")}</small></span></summary>
               <div className="capture-optional-body"><dl className="sdk-feedback-context">{contextEntries.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl></div>
             </details>
-            <p className="privacy-note">只提交本页展示及你主动选择的内容，不读取账号、剪贴板、其他应用或完整系统日志。</p>
+            <p className="privacy-note">{t("sdkPrivacyNote")}</p>
             <div className="form-footer sdk-feedback-actions">
-              <button className="secondary-button" type="submit" disabled={submitting || !title.trim()}>{submitting && destination === "inbox" ? <LoaderCircle className="spin" size={17} /> : <FileText size={17} />}{submitting && destination === "inbox" ? "正在保存…" : "保存到草稿"}</button>
-              <button className="primary-button" type="button" disabled={submitting || !title.trim() || !description.trim()} onClick={() => void submit("ready")}>{submitting && destination === "ready" ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{submitting && destination === "ready" ? "正在提交…" : "提交到待处理"}</button>
+              <button className="secondary-button" type="submit" disabled={submitting || !title.trim()}>{submitting && destination === "inbox" ? <LoaderCircle className="spin" size={17} /> : <FileText size={17} />}{t(submitting && destination === "inbox" ? "sdkSaving" : "sdkSaveDraft")}</button>
+              <button className="primary-button" type="button" disabled={submitting || !title.trim() || !description.trim()} onClick={() => void submit("ready")}>{submitting && destination === "ready" ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{t(submitting && destination === "ready" ? "sdkSubmitting" : "sdkSubmitReady")}</button>
             </div>
           </form>
         )}
