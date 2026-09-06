@@ -712,6 +712,11 @@ export function App() {
           download
           onClick={() => setSidebarOpen(false)}
         ><Download size={15} /> {t("downloadAndroid")}</a>
+        {/* Transitional. The app moved from the SDK sample's applicationId to
+            io.missiongo.android, so Android installs it beside the old build
+            instead of replacing it. Remove this notice, its two message keys and
+            .download-note once the testers are known to be off the old package. */}
+        <p className="download-note">{t("androidReinstallNotice")}</p>
         <button className="text-button add-product" onClick={() => setProductOpen(true)}><Settings2 size={15} /> {t("manageProductsEntry")}</button>
         <div className="sidebar-utilities">
           <LanguageSwitch sidebar />

@@ -56,7 +56,11 @@ npm run publish:android-internal
 
 正式 App 的 applicationId 是 `io.missiongo.android`，名称取自 `@string/app_name`，图标与 `apps/web/public/icon.svg` 同源。这些值在 `product.json` 里声明一次，`npm run check` 会校验各处没有跑偏。
 
-> **一次性升级中断**：该 ID 此前是 `io.missiongo.feedback.sample`，与 SDK 验证 Sample 相同，两者在同一台手机上会互相顶掉。改为正式 ID 后，**已安装旧版本的手机必须先卸载再安装**，这一次无法原地升级。工作条目都在服务端，卸载不会丢数据。此后原地升级恢复正常。
+> **一次性过渡**：该 ID 此前是 `io.missiongo.feedback.sample`，与 SDK 验证 Sample 相同，两者在同一台手机上会互相顶掉。
+>
+> 改为正式 ID 后，Android 会把新版当作**另一个应用**，而不是升级——不卸载旧版的话，两个都叫 MissionGo、图标相同的条目会同时留在桌面上，且不会有任何报错提示。所以**已装旧版的手机必须先卸载再安装**。工作条目都在服务端，卸载不丢数据。
+>
+> 网页下载入口已加了对应提示（`androidReinstallNotice`）。确认试用者都已切到新包名后，可以把该提示、它的两个文案键和 `.download-note` 一并删掉——`apps/web/src/App.tsx` 里有标注。此后原地升级恢复正常。
 
 调试签名仍未迁移：正式对外分发前，需要另行改用仓库外保存的发布签名。
 

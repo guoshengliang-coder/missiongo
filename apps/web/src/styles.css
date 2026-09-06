@@ -393,6 +393,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .mission-card p { margin: 0 0 5px; font-size: var(--text-sm); font-weight: 750; }
 .mission-card > span:last-child { display: block; color: var(--primary-fg-soft); font-size: var(--text-sm); line-height: 1.5; }
 .add-product { justify-content: flex-start; margin: 0 5px; text-decoration: none; }
+.download-note { margin: 1px 5px 4px 27px; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
 .sidebar-utilities { display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--line); }
 .sidebar-utility-button { min-height: 34px; justify-content: flex-start; gap: 7px; margin: 0 5px; text-align: left; }
 
