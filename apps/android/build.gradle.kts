@@ -24,9 +24,10 @@ val missionGoVersionName = providers.gradleProperty("missiongoAndroidVersionName
 // machine is all it takes for its builds to upgrade in place.
 //
 // AGENTS.md forbids committing signing keys, so this only ever reads a path.
-// A checkout without the key still builds and still runs on a device, falling
-// back to the machine's debug key: scripts/publish-android-internal.sh is what
-// insists on the shared one, because only published builds have to interoperate.
+// A checkout without the key still builds: debug falls back to the machine's own
+// debug key and runs on a device, while release comes out unsigned and therefore
+// cannot be installed at all. Nothing can be released under the wrong key by
+// accident, and publish-android-internal.sh refuses before it gets that far.
 val missionGoSigningPath = providers.gradleProperty("missiongoAndroidSigningProperties")
     .orElse(providers.environmentVariable("MISSIONGO_ANDROID_SIGNING_PROPERTIES"))
     .orElse(
