@@ -106,6 +106,7 @@ command -v rsync >/dev/null || { echo "rsync is required." >&2; exit 1; }
 local_apk="apps/web/public/downloads/missiongo-android-latest.apk"
 local_apk_meta="apps/web/public/downloads/missiongo-android-latest.release"
 apk_link="${downloads_dir}/missiongo-android-latest.apk"
+local_maven="apps/web/public/maven"
 
 # macOS ships shasum without sha256sum; a minimal Linux host ships the reverse.
 sha256_of() {
@@ -131,6 +132,18 @@ if [ ! -s "$local_apk" ]; then
     echo "      Leaving ${apk_link} on the build it already serves." >&2
   fi
   echo "      Run npm run publish:android-internal to ship a new one." >&2
+fi
+
+# Same story for the Android SDK's Maven repository: git-ignored, published on
+# demand, and served straight out of the web image. A host app pins an exact
+# version, so shipping a site without it does not degrade gracefully — Gradle
+# gets a 404 and the host's build fails. Say so here rather than let it surface
+# in someone else's CI.
+if [ ! -d "$local_maven" ]; then
+  echo "Note: this checkout carries no SDK Maven artifacts under ${local_maven}/." >&2
+  echo "      /maven will 404 until a deploy runs from a checkout that has them." >&2
+  echo "      Publish with: (cd sdks/android-feedback && ./gradlew \\" >&2
+  echo "        :missiongo-feedback:publishReleasePublicationToWebsiteRepository)" >&2
 fi
 
 if [ "$publish_apk" -eq 1 ]; then
