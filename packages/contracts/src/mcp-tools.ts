@@ -22,6 +22,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "get_item_context", access: "read", purpose: "Load the complete structured context for one work item." },
   { name: "get_item_timeline", access: "read", purpose: "Read comments, events, and execution summaries." },
   { name: "get_attachment", access: "read", purpose: "Obtain controlled access to one work item attachment." },
+  { name: "append_comment", access: "write", purpose: "Add one comment to a work item without changing anything a person wrote." },
 ] as const satisfies readonly McpToolDefinition[];
 
 export interface ListItemsInput {
@@ -52,12 +53,18 @@ export interface ClaimItemResult {
   readonly leaseExpiresAt: string;
 }
 
-export interface AppendAnalysisInput {
+export type CommentBodyKind = "structured" | "free";
+
+export interface AppendCommentInput {
   readonly itemKey: string;
-  readonly agentId: string;
-  readonly conclusion: string;
-  readonly evidence: readonly string[];
-  readonly risks: readonly string[];
+  readonly bodyKind: CommentBodyKind;
+  /** Free-text body. */
+  readonly text?: string;
+  /** Structured body. */
+  readonly conclusion?: string;
+  readonly evidence?: readonly string[];
+  readonly risks?: readonly string[];
+  readonly agentName?: string;
   readonly idempotencyKey: string;
 }
 

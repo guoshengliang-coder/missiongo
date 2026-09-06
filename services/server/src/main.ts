@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { buildApp } from "./app.js";
 import { trustProxySetting } from "./config.js";
+import { MCP_WRITE_TIERS } from "./mcp.js";
 
 try {
   loadEnvFile(fileURLToPath(new URL("../../../.env", import.meta.url)));
@@ -18,6 +19,11 @@ const adminToken = process.env.ADMIN_API_TOKEN;
 const trustProxy = trustProxySetting(process.env.TRUST_PROXY);
 const publicOrigin = process.env.MISSIONGO_PUBLIC_ORIGIN?.trim();
 const authorizedProductIdsValue = process.env.ADMIN_AUTHORIZED_PRODUCT_IDS?.trim();
+const writeToolsValue = process.env.MISSIONGO_WRITE_TOOLS?.trim() || "none";
+if (!MCP_WRITE_TIERS.includes(writeToolsValue as (typeof MCP_WRITE_TIERS)[number])) {
+  throw new Error(`MISSIONGO_WRITE_TOOLS must be one of ${MCP_WRITE_TIERS.join(", ")}.`);
+}
+const writeTools = writeToolsValue as (typeof MCP_WRITE_TIERS)[number];
 const authorizedProductIds = authorizedProductIdsValue
   ? authorizedProductIdsValue.split(",")
   .map((value) => value.trim())
@@ -64,6 +70,7 @@ const app = buildApp({
   trustProxy,
   ...(publicOrigin ? { publicOrigin } : {}),
   ...(adminToken ? { adminToken } : {}),
+  writeTools,
   ...(hasCompleteAdminAccount ? {
     adminAccount: {
       id: adminAccountId!,

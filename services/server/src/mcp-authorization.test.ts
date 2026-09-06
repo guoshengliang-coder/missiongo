@@ -142,7 +142,7 @@ describe("MCP write-tool authorization", () => {
     // claiming, leases, and status transitions. Naming the members explicitly
     // means a new tool has to be placed on purpose rather than by where it
     // happened to be pasted.
-    expect(toolNamesInTier("comments")).toEqual(["append_analysis"]);
+    expect(toolNamesInTier("comments")).toEqual(["append_comment"]);
     expect(toolNamesInTier("processing")).toEqual([
       "get_execution",
       "claim_item",
@@ -188,20 +188,20 @@ describe("MCP write tiers", () => {
   it("exposes no write tool by default", async () => {
     const server = await serverForTier();
     expect(server.toolInputSchemaJson("get_item_context")).toBeDefined();
-    expect(server.toolInputSchemaJson("append_analysis")).toBeUndefined();
+    expect(server.toolInputSchemaJson("append_comment")).toBeUndefined();
     expect(server.toolInputSchemaJson("claim_item")).toBeUndefined();
   });
 
   it("stops at comment writing on the comments tier", async () => {
     const server = await serverForTier("comments");
-    expect(server.toolInputSchemaJson("append_analysis")).toBeDefined();
+    expect(server.toolInputSchemaJson("append_comment")).toBeDefined();
     expect(server.toolInputSchemaJson("get_execution")).toBeUndefined();
     expect(server.toolInputSchemaJson("claim_item")).toBeUndefined();
   });
 
   it("exposes the processing tools only on the all tier", async () => {
     const server = await serverForTier("all");
-    expect(server.toolInputSchemaJson("append_analysis")).toBeDefined();
+    expect(server.toolInputSchemaJson("append_comment")).toBeDefined();
     expect(server.toolInputSchemaJson("claim_item")).toBeDefined();
     expect(server.toolInputSchemaJson("resume_execution")).toBeDefined();
   });

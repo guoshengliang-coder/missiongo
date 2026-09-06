@@ -41,6 +41,108 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
+describe("Commenting over MCP", () => {
+  async function commentingApp(writeTools: "none" | "comments" | "all" = "comments") {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-mcp-write-"));
+    temporaryDirectories.push(directory);
+    const adminAccount = testAdminAccount();
+    const app = buildApp({
+      databasePath: join(directory, "missiongo.sqlite"),
+      attachmentsPath: join(directory, "attachments"),
+      adminToken: "management-test-token",
+      adminAccount,
+      publicOrigin: "https://missiongo.test",
+      writeTools,
+    });
+    apps.push(app);
+
+    const product = (await app.inject({
+      method: "POST",
+      url: "/api/v1/products",
+      headers: { authorization: "Bearer management-test-token" },
+      payload: { name: "Hermes Go", keyPrefix: "HG" },
+    })).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      headers: { authorization: "Bearer management-test-token" },
+      payload: { productId: product.id, type: "bug", priority: "high", title: "Crash", description: "On launch" },
+    });
+
+    const call = async (token: string, id: number, method: string, params: Readonly<Record<string, unknown>> = {}) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/mcp",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        payload: { jsonrpc: "2.0", id, method, params },
+      });
+      const payload = response.headers["content-type"]?.includes("text/event-stream")
+        ? response.body.split("\n").find((line) => line.startsWith("data: "))?.slice(6)
+        : response.body;
+      return JSON.parse(payload!) as { result?: Record<string, unknown>; error?: unknown };
+    };
+
+    const readToken = createAiAccessToken(adminAccount, "read-client", ["missiongo:read"]).token;
+    const writeToken = createAiAccessToken(adminAccount, "write-client", ["missiongo:read", "missiongo:write"]).token;
+    return { app, call, readToken, writeToken };
+  }
+
+  it("writes a comment for a client the user granted writing to", async () => {
+    const { app, call, writeToken } = await commentingApp();
+    const result = await call(writeToken, 1, "tools/call", {
+      name: "append_comment",
+      arguments: { itemKey: "HG-1", text: "Reproduced on a Pixel 8.", idempotencyKey: "note-1" },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.result?.structuredContent).toMatchObject({
+      statusChanged: false,
+      comment: { actorKind: "agent", bodyKind: "free", clientId: "write-client" },
+    });
+
+    const comments = (await app.inject({
+      method: "GET",
+      url: "/api/v1/items/HG-1/comments",
+      headers: { authorization: "Bearer management-test-token" },
+    })).json<{ comments: Array<{ actorKind: string }> }>().comments;
+    expect(comments).toHaveLength(1);
+  });
+
+  it("refuses a write from a token that was only granted reading", async () => {
+    const { app, call, readToken } = await commentingApp();
+    const result = await call(readToken, 1, "tools/call", {
+      name: "append_comment",
+      arguments: { itemKey: "HG-1", text: "Should not land.", idempotencyKey: "note-1" },
+    });
+    expect(JSON.stringify(result)).toMatch(/does not include write access/);
+
+    const comments = (await app.inject({
+      method: "GET",
+      url: "/api/v1/items/HG-1/comments",
+      headers: { authorization: "Bearer management-test-token" },
+    })).json<{ comments: unknown[] }>().comments;
+    expect(comments).toHaveLength(0);
+  });
+
+  it("does not offer the tool at all on a read-only deployment", async () => {
+    const { call, writeToken } = await commentingApp("none");
+    const tools = await call(writeToken, 1, "tools/list");
+    const names = (tools.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name);
+    expect(names).not.toContain("append_comment");
+  });
+
+  it("keeps the processing tools out of the comments tier", async () => {
+    const { call, writeToken } = await commentingApp();
+    const tools = await call(writeToken, 1, "tools/list");
+    const names = (tools.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name);
+    expect(names).toContain("append_comment");
+    expect(names).not.toContain("claim_item");
+  });
+});
+
 describe("Work-item comments over REST", () => {
   async function itemApp() {
     const { app } = await testApp();

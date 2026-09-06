@@ -28,7 +28,7 @@ import sharp from "sharp";
 
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
 import { invalidInput, MissionGoError } from "./errors.js";
-import { createMissionGoMcpHandler } from "./mcp.js";
+import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
 import {
   MISSIONGO_READ_SCOPE,
   MISSIONGO_SUPPORTED_SCOPES,
@@ -50,6 +50,8 @@ export interface BuildAppOptions {
   /** Fastify trust-proxy setting: false, true, or trusted addresses/CIDRs/named ranges. */
   readonly trustProxy?: boolean | string;
   readonly sdkRateLimits?: Partial<Readonly<Record<SdkRateLimitBucket, SdkRateLimitRule>>>;
+  /** How much of the MCP write surface to expose. Defaults to none. */
+  readonly writeTools?: McpWriteTier;
 }
 
 type SdkRateLimitBucket = "draft_read" | "draft_write" | "finalize" | "web_session" | "attachment_upload";
@@ -311,7 +313,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const mcpHandler = options.adminAccount
     // Only hand out an update URL when a real deployment origin was configured;
     // the loopback fallback above is not an address a client can reinstall from.
-    ? createMissionGoMcpHandler(store, attachmentStorage, options.publicOrigin ? { publicOrigin } : {})
+    ? createMissionGoMcpHandler(store, attachmentStorage, {
+      ...(options.publicOrigin ? { publicOrigin } : {}),
+      ...(options.writeTools ? { writeTools: options.writeTools } : {}),
+    })
     : undefined;
   const oauthProvider = options.adminAccount ? new MissionGoOAuthProvider(options.adminAccount, publicOrigin) : undefined;
   const sdkRateLimits = { ...DEFAULT_SDK_RATE_LIMITS, ...options.sdkRateLimits };

@@ -16,10 +16,14 @@ describe("MCP tool catalog", () => {
     expect(names).not.toContain("complete_item");
   });
 
-  it("publishes only the seven stage-one read tools", () => {
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(7);
-    expect(MCP_TOOL_DEFINITIONS.every((tool) => tool.access === "read")).toBe(true);
+  it("publishes the seven read tools and commenting, and nothing from the processing tier", () => {
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(8);
+    expect(MCP_TOOL_DEFINITIONS.filter((tool) => tool.access === "write").map((tool) => tool.name))
+      .toEqual(["append_comment"]);
     expect(findMcpTool("get_item_context")?.access).toBe("read");
+    // Claiming, leases and status transitions are a separate decision and are
+    // not published yet.
     expect(findMcpTool("claim_item")).toBeUndefined();
+    expect(findMcpTool("submit_resolution")).toBeUndefined();
   });
 });
