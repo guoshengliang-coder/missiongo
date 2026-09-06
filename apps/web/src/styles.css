@@ -353,7 +353,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .workspace { min-width: 0; min-height: 0; display: block; padding: 30px 34px 34px; overflow-y: auto; overscroll-behavior: contain; }
 .workspace.detail-open { padding: 0; overflow: hidden; }
 .list-page { width: 100%; max-width: 1500px; margin: 0 auto; }
-.list-page[hidden] { display: none; }
+.workspace.detail-open .list-page { display: none; }
 .workspace-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 22px; }
 .eyebrow { margin: 0 0 6px; color: var(--muted); font-size: var(--text-sm); font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
 .workspace-head h1 { margin: 0; font-size: clamp(27px, 3vw, 38px); letter-spacing: -0.045em; line-height: 1; }
@@ -461,6 +461,34 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .detail-more-menu-popover button.menu-plain { color: var(--ink); }
 
 .detail-page-shell { width: 100%; height: 100%; margin: 0; }
+
+/* Wide enough for both: the list stays put while an item is open, so working
+   through a batch no longer means returning to the list to find your place. */
+@media (min-width: 1280px) {
+  /* An explicit row keeps both panes at the workspace height so each scrolls
+     on its own; an auto row would size to the taller one and clip. */
+  .workspace.detail-open { display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .workspace.detail-open .list-page { display: flex; flex-direction: column; max-width: none; min-height: 0; padding: 16px 14px 0; overflow-y: auto; overscroll-behavior: contain; border-right: 1px solid var(--line); background: var(--surface-strong); }
+  .workspace.detail-open .workspace-head, .workspace.detail-open .type-filters, .workspace.detail-open .list-columns { display: none; }
+  .workspace.detail-open .list-surface { border: 0; border-radius: 0; box-shadow: none; background: transparent; }
+  .workspace.detail-open .item-list { min-height: 0; }
+  .workspace.detail-open .item-row, .workspace.detail-open .list-surface.without-media .item-row {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    gap: 6px 10px;
+    padding: 11px 8px;
+  }
+  .workspace.detail-open .item-row-main { grid-column: 1 / -1; }
+  .workspace.detail-open .item-description { display: none; }
+  .workspace.detail-open .item-context { grid-column: 1; grid-row: 2; flex-direction: row; align-items: center; gap: 6px; }
+  .workspace.detail-open .item-context small::before { content: "·"; margin-right: 6px; }
+  .workspace.detail-open .item-state { grid-column: 2; grid-row: 2; }
+  .workspace.detail-open .item-media-strip, .workspace.detail-open .item-updated, .workspace.detail-open .item-row-actions { display: none; }
+  .workspace.detail-open .item-row.selected { background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--mint-dark); }
+  .workspace.detail-open .list-pagination { background: transparent; }
+  .workspace.detail-open .detail-page-shell { min-width: 0; height: 100%; }
+}
 .detail-pane { min-width: 0; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
 .detail-toolbar { z-index: 8; min-height: 62px; flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 9px 34px; background: var(--surface-strong); border-bottom: 1px solid var(--line); }
 .detail-back-button { margin-right: 5px; }

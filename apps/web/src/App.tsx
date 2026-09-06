@@ -697,7 +697,9 @@ export function App() {
       {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label={t("closeNavigation")} />}
 
       <main className={`workspace ${selectedItemKey ? "detail-open" : ""}`} ref={workspaceRef}>
-        <section className="list-page" hidden={Boolean(selectedItemKey)}>
+        {/* Visibility is a layout decision: below the two-pane breakpoint the
+            list gives way to the detail, above it they sit side by side. */}
+        <section className="list-page">
           <nav className="mobile-status-nav mobile-only" aria-label={t("workspace")}>
             <button className={statusFilter === "all" ? "active" : ""} aria-pressed={statusFilter === "all"} onClick={() => selectStatus("all")}>
               <ListTodo size={16} />
@@ -785,6 +787,7 @@ export function App() {
                 <ItemRow
                   key={item.id}
                   item={item}
+                  selected={item.key === selectedItemKey}
                   sourceComponent={item.sourceComponentId ? componentsById.get(item.sourceComponentId) : undefined}
                   showAttachmentColumn={showAttachmentColumn}
                   onOpen={() => openItemPage(item.key)}
@@ -892,6 +895,7 @@ function ItemRow({
   item,
   sourceComponent,
   showAttachmentColumn,
+  selected,
   onOpen,
   onEdit,
   onNotice,
@@ -899,6 +903,7 @@ function ItemRow({
   item: WorkItem;
   sourceComponent: Component | undefined;
   showAttachmentColumn: boolean;
+  selected: boolean;
   onOpen: () => void;
   onEdit: () => void;
   onNotice: (message: string) => void;
@@ -918,7 +923,8 @@ function ItemRow({
   ].filter(Boolean).join(" · ");
   return (
     <article
-      className="item-row"
+      className={`item-row ${selected ? "selected" : ""}`}
+      aria-current={selected ? "true" : undefined}
       onClick={(event) => {
         const target = event.target;
         if (target instanceof Element && target.closest("button, a, input, select, textarea, summary, details, video, [role='dialog']")) return;
