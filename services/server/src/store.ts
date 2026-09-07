@@ -178,6 +178,8 @@ interface SdkTokenRow {
 }
 
 interface FeedbackDraftRow {
+  product_name: string;
+  source_component_name: string | null;
   id: string;
   client_draft_id: string;
   product_id: string;
@@ -1825,9 +1827,12 @@ export class MissionGoStore {
       .prepare(
         `SELECT d.id, d.client_draft_id, d.product_id, d.source_component_id, d.status,
                 d.type, d.priority, d.title, d.description, d.environment_json,
-                d.context_json, d.logs_json, w.item_key, d.expires_at, d.created_at, d.updated_at
+                d.context_json, d.logs_json, w.item_key, d.expires_at, d.created_at, d.updated_at,
+                p.name AS product_name, c.name AS source_component_name
          FROM feedback_drafts d
          LEFT JOIN work_items w ON w.id = d.submitted_item_id
+         JOIN products p ON p.id = d.product_id
+         LEFT JOIN components c ON c.id = d.source_component_id
          WHERE d.id = ? AND d.access_token_id = ?`,
       )
       .get(draftId, tokenId) as unknown as FeedbackDraftRow | undefined;
@@ -1838,9 +1843,12 @@ export class MissionGoStore {
       .prepare(
         `SELECT d.id, d.client_draft_id, d.product_id, d.source_component_id, d.status,
                 d.type, d.priority, d.title, d.description, d.environment_json,
-                d.context_json, d.logs_json, w.item_key, d.expires_at, d.created_at, d.updated_at
+                d.context_json, d.logs_json, w.item_key, d.expires_at, d.created_at, d.updated_at,
+                p.name AS product_name, c.name AS source_component_name
          FROM feedback_drafts d
          LEFT JOIN work_items w ON w.id = d.submitted_item_id
+         JOIN products p ON p.id = d.product_id
+         LEFT JOIN components c ON c.id = d.source_component_id
          WHERE d.access_token_id = ? AND d.client_draft_id = ?`,
       )
       .get(tokenId, clientDraftId) as unknown as FeedbackDraftRow | undefined;
@@ -2025,7 +2033,11 @@ export class MissionGoStore {
       id: row.id,
       clientDraftId: row.client_draft_id,
       productId: row.product_id,
+      // The editor shows where the report will land. It used to print a literal, which was
+      // simply the wrong product for every host but the one it was written on.
+      productName: row.product_name,
       ...(row.source_component_id ? { sourceComponentId: row.source_component_id } : {}),
+      ...(row.source_component_name ? { sourceComponentName: row.source_component_name } : {}),
       status: row.status,
       type: row.type,
       priority: row.priority,

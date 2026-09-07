@@ -278,6 +278,8 @@ export interface FeedbackDraftSnapshot {
   readonly id: string;
   readonly clientDraftId: string;
   readonly productId: string;
+  readonly productName: string;
+  readonly sourceComponentName?: string;
   readonly sourceComponentId?: string;
   readonly status: "editing" | "submitted" | "expired";
   readonly type: WorkItemType;

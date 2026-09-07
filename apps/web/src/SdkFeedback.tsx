@@ -12,6 +12,8 @@ import type { WorkItemPriority, WorkItemType } from "./types";
 type SubmissionTarget = "inbox" | "ready";
 
 interface FeedbackDraft {
+  readonly productName: string;
+  readonly sourceComponentName?: string;
   readonly id: string;
   readonly status: "editing" | "submitted" | "expired";
   readonly title: string;
@@ -237,7 +239,10 @@ export function SdkFeedbackPage() {
             </div>
             <div className="classification-row">
               <label><span className="field-label">{t("platform")}<span className="field-requirement required">{t("requiredField")}</span></span><input value="Android" readOnly /></label>
-              <label><span className="field-label">{t("sdkSourceModule")}</span><input value="MissionGo" readOnly /></label>
+              <label><span className="field-label">{t("sdkDestination")}</span><input
+                value={draft.sourceComponentName ? `${draft.productName} · ${draft.sourceComponentName}` : draft.productName}
+                readOnly
+              /></label>
               <label><span className="field-label">{t("priority")}</span><select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
             </div>
             <label><span className="field-label">{t("whatNeedsAttention")}<span className="field-requirement required">{t("requiredField")}</span></span><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={500} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
