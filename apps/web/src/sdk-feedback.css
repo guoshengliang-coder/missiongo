@@ -27,6 +27,7 @@
 .sdk-feedback-picker input { position: absolute; width: 1px; height: 1px; padding: 0; opacity: 0; pointer-events: none; }
 .sdk-feedback-selected { display: flex; flex-direction: column; gap: 6px; }
 .sdk-feedback-selected > span { min-width: 0; display: flex; align-items: center; gap: 7px; padding: 8px 10px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: 9px; color: var(--muted); }
+.sdk-feedback-thumb { flex: 0 0 auto; width: 40px; height: 40px; object-fit: cover; background: var(--surface-strong); border: 1px solid var(--line); border-radius: 6px; }
 .sdk-feedback-selected strong { min-width: 0; overflow: hidden; color: var(--ink); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 
 .sdk-feedback-check { flex-direction: row; align-items: center; gap: 8px; min-height: 38px; padding: 9px 10px; background: white; border: 1px solid var(--line); border-radius: 9px; font-weight: 550; }

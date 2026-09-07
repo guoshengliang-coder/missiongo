@@ -116,6 +116,22 @@ export function SdkFeedbackPage() {
   const [annotatingId, setAnnotatingId] = useState<string | null>(null);
   const [clearGalleryCopies, setClearGalleryCopies] = useState(false);
   const [mediaDeletion] = useState(androidMediaDeletion);
+  const [previews, setPreviews] = useState<ReadonlyMap<string, string>>(new Map());
+
+  // The picked files never leave the browser until submit, so a thumbnail can only come
+  // from an object URL over the File already in state. They are recreated whenever the
+  // selection changes -- annotating swaps a file in place -- and revoked on the way out,
+  // because a URL that outlives its selection keeps the whole image alive in memory.
+  useEffect(() => {
+    const urls = new Map<string, string>();
+    for (const { id, file } of files) {
+      if (isAnnotatableImage(file)) urls.set(id, URL.createObjectURL(file));
+    }
+    setPreviews(urls);
+    return () => {
+      for (const url of urls.values()) URL.revokeObjectURL(url);
+    };
+  }, [files]);
 
   useEffect(() => {
     if (completedItemKey) return;
@@ -253,7 +269,10 @@ export function SdkFeedbackPage() {
               </div>
               {selectedMedia.length > 0 && <div className="sdk-feedback-selected">{selectedMedia.map(({ id, file }) => (
                 <span key={id}>
-                  <ImageIcon size={14} /><strong>{file.name}</strong>
+                  {previews.get(id)
+                    ? <img className="sdk-feedback-thumb" src={previews.get(id)} alt="" />
+                    : <ImageIcon size={14} />}
+                  <strong>{file.name}</strong>
                   {isAnnotatableImage(file) && (
                     <button type="button" onClick={() => setAnnotatingId(id)} aria-label={t("annotateImage")} title={t("annotate")}><Highlighter size={13} /></button>
                   )}
