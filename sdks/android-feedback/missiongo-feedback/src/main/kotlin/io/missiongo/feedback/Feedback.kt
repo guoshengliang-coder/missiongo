@@ -1,5 +1,6 @@
 package io.missiongo.feedback
 
+import java.io.File
 import java.util.UUID
 
 public enum class FeedbackType(internal val wireValue: String) {
@@ -31,6 +32,20 @@ public data class FeedbackOptions(
     public val type: FeedbackType = FeedbackType.Bug,
     public val priority: FeedbackPriority = FeedbackPriority.Normal,
     public val context: Map<String, String> = emptyMap(),
+    /**
+     * Files to attach, uploaded by the SDK once the report exists.
+     *
+     * This is the way to send a complete diagnostic history. [MissionGo.log] carries a bounded
+     * in-memory trail — 500 entries and 256 KiB, which the server rejects the whole report for
+     * exceeding — while a host that already writes its own rolling log file can hand the file
+     * over instead: no entry limit, its own line format, and its own true timestamps.
+     *
+     * Each file must exist and be readable when the report is submitted; the queue path can run
+     * long after the call, so a file in a cache the host may clear is a poor choice. Uploads
+     * happen after the work item is created, so a failed upload leaves the report itself intact
+     * and is reported through [FeedbackResult.Failed] only for the interactive flow.
+     */
+    public val attachments: List<File> = emptyList(),
     public val clientDraftId: String = UUID.randomUUID().toString(),
 )
 

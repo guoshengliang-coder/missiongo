@@ -4,7 +4,7 @@
 > 读完它就足以完成接入，不需要 MissionGo 的源码，也不需要读 MissionGo 的其他文档。
 >
 > 固定地址：`__MISSIONGO_PUBLIC_ORIGIN__/downloads/missiongo-android-sdk/INTEGRATION.md`
-> 对应 SDK 版本：**0.2.4**
+> 对应 SDK 版本：**0.2.5**
 
 ## 0. 这是什么
 
@@ -20,7 +20,7 @@
 | | 内容 | 从哪来 |
 |---|---|---|
 | 1 | Maven 仓库地址 `__MISSIONGO_PUBLIC_ORIGIN__/maven` | 本文档 |
-| 2 | 坐标 `io.missiongo:missiongo-feedback:0.2.4` | 本文档 |
+| 2 | 坐标 `io.missiongo:missiongo-feedback:0.2.5` | 本文档 |
 | 3 | 服务地址（endpoint）`__MISSIONGO_PUBLIC_ORIGIN__` | 本文档 |
 | 4 | SDK Token | **由人在 MissionGo 管理端创建后，直接写入本机私密文件** |
 
@@ -84,7 +84,7 @@ dependencyResolutionManagement {
 ```kotlin
 // gradle/libs.versions.toml
 [versions]
-missiongoFeedback = "0.2.4"
+missiongoFeedback = "0.2.5"
 
 [libraries]
 missiongo-feedback = { module = "io.missiongo:missiongo-feedback", version.ref = "missiongoFeedback" }
@@ -253,6 +253,51 @@ MissionGo.log(
     message = "Send failed",
     throwable = error,
     attributes = mapOf("errorCode" to "TIMEOUT"),
+)
+```
+
+### 完整历史用附件，`log()` 只放短的结构化轨迹
+
+两条路各司其职，别混用：
+
+| | 用途 | 上限 |
+|---|---|---|
+| `FeedbackOptions.attachments` | 宿主自己的滚动日志文件、崩溃报告、导出件 | 单文件 10 MiB，每条记录最多 10 个附件 |
+| `MissionGo.log()` | 短的、带 level 和 attributes 的轨迹，值得在时间线里内联看到 | **500 条 / 256 KiB，超限服务端整条拒收** |
+
+```kotlin
+MissionGo.openFeedback(
+    activity = activity,
+    options = FeedbackOptions(
+        title = "同步失败",
+        attachments = listOf(File(context.filesDir, "diagnostics/rolling.log")),
+    ),
+)
+```
+
+支持 `.log` `.txt` `.json` `.md` `.csv` `.pdf` 以及图片和视频。SDK 在记录创建之后上传，失败不会撤销
+已提交的记录，只在 SDK 自己的日志缓冲里留一行。
+
+> ⚠️ **文件在提交那一刻必须仍然存在且可读。** 队列路径（`enqueueFeedback`）可能在很久之后才执行，
+> 所以放在宿主可能清理的缓存目录里是个坏选择。
+>
+> 另外：交互式 `openFeedback` 的上传在编辑器关闭后继续，但**不跨进程**——进程被杀就丢了（记录本身
+> 不受影响）。绝对不能丢的文件走 `enqueueFeedback`，它由 WorkManager 承载。
+
+### ⚠️ 日志的时间戳：不传就是"现在"
+
+`log()` 默认用**调用时刻**打戳。如果你按下面的建议在打开反馈时一次性灌入环形缓冲，整批日志会被
+盖上同一个时间——第一个真实接入就这样送来了 500 行、只有 16 个不同时间戳，六分钟的故障读起来像
+几秒，差点被当成"缓冲已经滚过事故现场"。
+
+灌缓冲时把每行的真实时间传进来：
+
+```kotlin
+MissionGo.log(
+    level = MissionGoLogLevel.Error,
+    message = entry.text,
+    attributes = mapOf("category" to entry.category),
+    timestampMillis = entry.timeMillis,   // ← 不传则为调用时刻
 )
 ```
 

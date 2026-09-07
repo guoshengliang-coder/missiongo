@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "io.missiongo"
-version = providers.gradleProperty("missiongoVersion").orElse("0.2.4").get()
+version = providers.gradleProperty("missiongoVersion").orElse("0.2.5").get()
 
 android {
     namespace = "io.missiongo.feedback"

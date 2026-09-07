@@ -88,6 +88,9 @@ internal class FeedbackLaunchStore(
             put("type", payload.options.type.wireValue)
             put("priority", payload.options.priority.wireValue)
             put("clientDraftId", payload.options.clientDraftId)
+            // Paths, not contents: the queue can run much later, and copying a log file
+            // into the snapshot would duplicate something the host already keeps.
+            put("attachments", JSONArray().apply { payload.options.attachments.forEach { put(it.path) } })
         })
         put("environment", JSONObject().apply {
             payload.environment.appVersion?.let { put("appVersion", it) }
@@ -120,6 +123,9 @@ internal class FeedbackLaunchStore(
                 type = FeedbackType.entries.first { it.wireValue == optionsJson.getString("type") },
                 priority = FeedbackPriority.entries.first { it.wireValue == optionsJson.getString("priority") },
                 clientDraftId = optionsJson.getString("clientDraftId"),
+                attachments = optionsJson.optJSONArray("attachments")?.let { array ->
+                    (0 until array.length()).map { java.io.File(array.getString(it)) }
+                } ?: emptyList(),
             ),
             environment = FeedbackEnvironment(
                 appVersion = environmentJson.optionalString("appVersion"),

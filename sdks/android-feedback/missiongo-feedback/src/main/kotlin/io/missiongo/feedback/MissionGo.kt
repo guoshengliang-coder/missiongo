@@ -23,6 +23,10 @@ import io.missiongo.feedback.internal.DiagnosticNormalizer
 import io.missiongo.feedback.internal.SdkRuntime
 import io.missiongo.feedback.internal.utcTimestamp
 import java.io.File
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
 /**
@@ -60,6 +64,8 @@ public object MissionGo {
     // context. See setEditorAppearance.
     @Volatile
     private var appearanceOverride: MissionGoAppearance? = null
+
+    private val uploadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** True once [initialize] has succeeded. Hosts use it to decide whether to offer a feedback entry. */
     @JvmStatic
@@ -132,6 +138,14 @@ public object MissionGo {
         addLog(MissionGoLogLevel.Info, "breadcrumb:$name", null, attributes)
     }
 
+    /**
+     * @param timestampMillis when the line was written, if that is not now. A host that keeps its
+     *   own rolling buffer and hands it over when a report is opened — the pattern this SDK
+     *   documents — would otherwise get every line stamped with the moment of the handover: one
+     *   report arrived with 500 lines carrying 16 distinct timestamps, and the six minutes of
+     *   failure they covered read as a few seconds, which nearly got them dismissed as a buffer
+     *   that had already scrolled past the incident.
+     */
     @JvmStatic
     @JvmOverloads
     public fun log(
@@ -139,8 +153,9 @@ public object MissionGo {
         message: String,
         throwable: Throwable? = null,
         attributes: Map<String, String> = emptyMap(),
+        timestampMillis: Long? = null,
     ) {
-        addLog(level, message, throwable, attributes)
+        addLog(level, message, throwable, attributes, timestampMillis)
     }
 
     /** Creates or updates an idempotent server draft without making it a work item. */
@@ -166,11 +181,46 @@ public object MissionGo {
         return FeedbackSubmission(response.id, itemKey)
     }
 
+
+    /**
+     * Uploads the host's files against a report that now exists.
+     *
+     * Best effort per file: the work item is already created, so a file that cannot be read or
+     * that the server refuses must not undo a report the user has written. Each failure is
+     * recorded as a log line on this SDK's own buffer, which is where a host looking for it will
+     * be, and the rest still go up.
+     *
+     * The client attachment id is derived from the draft and the position, so a retry after a
+     * lost response reuses the stored file rather than adding a second copy.
+     */
+    private suspend fun uploadAttachments(
+        current: SdkRuntime,
+        draftId: String,
+        attachments: List<File>,
+    ) {
+        attachments.forEachIndexed { index, file ->
+            runCatching {
+                require(file.isFile) { "not a readable file" }
+                require(file.length() > 0) { "file is empty" }
+                current.api.uploadAttachment(draftId, file, "$draftId-$index")
+            }.onFailure { failure ->
+                addLog(
+                    MissionGoLogLevel.Warn,
+                    "MissionGo could not attach ${file.name}: ${failure.message}",
+                    null,
+                    emptyMap(),
+                )
+            }
+        }
+    }
+
     /** Programmatic end-to-end path used by automation and the sample app. */
     @JvmStatic
     public suspend fun submitFeedback(options: FeedbackOptions): FeedbackSubmission {
         val draft = createDraft(options)
-        return finalizeDraft(draft.id)
+        val submission = finalizeDraft(draft.id)
+        runtime?.let { uploadAttachments(it, draft.id, options.attachments) }
+        return submission
     }
 
     /**
@@ -281,7 +331,17 @@ public object MissionGo {
     // The launch store may be gone (process recreated without initialization), but the in-process
     // callback registry is not, so a waiting host still hears the outcome either way.
     internal fun completeFeedbackLaunch(launchId: String, result: FeedbackResult) {
-        runtime?.launches?.remove(launchId)
+        val current = runtime
+        val attachments = current?.launches?.get(launchId)?.options?.attachments.orEmpty()
+        if (current != null && result is FeedbackResult.Submitted && attachments.isNotEmpty()) {
+            // On a scope that outlives the editor Activity: the user closes it the moment they
+            // submit, and an upload tied to the Activity would be cancelled mid-file. It does not
+            // outlive the process, so unlike the queued path this one is best effort -- the report
+            // is already filed either way, and a host that cannot afford to lose the file should
+            // send it through enqueueFeedback.
+            uploadScope.launch { uploadAttachments(current, result.submission.draftId, attachments) }
+        }
+        current?.launches?.remove(launchId)
         FeedbackLaunchCallbacks.complete(launchId, result)
     }
 
@@ -303,6 +363,7 @@ public object MissionGo {
         val submitted = if (draft.itemKey != null) draft else current.api.finalizeDraft(draft.id)
         val itemKey = submitted.itemKey
             ?: throw MissionGoException("invalid_server_response", "MissionGo did not return a work-item key.")
+        uploadAttachments(current, submitted.id, pending.options.attachments)
         current.queue.remove(queueId)
         return FeedbackSubmission(submitted.id, itemKey)
     }
@@ -324,12 +385,13 @@ public object MissionGo {
         message: String,
         throwable: Throwable?,
         attributes: Map<String, String>,
+        timestampMillis: Long? = null,
     ) {
         val current = runtime ?: return
         val completeMessage = if (throwable == null) message else "$message\n${throwable.stackTraceToString()}"
         current.context.addLog(
             FeedbackLogEntry(
-                timestamp = utcTimestamp(),
+                timestamp = timestampMillis?.let(::utcTimestamp) ?: utcTimestamp(),
                 level = level.wireValue,
                 message = completeMessage,
                 attributes = attributes,
