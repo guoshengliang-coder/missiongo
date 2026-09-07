@@ -48,6 +48,35 @@ dependencies {
     testImplementation("org.json:json:20260814")
 }
 
+// A published version is immutable: every release verifies the older artifacts byte for
+// byte, and hosts pin an exact version. Publishing over one that already exists would break
+// that silently -- a host resolving the same number on a clean CI would get different code.
+//
+// It nearly happened: two changes landed in the SDK after 0.2.3 shipped without the version
+// being bumped, and the next publish would have overwritten it. Nothing warned, because the
+// convention lived only in whoever remembered it.
+//
+// Bump missiongoVersion in gradle.properties. Pass -PmissiongoAllowRepublish=true only to
+// republish deliberately, knowing what already carries that number.
+val publishedVersionDirectory = rootProject.layout.projectDirectory
+    .dir("../../apps/web/public/maven/io/missiongo/missiongo-feedback/$version")
+    .asFile
+val allowRepublish = providers.gradleProperty("missiongoAllowRepublish")
+    .map(String::toBoolean)
+    .getOrElse(false)
+
+tasks.matching { it.name == "publishReleasePublicationToWebsiteRepository" }.configureEach {
+    doFirst {
+        if (publishedVersionDirectory.isDirectory && !allowRepublish) {
+            throw GradleException(
+                "Version $version is already published at ${publishedVersionDirectory.path}.\n" +
+                    "Bump missiongoVersion in gradle.properties, or pass " +
+                    "-PmissiongoAllowRepublish=true to overwrite it on purpose.",
+            )
+        }
+    }
+}
+
 publishing {
     publications {
         register<MavenPublication>("release") {

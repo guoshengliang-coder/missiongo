@@ -57,6 +57,11 @@ cd sdks/android-feedback
 ./gradlew :missiongo-feedback:publishReleasePublicationToWebsiteRepository
 ```
 
+**版本号已存在时发布会直接失败。** 已发布的版本不可变——宿主钉的是具体版本号，覆盖它会让同一个
+号在一次干净 CI 上解析到不同的代码。改了 SDK 源码就要提 `missiongoVersion`；确实要覆盖时传
+`-PmissiongoAllowRepublish=true`，明确知道那个号上原本是什么。`publishToMavenLocal` 不受此限制，
+本机联调照常。
+
 制品写入 `apps/web/public/maven/`，随下一次 `npm run build:web` 和网站部署上线。该目录和内部
 APK 一样不进 Git，所以只有跑过发布的那台机器有它。`scripts/deploy.sh` 会在部署方的 checkout
 没有该目录时，把线上正在服务的那份原样带过去——否则一次为别的目的进行的部署就会静默清空
