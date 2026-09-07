@@ -43,6 +43,12 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.11.0")
     implementation("androidx.work:work-runtime:2.11.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    // Must equal the Kotlin the build compiles with. No Kotlin plugin is declared
+    // here, so that is whatever the Android Gradle plugin bundles -- 2.3.21 today.
+    // Raising this alone brings in classes compiled against newer metadata than
+    // the compiler can read, and the build stops at "Incompatible classes were
+    // found in dependencies". It moves when AGP moves; Dependabot is told to
+    // leave it alone in .github/dependabot.yml.
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.3.21")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
     testImplementation("org.json:json:20260814")

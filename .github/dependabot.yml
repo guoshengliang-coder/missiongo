@@ -11,3 +11,12 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    ignore:
+      # The build declares no Kotlin plugin: the compiler is whatever the Android
+      # Gradle plugin bundles, currently 2.3.21. kotlin-test-junit is pinned to
+      # exactly that on purpose, so a bump on its own ships a library compiled
+      # against newer metadata than the compiler can read -- the build fails with
+      # "Incompatible classes were found in dependencies", which is what happened
+      # to the 2.4.10 proposal. Its correct version is not "the latest", it is
+      # "whatever AGP brings", so it moves when AGP moves and not before.
+      - dependency-name: "org.jetbrains.kotlin:kotlin-test-junit"
