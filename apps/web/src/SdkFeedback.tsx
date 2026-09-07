@@ -7,6 +7,7 @@ import { loadSdkAttachments, replaceSdkAttachments, type StoredSdkAttachment } f
 import { ImageAnnotator } from "./ImageAnnotator";
 import { isAnnotatableImage } from "./image-annotation";
 import { useI18n } from "./i18n";
+import { useUnsavedChangesGuard } from "./unsaved-changes";
 import type { WorkItemPriority, WorkItemType } from "./types";
 
 type SubmissionTarget = "inbox" | "ready";
@@ -155,6 +156,14 @@ export function SdkFeedbackPage() {
       })
       .catch((failure: unknown) => setError(failure instanceof Error ? failure.message : "Could not load feedback."));
   }, [completedItemKey, draftId]);
+
+  // The SDK draft is only sent on submit, so whatever was typed here exists nowhere else.
+  // The pre-filled title the host supplied is not the user's input, hence the comparison
+  // against the loaded draft rather than a plain emptiness check.
+  useUnsavedChangesGuard(
+    !itemKey && !submitting && draft !== null &&
+    (title !== draft.title || description !== draft.description || files.length > 0),
+  );
 
   const submit = async (target: SubmissionTarget) => {
     if (!draft || !title.trim()) return;

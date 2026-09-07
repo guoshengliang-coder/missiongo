@@ -83,6 +83,7 @@ import { androidFeedbackBridge, androidMediaDeletion } from "./android-bridge";
 import { environmentSummary, platformName } from "./environment-summary";
 import { useI18n } from "./i18n";
 import { groupTimeline } from "./timeline";
+import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { isAnnotatableImage } from "./image-annotation";
@@ -1911,6 +1912,10 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
   }));
   const [files, setFiles] = useState<readonly File[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
+  // Unlike the capture form, an edit in progress is mirrored nowhere: closing the tab
+  // loses it. Captured once, from the first render, so it stays the value to compare against.
+  const [savedDraft] = useState(draft);
+  useUnsavedChangesGuard(JSON.stringify(draft) !== JSON.stringify(savedDraft) || files.length > 0);
 
   // Annotating replaces an attachment's bytes, filename and size, and adds a
   // timeline entry, so it refreshes exactly what deleting one does.

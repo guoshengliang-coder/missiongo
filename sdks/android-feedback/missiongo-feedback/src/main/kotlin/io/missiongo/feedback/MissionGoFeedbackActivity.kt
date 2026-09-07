@@ -1,6 +1,7 @@
 package io.missiongo.feedback
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -41,6 +42,7 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
     private var completed = false
     private var lastFailure: MissionGoException? = null
     private var loadingOverlay: View? = null
+    private var discardDialog: AlertDialog? = null
     private val filePicker = WebViewFilePicker(this, "从图库选择图片或视频", "选择日志或其他文件")
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -55,7 +57,7 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                cancelAndFinish()
+                if (webView == null || completed) cancelAndFinish() else confirmDiscard()
             }
         })
         launchId = intent.getStringExtra("launchId")
@@ -295,6 +297,25 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
         finish()
     }
 
+    /**
+     * The form holds what was typed in the page alone until submit, so backing out of it
+     * throws the report away -- often after the person spent a minute describing something
+     * they only hit once. Whether anything was actually typed is known only inside the
+     * WebView, and asking it needs a bridge method and therefore a new SDK release in every
+     * host, so until then this asks whenever the form is on screen. The loading, error and
+     * success screens hold nothing to lose and still close on the first press.
+     */
+    private fun confirmDiscard() {
+        if (isFinishing || isDestroyed || discardDialog?.isShowing == true) return
+        discardDialog = AlertDialog.Builder(this)
+            .setTitle("放弃这条反馈？")
+            .setMessage("已填写的内容不会被保存。")
+            .setNegativeButton("继续填写") { dialog, _ -> dialog.dismiss() }
+            .setPositiveButton("放弃") { _, _ -> cancelAndFinish() }
+            .setOnDismissListener { discardDialog = null }
+            .show()
+    }
+
     private fun cancelAndFinish() {
         if (!completed) {
             launchId?.let { MissionGo.completeFeedbackLaunch(it, FeedbackResult.Cancelled) }
@@ -344,6 +365,8 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        discardDialog?.dismiss()
+        discardDialog = null
         scope.cancel()
         filePicker.dispose()
         destroyWebView()
