@@ -61,7 +61,7 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
         launchId = intent.getStringExtra("launchId")
         val available = runCatching { MissionGo.hasFeedbackLaunch(launchId) }.getOrDefault(false)
         if (!available) {
-            showUnrecoverableError("The feedback draft could not be restored. Please open feedback again.")
+            showUnrecoverableError("这份反馈草稿已经失效，请重新打开反馈。")
             return
         }
         startEditor()
@@ -86,7 +86,7 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
                     val missionGoFailure = failure as? MissionGoException
                         ?: MissionGoException("unexpected_error", failure.message ?: "Could not open MissionGo feedback.", failure)
                     lastFailure = missionGoFailure
-                    showRetryableError(missionGoFailure.message ?: "Could not open MissionGo feedback.")
+                    showRetryableError(missionGoFailure.code)
                 }
         }
     }
@@ -139,7 +139,7 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                     if (request.isForMainFrame) {
                         lastFailure = MissionGoException("webview_load_failed", error.description.toString())
-                        showRetryableError(error.description.toString())
+                        showRetryableError("webview_load_failed")
                     }
                 }
             }
@@ -234,28 +234,42 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
 
     private fun showSubmitted(itemKey: String) {
         setContentView(TextView(this).apply {
-            text = "Feedback submitted\n$itemKey"
+            text = "反馈已提交\n$itemKey"
             textSize = 18f
             setPadding(48, 48, 48, 48)
         })
     }
 
-    private fun showRetryableError(message: String) {
+    private fun showRetryableError(code: String) {
         destroyWebView()
         val padding = (24 * resources.displayMetrics.density).toInt()
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, padding, padding, padding)
-            addView(TextView(this@MissionGoFeedbackActivity).apply { text = message })
+            addView(TextView(this@MissionGoFeedbackActivity).apply { text = reporterMessage(code) })
             addView(Button(this@MissionGoFeedbackActivity).apply {
-                text = "Retry"
+                text = "重试"
                 setOnClickListener { startEditor() }
             }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(Button(this@MissionGoFeedbackActivity).apply {
-                text = "Close"
+                text = "关闭"
                 setOnClickListener { finishWithFailure() }
             }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         })
+    }
+
+    /**
+     * What the person filing the report is shown. The exception's own message stays as it
+     * is: it is English, names MissionGo, and reaches the host through
+     * [FeedbackResult.Failed], where a developer reading a log is the audience. This screen
+     * has the other audience -- a user of the host app, who has no idea what MissionGo is --
+     * so it says what happened in their language and offers the two buttons below.
+     */
+    private fun reporterMessage(code: String): String = when (code) {
+        "network_error" -> "网络连接不可用，请检查网络后重试。"
+        "feedback_expired" -> "这份反馈草稿已经失效，请重新打开反馈。"
+        "webview_load_failed" -> "反馈页面加载失败，请重试。"
+        else -> "反馈页面打开失败，请重试。"
     }
 
     private fun showUnrecoverableError(message: String) {

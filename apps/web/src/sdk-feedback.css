@@ -17,7 +17,6 @@
 }
 
 .sdk-feedback-header { margin-bottom: 20px; }
-.sdk-feedback-header p { margin: 0 0 7px; color: var(--mint-dark); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .sdk-feedback-header h1 { margin: 0; font-size: 25px; letter-spacing: -.035em; }
 .sdk-feedback-header span { display: block; margin-top: 7px; color: var(--muted); font-size: 10px; line-height: 1.55; }
 .sdk-feedback-form { gap: 15px; }

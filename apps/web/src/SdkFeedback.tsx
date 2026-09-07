@@ -226,7 +226,7 @@ export function SdkFeedbackPage() {
   return (
     <main className="sdk-feedback-page">
       <section className="sdk-feedback-dialog">
-        <header className="sdk-feedback-header"><p>MissionGo</p><h1>{t("sdkFeedbackTitle")}</h1><span>{t("sdkFeedbackIntro")}</span></header>
+        <header className="sdk-feedback-header"><h1>{t("sdkFeedbackTitle")}</h1><span>{t("sdkFeedbackIntro")}</span></header>
         {error && <div className="sdk-feedback-error" role="alert">{error}</div>}
         {attachmentError && <div className="sdk-feedback-error" role="alert">{attachmentError}</div>}
         {draft && (
