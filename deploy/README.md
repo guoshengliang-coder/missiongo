@@ -88,6 +88,34 @@ curl -s https://<host>/health
 A server started by hand reports `"release":"unknown"` rather than implying it
 is something it is not.
 
+#### Going back
+
+`scripts/rollback.sh` moves `current` to an earlier release and rebuilds from
+that snapshot. It is a separate script because the steps are easy to get wrong
+by hand, and one of them can lose data.
+
+```sh
+./scripts/rollback.sh --host <ssh host> --env-file /etc/missiongo/production.env --list
+./scripts/rollback.sh --host <ssh host> --env-file /etc/missiongo/production.env \
+  --verify https://<host>
+```
+
+With no `--to`, it goes back one release. `--list` shows every kept release with
+the commit it holds and which one is live.
+
+**The database is not rolled back.** Migrations only run forwards, so the real
+hazard is an older build meeting a newer schema — an added column it will
+ignore, a rebuilt table or a tightened constraint it will not survive. Before
+touching anything the script compares the highest migration the target's code
+knows against the highest the database has applied, and refuses when the target
+is behind. Restoring a backup from before that migration is the honest fix;
+`--allow-schema-gap` exists for when you have read the difference and know it is
+additive.
+
+It backs up first (`--skip-backup` to skip, for a rehearsal), and with
+`--verify` it confirms afterwards that `/health` reports the commit you asked
+for rather than assuming the switch worked.
+
 `rsync` does not read `.gitignore`, and does not read `.git/info/exclude` at
 all, so the script lists its excludes explicitly. Keep local-only notes under
 `.private/`, which it and `.dockerignore` both exclude.
