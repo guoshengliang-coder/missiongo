@@ -4,7 +4,7 @@
 > 读完它就足以完成接入，不需要 MissionGo 的源码，也不需要读 MissionGo 的其他文档。
 >
 > 固定地址：`__MISSIONGO_PUBLIC_ORIGIN__/downloads/missiongo-android-sdk/INTEGRATION.md`
-> 对应 SDK 版本：**0.2.3**
+> 对应 SDK 版本：**0.2.4**
 
 ## 0. 这是什么
 
@@ -20,7 +20,7 @@
 | | 内容 | 从哪来 |
 |---|---|---|
 | 1 | Maven 仓库地址 `__MISSIONGO_PUBLIC_ORIGIN__/maven` | 本文档 |
-| 2 | 坐标 `io.missiongo:missiongo-feedback:0.2.3` | 本文档 |
+| 2 | 坐标 `io.missiongo:missiongo-feedback:0.2.4` | 本文档 |
 | 3 | 服务地址（endpoint）`__MISSIONGO_PUBLIC_ORIGIN__` | 本文档 |
 | 4 | SDK Token | **由人在 MissionGo 管理端创建后，直接写入本机私密文件** |
 
@@ -84,7 +84,7 @@ dependencyResolutionManagement {
 ```kotlin
 // gradle/libs.versions.toml
 [versions]
-missiongoFeedback = "0.2.3"
+missiongoFeedback = "0.2.4"
 
 [libraries]
 missiongo-feedback = { module = "io.missiongo:missiongo-feedback", version.ref = "missiongoFeedback" }
