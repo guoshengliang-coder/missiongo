@@ -101,6 +101,7 @@ import { isAnnotatableImage } from "./image-annotation";
 import {
   DEFAULT_STATUS,
   ITEM_HISTORY_MARKER,
+  OVERLAY_HISTORY_MARKER,
   filtersFromUrl,
   filtersToUrl,
   itemDetailUrl,
@@ -467,14 +468,49 @@ export function App() {
     restoreListScroll();
   };
 
+  /**
+   * Land on a plain list URL without adding to the stack. Also drops the
+   * overlay marker: the capture sheet's entry is collapsed into this one rather
+   * than popped, because popping would race the URL rewrite below and leave the
+   * sheet's entry as the one that got rewritten.
+   */
   const clearItemPage = () => {
-    history.replaceState(history.state, "", itemListUrl());
+    const { [OVERLAY_HISTORY_MARKER]: _overlay, ...state } =
+      (typeof history.state === "object" && history.state ? history.state : {}) as Record<string, unknown>;
+    history.replaceState(state, "", itemListUrl());
     setDetailOpenInEdit(false);
     setSelectedItemKey(null);
   };
 
+  /**
+   * The capture sheet is a history entry, not just state, so the phone's back
+   * gesture and the browser's back button close it instead of leaving the app.
+   *
+   * Pushed here rather than in an effect inside the sheet: this is the same
+   * shape as openItemPage, and a push that happens in the handler that opens
+   * the overlay cannot be doubled by StrictMode's second mount.
+   */
+  const openCapture = () => {
+    const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
+    history.pushState({ ...state, [OVERLAY_HISTORY_MARKER]: true }, "");
+    setCaptureOpen(true);
+  };
+
+  // Closing from the UI unwinds the entry the open added, so a later back press
+  // is not spent on a sheet that is already gone.
+  const closeCapture = () => {
+    if (history.state?.[OVERLAY_HISTORY_MARKER]) {
+      history.back();
+      return;
+    }
+    setCaptureOpen(false);
+  };
+
   useEffect(() => {
     const handlePopState = () => {
+      // The overlay entry carries no URL of its own, so the marker on the state
+      // is what says whether the sheet is still the top of the stack.
+      if (!history.state?.[OVERLAY_HISTORY_MARKER]) setCaptureOpen(false);
       const itemKey = itemKeyFromUrl();
       setDetailOpenInEdit(false);
       setSelectedItemKey(itemKey);
@@ -804,7 +840,7 @@ export function App() {
           <button className="icon-button mobile-only mobile-search-close" onClick={() => setMobileSearchOpen(false)} aria-label={t("closeSearch")}><X size={18} /></button>
         </div>
         <button className="icon-button mobile-only mobile-search-trigger" onClick={() => setMobileSearchOpen(true)} aria-label={t("searchItems")}><Search size={19} /></button>
-        <button className="primary-button capture-button" onClick={() => setCaptureOpen(true)}>
+        <button className="primary-button capture-button" onClick={openCapture}>
           <Plus size={18} /> <span>{t("capture")}</span>
         </button>
       </header>
@@ -951,7 +987,7 @@ export function App() {
                   <div className="round-icon"><Lightbulb size={22} /></div>
                   <h2>{(itemSummary?.total ?? 0) === 0 ? t("captureFirstSpark") : t("noMatchingItems")}</h2>
                   <p>{(itemSummary?.total ?? 0) === 0 ? t("firstSparkHelp") : t("noMatchHelp")}</p>
-                  {(itemSummary?.total ?? 0) === 0 && <button className="primary-button" onClick={() => setCaptureOpen(true)}><Plus size={17} /> {t("captureItem")}</button>}
+                  {(itemSummary?.total ?? 0) === 0 && <button className="primary-button" onClick={openCapture}><Plus size={17} /> {t("captureItem")}</button>}
                 </div>
               )}
               {visibleItems.map((item) => (
@@ -992,10 +1028,10 @@ export function App() {
         )}
       </main>
 
-      {!selectedItemKey && <button className="mobile-fab mobile-only" onClick={() => setCaptureOpen(true)} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
+      {!selectedItemKey && <button className="mobile-fab mobile-only" onClick={openCapture} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
 
       {captureOpen && selectedProduct && (
-        <Modal title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={() => setCaptureOpen(false)}>
+        <Modal title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={closeCapture}>
           <CaptureForm
             product={selectedProduct}
             onCreated={(item, failedUploads) => {
@@ -1137,7 +1173,11 @@ function ItemRow({
       <ItemMediaStrip itemKey={item.key} attachments={item.attachments} preserveColumn={showAttachmentColumn} />
       <span className="item-context">
         <strong>{contextPrimary}</strong>
-        <small>{contextDetails || t("noEnvironmentShort")}</small>
+        {/* No placeholder when there is nothing to say: on a phone this row is
+            one line shared with the platform, and "no version or device
+            details" was taking enough of it to truncate "Android" to "Andr...".
+            A line that only reports an absence is not worth that. See AND-32. */}
+        {contextDetails && <small>{contextDetails}</small>}
       </span>
       <span className="item-state">
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
@@ -2679,7 +2719,9 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
           <span><strong>{t("clearGalleryCopies")}</strong><small>{t("clearGalleryCopiesHelp")}</small></span>
         </label>
       )}
-      <div className="form-footer">
+      {/* capture-actions, not just form-footer: on a phone this one sticks to the
+          bottom of the sheet, which the edit form's footer does not. See AND-30. */}
+      <div className="form-footer capture-actions">
         <button
           type="button"
           className="secondary-button"
