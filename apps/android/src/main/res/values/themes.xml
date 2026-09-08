@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The platform default (Theme.Material.Light.NoActionBar) leaves
+      windowBackground white, so a cold start showed the system's white window
+      before the Activity's own #FBFAF7 was drawn: a visible flash on every
+      launch, before any of the page's own loading had even begun. Painting the
+      window in the app's colour makes the handover invisible.
+    -->
+    <style name="Theme.MissionGo" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/missiongo_surface</item>
+    </style>
+</resources>

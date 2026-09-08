@@ -1,4 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="missiongo_icon_background">#67E3B4</color>
+    <!--
+      The app's own background. Declared here because it is the same colour in
+      three places that must agree: the window behind the Activity, the loading
+      and error screens, and the WebView itself. When only the views knew it, the
+      system drew its default white first and the launch flashed white before the
+      page appeared.
+    -->
+    <color name="missiongo_surface">#FBFAF7</color>
+    <color name="missiongo_ink">#172033</color>
 </resources>

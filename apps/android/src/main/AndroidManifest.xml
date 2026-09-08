@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Only so the app can offer to clear the screenshots it just uploaded. It
          asks at the moment the offer is accepted, never on launch. -->
@@ -15,7 +16,27 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:usesCleartextTraffic="false"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@style/Theme.MissionGo">
+        <!--
+             androidx.work arrives through the feedback SDK, and its startup
+             provider runs before Application.onCreate to bring up WorkManager and
+             open its Room database. This app never uses WorkManager: it reaches
+             the SDK only through MissionGo.openFeedback, which starts an Activity.
+             Only enqueueFeedback, cancelQueuedFeedback and retryQueuedFeedback
+             touch WorkManager, and nothing here calls them, so the work is paid
+             on every cold start for a feature the app does not have.
+
+             This removal applies to this app's merged manifest alone; a host app
+             that integrates the SDK keeps its own initializer and its queued
+             submissions. If this app ever does call one of those three, restore
+             this provider or initialize WorkManager on demand; without it
+             WorkManager.getInstance throws.
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            tools:node="remove" />
+
         <activity
             android:name="io.missiongo.android.MainActivity"
             android:exported="true"

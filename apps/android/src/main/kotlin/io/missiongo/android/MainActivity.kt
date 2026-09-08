@@ -3,7 +3,6 @@ package io.missiongo.android
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -68,10 +67,10 @@ class MainActivity : ComponentActivity() {
 
     private fun buildContent(): View {
         val webContainer = FrameLayout(this).apply {
-            setBackgroundColor(Color.rgb(251, 250, 247))
+            setBackgroundColor(getColor(R.color.missiongo_surface))
 
         webView = WebView(this@MainActivity).apply {
-            setBackgroundColor(Color.rgb(251, 250, 247))
+            setBackgroundColor(getColor(R.color.missiongo_surface))
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.allowFileAccess = false
@@ -89,9 +88,6 @@ class MainActivity : ComponentActivity() {
             addJavascriptInterface(FeedbackBridge(), "MissionGoAndroid")
             webViewClient = MissionGoWebViewClient()
             webChromeClient = object : WebChromeClient() {
-                override fun onProgressChanged(view: WebView, newProgress: Int) {
-                    if (newProgress >= 100) loadingView.visibility = View.GONE
-                }
 
                 override fun onShowFileChooser(
                     webView: WebView,
@@ -225,14 +221,14 @@ class MainActivity : ComponentActivity() {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER
         setPadding(dp(32), dp(32), dp(32), dp(32))
-        setBackgroundColor(Color.rgb(251, 250, 247))
+        setBackgroundColor(getColor(R.color.missiongo_surface))
     }
 
     private fun messageText(value: String, size: Float = 14f): TextView = TextView(this).apply {
         text = value
         textSize = size
         gravity = Gravity.CENTER
-        setTextColor(Color.rgb(23, 32, 51))
+        setTextColor(getColor(R.color.missiongo_ink))
         setPadding(0, dp(12), 0, 0)
     }
 
@@ -264,7 +260,24 @@ class MainActivity : ComponentActivity() {
             loadingView.visibility = View.VISIBLE
         }
 
+        /**
+         * The first frame the page actually paints. This is where the native
+         * loader hands over.
+         *
+         * It used to hide on `onPageFinished` and on progress reaching 100, both
+         * of which fire while the page still has nothing on screen -- the shell
+         * is drawn from JavaScript that has not run yet. The spinner therefore
+         * disappeared into a blank screen, and the visitor watched nothing at all
+         * until the console appeared.
+         */
+        override fun onPageCommitVisible(view: WebView, url: String?) {
+            loadingView.visibility = View.GONE
+        }
+
         override fun onPageFinished(view: WebView, url: String?) {
+            // Not the handover -- see onPageCommitVisible. Kept as a backstop for
+            // a load that finishes without ever committing a frame, so the
+            // spinner cannot outlive the page.
             loadingView.visibility = View.GONE
             CookieManager.getInstance().flush()
         }
