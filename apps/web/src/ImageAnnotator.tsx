@@ -1,5 +1,5 @@
 import { Circle, Hand, Loader2, Maximize, Minus, Pencil, Plus, RotateCcw, Square, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { useI18n, type MessageKey } from "./i18n";
@@ -170,12 +170,24 @@ export function ImageAnnotator({
   // The fit is computed here rather than left to `max-height: 100%`, which was
   // silently dropped and let a tall screenshot render at full height inside a
   // clipped stage -- most of the image was simply unreachable.
-  useEffect(() => {
+  //
+  // Measured synchronously on mount, before the browser paints, so the editor's
+  // first frame is already fitted. Leaving this to the observer alone means the
+  // canvas lays out at full natural size until the first callback arrives --
+  // which is the bug this replaces, briefly reintroduced on every open.
+  useLayoutEffect(() => {
     const element = stageRef.current;
     if (!element) return undefined;
+    const measure = (width: number, height: number) => {
+      setStage((current) => (current.width === width && current.height === height
+        ? current
+        : { width, height }));
+    };
+    const box = element.getBoundingClientRect();
+    measure(box.width, box.height);
     const observer = new ResizeObserver(([entry]) => {
-      const box = entry?.contentRect;
-      if (box) setStage({ width: box.width, height: box.height });
+      const next = entry?.contentRect;
+      if (next) measure(next.width, next.height);
     });
     observer.observe(element);
     return () => observer.disconnect();
