@@ -8,8 +8,8 @@
   ],
   "artifacts": {
     "androidApp": {
-      "version": "0.1.7",
-      "commit": "bf415734572a9a9774367b0d8f332fa9e66ef9a3",
+      "version": "0.1.8",
+      "commit": "14d8ca43d84c34a43abc27d192cd0e25c47f1ecd",
       "versionFile": "sdks/android-feedback/gradle.properties",
       "versionProperty": "missiongoAndroidVersionName",
       "paths": [
