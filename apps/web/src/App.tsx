@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
+import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -97,6 +97,12 @@ import {
   itemKeyFromUrl,
   itemListUrl,
 } from "./navigation";
+import {
+  DEFAULT_LIST_PANE_WIDTH,
+  LIST_PANE_WIDTH_KEY,
+  clampListPaneWidth,
+  readListPaneWidth,
+} from "./pane-layout";
 import { productBadgeColor } from "./product-color";
 import { registerMissionGoWebMcp } from "./webmcp";
 
@@ -365,6 +371,20 @@ export function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
+  const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
+
+  const applyListPaneWidth = useCallback((width: number) => {
+    // Measured rather than assumed: the sidebar is a fixed track, but the
+    // window is not, and the share-based ceiling needs the real pane width.
+    const available = workspaceRef.current?.clientWidth ?? window.innerWidth;
+    const next = clampListPaneWidth(width, available);
+    setListPaneWidth(next);
+    try {
+      localStorage.setItem(LIST_PANE_WIDTH_KEY, String(next));
+    } catch {
+      // A width is not worth failing a drag over when storage is unavailable.
+    }
+  }, []);
 
   const restoreListScroll = useCallback(() => {
     requestAnimationFrame(() => {
@@ -750,7 +770,11 @@ export function App() {
       </aside>
       {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label={t("closeNavigation")} />}
 
-      <main className={`workspace ${selectedItemKey ? "detail-open" : ""}`} ref={workspaceRef}>
+      <main
+        className={`workspace ${selectedItemKey ? "detail-open" : ""}`}
+        ref={workspaceRef}
+        style={{ "--list-pane-width": `${listPaneWidth}px` } as CSSProperties}
+      >
         {/* Visibility is a layout decision: below the two-pane breakpoint the
             list gives way to the detail, above it they sit side by side. */}
         <section className="list-page">
@@ -851,6 +875,10 @@ export function App() {
             </div>
           </section>
         </section>
+
+        {selectedItemKey && (
+          <PaneSplitter width={listPaneWidth} onWidth={applyListPaneWidth} />
+        )}
 
         {selectedItemKey && (
           <div className="detail-page-shell">
@@ -1170,13 +1198,57 @@ function useMediaQuery(query: string): boolean {
   return matches;
 }
 
-function useNarrowViewport(): boolean {
-  return useMediaQuery("(max-width: 520px)");
-}
-
 /** Below this the workspace shows one pane at a time, and so should the manager. */
 function useSinglePaneLayout(): boolean {
   return useMediaQuery("(max-width: 1023px)");
+}
+
+/**
+ * The drag handle between the list and the detail.
+ *
+ * Hand-rolled rather than pulled in: the app has no layout library, and the
+ * whole interaction is a pointer capture plus one subtraction. Keyboard and
+ * double-click-to-reset are here because a separator that only responds to a
+ * precise 6px drag is not reachable for everyone.
+ */
+function PaneSplitter({ width, onWidth }: { width: number; onWidth: (width: number) => void }) {
+  const { t } = useI18n();
+  const dragRef = useRef<{ readonly startX: number; readonly startWidth: number } | null>(null);
+
+  const track = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    onWidth(drag.startWidth + (event.clientX - drag.startX));
+  };
+
+  return (
+    <div
+      className={`pane-splitter ${dragRef.current ? "dragging" : ""}`}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={t("resizeListPane")}
+      aria-valuenow={Math.round(width)}
+      tabIndex={0}
+      onPointerDown={(event) => {
+        dragRef.current = { startX: event.clientX, startWidth: width };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={track}
+      onPointerUp={(event) => {
+        track(event);
+        dragRef.current = null;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      onPointerCancel={() => { dragRef.current = null; }}
+      onDoubleClick={() => onWidth(DEFAULT_LIST_PANE_WIDTH)}
+      onKeyDown={(event) => {
+        const step = event.key === "ArrowLeft" ? -16 : event.key === "ArrowRight" ? 16 : 0;
+        if (step === 0) return;
+        event.preventDefault();
+        onWidth(width + step);
+      }}
+    />
+  );
 }
 
 function ItemMediaStrip({
@@ -1189,14 +1261,14 @@ function ItemMediaStrip({
   preserveColumn: boolean;
 }) {
   const { t } = useI18n();
-  const narrow = useNarrowViewport();
   const mediaAttachments = attachments.filter(
     (attachment): attachment is WorkItemAttachment & { readonly kind: "image" | "video" } => isMediaAttachment(attachment),
   );
-  // Two thumbnails cover the common "before and after" pair; the rest are
-  // counted on the last one rather than shrinking every tile. A phone puts the
-  // strip on its own full-width row, so it has room for three.
-  const visible = mediaAttachments.slice(0, narrow ? 3 : 2);
+  // Three thumbnails, then a count on the last rather than shrinking every
+  // tile. This used to be two on a wide viewport and three on a phone, but the
+  // card row is now chosen by the pane's width, which no JS media query can
+  // see -- so render three and let the strip clip what will not fit.
+  const visible = mediaAttachments.slice(0, 3);
   if (visible.length === 0) return preserveColumn ? <div className="item-media-strip empty-slot" aria-hidden="true" /> : null;
   return (
     <div className="item-media-strip" aria-label={t("mediaCount", { count: mediaAttachments.length })}>
@@ -1211,6 +1283,24 @@ function ItemMediaStrip({
     </div>
   );
 }
+/** Tiles are drawn at 84px and can land on a 2x screen, so ask for 192. */
+const THUMBNAIL_EDGE = 192;
+
+/** Holds a blob URL for the life of the blob and revokes it on the way out. */
+function useObjectUrl(blob: Blob | undefined): string | null {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!blob) return undefined;
+    const next = URL.createObjectURL(blob);
+    setUrl(next);
+    return () => {
+      URL.revokeObjectURL(next);
+      setUrl(null);
+    };
+  }, [blob]);
+  return url;
+}
+
 function ItemMediaThumbnail({
   itemKey,
   attachment,
@@ -1225,20 +1315,23 @@ function ItemMediaThumbnail({
   const [thumbnailRef, isNearViewport] = useNearViewport<HTMLButtonElement>("80px");
   const [previewRequested, setPreviewRequested] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
+  // Two separate fetches on purpose. The tile needs a few kilobytes and is
+  // fetched as soon as the row nears the viewport; the original is worth
+  // megabytes and is only worth fetching once someone actually opens it.
+  const thumbnailQuery = useQuery({
+    queryKey: ["attachment-thumbnail", itemKey, attachment.id, THUMBNAIL_EDGE],
+    queryFn: () => api.downloadAttachmentThumbnail(itemKey, attachment.id, THUMBNAIL_EDGE),
+    enabled: attachment.kind === "image" && isNearViewport,
+    staleTime: Infinity,
+  });
   const contentQuery = useQuery({
     queryKey: ["attachment-content", itemKey, attachment.id],
     queryFn: () => api.downloadAttachment(itemKey, attachment.id),
-    enabled: (attachment.kind === "image" && isNearViewport) || previewRequested,
+    enabled: previewRequested,
     staleTime: Infinity,
   });
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!contentQuery.data) return undefined;
-    const url = URL.createObjectURL(contentQuery.data);
-    setObjectUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [contentQuery.data]);
+  const thumbnailUrl = useObjectUrl(thumbnailQuery.data);
+  const objectUrl = useObjectUrl(contentQuery.data);
 
   const Icon = attachment.kind === "video" ? Video : ImageIcon;
   return (
@@ -1254,8 +1347,8 @@ function ItemMediaThumbnail({
         title={attachment.filename}
         aria-label={t("previewAttachment", { filename: attachment.filename })}
       >
-        {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt="" loading="lazy" decoding="async" />}
-        {!objectUrl && <span className="media-file-tile">{contentQuery.isLoading ? <LoaderCircle className="spin" size={18} /> : <Icon size={18} />}<small>{attachment.filename.split(".").pop()?.toUpperCase()}</small></span>}
+        {attachment.kind === "image" && thumbnailUrl && <img src={thumbnailUrl} alt="" loading="lazy" decoding="async" />}
+        {!thumbnailUrl && <span className="media-file-tile">{thumbnailQuery.isLoading ? <LoaderCircle className="spin" size={18} /> : <Icon size={18} />}<small>{attachment.filename.split(".").pop()?.toUpperCase()}</small></span>}
         {overflowCount > 0 && <span className="media-overflow">+{overflowCount}</span>}
       </button>
       {viewerOpen && (
@@ -2734,6 +2827,7 @@ function AttachmentCard({
       // The cached blob is keyed by attachment id and never goes stale on its
       // own, so drop it or the card keeps showing the image before the marks.
       queryClient.removeQueries({ queryKey: ["attachment-content", itemKey, attachment.id] });
+      queryClient.removeQueries({ queryKey: ["attachment-thumbnail", itemKey, attachment.id] });
       setAnnotating(false);
       await onReplaced?.();
     } catch (error) {

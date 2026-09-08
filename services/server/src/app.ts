@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 
@@ -72,6 +72,10 @@ const DEFAULT_SDK_RATE_LIMITS: Readonly<Record<SdkRateLimitBucket, SdkRateLimitR
 
 /** Square edge of a stored product icon, in pixels. Small enough to live in the row. */
 const PRODUCT_ICON_EDGE = 96;
+
+/** Two rows of 84px tiles at 2x, which covers every list layout we render. */
+const DEFAULT_THUMBNAIL_EDGE = 192;
+const MAX_THUMBNAIL_EDGE = 512;
 
 const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "server", "shared", "other"] as const;
 
@@ -1095,6 +1099,36 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .header("x-content-type-options", "nosniff");
     if (range) reply.header("content-range", `bytes ${range.start}-${range.end}/${details.size}`);
     return reply.send(createReadStream(path, range));
+  });
+
+  // The list shows thumbnails, and serving the original for each one meant
+  // pushing megabytes to draw a 72px tile. Rendered on demand rather than at
+  // upload time so it also covers everything already stored, and cached hard:
+  // the bytes are derived from an attachment that can only be replaced through
+  // an endpoint that changes the id-scoped content, and the query string
+  // carries the size, so a stale hit is not reachable.
+  app.get("/api/v1/items/:itemKey/attachments/:attachmentId/thumbnail", async (request, reply) => {
+    const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
+    const attachment = store.getAttachmentRecord(itemKey, attachmentId);
+    if (attachment.kind !== "image") throw invalidInput("Only image attachments have thumbnails.");
+    const requested = Number((request.query as { width?: string }).width);
+    const width = Number.isFinite(requested)
+      ? Math.min(Math.max(Math.round(requested), 32), MAX_THUMBNAIL_EDGE)
+      : DEFAULT_THUMBNAIL_EDGE;
+    const path = attachmentStorage.resolveStoredFile(attachment.storageFilename);
+    const thumbnail = await sharp(await readFile(path), { animated: false })
+      // Phone screenshots carry their orientation in EXIF; without this the
+      // tile comes out on its side.
+      .rotate()
+      .resize({ width, height: width, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 78, mozjpeg: true })
+      .toBuffer();
+    return reply
+      .type("image/jpeg")
+      .header("content-length", thumbnail.length)
+      .header("cache-control", "private, max-age=86400")
+      .header("x-content-type-options", "nosniff")
+      .send(thumbnail);
   });
 
   // Editing an image in the browser sends the result back here rather than

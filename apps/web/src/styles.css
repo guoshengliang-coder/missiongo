@@ -524,8 +524,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @media (min-width: 1280px) {
   /* An explicit row keeps both panes at the workspace height so each scrolls
      on its own; an auto row would size to the taller one and clip. */
-  .workspace.detail-open { display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
-  .workspace.detail-open .list-page { display: flex; flex-direction: column; max-width: none; min-height: 0; padding: 16px 14px 0; overflow-y: auto; overscroll-behavior: contain; border-right: 1px solid var(--line); background: var(--surface-strong); }
+  /* clamp() is a backstop, not the mechanism: the drag handler already clamps
+     against the measured pane, but a window resized after the fact never goes
+     through it. */
+  .workspace.detail-open { display: grid; grid-template-columns: clamp(260px, var(--list-pane-width, 340px), 60%) 6px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  /* The pane is draggable now, so its rows have to answer to its own width
+     rather than the window's -- the two stopped tracking each other. */
+  .workspace.detail-open .list-page { container-type: inline-size; container-name: list-pane; display: flex; flex-direction: column; max-width: none; min-height: 0; padding: 16px 14px 0; overflow-y: auto; overscroll-behavior: contain; background: var(--surface-strong); }
   .workspace.detail-open .workspace-head, .workspace.detail-open .type-filters, .workspace.detail-open .list-columns { display: none; }
   .workspace.detail-open .list-surface { border: 0; border-radius: 0; box-shadow: none; background: transparent; }
   .workspace.detail-open .item-list { min-height: 0; }
@@ -541,10 +546,40 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .workspace.detail-open .item-context { grid-column: 1; grid-row: 2; flex-direction: row; align-items: center; gap: 6px; }
   .workspace.detail-open .item-context small::before { content: "·"; margin-right: 6px; }
   .workspace.detail-open .item-state { grid-column: 2; grid-row: 2; }
-  .workspace.detail-open .item-media-strip, .workspace.detail-open .item-updated, .workspace.detail-open .item-row-actions { display: none; }
+  .workspace.detail-open .item-updated, .workspace.detail-open .item-row-actions { display: none; }
   .workspace.detail-open .item-row.selected { background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--mint-dark); }
   .workspace.detail-open .list-pagination { background: transparent; }
   .workspace.detail-open .detail-page-shell { min-width: 0; height: 100%; }
+
+  /* The divider had to become a control, so it needs a hit area wider than the
+     hairline it draws. The line stays 1px; the grab zone is the whole track. */
+  .pane-splitter { position: relative; z-index: 6; cursor: col-resize; touch-action: none; background: transparent; border: 0; padding: 0; }
+  .pane-splitter::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 1px; background: var(--line); transition: background 120ms ease, box-shadow 120ms ease; }
+  .pane-splitter:hover::before, .pane-splitter:focus-visible::before, .pane-splitter.dragging::before { background: var(--mint-dark); box-shadow: 0 0 0 1px var(--mint-dark); }
+  .pane-splitter:focus-visible { outline: none; }
+}
+
+/* A pane dragged narrow is the same reading problem as a phone, so it gets the
+   phone's card row -- thumbnails included. Those were previously hidden here,
+   which cost the fastest way to recognise an item. The query is on the pane's
+   own width because the pane is user-resizable and the viewport no longer
+   predicts it; the selectors keep .workspace.detail-open so they outrank the
+   compact rules above rather than relying on order alone. */
+@container list-pane (max-width: 620px) {
+  .workspace.detail-open .item-row, .workspace.detail-open .list-surface.without-media .item-row {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto auto;
+    gap: 8px 10px;
+    padding: 12px 9px;
+  }
+  .workspace.detail-open .item-row-main { grid-column: 1 / -1; grid-row: 1; }
+  .workspace.detail-open .item-context { grid-column: 1; grid-row: 2; }
+  .workspace.detail-open .item-state { grid-column: 2; grid-row: 2; justify-self: end; }
+  /* Full width under the text so the tiles are big enough to actually read. */
+  .workspace.detail-open .item-media-strip { grid-column: 1 / -1; grid-row: 3; gap: 8px; }
+  .workspace.detail-open .item-media-strip.empty-slot { display: none; }
+  .workspace.detail-open .item-media-thumb { width: 72px; height: 84px; }
 }
 .detail-pane { min-width: 0; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
 .detail-toolbar { z-index: 8; min-height: 62px; flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 9px 34px; background: var(--surface-strong); border-bottom: 1px solid var(--line); }

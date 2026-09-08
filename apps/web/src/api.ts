@@ -164,6 +164,16 @@ export const api = {
     );
     return response.blob();
   },
+  // List tiles are ~84px; the originals behind them run to megabytes. The
+  // server renders the small version so scrolling a list does not pull down
+  // full-resolution screenshots nobody is looking at yet.
+  downloadAttachmentThumbnail: async (itemKey: string, attachmentId: string, width: number) => {
+    const response = await attachmentRequest(
+      `/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}/thumbnail?width=${width}`,
+      {},
+    );
+    return response.blob();
+  },
   // Annotating an image sends the result back over the same attachment, so the
   // number the detail view and the MCP item context cite stays put.
   replaceAttachment: async (itemKey: string, attachmentId: string, file: File) => {

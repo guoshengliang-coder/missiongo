@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { MISSIONGO_SKILL_DOWNLOAD_PATH, MISSIONGO_SKILL_VERSION } from "@missiongo/contracts";
 import type { FastifyInstance } from "fastify";
+import sharp from "sharp";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
@@ -603,6 +604,66 @@ describe("MissionGo REST API", () => {
       headers: { authorization: "Bearer example-test-token" },
     });
     expect(authorized.statusCode).toBe(200);
+  });
+
+  it("renders a thumbnail far smaller than the original, and refuses non-images", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Mission GO", keyPrefix: "AND" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "bug",
+        priority: "normal",
+        title: "List thumbnails",
+        description: "The narrow list pane shows images again",
+        environment: { platform: "web" },
+      },
+    });
+
+    // A real phone-screenshot shape, so the assertion below is about the
+    // saving that motivated the endpoint rather than about a 1px fixture.
+    const original = await sharp({
+      create: { width: 1170, height: 2532, channels: 3, background: { r: 30, g: 120, b: 90 } },
+    }).png().toBuffer();
+
+    const upload = (filename: string, contentType: string, payload: Buffer | string) => app.inject({
+      method: "POST",
+      url: "/api/v1/items/AND-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": contentType,
+        "x-missiongo-filename": filename,
+      },
+      payload,
+    });
+
+    const image = (await upload("screenshot.png", "image/png", original)).json<{ id: string }>();
+    const log = (await upload("run.log", "text/plain", "boot\nready\n")).json<{ id: string }>();
+
+    const thumbnail = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail` });
+    expect(thumbnail.statusCode).toBe(200);
+    expect(thumbnail.headers["content-type"]).toBe("image/jpeg");
+    expect(thumbnail.rawPayload.length).toBeLessThan(original.length / 10);
+
+    // Fits inside the box rather than filling it: a tall screenshot keeps its
+    // aspect ratio, so the long edge is what lands on the requested size.
+    const shape = await sharp(thumbnail.rawPayload).metadata();
+    expect(shape.height).toBe(192);
+    expect(shape.width).toBe(89);
+
+    const wider = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail?width=384` });
+    expect((await sharp(wider.rawPayload).metadata()).height).toBe(384);
+
+    // An absurd request is clamped rather than allowed to render a huge image.
+    const clamped = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail?width=99999` });
+    expect((await sharp(clamped.rawPayload).metadata()).height).toBe(512);
+
+    const notAnImage = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${log.id}/thumbnail` });
+    expect(notAnImage.statusCode).toBe(400);
   });
 
   it("replaces attachment content in place, keeping its number and recording the edit", async () => {
