@@ -5,5 +5,22 @@
             android:name="io.missiongo.feedback.MissionGoFeedbackActivity"
             android:exported="false"
             android:theme="@style/MissionGoFeedbackTheme" />
+
+        <!--
+            Somewhere for the camera to write. Declared here so a host app gets
+            working "take a photo" from the SDK without configuring anything; the
+            authority is namespaced under the host's own applicationId, so two
+            apps embedding the SDK on one device do not collide. Not exported,
+            and the grant is per-Intent and per-file.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.missiongofeedback.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/missiongo_feedback_file_paths" />
+        </provider>
     </application>
 </manifest>

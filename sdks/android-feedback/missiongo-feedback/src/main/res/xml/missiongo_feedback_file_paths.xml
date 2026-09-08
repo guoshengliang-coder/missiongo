@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Only the one directory the camera writes into. Sharing a wider root would
+    expose the rest of the app's cache to whichever camera app the grant is
+    handed to. Must match CAPTURE_DIRECTORY in WebViewFilePicker.
+-->
+<paths>
+    <cache-path
+        name="missiongo-captures"
+        path="missiongo-captures/" />
+</paths>

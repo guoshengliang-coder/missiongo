@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import java.io.File
 import java.security.MessageDigest
 import android.util.Log
 import android.webkit.ValueCallback
@@ -17,6 +18,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 
 /**
  * The file chooser a WebView asks for, plus an offer to clear the screenshots
@@ -35,6 +37,25 @@ class WebViewFilePicker(
     private var callback: ValueCallback<Array<Uri>>? = null
     @Volatile private var pickedMedia: List<Uri> = emptyList()
     private var deletionListener: ((Boolean) -> Unit)? = null
+
+    // Where the camera is writing right now. ACTION_IMAGE_CAPTURE reports success
+    // with an empty result and puts the photo at the Uri it was handed, so the
+    // destination has to survive until the result comes back.
+    private var pendingCapture: Pair<Uri, File>? = null
+
+    private val cameraLauncher =
+        activity.registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val capture = pendingCapture
+            pendingCapture = null
+            // Not fromGallery: this photo was written into our own cache, so there
+            // is no gallery copy to offer to clear -- and nothing to delete.
+            if (result.resultCode == Activity.RESULT_OK && capture != null && capture.second.length() > 0) {
+                complete(arrayOf(capture.first), fromGallery = false)
+            } else {
+                capture?.second?.delete()
+                complete(null, fromGallery = false)
+            }
+        }
 
     private val documentLauncher =
         activity.registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -83,6 +104,12 @@ class WebViewFilePicker(
         val acceptsOnlyMedia = acceptedTypes.isNotEmpty() && acceptedTypes.all {
             it.startsWith("image/") || it.startsWith("video/")
         }
+
+        // What the page actually asked for. A "take a photo" button is
+        // <input capture>, and reading acceptTypes alone made image/* mean the
+        // photo picker -- so the camera button opened the gallery. Falls through
+        // to the pickers below when there is no camera to open. See AND-31.
+        if (params.isCaptureEnabled && acceptsImages && launchCamera()) return true
 
         return try {
             if (acceptsOnlyMedia) {
@@ -136,6 +163,10 @@ class WebViewFilePicker(
 
     /** Drops any pending callback. Call from the activity's onDestroy. */
     fun dispose() {
+        // A capture the activity did not live long enough to receive. The file is
+        // empty and nothing else knows about it.
+        pendingCapture?.second?.delete()
+        pendingCapture = null
         callback?.onReceiveValue(null)
         callback = null
         deletionListener = null
@@ -216,6 +247,46 @@ class WebViewFilePicker(
         return MEDIA_PERMISSIONS.filter { it in declared }
     }
 
+    /**
+     * Opens the camera onto a file of our own. Returns false when it could not
+     * be started, so the caller can fall back to the pickers -- a device with no
+     * camera app should still be able to attach a screenshot.
+     *
+     * The photo lands in the app's cache rather than the gallery: the SDK's whole
+     * offer to clear gallery copies exists because uploads should not leave a
+     * trail in the user's photos, and a capture that goes straight to the report
+     * never creates one.
+     */
+    private fun launchCamera(): Boolean {
+        val target = runCatching {
+            val directory = File(activity.cacheDir, CAPTURE_DIRECTORY).apply { mkdirs() }
+            val file = File(directory, "capture-${System.currentTimeMillis()}.jpg")
+            val authority = "${activity.packageName}.$FILE_PROVIDER_SUFFIX"
+            FileProvider.getUriForFile(activity, authority, file) to file
+        }.getOrElse { error ->
+            // Almost always the provider missing from a host that overrode the
+            // merged manifest. Worth a line, because the symptom downstream is
+            // just "the camera button opens the gallery".
+            Log.w(TAG, "No camera destination could be prepared: ${error.message}")
+            return false
+        }
+
+        val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+            .putExtra(MediaStore.EXTRA_OUTPUT, target.first)
+            // The camera app is a different process and needs to be let in to the
+            // file explicitly; the contract does not do this for us.
+            .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        return try {
+            pendingCapture = target
+            cameraLauncher.launch(intent)
+            true
+        } catch (_: ActivityNotFoundException) {
+            pendingCapture = null
+            target.second.delete()
+            false
+        }
+    }
+
     private fun launchMediaPicker(acceptsImages: Boolean, acceptsVideos: Boolean, mode: Int) {
         val mediaType = when {
             acceptsImages && acceptsVideos -> ActivityResultContracts.PickVisualMedia.ImageAndVideo
@@ -249,6 +320,10 @@ class WebViewFilePicker(
     private companion object {
         const val TAG = "MissionGoFeedback"
         const val MAX_MEDIA = 10
+        // Must match the authority and the cache-path in the SDK's manifest and
+        // res/xml/missiongo_feedback_file_paths.xml.
+        const val FILE_PROVIDER_SUFFIX = "missiongofeedback.fileprovider"
+        const val CAPTURE_DIRECTORY = "missiongo-captures"
         const val MAX_IDENTITY_BYTES = 8L * 1024 * 1024
         val MEDIA_PERMISSIONS = listOf(
             "android.permission.READ_MEDIA_IMAGES",
