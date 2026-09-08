@@ -130,6 +130,51 @@ describe("Commenting over MCP", () => {
     expect(comments).toHaveLength(0);
   });
 
+  it("hands a claimed item over once its pull request is merged", async () => {
+    const { app, call, writeToken } = await commentingApp();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items/HG-1/transitions",
+      headers: { authorization: "Bearer management-test-token" },
+      payload: { to: "ready", reason: "triaged" },
+    });
+    await call(writeToken, 1, "tools/call", {
+      name: "claim_item",
+      arguments: { itemKey: "HG-1", agentId: "codex", idempotencyKey: "claim-1" },
+    });
+
+    const handed = await call(writeToken, 2, "tools/call", {
+      name: "submit_for_verification",
+      arguments: {
+        itemKey: "HG-1",
+        pullRequestUrl: "https://github.com/owner/repo/pull/42",
+        summary: "冷启动初始化 session",
+        idempotencyKey: "verify-1",
+      },
+    });
+    expect(handed.result?.structuredContent).toMatchObject({
+      statusChanged: true,
+      item: { key: "HG-1", status: "pending_verification" },
+    });
+
+    const events = (await app.inject({
+      method: "GET",
+      url: "/api/v1/items/HG-1/timeline",
+      headers: { authorization: "Bearer management-test-token" },
+    })).json<{ events: Array<{ toStatus?: string; payload: Record<string, unknown> }> }>().events;
+    const moved = events.find((event) => event.toStatus === "pending_verification");
+    expect(moved?.payload).toMatchObject({ pullRequestUrl: "https://github.com/owner/repo/pull/42" });
+  });
+
+  it("refuses a handover without an https pull request", async () => {
+    const { call, writeToken } = await commentingApp();
+    const rejected = await call(writeToken, 1, "tools/call", {
+      name: "submit_for_verification",
+      arguments: { itemKey: "HG-1", pullRequestUrl: "github.com/owner/repo/pull/42", idempotencyKey: "verify-1" },
+    });
+    expect(JSON.stringify(rejected)).toMatch(/https/);
+  });
+
   it("tells a client what this connection may actually write", async () => {
     const { call, readToken, writeToken } = await commentingApp();
 
@@ -140,7 +185,7 @@ describe("Commenting over MCP", () => {
 
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
-      capabilities: { writeTools: ["append_comment", "claim_item"], canComment: true },
+      capabilities: { writeTools: ["append_comment", "claim_item", "submit_for_verification"], canComment: true },
     });
   });
 
@@ -167,7 +212,8 @@ describe("Commenting over MCP", () => {
     const names = (tools.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name);
     expect(names).toContain("append_comment");
     expect(names).toContain("claim_item");
-    // Finishing, pausing and abandoning are the user's calls, so no tool exists.
+    expect(names).toContain("submit_for_verification");
+    // Accepting, reopening, pausing and giving up are the user's calls.
     for (const gone of ["submit_resolution", "mark_pending_verification", "release_item"]) {
       expect(names).not.toContain(gone);
     }
@@ -229,10 +275,12 @@ describe("The consent screen", () => {
     return response.body;
   }
 
-  it("names the claim as the only status change on offer", async () => {
+  it("names both status changes, and what stays with the user", async () => {
     const page = await consentPage("comments");
-    expect(page).toContain("发表评论，并把待处理的任务领为处理中");
-    expect(page).toContain("领取是它唯一能做的状态变更");
+    expect(page).toContain("并在 PR 合并后推到待验证");
+    expect(page).toContain("只有这两个状态变更");
+    // Accepting the work is the decision the screen must not appear to grant.
+    expect(page).toContain("验收、退回、搁置");
     expect(page).toContain("限时读写授权");
   });
 

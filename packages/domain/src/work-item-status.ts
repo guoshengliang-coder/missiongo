@@ -52,17 +52,22 @@ const TRANSITIONS: Readonly<
     cancelled: rule(["human"], ["cancelled"]),
   },
   ready: {
-    // The only edge an agent may walk. Everything that leaves in_progress is a
-    // person's call, so an agent can start work but never decide it is finished,
-    // paused, or abandoned -- it says so in a comment and a person moves it.
-    in_progress: rule(["agent", "human"], ["claim", "resume"]),
+    // One of the two edges an agent may walk: it picks work up here. `resume` is
+    // deliberately absent -- it belongs to on_hold, and leaving it in this list
+    // handed an agent a second path it was never meant to have, because a rule
+    // is the cartesian product of its actors and its reasons.
+    in_progress: rule(["agent", "human"], ["claim"]),
     on_hold: rule(["human"], ["request_human_input"]),
     inbox: rule(["human"], ["reopened"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
   in_progress: {
     on_hold: rule(["human"], ["request_human_input"]),
-    pending_verification: rule(["human"], ["resolution_submitted"]),
+    // The other agent edge: the change is merged, so the work is a person's to
+    // verify. An agent may say that much because a merged pull request is a fact
+    // it can check. What the change is worth, whether it shipped, and whether it
+    // should have been abandoned instead are judgements, and they stay below.
+    pending_verification: rule(["agent", "human"], ["resolution_submitted"]),
     ready: rule(["human"], ["released"]),
     cancelled: rule(["human"], ["cancelled"]),
   },

@@ -717,6 +717,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .comment-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; margin: 0 0 16px; }
 .comment-form textarea { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); font: inherit; font-size: var(--text-sm); line-height: 1.5; resize: vertical; }
 .comment-form textarea:focus-visible { outline: 2px solid var(--mint-dark); outline-offset: 1px; }
+.timeline-pull-request { margin: 4px 0 0; font-size: var(--text-xs); }
 .comment-body { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-top: 8px; }
 .comment-body > :first-child { flex: 1; min-width: 0; }
 .comment-withdraw { flex: none; padding: 2px 6px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: var(--text-xs); cursor: pointer; }
