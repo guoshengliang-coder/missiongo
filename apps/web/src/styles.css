@@ -1095,3 +1095,21 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .archive-button:hover { color: var(--danger); border-color: var(--danger-line); }
 .component-settings-row.archived input, .component-settings-row.archived select { color: var(--muted); background: var(--surface-inset); }
 .component-settings-row.archived input { text-decoration: line-through; }
+
+/* The pre-mount fallback. See BootSkeleton.tsx: it stands in for the shell
+   between the entry chunk running and the page chunk mounting, so its blocks
+   have to sit where the real chrome will, or the handover visibly jumps. */
+.boot-blank { min-height: 100vh; min-height: 100dvh; background: var(--surface); }
+.boot-skeleton { pointer-events: none; }
+.boot-main { min-height: 0; overflow: hidden; padding: 25px 28px 28px; }
+.boot-block { background: var(--skeleton); border-radius: var(--radius-sm); animation: pulse 1.4s ease-in-out infinite; }
+.boot-brand { width: 132px; height: 36px; border-radius: var(--radius-md); }
+.boot-switcher { width: 176px; height: 38px; border-radius: var(--radius-md); }
+.boot-search { flex: 1; max-width: 420px; height: 38px; border-radius: var(--radius-md); }
+.boot-action { width: 104px; height: 38px; margin-left: auto; border-radius: var(--radius-md); }
+.boot-sidebar-label { width: 88px; height: 10px; margin: 0 10px 10px; }
+.boot-nav { height: 39px; margin: 0 5px 2px; border-radius: var(--radius-md); }
+
+@media (max-width: 1080px) {
+  .boot-search { display: none; }
+}

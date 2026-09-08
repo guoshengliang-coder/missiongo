@@ -82,6 +82,59 @@ function markdownDownload(
   };
 }
 
+/**
+ * Emit a `modulepreload` hint for the console chunk.
+ *
+ * Vite only emits these for a chunk's *static* imports. main.tsx picks its page
+ * with a runtime ternary, so the page chunk is invisible to the HTML and the
+ * browser cannot discover it until the entry chunk has been downloaded *and
+ * executed*. Measured against production that cost a full extra round trip: the
+ * entry chunk landed at 1238ms and the console chunk was not even requested
+ * until 1249ms, pushing the first API call out to 1611ms.
+ *
+ * The hint necessarily lands in the one document nginx serves for every route,
+ * so /sdk/feedback preloads a chunk it never runs. That is a real cost on the
+ * connection the split was built to protect, and it buys the console a round
+ * trip; if the feedback form ever needs it back, the fix is a second HTML entry
+ * for that route rather than dropping the hint. An inline script that picked the
+ * chunk by pathname would avoid the waste, but the deployed CSP is
+ * `script-src 'self'`, so it would never run.
+ */
+function consoleChunkPreload(): Plugin {
+  let base = "/";
+  return {
+    name: "missiongo-console-chunk-preload",
+    apply: "build",
+    configResolved(config) {
+      base = config.base;
+    },
+    transformIndexHtml: {
+      order: "post",
+      handler(_html, context) {
+        const bundle = context.bundle;
+        if (!bundle) return [];
+        const chunk = Object.values(bundle).find(
+          (item) => item.type === "chunk" && item.facadeModuleId?.endsWith("/src/App.tsx"),
+        );
+        if (!chunk) {
+          // A silent miss would look like a performance regression with no cause,
+          // so fail the build instead: the file was renamed or the split changed.
+          throw new Error("missiongo-console-chunk-preload: no chunk for src/App.tsx in the bundle.");
+        }
+        return [{
+          tag: "link",
+          attrs: {
+            rel: "modulepreload",
+            crossorigin: "",
+            href: `${base}${chunk.fileName}`,
+          },
+          injectTo: "head",
+        }];
+      },
+    },
+  };
+}
+
 function readPublicOrigin(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -111,6 +164,7 @@ export default defineConfig(({ mode }) => {
     envDir: repositoryRoot,
     plugins: [
       react(),
+      consoleChunkPreload(),
       androidDownloadHeaders(),
       markdownDownload("missiongo-skill-download", skillDownloadPath, skillSourcePath, publicOrigin),
       markdownDownload(
@@ -135,6 +189,18 @@ export default defineConfig(({ mode }) => {
       },
     ],
     server: {
+      host: "127.0.0.1",
+      proxy: {
+        "/api": { target: serverTarget, changeOrigin: false },
+        "/health": { target: serverTarget, changeOrigin: false },
+      },
+    },
+    // The same proxy for `vite preview`. Dev serves unbundled modules, so it is
+    // the wrong place to check anything about chunks -- load order, preload
+    // hints, how much JS runs before the first request. Preview serves the real
+    // build, and without this it cannot reach the API, which made the one mode
+    // that reflects production useless for measuring it.
+    preview: {
       host: "127.0.0.1",
       proxy: {
         "/api": { target: serverTarget, changeOrigin: false },

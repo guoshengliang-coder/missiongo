@@ -2,6 +2,7 @@ import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { BootSkeleton } from "./BootSkeleton";
 import { I18nProvider } from "./i18n";
 import "./styles.css";
 
@@ -26,9 +27,11 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <I18nProvider>
-        {/* Both pages draw their own loading state once mounted; a second spinner here
-            would only flash between the two. */}
-        <Suspense fallback={null}>
+        {/* Both pages draw their own loading state once mounted, but reaching that
+            point still costs a chunk fetch and its evaluation, and `null` left the
+            screen blank for all of it. BootSkeleton lives in this chunk, so it can
+            paint immediately. */}
+        <Suspense fallback={<BootSkeleton />}>
           <RootPage />
         </Suspense>
       </I18nProvider>
