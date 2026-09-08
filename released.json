@@ -12,14 +12,19 @@
       "commit": "bf415734572a9a9774367b0d8f332fa9e66ef9a3",
       "versionFile": "sdks/android-feedback/gradle.properties",
       "versionProperty": "missiongoAndroidVersionName",
-      "paths": ["apps/android", "sdks/android-feedback/missiongo-feedback"]
+      "paths": [
+        "apps/android",
+        "sdks/android-feedback/missiongo-feedback"
+      ]
     },
     "androidSdk": {
       "version": "0.2.5",
-      "commit": "e938a18f9a25ee2e3b5f272d80651a3d1d14cdee",
+      "commit": "f045a240a3c1bf45552d55a691f9fac52cd339d4",
       "versionFile": "sdks/android-feedback/gradle.properties",
       "versionProperty": "missiongoVersion",
-      "paths": ["sdks/android-feedback/missiongo-feedback"]
+      "paths": [
+        "sdks/android-feedback/missiongo-feedback"
+      ]
     }
   }
 }
