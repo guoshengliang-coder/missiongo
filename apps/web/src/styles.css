@@ -536,16 +536,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .workspace.detail-open .item-list { min-height: 0; }
   .workspace.detail-open .item-row, .workspace.detail-open .list-surface.without-media .item-row {
     height: auto;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     grid-template-rows: auto auto;
     gap: 6px 10px;
     padding: 11px 8px;
   }
-  .workspace.detail-open .item-row-main { grid-column: 1 / -1; }
+  .workspace.detail-open .item-row-main { grid-column: 1 / 3; grid-row: 1; }
+  /* Beside the text rather than under it: with room to spare the row stays one
+     item tall, and the tiles read as belonging to it. */
+  .workspace.detail-open .item-media-strip { grid-column: 3; grid-row: 1 / -1; align-self: center; }
   .workspace.detail-open .item-description { display: none; }
   .workspace.detail-open .item-context { grid-column: 1; grid-row: 2; flex-direction: row; align-items: center; gap: 6px; }
   .workspace.detail-open .item-context small::before { content: "·"; margin-right: 6px; }
-  .workspace.detail-open .item-state { grid-column: 2; grid-row: 2; }
+  .workspace.detail-open .item-state { grid-column: 2; grid-row: 2; justify-self: end; }
   .workspace.detail-open .item-updated, .workspace.detail-open .item-row-actions { display: none; }
   .workspace.detail-open .item-row.selected { background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--mint-dark); }
   .workspace.detail-open .list-pagination { background: transparent; }
