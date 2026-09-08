@@ -27,7 +27,10 @@ export interface WorkItemReport {
 }
 
 export interface WorkItemDiagnosticSummary {
+  /** Structured entries the host sent with the report, bounded and stored inline. */
   readonly logCount: number;
+  /** Attached log files. Counted apart: one file can hold thousands of lines. */
+  readonly logFileCount: number;
   readonly contextEntryCount: number;
 }
 

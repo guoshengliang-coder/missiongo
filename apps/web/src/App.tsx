@@ -948,8 +948,13 @@ function ItemRow({
   const TypeIcon = TYPE_ICONS[item.type];
   const environment = item.environment;
   const overview = item.report?.overview ?? item.description;
-  const logAttachmentCount = item.attachments.filter((attachment) => attachment.kind === "log").length;
-  const logCount = Math.max(logAttachmentCount, item.diagnosticSummary?.logCount ?? 0);
+  // An attached log file and a structured log entry are not the same unit, and showing their sum
+  // made a whole attached history look like one more line.
+  const logFileCount = Math.max(
+    item.attachments.filter((attachment) => attachment.kind === "log").length,
+    item.diagnosticSummary?.logFileCount ?? 0,
+  );
+  const logCount = item.diagnosticSummary?.logCount ?? 0;
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
   const contextDetails = environmentSummary(environment, Boolean(sourceComponent), t);
   return (
@@ -971,6 +976,7 @@ function ItemRow({
             <span className="item-evidence-summary">
               {item.type === "bug" && item.report?.reproductionSteps && <small className="evidence-strong">{t("hasReproduction")}</small>}
               {logCount > 0 && <small>{t("logCount", { count: logCount })}</small>}
+              {logFileCount > 0 && <small className="evidence-strong">{t("logFileCount", { count: logFileCount })}</small>}
               {(item.diagnosticSummary?.contextEntryCount ?? 0) > 0 && <small>{t("contextCount", { count: item.diagnosticSummary.contextEntryCount })}</small>}
             </span>
           </span>

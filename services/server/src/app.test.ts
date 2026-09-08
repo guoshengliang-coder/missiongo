@@ -2046,7 +2046,9 @@ describe("MissionGo REST API", () => {
       affectedComponentIds: [component.id],
       title: "Search results disappear after retry",
       report: { overview: "Updated before submission." },
-      diagnosticSummary: { logCount: 2, contextEntryCount: 2 },
+      // One structured entry and one attached log file, counted apart: their sum used to be
+      // reported as a single number, which made an attached history look like one more line.
+      diagnosticSummary: { logCount: 1, logFileCount: 1, contextEntryCount: 2 },
       environment: { platform: "android", appVersion: "1.2.0" },
       attachments: [expect.objectContaining({ filename: "search-retry.log", kind: "log" })],
     });

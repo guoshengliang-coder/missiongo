@@ -28,6 +28,7 @@ export interface WorkItemReport {
 
 export interface WorkItemDiagnosticSummary {
   readonly logCount: number;
+  readonly logFileCount?: number;
   readonly contextEntryCount: number;
 }
 

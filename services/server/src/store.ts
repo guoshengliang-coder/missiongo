@@ -1923,7 +1923,11 @@ export class MissionGoStore {
       }
     }
     return {
-      logCount: structuredLogCount + attachments.filter((attachment) => attachment.kind === "log").length,
+      // Counted apart, because they are different things and adding them hid the larger one: a
+      // report arrived carrying 500 structured entries and a 4,417-line log file, and the summary
+      // said "501", which reads as a few more lines rather than the whole history being attached.
+      logCount: structuredLogCount,
+      logFileCount: attachments.filter((attachment) => attachment.kind === "log").length,
       contextEntryCount,
     };
   }
