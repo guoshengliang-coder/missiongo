@@ -1083,7 +1083,14 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .annotator-swatch.active { border-color: var(--ink); box-shadow: 0 0 0 2px var(--surface-strong) inset; }
 .annotator-stage { display: grid; place-items: center; min-height: 0; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
 /* touch-action keeps a drag drawing a line instead of scrolling the page. */
-.annotator-canvas { max-width: 100%; max-height: 100%; object-fit: contain; touch-action: none; cursor: crosshair; }
+/* No max-width/max-height here on purpose: the percentages were being
+   dropped, so a tall screenshot laid out at full natural height inside a
+   clipped stage and most of it could not be reached. The fit is measured
+   in JS and written to width/height instead. */
+.annotator-canvas { touch-action: none; cursor: crosshair; will-change: transform; }
+.annotator-canvas.panning { cursor: grab; }
+.annotator-canvas.panning:active { cursor: grabbing; }
+.annotator-zoom-level { min-width: 46px; padding: 0 2px; color: var(--muted); font-size: var(--text-xs); font-weight: 700; font-variant-numeric: tabular-nums; text-align: center; }
 .annotator-error { padding: 24px; color: var(--muted); text-align: center; }
 .annotator-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
 /* The buttons keep their width and the hint takes what is left, wrapping to its
