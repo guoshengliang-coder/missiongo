@@ -57,6 +57,19 @@ automates that, run from a workstation checkout rather than on the server:
 ./scripts/deploy.sh --host <ssh host> --env-file /etc/missiongo/production.env
 ```
 
+#### One-off: move SDK diagnostics into log files
+
+Items created before the release that moved diagnostics out of the creation
+event still carry their log buffer inside it, which is what made a single item
+return 85 KB from `get_item_context`. Run this once against the server's data
+after that release is live. It is safe to run twice, and `--dry-run` reports
+what it would move without touching anything.
+
+```sh
+node scripts/migrate-sdk-logs.mjs --dry-run
+node scripts/migrate-sdk-logs.mjs
+```
+
 It pushes a timestamped snapshot, backs up the database and attachments,
 rebuilds, moves the symlink, publishes the Android APK, and reports container
 status. The backup runs in a throwaway `node` container, so the server needs
