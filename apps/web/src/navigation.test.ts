@@ -4,6 +4,7 @@ import {
   filtersFromUrl,
   filtersToUrl,
   itemDetailUrl,
+  itemHistoryOp,
   itemKeyFromUrl,
   itemListUrl,
 } from "./navigation";
@@ -18,6 +19,37 @@ describe("item navigation", () => {
     const url = new URL("https://example.test/?item=MG-42&view=compact");
     expect(itemKeyFromUrl(url)).toBe("MG-42");
     expect(itemListUrl(url)).toBe("/?view=compact");
+  });
+});
+
+describe("history depth when clicking through the list", () => {
+  /**
+   * Models what the browser stack does as openItemPage runs, so the regression
+   * is caught here rather than by clicking five items in a real browser.
+   */
+  function walk(itemKeys: readonly string[]): readonly string[] {
+    const stack = ["/?product=p1"];
+    let selected: string | null = null;
+    for (const itemKey of itemKeys) {
+      if (selected === itemKey) continue;
+      const url = itemDetailUrl(itemKey, new URL(`https://example.test${stack.at(-1)!}`));
+      if (itemHistoryOp(selected) === "push") stack.push(url);
+      else stack[stack.length - 1] = url;
+      selected = itemKey;
+    }
+    return stack;
+  }
+
+  it("keeps one detail entry however many items are opened", () => {
+    expect(walk(["MG-1"])).toEqual(["/?product=p1", "/?product=p1&item=MG-1"]);
+    expect(walk(["MG-1", "MG-2", "MG-3", "MG-4", "MG-5"]))
+      .toEqual(["/?product=p1", "/?product=p1&item=MG-5"]);
+  });
+
+  it("lands back on the list after a single step back", () => {
+    const stack = [...walk(["MG-1", "MG-2", "MG-3", "MG-4", "MG-5"])];
+    stack.pop();
+    expect(itemKeyFromUrl(new URL(`https://example.test${stack.at(-1)!}`))).toBeNull();
   });
 });
 

@@ -93,6 +93,7 @@ import {
   filtersFromUrl,
   filtersToUrl,
   itemDetailUrl,
+  itemHistoryOp,
   itemKeyFromUrl,
   itemListUrl,
 } from "./navigation";
@@ -374,12 +375,19 @@ export function App() {
 
   const openItemPage = useCallback((itemKey: string, edit = false) => {
     if (selectedItemKey === itemKey) return;
-    const workspace = workspaceRef.current;
-    listScrollTopRef.current = workspace && workspace.scrollHeight > workspace.clientHeight
-      ? workspace.scrollTop
-      : window.scrollY;
-    const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
-    history.pushState({ ...state, [ITEM_HISTORY_MARKER]: true }, "", itemDetailUrl(itemKey));
+    if (itemHistoryOp(selectedItemKey) === "push") {
+      const workspace = workspaceRef.current;
+      listScrollTopRef.current = workspace && workspace.scrollHeight > workspace.clientHeight
+        ? workspace.scrollTop
+        : window.scrollY;
+      const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
+      history.pushState({ ...state, [ITEM_HISTORY_MARKER]: true }, "", itemDetailUrl(itemKey));
+    } else {
+      // Carry history.state through untouched. A detail reached by deep link
+      // has no marker, and closeItemPage reads that to replace the URL instead
+      // of calling back() -- which would leave the app entirely.
+      history.replaceState(history.state, "", itemDetailUrl(itemKey));
+    }
     setDetailOpenInEdit(edit);
     setSelectedItemKey(itemKey);
     requestAnimationFrame(() => {

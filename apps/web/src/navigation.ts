@@ -30,6 +30,19 @@ export function itemDetailUrl(itemKey: string, url: URL = new URL(window.locatio
   return `${next.pathname}${next.search}${next.hash}`;
 }
 
+/**
+ * Which history operation should be used to open an item detail.
+ *
+ * Pushing on every open is what made "back" walk through every item that had
+ * been looked at instead of returning to the list: five items looked at meant
+ * five entries to unwind. Only leaving the list is a navigation worth
+ * remembering; swapping one detail for another replaces the entry, so there is
+ * never more than one detail on the stack and a single back returns to the list.
+ */
+export function itemHistoryOp(selectedItemKey: string | null): "push" | "replace" {
+  return selectedItemKey === null ? "push" : "replace";
+}
+
 export function itemListUrl(url: URL = new URL(window.location.href)): string {
   const next = new URL(url);
   next.searchParams.delete("item");
