@@ -14,7 +14,10 @@
 #
 # Excludes are explicit because rsync does not read .gitignore, and does not read
 # .git/info/exclude at all — a locally ignored directory reaches the server
-# otherwise.
+# otherwise. Worktree directories are the sharp case: .claude/worktrees is
+# excluded only in .git/info/exclude, and between them the two here held 928 MB
+# of other branches' checkouts — including uncommitted work — all of which was
+# being shipped into the release snapshot and the Docker build context.
 #
 # The public Android download is served by the host proxy from its own directory,
 # outside the release snapshots, so a deploy has to publish the APK there as well
@@ -264,6 +267,7 @@ target="${releases_dir}/${release}"
 echo "==> Pushing ${release}"
 rsync -az --delete \
   --exclude='.git' --exclude='.private' \
+  --exclude='.worktrees' --exclude='.claude/worktrees' \
   --exclude='node_modules' --exclude='dist' --exclude='build' \
   --exclude='.gradle' --exclude='.kotlin' --exclude='coverage' \
   --exclude='.env' --exclude='data' \

@@ -3,6 +3,10 @@ dist/
 coverage/
 *.tsbuildinfo
 
+# Git worktrees kept inside the checkout. Untracked they make every build look
+# dirty, which suppresses the released.json update and blocks deploy.sh.
+.worktrees/
+
 .env
 .env.*
 !.env.example
