@@ -116,6 +116,8 @@ interface CommentRow {
   execution_id: string | null;
   body_kind: CommentBodyKind;
   body_json: string;
+  agent_name: string | null;
+  summary: string | null;
   timeline_seq: number;
   created_at: string;
   withdrawn_at: string | null;
@@ -1124,6 +1126,8 @@ export class MissionGoStore {
       payload: {
         bodyKind: comment.bodyKind,
         body: comment.body,
+        ...(comment.agentName ? { agentName: comment.agentName } : {}),
+        ...(comment.summary ? { summary: comment.summary } : {}),
         ...(comment.withdrawnAt ? { withdrawnAt: comment.withdrawnAt } : {}),
       },
       ...(comment.accountId ? { accountId: comment.accountId } : {}),
@@ -1135,6 +1139,8 @@ export class MissionGoStore {
 
   createComment(input: CreateCommentInput): WorkItemCommentSnapshot {
     const body = this.validateCommentBody(input.bodyKind, input.body);
+    const agentName = this.validateByline(input.agentName, "Agent name", 100);
+    const summary = this.validateByline(input.summary, "Summary", 300);
     const idempotencyKey = input.idempotencyKey ? this.validateIdempotencyKey(input.idempotencyKey) : undefined;
     const operation = `create_comment:${input.itemKey.toUpperCase()}`;
 
@@ -1153,8 +1159,8 @@ export class MissionGoStore {
         .prepare(
           `INSERT INTO work_item_comments
              (id, item_id, actor_kind, account_id, client_id, execution_id, body_kind, body_json,
-              timeline_seq, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              agent_name, summary, timeline_seq, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -1165,6 +1171,8 @@ export class MissionGoStore {
           attribution.executionId ?? null,
           input.bodyKind,
           JSON.stringify(body),
+          agentName ?? null,
+          summary ?? null,
           this.nextTimelineSequence(item.id),
           now,
         );
@@ -1175,6 +1183,8 @@ export class MissionGoStore {
         actorKind: input.actorKind,
         bodyKind: input.bodyKind,
         body,
+        ...(agentName ? { agentName } : {}),
+        ...(summary ? { summary } : {}),
         ...(attribution.accountId ? { accountId: attribution.accountId } : {}),
         ...(attribution.clientId ? { clientId: attribution.clientId } : {}),
         ...(attribution.executionId ? { executionId: attribution.executionId } : {}),
@@ -1263,7 +1273,7 @@ export class MissionGoStore {
     const rows = this.database.connection
       .prepare(
         `SELECT id, actor_kind, account_id, client_id, execution_id, body_kind, body_json,
-                timeline_seq, created_at, withdrawn_at, withdrawn_by
+                agent_name, summary, timeline_seq, created_at, withdrawn_at, withdrawn_by
          FROM work_item_comments
          WHERE item_id = ?${includeWithdrawn ? "" : " AND withdrawn_at IS NULL"}
          ORDER BY timeline_seq`,
@@ -1279,6 +1289,8 @@ export class MissionGoStore {
       actorKind: row.actor_kind,
       bodyKind: row.body_kind,
       body: JSON.parse(row.body_json) as CommentBody,
+      ...(row.agent_name ? { agentName: row.agent_name } : {}),
+      ...(row.summary ? { summary: row.summary } : {}),
       ...(row.account_id ? { accountId: row.account_id } : {}),
       ...(row.client_id ? { clientId: row.client_id } : {}),
       ...(row.execution_id ? { executionId: row.execution_id } : {}),
@@ -1303,16 +1315,25 @@ export class MissionGoStore {
     if (proposal && proposal.length > 20_000) throw invalidInput("Proposal must be 20,000 characters or fewer.");
     const evidence = this.validateAnalysisList(structured.evidence ?? [], "Evidence");
     if (evidence.length === 0) throw invalidInput("A structured comment needs at least one piece of evidence.");
-    const agentName = structured.agentName?.trim();
-    if (agentName && agentName.length > 100) throw invalidInput("Agent name must be 100 characters or fewer.");
     return {
       understanding,
       finding,
       evidence,
       ...(proposal ? { proposal } : {}),
       openQuestions: this.validateAnalysisList(structured.openQuestions ?? [], "Open questions"),
-      ...(agentName ? { agentName } : {}),
     };
+  }
+
+  /**
+   * Byline fields are optional and single-line. A summary that has been allowed
+   * to run to paragraphs is not a summary, so the length cap is small and
+   * newlines collapse rather than being preserved.
+   */
+  private validateByline(value: string | undefined, label: string, limit: number): string | undefined {
+    const text = value?.replaceAll(/\s+/gu, " ").trim();
+    if (!text) return undefined;
+    if (text.length > limit) throw invalidInput(`${label} must be ${limit} characters or fewer.`);
+    return text;
   }
 
   private getIdempotentResult<T>(key: string, operation: string): T | undefined {

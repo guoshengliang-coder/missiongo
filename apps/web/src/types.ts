@@ -116,6 +116,8 @@ export interface WorkItemEvent {
   /** Present on agent writes: which account authorized it and through which client. */
   readonly accountId?: string;
   readonly clientId?: string;
+  /** The client's registered name, decoded server-side from clientId. Not self-reported. */
+  readonly clientName?: string;
   readonly executionId?: string;
   readonly createdAt: string;
 }

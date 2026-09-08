@@ -1,22 +1,34 @@
-import { Circle, Loader2, Pencil, RotateCcw, Square, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Circle, Hand, Loader2, Maximize, Minus, Pencil, Plus, RotateCcw, Square, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { useI18n, type MessageKey } from "./i18n";
 import {
   ANNOTATION_COLORS,
   ANNOTATION_JPEG_QUALITY,
+  MAX_ANNOTATION_ZOOM,
+  MIN_ANNOTATION_ZOOM,
   annotatedFilename,
   annotationOutputType,
+  clampOffset,
+  clampZoom,
+  fitScale,
+  zoomAbout,
   type AnnotationColor,
+  type AnnotationDrawTool,
   type AnnotationTool,
+  type Offset,
 } from "./image-annotation";
 
 const TOOL_BUTTONS = [
   { name: "pen", Icon: Pencil, label: "annotateToolPen" },
   { name: "rectangle", Icon: Square, label: "annotateToolRectangle" },
   { name: "ellipse", Icon: Circle, label: "annotateToolEllipse" },
+  { name: "hand", Icon: Hand, label: "annotateToolHand" },
 ] as const satisfies readonly { name: AnnotationTool; Icon: typeof Pencil; label: MessageKey }[];
+
+/** One step of the +/- buttons. Geometric, so zooming feels even at every scale. */
+const ZOOM_STEP = 1.4;
 
 interface Point {
   readonly x: number;
@@ -24,7 +36,7 @@ interface Point {
 }
 
 interface Shape {
-  readonly tool: AnnotationTool;
+  readonly tool: AnnotationDrawTool;
   readonly color: AnnotationColor;
   readonly width: number;
   readonly points: readonly Point[];
@@ -35,9 +47,14 @@ interface Shape {
  * displayed at, so the exported file keeps its original detail. Stroke width
  * scales with the image for the same reason: three pixels is a bold line on a
  * phone screenshot and invisible on a 4000px photograph.
+ *
+ * Dividing by the zoom keeps the line the same thickness under the pointer at
+ * every magnification. Zooming in is how you mark something small, and a line
+ * that stayed fixed in image pixels would blot out the very detail you zoomed
+ * in to circle. At rest (zoom 1) this is exactly the width it always was.
  */
-function strokeWidthFor(width: number, height: number): number {
-  return Math.max(3, Math.round(Math.max(width, height) / 260));
+function strokeWidthFor(width: number, height: number, zoom: number): number {
+  return Math.max(1, Math.round(Math.max(3, Math.max(width, height) / 260) / zoom));
 }
 
 function drawShape(context: CanvasRenderingContext2D, shape: Shape): void {
@@ -81,8 +98,19 @@ export function ImageAnnotator({
 }) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const [natural, setNatural] = useState({ width: 0, height: 0 });
+  const [stage, setStage] = useState({ width: 0, height: 0 });
+  const [zoom, setZoom] = useState(MIN_ANNOTATION_ZOOM);
+  const [offset, setOffset] = useState<Offset>({ x: 0, y: 0 });
+  // Pointer ids currently down on the canvas. Two of them means a pinch, and
+  // the in-flight stroke is abandoned rather than dragged around by a gesture
+  // that was never meant to draw.
+  const pointersRef = useRef(new Map<number, Offset>());
+  const panRef = useRef<{ readonly from: Offset; readonly at: Offset } | null>(null);
+  const pinchRef = useRef<{ readonly distance: number; readonly zoom: number } | null>(null);
   const [shapes, setShapes] = useState<readonly Shape[]>([]);
   const [drawing, setDrawing] = useState<Shape | null>(null);
   const [tool, setTool] = useState<AnnotationTool>("pen");
@@ -111,6 +139,7 @@ export function ImageAnnotator({
         canvas.width = image.naturalWidth;
         canvas.height = image.naturalHeight;
       }
+      setNatural({ width: image.naturalWidth, height: image.naturalHeight });
       setReady(true);
     });
     image.addEventListener("error", () => {
@@ -138,6 +167,53 @@ export function ImageAnnotator({
     if (ready) repaint();
   }, [ready, repaint]);
 
+  // The fit is computed here rather than left to `max-height: 100%`, which was
+  // silently dropped and let a tall screenshot render at full height inside a
+  // clipped stage -- most of the image was simply unreachable.
+  useEffect(() => {
+    const element = stageRef.current;
+    if (!element) return undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      const box = entry?.contentRect;
+      if (box) setStage({ width: box.width, height: box.height });
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const fit = useMemo(() => fitScale(natural, stage), [natural, stage]);
+  const displayed = useMemo(
+    () => ({ width: natural.width * fit, height: natural.height * fit }),
+    [natural, fit],
+  );
+
+  const applyView = useCallback((nextZoom: number, nextOffset: Offset) => {
+    const clamped = clampZoom(nextZoom);
+    setZoom(clamped);
+    setOffset(clampOffset(nextOffset, displayed, stage, clamped));
+  }, [displayed, stage]);
+
+  /** Zoom about a point given in client coordinates, e.g. the cursor. */
+  const zoomAt = useCallback((nextZoom: number, client?: Offset) => {
+    const box = stageRef.current?.getBoundingClientRect();
+    const anchor = box && client
+      ? { x: client.x - (box.left + box.width / 2), y: client.y - (box.top + box.height / 2) }
+      : { x: 0, y: 0 };
+    const clamped = clampZoom(nextZoom);
+    applyView(clamped, zoomAbout(anchor, offset, zoom, clamped));
+  }, [applyView, offset, zoom]);
+
+  const resetView = useCallback(() => {
+    setZoom(MIN_ANNOTATION_ZOOM);
+    setOffset({ x: 0, y: 0 });
+  }, []);
+
+  // A pan is only bounded once the image is bigger than the stage, so shrinking
+  // back to the fit has to pull the image home rather than leave it off-screen.
+  useEffect(() => {
+    setOffset((current) => clampOffset(current, displayed, stage, zoom));
+  }, [displayed, stage, zoom]);
+
   const pointFrom = (event: ReactPointerEvent<HTMLCanvasElement>): Point | undefined => {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
@@ -149,16 +225,63 @@ export function ImageAnnotator({
     };
   };
 
-  const startStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+  const pointerSpread = (): { distance: number; centre: Offset } | undefined => {
+    const [first, second] = [...pointersRef.current.values()];
+    if (!first || !second) return undefined;
+    return {
+      distance: Math.hypot(second.x - first.x, second.y - first.y),
+      centre: { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 },
+    };
+  };
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!ready || saving) return;
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    event.currentTarget.setPointerCapture(event.pointerId);
+
+    const spread = pointerSpread();
+    if (spread) {
+      // A second finger turns the gesture into a pinch. Whatever the first was
+      // drawing is dropped rather than committed: nobody means to leave a mark
+      // by starting to zoom.
+      setDrawing(null);
+      panRef.current = null;
+      pinchRef.current = { distance: spread.distance, zoom };
+      return;
+    }
+
+    if (tool === "hand") {
+      panRef.current = { from: offset, at: { x: event.clientX, y: event.clientY } };
+      return;
+    }
+
     const point = pointFrom(event);
     const canvas = canvasRef.current;
     if (!point || !canvas) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setDrawing({ tool, color, width: strokeWidthFor(canvas.width, canvas.height), points: [point] });
+    setDrawing({ tool, color, width: strokeWidthFor(canvas.width, canvas.height, zoom), points: [point] });
   };
 
-  const extendStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+  const onPointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (pointersRef.current.has(event.pointerId)) {
+      pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
+
+    const pinch = pinchRef.current;
+    if (pinch) {
+      const spread = pointerSpread();
+      if (spread && pinch.distance > 0) zoomAt(pinch.zoom * (spread.distance / pinch.distance), spread.centre);
+      return;
+    }
+
+    const pan = panRef.current;
+    if (pan) {
+      applyView(zoom, {
+        x: pan.from.x + (event.clientX - pan.at.x),
+        y: pan.from.y + (event.clientY - pan.at.y),
+      });
+      return;
+    }
+
     if (!drawing) return;
     const point = pointFrom(event);
     if (!point) return;
@@ -167,11 +290,22 @@ export function ImageAnnotator({
       : { ...drawing, points: [drawing.points[0]!, point] });
   };
 
-  const endStroke = () => {
+  const onPointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    pointersRef.current.delete(event.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    panRef.current = null;
     if (!drawing) return;
     // A tap with no movement leaves a single point, which would draw nothing.
     if (drawing.points.length > 1) setShapes((current) => [...current, drawing]);
     setDrawing(null);
+  };
+
+  const onWheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
+    if (!ready) return;
+    // deltaY is negative when scrolling up, which is the direction people
+    // expect to magnify. Exponential so a trackpad flick and a mouse notch
+    // both feel proportional rather than linear at one scale and wild at another.
+    zoomAt(zoom * Math.exp(-event.deltaY / 380), { x: event.clientX, y: event.clientY });
   };
 
   const save = async () => {
@@ -252,19 +386,66 @@ export function ImageAnnotator({
         >
           <RotateCcw size={17} aria-hidden="true" />
         </button>
+
+        {/* Buttons as well as wheel and pinch: the Android shell turns off the
+            browser's own zoom, and a mouse without a wheel still needs a way in. */}
+        <div className="annotator-group" role="group" aria-label={t("annotateZoom")}>
+          <button
+            type="button"
+            className="annotator-tool"
+            onClick={() => zoomAt(zoom / ZOOM_STEP)}
+            disabled={!ready || zoom <= MIN_ANNOTATION_ZOOM}
+            aria-label={t("annotateZoomOut")}
+          >
+            <Minus size={17} aria-hidden="true" />
+          </button>
+          <output className="annotator-zoom-level">{Math.round(zoom * 100)}%</output>
+          <button
+            type="button"
+            className="annotator-tool"
+            onClick={() => zoomAt(zoom * ZOOM_STEP)}
+            disabled={!ready || zoom >= MAX_ANNOTATION_ZOOM}
+            aria-label={t("annotateZoomIn")}
+          >
+            <Plus size={17} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="annotator-tool"
+            onClick={resetView}
+            disabled={!ready || (zoom === MIN_ANNOTATION_ZOOM && offset.x === 0 && offset.y === 0)}
+            aria-label={t("annotateZoomFit")}
+          >
+            <Maximize size={17} aria-hidden="true" />
+          </button>
+        </div>
       </div>
 
-      <div className="annotator-stage">
+      <div className="annotator-stage" ref={stageRef}>
         {loadError
           ? <p className="annotator-error">{loadError}</p>
           : (
             <canvas
               ref={canvasRef}
-              className="annotator-canvas"
-              onPointerDown={startStroke}
-              onPointerMove={extendStroke}
-              onPointerUp={endStroke}
-              onPointerCancel={endStroke}
+              className={`annotator-canvas${tool === "hand" ? " panning" : ""}`}
+              // Sized here, not by CSS. The backing store stays at the image's
+              // natural resolution -- which is what toBlob exports -- while the
+              // element is laid out at the fitted size and the transform only
+              // changes what is on screen. So zoom and pan cannot reach the
+              // saved file, and pointFrom keeps working: getBoundingClientRect
+              // already reports the transformed box.
+              style={displayed.width > 0
+                ? {
+                  width: `${displayed.width}px`,
+                  height: `${displayed.height}px`,
+                  transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`,
+                }
+                : undefined}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerUp}
+              onWheel={onWheel}
             />
           )}
       </div>

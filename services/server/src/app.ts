@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 
@@ -73,6 +73,10 @@ const DEFAULT_SDK_RATE_LIMITS: Readonly<Record<SdkRateLimitBucket, SdkRateLimitR
 
 /** Square edge of a stored product icon, in pixels. Small enough to live in the row. */
 const PRODUCT_ICON_EDGE = 96;
+
+/** Two rows of 84px tiles at 2x, which covers every list layout we render. */
+const DEFAULT_THUMBNAIL_EDGE = 192;
+const MAX_THUMBNAIL_EDGE = 512;
 
 const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "server", "shared", "other"] as const;
 
@@ -1135,16 +1139,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   });
 
+  // A comment records the signed OAuth client id it was written through, and
+  // that id carries the client's registered name. Decoding it here turns a
+  // byline that only said "AI" into the program that actually wrote it, for
+  // every comment ever written and without storing anything new.
+  const withClientName = <T extends { readonly clientId?: string }>(entry: T): T & { clientName?: string } => {
+    const name = entry.clientId ? oauthProvider?.clientDisplayName(entry.clientId) : undefined;
+    return name ? { ...entry, clientName: name } : entry;
+  };
+
   app.get("/api/v1/items/:itemKey/timeline", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
     // The web folds withdrawn comments rather than hiding them, so a reader can
     // see that something was said and taken back. MCP gets the pruned view.
-    return { events: store.getTimeline(itemKey, { includeWithdrawn: true }) };
+    return { events: store.getTimeline(itemKey, { includeWithdrawn: true }).map(withClientName) };
   });
 
   app.get("/api/v1/items/:itemKey/comments", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
-    return { comments: store.listComments(itemKey, { includeWithdrawn: true }) };
+    return { comments: store.listComments(itemKey, { includeWithdrawn: true }).map(withClientName) };
   });
 
   app.post("/api/v1/items/:itemKey/comments", async (request, reply) => {
@@ -1164,6 +1177,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           ...(stringField(body, "proposal", false) !== undefined ? { proposal: body.proposal as string } : {}),
           openQuestions: stringArrayField(body, "openQuestions") ?? [],
         },
+      ...(stringField(body, "summary", false) !== undefined ? { summary: body.summary as string } : {}),
       ...(sessionUser(request) ? { attribution: { accountId: sessionUser(request)!.id } } : {}),
     });
     return reply.status(201).send(comment);
@@ -1219,6 +1233,36 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .header("x-content-type-options", "nosniff");
     if (range) reply.header("content-range", `bytes ${range.start}-${range.end}/${details.size}`);
     return reply.send(createReadStream(path, range));
+  });
+
+  // The list shows thumbnails, and serving the original for each one meant
+  // pushing megabytes to draw a 72px tile. Rendered on demand rather than at
+  // upload time so it also covers everything already stored, and cached hard:
+  // the bytes are derived from an attachment that can only be replaced through
+  // an endpoint that changes the id-scoped content, and the query string
+  // carries the size, so a stale hit is not reachable.
+  app.get("/api/v1/items/:itemKey/attachments/:attachmentId/thumbnail", async (request, reply) => {
+    const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
+    const attachment = store.getAttachmentRecord(itemKey, attachmentId);
+    if (attachment.kind !== "image") throw invalidInput("Only image attachments have thumbnails.");
+    const requested = Number((request.query as { width?: string }).width);
+    const width = Number.isFinite(requested)
+      ? Math.min(Math.max(Math.round(requested), 32), MAX_THUMBNAIL_EDGE)
+      : DEFAULT_THUMBNAIL_EDGE;
+    const path = attachmentStorage.resolveStoredFile(attachment.storageFilename);
+    const thumbnail = await sharp(await readFile(path), { animated: false })
+      // Phone screenshots carry their orientation in EXIF; without this the
+      // tile comes out on its side.
+      .rotate()
+      .resize({ width, height: width, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 78, mozjpeg: true })
+      .toBuffer();
+    return reply
+      .type("image/jpeg")
+      .header("content-length", thumbnail.length)
+      .header("cache-control", "private, max-age=86400")
+      .header("x-content-type-options", "nosniff")
+      .send(thumbnail);
   });
 
   // Editing an image in the browser sends the result back here rather than

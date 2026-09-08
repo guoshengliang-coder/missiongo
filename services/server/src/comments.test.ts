@@ -200,6 +200,80 @@ describe("work-item comments", () => {
     expect((body as unknown as Record<string, unknown>).conclusion).toBeUndefined();
   });
 
+  it("records who wrote a comment and its summary, on both body shapes", async () => {
+    const { store, item } = await seed();
+    store.createComment({
+      itemKey: item.key,
+      actorKind: "agent",
+      bodyKind: "structured",
+      body: {
+        understanding: "冷启动崩溃",
+        finding: "初始化顺序反了",
+        evidence: ["logcat 第 42 行"],
+        openQuestions: [],
+      },
+      agentName: "Claude Code · studio-mac",
+      summary: "初始化顺序反了，改一行即可",
+    });
+    // The free branch used to drop agentName entirely, so a question an agent
+    // asked came back unsigned.
+    store.createComment({
+      itemKey: item.key,
+      actorKind: "agent",
+      bodyKind: "free",
+      body: { text: "这条要不要一起改？" },
+      agentName: "Codex · thinkpad",
+      summary: "问一个范围问题",
+    });
+
+    const [analysis, question] = store.listComments(item.key);
+    expect(analysis?.agentName).toBe("Claude Code · studio-mac");
+    expect(analysis?.summary).toBe("初始化顺序反了，改一行即可");
+    expect(question?.agentName).toBe("Codex · thinkpad");
+    expect(question?.summary).toBe("问一个范围问题");
+
+    // They ride the timeline too, which is what the web actually reads.
+    const [, ...comments] = store.getTimeline(item.key);
+    expect(comments.map((event) => event.payload.agentName))
+      .toEqual(["Claude Code · studio-mac", "Codex · thinkpad"]);
+  });
+
+  it("leaves a comment unsigned rather than inventing a byline", async () => {
+    const { store, item } = await seed();
+    // Every comment written before any of this existed looks like this.
+    store.createComment({
+      itemKey: item.key,
+      actorKind: "agent",
+      bodyKind: "free",
+      body: { text: "旧评论" },
+    });
+    const [comment] = store.listComments(item.key);
+    expect(comment?.agentName).toBeUndefined();
+    expect(comment?.summary).toBeUndefined();
+  });
+
+  it("keeps a summary to one line and a sane length", async () => {
+    const { store, item } = await seed();
+    const comment = store.createComment({
+      itemKey: item.key,
+      actorKind: "agent",
+      bodyKind: "free",
+      body: { text: "..." },
+      agentName: "  Claude Code  ",
+      summary: "第一行\n第二行",
+    });
+    expect(comment.agentName).toBe("Claude Code");
+    expect(comment.summary).toBe("第一行 第二行");
+
+    expect(() => store.createComment({
+      itemKey: item.key,
+      actorKind: "agent",
+      bodyKind: "free",
+      body: { text: "..." },
+      summary: "x".repeat(301),
+    })).toThrow(/300 characters or fewer/u);
+  });
+
   it("refuses a structured analysis with no evidence", async () => {
     const { store, item } = await seed();
     expect(() => store.createComment({
