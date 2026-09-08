@@ -60,6 +60,86 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AuthSession" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/bootstrap:
+    get:
+      operationId: getBootstrap
+      description: >-
+        Everything the console needs to draw its first screen, in one request:
+        the session, the products, the resolved product, its first page of items
+        and its components. It exists to collapse the session -> products ->
+        items chain, which cost three round trips before anything could render.
+        Every route it composes remains available and unchanged; the console
+        still uses them for paging, filtering and product switching.
+      security:
+        - adminSessionCookie: []
+      parameters:
+        - in: query
+          name: productId
+          description: >-
+            The product to open. Ignored when it does not exist or is not
+            visible, in which case the first product is used.
+          schema:
+            type: string
+        - in: query
+          name: status
+          schema:
+            $ref: "#/components/schemas/WorkItemStatus"
+        - in: query
+          name: type
+          schema:
+            $ref: "#/components/schemas/WorkItemType"
+        - in: query
+          name: search
+          schema:
+            type: string
+            maxLength: 200
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: >-
+            The first screen. items and components are empty, and productId is
+            null, when the workspace has no product yet.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, products, productId, items, components]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/AuthUser"
+                  products:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Product"
+                  productId:
+                    type: string
+                    nullable: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkItem"
+                  components:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Component"
+                  nextBeforeSequence:
+                    type: integer
+                    minimum: 1
+                  summary:
+                    type: object
+                    required: [total, byStatus]
+                    properties:
+                      total: { type: integer, minimum: 0 }
+                      byStatus:
+                        type: object
+                        additionalProperties: { type: integer, minimum: 0 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/v1/auth/logout:
     post:
       operationId: logoutAdministrator
@@ -298,6 +378,37 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/products/{productId}/icon:
+    get:
+      operationId: getProductIcon
+      description: >-
+        The product icon as a PNG. Served separately from the product listing so
+        the listing stays small enough not to delay the console's first paint,
+        and so the browser can cache the image across cold starts. The ETag
+        follows the product's updatedAt, which callers can also use as a cache
+        buster.
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The icon, re-encoded as a 96x96 PNG.
+          headers:
+            ETag:
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string }
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "304":
+          description: The caller's cached copy is still current.
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/v1/products/{productId}/components:
     parameters:
       - $ref: "#/components/parameters/ProductId"
@@ -690,13 +801,20 @@ components:
         role: { const: admin }
     Product:
       type: object
-      required: [id, keyPrefix, name, createdAt, updatedAt]
+      required: [id, keyPrefix, name, createdAt, updatedAt, hasIcon]
       properties:
         id: { type: string }
         keyPrefix: { type: string, pattern: "^[A-Z][A-Z0-9]{1,9}$" }
         name: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+        archivedAt: { type: string, format: date-time }
+        hasIcon:
+          type: boolean
+          description: >-
+            Whether an icon has been uploaded. The image itself is not inlined
+            here; fetch it from GET /api/v1/products/{productId}/icon, which the
+            browser can cache. False means the generated badge is used.
     CreateProductRequest:
       type: object
       required: [name, keyPrefix]

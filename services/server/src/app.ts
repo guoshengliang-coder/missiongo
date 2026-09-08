@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 
@@ -28,7 +28,7 @@ import {
 import sharp from "sharp";
 
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
-import { invalidInput, MissionGoError } from "./errors.js";
+import { invalidInput, MissionGoError, notFound } from "./errors.js";
 import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
 import {
   MISSIONGO_READ_SCOPE,
@@ -400,6 +400,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       || path === "/api/v1/auth/login"
       || path === "/api/v1/auth/session"
       || path === "/api/v1/auth/logout"
+      // Answers its own 401, exactly as /auth/session does, because the console
+      // reads that status to decide whether to draw the sign-in page. Letting the
+      // hook answer instead would drop the `no-store` the reply needs, and would
+      // admit a bearer-token caller the handler then has no session to serve.
+      || path === "/api/v1/bootstrap"
       || (!options.adminToken && !options.adminAccount)
     ) return;
     const bearerAuthorized = options.adminToken
@@ -592,6 +597,56 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       });
     }
     return reply.header("cache-control", "no-store").send({ user });
+  });
+
+  /**
+   * Everything the console needs to draw its first screen, in one request.
+   *
+   * It used to take three, chained: `/auth/session`, then `/products` (gated on
+   * the session), then `/items` and `/components` (gated on the product). Each is
+   * a full round trip -- 185-234ms measured against production -- and the first
+   * two sat behind full-screen spinners, so the shell could not appear until all
+   * of them had returned. The work itself was never the cost: the four queries
+   * together take about 15ms of server time, under 3% of the chain.
+   *
+   * Deliberately additive. Every route it composes stays exactly as it was, and
+   * the console still uses them for paging, filtering and product switching --
+   * this only collapses the *first* screen.
+   */
+  app.get("/api/v1/bootstrap", async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    reply.header("cache-control", "no-store");
+
+    const user = !options.adminAccount && !options.adminToken
+      ? { id: "local-admin", username: "local-admin", role: "admin" as const }
+      : sessionUser(request);
+    if (!user) {
+      return reply.status(401).send({
+        type: "urn:missiongo:problem:authentication_required",
+        title: "Sign in with the administrator account to continue.",
+        status: 401,
+        code: "authentication_required",
+      });
+    }
+
+    const products = store.listProducts({ includeArchived: includeArchived(query) });
+    // The client's remembered product only counts if it still exists and is still
+    // visible; otherwise the first one wins. Resolving it here is what lets the
+    // items query run in this same request instead of a round trip later, and it
+    // settles on the server what the client used to learn by fetching the list.
+    const requested = typeof query.productId === "string" ? query.productId : undefined;
+    const product = products.find((entry) => entry.id === requested) ?? products[0];
+    if (!product) {
+      return reply.send({ user, products, productId: null, items: [], components: [] });
+    }
+
+    return reply.send({
+      user,
+      products,
+      productId: product.id,
+      ...workItemListPage(query, product.id),
+      components: store.listComponents(product.id, { includeArchived: true }),
+    });
   });
 
   app.post("/api/v1/auth/login", async (request, reply) => {
@@ -885,6 +940,39 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.status(201).send(product);
   });
 
+  /**
+   * The icon as its own cacheable image, rather than base64 inside the product
+   * listing. Inlined, one icon cost ~13 KB that gzip could not touch, on the
+   * request the console blocks its first paint behind, re-sent on every cold
+   * start. As an image it loads beside the first paint instead of before it, and
+   * the browser keeps it across launches.
+   *
+   * `updatedAt` moves whenever the icon is replaced, so it is a sound ETag and
+   * lets the caller cache-bust with a query parameter it already has.
+   */
+  app.get("/api/v1/products/:productId/icon", async (request, reply) => {
+    const { productId } = request.params as { productId: string };
+    const product = store.getProduct(productId);
+    const pngBase64 = store.getProductIconPng(productId);
+    if (!pngBase64) throw notFound("Product icon");
+
+    const etag = `"${createHash("sha256").update(`${productId}:${product.updatedAt}`).digest("hex").slice(0, 32)}"`;
+    if (request.headers["if-none-match"] === etag) {
+      return reply.status(304).header("etag", etag).send();
+    }
+
+    const png = Buffer.from(pngBase64, "base64");
+    return reply
+      .type("image/png")
+      .header("content-length", png.length)
+      .header("etag", etag)
+      // Private: a product icon is workspace content, not public. Short max-age
+      // with revalidation keeps a replaced icon from sticking around.
+      .header("cache-control", "private, max-age=300, must-revalidate")
+      .header("x-content-type-options", "nosniff")
+      .send(png);
+  });
+
   // The icon is re-encoded rather than stored as uploaded: it bounds the size,
   // strips whatever metadata the original carried, and means the switcher only
   // ever renders one format.
@@ -945,10 +1033,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   });
 
-  app.get("/api/v1/items", async (request) => {
-    const query = request.query as Record<string, unknown>;
-    const productId = typeof query.productId === "string" ? query.productId : undefined;
-    if (!productId) throw invalidInput("productId is required.");
+  /**
+   * One page of the item list plus its summary. Shared by `/items` and by
+   * `/bootstrap`, so the first screen a cold start renders cannot drift from the
+   * one every later filter change fetches.
+   */
+  function workItemListPage(query: Record<string, unknown>, productId: string) {
     const limit = typeof query.limit === "string" ? Number(query.limit) : undefined;
     const beforeSequence = typeof query.beforeSequence === "string" ? Number(query.beforeSequence) : undefined;
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
@@ -979,6 +1069,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }),
       ...(nextBeforeSequence !== undefined ? { nextBeforeSequence } : {}),
     };
+  }
+
+  app.get("/api/v1/items", async (request) => {
+    const query = request.query as Record<string, unknown>;
+    const productId = typeof query.productId === "string" ? query.productId : undefined;
+    if (!productId) throw invalidInput("productId is required.");
+    return workItemListPage(query, productId);
   });
 
   app.post("/api/v1/items", async (request, reply) => {

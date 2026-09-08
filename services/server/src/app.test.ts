@@ -2144,8 +2144,8 @@ describe("MissionGo REST API", () => {
     const { app } = await testApp();
     const product = (
       await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Iconic", keyPrefix: "ICO" } })
-    ).json<{ id: string; icon?: string }>();
-    expect(product.icon).toBeUndefined();
+    ).json<{ id: string; hasIcon: boolean }>();
+    expect(product.hasIcon).toBe(false);
 
     const uploaded = await app.inject({
       method: "PUT",
@@ -2157,17 +2157,36 @@ describe("MissionGo REST API", () => {
       ),
     });
     expect(uploaded.statusCode).toBe(200);
-    const icon = uploaded.json<{ icon: string }>().icon;
-    expect(icon.startsWith("data:image/png;base64,")).toBe(true);
+    expect(uploaded.json<{ hasIcon: boolean }>().hasIcon).toBe(true);
+
+    // The bytes are not inlined in the product any more: they cost ~13 KB of
+    // base64 that gzip cannot shrink, on the request the console blocks its
+    // first paint behind. They come from the icon route instead.
+    const fetched = await app.inject({ method: "GET", url: `/api/v1/products/${product.id}/icon` });
+    expect(fetched.statusCode).toBe(200);
+    expect(fetched.headers["content-type"]).toBe("image/png");
 
     // A 1x1 source comes back as a 96px PNG, so the switcher only renders one format.
-    const decoded = Buffer.from(icon.slice("data:image/png;base64,".length), "base64");
+    const decoded = fetched.rawPayload;
     expect(decoded.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
     expect(decoded.readUInt32BE(16)).toBe(96);
     expect(decoded.readUInt32BE(20)).toBe(96);
 
+    // The ETag is what lets a cold start skip re-downloading an unchanged icon.
+    const etag = fetched.headers.etag as string;
+    expect(etag).toBeTruthy();
+    const revalidated = await app.inject({
+      method: "GET",
+      url: `/api/v1/products/${product.id}/icon`,
+      headers: { "if-none-match": etag },
+    });
+    expect(revalidated.statusCode).toBe(304);
+
     const listed = await app.inject({ method: "GET", url: "/api/v1/products" });
-    expect(listed.json<Array<{ id: string; icon?: string }>>().find((entry) => entry.id === product.id)?.icon).toBe(icon);
+    const listedProduct = listed.json<Array<{ id: string; hasIcon: boolean; icon?: string }>>()
+      .find((entry) => entry.id === product.id);
+    expect(listedProduct?.hasIcon).toBe(true);
+    expect(listedProduct?.icon).toBeUndefined();
 
     const rejected = await app.inject({
       method: "PUT",
@@ -2179,7 +2198,10 @@ describe("MissionGo REST API", () => {
 
     const removed = await app.inject({ method: "DELETE", url: `/api/v1/products/${product.id}/icon` });
     expect(removed.statusCode).toBe(200);
-    expect(removed.json<{ icon?: string }>().icon).toBeUndefined();
+    expect(removed.json<{ hasIcon: boolean }>().hasIcon).toBe(false);
+
+    const gone = await app.inject({ method: "GET", url: `/api/v1/products/${product.id}/icon` });
+    expect(gone.statusCode).toBe(404);
 
     await app.close();
   });
@@ -2200,5 +2222,162 @@ describe("MissionGo REST API", () => {
       status: "ok",
       release: "unknown",
     });
+  });
+});
+
+describe("The bootstrap route", () => {
+  async function seed(app: FastifyInstance, name: string, keyPrefix: string, itemCount: number) {
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name, keyPrefix } })
+    ).json<{ id: string }>();
+    const component = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/products/${product.id}/components`,
+        payload: { name: "Android App", kind: "android" },
+      })
+    ).json<{ id: string }>();
+    for (let index = 0; index < itemCount; index += 1) {
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/items",
+        payload: {
+          productId: product.id,
+          type: "bug",
+          priority: "normal",
+          title: `${keyPrefix} item ${index}`,
+          description: "Seeded for the bootstrap route.",
+          sourceComponentId: component.id,
+          environment: { platform: "android" },
+        },
+      });
+    }
+    return { product, component };
+  }
+
+  it("returns the session, products, the first page of items and components at once", async () => {
+    const { app } = await testApp();
+    const { product, component } = await seed(app, "Hermes Go", "HG", 3);
+
+    const response = await app.inject({ method: "GET", url: "/api/v1/bootstrap" });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{
+      user: { username: string };
+      products: Array<{ id: string; hasIcon: boolean }>;
+      productId: string;
+      items: Array<{ key: string }>;
+      summary: { productTotal: number };
+      components: Array<{ id: string }>;
+    }>();
+
+    expect(body.user.username).toBe("local-admin");
+    expect(body.products.map((entry) => entry.id)).toEqual([product.id]);
+    expect(body.productId).toBe(product.id);
+    expect(body.items).toHaveLength(3);
+    expect(body.summary.productTotal).toBe(3);
+    expect(body.components.map((entry) => entry.id)).toEqual([component.id]);
+
+    // The whole point is that this one response replaces the three chained
+    // requests, so it has to agree with them exactly.
+    const items = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}` });
+    expect(body.items).toEqual(items.json<{ items: unknown[] }>().items);
+    const products = await app.inject({ method: "GET", url: "/api/v1/products" });
+    expect(body.products).toEqual(products.json());
+
+    await app.close();
+  });
+
+  it("honours a requested product, and falls back to the first when it is unknown", async () => {
+    const { app } = await testApp();
+    const first = await seed(app, "Hermes Go", "HG", 1);
+    const second = await seed(app, "Andes", "AND", 2);
+
+    const requested = await app.inject({ method: "GET", url: `/api/v1/bootstrap?productId=${second.product.id}` });
+    const requestedBody = requested.json<{ productId: string; items: unknown[] }>();
+    expect(requestedBody.productId).toBe(second.product.id);
+    expect(requestedBody.items).toHaveLength(2);
+
+    // A product id remembered from a workspace the user no longer has must not
+    // strand them on an empty screen. The fallback is the first product *as the
+    // list orders them* -- by name, so "Andes" precedes the older "Hermes Go".
+    const stale = await app.inject({ method: "GET", url: "/api/v1/bootstrap?productId=does-not-exist" });
+    const staleBody = stale.json<{ productId: string; products: Array<{ id: string }>; items: unknown[] }>();
+    expect(staleBody.productId).toBe(staleBody.products[0]!.id);
+    expect(staleBody.productId).toBe(second.product.id);
+    expect(staleBody.items).toHaveLength(2);
+    expect(first.product.id).not.toBe(second.product.id);
+
+    await app.close();
+  });
+
+  it("passes the list filters through to the same page /items would return", async () => {
+    const { app } = await testApp();
+    const { product } = await seed(app, "Hermes Go", "HG", 5);
+
+    const filtered = await app.inject({
+      method: "GET",
+      url: `/api/v1/bootstrap?productId=${product.id}&limit=2&status=inbox`,
+    });
+    const body = filtered.json<{ items: unknown[]; nextBeforeSequence?: number }>();
+    expect(body.items).toHaveLength(2);
+    expect(body.nextBeforeSequence).toBeGreaterThan(0);
+
+    const direct = await app.inject({
+      method: "GET",
+      url: `/api/v1/items?productId=${product.id}&limit=2&status=inbox`,
+    });
+    expect(body.items).toEqual(direct.json<{ items: unknown[] }>().items);
+
+    const rejected = await app.inject({ method: "GET", url: `/api/v1/bootstrap?productId=${product.id}&limit=0` });
+    expect(rejected.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("reports an empty workspace without inventing a product", async () => {
+    const { app } = await testApp();
+    const response = await app.inject({ method: "GET", url: "/api/v1/bootstrap" });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ productId: string | null; products: unknown[]; items: unknown[] }>();
+    expect(body.productId).toBeNull();
+    expect(body.products).toEqual([]);
+    expect(body.items).toEqual([]);
+    await app.close();
+  });
+
+  it("requires a session when an administrator account is configured", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-bootstrap-"));
+    temporaryDirectories.push(directory);
+    const adminAccount = testAdminAccount();
+    const app = buildApp({
+      databasePath: join(directory, "missiongo.sqlite"),
+      attachmentsPath: join(directory, "attachments"),
+      adminAccount,
+      publicOrigin: "https://missiongo.test",
+    });
+    apps.push(app);
+
+    const anonymous = await app.inject({ method: "GET", url: "/api/v1/bootstrap" });
+    expect(anonymous.statusCode).toBe(401);
+    expect(anonymous.json<{ code: string }>().code).toBe("authentication_required");
+    // A 401 that got cached would lock a signed-in user out of their own console.
+    expect(anonymous.headers["cache-control"]).toBe("no-store");
+
+    const signedIn = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: "mission-owner", password: "correct horse" },
+    });
+    expect(signedIn.statusCode).toBe(200);
+
+    const authorized = await app.inject({
+      method: "GET",
+      url: "/api/v1/bootstrap",
+      headers: { cookie: signedIn.headers["set-cookie"] as string },
+    });
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.json<{ user: { username: string } }>().user.username).toBe("mission-owner");
+
+    await app.close();
   });
 });

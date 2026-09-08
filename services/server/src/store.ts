@@ -1623,8 +1623,17 @@ export class MissionGoStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
-      ...(row.icon_png ? { icon: `data:image/png;base64,${row.icon_png}` } : {}),
+      hasIcon: Boolean(row.icon_png),
     };
+  }
+
+  /** The stored icon as base64 PNG, or null when the product has none. */
+  getProductIconPng(productId: string): string | null {
+    this.getProduct(productId);
+    const row = this.database.connection
+      .prepare("SELECT icon_png FROM products WHERE id = ?")
+      .get(productId) as unknown as { icon_png: string | null } | undefined;
+    return row?.icon_png ?? null;
   }
 
   private mapComponent(row: ComponentRow): ComponentSnapshot {

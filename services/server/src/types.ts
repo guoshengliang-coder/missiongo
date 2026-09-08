@@ -26,8 +26,15 @@ export interface ProductSnapshot {
   readonly updatedAt: string;
   /** Set when the product is retired. Its items stay readable; it leaves the pickers. */
   readonly archivedAt?: string;
-  /** An uploaded icon as a PNG data URL. Absent when the product uses its generated badge. */
-  readonly icon?: string;
+  /**
+   * Whether an icon has been uploaded. The bytes are not inlined here: a 96px PNG
+   * base64s to roughly 13 KB that gzip cannot shrink (it is already compressed),
+   * and one icon took the product listing from 483 B to 17.7 KB -- paid on every
+   * cold start, on a request the console blocks its first paint behind. Fetch the
+   * image from `GET /api/v1/products/:productId/icon`, which the browser caches.
+   * `false` means the product draws its generated badge instead.
+   */
+  readonly hasIcon: boolean;
 }
 
 export interface ComponentSnapshot {

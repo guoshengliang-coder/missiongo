@@ -43,7 +43,8 @@ import {
   X,
 } from "lucide-react";
 
-import { api, ApiError, type AuthSession, type AuthenticatedUser } from "./api";
+import { api, ApiError, productIconUrl, type AuthSession, type AuthenticatedUser } from "./api";
+import { BootSkeleton } from "./BootSkeleton";
 import {
   captureDraftStorageKey,
   hasCaptureDraftContent,
@@ -119,6 +120,13 @@ const TYPE_ICONS: Record<WorkItemType, typeof Inbox> = {
 };
 
 const ANDROID_APK_DOWNLOAD_PATH = "/downloads/missiongo-android-latest.apk";
+
+/**
+ * Items per list page. Shared with the bootstrap request so the page it returns
+ * lands under the exact query key the list then reads, and the list does not
+ * refetch what it was just handed.
+ */
+const ITEM_PAGE_SIZE = 30;
 
 const REPORT_COPY = {
   idea: { title: "ideaDetails", help: "ideaDetailsHelp", overview: "ideaOverview", placeholder: "ideaOverviewPlaceholder" },
@@ -424,18 +432,64 @@ export function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, [restoreListScroll]);
 
-  const authQuery = useQuery({
-    queryKey: ["auth-session"],
-    queryFn: api.getSession,
+  /**
+   * The whole first screen in one request. It used to be three, chained --
+   * session, then products, then items -- each waiting on the one before, and
+   * the first two hidden behind full-screen spinners. Measured against
+   * production that was three round trips of 185-234ms for about 15ms of actual
+   * server work.
+   *
+   * The filters come from the ref captured on mount, not from live state: this
+   * fetches the screen the visitor arrived on, once. Every later change is an
+   * ordinary `itemsQuery` fetch.
+   *
+   * `retry: false` because the client default of 1 silently doubles the stall on
+   * a flaky connection, which is exactly when it is most visible.
+   */
+  const bootstrapQuery = useQuery({
+    queryKey: ["bootstrap"],
     retry: false,
     staleTime: Infinity,
+    queryFn: async () => {
+      const data = await api.getBootstrap(
+        initialFilters.productId || localStorage.getItem("missiongo.product"),
+        {
+          ...(initialFilters.status !== "all" ? { status: initialFilters.status } : {}),
+          ...(initialFilters.type !== "all" ? { type: initialFilters.type } : {}),
+          ...(initialFilters.search.trim() ? { search: initialFilters.search.trim() } : {}),
+          limit: ITEM_PAGE_SIZE,
+        },
+      );
+      // Seed the caches the rest of the screen reads from, here rather than in an
+      // effect, so it happens before anything can observe this query as settled.
+      // An effect would run a render too late, and the queries below would each
+      // fire a request for data this response already carried.
+      queryClient.setQueryData(["products"], data.products);
+      if (data.productId) {
+        queryClient.setQueryData(["components", data.productId, "with-archived"], data.components);
+        queryClient.setQueryData(
+          // Must match how itemsQuery builds its key below, trim included, or the
+          // list mounts under a different key and refetches what we just seeded.
+          ["items", data.productId, initialFilters.status, initialFilters.type, initialFilters.search.trim()],
+          {
+            pages: [{
+              items: data.items,
+              summary: data.summary,
+              ...(data.nextBeforeSequence !== undefined ? { nextBeforeSequence: data.nextBeforeSequence } : {}),
+            }],
+            pageParams: [null],
+          },
+        );
+      }
+      return data;
+    },
   });
   const productsQuery = useQuery({
     queryKey: ["products"],
     queryFn: () => api.listProducts(),
-    enabled: authQuery.isSuccess,
+    enabled: bootstrapQuery.isSuccess,
   });
-  const products = productsQuery.data ?? [];
+  const products = productsQuery.data ?? bootstrapQuery.data?.products ?? [];
 
   useEffect(() => {
     if (products.length === 0) return;
@@ -494,19 +548,19 @@ export function App() {
       ...(statusFilter !== "all" ? { status: statusFilter } : {}),
       ...(typeFilter !== "all" ? { type: typeFilter } : {}),
       ...(deferredSearch ? { search: deferredSearch } : {}),
-      limit: 30,
+      limit: ITEM_PAGE_SIZE,
       ...(pageParam ? { beforeSequence: pageParam } : {}),
     }),
     initialPageParam: null as number | null,
     getNextPageParam: (page) => page.nextBeforeSequence ?? null,
-    enabled: authQuery.isSuccess && Boolean(selectedProductId),
+    enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId),
   });
   const items = itemsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const itemSummary = itemsQuery.data?.pages[0]?.summary;
   const componentsQuery = useQuery({
     queryKey: ["components", selectedProductId, "with-archived"],
     queryFn: () => api.listComponents(selectedProductId, { includeArchived: true }),
-    enabled: authQuery.isSuccess && Boolean(selectedProductId),
+    enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId),
   });
   const componentsById = useMemo(
     () => new Map((componentsQuery.data ?? []).map((component) => [component.id, component])),
@@ -569,18 +623,15 @@ export function App() {
     setMobileSearchOpen(false);
   };
 
-  if (authQuery.isPending) {
-    return (
-      <main className="centered-state">
-        <div className="page-language"><LanguageSwitch /></div>
-        <Brand />
-        <LoaderCircle className="spin" size={26} />
-        <p>{t("checkingSession")}</p>
-      </main>
-    );
-  }
+  // No full-screen spinner here any more. There were two -- "checking your
+  // account", then "opening your workspace" -- one per request in the old chain,
+  // and together they withheld the entire shell for two round trips. There is one
+  // request now, and while it is in flight the visitor gets the same skeleton
+  // that covered the chunk fetch, so the boot reads as one continuous load
+  // rather than a blank screen followed by two spinners.
+  if (bootstrapQuery.isPending) return <BootSkeleton />;
 
-  if (authQuery.isError || !authQuery.data) {
+  if (bootstrapQuery.isError || !bootstrapQuery.data) {
     return (
       <main className="connection-page">
         <div className="page-language"><LanguageSwitch /></div>
@@ -595,21 +646,14 @@ export function App() {
               queryClient.removeQueries({ queryKey: ["items"] });
               queryClient.removeQueries({ queryKey: ["components"] });
               queryClient.setQueryData(["auth-session"], session);
+              // Refetching bootstrap is what draws the workspace: it carries the
+              // products, the first page of items and the components in one go,
+              // and re-seeds the caches the shell reads.
+              void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
               void queryClient.invalidateQueries({ queryKey: ["products"] });
             }}
           />
         </section>
-      </main>
-    );
-  }
-
-  if (productsQuery.isLoading) {
-    return (
-      <main className="centered-state">
-        <div className="page-language"><LanguageSwitch /></div>
-        <Brand />
-        <LoaderCircle className="spin" size={26} />
-        <p>{t("openingWorkspace")}</p>
       </main>
     );
   }
@@ -887,7 +931,7 @@ export function App() {
       {connectionOpen && (
         <Modal title={t("accountSettings")} subtitle={t("accountSettingsHelp")} onClose={() => setConnectionOpen(false)}>
           <AccountPanel
-            user={authQuery.data.user}
+            user={bootstrapQuery.data.user}
             onLoggedOut={() => window.location.reload()}
           />
         </Modal>
@@ -1005,13 +1049,15 @@ function ItemRow({
  * it exists, with nothing to configure.
  */
 function ProductBadge({ product, size = 22 }: { product: Product; size?: number }) {
-  if (product.icon) {
+  if (product.hasIcon) {
     return (
       <img
         className="product-badge"
-        src={product.icon}
+        src={productIconUrl(product)}
         alt=""
         aria-hidden="true"
+        loading="lazy"
+        decoding="async"
         style={{ width: size, height: size }}
       />
     );
@@ -2914,9 +2960,9 @@ function ProductIconField({ product }: { product: Product }) {
         <small>{t("productIconHelp")}</small>
         <div className="product-icon-actions">
           <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => inputRef.current?.click()}>
-            {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <ImageIcon size={15} />} {product.icon ? t("replaceIcon") : t("uploadIcon")}
+            {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <ImageIcon size={15} />} {product.hasIcon ? t("replaceIcon") : t("uploadIcon")}
           </button>
-          {product.icon && (
+          {product.hasIcon && (
             <button type="button" className="text-button" disabled={mutation.isPending} onClick={() => mutation.mutate(null)}>
               {t("useGeneratedIcon")}
             </button>

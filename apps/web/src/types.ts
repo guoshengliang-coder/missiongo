@@ -61,8 +61,12 @@ export interface Product {
   readonly updatedAt: string;
   /** Set when the product is retired; it leaves the switcher but keeps its items. */
   readonly archivedAt?: string;
-  /** An uploaded icon as a data URL. Absent when the product shows its generated badge. */
-  readonly icon?: string;
+  /**
+   * Whether an icon has been uploaded. The bytes are fetched separately, from
+   * `/api/v1/products/:id/icon`, so the product listing stays small enough not to
+   * delay the first paint. False means the generated badge is used.
+   */
+  readonly hasIcon: boolean;
 }
 
 export const COMPONENT_KINDS = ["android", "macos", "web", "server", "shared", "other"] as const;

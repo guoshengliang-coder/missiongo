@@ -92,7 +92,45 @@ async function attachmentRequest(path: string, init: RequestInit = {}): Promise<
   return response;
 }
 
+/**
+ * Where to point an `<img>` at a product's icon.
+ *
+ * `updatedAt` moves whenever the icon is replaced and matches the server's ETag,
+ * so it doubles as the cache buster: the browser may keep the image across cold
+ * starts, and a replaced icon still appears at once under its new URL.
+ */
+export function productIconUrl(product: Pick<Product, "id" | "updatedAt">): string {
+  return `/api/v1/products/${encodeURIComponent(product.id)}/icon?v=${encodeURIComponent(product.updatedAt)}`;
+}
+
+/**
+ * The first screen, in one response. Replaces the `/auth/session` ->
+ * `/products` -> `/items` chain, which cost three round trips before anything
+ * could render. `productId` is resolved by the server: it is the requested one
+ * when that product still exists, the first product otherwise, and null when the
+ * workspace has none.
+ */
+export interface Bootstrap {
+  readonly user: AuthenticatedUser;
+  readonly products: Product[];
+  readonly productId: string | null;
+  readonly items: WorkItem[];
+  readonly components: Component[];
+  readonly summary?: WorkItemListPage["summary"];
+  readonly nextBeforeSequence?: number;
+}
+
 export const api = {
+  getBootstrap: (productId: string | null, options: ListItemsOptions = {}) => {
+    const query = new URLSearchParams();
+    if (productId) query.set("productId", productId);
+    if (options.status) query.set("status", options.status);
+    if (options.type) query.set("type", options.type);
+    if (options.search) query.set("search", options.search);
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return request<Bootstrap>(`/api/v1/bootstrap${suffix}`);
+  },
   getSession: () => request<AuthSession>("/api/v1/auth/session"),
   login: (input: { username: string; password: string }) =>
     request<AuthSession>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(input) }),

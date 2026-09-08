@@ -5,8 +5,6 @@ import type { WorkItemPriority, WorkItemStatus, WorkItemType } from "./types";
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
-  openingWorkspace: "Opening your workspace…",
-  checkingSession: "Checking your account…",
   privateWorkspace: "Administrator account",
   connectTitle: "Sign in to MissionGo",
   connectBody: "Use the administrator username and password to continue. Registration is not available yet.",
@@ -377,8 +375,6 @@ const EN_MESSAGES = {
 export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
-  openingWorkspace: "正在打开工作区…",
-  checkingSession: "正在检查登录状态…",
   privateWorkspace: "管理员账户",
   connectTitle: "登录 MissionGo",
   connectBody: "请输入管理员用户名和密码继续使用。暂时不提供注册功能。",
