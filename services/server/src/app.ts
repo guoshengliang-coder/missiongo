@@ -288,9 +288,8 @@ function oauthLoginPage(
   invalidCredentials = false,
 ): string {
   const writes = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools !== "none";
-  const writeGrant = writeTools === "all"
-    ? "<strong>发表评论，并推进任务的处理阶段</strong>。不能修改你写的内容，不能创建或删除条目，不能撤回评论。"
-    : "<strong>在任务上发表评论</strong>。不能修改你写的内容，不能创建或删除条目，不能撤回评论，也不能改变任务状态。";
+  const writeGrant = "<strong>发表评论，并把待处理的任务领为处理中</strong>。领取是它唯一能做的状态变更——"
+    + "完成、做不了、要问你，都只会写成评论，由你决定任务往哪走。它不能修改你写的内容，不能创建或删除条目，不能撤回评论。";
   const scopeNote = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools === "none"
     ? "本次只会签发读取授权：这个部署当前没有开放 AI 写入。"
     : writes

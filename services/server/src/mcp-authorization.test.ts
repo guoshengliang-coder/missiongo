@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AttachmentStorage } from "./attachment-storage.js";
 import {
   createMissionGoMcpServer,
-  requireExecutionAccess,
   requireItemAccess,
   requireWriteScope,
   WRITE_TOOLS_BY_TIER,
@@ -91,22 +90,6 @@ describe("MCP write-tool authorization", () => {
       .toThrowError(/account authorization is required/);
   });
 
-  it("resolves an execution back to its product before allowing a write", async () => {
-    const { store, product, item } = await seed();
-    store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
-    const execution = store.claimExecution({
-      itemKey: item.key,
-      agentId: "agent-1",
-      mode: "process",
-      leaseSeconds: 900,
-      idempotencyKey: "claim-1",
-    });
-
-    expect(() => requireExecutionAccess(contextFor([product.id]), store, execution.id)).not.toThrow();
-    expect(() => requireExecutionAccess(contextFor(["some-other-product"]), store, execution.id))
-      .toThrowError(/not permitted/);
-  });
-
   it("keeps every write-section tool handler behind an authorization check", () => {
     // The write tools are unreachable in a default build, so no integration test
     // exercises them. Guard the invariant structurally instead: a tool registered
@@ -154,7 +137,6 @@ describe("MCP write-tool authorization", () => {
 
     expect(WRITE_TOOLS_BY_TIER.none).toEqual([]);
     expect(WRITE_TOOLS_BY_TIER.comments).toEqual(mutating("comments"));
-    expect(WRITE_TOOLS_BY_TIER.all).toEqual(mutating("all"));
   });
 
   it("keeps each write tool in the tier it belongs to", () => {
@@ -162,18 +144,7 @@ describe("MCP write-tool authorization", () => {
     // claiming, leases, and status transitions. Naming the members explicitly
     // means a new tool has to be placed on purpose rather than by where it
     // happened to be pasted.
-    expect(toolNamesInTier("comments")).toEqual(["append_comment"]);
-    expect(toolNamesInTier("processing")).toEqual([
-      "get_execution",
-      "claim_item",
-      "renew_item_lease",
-      "append_progress",
-      "request_human_input",
-      "submit_resolution",
-      "mark_pending_verification",
-      "release_item",
-      "resume_execution",
-    ]);
+    expect(toolNamesInTier("comments")).toEqual(["append_comment", "claim_item"]);
   });
 });
 
@@ -212,17 +183,14 @@ describe("MCP write tiers", () => {
     expect(server.toolInputSchemaJson("claim_item")).toBeUndefined();
   });
 
-  it("stops at comment writing on the comments tier", async () => {
+  it("exposes commenting and claiming, and nothing that ends the work", async () => {
     const server = await serverForTier("comments");
     expect(server.toolInputSchemaJson("append_comment")).toBeDefined();
-    expect(server.toolInputSchemaJson("get_execution")).toBeUndefined();
-    expect(server.toolInputSchemaJson("claim_item")).toBeUndefined();
-  });
-
-  it("exposes the processing tools only on the all tier", async () => {
-    const server = await serverForTier("all");
-    expect(server.toolInputSchemaJson("append_comment")).toBeDefined();
     expect(server.toolInputSchemaJson("claim_item")).toBeDefined();
-    expect(server.toolInputSchemaJson("resume_execution")).toBeDefined();
+    // Deciding an item is finished, paused or abandoned stays with the user, so
+    // there is no tool for it at any tier.
+    for (const gone of ["submit_resolution", "mark_pending_verification", "release_item", "resume_execution"]) {
+      expect(server.toolInputSchemaJson(gone)).toBeUndefined();
+    }
   });
 });

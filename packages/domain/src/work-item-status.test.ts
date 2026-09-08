@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluateWorkItemTransition } from "./work-item-status.js";
+import { evaluateWorkItemTransition, TRANSITION_REASONS } from "./work-item-status.js";
+import { WORK_ITEM_STATUSES } from "./work-item.js";
 
 describe("work item state machine", () => {
   it("allows a human to move a captured item from inbox to ready", () => {
@@ -15,15 +16,19 @@ describe("work item state machine", () => {
     ).toMatchObject({ allowed: true, code: "allowed" });
   });
 
-  it("allows an agent to submit work for human verification", () => {
-    expect(
-      evaluateWorkItemTransition({
-        from: "in_progress",
-        to: "pending_verification",
-        actor: "agent",
-        reason: "resolution_submitted",
-      }),
-    ).toMatchObject({ allowed: true });
+  it("stops an agent at the claim: everything leaving in_progress is a person's", () => {
+    // An agent says it finished, cannot proceed, or needs input in a comment.
+    // Deciding what that means for the item is not its call.
+    for (const [to, reason] of [
+      ["pending_verification", "resolution_submitted"],
+      ["on_hold", "request_human_input"],
+      ["ready", "released"],
+    ] as const) {
+      expect(evaluateWorkItemTransition({ from: "in_progress", to, actor: "agent", reason }))
+        .toMatchObject({ allowed: false, code: "actor_not_allowed" });
+    }
+    expect(evaluateWorkItemTransition({ from: "on_hold", to: "in_progress", actor: "agent", reason: "resume" }))
+      .toMatchObject({ allowed: false, code: "actor_not_allowed" });
   });
 
   it("prevents an agent from completing final verification", () => {
@@ -48,15 +53,18 @@ describe("work item state machine", () => {
     ).toMatchObject({ allowed: true });
   });
 
-  it("lets the system release a work item after its lease expires", () => {
-    expect(
-      evaluateWorkItemTransition({
-        from: "in_progress",
-        to: "ready",
-        actor: "system",
-        reason: "lease_expired",
-      }),
-    ).toMatchObject({ allowed: true });
+  it("leaves the agent exactly one edge in the whole table", () => {
+    const edges: Array<[string, string, string]> = [];
+    for (const from of WORK_ITEM_STATUSES) {
+      for (const to of WORK_ITEM_STATUSES) {
+        for (const reason of TRANSITION_REASONS) {
+          if (evaluateWorkItemTransition({ from, to, actor: "agent", reason }).allowed) {
+            edges.push([from, to, reason]);
+          }
+        }
+      }
+    }
+    expect(edges).toEqual([["ready", "in_progress", "claim"], ["ready", "in_progress", "resume"]]);
   });
 
   it("rejects a mismatched transition reason", () => {

@@ -16,14 +16,15 @@ describe("MCP tool catalog", () => {
     expect(names).not.toContain("complete_item");
   });
 
-  it("publishes the seven read tools and commenting, and nothing from the processing tier", () => {
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(8);
+  it("publishes the seven read tools, commenting, and the single claim", () => {
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(9);
     expect(MCP_TOOL_DEFINITIONS.filter((tool) => tool.access === "write").map((tool) => tool.name))
-      .toEqual(["append_comment"]);
+      .toEqual(["append_comment", "claim_item"]);
     expect(findMcpTool("get_item_context")?.access).toBe("read");
-    // Claiming, leases and status transitions are a separate decision and are
-    // not published yet.
-    expect(findMcpTool("claim_item")).toBeUndefined();
-    expect(findMcpTool("submit_resolution")).toBeUndefined();
+    // Deciding an item is finished, paused or abandoned is the user's, so no
+    // tool for it exists at any tier.
+    for (const gone of ["submit_resolution", "mark_pending_verification", "release_item", "resume_execution"]) {
+      expect(findMcpTool(gone)).toBeUndefined();
+    }
   });
 });

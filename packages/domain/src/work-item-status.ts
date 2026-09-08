@@ -52,19 +52,22 @@ const TRANSITIONS: Readonly<
     cancelled: rule(["human"], ["cancelled"]),
   },
   ready: {
+    // The only edge an agent may walk. Everything that leaves in_progress is a
+    // person's call, so an agent can start work but never decide it is finished,
+    // paused, or abandoned -- it says so in a comment and a person moves it.
     in_progress: rule(["agent", "human"], ["claim", "resume"]),
     on_hold: rule(["human"], ["request_human_input"]),
     inbox: rule(["human"], ["reopened"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
   in_progress: {
-    on_hold: rule(["agent", "human"], ["request_human_input"]),
-    pending_verification: rule(["agent", "human"], ["resolution_submitted"]),
-    ready: rule(["agent", "human", "system"], ["released", "lease_expired"]),
+    on_hold: rule(["human"], ["request_human_input"]),
+    pending_verification: rule(["human"], ["resolution_submitted"]),
+    ready: rule(["human"], ["released"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
   on_hold: {
-    in_progress: rule(["agent", "human"], ["resume"]),
+    in_progress: rule(["human"], ["resume"]),
     ready: rule(["human"], ["reopened"]),
     cancelled: rule(["human"], ["cancelled"]),
   },

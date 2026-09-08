@@ -66,19 +66,31 @@ describe("work-item event attribution", () => {
     expect(created?.executionId).toBeUndefined();
   });
 
-  it("ties an execution's events back to the execution", async () => {
+  it("records which agent claimed an item, and refuses a second claim", async () => {
     const { store, item } = await seed();
     store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
-    const execution = store.claimExecution({
+    const claimed = store.claimWorkItem({
       itemKey: item.key,
       agentId: "agent-1",
-      mode: "process",
-      leaseSeconds: 900,
+      attribution: { accountId: "account-1", clientId: "client-9" },
       idempotencyKey: "claim-1",
     });
+    expect(claimed.status).toBe("in_progress");
 
-    const claimed = store.getTimeline(item.key).find((entry) => entry.eventType === "execution_claimed");
-    expect(claimed?.executionId).toBe(execution.id);
+    // The first status_changed is the human triage into ready; the claim is the next one.
+    const moved = store.getTimeline(item.key)
+      .findLast((entry) => entry.eventType === "status_changed" && entry.toStatus === "in_progress");
+    expect(moved?.actorKind).toBe("agent");
+    expect(moved?.accountId).toBe("account-1");
+    expect(moved?.payload).toMatchObject({ reason: "claim", note: "agent-1" });
+
+    // The status is the lock: an item already in progress cannot be claimed
+    // again, so two sessions racing for it means one of them loses.
+    expect(() => store.claimWorkItem({
+      itemKey: item.key,
+      agentId: "agent-2",
+      idempotencyKey: "claim-2",
+    })).toThrowError(/Only a ready work item can be claimed/);
   });
 
   it("applies the attribution migration once and keeps the columns on reopen", async () => {

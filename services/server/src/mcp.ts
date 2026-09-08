@@ -2,7 +2,7 @@ import { open, readFile, stat } from "node:fs/promises";
 
 import { McpServer, createMcpHandler, type McpHttpHandler, type ServerContext } from "@modelcontextprotocol/server";
 import { skillVersionInfo } from "@missiongo/contracts";
-import { WORK_ITEM_STATUSES, WORK_ITEM_TYPES, type ExecutionReport } from "@missiongo/domain";
+import { WORK_ITEM_STATUSES, WORK_ITEM_TYPES } from "@missiongo/domain";
 import sharp from "sharp";
 import { z } from "zod";
 
@@ -33,7 +33,7 @@ export function missionGoMcpInstructions(writeTools: McpWriteTier = "none"): str
   return MCP_SHARED_INSTRUCTIONS + (writeTools === "none" ? MCP_READ_ONLY_INSTRUCTIONS : MCP_COMMENT_INSTRUCTIONS);
 }
 
-export const MCP_WRITE_TIERS = ["none", "comments", "all"] as const;
+export const MCP_WRITE_TIERS = ["none", "comments"] as const;
 export type McpWriteTier = (typeof MCP_WRITE_TIERS)[number];
 
 export interface MissionGoMcpOptions {
@@ -83,18 +83,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["append_comment"],
-  all: [
-    "append_comment",
-    "claim_item",
-    "renew_item_lease",
-    "append_progress",
-    "request_human_input",
-    "submit_resolution",
-    "mark_pending_verification",
-    "release_item",
-    "resume_execution",
-  ],
+  comments: ["append_comment", "claim_item"],
 };
 
 /**
@@ -131,28 +120,6 @@ export function requireItemAccess(ctx: ServerContext, store: MissionGoStore, ite
   requireProductAccess(ctx, store.getWorkItem(normalizedKey).productId);
   return normalizedKey;
 }
-
-/** Authorize the caller for the work item an execution belongs to. */
-export function requireExecutionAccess(ctx: ServerContext, store: MissionGoStore, executionId: string): void {
-  requireProductAccess(ctx, store.getWorkItem(store.getExecution(executionId).itemKey).productId);
-}
-
-const executionReportSchema = z.object({
-  conclusion: z.string().min(1).max(20_000),
-  rootCause: z.string().min(1).max(20_000).optional(),
-  changeSummary: z.string().min(1).max(20_000),
-  affectedFiles: z.array(z.string().min(1).max(1_000)).max(200),
-  branch: z.string().min(1).max(500).optional(),
-  commit: z.string().min(1).max(200).optional(),
-  checks: z.array(z.object({
-    name: z.string().min(1).max(500),
-    command: z.string().min(1).max(2_000).optional(),
-    outcome: z.enum(["passed", "failed", "skipped"]),
-    summary: z.string().min(1).max(4_000),
-  })).max(100),
-  remainingRisks: z.array(z.string().min(1).max(2_000)).max(100),
-  manualVerificationSteps: z.array(z.string().min(1).max(2_000)).max(100),
-});
 
 function textResult(data: Readonly<Record<string, unknown>>, summary?: string) {
   return {
@@ -490,203 +457,37 @@ export function createMissionGoMcpServer(
     },
   );
 
-  if (writeToolsTier !== "all") return server;
-
-  // MCP_WRITE_TIER: processing
-  server.registerTool(
-    "get_execution",
-    {
-      title: "Get an AI execution",
-      description: "Read one structured AI execution, its report, and its active lease metadata.",
-      inputSchema: z.object({ executionId: z.string().uuid() }),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    },
-    async ({ executionId }, ctx) => {
-      requireExecutionAccess(ctx, store, executionId);
-      return textResult({ execution: store.getExecution(executionId) });
-    },
-  );
-
   server.registerTool(
     "claim_item",
     {
-      title: "Claim a work item",
-      description: "Atomically claim a ready, on-hold, or pending-verification item before changing code.",
+      title: "Claim a ready work item",
+      description:
+        "Take a ready work item into progress before you start changing code. This is the only status change you can make: "
+        + "everything that leaves in-progress -- finished, cannot proceed, needs input, put aside -- is a person's decision. "
+        + "Say those in a comment and leave the item where it is. Tell the user what you are about to claim before claiming it.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
         agentId: z.string().min(1).max(200),
-        mode: z.enum(["process", "continue", "verify"]),
-        leaseSeconds: z.number().int().min(60).max(3_600).default(900),
         idempotencyKey: z.string().min(1).max(200),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, agentId, mode, leaseSeconds, idempotencyKey }, ctx) => {
+    async ({ itemKey, agentId, idempotencyKey }, ctx) => {
       requireWriteScope(ctx);
-      const execution = store.claimExecution({
+      const access = accountAccess(ctx);
+      const item = store.claimWorkItem({
         itemKey: requireItemAccess(ctx, store, itemKey),
         agentId,
-        mode,
-        leaseSeconds,
+        attribution: {
+          accountId: access.accountId,
+          ...(access.clientId ? { clientId: access.clientId } : {}),
+        },
         idempotencyKey,
       });
-      const lease = execution.activeLease!;
       return textResult(
-        { executionId: execution.id, leaseId: lease.id, leaseExpiresAt: lease.expiresAt },
-        `${execution.itemKey} claimed until ${lease.expiresAt}.`,
+        { item, statusChanged: true },
+        `${item.key} is now in progress. Every later status change is the user's to make.`,
       );
-    },
-  );
-
-  server.registerTool(
-    "renew_item_lease",
-    {
-      title: "Renew a work-item lease",
-      description: "Extend an active execution lease while processing is still underway.",
-      inputSchema: z.object({
-        executionId: z.string().uuid(),
-        leaseId: z.string().uuid(),
-        leaseSeconds: z.number().int().min(60).max(3_600).default(900),
-        idempotencyKey: z.string().min(1).max(200),
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    },
-    async (input, ctx) => {
-      requireWriteScope(ctx);
-      requireExecutionAccess(ctx, store, input.executionId);
-      return textResult({ execution: store.renewExecutionLease(input) });
-    },
-  );
-
-  server.registerTool(
-    "append_progress",
-    {
-      title: "Append processing progress",
-      description: "Add a concise, user-visible milestone to an active AI execution.",
-      inputSchema: z.object({
-        executionId: z.string().uuid(),
-        leaseId: z.string().uuid(),
-        message: z.string().min(1).max(4_000),
-        idempotencyKey: z.string().min(1).max(200),
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    },
-    async (input, ctx) => {
-      requireWriteScope(ctx);
-      requireExecutionAccess(ctx, store, input.executionId);
-      return textResult({ event: store.appendExecutionProgress(input) });
-    },
-  );
-
-  server.registerTool(
-    "request_human_input",
-    {
-      title: "Request human input",
-      description: "Pause an active execution, release its lease, and place the item on hold with one concrete question.",
-      inputSchema: z.object({
-        executionId: z.string().uuid(),
-        leaseId: z.string().uuid(),
-        question: z.string().min(1).max(4_000),
-        idempotencyKey: z.string().min(1).max(200),
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    },
-    async (input, ctx) => {
-      requireWriteScope(ctx);
-      requireExecutionAccess(ctx, store, input.executionId);
-      return textResult({ execution: store.requestExecutionHumanInput(input) });
-    },
-  );
-
-  server.registerTool(
-    "submit_resolution",
-    {
-      title: "Submit a processing resolution",
-      description: "Store the complete code-processing and verification report before requesting human verification.",
-      inputSchema: z.object({
-        executionId: z.string().uuid(),
-        leaseId: z.string().uuid(),
-        report: executionReportSchema,
-        idempotencyKey: z.string().min(1).max(200),
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    },
-    async ({ executionId, leaseId, report, idempotencyKey }, ctx) => {
-      requireWriteScope(ctx);
-      requireExecutionAccess(ctx, store, executionId);
-      return textResult({
-        execution: store.submitExecutionResolution({
-          executionId,
-          leaseId,
-          report: report as ExecutionReport,
-          idempotencyKey,
-        }),
-      });
-    },
-  );
-
-  server.registerTool(
-    "mark_pending_verification",
-    {
-      title: "Mark pending human verification",
-      description: "After a resolution report is stored, move the item to human verification and release the lease.",
-      inputSchema: z.object({
-        executionId: z.string().uuid(),
-        leaseId: z.string().uuid(),
-        idempotencyKey: z.string().min(1).max(200),
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    },
-    async (input, ctx) => {
-      requireWriteScope(ctx);
-      requireExecutionAccess(ctx, store, input.executionId);
-      return textResult({ execution: store.markExecutionPendingVerification(input) });
-    },
-  );
-
-  server.registerTool(
-    "release_item",
-    {
-      title: "Release a claimed item",
-      description: "Abort an active execution safely, release its lease, and return an in-progress item to ready.",
-      inputSchema: z.object({
-        executionId: z.string().uuid(),
-        leaseId: z.string().uuid(),
-        note: z.string().min(1).max(4_000).optional(),
-        idempotencyKey: z.string().min(1).max(200),
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    },
-    async ({ executionId, leaseId, note, idempotencyKey }, ctx) => {
-      requireWriteScope(ctx);
-      requireExecutionAccess(ctx, store, executionId);
-      return textResult({
-        execution: store.releaseExecution({
-          executionId,
-          leaseId,
-          ...(note ? { note } : {}),
-          idempotencyKey,
-        }),
-      });
-    },
-  );
-
-  server.registerTool(
-    "resume_execution",
-    {
-      title: "Resume a paused execution",
-      description: "Resume an execution waiting for human input and issue a fresh lease.",
-      inputSchema: z.object({
-        executionId: z.string().uuid(),
-        leaseSeconds: z.number().int().min(60).max(3_600).default(900),
-        idempotencyKey: z.string().min(1).max(200),
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    },
-    async (input, ctx) => {
-      requireWriteScope(ctx);
-      requireExecutionAccess(ctx, store, input.executionId);
-      return textResult({ execution: store.resumeExecution(input) });
     },
   );
 

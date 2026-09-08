@@ -227,6 +227,14 @@ export interface CreateCommentInput {
   readonly idempotencyKey?: string;
 }
 
+export interface ClaimWorkItemInput {
+  readonly itemKey: string;
+  /** Which AI is picking it up, recorded on the timeline so a person can tell them apart. */
+  readonly agentId: string;
+  readonly attribution?: EventAttribution;
+  readonly idempotencyKey: string;
+}
+
 export interface WithdrawCommentInput {
   readonly itemKey: string;
   readonly commentId: string;
