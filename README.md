@@ -89,6 +89,28 @@ npm run dev:web
 
 生产构建面向 Chrome/Edge 90+、Firefox 90+ 和 Safari/iOS 15.4+。低于 1024px 时切换为单栏布局，并适配横屏、安全区和底部手势区域。离线能力仅覆盖应用壳层、已缓存页面和本地草稿，不缓存 API、管理员凭据或受保护附件，也不会在离线时排队提交。
 
+## 发布
+
+三个产物从这个仓库发出：Web 应用、Android 应用和 Android SDK。`released.json`
+记录每个产物上次发布的版本和它构建自哪个提交，`npm run release:state` 据此说明
+谁需要发、谁不用动：
+
+```sh
+npm run release:state -- --deployed https://<host>
+```
+
+- **up to date** — 自上次发布以来，喂给这个产物的路径没有任何改动，不用发
+- **ready to publish** — 有改动，版本号也已经抬过了
+- **needs a version bump** — 有改动但版本号没动，两个发布脚本都会在构建之前拒绝
+
+一个版本号必须只对应一份构建。`scripts/publish-android-internal.sh` 和
+`scripts/publish-android-sdk.sh` 各自在开工前检查这一点，发布成功后把新的版本和提交
+写回 `released.json`——那个文件是被跟踪的，记得和发布一起提交，否则下一次比较的
+就是错的提交。两个脚本都有 `--allow-republish` 作为逃生口。
+
+Web 应用没有自己的版本号，它的身份就是提交：`scripts/deploy.sh` 负责发布，
+`/health` 报告线上跑的是哪个提交，细节见[部署说明](deploy/README.md)。
+
 ## 项目规范
 
 - [贡献指南](CONTRIBUTING.md)

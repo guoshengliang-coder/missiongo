@@ -1,6 +1,14 @@
 #!/bin/sh
 set -eu
 
+allow_republish=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --allow-republish) allow_republish=1; shift ;;
+    *) echo "Usage: $0 [--allow-republish]" >&2; exit 1 ;;
+  esac
+done
+
 SCRIPT_DIRECTORY=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPOSITORY_ROOT=$(CDPATH= cd -- "$SCRIPT_DIRECTORY/.." && pwd)
 GRADLE_ROOT="$REPOSITORY_ROOT/sdks/android-feedback"
@@ -41,6 +49,26 @@ MISSIONGO_ANDROID_ENDPOINT=${MISSIONGO_PUBLIC_ORIGIN:?Missing MISSIONGO_PUBLIC_O
 MISSIONGO_ANDROID_SDK_TOKEN=$(jq -er '.token | select(type == "string" and length > 0)' "$SDK_TOKEN_FILE")
 export MISSIONGO_ANDROID_ENDPOINT MISSIONGO_ANDROID_SDK_TOKEN
 
+# Four APKs have shipped as 0.1.7, built fifteen commits apart, because nothing
+# tied the version name to the code inside it. A published number has to mean one
+# build; released.json records which commit each artifact was published from, and
+# this refuses when the answer would become ambiguous.
+if [ "$allow_republish" -eq 0 ]; then
+  node "$REPOSITORY_ROOT/scripts/release-state.mjs" --check androidApp || {
+    echo "Pass --allow-republish to publish the same version anyway." >&2
+    exit 1
+  }
+fi
+
+SOURCE_COMMIT=$(git -C "$REPOSITORY_ROOT" rev-parse HEAD)
+SOURCE_DIRTY=false
+if [ -n "$(git -C "$REPOSITORY_ROOT" status --porcelain)" ]; then
+  SOURCE_DIRTY=true
+  echo "Note: publishing from a working tree with uncommitted changes." >&2
+  echo "      The APK will record source_dirty=true, so it can never be mistaken" >&2
+  echo "      for a build of ${SOURCE_COMMIT}." >&2
+fi
+
 # The published APK is a release build. A debug build carries
 # android:debuggable="true", which lets anyone holding the phone read the app's
 # private data with run-as and attach a debugger to the signed-in WebView — too
@@ -79,11 +107,22 @@ cat > "$RELEASE_METADATA" <<METADATA
 version_name=$VERSION_NAME
 version_code=$VERSION_CODE
 build_timestamp=$BUILD_TIMESTAMP
+source_commit=$SOURCE_COMMIT
+source_dirty=$SOURCE_DIRTY
 sha256=$(shasum -a 256 "$LATEST_APK" | awk '{print $1}')
 METADATA
 
 cd "$REPOSITORY_ROOT"
 npm run build:web
+
+# Close the loop. A publish that does not write this back leaves the guard above
+# comparing against a commit that is no longer the last published one, and it
+# would wave through the next build silently.
+if [ "$SOURCE_DIRTY" = "false" ]; then
+  node "$REPOSITORY_ROOT/scripts/release-state.mjs" --record androidApp --commit "$SOURCE_COMMIT"
+else
+  echo "released.json not updated: this build came from a dirty tree, so no commit describes it." >&2
+fi
 
 echo "Android internal build published: $VERSION_NAME ($VERSION_CODE)"
 echo "Website path: /downloads/missiongo-android-latest.apk"

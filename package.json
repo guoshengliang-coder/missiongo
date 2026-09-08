@@ -20,6 +20,8 @@
     "build:types": "tsc -b",
     "build:web": "npm run build --workspace @missiongo/web",
     "publish:android-internal": "./scripts/publish-android-internal.sh",
+    "publish:android-sdk": "./scripts/publish-android-sdk.sh",
+    "release:state": "node ./scripts/release-state.mjs",
     "dev:server": "npm run dev --workspace @missiongo/server",
     "dev:web": "npm run dev --workspace @missiongo/web",
     "check": "npm run lint && npm run check:identity && npm run check:migrations && npm run test && npm run typecheck && npm run build",
