@@ -7,6 +7,12 @@
 # Local-only notes and handover documents. Ignored via .git/info/exclude,
 # which rsync does not read, so name it here too.
 .private
+# Same reasoning, same trap: the compose build context is the whole release
+# directory, and .claude/worktrees is ignored only in .git/info/exclude while
+# .worktrees was ignored nowhere. Neither is copied into the image, but both
+# were being handed to the daemon as build context.
+.worktrees
+.claude/worktrees
 node_modules
 **/node_modules
 dist
