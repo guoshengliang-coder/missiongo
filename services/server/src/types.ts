@@ -251,6 +251,21 @@ export interface ClaimWorkItemInput {
   readonly idempotencyKey: string;
 }
 
+export interface SubmitForVerificationInput {
+  readonly itemKey: string;
+  /**
+   * Where the merged change lives. Required, because an item arriving in the
+   * verification queue without a pointer to what to verify is the failure the
+   * version number was meant to prevent and could not: an agent cannot know
+   * which release will carry a change, but it does know which pull request
+   * carried it.
+   */
+  readonly pullRequestUrl: string;
+  readonly summary?: string;
+  readonly attribution?: EventAttribution;
+  readonly idempotencyKey: string;
+}
+
 export interface WithdrawCommentInput {
   readonly itemKey: string;
   readonly commentId: string;

@@ -293,8 +293,9 @@ function oauthLoginPage(
   invalidCredentials = false,
 ): string {
   const writes = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools !== "none";
-  const writeGrant = "<strong>发表评论，并把待处理的任务领为处理中</strong>。领取是它唯一能做的状态变更——"
-    + "完成、做不了、要问你，都只会写成评论，由你决定任务往哪走。它不能修改你写的内容，不能创建或删除条目，不能撤回评论。";
+  const writeGrant = "<strong>发表评论、把待处理的任务领为处理中、并在 PR 合并后推到待验证</strong>。"
+    + "只有这两个状态变更——验收、退回、搁置，以及做不了怎么办，都由你决定。"
+    + "它不能修改你写的内容，不能创建或删除条目，不能撤回评论。";
   const scopeNote = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools === "none"
     ? "本次只会签发读取授权：这个部署当前没有开放 AI 写入。"
     : writes

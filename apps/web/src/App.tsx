@@ -1902,6 +1902,15 @@ function DetailPane({
                       {/* A direct jump skipped the steps in between; say so, or the
                           history reads as if the work went through them. */}
                       {event.payload?.reason === "manual_override" && <span className="timeline-tag">{t("movedDirectly")}</span>}
+                      {/* The AI hands work over naming the pull request that carried
+                          it, which is the thing to open when deciding to verify. */}
+                      {typeof event.payload?.pullRequestUrl === "string" && (
+                        <p className="timeline-pull-request">
+                          <a href={event.payload.pullRequestUrl} target="_blank" rel="noreferrer noopener">
+                            {t("mergedPullRequest")}
+                          </a>
+                        </p>
+                      )}
                       <p>
                         {commentAuthor(
                           { ...event, agentName: eventAgentName(event.payload) },

@@ -93,6 +93,50 @@ describe("work-item event attribution", () => {
     })).toThrowError(/Only a ready work item can be claimed/);
   });
 
+  it("hands merged work over for verification, naming the pull request", async () => {
+    const { store, item } = await seed();
+    store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+
+    const submitted = store.submitForVerification({
+      itemKey: item.key,
+      pullRequestUrl: "https://github.com/owner/repo/pull/42",
+      summary: "冷启动初始化 session",
+      attribution: { accountId: "account-1", clientId: "client-9" },
+      idempotencyKey: "submit-1",
+    });
+    expect(submitted.status).toBe("pending_verification");
+
+    const moved = store.getTimeline(item.key)
+      .findLast((entry) => entry.eventType === "status_changed" && entry.toStatus === "pending_verification");
+    expect(moved?.actorKind).toBe("agent");
+    expect(moved?.accountId).toBe("account-1");
+    // Its own field rather than buried in the note: the timeline renders it as a link.
+    expect(moved?.payload).toMatchObject({
+      reason: "resolution_submitted",
+      note: "冷启动初始化 session",
+      pullRequestUrl: "https://github.com/owner/repo/pull/42",
+    });
+  });
+
+  it("refuses a handover without an https pull request, or from the wrong status", async () => {
+    const { store, item } = await seed();
+    // The item is still in inbox, so there is nothing to hand over yet.
+    expect(() => store.submitForVerification({
+      itemKey: item.key,
+      pullRequestUrl: "https://github.com/owner/repo/pull/42",
+      idempotencyKey: "too-early",
+    })).toThrowError(/Only an in-progress work item/);
+
+    store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+    for (const pullRequestUrl of ["", "   ", "github.com/owner/repo/pull/42"]) {
+      expect(() => store.submitForVerification({ itemKey: item.key, pullRequestUrl, idempotencyKey: `bad-${pullRequestUrl}` }))
+        .toThrowError(/Pull request URL/);
+    }
+    expect(store.getWorkItem(item.key).status).toBe("in_progress");
+  });
+
   it("applies the attribution migration once and keeps the columns on reopen", async () => {
     const { directory, store } = await seed();
     store.close();

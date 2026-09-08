@@ -25,6 +25,7 @@ import {
   COMPONENT_KINDS,
   type AttachmentRecord,
   type ClaimWorkItemInput,
+  type SubmitForVerificationInput,
   type CommentBody,
   type CommentBodyKind,
   type CreateCommentInput,
@@ -1224,6 +1225,50 @@ export class MissionGoStore {
     });
   }
 
+  /**
+   * Hand merged work over for verification. The pull request URL is required and
+   * lands as its own payload field rather than inside the free-text note, because
+   * the timeline renders it as a link and a person opens it to check the change.
+   *
+   * That the URL points at a *merged* pull request is not checked here and cannot
+   * be: the server has no view of GitHub. The Skill carries that obligation, and
+   * the rules say so rather than letting anyone read this as a guarantee.
+   */
+  submitForVerification(input: SubmitForVerificationInput): WorkItemSnapshot {
+    const pullRequestUrl = requiredText(input.pullRequestUrl, "Pull request URL");
+    if (pullRequestUrl.length > 500) throw invalidInput("Pull request URL must be 500 characters or fewer.");
+    if (!pullRequestUrl.startsWith("https://")) throw invalidInput("Pull request URL must be an https:// address.");
+    const summary = input.summary?.trim();
+    if (summary && summary.length > 4_000) throw invalidInput("Summary must be 4,000 characters or fewer.");
+    const idempotencyKey = this.validateIdempotencyKey(input.idempotencyKey);
+    const operation = `submit_for_verification:${input.itemKey.toUpperCase()}`;
+
+    return this.database.transaction(() => {
+      const repeated = this.getIdempotentResult<WorkItemSnapshot>(idempotencyKey, operation);
+      if (repeated) return repeated;
+
+      const item = this.getWorkItemRow(input.itemKey);
+      if (!item) throw notFound("Work item");
+      if (item.status !== "in_progress") {
+        throw conflict("item_not_ready_for_verification", "Only an in-progress work item can be handed over for verification.");
+      }
+      const now = new Date().toISOString();
+      this.applyTransition(
+        item,
+        "pending_verification",
+        "agent",
+        "resolution_submitted",
+        summary,
+        now,
+        input.attribution ?? {},
+        { pullRequestUrl },
+      );
+      const result = this.getWorkItem(item.item_key);
+      this.saveIdempotentResult(idempotencyKey, operation, result, now);
+      return result;
+    });
+  }
+
   listComments(itemKey: string, options: { includeWithdrawn?: boolean } = {}): readonly WorkItemCommentSnapshot[] {
     const item = this.getWorkItemRow(itemKey);
     if (!item) throw notFound("Work item");
@@ -1425,6 +1470,7 @@ export class MissionGoStore {
     note: string | undefined,
     now: string,
     attribution: EventAttribution = {},
+    payloadExtra: Readonly<Record<string, unknown>> = {},
   ): void {
     try {
       assertWorkItemTransition({ from: current.status, to, actor, reason });
@@ -1438,7 +1484,7 @@ export class MissionGoStore {
       actor,
       current.status,
       to,
-      note ? { reason, note } : { reason },
+      { reason, ...(note ? { note } : {}), ...payloadExtra },
       now,
       attribution,
     );

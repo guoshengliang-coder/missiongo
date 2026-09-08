@@ -144,7 +144,7 @@ describe("MCP write-tool authorization", () => {
     // claiming, leases, and status transitions. Naming the members explicitly
     // means a new tool has to be placed on purpose rather than by where it
     // happened to be pasted.
-    expect(toolNamesInTier("comments")).toEqual(["append_comment", "claim_item"]);
+    expect(toolNamesInTier("comments")).toEqual(["append_comment", "claim_item", "submit_for_verification"]);
   });
 });
 
@@ -181,14 +181,16 @@ describe("MCP write tiers", () => {
     expect(server.toolInputSchemaJson("get_item_context")).toBeDefined();
     expect(server.toolInputSchemaJson("append_comment")).toBeUndefined();
     expect(server.toolInputSchemaJson("claim_item")).toBeUndefined();
+    expect(server.toolInputSchemaJson("submit_for_verification")).toBeUndefined();
   });
 
   it("exposes commenting and claiming, and nothing that ends the work", async () => {
     const server = await serverForTier("comments");
     expect(server.toolInputSchemaJson("append_comment")).toBeDefined();
     expect(server.toolInputSchemaJson("claim_item")).toBeDefined();
-    // Deciding an item is finished, paused or abandoned stays with the user, so
-    // there is no tool for it at any tier.
+    expect(server.toolInputSchemaJson("submit_for_verification")).toBeDefined();
+    // Accepting, reopening, pausing and giving up stay with the user, so there
+    // is no tool for any of them.
     for (const gone of ["submit_resolution", "mark_pending_verification", "release_item", "resume_execution"]) {
       expect(server.toolInputSchemaJson(gone)).toBeUndefined();
     }

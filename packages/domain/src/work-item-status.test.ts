@@ -16,11 +16,18 @@ describe("work item state machine", () => {
     ).toMatchObject({ allowed: true, code: "allowed" });
   });
 
-  it("stops an agent at the claim: everything leaving in_progress is a person's", () => {
-    // An agent says it finished, cannot proceed, or needs input in a comment.
-    // Deciding what that means for the item is not its call.
+  it("lets an agent hand merged work over, and nothing else that leaves in_progress", () => {
+    // A merged pull request is a fact the agent can check, so it may say the work
+    // is ready to verify. Giving up, pausing and resuming are judgements about
+    // what the work is worth, and those stay with the person.
+    expect(evaluateWorkItemTransition({
+      from: "in_progress",
+      to: "pending_verification",
+      actor: "agent",
+      reason: "resolution_submitted",
+    })).toMatchObject({ allowed: true });
+
     for (const [to, reason] of [
-      ["pending_verification", "resolution_submitted"],
       ["on_hold", "request_human_input"],
       ["ready", "released"],
     ] as const) {
@@ -53,7 +60,7 @@ describe("work item state machine", () => {
     ).toMatchObject({ allowed: true });
   });
 
-  it("leaves the agent exactly one edge in the whole table", () => {
+  it("leaves the agent exactly two paths through the whole table", () => {
     const edges: Array<[string, string, string]> = [];
     for (const from of WORK_ITEM_STATUSES) {
       for (const to of WORK_ITEM_STATUSES) {
@@ -64,7 +71,13 @@ describe("work item state machine", () => {
         }
       }
     }
-    expect(edges).toEqual([["ready", "in_progress", "claim"], ["ready", "in_progress", "resume"]]);
+    // Reasons are counted, not just status pairs. A rule is the cartesian product
+    // of its actors and its reasons, so an extra reason on an agent edge grants a
+    // path nobody intended -- which is how `resume` used to reach this list.
+    expect(edges).toEqual([
+      ["ready", "in_progress", "claim"],
+      ["in_progress", "pending_verification", "resolution_submitted"],
+    ]);
   });
 
   it("rejects a mismatched transition reason", () => {
