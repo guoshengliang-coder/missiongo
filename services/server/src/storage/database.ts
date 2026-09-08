@@ -348,6 +348,33 @@ export class MissionGoDatabase {
           .run(17, new Date().toISOString());
       });
     }
+    // A comment used to say only "AI", which told a reader nothing about which
+    // machine's Claude Code or Codex wrote it, and every AI comment arrived at
+    // full length with no way to skim. Give comments somewhere to record who
+    // wrote them and a one-line summary. Both apply to free-text comments as
+    // well as analyses, so they are columns rather than body_json keys.
+    //
+    // No backfill: the agent name and summary are things an agent has to say,
+    // and inventing either for an existing comment would be putting words in
+    // its mouth. Old comments read exactly as they always did.
+    const commentBylineMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609081100")
+      .get() as unknown as { version: number } | undefined;
+    if (!commentBylineMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(work_item_comments)")
+          .all() as unknown as Array<{ name: string }>;
+        for (const column of ["agent_name", "summary"]) {
+          if (!columns.some((existing) => existing.name === column)) {
+            this.connection.exec(`ALTER TABLE work_item_comments ADD COLUMN ${column} TEXT;`);
+          }
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609081100, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

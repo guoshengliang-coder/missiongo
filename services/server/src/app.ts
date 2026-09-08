@@ -1015,16 +1015,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   });
 
+  // A comment records the signed OAuth client id it was written through, and
+  // that id carries the client's registered name. Decoding it here turns a
+  // byline that only said "AI" into the program that actually wrote it, for
+  // every comment ever written and without storing anything new.
+  const withClientName = <T extends { readonly clientId?: string }>(entry: T): T & { clientName?: string } => {
+    const name = entry.clientId ? oauthProvider?.clientDisplayName(entry.clientId) : undefined;
+    return name ? { ...entry, clientName: name } : entry;
+  };
+
   app.get("/api/v1/items/:itemKey/timeline", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
     // The web folds withdrawn comments rather than hiding them, so a reader can
     // see that something was said and taken back. MCP gets the pruned view.
-    return { events: store.getTimeline(itemKey, { includeWithdrawn: true }) };
+    return { events: store.getTimeline(itemKey, { includeWithdrawn: true }).map(withClientName) };
   });
 
   app.get("/api/v1/items/:itemKey/comments", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
-    return { comments: store.listComments(itemKey, { includeWithdrawn: true }) };
+    return { comments: store.listComments(itemKey, { includeWithdrawn: true }).map(withClientName) };
   });
 
   app.post("/api/v1/items/:itemKey/comments", async (request, reply) => {
@@ -1044,6 +1053,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           ...(stringField(body, "proposal", false) !== undefined ? { proposal: body.proposal as string } : {}),
           openQuestions: stringArrayField(body, "openQuestions") ?? [],
         },
+      ...(stringField(body, "summary", false) !== undefined ? { summary: body.summary as string } : {}),
       ...(sessionUser(request) ? { attribution: { accountId: sessionUser(request)!.id } } : {}),
     });
     return reply.status(201).send(comment);

@@ -196,7 +196,6 @@ export interface StructuredCommentBody {
   readonly proposal?: string;
   /** What the agent could not settle alone. Answering these is the user's call. */
   readonly openQuestions: readonly string[];
-  readonly agentName?: string;
 }
 
 /** Everything else people and agents say: questions, answers, side findings. */
@@ -212,6 +211,14 @@ export interface WorkItemCommentSnapshot extends EventAttribution {
   readonly actorKind: ActorKind;
   readonly bodyKind: CommentBodyKind;
   readonly body: CommentBody;
+  /**
+   * What the agent calls itself, e.g. "Claude Code · studio-mac". Self-reported
+   * and therefore not proof of anything -- the unforgeable half of the byline
+   * is the OAuth client name carried inside clientId.
+   */
+  readonly agentName?: string;
+  /** The agent's own one-line summary, shown before the body is expanded. */
+  readonly summary?: string;
   readonly createdAt: string;
   readonly withdrawnAt?: string;
   readonly withdrawnBy?: string;
@@ -222,6 +229,8 @@ export interface CreateCommentInput {
   readonly actorKind: ActorKind;
   readonly bodyKind: CommentBodyKind;
   readonly body: CommentBody;
+  readonly agentName?: string;
+  readonly summary?: string;
   readonly attribution?: EventAttribution;
   /** Required for agent writes, which are retried; a person pressing send is not. */
   readonly idempotencyKey?: string;

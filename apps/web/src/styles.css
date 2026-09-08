@@ -696,6 +696,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .timeline-dot { position: relative; z-index: 1; width: 7px; height: 7px; margin-top: 4px; background: var(--mint-dark); border: 2px solid var(--surface); border-radius: 50%; box-sizing: content-box; }
 .timeline-event strong { display: block; font-size: var(--text-xs); }
 .timeline-event p { margin: 3px 0 0; color: var(--muted); font-size: var(--text-xs); }
+/* A long comment folds behind one line. The summary is the agent's own if it
+   sent one, and the first sentence of the body if it did not -- which is every
+   comment written before summaries existed. */
+.comment-collapsible { margin-top: 8px; }
+/* The withdraw button sits under the body here rather than beside it: in a
+   fold it would otherwise land next to the summary and read as its action. */
+.comment-collapsible > .comment-withdraw { margin-top: 8px; }
+.comment-collapsible > summary { display: flex; align-items: baseline; gap: 8px; margin-top: 7px; padding: 7px 9px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); cursor: pointer; list-style: none; }
+.comment-collapsible > summary::-webkit-details-marker { display: none; }
+.comment-collapsible > summary:hover { border-color: var(--line-dark); }
+.comment-summary-text { min-width: 0; flex: 1; color: var(--ink); font-size: var(--text-xs); font-weight: 700; line-height: 1.5; }
+.comment-collapsible > summary small { flex: 0 0 auto; color: var(--muted); font-size: var(--text-xs); font-weight: 700; white-space: nowrap; }
+.comment-collapsible > summary .when-open, .comment-collapsible[open] > summary .when-closed { display: none; }
+.comment-collapsible[open] > summary .when-open { display: inline; }
+
 /* An agent's entry reads as a different voice from a person's, so the dot changes. */
 .timeline-event--agent .timeline-dot { background: var(--ink-2); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

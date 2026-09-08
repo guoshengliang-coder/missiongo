@@ -51,11 +51,16 @@ export interface AppendCommentInput {
   readonly bodyKind: CommentBodyKind;
   /** Free-text body. */
   readonly text?: string;
-  /** Structured body. */
-  readonly conclusion?: string;
+  /** Structured body: what was understood, what was found, and what it rests on. */
+  readonly understanding?: string;
+  readonly finding?: string;
   readonly evidence?: readonly string[];
-  readonly risks?: readonly string[];
+  readonly proposal?: string;
+  readonly openQuestions?: readonly string[];
+  /** Which AI on which machine, e.g. "Claude Code · studio-mac". Self-reported. */
   readonly agentName?: string;
+  /** One line saying what the comment concludes, shown before the body is opened. */
+  readonly summary?: string;
   readonly idempotencyKey: string;
 }
 

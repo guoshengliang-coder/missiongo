@@ -158,6 +158,21 @@ export class MissionGoOAuthProvider {
     return { id: clientId, name: payload.name, redirectUris: payload.redirectUris };
   }
 
+  /**
+   * The program behind a stored clientId, e.g. "Claude Code" or "Codex".
+   *
+   * This is the unforgeable half of a comment's byline: the name is baked into
+   * the signed client id at registration and the consent page showed it to the
+   * user before anything was granted. An agent can call itself whatever it
+   * likes in agentName; it cannot change this.
+   *
+   * Resolved on read rather than stored on the comment, so historical comments
+   * gain a name with no backfill.
+   */
+  clientDisplayName(clientId: string): string | undefined {
+    return this.readClient(clientId)?.name;
+  }
+
   beginAuthorization(
     input: OAuthAuthorizationInput,
     now = Date.now(),

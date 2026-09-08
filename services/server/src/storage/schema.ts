@@ -107,6 +107,12 @@ export const INITIAL_SCHEMA = `
     execution_id TEXT,
     body_kind TEXT NOT NULL CHECK (body_kind IN ('structured', 'free')),
     body_json TEXT NOT NULL,
+    -- Who the agent says it is (which machine's Claude Code, which Codex) and
+    -- its own one-line summary of what follows. Columns rather than keys inside
+    -- body_json because both apply to free-text comments too, and a free body
+    -- is just { text }.
+    agent_name TEXT,
+    summary TEXT,
     timeline_seq INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     withdrawn_at TEXT,

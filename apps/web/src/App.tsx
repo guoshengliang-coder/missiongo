@@ -86,6 +86,13 @@ import { groupTimeline } from "./timeline";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import { ImageAnnotator } from "./ImageAnnotator";
+import {
+  COMMENT_COLLAPSE_THRESHOLD,
+  commentAuthor,
+  commentPlainText,
+  deriveSummary,
+  eventAgentName,
+} from "./comment-summary";
 import { isAnnotatableImage } from "./image-annotation";
 import {
   DEFAULT_STATUS,
@@ -1783,7 +1790,12 @@ function DetailPane({
                       {/* A direct jump skipped the steps in between; say so, or the
                           history reads as if the work went through them. */}
                       {event.payload?.reason === "manual_override" && <span className="timeline-tag">{t("movedDirectly")}</span>}
-                      <p>{actorLabel(event.actorKind)} · {formatTime(event.createdAt)}</p>
+                      <p>
+                        {commentAuthor(
+                          { ...event, agentName: eventAgentName(event.payload) },
+                          actorLabel(event.actorKind),
+                        )} · {formatTime(event.createdAt)}
+                      </p>
                       {filenames.length > 0 && <p className="timeline-files">{filenames.join("、")}</p>}
                       {event.eventType === "comment_added" && (
                         <CommentBody
@@ -1842,6 +1854,15 @@ function CommentBody({
       : null;
   if (!rendered) return null;
 
+  // Agents write a lot, and at length. A long comment folds behind one line so
+  // a timeline of them can be skimmed; a short one is already its own summary,
+  // and putting a summary above it would just say everything twice.
+  const plain = commentPlainText(payload.bodyKind, body);
+  const summary = typeof payload.summary === "string" && payload.summary.trim()
+    ? payload.summary.trim()
+    : deriveSummary(plain);
+  const collapsible = !withdrawn && summary.length > 0 && plain.length > COMMENT_COLLAPSE_THRESHOLD;
+
   // Withdrawn comments stay on the record but fold away: they are no longer sent
   // to an AI reading the item, and leaving one open invites reading it as current.
   if (withdrawn) {
@@ -1854,12 +1875,30 @@ function CommentBody({
     );
   }
 
+  const withdrawButton = (
+    /* Withdrawing is the person's alone: an agent that could take its own
+       words back could erase the record of having said them. */
+    <button type="button" className="comment-withdraw" onClick={onWithdraw}>{t("withdrawComment")}</button>
+  );
+
+  if (collapsible) {
+    return (
+      <details className="comment-collapsible">
+        <summary>
+          <span className="comment-summary-text">{summary}</span>
+          <small className="when-closed">{t("commentExpand")}</small>
+          <small className="when-open">{t("commentCollapse")}</small>
+        </summary>
+        {rendered}
+        {withdrawButton}
+      </details>
+    );
+  }
+
   return (
     <div className="comment-body">
       {rendered}
-      {/* Withdrawing is the person's alone: an agent that could take its own
-          words back could erase the record of having said them. */}
-      <button type="button" className="comment-withdraw" onClick={onWithdraw}>{t("withdrawComment")}</button>
+      {withdrawButton}
     </div>
   );
 }
