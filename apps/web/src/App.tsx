@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
+import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ComponentProps, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -45,6 +45,8 @@ import {
 
 import { api, ApiError, productIconUrl, type AuthSession, type AuthenticatedUser } from "./api";
 import { BootSkeleton } from "./BootSkeleton";
+// Type-only: erased at compile time, so it does not pull the chunk into the boot.
+import type { ImageAnnotator as ImageAnnotatorImpl } from "./ImageAnnotator";
 import {
   captureDraftStorageKey,
   hasCaptureDraftContent,
@@ -87,7 +89,6 @@ import { parseFeedbackLog } from "@missiongo/domain";
 import { groupTimeline } from "./timeline";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
-import { ImageAnnotator } from "./ImageAnnotator";
 import { isAnnotatableImage } from "./image-annotation";
 import {
   DEFAULT_STATUS,
@@ -127,6 +128,28 @@ const ANDROID_APK_DOWNLOAD_PATH = "/downloads/missiongo-android-latest.apk";
  * refetch what it was just handed.
  */
 const ITEM_PAGE_SIZE = 30;
+
+/**
+ * The annotator is only reachable once someone chooses to mark up an image, but
+ * importing it statically put it on the cold-start path anyway: measured, its
+ * chunk was fetched alongside the console chunk and evaluated before the first
+ * paint, for a screen most visits never open. Loading it on demand keeps it out
+ * of the boot.
+ *
+ * `Suspense` renders nothing while the chunk arrives. It opens as a modal from a
+ * click, so the wait reads as ordinary click latency rather than a blank screen.
+ */
+const LazyImageAnnotator = lazy(
+  () => import("./ImageAnnotator").then(({ ImageAnnotator }) => ({ default: ImageAnnotator })),
+);
+
+function ImageAnnotator(props: ComponentProps<typeof ImageAnnotatorImpl>) {
+  return (
+    <Suspense fallback={null}>
+      <LazyImageAnnotator {...props} />
+    </Suspense>
+  );
+}
 
 const REPORT_COPY = {
   idea: { title: "ideaDetails", help: "ideaDetailsHelp", overview: "ideaOverview", placeholder: "ideaOverviewPlaceholder" },
