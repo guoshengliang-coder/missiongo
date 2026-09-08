@@ -2,6 +2,17 @@ import { ITEM_STATUSES, ITEM_TYPES, type WorkItemStatus, type WorkItemType } fro
 
 export const ITEM_HISTORY_MARKER = "missiongo:item-detail";
 
+/**
+ * Marks the history entry an overlay adds while it is open.
+ *
+ * The capture sheet used to be React state alone, so it left no history entry
+ * at all. Inside the Android shell that is the difference between closing the
+ * sheet and closing the app: the shell's back callback asks the WebView whether
+ * it canGoBack(), and with nothing pushed the answer is no. The same press on
+ * mobile web left the site. See AND-28.
+ */
+export const OVERLAY_HISTORY_MARKER = "missiongo:overlay";
+
 export interface ListFilters {
   readonly productId: string;
   readonly status: WorkItemStatus | "all";
