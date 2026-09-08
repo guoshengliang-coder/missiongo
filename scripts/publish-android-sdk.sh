@@ -30,7 +30,7 @@ GRADLE_ROOT="$REPOSITORY_ROOT/sdks/android-feedback"
 
 if [ "$allow_republish" -eq 0 ]; then
   node "$REPOSITORY_ROOT/scripts/release-state.mjs" --check androidSdk || {
-    echo "Pass --allow-republish to publish the same version anyway." >&2
+    echo "Pass --allow-republish to publish anyway." >&2
     exit 1
   }
 fi

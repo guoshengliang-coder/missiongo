@@ -183,4 +183,14 @@ if (state.verdict === "unknown") {
   console.error(`${checkArtifact} records a commit this repository does not have, so nothing can be compared.`);
   process.exit(1);
 }
+// Republishing something unchanged is not harmless. The version code is a build
+// timestamp and the build is not reproducible, so the second attempt produces a
+// different file carrying the same version name -- which is the ambiguity this
+// ledger exists to remove, arriving by another door.
+if (state.verdict === "up to date") {
+  console.error(`${checkArtifact} has not changed since ${state.publishedVersion} was published from ${state.publishedFrom.slice(0, 7)}.`);
+  console.error("Rebuilding would put a second, different file under that same version name:");
+  console.error("the version code is a build timestamp, and the build is not reproducible.");
+  process.exit(1);
+}
 process.exit(0);

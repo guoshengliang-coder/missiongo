@@ -99,9 +99,13 @@ npm run dev:web
 npm run release:state -- --deployed https://<host>
 ```
 
-- **up to date** — 自上次发布以来，喂给这个产物的路径没有任何改动，不用发
+- **up to date** — 自上次发布以来，喂给这个产物的路径没有任何改动
 - **ready to publish** — 有改动，版本号也已经抬过了
-- **needs a version bump** — 有改动但版本号没动，两个发布脚本都会在构建之前拒绝
+- **needs a version bump** — 有改动但版本号没动
+
+只有 **ready to publish** 能发。另外两种，两个发布脚本都会在构建任何东西之前拒绝。
+拦下「没改动」不是洁癖：versionCode 是构建时间戳，构建也不可复现，所以重发一次会产生
+第二个内容不同、版本名却相同的文件——正是这套记账要消除的那种歧义，换个门进来。
 
 一个版本号必须只对应一份构建。`scripts/publish-android-internal.sh` 和
 `scripts/publish-android-sdk.sh` 各自在开工前检查这一点，发布成功后把新的版本和提交

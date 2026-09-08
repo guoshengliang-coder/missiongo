@@ -55,7 +55,7 @@ export MISSIONGO_ANDROID_ENDPOINT MISSIONGO_ANDROID_SDK_TOKEN
 # this refuses when the answer would become ambiguous.
 if [ "$allow_republish" -eq 0 ]; then
   node "$REPOSITORY_ROOT/scripts/release-state.mjs" --check androidApp || {
-    echo "Pass --allow-republish to publish the same version anyway." >&2
+    echo "Pass --allow-republish to publish anyway." >&2
     exit 1
   }
 fi
