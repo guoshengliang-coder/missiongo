@@ -279,7 +279,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .product-switcher-list li { display: flex; align-items: center; gap: 9px; min-height: 42px; padding: 0 9px; border-radius: var(--radius-sm); cursor: pointer; }
 .product-switcher-list li.active { background: var(--canvas); }
 .product-switcher-list li.selected { color: var(--ink); }
-.product-switcher-list li > span { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+/* Has to name the label: a bare `li > span` also matched the generated badge,
+   which is a span too, and beat its own `flex: 0 0 auto` on specificity. The
+   badge then grew with the row, so the checked row and the rest ended up with
+   different sized colour blocks. */
+.product-switcher-list li > .product-switcher-option { min-width: 0; flex: 1; display: flex; flex-direction: column; }
 .product-switcher-list li strong { overflow: hidden; font-size: var(--text-sm); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .product-switcher-list li small { color: var(--muted); font-size: var(--text-xs); }
 .product-switcher-list li > svg { flex: 0 0 auto; color: var(--mint-dark); }

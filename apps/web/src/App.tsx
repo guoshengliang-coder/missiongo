@@ -88,14 +88,15 @@ import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { isAnnotatableImage } from "./image-annotation";
 import {
+  DEFAULT_STATUS,
   ITEM_HISTORY_MARKER,
-  activeFilterCount,
   filtersFromUrl,
   filtersToUrl,
   itemDetailUrl,
   itemKeyFromUrl,
   itemListUrl,
 } from "./navigation";
+import { productBadgeColor } from "./product-color";
 import { registerMissionGoWebMcp } from "./webmcp";
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
@@ -555,9 +556,13 @@ export function App() {
     setSidebarOpen(false);
   };
 
-  const filterCount = activeFilterCount({ productId: selectedProductId, status: statusFilter, type: typeFilter, search });
+  // The status lives in the sidebar and the type in the tab row above the list,
+  // so a chip repeating either of them is the third place the same thing is
+  // shown. Only the search has nowhere else to appear, and it is what brings the
+  // match count and the clear button with it.
+  const searchFilterActive = Boolean(search.trim());
   const clearFilters = () => {
-    setStatusFilter("all");
+    setStatusFilter(DEFAULT_STATUS);
     setTypeFilter("all");
     setSearch("");
     setMobileSearchOpen(false);
@@ -643,6 +648,11 @@ export function App() {
           selectedProductId={selectedProductId}
           onSelect={(productId) => {
             setSelectedProductId(productId);
+            // A filter chosen for one product says nothing about the next one,
+            // and the item asks for the default view "no matter what".
+            setStatusFilter(DEFAULT_STATUS);
+            setTypeFilter("all");
+            setSearch("");
             clearItemPage();
           }}
         />
@@ -773,25 +783,13 @@ export function App() {
             ))}
           </div>
 
-          {filterCount > 0 && (
+          {searchFilterActive && (
             <div className="active-filters" role="status">
               <Filter size={14} aria-hidden="true" />
               <span className="active-filters-label">{t("filtersActive")}</span>
-              {statusFilter !== "all" && (
-                <button type="button" className="filter-chip" onClick={() => setStatusFilter("all")}>
-                  {statusLabel(statusFilter)}<X size={12} aria-hidden="true" />
-                </button>
-              )}
-              {typeFilter !== "all" && (
-                <button type="button" className="filter-chip" onClick={() => setTypeFilter("all")}>
-                  {typeLabel(typeFilter)}<X size={12} aria-hidden="true" />
-                </button>
-              )}
-              {search.trim() && (
-                <button type="button" className="filter-chip" onClick={() => setSearch("")}>
-                  {t("searchChip", { query: search.trim() })}<X size={12} aria-hidden="true" />
-                </button>
-              )}
+              <button type="button" className="filter-chip" onClick={() => setSearch("")}>
+                {t("searchChip", { query: search.trim() })}<X size={12} aria-hidden="true" />
+              </button>
               <span className="active-filters-count">
                 {t("filterMatchCount", { matched: statusFilter === "all" ? listedCount : (itemSummary?.byStatus[statusFilter] ?? items.length), total: itemSummary?.productTotal ?? items.length })}
               </span>
@@ -1017,12 +1015,11 @@ function ProductBadge({ product, size = 22 }: { product: Product; size?: number 
       />
     );
   }
-  const hue = [...product.id].reduce((total, character) => (total * 31 + character.charCodeAt(0)) % 360, 7);
   return (
     <span
       className="product-badge generated"
       aria-hidden="true"
-      style={{ width: size, height: size, background: `hsl(${hue} 55% 38%)`, fontSize: Math.round(size * 0.38) }}
+      style={{ width: size, height: size, background: productBadgeColor(product.id), fontSize: Math.round(size * 0.38) }}
     >
       {product.keyPrefix.slice(0, 3)}
     </span>
@@ -1141,7 +1138,9 @@ function ProductSwitcher({
               onClick={() => choose(index)}
             >
               <ProductBadge product={product} />
-              <span><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
+              {/* Named, because a bare `li > span` rule also caught the badge and
+                  stretched it to fill the row. */}
+              <span className="product-switcher-option"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
               {product.id === selectedProductId && <Check size={15} aria-hidden="true" />}
             </li>
           ))}
@@ -1590,30 +1589,11 @@ function DetailPane({
               <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
               <div><p className="eyebrow">{typeLabel(item.type)} · {priorityLabel(item.priority)}</p><h2>{item.title}</h2></div>
             </div>
-            {/* Read the item before looking at the evidence: the report comes first,
-                then the captured context, and the attachments back both of them up. */}
+            {/* Read the item, then the evidence a person went and looked at --
+                screenshots, documents, logs. The captured environment is the
+                machine's own footnote to all of it, so it sits underneath them
+                rather than between the report and the pictures of the problem. */}
             <ReportDetails type={item.type} report={item.report} fallbackDescription={item.description} />
-            <section className="environment-block">
-              <h3>{t("capturedContext")}</h3>
-              {item.environment || sourceComponent || affectedComponents.length > 0 ? (
-                <div className="context-grid">
-                  {sourceComponent && (
-                    <span>
-                      <small>{t("sourceComponent")}</small>
-                      {sourceComponent.name}{sourceComponent.archivedAt ? ` · ${t("archived")}` : ""}
-                    </span>
-                  )}
-                  {affectedComponents.length > 0 && <span><small>{t("affectedComponents")}</small>{affectedComponents.map((component) => component.name).join("、")}</span>}
-                  {item.environment && <span><small>{t("platform")}</small>{t(item.environment.platform)}</span>}
-                  {item.environment?.appVersion && <span><small>{t("version")}</small>{item.environment.appVersion}</span>}
-                  {item.environment?.buildNumber && <span><small>{t("buildNumber")}</small>{item.environment.buildNumber}</span>}
-                  {item.environment?.osVersion && <span><small>{t("operatingSystem")}</small>{item.environment.osVersion}</span>}
-                  {item.environment?.deviceModel && <span><small>{t("device")}</small>{item.environment.deviceModel}</span>}
-                  {item.environment?.sourceRevision && <span><small>{t("sourceRevision")}</small><code>{item.environment.sourceRevision}</code></span>}
-                  {Object.entries(item.environment?.metadata ?? {}).map(([key, value]) => <span key={key}><small>{key}</small>{value}</span>)}
-                </div>
-              ) : <p className="section-empty">{t("noEnvironment")}</p>}
-            </section>
             <AttachmentSection
               itemKey={item.key}
               attachments={mediaAttachments}
@@ -1635,6 +1615,27 @@ function DetailPane({
               context={sdkDiagnostics.context}
               attachments={logAttachments}
             />
+            <section className="environment-block">
+              <h3>{t("capturedContext")}</h3>
+              {item.environment || sourceComponent || affectedComponents.length > 0 ? (
+                <div className="context-grid">
+                  {sourceComponent && (
+                    <span>
+                      <small>{t("sourceComponent")}</small>
+                      {sourceComponent.name}{sourceComponent.archivedAt ? ` · ${t("archived")}` : ""}
+                    </span>
+                  )}
+                  {affectedComponents.length > 0 && <span><small>{t("affectedComponents")}</small>{affectedComponents.map((component) => component.name).join("、")}</span>}
+                  {item.environment && <span><small>{t("platform")}</small>{t(item.environment.platform)}</span>}
+                  {item.environment?.appVersion && <span><small>{t("version")}</small>{item.environment.appVersion}</span>}
+                  {item.environment?.buildNumber && <span><small>{t("buildNumber")}</small>{item.environment.buildNumber}</span>}
+                  {item.environment?.osVersion && <span><small>{t("operatingSystem")}</small>{item.environment.osVersion}</span>}
+                  {item.environment?.deviceModel && <span><small>{t("device")}</small>{item.environment.deviceModel}</span>}
+                  {item.environment?.sourceRevision && <span><small>{t("sourceRevision")}</small><code>{item.environment.sourceRevision}</code></span>}
+                  {Object.entries(item.environment?.metadata ?? {}).map(([key, value]) => <span key={key}><small>{key}</small>{value}</span>)}
+                </div>
+              ) : <p className="section-empty">{t("noEnvironment")}</p>}
+            </section>
             <section className="timeline-block">
               <header className="timeline-head">
                 <h3>{t("timeline")}</h3>
