@@ -207,6 +207,13 @@ export default defineConfig(({ mode }) => {
         "/health": { target: serverTarget, changeOrigin: false },
       },
     },
+    define: {
+      // Busts the persisted query cache on every build. A deploy can change the
+      // shape of what a query returns, and hydrating the old shape into new
+      // components is how a cache like that breaks a screen rather than
+      // speeding it up. See query-persistence.ts.
+      MISSIONGO_BUILD_STAMP: JSON.stringify(`${Date.now().toString(36)}`),
+    },
     build: {
       target: ["chrome90", "edge90", "firefox90", "safari15.4"],
       cssTarget: "safari15.4",

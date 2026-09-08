@@ -45,6 +45,7 @@ import {
 
 import { api, ApiError, productIconUrl, type AuthSession, type AuthenticatedUser } from "./api";
 import { BootSkeleton } from "./BootSkeleton";
+import { clearPersistedQueryCache } from "./query-persistence";
 // Type-only: erased at compile time, so it does not pull the chunk into the boot.
 import type { ImageAnnotator as ImageAnnotatorImpl } from "./ImageAnnotator";
 import {
@@ -474,15 +475,30 @@ export function App() {
     retry: false,
     staleTime: Infinity,
     queryFn: async () => {
-      const data = await api.getBootstrap(
-        initialFilters.productId || localStorage.getItem("missiongo.product"),
-        {
-          ...(initialFilters.status !== "all" ? { status: initialFilters.status } : {}),
-          ...(initialFilters.type !== "all" ? { type: initialFilters.type } : {}),
-          ...(initialFilters.search.trim() ? { search: initialFilters.search.trim() } : {}),
-          limit: ITEM_PAGE_SIZE,
-        },
-      );
+      let data;
+      try {
+        data = await api.getBootstrap(
+          initialFilters.productId || localStorage.getItem("missiongo.product"),
+          {
+            ...(initialFilters.status !== "all" ? { status: initialFilters.status } : {}),
+            ...(initialFilters.type !== "all" ? { type: initialFilters.type } : {}),
+            ...(initialFilters.search.trim() ? { search: initialFilters.search.trim() } : {}),
+            limit: ITEM_PAGE_SIZE,
+          },
+        );
+      } catch (error) {
+        // A refused session means the screen cached on this device belongs to
+        // someone who is no longer signed in here. Evict the restored queries as
+        // well as the copy on disk: clearing only the disk leaves them in memory,
+        // where the persistence subscription promptly writes them back out.
+        if (error instanceof ApiError && error.status === 401) {
+          for (const key of ["products", "items", "components"]) {
+            queryClient.removeQueries({ queryKey: [key] });
+          }
+          clearPersistedQueryCache();
+        }
+        throw error;
+      }
       // Seed the caches the rest of the screen reads from, here rather than in an
       // effect, so it happens before anything can observe this query as settled.
       // An effect would run a render too late, and the queries below would each
@@ -652,9 +668,21 @@ export function App() {
   // request now, and while it is in flight the visitor gets the same skeleton
   // that covered the chunk fetch, so the boot reads as one continuous load
   // rather than a blank screen followed by two spinners.
-  if (bootstrapQuery.isPending) return <BootSkeleton />;
+  // Cached from a previous visit and already hydrated, so the shell below can
+  // render now and let the in-flight bootstrap replace it when it lands.
+  const hasCachedScreen = products.length > 0;
 
-  if (bootstrapQuery.isError || !bootstrapQuery.data) {
+  // Only when there is genuinely nothing to draw. With a cache, showing the
+  // skeleton would hide a screen we already have.
+  if (bootstrapQuery.isPending && !hasCachedScreen) return <BootSkeleton />;
+
+  // Only a *refused* session, not any failure. Rendering cached items to someone
+  // the server just turned away is exactly the failure a cache like this invites,
+  // so a 401 reaches sign-in whatever this device still holds. An unreachable
+  // server is the opposite case: the cached screen plus the offline banner is a
+  // far better answer than a sign-in form the visitor cannot submit.
+  const sessionRefused = bootstrapQuery.error instanceof ApiError && bootstrapQuery.error.status === 401;
+  if (sessionRefused || (!bootstrapQuery.isPending && !bootstrapQuery.data && !hasCachedScreen)) {
     return (
       <main className="connection-page">
         <div className="page-language"><LanguageSwitch /></div>
@@ -669,6 +697,8 @@ export function App() {
               queryClient.removeQueries({ queryKey: ["items"] });
               queryClient.removeQueries({ queryKey: ["components"] });
               queryClient.setQueryData(["auth-session"], session);
+              // Whoever signed in may not be who this device cached.
+              clearPersistedQueryCache();
               // Refetching bootstrap is what draws the workspace: it carries the
               // products, the first page of items and the components in one go,
               // and re-seeds the caches the shell reads.
@@ -953,10 +983,22 @@ export function App() {
       )}
       {connectionOpen && (
         <Modal title={t("accountSettings")} subtitle={t("accountSettingsHelp")} onClose={() => setConnectionOpen(false)}>
+          {/* The shell can be on screen from cache before the session is known,
+              so the panel waits for the real user rather than inventing one. */}
+          {!bootstrapQuery.data ? (
+            <div className="centered-state"><LoaderCircle className="spin" size={22} /></div>
+          ) : (
           <AccountPanel
             user={bootstrapQuery.data.user}
-            onLoggedOut={() => window.location.reload()}
+            onLoggedOut={() => {
+              // Before the reload, not after: the cache on disk holds this
+              // account's work items, and a restore on the next start would
+              // paint them for whoever opens the app next.
+              clearPersistedQueryCache();
+              window.location.reload();
+            }}
           />
+          )}
         </Modal>
       )}
       {notice && <div className="toast" role="status"><Check size={16} /> {notice}<button onClick={() => setNotice(null)} aria-label={t("dismiss")}><X size={14} /></button></div>}

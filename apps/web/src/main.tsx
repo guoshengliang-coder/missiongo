@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { BootSkeleton } from "./BootSkeleton";
 import { I18nProvider } from "./i18n";
+import { persistQueryCache, restorePersistedQueryCache } from "./query-persistence";
 import "./styles.css";
 
 const queryClient = new QueryClient({
@@ -15,6 +16,11 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+// Before the first render, so the previous screen is what paints rather than a
+// skeleton. Synchronous by design; see query-persistence.ts.
+restorePersistedQueryCache(queryClient);
+persistQueryCache(queryClient);
 
 // Importing both statically put the whole console into the one chunk the SDK feedback
 // form had to download inside a host's WebView, on a phone connection, before it could

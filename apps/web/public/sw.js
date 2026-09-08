@@ -1,6 +1,6 @@
 // Bumped whenever the caching behaviour changes: `activate` deletes every cache
 // that is not this one, which is also how a client with a broken cache recovers.
-const CACHE_NAME = "missiongo-shell-v2";
+const CACHE_NAME = "missiongo-shell-v3";
 const SHELL = ["/", "/icon.svg", "/manifest.webmanifest"];
 
 // A Response body can only be read once, and `caches.open()` is async: cloning
@@ -35,13 +35,31 @@ self.addEventListener("fetch", (event) => {
 
   if (request.mode === "navigate") {
     event.respondWith((async () => {
+      // The document is `no-store`, so this used to be a full network round trip
+      // on every single launch -- 142ms measured against production even with
+      // every asset already cached. Serve the cached copy and refresh it behind
+      // the request instead: the next launch gets the new one.
+      //
+      // Only ever a *complete* shell. The cached document names hashed assets,
+      // and a deploy removes the old ones from the server, so a document whose
+      // scripts now 404 renders nothing at all. That check guarded the offline
+      // path before; serving from cache while online makes it load-bearing.
+      const cached = (await caches.match(request)) || (await caches.match("/"));
+      if (cached && await shellIsComplete(cached.clone())) {
+        event.waitUntil((async () => {
+          try {
+            const fresh = await fetch(request);
+            if (fresh.ok) (await caches.open(CACHE_NAME)).put(request, fresh.clone());
+          } catch {
+            // Offline. The copy just served is still the right answer.
+          }
+        })());
+        return cached;
+      }
+
       try {
         return cacheCopy(event, request, await fetch(request));
       } catch {
-        // Offline. The cached document names hashed assets, so only serve it
-        // when those assets are cached too: a deploy removes the old ones from
-        // the server, and a document whose scripts 404 renders nothing at all.
-        const cached = (await caches.match(request)) || (await caches.match("/"));
         return cached && (await shellIsComplete(cached.clone())) ? cached : Response.error();
       }
     })());
