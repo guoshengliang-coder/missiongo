@@ -82,6 +82,7 @@ import {
 import { androidFeedbackBridge, androidMediaDeletion } from "./android-bridge";
 import { environmentSummary, platformName } from "./environment-summary";
 import { useI18n } from "./i18n";
+import { parseFeedbackLog } from "@missiongo/domain";
 import { groupTimeline } from "./timeline";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
@@ -1866,7 +1867,24 @@ function DiagnosticDetails({
   attachments: readonly WorkItemAttachment[];
 }) {
   const { formatTime, t } = useI18n();
-  const hasDiagnostics = logs.length > 0 || attachments.length > 0 || Object.keys(context).length > 0;
+  // Diagnostics submitted through the SDK arrive as a .log attachment. Parsing
+  // it back gives the same level-and-attribute view the entries used to get
+  // when they rode along inside the creation event.
+  const diagnosticsFile = attachments.find((attachment) => attachment.filename.endsWith("-diagnostics.log"));
+  const parsedQuery = useQuery({
+    queryKey: ["diagnostics-log", itemKey, diagnosticsFile?.id],
+    queryFn: async () => parseFeedbackLog(await api.readTextAttachment(itemKey, diagnosticsFile!.id)),
+    enabled: Boolean(diagnosticsFile),
+    staleTime: Infinity,
+  });
+  const parsedLogs: readonly DiagnosticEventLog[] = (parsedQuery.data ?? []).map((entry) => ({
+    timestamp: entry.timestamp,
+    level: entry.level,
+    message: entry.message,
+    attributes: entry.attributes ?? {},
+  }));
+  const allLogs = logs.length > 0 ? logs : parsedLogs;
+  const hasDiagnostics = allLogs.length > 0 || attachments.length > 0 || Object.keys(context).length > 0;
   return (
     <section className="attachment-block diagnostic-detail-block">
       <header>
@@ -1880,11 +1898,11 @@ function DiagnosticDetails({
               <div className="diagnostic-context-grid">{Object.entries(context).map(([key, value]) => <span key={key}><small>{key}</small>{value}</span>)}</div>
             </details>
           )}
-          {logs.length > 0 && (
+          {allLogs.length > 0 && (
             <details className="structured-log-details" open>
-              <summary>{t("sdkLogs")}<small>{t("logCount", { count: logs.length })}</small></summary>
+              <summary>{t("sdkLogs")}<small>{t("logCount", { count: allLogs.length })}</small></summary>
               <div className="structured-log-list">
-                {logs.map((log, index) => (
+                {allLogs.map((log, index) => (
                   <article key={`${log.timestamp}-${index}`} className={`log-${log.level}`}>
                     <header><strong>{log.level.toUpperCase()}</strong><time>{formatTime(log.timestamp)}</time></header>
                     <pre>{log.message}</pre>

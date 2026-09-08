@@ -8,6 +8,8 @@ import { MISSIONGO_SKILL_DOWNLOAD_PATH, MISSIONGO_SKILL_VERSION } from "@mission
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { parseFeedbackLog } from "@missiongo/domain";
+
 import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
 import { buildApp } from "./app.js";
 
@@ -1855,6 +1857,29 @@ describe("MissionGo REST API", () => {
       headers: adminHeaders,
     });
     expect(defaultDraftItem.json()).toMatchObject({ key: finalizedKey, status: "inbox" });
+
+    // The diagnostics become a log file rather than part of the creation event.
+    // Inlined, they rode along with every read of the item and had no paging;
+    // one report of 500 entries returned 85 KB and overran the MCP output limit.
+    const created_event = app.missionGoStore.getTimeline(finalizedKey)
+      .find((event) => event.eventType === "item_created");
+    expect(created_event?.payload).not.toHaveProperty("logs");
+    expect(created_event?.payload).toMatchObject({ logEntryCount: 1 });
+
+    const logFile = app.missionGoStore.listAttachments(finalizedKey)
+      .find((attachment) => attachment.kind === "log");
+    expect(logFile?.filename).toBe(`${finalizedKey}-diagnostics.log`);
+    // The count still names the entries, so the summary reads the same as before.
+    expect(defaultDraftItem.json<{ diagnosticSummary: { logCount: number } }>().diagnosticSummary.logCount).toBe(1);
+
+    const logContent = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/${finalizedKey}/attachments/${logFile!.id}/content`,
+      headers: adminHeaders,
+    });
+    expect(parseFeedbackLog(logContent.body)).toEqual([
+      { timestamp: "2026-09-04T10:00:00.000Z", level: "error", message: "Search request timed out" },
+    ]);
     const repeatedFinalize = await app.inject({
       method: "POST",
       url: `/api/v1/sdk/drafts/${created.id}/finalize`,
@@ -1914,16 +1939,22 @@ describe("MissionGo REST API", () => {
       report: { overview: "Updated before submission." },
       // One structured entry and one attached log file, counted apart: their sum used to be
       // reported as a single number, which made an attached history look like one more line.
-      diagnosticSummary: { logCount: 1, logFileCount: 1, contextEntryCount: 2 },
+      // The structured entry now lives in a log file of its own, so there are two:
+      // the diagnostics the SDK collected, and the one the reporter attached.
+      diagnosticSummary: { logCount: 1, logFileCount: 2, contextEntryCount: 2 },
       environment: { platform: "android", appVersion: "1.2.0" },
-      attachments: [expect.objectContaining({ filename: "search-retry.log", kind: "log" })],
+      attachments: expect.arrayContaining([
+        expect.objectContaining({ filename: "search-retry.log", kind: "log" }),
+        expect.objectContaining({ filename: `${finalizedKey}-diagnostics.log`, kind: "log" }),
+      ]),
     });
     const timeline = await app.inject({ method: "GET", url: `/api/v1/items/${finalizedKey}/timeline`, headers: adminHeaders });
     expect(timeline.json()).toMatchObject({
       events: expect.arrayContaining([
         expect.objectContaining({
           eventType: "item_created",
-          payload: expect.objectContaining({ source: "android_sdk", context: payload.context, logs: payload.logs }),
+          // The buffer moved to a log file; the event keeps the count so the summary still reads the same.
+          payload: expect.objectContaining({ source: "android_sdk", context: payload.context, logEntryCount: payload.logs.length }),
         }),
         expect.objectContaining({ eventType: "attachment_added" }),
       ]),

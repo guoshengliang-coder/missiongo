@@ -570,7 +570,12 @@ export class MissionGoStore {
           source: "android_sdk",
           feedbackDraftId: row.id,
           context: JSON.parse(row.context_json) as Readonly<Record<string, string>>,
-          logs: JSON.parse(row.logs_json) as readonly FeedbackLogEntry[],
+          // The log buffer is not here: it goes to a .log attachment, which the
+          // caller writes once the item exists. Inlining hundreds of entries in
+          // the creation event made every read of the item carry all of them,
+          // with no way to page. The draft keeps logs_json, so a failed write
+          // can be retried rather than losing the diagnostics.
+          logEntryCount: (JSON.parse(row.logs_json) as readonly FeedbackLogEntry[]).length,
         },
       );
       this.database.connection
@@ -1528,7 +1533,9 @@ export class MissionGoStore {
     if (createdEvent) {
       try {
         const payload = JSON.parse(createdEvent.payload_json) as Record<string, unknown>;
-        structuredLogCount = Array.isArray(payload.logs) ? payload.logs.length : 0;
+        structuredLogCount = Array.isArray(payload.logs)
+          ? payload.logs.length
+          : typeof payload.logEntryCount === "number" ? payload.logEntryCount : 0;
         contextEntryCount = payload.context && typeof payload.context === "object" && !Array.isArray(payload.context)
           ? Object.keys(payload.context).length
           : 0;

@@ -5,6 +5,7 @@ import { stat } from "node:fs/promises";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 
 import {
+  formatFeedbackLog,
   TRANSITION_REASONS,
   WORK_ITEM_PRIORITIES,
   WORK_ITEM_STATUSES,
@@ -817,7 +818,33 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     enforceSdkRateLimit(reply, principal, "finalize");
     const body = request.body === undefined ? {} : objectBody(request.body);
     const status = enumField(body, "status", ["inbox", "ready"] as const, false) ?? "inbox";
-    return store.finalizeFeedbackDraft(draftId, principal, status);
+    const draft = store.getFeedbackDraft(draftId, principal);
+    const finalized = store.finalizeFeedbackDraft(draftId, principal, status);
+
+    // The diagnostics become a log file rather than part of the creation event,
+    // so reading the item does not drag hundreds of entries along with it. The
+    // item exists by now, which is what an attachment needs; the draft still
+    // holds logs_json, so a failure here loses nothing that cannot be redone.
+    // Finalizing is idempotent, so this has to be too -- and checking for the
+    // file rather than for a first-time transition also lets a failed write be
+    // retried by calling finalize again.
+    const logFilename = finalized.itemKey ? `${finalized.itemKey}-diagnostics.log` : "";
+    const alreadyWritten = finalized.itemKey
+      && store.listAttachments(finalized.itemKey).some((attachment) => attachment.filename === logFilename);
+    if (draft.logs.length > 0 && finalized.itemKey && !alreadyWritten) {
+      try {
+        await attachmentStorage.save(
+          store,
+          finalized.itemKey,
+          encodeURIComponent(logFilename),
+          "text/plain",
+          Buffer.from(formatFeedbackLog(draft.logs), "utf8"),
+        );
+      } catch (error) {
+        request.log.error({ err: error, itemKey: finalized.itemKey }, "diagnostics log attachment failed");
+      }
+    }
+    return finalized;
   });
 
   app.post("/api/v1/sdk/drafts/:draftId/web-session", async (request, reply) => {

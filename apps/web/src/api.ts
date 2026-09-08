@@ -157,6 +157,15 @@ export const api = {
     });
     return response.json() as Promise<WorkItemAttachment>;
   },
+  // The SDK's diagnostics live in a .log attachment rather than in the item's
+  // creation event, so the panel that renders them has to fetch the file.
+  readTextAttachment: async (itemKey: string, attachmentId: string) => {
+    const response = await attachmentRequest(
+      `/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}/content`,
+      {},
+    );
+    return response.text();
+  },
   downloadAttachment: async (itemKey: string, attachmentId: string, range?: { start: number; end?: number }) => {
     const response = await attachmentRequest(
       `/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}/content`,
