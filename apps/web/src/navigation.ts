@@ -13,6 +13,20 @@ export const ITEM_HISTORY_MARKER = "missiongo:item-detail";
  */
 export const OVERLAY_HISTORY_MARKER = "missiongo:overlay";
 
+/**
+ * How many of its own history entries the app can still unwind from this state.
+ *
+ * Both markers accumulate: opening the capture sheet over an item detail pushes
+ * a state carrying the detail's marker as well, so the count is how deep the app
+ * is rather than which screen is on top. The Android shell reads this to decide
+ * between popping a level and leaving. See AND-28.
+ */
+export function backDepthFromState(state: unknown): number {
+  if (typeof state !== "object" || state === null) return 0;
+  const markers = state as Record<string, unknown>;
+  return (markers[ITEM_HISTORY_MARKER] ? 1 : 0) + (markers[OVERLAY_HISTORY_MARKER] ? 1 : 0);
+}
+
 export interface ListFilters {
   readonly productId: string;
   readonly status: WorkItemStatus | "all";

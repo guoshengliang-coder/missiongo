@@ -83,7 +83,7 @@ import {
   type WorkItemStatus,
   type WorkItemType,
 } from "./types";
-import { androidFeedbackBridge, androidMediaDeletion } from "./android-bridge";
+import { androidFeedbackBridge, androidMediaDeletion, reportAndroidBackDepth } from "./android-bridge";
 import { environmentSummary, platformName } from "./environment-summary";
 import { useI18n } from "./i18n";
 import { parseFeedbackLog } from "@missiongo/domain";
@@ -102,6 +102,7 @@ import {
   DEFAULT_STATUS,
   ITEM_HISTORY_MARKER,
   OVERLAY_HISTORY_MARKER,
+  backDepthFromState,
   filtersFromUrl,
   filtersToUrl,
   itemDetailUrl,
@@ -434,6 +435,12 @@ export function App() {
     });
   }, []);
 
+  /**
+   * Every history write goes through here, so the Android shell's back button
+   * can never be looking at a stale depth. See AND-28.
+   */
+  const syncBackDepth = () => reportAndroidBackDepth(backDepthFromState(history.state));
+
   const openItemPage = useCallback((itemKey: string, edit = false) => {
     if (selectedItemKey === itemKey) return;
     if (itemHistoryOp(selectedItemKey) === "push") {
@@ -449,6 +456,7 @@ export function App() {
       // of calling back() -- which would leave the app entirely.
       history.replaceState(history.state, "", itemDetailUrl(itemKey));
     }
+    reportAndroidBackDepth(backDepthFromState(history.state));
     setDetailOpenInEdit(edit);
     setSelectedItemKey(itemKey);
     requestAnimationFrame(() => {
@@ -464,6 +472,7 @@ export function App() {
       return;
     }
     history.replaceState(history.state, "", itemListUrl());
+    syncBackDepth();
     setSelectedItemKey(null);
     restoreListScroll();
   };
@@ -478,6 +487,7 @@ export function App() {
     const { [OVERLAY_HISTORY_MARKER]: _overlay, ...state } =
       (typeof history.state === "object" && history.state ? history.state : {}) as Record<string, unknown>;
     history.replaceState(state, "", itemListUrl());
+    syncBackDepth();
     setDetailOpenInEdit(false);
     setSelectedItemKey(null);
   };
@@ -493,6 +503,7 @@ export function App() {
   const openCapture = () => {
     const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
     history.pushState({ ...state, [OVERLAY_HISTORY_MARKER]: true }, "");
+    syncBackDepth();
     setCaptureOpen(true);
   };
 
@@ -510,6 +521,7 @@ export function App() {
     const handlePopState = () => {
       // The overlay entry carries no URL of its own, so the marker on the state
       // is what says whether the sheet is still the top of the stack.
+      syncBackDepth();
       if (!history.state?.[OVERLAY_HISTORY_MARKER]) setCaptureOpen(false);
       const itemKey = itemKeyFromUrl();
       setDetailOpenInEdit(false);
@@ -523,6 +535,9 @@ export function App() {
         restoreListScroll();
       }
     };
+    // The shell keeps its copy for the life of the activity, and a reload leaves
+    // it holding the count from before. Start it from what this document has.
+    reportAndroidBackDepth(backDepthFromState(history.state));
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, [restoreListScroll]);

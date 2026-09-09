@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  backDepthFromState,
   filtersFromUrl,
   filtersToUrl,
+  ITEM_HISTORY_MARKER,
   itemDetailUrl,
   itemHistoryOp,
   itemKeyFromUrl,
   itemListUrl,
+  OVERLAY_HISTORY_MARKER,
 } from "./navigation";
 
 describe("item navigation", () => {
@@ -89,5 +92,30 @@ describe("list filters in the URL", () => {
   it("falls back to the default view for values the app does not recognise", () => {
     const url = new URL("https://example.test/?status=archived&type=epic&q=%20%20");
     expect(filtersFromUrl(url)).toEqual({ productId: "", status: "ready", type: "all", search: "" });
+  });
+});
+
+describe("android back depth", () => {
+  it("is nothing to unwind on the plain list", () => {
+    expect(backDepthFromState(null)).toBe(0);
+    expect(backDepthFromState(undefined)).toBe(0);
+    expect(backDepthFromState({})).toBe(0);
+    expect(backDepthFromState({ scroll: 120 })).toBe(0);
+  });
+
+  it("counts one level for a detail, and one for the capture sheet on its own", () => {
+    expect(backDepthFromState({ [ITEM_HISTORY_MARKER]: true })).toBe(1);
+    expect(backDepthFromState({ [OVERLAY_HISTORY_MARKER]: true })).toBe(1);
+  });
+
+  it("counts both when the sheet was opened over a detail", () => {
+    // openCapture carries the existing state forward, so the sheet's entry holds
+    // the detail's marker too -- two presses to get back to the list.
+    expect(backDepthFromState({ [ITEM_HISTORY_MARKER]: true, [OVERLAY_HISTORY_MARKER]: true })).toBe(2);
+  });
+
+  it("ignores a state that is not an object", () => {
+    expect(backDepthFromState("deep")).toBe(0);
+    expect(backDepthFromState(7)).toBe(0);
   });
 });
