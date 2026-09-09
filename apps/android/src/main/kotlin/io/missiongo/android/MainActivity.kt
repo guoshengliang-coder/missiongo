@@ -40,6 +40,14 @@ class MainActivity : ComponentActivity() {
     // activity is started, and the labels need a context that only exists then.
     private lateinit var filePicker: WebViewFilePicker
 
+    /**
+     * How many of its own history entries the page says it can unwind. Written
+     * from the JavaScript bridge thread and read when back is pressed, which is
+     * why it is volatile. Starts at zero, so a page that never reports -- an
+     * older build, or one that failed to load -- behaves exactly as before.
+     */
+    @Volatile private var backDepth = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Debug builds only: lets the WebView be inspected over adb while working
@@ -49,7 +57,18 @@ class MainActivity : ComponentActivity() {
         setContentView(buildContent())
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (webView.canGoBack()) {
+                // The page's own levels first, and only it can walk them --
+                // canGoBack() does not count history.pushState entries and
+                // goBack() does not move through them. Measured on an API 36
+                // emulator: two pushes gave history.length 3, canGoBack() false,
+                // goBack() inert, and history.back() correct. Trusting
+                // canGoBack() is what closed the app from the capture sheet and
+                // from an item detail. See AND-28.
+                if (backDepth > 0) {
+                    webView.evaluateJavascript("history.back()", null)
+                } else if (webView.canGoBack()) {
+                    // Still consulted, for a real navigation away from the app's
+                    // own pages -- the page's counter says nothing about those.
                     webView.goBack()
                 } else {
                     isEnabled = false
@@ -157,6 +176,22 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        /**
+         * How many levels the page can unwind before back should leave the app.
+         * Reported on every history change rather than asked for on the press,
+         * because back is dispatched synchronously and evaluateJavascript is not.
+         */
+        @JavascriptInterface
+        fun setBackDepth(depth: Int) {
+            runOnUiThread {
+                if (isMissionGoPage()) {
+                    backDepth = depth.coerceAtLeast(0)
+                } else {
+                    Log.w(TAG, "Ignored a back-depth report from ${webView.url}")
+                }
+            }
+        }
+
         /** Whether the page may offer to clear the gallery copies after uploading. */
         @JavascriptInterface
         fun supportsMediaDeletion(): Boolean = filePicker.supportsMediaDeletion()
@@ -256,6 +291,9 @@ class MainActivity : ComponentActivity() {
 
     private inner class MissionGoWebViewClient : WebViewClient() {
         override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+            // The count belongs to the document being replaced. The new one
+            // reports as soon as it mounts; until then there is nothing to pop.
+            backDepth = 0
             errorView.visibility = View.GONE
             loadingView.visibility = View.VISIBLE
         }
