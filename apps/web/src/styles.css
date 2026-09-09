@@ -1161,6 +1161,17 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .annotator-actions > div { display: flex; flex: 0 0 auto; gap: 8px; }
 .annotator-hint { flex: 1 1 220px; margin: 0; color: var(--muted); font-size: var(--text-md); }
 
+/* What an error boundary shows in place of a screen that threw. A plain fixed
+   overlay rather than a <dialog>: it has to be able to render when whatever
+   just failed may have left the page in any state, and showModal() is one more
+   thing that can throw on the way to saying something went wrong. z-index sits
+   above .annotator (120) so it covers the editor it is standing in for. */
+.load-failure { position: fixed; inset: 0; z-index: 130; display: grid; place-items: center; padding: 24px; background: rgba(17, 23, 35, 0.46); }
+.load-failure-card { width: min(420px, 100%); padding: 24px; color: var(--ink); background: var(--canvas); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); }
+.load-failure-card h2 { margin: 0 0 8px; font-size: 17px; letter-spacing: -0.02em; }
+.load-failure-card p { margin: 0 0 20px; color: var(--muted); font-size: var(--text-md); }
+.load-failure-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+
 .active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 38px; padding: 6px 12px; margin-bottom: 10px; background: var(--accent-bg); border: 1px solid var(--accent-line); border-radius: var(--radius-md); }
 .active-filters > svg { color: var(--mint-dark); flex: 0 0 auto; }
 .active-filters-label { color: var(--accent-text); font-size: var(--text-md); font-weight: 650; }

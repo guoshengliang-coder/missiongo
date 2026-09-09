@@ -85,6 +85,7 @@ import {
 } from "./types";
 import { androidFeedbackBridge, androidMediaDeletion, reportAndroidBackDepth } from "./android-bridge";
 import { environmentSummary, platformName } from "./environment-summary";
+import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { parseFeedbackLog } from "@missiongo/domain";
 import { groupTimeline } from "./timeline";
@@ -156,6 +157,14 @@ const ITEM_PAGE_SIZE = 30;
  *
  * `Suspense` renders nothing while the chunk arrives. It opens as a modal from a
  * click, so the wait reads as ordinary click latency rather than a blank screen.
+ *
+ * The boundary is what makes that split safe. A chunk name only lives as long as
+ * the build that produced it, so a page open across a deploy asks for a file the
+ * server has already removed; React reports the rejected import as a render
+ * error, and with nothing catching it the console -- not the modal, the whole
+ * console -- was unmounted into a blank page (AND-35). Scoped here rather than
+ * left to the root boundary so the failure costs the annotator and not the
+ * screen behind it.
  */
 const LazyImageAnnotator = lazy(
   () => import("./ImageAnnotator").then(({ ImageAnnotator }) => ({ default: ImageAnnotator })),
@@ -163,9 +172,11 @@ const LazyImageAnnotator = lazy(
 
 function ImageAnnotator(props: ComponentProps<typeof ImageAnnotatorImpl>) {
   return (
-    <Suspense fallback={null}>
-      <LazyImageAnnotator {...props} />
-    </Suspense>
+    <ErrorBoundary fallback={(error) => <LoadFailureNotice error={error} onDismiss={props.onCancel} />}>
+      <Suspense fallback={null}>
+        <LazyImageAnnotator {...props} />
+      </Suspense>
+    </ErrorBoundary>
   );
 }
 

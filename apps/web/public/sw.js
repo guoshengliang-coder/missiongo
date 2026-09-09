@@ -1,6 +1,12 @@
 // Bumped whenever the caching behaviour changes: `activate` deletes every cache
 // that is not this one, which is also how a client with a broken cache recovers.
-const CACHE_NAME = "missiongo-shell-v3";
+//
+// v4 is that recovery, for AND-35. This file is the only thing a browser checks
+// to decide whether to reinstall, and it is byte-identical from build to build,
+// so a client that cached a shell before v4 kept serving it indefinitely and had
+// no way out. Editing this file at all is what re-runs install; the bump is what
+// throws the poisoned cache away.
+const CACHE_NAME = "missiongo-shell-v4";
 const SHELL = ["/", "/icon.svg", "/manifest.webmanifest"];
 
 // A Response body can only be read once, and `caches.open()` is async: cloning
@@ -49,7 +55,7 @@ self.addEventListener("fetch", (event) => {
         event.waitUntil((async () => {
           try {
             const fresh = await fetch(request);
-            if (fresh.ok) (await caches.open(CACHE_NAME)).put(request, fresh.clone());
+            if (fresh.ok) await putDocument(request, fresh);
           } catch {
             // Offline. The copy just served is still the right answer.
           }
@@ -58,7 +64,9 @@ self.addEventListener("fetch", (event) => {
       }
 
       try {
-        return cacheCopy(event, request, await fetch(request));
+        const fresh = await fetch(request);
+        if (fresh.ok) event.waitUntil(putDocument(request, fresh.clone()));
+        return fresh;
       } catch {
         return cached && (await shellIsComplete(cached.clone())) ? cached : Response.error();
       }
@@ -70,10 +78,48 @@ self.addEventListener("fetch", (event) => {
     event.respondWith((async () => {
       const cached = await caches.match(request);
       if (cached) return cached;
-      return cacheCopy(event, request, await fetch(request));
+      const response = await fetch(request);
+      // A hashed asset that is not there means the document naming it came from
+      // a build this server has already replaced. Nothing can be done for the
+      // page that asked -- the name it holds is the name that is gone -- but the
+      // cached shell must stop handing the same dead names to the next visit,
+      // so drop the documents and let that one go to the network. This is what
+      // makes the reload the error boundary offers actually fix anything.
+      if (response.status === 404 && url.pathname.startsWith("/assets/")) {
+        event.waitUntil(dropCachedDocuments());
+      }
+      return cacheCopy(event, request, response);
     })());
   }
 });
+
+/**
+ * Store a freshly fetched document under both the URL that was asked for and
+ * `/`.
+ *
+ * `/` is the fallback every navigation lands on when its own URL is not an exact
+ * cache hit, and the console's URL always carries a query -- product, status,
+ * type, search -- so that fallback is the common path, not the rare one. It used
+ * to be written once at install and never again, which left it pinned to
+ * whichever build happened to be live the first time this browser opened the
+ * site. Every route serves the same index.html, so the copy fetched for
+ * `/?product=X` is the right thing to store under `/` as well.
+ */
+async function putDocument(request, response) {
+  const cache = await caches.open(CACHE_NAME);
+  await Promise.all([cache.put(request, response.clone()), cache.put("/", response.clone())]);
+}
+
+/** Forget every cached document, keeping the hashed assets, which are still valid for whoever names them. */
+async function dropCachedDocuments() {
+  const cache = await caches.open(CACHE_NAME);
+  const keys = await cache.keys();
+  await Promise.all(
+    keys
+      .filter((key) => key.mode === "navigate" || new URL(key.url).pathname === "/")
+      .map((key) => cache.delete(key)),
+  );
+}
 
 /** True when every hashed asset the cached document references is cached as well. */
 async function shellIsComplete(document) {
