@@ -48,6 +48,13 @@ class MainActivity : ComponentActivity() {
      */
     @Volatile private var backDepth = 0
 
+    /**
+     * Kept so onResume can re-arm it. The callback stands aside for one press to
+     * let the system leave the app, and a device that keeps the activity alive
+     * would otherwise come back with it still disabled.
+     */
+    private var backCallback: OnBackPressedCallback? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Debug builds only: lets the WebView be inspected over adb while working
@@ -55,7 +62,7 @@ class MainActivity : ComponentActivity() {
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
         filePicker = WebViewFilePicker(this, getString(R.string.choose_gallery), getString(R.string.choose_files))
         setContentView(buildContent())
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+        val backCallback = object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 // The page's own levels first, and only it can walk them --
                 // canGoBack() does not count history.pushState entries and
@@ -71,11 +78,21 @@ class MainActivity : ComponentActivity() {
                     // own pages -- the page's counter says nothing about those.
                     webView.goBack()
                 } else {
+                    // Stand aside for one press so the system does its default,
+                    // then take the callback back. Leaving it disabled was a
+                    // latch: on a device that keeps the activity alive when the
+                    // task goes to the background -- back on a root activity
+                    // does not always destroy it -- every later press bypassed
+                    // the WebView, so the app left again the moment it was
+                    // reopened warm, until it was force-stopped. See AND-28.
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
                 }
             }
-        })
+        }
+        onBackPressedDispatcher.addCallback(this, backCallback)
+        this.backCallback = backCallback
 
         if (savedInstanceState == null) {
             openMissionGo()
@@ -336,6 +353,13 @@ class MainActivity : ComponentActivity() {
                 showLoadError()
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Belt and braces for the latch above: whatever happened while the app
+        // was away, back routes through the WebView again from here.
+        backCallback?.isEnabled = true
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

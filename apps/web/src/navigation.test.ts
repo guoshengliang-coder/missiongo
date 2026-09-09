@@ -10,6 +10,7 @@ import {
   itemKeyFromUrl,
   itemListUrl,
   OVERLAY_HISTORY_MARKER,
+  SIDEBAR_HISTORY_MARKER,
 } from "./navigation";
 
 describe("item navigation", () => {
@@ -106,6 +107,12 @@ describe("android back depth", () => {
   it("counts one level for a detail, and one for the capture sheet on its own", () => {
     expect(backDepthFromState({ [ITEM_HISTORY_MARKER]: true })).toBe(1);
     expect(backDepthFromState({ [OVERLAY_HISTORY_MARKER]: true })).toBe(1);
+  });
+
+  it("counts the drawer, which is a layer of its own", () => {
+    expect(backDepthFromState({ [SIDEBAR_HISTORY_MARKER]: true })).toBe(1);
+    // The drawer opens over the list, but it can also be opened over a detail.
+    expect(backDepthFromState({ [ITEM_HISTORY_MARKER]: true, [SIDEBAR_HISTORY_MARKER]: true })).toBe(2);
   });
 
   it("counts both when the sheet was opened over a detail", () => {

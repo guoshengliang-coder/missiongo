@@ -102,6 +102,7 @@ import {
   DEFAULT_STATUS,
   ITEM_HISTORY_MARKER,
   OVERLAY_HISTORY_MARKER,
+  SIDEBAR_HISTORY_MARKER,
   backDepthFromState,
   filtersFromUrl,
   filtersToUrl,
@@ -507,6 +508,25 @@ export function App() {
     setCaptureOpen(true);
   };
 
+  /**
+   * The drawer is a layer too. Without an entry of its own, the phone's back
+   * button saw nothing to unwind and left the app instead of closing it.
+   */
+  const openSidebar = () => {
+    const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
+    history.pushState({ ...state, [SIDEBAR_HISTORY_MARKER]: true }, "");
+    syncBackDepth();
+    setSidebarOpen(true);
+  };
+
+  const closeSidebar = () => {
+    if (history.state?.[SIDEBAR_HISTORY_MARKER]) {
+      history.back();
+      return;
+    }
+    setSidebarOpen(false);
+  };
+
   // Closing from the UI unwinds the entry the open added, so a later back press
   // is not spent on a sheet that is already gone.
   const closeCapture = () => {
@@ -523,6 +543,7 @@ export function App() {
       // is what says whether the sheet is still the top of the stack.
       syncBackDepth();
       if (!history.state?.[OVERLAY_HISTORY_MARKER]) setCaptureOpen(false);
+      if (!history.state?.[SIDEBAR_HISTORY_MARKER]) setSidebarOpen(false);
       const itemKey = itemKeyFromUrl();
       setDetailOpenInEdit(false);
       setSelectedItemKey(itemKey);
@@ -535,6 +556,17 @@ export function App() {
         restoreListScroll();
       }
     };
+    // A detail reached by its own URL -- a deep link, or a WebView restored onto
+    // one -- renders with nothing underneath it, so back had a level to close on
+    // screen and none in the history. Give it the list entry it is missing.
+    // Read once: the replaceState below drops the parameter, so asking the URL
+    // again afterwards would hand back null and write "item=null".
+    const deepLinkedItem = itemKeyFromUrl();
+    if (deepLinkedItem && !history.state?.[ITEM_HISTORY_MARKER]) {
+      const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
+      history.replaceState(state, "", itemListUrl());
+      history.pushState({ ...state, [ITEM_HISTORY_MARKER]: true }, "", itemDetailUrl(deepLinkedItem));
+    }
     // The shell keeps its copy for the life of the activity, and a reload leaves
     // it holding the count from before. Start it from what this document has.
     reportAndroidBackDepth(backDepthFromState(history.state));
@@ -733,7 +765,7 @@ export function App() {
 
   const selectStatus = (status: WorkItemStatus | "all") => {
     setStatusFilter(status);
-    setSidebarOpen(false);
+    closeSidebar();
   };
 
   // The status lives in the sidebar and the type in the tab row above the list,
@@ -822,7 +854,7 @@ export function App() {
   return (
     <div className="app-shell">
       <header className={`topbar ${mobileSearchOpen ? "searching" : ""}`}>
-        <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label={t("openNavigation")}>
+        <button className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
           <Menu size={20} />
         </button>
         <Brand compact />
@@ -864,7 +896,7 @@ export function App() {
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="sidebar-mobile-head mobile-only">
           <Brand compact />
-          <button className="icon-button" onClick={() => setSidebarOpen(false)} aria-label={t("closeNavigation")}><X size={20} /></button>
+          <button className="icon-button" onClick={() => closeSidebar()} aria-label={t("closeNavigation")}><X size={20} /></button>
         </div>
         <nav aria-label={t("workspace")}>
           <p className="sidebar-label">{t("workspace")}</p>
@@ -896,7 +928,7 @@ export function App() {
           <button
             className="text-button add-product"
             onClick={() => {
-              setSidebarOpen(false);
+              closeSidebar();
               androidFeedbackBridge()?.openFeedback();
             }}
           ><MessageSquarePlus size={15} /> {t("submitFeedback")}</button>
@@ -905,7 +937,7 @@ export function App() {
           className="text-button add-product"
           href={ANDROID_APK_DOWNLOAD_PATH}
           download
-          onClick={() => setSidebarOpen(false)}
+          onClick={() => closeSidebar()}
         ><Download size={15} /> {t("downloadAndroid")}</a>
         {/* Transitional. The app moved from the SDK sample's applicationId to
             io.missiongo.android, so Android installs it beside the old build
@@ -918,13 +950,13 @@ export function App() {
           <button
             className="text-button sidebar-utility-button"
             onClick={() => {
-              setSidebarOpen(false);
+              closeSidebar();
               setConnectionOpen(true);
             }}
           ><Settings2 size={15} /> {t("connectionSettings")}</button>
         </div>
       </aside>
-      {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label={t("closeNavigation")} />}
+      {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => closeSidebar()} aria-label={t("closeNavigation")} />}
 
       <main
         className={`workspace ${selectedItemKey ? "detail-open" : ""}`}
