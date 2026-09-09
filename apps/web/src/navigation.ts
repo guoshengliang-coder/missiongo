@@ -14,6 +14,12 @@ export const ITEM_HISTORY_MARKER = "missiongo:item-detail";
 export const OVERLAY_HISTORY_MARKER = "missiongo:overlay";
 
 /**
+ * The navigation drawer's entry. Separate from the capture sheet's, because the
+ * two can be open at once and popstate has to know which one this entry closed.
+ */
+export const SIDEBAR_HISTORY_MARKER = "missiongo:sidebar";
+
+/**
  * How many of its own history entries the app can still unwind from this state.
  *
  * Both markers accumulate: opening the capture sheet over an item detail pushes
@@ -24,7 +30,9 @@ export const OVERLAY_HISTORY_MARKER = "missiongo:overlay";
 export function backDepthFromState(state: unknown): number {
   if (typeof state !== "object" || state === null) return 0;
   const markers = state as Record<string, unknown>;
-  return (markers[ITEM_HISTORY_MARKER] ? 1 : 0) + (markers[OVERLAY_HISTORY_MARKER] ? 1 : 0);
+  return (markers[ITEM_HISTORY_MARKER] ? 1 : 0)
+    + (markers[OVERLAY_HISTORY_MARKER] ? 1 : 0)
+    + (markers[SIDEBAR_HISTORY_MARKER] ? 1 : 0);
 }
 
 export interface ListFilters {
