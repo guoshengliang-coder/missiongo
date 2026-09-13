@@ -15,34 +15,38 @@ const sdkIntegrationSourcePath = resolve(repositoryRoot, "sdks/android-feedback/
 // Keep in sync with MISSIONGO_SKILL_ORIGIN_PLACEHOLDER in packages/contracts/src/skill.ts
 // and the sed substitutions in deploy/Dockerfile.
 const skillOriginPlaceholder = "__MISSIONGO_PUBLIC_ORIGIN__";
-const nodeDaemonDownloadPath = "/downloads/missiongo-node/missiongo-node.mjs";
-const nodeDaemonBundlePath = resolve(repositoryRoot, "apps/node/dist/missiongo-node.mjs");
+const macosDownloadPath = "/downloads/missiongo-macos-latest.zip";
+const macosZipPath = resolve(repositoryRoot, "apps/web/public/downloads/missiongo-macos-latest.zip");
 
 /**
- * Serves the machine daemon at the address the install guide tells people to
- * curl, so the guide can be followed end to end against a local server. The file
- * is the `npm run bundle` output; when it has not been built the request says so
- * instead of falling through to the console's index.html under a .mjs name.
+ * Serves the macOS client at the address the machines tab links to, so the
+ * download can be tried against a local server.
+ *
+ * Not left to Vite's public/ handling: the zip is a local build output that is
+ * usually absent, and a missing file would fall through to the console's
+ * index.html with a 200 -- which the browser saves as a broken .zip. Answering
+ * 404 with the command that produces it says what is actually wrong.
  */
-function nodeDaemonDownload(): Plugin {
+function macosDownload(): Plugin {
   const middleware = (request: IncomingMessage, response: ServerResponse, next: () => void): void => {
-    if (request.url?.split("?", 1)[0] !== nodeDaemonDownloadPath) {
+    if (request.url?.split("?", 1)[0] !== macosDownloadPath) {
       next();
       return;
     }
-    if (!existsSync(nodeDaemonBundlePath)) {
+    if (!existsSync(macosZipPath)) {
       response.statusCode = 404;
       response.setHeader("Content-Type", "text/plain; charset=utf-8");
-      response.end("missiongo-node.mjs has not been built. Run: npm run bundle --workspace @missiongo/node\n");
+      response.end("missiongo-macos-latest.zip has not been built. Run: npm run publish:macos\n");
       return;
     }
-    response.setHeader("Content-Type", "text/javascript; charset=utf-8");
+    response.setHeader("Content-Type", "application/zip");
+    response.setHeader("Content-Disposition", 'attachment; filename="MissionGo-macOS.zip"');
     response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    response.end(readFileSync(nodeDaemonBundlePath));
+    response.end(readFileSync(macosZipPath));
   };
 
   return {
-    name: "missiongo-node-download",
+    name: "missiongo-macos-download",
     configureServer(server) {
       server.middlewares.use(middleware);
     },
@@ -202,7 +206,7 @@ export default defineConfig(({ mode }) => {
       react(),
       consoleChunkPreload(),
       androidDownloadHeaders(),
-      nodeDaemonDownload(),
+      macosDownload(),
       markdownDownload("missiongo-skill-download", skillDownloadPath, skillSourcePath, publicOrigin),
       markdownDownload(
         "missiongo-sdk-integration-download",

@@ -95,8 +95,6 @@ interface DispatchRow {
   completed_at: string | null;
 }
 
-const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
-
 function nodeTokenHash(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
@@ -169,58 +167,110 @@ export class DispatchStore {
     for (const resolve of waiting) resolve();
   }
 
-  createPairingCode(accountId: string, name: string): { code: string; expiresAt: string } {
-    const nodeName = text(name, "Node name", 100);
-    const now = Date.now();
-    // Grouped for the eye: a person reads this off one screen and types it on
-    // another, and a 24-character run of base32 gets miscounted.
-    const code = `${randomBytes(5).toString("hex")}-${randomBytes(5).toString("hex")}`;
-    const expiresAt = new Date(now + PAIRING_CODE_TTL_MS).toISOString();
-    this.database.connection
-      .prepare(
-        `INSERT INTO node_pairing_codes (id, account_id, name, code_hash, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(randomUUID(), accountId, nodeName, nodeTokenHash(code), expiresAt, new Date(now).toISOString());
-    return { code, expiresAt };
-  }
-
   /**
-   * Trade a pairing code for a node credential. Single use and time limited, so
-   * a code read out of a terminal's scrollback later is worth nothing.
+   * Register the Mac a signed-in person is using, or hand that same Mac a fresh
+   * credential.
+   *
+   * The installation id is what makes it the same Mac. Logging in again — after
+   * signing out, or after the node was revoked — keeps the row, and with it the
+   * repository mapping and the dispatch history, instead of leaving an orphan
+   * behind every login. The old credential stops working in the same statement
+   * that issues the new one, so a copy of it on disk is worth nothing afterwards.
+   *
+   * Signing in is the person's intent to use this Mac, so it also undoes a
+   * revoke. What a revoke must not survive is the old token, and it does not.
    */
-  redeemPairingCode(input: { code: string; hostname?: string }): CreatedNodeCredential {
+  registerNode(input: {
+    accountId: string;
+    installationId: string;
+    name: string;
+    hostname?: string;
+  }): CreatedNodeCredential {
+    const installationId = text(input.installationId, "Installation ID", 100);
+    if (!/^[A-Za-z0-9-]{8,100}$/.test(installationId)) throw invalidInput("Installation ID is not valid.");
+    const name = text(input.name, "Node name", 100);
+    const hostname = input.hostname?.trim().slice(0, 255) || null;
+
     return this.database.transaction(() => {
       const now = new Date().toISOString();
-      const row = this.database.connection
-        .prepare(
-          `SELECT id, account_id, name, expires_at, used_at
-           FROM node_pairing_codes WHERE code_hash = ?`,
-        )
-        .get(nodeTokenHash(input.code.trim())) as unknown as {
-          id: string;
-          account_id: string;
-          name: string;
-          expires_at: string;
-          used_at: string | null;
-        } | undefined;
-      if (!row) throw notFound("Pairing code");
-      if (row.used_at) throw conflict("pairing_code_used", "This pairing code was already used.");
-      if (row.expires_at <= now) throw conflict("pairing_code_expired", "This pairing code has expired.");
+      const token = `mgn_${randomBytes(32).toString("base64url")}`;
+      const existing = this.database.connection
+        .prepare("SELECT id, name FROM nodes WHERE account_id = ? AND installation_id = ?")
+        .get(input.accountId, installationId) as unknown as { id: string; name: string } | undefined;
+
+      if (existing) {
+        this.database.connection
+          .prepare(
+            `UPDATE nodes SET token_hash = ?, hostname = ?, revoked_at = NULL, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(nodeTokenHash(token), hostname, now, existing.id);
+        // A name someone set in the console is theirs; the client only proposes
+        // one for a machine it is seeing for the first time.
+        return { nodeId: existing.id, name: existing.name, token };
+      }
 
       const nodeId = randomUUID();
-      const token = `mgn_${randomBytes(32).toString("base64url")}`;
       this.database.connection
         .prepare(
-          `INSERT INTO nodes (id, account_id, name, hostname, token_hash, agents_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, '[]', ?, ?)`,
+          `INSERT INTO nodes (id, account_id, installation_id, name, hostname, token_hash, agents_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
         )
-        .run(nodeId, row.account_id, row.name, input.hostname?.trim() || null, nodeTokenHash(token), now, now);
-      this.database.connection
-        .prepare("UPDATE node_pairing_codes SET used_at = ?, node_id = ? WHERE id = ?")
-        .run(now, nodeId, row.id);
-      return { nodeId, name: row.name, token };
+        .run(nodeId, input.accountId, installationId, name, hostname, nodeTokenHash(token), now, now);
+      return { nodeId, name, token };
     });
+  }
+
+  /** Everything the client shows about the machine it is running on. */
+  describeSelf(nodeId: string, products: readonly { id: string; keyPrefix: string; name: string }[]): {
+    node: { id: string; name: string; hostname?: string; online: boolean; lastSeenAt?: string };
+    repos: readonly NodeRepoMapping[];
+    products: readonly { id: string; keyPrefix: string; name: string }[];
+  } {
+    const row = this.nodeRow(nodeId);
+    const node = this.mapNode(row);
+    return {
+      node: {
+        id: node.id,
+        name: node.name,
+        ...(node.hostname ? { hostname: node.hostname } : {}),
+        online: node.online,
+        ...(node.lastSeenAt ? { lastSeenAt: node.lastSeenAt } : {}),
+      },
+      repos: node.repos,
+      products,
+    };
+  }
+
+  /** The client's own mapping edit; the same rules as the console's. */
+  replaceOwnRepos(nodeId: string, repos: readonly { productId: string; repoPath: string }[]): readonly NodeRepoMapping[] {
+    return this.replaceRepos(this.nodeRow(nodeId).account_id, nodeId, repos);
+  }
+
+  listDispatchesForNode(nodeId: string, limit = 20): readonly DispatchSnapshot[] {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT d.id, d.node_id, n.name AS node_name, d.agent_kind, d.mode, d.status,
+                d.session_name, d.session_url, d.error, d.created_at, d.delivered_at, d.completed_at
+         FROM dispatches d JOIN nodes n ON n.id = d.node_id
+         WHERE d.node_id = ?
+         ORDER BY d.created_at DESC
+         LIMIT ?`,
+      )
+      .all(nodeId, limit) as unknown as DispatchRow[];
+    return rows.map((row) => this.mapDispatch(row));
+  }
+
+  private nodeRow(nodeId: string): NodeRow {
+    const row = this.database.connection
+      .prepare(
+        `SELECT id, account_id, name, hostname, agents_json, repo_candidates_json,
+                last_seen_at, revoked_at, created_at
+         FROM nodes WHERE id = ?`,
+      )
+      .get(nodeId) as unknown as NodeRow | undefined;
+    if (!row) throw notFound("Node");
+    return row;
   }
 
   authenticateNode(token: string): { nodeId: string; accountId: string } | undefined {

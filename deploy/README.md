@@ -172,6 +172,25 @@ checkout carries none, publishing is skipped with a note and the previous build
 stays downloadable; run `npm run publish:android-internal` first to ship a new
 one.
 
+### Publishing the macOS client
+
+Unlike the APK, the macOS client is served from the web image. The host proxy
+forwards only `/downloads/missiongo-android-latest.apk` to its own directory;
+every other `/downloads/` path reaches the container, whose nginx serves
+`/downloads/missiongo-macos-latest.zip` from the built site and answers 404
+when the file is missing.
+
+`npm run publish:macos` tests the Swift package, builds and ad-hoc signs
+`MissionGo.app`, and places `missiongo-macos-latest.zip` plus its
+`missiongo-macos-latest.release` metadata under `apps/web/public/downloads/`,
+where the next deploy's image build picks it up. Like the APK, a zip whose
+sha256 no longer matches its metadata stops the deploy before anything is
+pushed.
+
+The zip is git-ignored. A checkout that carries none gets the live release's
+copy carried into the new snapshot after the push, the same way `/maven` is, so
+a deploy for an unrelated reason never turns the download into a 404.
+
 ### Restricting the origin to a CDN
 
 A CDN protects nothing if the origin also answers on its own address. Anyone who

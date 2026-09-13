@@ -37,3 +37,18 @@ jobs:
           :missiongo-feedback:testDebugUnitTest
           :sample:assembleDebug
           :missiongo-android-app:assembleDebug
+
+  # The macOS client. Tests run on every change, and the bundle is assembled the
+  # same way the publish script does it, so a change that breaks packaging fails
+  # here rather than on the machine that happens to publish next.
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+      - name: Test the macOS client
+        run: swift test --package-path apps/macos
+      - name: Build the app bundle
+        run: ./scripts/build-macos-app.sh

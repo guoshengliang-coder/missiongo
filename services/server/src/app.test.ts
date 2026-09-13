@@ -540,7 +540,7 @@ describe("MissionGo REST API", () => {
     expect(protectedMetadata.json()).toMatchObject({
       resource: "https://missiongo.test/mcp",
       authorization_servers: ["https://missiongo.test"],
-      scopes_supported: ["missiongo:read", "missiongo:write"],
+      scopes_supported: ["missiongo:read", "missiongo:write", "missiongo:node"],
     });
 
     const registration = await app.inject({

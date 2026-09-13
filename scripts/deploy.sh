@@ -184,6 +184,8 @@ local_apk="apps/web/public/downloads/missiongo-android-latest.apk"
 local_apk_meta="apps/web/public/downloads/missiongo-android-latest.release"
 apk_link="${downloads_dir}/missiongo-android-latest.apk"
 local_maven="apps/web/public/maven"
+local_macos_zip="apps/web/public/downloads/missiongo-macos-latest.zip"
+local_macos_meta="apps/web/public/downloads/missiongo-macos-latest.release"
 
 # macOS ships shasum without sha256sum; a minimal Linux host ships the reverse.
 sha256_of() {
@@ -257,6 +259,35 @@ if [ "$publish_apk" -eq 1 ]; then
   apk_name="MissionGo-Android-${apk_version_name}-${apk_version_code}.apk"
 fi
 
+# The macOS client is served from the web image, unlike the APK: the host proxy
+# forwards only the APK path to its own directory, and everything else under
+# /downloads reaches the container. So the zip has to be in the snapshot the
+# image is built from. A checkout that carries one must carry the metadata that
+# names it, for the same reason as the APK; a checkout that carries none gets the
+# live one copied over after the push, below.
+if [ -s "$local_macos_zip" ]; then
+  [ -s "$local_macos_meta" ] || {
+    echo "No build metadata beside the macOS client: ${local_macos_meta}" >&2
+    echo "Run npm run publish:macos to rebuild and record it." >&2
+    exit 1
+  }
+  macos_meta_sha="$(sed -n 's/^sha256=//p' "$local_macos_meta" | head -n 1)"
+  macos_version="$(sed -n 's/^version=//p' "$local_macos_meta" | head -n 1)"
+  macos_sha="$(sha256_of "$local_macos_zip")"
+  if [ "$macos_sha" != "$macos_meta_sha" ]; then
+    echo "The macOS client does not match the metadata beside it, so its version is unknown." >&2
+    echo "  zip      ${macos_sha}" >&2
+    echo "  metadata ${macos_meta_sha}" >&2
+    echo "Run npm run publish:macos to rebuild and record it." >&2
+    exit 1
+  fi
+  echo "==> Shipping macOS client ${macos_version} (sha256 ${macos_sha})"
+else
+  echo "Note: this checkout carries no macOS client under apps/web/public/downloads/." >&2
+  echo "      Carrying the live one over, so the download keeps working." >&2
+  echo "      Run npm run publish:macos to ship a new one." >&2
+fi
+
 # The commit is in the name so the live release can be identified from a
 # directory listing alone, without reading anything inside it.
 release="$(remote date +%Y%m%d-%H%M%S)-${short_commit}"
@@ -295,6 +326,17 @@ if [ ! -d "$local_maven" ]; then
       sudo mkdir -p '${target}/apps/web/public' && \
       sudo cp -a '${current_link}/${local_maven}' '${target}/apps/web/public/'; \
     else echo '    nothing to carry over: the live release has no /maven either'; fi"
+fi
+
+# The macOS client, carried over the same way and for the same reason: a deploy
+# for anything else must not quietly turn the download into a 404.
+if [ ! -s "$local_macos_zip" ]; then
+  echo "==> Carrying the macOS client over from the live release"
+  remote "if [ -s '${current_link}/${local_macos_zip}' ]; then \
+      sudo mkdir -p '${target}/apps/web/public/downloads' && \
+      sudo cp -a '${current_link}/${local_macos_zip}' '${target}/apps/web/public/downloads/' && \
+      { [ ! -s '${current_link}/${local_macos_meta}' ] || sudo cp -a '${current_link}/${local_macos_meta}' '${target}/apps/web/public/downloads/'; }; \
+    else echo '    nothing to carry over: the live release has no macOS client either'; fi"
 fi
 
 # Written after the push so --delete cannot remove it, and inside the snapshot so

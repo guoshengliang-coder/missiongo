@@ -1,11 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, CirclePause, ClipboardCheck, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { Check, CirclePause, Download, LoaderCircle, Plus, Trash2 } from "lucide-react";
 
 import { api, ApiError } from "./api";
 import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
-import { copyText, nodeCommands, nodeListRefetchInterval, pairingProgress, type PairingProgress } from "./node-install";
+import {
+  arrivalBaseline,
+  arrivalProgress,
+  MACOS_CLIENT_DOWNLOAD_PATH,
+  NODE_WAIT_GIVE_UP_MS,
+  nodeListRefetchInterval,
+  type ArrivalProgress,
+  type PendingArrival,
+} from "./node-install";
 import { startsInManualMode, suggestRepoCandidate } from "./repo-match";
 import type { DispatchNode, Product } from "./types";
 
@@ -21,8 +29,8 @@ function nodeErrorMessage(error: unknown, fallback: string): string {
 const MANUAL_OPTION = "manual";
 
 /**
- * Machines that run dispatched work: pairing, what each one reported, and where
- * each product's checkout lives on it.
+ * Machines that run dispatched work: getting the macOS client onto a Mac, what
+ * each machine reported, and where each product's checkout lives on it.
  *
  * Account-wide rather than per-product, even though it is reached through a
  * product's settings, because a machine serves every product and the repository
@@ -32,59 +40,51 @@ const MANUAL_OPTION = "manual";
 export function NodeSettings({ products }: { products: readonly Product[] }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  const [name, setName] = useState("");
-  // The plaintext code exists only here: the server keeps a hash, so leaving
-  // this screen is what takes it away. The baseline is the node list from just
-  // before the code existed, which is how a machine that turns up is known to
-  // be the one this code connected.
-  const [pairing, setPairing] = useState<PendingPairing | null>(null);
+  // Set when the download is clicked. There is no code tying a Mac to this
+  // screen any more -- the client signs in on its own -- so the node list from
+  // that moment is the only way to tell which machine is the one being set up.
+  const [arrival, setArrival] = useState<PendingArrival | null>(null);
   // Latched name of the machine that came up, so the confirmation survives the
   // wait ending rather than flickering away on the next refetch.
   const [arrived, setArrived] = useState<string | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
-  // Only a clock for the expiry: bumped once, when the code runs out.
+  // Only a clock for the give-up: bumped once, when the wait runs out.
   const [now, setNow] = useState(() => Date.now());
 
   // Polled while this panel is open: online is a heartbeat away from changing,
-  // and this is the screen somebody watches to see a machine come up after
-  // running the commands. The interval is a function so it follows the pairing
-  // that exists at each fetch, and drops back once the wait is over.
+  // and this is the screen somebody watches to see a Mac come up after signing
+  // in. The interval is a function so it follows the wait that exists at each
+  // fetch, and drops back once the wait is over.
   const nodesQuery = useQuery({
     queryKey: ["nodes"],
     queryFn: api.listNodes,
     refetchInterval: (query) => nodeListRefetchInterval(
-      pairing ? pairingProgress(pairing, query.state.data?.nodes ?? [], Date.now()) : undefined,
+      arrival ? arrivalProgress(arrival, query.state.data?.nodes ?? [], Date.now()) : undefined,
     ),
   });
   const nodes = nodesQuery.data?.nodes ?? [];
-  const progress = pairing ? pairingProgress(pairing, nodes, now) : undefined;
-  const expecting = progress?.state === "waiting" || progress?.state === "paired";
+  const progress = arrival ? arrivalProgress(arrival, nodes, now) : undefined;
+  const expecting = progress?.state === "waiting" || progress?.state === "signedIn";
   const arrivedNode = progress?.state === "online" ? progress.node : undefined;
 
-  const pairingMutation = useMutation({
-    mutationFn: async () => {
-      // Read fresh, and before the code exists, so no machine that redeems this
-      // code can already be in the baseline.
-      const before = await queryClient.fetchQuery({ queryKey: ["nodes"], queryFn: api.listNodes, staleTime: 0 });
-      const created = await api.createNodePairingCode({ name: name.trim() });
-      return { ...created, baseline: before.nodes.map((node) => node.id) };
-    },
-    onSuccess: (created) => {
-      // A second code while the first is still out keeps the first baseline: a
-      // machine that took the first code is just as new as one taking this one.
-      setPairing((current) => ({ code: created.code, expiresAt: created.expiresAt, baseline: current?.baseline ?? created.baseline }));
-      setArrived(null);
-      setName("");
-    },
-  });
+  const startWaiting = () => {
+    const startedAt = Date.now();
+    // A second click while a wait is out keeps the first baseline: a Mac that
+    // signed in after the first click is just as new. The clock restarts,
+    // because the click says somebody is still at it.
+    setArrival((current) => ({ baseline: current?.baseline ?? arrivalBaseline(nodes), startedAt }));
+    setNow(startedAt);
+    setArrived(null);
+  };
 
+  const startedAt = arrival?.startedAt;
   useEffect(() => {
-    if (!pairing) return;
-    const remaining = Date.parse(pairing.expiresAt) - Date.now();
+    if (startedAt === undefined) return;
+    const remaining = startedAt + NODE_WAIT_GIVE_UP_MS - Date.now();
     if (remaining <= 0) return;
     const timer = window.setTimeout(() => setNow(Date.now()), remaining + 250);
     return () => window.clearTimeout(timer);
-  }, [pairing]);
+  }, [startedAt]);
 
   const arrivedId = arrivedNode?.id;
   const arrivedName = arrivedNode?.name;
@@ -92,14 +92,14 @@ export function NodeSettings({ products }: { products: readonly Product[] }) {
     if (!arrivedId || arrivedName === undefined) return;
     // The guide has done its job; the new machine's card is what matters now.
     setArrived(arrivedName);
-    setPairing(null);
+    setArrival(null);
     setGuideOpen(false);
   }, [arrivedId, arrivedName]);
 
   // With no machine the guide is the whole point of the screen. With some, the
   // list is what people come back for, so the guide waits behind a button --
-  // except while a machine is on its way, when collapsing it would hide the code.
-  const guideShown = nodes.length === 0 || guideOpen || Boolean(pairing);
+  // except while a Mac is on its way, when collapsing it would hide the status.
+  const guideShown = nodes.length === 0 || guideOpen || Boolean(arrival);
 
   return (
     <section className="product-settings-section" role="tabpanel">
@@ -132,18 +132,12 @@ export function NodeSettings({ products }: { products: readonly Product[] }) {
       {/* Deciding collapsed-or-open before the list loads would open the guide and then snap it shut. */}
       {!nodesQuery.isLoading && (guideShown ? (
         <NodeInstallGuide
-          origin={window.location.origin}
-          pairing={pairing}
           progress={progress}
-          creating={pairingMutation.isPending}
-          createError={pairingMutation.isError ? nodeErrorMessage(pairingMutation.error, t("somethingWentWrong")) : null}
-          name={name}
-          onNameChange={setName}
-          onCreate={() => pairingMutation.mutate()}
+          onDownload={startWaiting}
           onCollapse={nodes.length > 0 && !expecting
             ? () => {
               setGuideOpen(false);
-              setPairing(null);
+              setArrival(null);
             }
             : undefined}
         />
@@ -163,158 +157,60 @@ export function NodeSettings({ products }: { products: readonly Product[] }) {
   );
 }
 
-interface PendingPairing {
-  readonly code: string;
-  readonly expiresAt: string;
-  readonly baseline: readonly string[];
-}
-
 /**
- * The steps from a bare Mac to a machine that stays online, in the order they
- * have to happen. Every command is shown whole, with the real origin and code in
- * it, because the person running it is usually on another screen and copying is
- * the only step that cannot be mistyped.
+ * From a bare Mac to a machine that stays online. Only what the browser has to
+ * say: the client checks Claude Code and repository trust itself and explains
+ * each gap there, where it can see them, so this page names them once and moves
+ * on.
  */
 function NodeInstallGuide({
-  origin,
-  pairing,
   progress,
-  name,
-  onNameChange,
-  creating,
-  createError,
-  onCreate,
+  onDownload,
   onCollapse,
 }: {
-  origin: string;
-  pairing: PendingPairing | null;
-  progress: PairingProgress | undefined;
-  name: string;
-  onNameChange: (name: string) => void;
-  creating: boolean;
-  createError: string | null;
-  onCreate: () => void;
+  progress: ArrivalProgress | undefined;
+  onDownload: () => void;
   onCollapse: (() => void) | undefined;
 }) {
-  const { locale, t } = useI18n();
-  const codeUsable = pairing !== null && progress?.state !== "expired";
-  // The flag is literal JSON the check prints, so it is set as code rather than
-  // translated along with the sentence around it.
-  const [beforeFlag, afterFlag = ""] = t("nodePrereqClaude").split("{flag}");
+  const { t } = useI18n();
 
   return (
     <div className="node-install-guide">
+      {/* A plain link rather than a fetch, like the Android download: the browser
+          handles the save, and nothing here waits on it. The click only starts
+          watching the list. */}
+      <a className="primary-button node-download" href={MACOS_CLIENT_DOWNLOAD_PATH} download onClick={onDownload}>
+        <Download size={15} /> {t("nodeDownloadMacClient")}
+      </a>
+      <p className="node-requirements">{t("nodeRequirements")}</p>
       <ol className="node-install-steps">
         <li>
-          <h4>{t("nodeStepPrerequisites")}</h4>
-          <p>{t("nodePrereqNode")}</p>
-          <CommandBlock command={nodeCommands.checkNode} />
-          <p>{t("nodePrereqNodeMissing")}</p>
-          <CommandBlock command={nodeCommands.installNode} />
-          <p>{beforeFlag}<code>"loggedIn": true</code>{afterFlag}</p>
-          <CommandBlock command={nodeCommands.checkClaude} />
-          <p>{t("nodePrereqClaudeMissing")}</p>
-          <CommandBlock command={nodeCommands.loginClaude} />
-          <p className="node-requirements">{t("nodeRequirements")}</p>
+          <h4>{t("nodeStepInstall")}</h4>
         </li>
         <li>
-          <h4>{t("nodeStepDownload")}</h4>
-          <p>{t("nodeStepDownloadHelp")}</p>
-          <CommandBlock command={nodeCommands.download(origin)} />
+          <h4>{t("nodeStepOpen")}</h4>
+          <p>{t("nodeStepOpenHelp")}</p>
         </li>
         <li>
-          <h4>{t("nodeStepPair")}</h4>
-          {codeUsable ? (
-            <>
-              <p>{t("pairingCodeCreated")}</p>
-              {/* Keyed by code so a new code does not inherit the last one's "copied". */}
-              <CommandBlock key={pairing.code} command={nodeCommands.pair(origin, pairing.code)} />
-              <small>{t("pairingCodeExpires", { time: new Date(pairing.expiresAt).toLocaleString(locale) })}</small>
-            </>
-          ) : (
-            <>
-              <p>{t("nodeStepPairHelp")}</p>
-              {progress?.state === "expired" && (
-                <div className="inline-error"><CirclePause size={16} /><span>{t("pairingCodeExpired")}</span></div>
-              )}
-              <div className="node-pair-row">
-                <label>{t("nodeName")}
-                  <input value={name} onChange={(event) => onNameChange(event.target.value)} placeholder={t("nodeNamePlaceholder")} maxLength={100} />
-                </label>
-                <button
-                  type="button"
-                  className="primary-button"
-                  disabled={!name.trim() || creating}
-                  onClick={onCreate}
-                >
-                  {creating ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createPairingCode")}
-                </button>
-              </div>
-            </>
-          )}
-          {createError && (
-            <div className="inline-error"><CirclePause size={16} /><span>{createError}</span></div>
-          )}
-        </li>
-        <li>
-          <h4>{t("nodeStepService")}</h4>
-          <p>{t("nodeStepServiceHelp")}</p>
-          <CommandBlock command={nodeCommands.installService} />
-          <p>{t("nodeStepServiceForeground")}</p>
-          <CommandBlock command={nodeCommands.run} />
+          <h4>{t("nodeStepSignIn")}</h4>
+          <p>{t("nodeStepSignInHelp")}</p>
         </li>
       </ol>
 
       {progress?.state === "waiting" && (
-        <p className="node-pairing-status" role="status"><LoaderCircle className="spin" size={15} /> {t("nodeWaitingOnline")}</p>
+        <p className="node-pairing-status" role="status"><LoaderCircle className="spin" size={15} /> {t("nodeWaitingSignIn")}</p>
       )}
-      {progress?.state === "paired" && (
+      {progress?.state === "signedIn" && (
         <p className="node-pairing-status" role="status">
-          <LoaderCircle className="spin" size={15} /> {t("nodePairedWaiting", { name: progress.node.name })}
+          <LoaderCircle className="spin" size={15} /> {t("nodeSignedInWaiting", { name: progress.node.name })}
         </p>
+      )}
+      {progress?.state === "gaveUp" && (
+        <p className="node-pairing-status" role="status"><CirclePause size={15} /> {t("nodeWaitGaveUp")}</p>
       )}
       {onCollapse && (
         <button type="button" className="text-button node-guide-collapse" onClick={onCollapse}>{t("nodeHideGuide")}</button>
       )}
-    </div>
-  );
-}
-
-/**
- * A command as plain text with a copy button. Text children only: the pairing
- * code comes from the server, and nothing here should ever be parsed as markup.
- */
-function CommandBlock({ command }: { command: string }) {
-  const { t } = useI18n();
-  const codeRef = useRef<HTMLElement>(null);
-  const [feedback, setFeedback] = useState<"copied" | "selected" | null>(null);
-
-  useEffect(() => {
-    if (!feedback) return;
-    const timer = window.setTimeout(() => setFeedback(null), 2_500);
-    return () => window.clearTimeout(timer);
-  }, [feedback]);
-
-  const copy = async () => {
-    if (await copyText(command, navigator.clipboard)) {
-      setFeedback("copied");
-      return;
-    }
-    // No clipboard (the Android WebView shell, plain HTTP): select the command so
-    // the system's own copy is one tap away.
-    const element = codeRef.current;
-    const selection = window.getSelection();
-    if (element && selection) selection.selectAllChildren(element);
-    setFeedback("selected");
-  };
-
-  return (
-    <div className="node-command">
-      <code ref={codeRef}>{command}</code>
-      <button type="button" className="secondary-button" onClick={() => void copy()}>
-        {feedback === "copied" ? <Check size={14} /> : <ClipboardCheck size={14} />}
-        {" "}{feedback === "copied" ? t("copied") : feedback === "selected" ? t("commandSelected") : t("copyCommand")}
-      </button>
     </div>
   );
 }

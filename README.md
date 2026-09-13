@@ -28,7 +28,7 @@ AI 接入负责按编号完整读取条目、时间线、日志和图片；在�
 - 公开注册、多用户、团队和角色管理；
 - macOS/iOS 反馈 SDK；
 - AI 决定任务是否通过验收（验收、退回、搁置都由人做）；AI 修改条目内容与字段；
-- 定时扫描和无人值守任务队列（管理端派单已经可用，但始终要人点一下，见 [AI 节点](docs/node.md)）；
+- 定时扫描和无人值守任务队列（管理端派单已经可用，但始终要人点一下，见 [执行机器](docs/node.md)）；
 - 公共 Maven Central 发布、多实例部署和对象存储。
 
 这些方向保留在 [产品与技术路线图](docs/product-and-technical-plan.md)，不应被当作当前接口承诺。
@@ -41,12 +41,15 @@ Android 管理 App ───────┼── REST API ── SQLite + 本�
 Android 反馈 SDK ───────┘
 
 Codex / Claude Code / 其他客户端 ── OAuth + MCP（读取 + 评论）
+
+macOS 客户端（执行机器）── OAuth 登录 + 长轮询拉取派单 ── 本机启动 Claude Code 会话
 ```
 
 | 目录 | 职责 |
 |---|---|
 | `apps/web` | React/Vite Web 与 H5 管理端 |
 | `apps/android` | 正式 Android 管理 App |
+| `apps/macos` | macOS 菜单栏客户端：把 Mac 登记为执行机器，接收派单并启动会话 |
 | `services/server` | Fastify REST、OAuth、MCP、SQLite 与附件服务 |
 | `packages/domain` | 状态机和领域规则 |
 | `packages/contracts` | 跨端类型与公开 MCP 工具契约 |
@@ -91,7 +94,7 @@ npm run dev:web
 
 ## 发布
 
-三个产物从这个仓库发出：Web 应用、Android 应用和 Android SDK。`released.json`
+四个产物从这个仓库发出：Web 应用、Android 应用、Android SDK 和 macOS 客户端。`released.json`
 记录每个产物上次发布的版本和它构建自哪个提交，`npm run release:state` 据此说明
 谁需要发、谁不用动：
 
@@ -107,10 +110,10 @@ npm run release:state -- --deployed https://<host>
 拦下「没改动」不是洁癖：versionCode 是构建时间戳，构建也不可复现，所以重发一次会产生
 第二个内容不同、版本名却相同的文件——正是这套记账要消除的那种歧义，换个门进来。
 
-一个版本号必须只对应一份构建。`scripts/publish-android-internal.sh` 和
-`scripts/publish-android-sdk.sh` 各自在开工前检查这一点，发布成功后把新的版本和提交
+一个版本号必须只对应一份构建。`scripts/publish-android-internal.sh`、
+`scripts/publish-android-sdk.sh`、`scripts/publish-macos.sh` 各自在开工前检查这一点，发布成功后把新的版本和提交
 写回 `released.json`——那个文件是被跟踪的，记得和发布一起提交，否则下一次比较的
-就是错的提交。两个脚本都有 `--allow-republish` 作为逃生口。
+就是错的提交。三个脚本都有 `--allow-republish` 作为逃生口。
 
 Web 应用没有自己的版本号，它的身份就是提交：`scripts/deploy.sh` 负责发布，
 `/health` 报告线上跑的是哪个提交，细节见[部署说明](deploy/README.md)。

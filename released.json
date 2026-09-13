@@ -25,6 +25,15 @@
       "paths": [
         "sdks/android-feedback/missiongo-feedback"
       ]
+    },
+    "macosApp": {
+      "version": "0.1.0",
+      "commit": "4e529353bb60185e420f6e4f1099ba49581acf24",
+      "versionFile": "apps/macos/version.properties",
+      "versionProperty": "missiongoMacosVersion",
+      "paths": [
+        "apps/macos"
+      ]
     }
   }
 }

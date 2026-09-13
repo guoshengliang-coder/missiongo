@@ -7,13 +7,11 @@ COPY apps/web/package.json apps/web/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/domain/package.json packages/domain/package.json
 COPY services/server/package.json services/server/package.json
-COPY apps/node/package.json apps/node/package.json
 
 RUN npm ci
 
 COPY tsconfig.json tsconfig.base.json ./
 COPY apps/web apps/web
-COPY apps/node apps/node
 COPY packages/contracts packages/contracts
 COPY packages/domain packages/domain
 COPY services/server services/server
@@ -21,13 +19,8 @@ COPY services/server services/server
 ARG MISSIONGO_PUBLIC_ORIGIN
 ENV MISSIONGO_PUBLIC_ORIGIN=${MISSIONGO_PUBLIC_ORIGIN}
 
-# The machine daemon is bundled here and smoke-run before it is published: the
-# console hands people a curl command for it, and a broken file would only show
-# up as a machine that never comes online.
 RUN npx tsc -b packages/domain packages/contracts services/server --force \
   && npm run build --workspace @missiongo/web \
-  && npm run bundle --workspace @missiongo/node \
-  && node apps/node/dist/missiongo-node.mjs --help > /dev/null \
   && npm prune --omit=dev
 
 FROM node:22-bookworm-slim AS server
@@ -67,7 +60,6 @@ COPY deploy/nginx-container.conf /etc/nginx/conf.d/default.conf
 # block, and nginx would fail to load it as one.
 COPY deploy/nginx-security-headers.conf /etc/nginx/missiongo-security-headers.conf
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
-COPY --from=builder /app/apps/node/dist/missiongo-node.mjs /usr/share/nginx/html/downloads/missiongo-node/missiongo-node.mjs
 COPY skills/missiongo/SKILL.md /tmp/missiongo-SKILL.md
 COPY sdks/android-feedback/INTEGRATION.md /tmp/missiongo-sdk-INTEGRATION.md
 

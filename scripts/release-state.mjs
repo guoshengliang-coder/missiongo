@@ -9,8 +9,8 @@
 //   node scripts/release-state.mjs --record androidApp --commit <sha>
 //   node scripts/release-state.mjs --deployed https://<host>   # include the web app
 //
-// Three artifacts ship from this repository -- the web app, the Android app and
-// the Android SDK -- and each used to decide on its own whether it needed
+// Four artifacts ship from this repository -- the web app, the Android app, the
+// Android SDK and the macOS client -- and each used to decide on its own whether it needed
 // publishing. The web app is deployed on every deploy whether or not it changed;
 // the SDK is published when someone remembers; the Android app is rebuilt and
 // republished every time, under a version name that has not moved in fifteen
