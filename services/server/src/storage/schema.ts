@@ -160,6 +160,11 @@ export const INITIAL_SCHEMA = `
   CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL,
+    -- Chosen by the macOS client the first time it runs, so logging in again on
+    -- the same Mac finds the same node. Its unique index lives in the migration
+    -- that adds it: this schema runs before migrations, when an existing database
+    -- does not have the column yet.
+    installation_id TEXT,
     name TEXT NOT NULL,
     hostname TEXT,
     token_hash TEXT NOT NULL UNIQUE,
@@ -171,20 +176,6 @@ export const INITIAL_SCHEMA = `
     revoked_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
-  ) STRICT;
-
-  -- Pairing codes are short-lived and single-use: the machine trades one for a
-  -- token, so a code left in a terminal's scrollback stops being a credential
-  -- minutes after it is read.
-  CREATE TABLE IF NOT EXISTS node_pairing_codes (
-    id TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    code_hash TEXT NOT NULL UNIQUE,
-    expires_at TEXT NOT NULL,
-    used_at TEXT,
-    node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL
   ) STRICT;
 
   -- Which checkout on that machine a product's items are worked in. A product

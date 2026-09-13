@@ -11,7 +11,14 @@ const AUTHORIZATION_REQUEST_SECONDS = 10 * 60;
 const AUTHORIZATION_CODE_SECONDS = 5 * 60;
 export const MISSIONGO_READ_SCOPE = "missiongo:read";
 export const MISSIONGO_WRITE_SCOPE = "missiongo:write";
-export const MISSIONGO_SUPPORTED_SCOPES = [MISSIONGO_READ_SCOPE, MISSIONGO_WRITE_SCOPE] as const;
+/**
+ * Lets the macOS client register the Mac it runs on as a dispatch node. Separate
+ * from write because the two grant different things: write lets an AI act on
+ * items, node lets a machine receive work and start sessions. A person consenting
+ * to one should not be signing up for the other.
+ */
+export const MISSIONGO_NODE_SCOPE = "missiongo:node";
+export const MISSIONGO_SUPPORTED_SCOPES = [MISSIONGO_READ_SCOPE, MISSIONGO_WRITE_SCOPE, MISSIONGO_NODE_SCOPE] as const;
 
 /**
  * Normalize a requested scope string, or throw.

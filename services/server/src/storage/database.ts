@@ -409,6 +409,31 @@ export class MissionGoDatabase {
           .run(202609131230, new Date().toISOString());
       });
     }
+    // Machines now join by signing in from the macOS client instead of typing a
+    // pairing code. The client names its installation so a second login on the
+    // same Mac finds the same node; pairing codes have no remaining use, and a
+    // table nothing reads is a table someone later trusts.
+    const clientRegistrationMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609140100")
+      .get() as unknown as { version: number } | undefined;
+    if (!clientRegistrationMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(nodes)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "installation_id")) {
+          this.connection.exec("ALTER TABLE nodes ADD COLUMN installation_id TEXT;");
+        }
+        this.connection.exec(`
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_account_installation
+            ON nodes(account_id, installation_id) WHERE installation_id IS NOT NULL;
+          DROP TABLE IF EXISTS node_pairing_codes;
+        `);
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609140100, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

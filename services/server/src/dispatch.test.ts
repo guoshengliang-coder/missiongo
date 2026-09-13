@@ -1,16 +1,17 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scryptSync } from "node:crypto";
+import { createHash, randomUUID, scryptSync } from "node:crypto";
 
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
-import type { AdminAccountConfig } from "./admin-auth.js";
+import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
 
 const apps: FastifyInstance[] = [];
 const temporaryDirectories: string[] = [];
+const accountsByApp = new WeakMap<FastifyInstance, AdminAccountConfig>();
 
 function adminAccount(id = "account-test-1"): AdminAccountConfig {
   const salt = Buffer.from("missiongo-dispatch-salt");
@@ -32,6 +33,7 @@ async function signedInApp(account: AdminAccountConfig = adminAccount()) {
     adminAccount: account,
   });
   apps.push(app);
+  accountsByApp.set(app, account);
   const login = await app.inject({
     method: "POST",
     url: "/api/v1/auth/login",
@@ -67,20 +69,32 @@ async function readyItem(app: FastifyInstance, cookie: string, productName: stri
   return { productId, itemKey: item.json<{ key: string }>().key };
 }
 
-async function pairedNode(app: FastifyInstance, cookie: string, name = "Mac mini") {
-  const created = await app.inject({
+function loginToken(app: FastifyInstance, scopes: readonly string[] = ["missiongo:read", "missiongo:node"]): string {
+  return createAiAccessToken(accountsByApp.get(app)!, "mgc_macos_test", scopes).token;
+}
+
+async function register(
+  app: FastifyInstance,
+  token: string,
+  payload: { installationId?: string; name?: string; hostname?: string } = {},
+) {
+  return app.inject({
     method: "POST",
-    url: "/api/v1/nodes/pairing-codes",
-    headers: { cookie },
-    payload: { name },
+    url: "/api/v1/node/register",
+    headers: { authorization: `Bearer ${token}` },
+    payload: {
+      installationId: payload.installationId ?? randomUUID(),
+      name: payload.name ?? "Mac mini",
+      hostname: payload.hostname ?? "macbook-test",
+    },
   });
-  const { code } = created.json<{ code: string }>();
-  const paired = await app.inject({
-    method: "POST",
-    url: "/api/v1/node/pair",
-    payload: { code, hostname: "macbook-test" },
-  });
-  return paired.json<{ nodeId: string; token: string }>();
+}
+
+/** A node as the macOS client creates one: sign in, then register this Mac. */
+async function registeredNode(app: FastifyInstance, name = "Mac mini", installationId: string = randomUUID()) {
+  const registered = await register(app, loginToken(app), { name, installationId });
+  if (registered.statusCode !== 201) throw new Error(`register failed: ${registered.statusCode} ${registered.body}`);
+  return registered.json<{ nodeId: string; token: string; name: string }>();
 }
 
 async function heartbeat(
@@ -102,8 +116,72 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-describe("Pairing a node", () => {
-  it("trades a pairing code for a credential exactly once", async () => {
+describe("Registering a Mac by signing in", () => {
+  it("trades a login carrying the node scope for a machine credential", async () => {
+    const { app } = await signedInApp();
+    const registered = await register(app, loginToken(app), { name: "Mac mini" });
+    expect(registered.statusCode).toBe(201);
+    expect(registered.json<{ token: string }>().token.startsWith("mgn_")).toBe(true);
+  });
+
+  it("refuses no token, a login without the node scope, and a node credential", async () => {
+    const { app } = await signedInApp();
+    expect((await register(app, "")).statusCode).toBe(401);
+    // A login granted for an AI to read and write items does not also sign this
+    // Mac up to receive work.
+    expect((await register(app, loginToken(app, ["missiongo:read", "missiongo:write"]))).statusCode).toBe(401);
+
+    const node = await registeredNode(app);
+    expect((await register(app, node.token)).statusCode).toBe(401);
+  });
+
+  it("finds the same Mac on a second login and retires its old credential", async () => {
+    const { app, cookie } = await signedInApp();
+    const installationId = randomUUID();
+    const first = await registeredNode(app, "Mac mini", installationId);
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${first.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    await app.inject({ method: "PATCH", url: `/api/v1/nodes/${first.nodeId}`, headers: { cookie }, payload: { name: "办公室 Mac mini" } });
+
+    const second = await registeredNode(app, "Mac mini", installationId);
+    expect(second.nodeId).toBe(first.nodeId);
+    // A name set in the console belongs to the person who set it.
+    expect(second.name).toBe("办公室 Mac mini");
+    expect((await heartbeat(app, first.token)).statusCode).toBe(401);
+    expect((await heartbeat(app, second.token)).json()).toMatchObject({
+      repos: [{ repoPath: "/Users/dev/Projects/missiongo" }],
+    });
+
+    const nodes = await app.inject({ method: "GET", url: "/api/v1/nodes", headers: { cookie } });
+    expect(nodes.json<{ nodes: unknown[] }>().nodes).toHaveLength(1);
+  });
+
+  it("brings a revoked Mac back on the next login, with a new credential only", async () => {
+    const { app, cookie } = await signedInApp();
+    const installationId = randomUUID();
+    const node = await registeredNode(app, "Mac mini", installationId);
+    expect((await app.inject({ method: "DELETE", url: `/api/v1/nodes/${node.nodeId}`, headers: { cookie } })).statusCode).toBe(204);
+    expect((await heartbeat(app, node.token)).statusCode).toBe(401);
+
+    const again = await registeredNode(app, "Mac mini", installationId);
+    expect(again.nodeId).toBe(node.nodeId);
+    expect((await heartbeat(app, again.token)).statusCode).toBe(200);
+    expect((await heartbeat(app, node.token)).statusCode).toBe(401);
+  });
+
+  it("gives a different installation its own node", async () => {
+    const { app } = await signedInApp();
+    const one = await registeredNode(app, "Mac mini");
+    const two = await registeredNode(app, "MacBook");
+    expect(one.nodeId).not.toBe(two.nodeId);
+  });
+
+  it("no longer offers pairing codes", async () => {
     const { app, cookie } = await signedInApp();
     const created = await app.inject({
       method: "POST",
@@ -111,36 +189,166 @@ describe("Pairing a node", () => {
       headers: { cookie },
       payload: { name: "Mac mini" },
     });
-    expect(created.statusCode).toBe(201);
-    const { code } = created.json<{ code: string }>();
+    expect(created.statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: "/api/v1/node/pair", payload: { code: "x" } })).statusCode).toBe(404);
+  });
+});
 
-    const paired = await app.inject({ method: "POST", url: "/api/v1/node/pair", payload: { code, hostname: "mini" } });
-    expect(paired.statusCode).toBe(201);
-    expect(paired.json<{ token: string }>().token.startsWith("mgn_")).toBe(true);
+describe("The macOS client's sign-in, end to end", () => {
+  it("registers a client, signs in with the node scope, and trades the login for a machine", async () => {
+    // The whole flow the client runs, against the real OAuth routes: a loopback
+    // redirect registered per attempt, PKCE S256, a form-encoded token exchange,
+    // then registration. It is the one path a person takes to join a Mac.
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-client-login-"));
+    temporaryDirectories.push(directory);
+    const account = adminAccount();
+    const app = buildApp({
+      databasePath: join(directory, "missiongo.sqlite"),
+      attachmentsPath: join(directory, "attachments"),
+      adminAccount: account,
+      publicOrigin: "https://missiongo.test",
+    });
+    apps.push(app);
+    const redirectUri = "http://127.0.0.1:53086/callback";
 
-    const replayed = await app.inject({ method: "POST", url: "/api/v1/node/pair", payload: { code } });
-    expect(replayed.statusCode).toBe(409);
-    expect(replayed.json()).toMatchObject({ code: "pairing_code_used" });
+    const client = await app.inject({
+      method: "POST",
+      url: "/oauth/register",
+      payload: { client_name: "MissionGo macOS", redirect_uris: [redirectUri], token_endpoint_auth_method: "none" },
+    });
+    expect(client.statusCode).toBe(201);
+    const clientId = client.json<{ client_id: string }>().client_id;
+
+    const verifier = "v".repeat(64);
+    const authorize = await app.inject({
+      method: "GET",
+      url: "/oauth/authorize",
+      query: {
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: "code",
+        state: "client-state",
+        scope: "missiongo:read missiongo:node",
+        code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+        code_challenge_method: "S256",
+      },
+    });
+    expect(authorize.statusCode).toBe(200);
+    // The person is told what signing in here grants.
+    expect(authorize.body).toContain("把这台 Mac 登记为执行机器");
+    const requestToken = /name="request" value="([^"]+)"/.exec(authorize.body)?.[1];
+
+    const approved = await app.inject({
+      method: "POST",
+      url: "/oauth/authorize",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ request: requestToken!, username: account.username, password: "correct horse" }).toString(),
+    });
+    expect(approved.statusCode).toBe(302);
+    const callback = new URL(approved.headers.location!);
+    expect(callback.searchParams.get("state")).toBe("client-state");
+
+    const exchanged = await app.inject({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: callback.searchParams.get("code")!,
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_verifier: verifier,
+      }).toString(),
+    });
+    expect(exchanged.statusCode).toBe(200);
+    const accessToken = exchanged.json<{ access_token: string; scope: string }>();
+    expect(accessToken.scope).toContain("missiongo:node");
+
+    const registered = await register(app, accessToken.access_token, { name: "Mac mini" });
+    expect(registered.statusCode).toBe(201);
+    const token = registered.json<{ token: string }>().token;
+    expect((await heartbeat(app, token)).statusCode).toBe(200);
+  });
+});
+
+describe("The client's own view of its Mac", () => {
+  it("shows its node, its mapping and the products it can map", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token);
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+
+    const saved = await app.inject({
+      method: "PUT",
+      url: "/api/v1/node/repos",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const me = await app.inject({ method: "GET", url: "/api/v1/node/me", headers: { authorization: `Bearer ${node.token}` } });
+    expect(me.statusCode).toBe(200);
+    expect(me.json()).toMatchObject({
+      node: { id: node.nodeId, online: true },
+      repos: [{ productId: mission.productId, productKey: "AND", repoPath: "/Users/dev/Projects/missiongo" }],
+      products: [{ id: mission.productId, keyPrefix: "AND", name: "Mission GO" }],
+    });
+
+    // The console sees the mapping the client saved.
+    const nodes = await app.inject({ method: "GET", url: "/api/v1/nodes", headers: { cookie } });
+    expect(nodes.json<{ nodes: Array<{ repos: unknown[] }> }>().nodes[0]!.repos).toHaveLength(1);
   });
 
-  it("refuses an unknown code and a revoked node's token", async () => {
+  it("refuses a relative path from the client too", async () => {
     const { app, cookie } = await signedInApp();
-    const unknown = await app.inject({ method: "POST", url: "/api/v1/node/pair", payload: { code: "nope-nope" } });
-    expect(unknown.statusCode).toBe(404);
+    const node = await registeredNode(app);
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    const saved = await app.inject({
+      method: "PUT",
+      url: "/api/v1/node/repos",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { repos: [{ productId: mission.productId, repoPath: "Projects/missiongo" }] },
+    });
+    expect(saved.statusCode).toBe(400);
+  });
 
-    const node = await pairedNode(app, cookie);
-    expect((await heartbeat(app, node.token)).statusCode).toBe(200);
+  it("lists only this Mac's dispatches", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app, "Mac mini");
+    const other = await registeredNode(app, "MacBook");
+    await heartbeat(app, node.token);
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: "/api/v1/node/repos",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [mission.itemKey] },
+    });
 
-    const revoked = await app.inject({ method: "DELETE", url: `/api/v1/nodes/${node.nodeId}`, headers: { cookie } });
-    expect(revoked.statusCode).toBe(204);
-    expect((await heartbeat(app, node.token)).statusCode).toBe(401);
+    const mine = await app.inject({ method: "GET", url: "/api/v1/node/dispatches", headers: { authorization: `Bearer ${node.token}` } });
+    expect(mine.json<{ dispatches: Array<{ itemKeys: string[] }> }>().dispatches).toMatchObject([{ itemKeys: [mission.itemKey] }]);
+
+    const theirs = await app.inject({ method: "GET", url: "/api/v1/node/dispatches", headers: { authorization: `Bearer ${other.token}` } });
+    expect(theirs.json<{ dispatches: unknown[] }>().dispatches).toEqual([]);
+  });
+
+  it("refuses these endpoints without a node credential", async () => {
+    const { app, cookie } = await signedInApp();
+    expect((await app.inject({ method: "GET", url: "/api/v1/node/me", headers: { cookie } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api/v1/node/me", headers: { authorization: `Bearer ${loginToken(app)}` } })).statusCode).toBe(401);
   });
 });
 
 describe("Checkouts a node reports", () => {
   it("keeps the machine's list so the console can offer it instead of a path field", async () => {
     const { app, cookie } = await signedInApp();
-    const node = await pairedNode(app, cookie);
+    const node = await registeredNode(app);
     await heartbeat(app, node.token, "claude_code", [
       { path: "/Users/dev/Projects/missiongo", name: "missiongo", lastUsedAt: "2026-09-13T10:00:00.000Z" },
       { path: "/Users/dev/Projects/hermes", name: "hermes" },
@@ -156,7 +364,7 @@ describe("Checkouts a node reports", () => {
 
   it("drops relative paths and caps how many a node can report", async () => {
     const { app, cookie } = await signedInApp();
-    const node = await pairedNode(app, cookie);
+    const node = await registeredNode(app);
     await heartbeat(app, node.token, "claude_code", [
       { path: "../escape", name: "escape" },
       ...Array.from({ length: 60 }, (_value, index) => ({
@@ -173,7 +381,7 @@ describe("Checkouts a node reports", () => {
 
   it("still dispatches to a path that was never reported, because the list is a convenience", async () => {
     const { app, cookie } = await signedInApp();
-    const node = await pairedNode(app, cookie);
+    const node = await registeredNode(app);
     await heartbeat(app, node.token);
     const mission = await readyItem(app, cookie, "Mission GO", "AND");
     await app.inject({
@@ -195,7 +403,7 @@ describe("Checkouts a node reports", () => {
 describe("Dispatching a batch", () => {
   it("queues one session for the batch and records it on every item's timeline", async () => {
     const { app, cookie } = await signedInApp();
-    const node = await pairedNode(app, cookie);
+    const node = await registeredNode(app);
     await heartbeat(app, node.token);
     const first = await readyItem(app, cookie, "Mission GO", "AND");
     const second = await app.inject({
@@ -246,7 +454,7 @@ describe("Dispatching a batch", () => {
 
   it("refuses items that are not ready, unmapped products and cross-repository batches", async () => {
     const { app, cookie } = await signedInApp();
-    const node = await pairedNode(app, cookie);
+    const node = await registeredNode(app);
     await heartbeat(app, node.token);
     const mission = await readyItem(app, cookie, "Mission GO", "AND");
     const hermes = await readyItem(app, cookie, "Hermes Go", "HG");
@@ -328,7 +536,7 @@ describe("Dispatching a batch", () => {
 
   it("refuses a node that never checked in, and an agent it did not report", async () => {
     const { app, cookie } = await signedInApp();
-    const node = await pairedNode(app, cookie);
+    const node = await registeredNode(app);
     const mission = await readyItem(app, cookie, "Mission GO", "AND");
     await app.inject({
       method: "PUT",
@@ -361,7 +569,7 @@ describe("Dispatching a batch", () => {
 describe("Claiming a dispatch on the node", () => {
   async function queuedDispatch() {
     const { app, cookie } = await signedInApp();
-    const node = await pairedNode(app, cookie);
+    const node = await registeredNode(app);
     await heartbeat(app, node.token);
     const mission = await readyItem(app, cookie, "Mission GO", "AND");
     await app.inject({
@@ -423,7 +631,7 @@ describe("Claiming a dispatch on the node", () => {
 
   it("hands a dispatch to a machine already waiting on a long poll", async () => {
     const { app, cookie } = await signedInApp();
-    const node = await pairedNode(app, cookie);
+    const node = await registeredNode(app);
     await heartbeat(app, node.token);
     const mission = await readyItem(app, cookie, "Mission GO", "AND");
     await app.inject({
@@ -457,7 +665,7 @@ describe("Claiming a dispatch on the node", () => {
 
   it("ends an idle long poll with 204 rather than holding it open", async () => {
     const { app, cookie } = await signedInApp();
-    const node = await pairedNode(app, cookie);
+    const node = await registeredNode(app);
     await heartbeat(app, node.token);
 
     const started = Date.now();
@@ -484,7 +692,7 @@ describe("Claiming a dispatch on the node", () => {
 
   it("keeps one node from reading or answering another node's dispatch", async () => {
     const { app, cookie, dispatchId } = await queuedDispatch();
-    const other = await pairedNode(app, cookie, "Laptop");
+    const other = await registeredNode(app, "Laptop");
     await heartbeat(app, other.token);
 
     expect((await app.inject({
@@ -506,7 +714,7 @@ describe("Claiming a dispatch on the node", () => {
 describe("Account scoping", () => {
   it("hides another account's nodes and refuses to dispatch to them", async () => {
     const { app, cookie } = await signedInApp();
-    const node = await pairedNode(app, cookie);
+    const node = await registeredNode(app);
     await heartbeat(app, node.token);
 
     const { app: otherApp, cookie: otherCookie } = await signedInApp(adminAccount("account-test-2"));

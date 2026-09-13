@@ -35,6 +35,7 @@ import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
 import {
   MISSIONGO_READ_SCOPE,
   MISSIONGO_SUPPORTED_SCOPES,
+  MISSIONGO_NODE_SCOPE,
   MISSIONGO_WRITE_SCOPE,
   MissionGoOAuthProvider,
   type OAuthAuthorizationInput,
@@ -311,6 +312,8 @@ function oauthLoginPage(
   const writeGrant = "<strong>发表评论、把待处理的任务领为处理中、并在 PR 合并后推到待验证</strong>。"
     + "只有这两个状态变更——验收、退回、搁置，以及做不了怎么办，都由你决定。"
     + "它不能修改你写的内容，不能创建或删除条目，不能撤回评论。";
+  const nodeGrant = "<strong>把这台 Mac 登记为执行机器</strong>：接收你在控制台派出的任务，并在本机启动会话处理。"
+    + "随时可以在控制台「执行机器」里撤销。";
   const scopeNote = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools === "none"
     ? "本次只会签发读取授权：这个部署当前没有开放 AI 写入。"
     : writes
@@ -330,6 +333,7 @@ function oauthLoginPage(
   <ul class="scopes">
     <li>读取你有权限查看的 MissionGo 内容</li>
     ${writes ? `<li>${writeGrant}</li>` : ""}
+    ${scopes.includes(MISSIONGO_NODE_SCOPE) ? `<li>${nodeGrant}</li>` : ""}
   </ul>
   ${invalidCredentials ? '<p class="error">用户名或密码不正确，请重新输入。</p>' : ""}
   <form method="post" action="/oauth/authorize">
@@ -782,12 +786,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/nodes", async (request) => ({ nodes: dispatchStore.listNodes(requireAccountId(request)) }));
 
-  app.post("/api/v1/nodes/pairing-codes", async (request, reply) => {
-    const body = objectBody(request.body);
-    const created = dispatchStore.createPairingCode(requireAccountId(request), stringField(body, "name")!);
-    return reply.status(201).send(created);
-  });
-
   app.patch("/api/v1/nodes/:nodeId", async (request) => {
     const { nodeId } = request.params as { nodeId: string };
     const body = objectBody(request.body);
@@ -846,10 +844,27 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { dispatches: dispatchStore.listDispatchesForItem(requireAccountId(request), itemKey) };
   });
 
-  app.post("/api/v1/node/pair", async (request, reply) => {
+  // The macOS client signs in through the same OAuth flow as an AI client, with
+  // the node scope, and trades that login for a machine credential here. The
+  // login token is not accepted anywhere else on /api/v1 and the client drops it
+  // straight after: it lasts 30 days and cannot be revoked on its own, while the
+  // node credential can be revoked from the console at any time.
+  app.post("/api/v1/node/register", async (request, reply) => {
+    const principal = options.adminAccount
+      ? readAiAccessToken(options.adminAccount, suppliedBearerToken(request))
+      : undefined;
+    if (!principal || !principal.scopes.includes(MISSIONGO_NODE_SCOPE)) {
+      throw new MissionGoError(
+        "authentication_required",
+        "Sign in from the MissionGo macOS client to register this machine.",
+        401,
+      );
+    }
     const body = objectBody(request.body);
-    const credential = dispatchStore.redeemPairingCode({
-      code: stringField(body, "code")!,
+    const credential = dispatchStore.registerNode({
+      accountId: principal.id,
+      installationId: stringField(body, "installationId")!,
+      name: stringField(body, "name")!,
       ...(stringField(body, "hostname", false) ? { hostname: body.hostname as string } : {}),
     });
     return reply.status(201).send(credential);
@@ -860,6 +875,40 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!node) throw new MissionGoError("authentication_required", "A valid node bearer token is required.", 401);
     return node;
   };
+
+  // What the client shows and edits about its own Mac. These take the node
+  // credential rather than a console session: the client has no browser cookie,
+  // and a machine may only ever see and change its own mapping.
+  app.get("/api/v1/node/me", async (request) => {
+    const node = requireNode(request);
+    const products = store.listProducts().map((product) => ({
+      id: product.id,
+      keyPrefix: product.keyPrefix,
+      name: product.name,
+    }));
+    return dispatchStore.describeSelf(node.nodeId, products);
+  });
+
+  app.put("/api/v1/node/repos", async (request) => {
+    const node = requireNode(request);
+    const body = objectBody(request.body);
+    const repos = Array.isArray(body.repos) ? body.repos : undefined;
+    if (!repos) throw invalidInput("repos must be an array.");
+    return {
+      repos: dispatchStore.replaceOwnRepos(
+        node.nodeId,
+        repos.map((entry) => {
+          const repo = objectBody(entry);
+          return { productId: stringField(repo, "productId")!, repoPath: stringField(repo, "repoPath")! };
+        }),
+      ),
+    };
+  });
+
+  app.get("/api/v1/node/dispatches", async (request) => {
+    const node = requireNode(request);
+    return { dispatches: dispatchStore.listDispatchesForNode(node.nodeId) };
+  });
 
   app.post("/api/v1/node/heartbeat", async (request) => {
     const node = requireNode(request);
