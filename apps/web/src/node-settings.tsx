@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CirclePause, ClipboardCheck, LoaderCircle, Plus, Trash2 } from "lucide-react";
 
 import { api, ApiError } from "./api";
 import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
+import { copyText, nodeCommands, nodeListRefetchInterval, pairingProgress, type PairingProgress } from "./node-install";
 import { startsInManualMode, suggestRepoCandidate } from "./repo-match";
 import type { DispatchNode, Product } from "./types";
 
@@ -29,29 +30,76 @@ const MANUAL_OPTION = "manual";
  * would hide exactly the gap that makes a dispatch impossible.
  */
 export function NodeSettings({ products }: { products: readonly Product[] }) {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
-  const [copied, setCopied] = useState(false);
   // The plaintext code exists only here: the server keeps a hash, so leaving
-  // this screen is what takes it away.
-  const [pairing, setPairing] = useState<{ code: string; expiresAt: string } | null>(null);
+  // this screen is what takes it away. The baseline is the node list from just
+  // before the code existed, which is how a machine that turns up is known to
+  // be the one this code connected.
+  const [pairing, setPairing] = useState<PendingPairing | null>(null);
+  // Latched name of the machine that came up, so the confirmation survives the
+  // wait ending rather than flickering away on the next refetch.
+  const [arrived, setArrived] = useState<string | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  // Only a clock for the expiry: bumped once, when the code runs out.
+  const [now, setNow] = useState(() => Date.now());
 
   // Polled while this panel is open: online is a heartbeat away from changing,
   // and this is the screen somebody watches to see a machine come up after
-  // running the pairing command.
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, refetchInterval: 30_000 });
+  // running the commands. The interval is a function so it follows the pairing
+  // that exists at each fetch, and drops back once the wait is over.
+  const nodesQuery = useQuery({
+    queryKey: ["nodes"],
+    queryFn: api.listNodes,
+    refetchInterval: (query) => nodeListRefetchInterval(
+      pairing ? pairingProgress(pairing, query.state.data?.nodes ?? [], Date.now()) : undefined,
+    ),
+  });
   const nodes = nodesQuery.data?.nodes ?? [];
+  const progress = pairing ? pairingProgress(pairing, nodes, now) : undefined;
+  const expecting = progress?.state === "waiting" || progress?.state === "paired";
+  const arrivedNode = progress?.state === "online" ? progress.node : undefined;
+
   const pairingMutation = useMutation({
-    mutationFn: () => api.createNodePairingCode({ name: name.trim() }),
+    mutationFn: async () => {
+      // Read fresh, and before the code exists, so no machine that redeems this
+      // code can already be in the baseline.
+      const before = await queryClient.fetchQuery({ queryKey: ["nodes"], queryFn: api.listNodes, staleTime: 0 });
+      const created = await api.createNodePairingCode({ name: name.trim() });
+      return { ...created, baseline: before.nodes.map((node) => node.id) };
+    },
     onSuccess: (created) => {
-      setPairing(created);
-      setCopied(false);
+      // A second code while the first is still out keeps the first baseline: a
+      // machine that took the first code is just as new as one taking this one.
+      setPairing((current) => ({ code: created.code, expiresAt: created.expiresAt, baseline: current?.baseline ?? created.baseline }));
+      setArrived(null);
       setName("");
     },
   });
 
-  const pairCommand = pairing ? `missiongo-node pair ${pairing.code} --server ${window.location.origin}` : "";
+  useEffect(() => {
+    if (!pairing) return;
+    const remaining = Date.parse(pairing.expiresAt) - Date.now();
+    if (remaining <= 0) return;
+    const timer = window.setTimeout(() => setNow(Date.now()), remaining + 250);
+    return () => window.clearTimeout(timer);
+  }, [pairing]);
+
+  const arrivedId = arrivedNode?.id;
+  const arrivedName = arrivedNode?.name;
+  useEffect(() => {
+    if (!arrivedId || arrivedName === undefined) return;
+    // The guide has done its job; the new machine's card is what matters now.
+    setArrived(arrivedName);
+    setPairing(null);
+    setGuideOpen(false);
+  }, [arrivedId, arrivedName]);
+
+  // With no machine the guide is the whole point of the screen. With some, the
+  // list is what people come back for, so the guide waits behind a button --
+  // except while a machine is on its way, when collapsing it would hide the code.
+  const guideShown = nodes.length === 0 || guideOpen || Boolean(pairing);
 
   return (
     <section className="product-settings-section" role="tabpanel">
@@ -61,40 +109,9 @@ export function NodeSettings({ products }: { products: readonly Product[] }) {
       </header>
       <p className="component-management-help">{t("nodeSettingsHelp")}</p>
       <p className="component-management-help">{t("nodeSettingsScopeNote")}</p>
-      <p className="node-requirements">{t("nodeRequirements")}</p>
 
-      {pairing && (
-        <div className="sdk-token-reveal">
-          <p><Check size={15} /> {t("pairingCodeCreated")}</p>
-          <div>
-            <code>{pairCommand}</code>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => {
-                void navigator.clipboard.writeText(pairCommand);
-                setCopied(true);
-              }}
-            >
-              {copied ? <Check size={15} /> : <ClipboardCheck size={15} />} {copied ? t("copied") : t("copyToken")}
-            </button>
-          </div>
-          <small>{t("pairingCodeExpires", { time: new Date(pairing.expiresAt).toLocaleString(locale) })}</small>
-        </div>
-      )}
-
-      <div className="component-add-panel">
-        <div className="component-add-row">
-          <label>{t("nodeName")}
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("nodeNamePlaceholder")} maxLength={100} />
-          </label>
-          <button className="primary-button" disabled={!name.trim() || pairingMutation.isPending} onClick={() => pairingMutation.mutate()}>
-            {pairingMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createPairingCode")}
-          </button>
-        </div>
-      </div>
-      {pairingMutation.isError && (
-        <div className="inline-error"><CirclePause size={16} /><span>{nodeErrorMessage(pairingMutation.error, t("somethingWentWrong"))}</span></div>
+      {arrived !== null && (
+        <p className="node-pairing-status online" role="status"><Check size={15} /> {t("nodeCameOnline", { name: arrived })}</p>
       )}
 
       <div className="node-list">
@@ -111,7 +128,194 @@ export function NodeSettings({ products }: { products: readonly Product[] }) {
           />
         ))}
       </div>
+
+      {/* Deciding collapsed-or-open before the list loads would open the guide and then snap it shut. */}
+      {!nodesQuery.isLoading && (guideShown ? (
+        <NodeInstallGuide
+          origin={window.location.origin}
+          pairing={pairing}
+          progress={progress}
+          creating={pairingMutation.isPending}
+          createError={pairingMutation.isError ? nodeErrorMessage(pairingMutation.error, t("somethingWentWrong")) : null}
+          name={name}
+          onNameChange={setName}
+          onCreate={() => pairingMutation.mutate()}
+          onCollapse={nodes.length > 0 && !expecting
+            ? () => {
+              setGuideOpen(false);
+              setPairing(null);
+            }
+            : undefined}
+        />
+      ) : (
+        <button
+          type="button"
+          className="secondary-button node-add-another"
+          onClick={() => {
+            setArrived(null);
+            setGuideOpen(true);
+          }}
+        >
+          <Plus size={15} /> {t("nodeAddAnother")}
+        </button>
+      ))}
     </section>
+  );
+}
+
+interface PendingPairing {
+  readonly code: string;
+  readonly expiresAt: string;
+  readonly baseline: readonly string[];
+}
+
+/**
+ * The steps from a bare Mac to a machine that stays online, in the order they
+ * have to happen. Every command is shown whole, with the real origin and code in
+ * it, because the person running it is usually on another screen and copying is
+ * the only step that cannot be mistyped.
+ */
+function NodeInstallGuide({
+  origin,
+  pairing,
+  progress,
+  name,
+  onNameChange,
+  creating,
+  createError,
+  onCreate,
+  onCollapse,
+}: {
+  origin: string;
+  pairing: PendingPairing | null;
+  progress: PairingProgress | undefined;
+  name: string;
+  onNameChange: (name: string) => void;
+  creating: boolean;
+  createError: string | null;
+  onCreate: () => void;
+  onCollapse: (() => void) | undefined;
+}) {
+  const { locale, t } = useI18n();
+  const codeUsable = pairing !== null && progress?.state !== "expired";
+  // The flag is literal JSON the check prints, so it is set as code rather than
+  // translated along with the sentence around it.
+  const [beforeFlag, afterFlag = ""] = t("nodePrereqClaude").split("{flag}");
+
+  return (
+    <div className="node-install-guide">
+      <ol className="node-install-steps">
+        <li>
+          <h4>{t("nodeStepPrerequisites")}</h4>
+          <p>{t("nodePrereqNode")}</p>
+          <CommandBlock command={nodeCommands.checkNode} />
+          <p>{t("nodePrereqNodeMissing")}</p>
+          <CommandBlock command={nodeCommands.installNode} />
+          <p>{beforeFlag}<code>"loggedIn": true</code>{afterFlag}</p>
+          <CommandBlock command={nodeCommands.checkClaude} />
+          <p>{t("nodePrereqClaudeMissing")}</p>
+          <CommandBlock command={nodeCommands.loginClaude} />
+          <p className="node-requirements">{t("nodeRequirements")}</p>
+        </li>
+        <li>
+          <h4>{t("nodeStepDownload")}</h4>
+          <p>{t("nodeStepDownloadHelp")}</p>
+          <CommandBlock command={nodeCommands.download(origin)} />
+        </li>
+        <li>
+          <h4>{t("nodeStepPair")}</h4>
+          {codeUsable ? (
+            <>
+              <p>{t("pairingCodeCreated")}</p>
+              {/* Keyed by code so a new code does not inherit the last one's "copied". */}
+              <CommandBlock key={pairing.code} command={nodeCommands.pair(origin, pairing.code)} />
+              <small>{t("pairingCodeExpires", { time: new Date(pairing.expiresAt).toLocaleString(locale) })}</small>
+            </>
+          ) : (
+            <>
+              <p>{t("nodeStepPairHelp")}</p>
+              {progress?.state === "expired" && (
+                <div className="inline-error"><CirclePause size={16} /><span>{t("pairingCodeExpired")}</span></div>
+              )}
+              <div className="node-pair-row">
+                <label>{t("nodeName")}
+                  <input value={name} onChange={(event) => onNameChange(event.target.value)} placeholder={t("nodeNamePlaceholder")} maxLength={100} />
+                </label>
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={!name.trim() || creating}
+                  onClick={onCreate}
+                >
+                  {creating ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createPairingCode")}
+                </button>
+              </div>
+            </>
+          )}
+          {createError && (
+            <div className="inline-error"><CirclePause size={16} /><span>{createError}</span></div>
+          )}
+        </li>
+        <li>
+          <h4>{t("nodeStepService")}</h4>
+          <p>{t("nodeStepServiceHelp")}</p>
+          <CommandBlock command={nodeCommands.installService} />
+          <p>{t("nodeStepServiceForeground")}</p>
+          <CommandBlock command={nodeCommands.run} />
+        </li>
+      </ol>
+
+      {progress?.state === "waiting" && (
+        <p className="node-pairing-status" role="status"><LoaderCircle className="spin" size={15} /> {t("nodeWaitingOnline")}</p>
+      )}
+      {progress?.state === "paired" && (
+        <p className="node-pairing-status" role="status">
+          <LoaderCircle className="spin" size={15} /> {t("nodePairedWaiting", { name: progress.node.name })}
+        </p>
+      )}
+      {onCollapse && (
+        <button type="button" className="text-button node-guide-collapse" onClick={onCollapse}>{t("nodeHideGuide")}</button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A command as plain text with a copy button. Text children only: the pairing
+ * code comes from the server, and nothing here should ever be parsed as markup.
+ */
+function CommandBlock({ command }: { command: string }) {
+  const { t } = useI18n();
+  const codeRef = useRef<HTMLElement>(null);
+  const [feedback, setFeedback] = useState<"copied" | "selected" | null>(null);
+
+  useEffect(() => {
+    if (!feedback) return;
+    const timer = window.setTimeout(() => setFeedback(null), 2_500);
+    return () => window.clearTimeout(timer);
+  }, [feedback]);
+
+  const copy = async () => {
+    if (await copyText(command, navigator.clipboard)) {
+      setFeedback("copied");
+      return;
+    }
+    // No clipboard (the Android WebView shell, plain HTTP): select the command so
+    // the system's own copy is one tap away.
+    const element = codeRef.current;
+    const selection = window.getSelection();
+    if (element && selection) selection.selectAllChildren(element);
+    setFeedback("selected");
+  };
+
+  return (
+    <div className="node-command">
+      <code ref={codeRef}>{command}</code>
+      <button type="button" className="secondary-button" onClick={() => void copy()}>
+        {feedback === "copied" ? <Check size={14} /> : <ClipboardCheck size={14} />}
+        {" "}{feedback === "copied" ? t("copied") : feedback === "selected" ? t("commandSelected") : t("copyCommand")}
+      </button>
+    </div>
   );
 }
 

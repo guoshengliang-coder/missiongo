@@ -13,8 +13,12 @@
   "dependencies": {
     "@missiongo/domain": "0.0.0"
   },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "bundle": "node scripts/bundle.mjs",
     "start": "node dist/cli.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"

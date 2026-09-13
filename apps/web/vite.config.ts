@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
@@ -15,6 +15,42 @@ const sdkIntegrationSourcePath = resolve(repositoryRoot, "sdks/android-feedback/
 // Keep in sync with MISSIONGO_SKILL_ORIGIN_PLACEHOLDER in packages/contracts/src/skill.ts
 // and the sed substitutions in deploy/Dockerfile.
 const skillOriginPlaceholder = "__MISSIONGO_PUBLIC_ORIGIN__";
+const nodeDaemonDownloadPath = "/downloads/missiongo-node/missiongo-node.mjs";
+const nodeDaemonBundlePath = resolve(repositoryRoot, "apps/node/dist/missiongo-node.mjs");
+
+/**
+ * Serves the machine daemon at the address the install guide tells people to
+ * curl, so the guide can be followed end to end against a local server. The file
+ * is the `npm run bundle` output; when it has not been built the request says so
+ * instead of falling through to the console's index.html under a .mjs name.
+ */
+function nodeDaemonDownload(): Plugin {
+  const middleware = (request: IncomingMessage, response: ServerResponse, next: () => void): void => {
+    if (request.url?.split("?", 1)[0] !== nodeDaemonDownloadPath) {
+      next();
+      return;
+    }
+    if (!existsSync(nodeDaemonBundlePath)) {
+      response.statusCode = 404;
+      response.setHeader("Content-Type", "text/plain; charset=utf-8");
+      response.end("missiongo-node.mjs has not been built. Run: npm run bundle --workspace @missiongo/node\n");
+      return;
+    }
+    response.setHeader("Content-Type", "text/javascript; charset=utf-8");
+    response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    response.end(readFileSync(nodeDaemonBundlePath));
+  };
+
+  return {
+    name: "missiongo-node-download",
+    configureServer(server) {
+      server.middlewares.use(middleware);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(middleware);
+    },
+  };
+}
 
 function androidDownloadHeaders(): Plugin {
   return {
@@ -166,6 +202,7 @@ export default defineConfig(({ mode }) => {
       react(),
       consoleChunkPreload(),
       androidDownloadHeaders(),
+      nodeDaemonDownload(),
       markdownDownload("missiongo-skill-download", skillDownloadPath, skillSourcePath, publicOrigin),
       markdownDownload(
         "missiongo-sdk-integration-download",
