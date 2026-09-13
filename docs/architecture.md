@@ -58,4 +58,4 @@ AI 客户端先完成 OAuth 登录，再由 Skill 指导调用 `get_current_acco
 - MCP 的写入面只有追加评论和两次状态流转（领取、PR 合并后推到待验证），不提供任意 SQL、条目字段修改、删除或验收；
 - 工作条目状态与未来的 AI 执行记录状态必须独立；
 - 只有人工可以从 `pending_verification` 进入 `done`；
-- macOS/iOS SDK、AI 写回和自动调度仍是路线图内容。
+- macOS/iOS SDK、AI 写回和自动调度仍是路线图内容；管理端派单已经实现，但每次都由人发起。

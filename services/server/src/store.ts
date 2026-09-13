@@ -1269,6 +1269,18 @@ export class MissionGoStore {
     });
   }
 
+  /**
+   * Record something the server did to an item, with no status change: today
+   * that is a dispatch being handed to a machine. It belongs on the timeline
+   * because the next reader — person or agent — otherwise cannot tell why a
+   * session appeared out of nowhere and claimed the item.
+   */
+  appendSystemEvent(itemId: string, eventType: string, payload: Readonly<Record<string, unknown>>): void {
+    this.database.transaction(() => {
+      this.insertEvent(itemId, eventType, "system", null, null, payload, new Date().toISOString());
+    });
+  }
+
   listComments(itemKey: string, options: { includeWithdrawn?: boolean } = {}): readonly WorkItemCommentSnapshot[] {
     const item = this.getWorkItemRow(itemKey);
     if (!item) throw notFound("Work item");

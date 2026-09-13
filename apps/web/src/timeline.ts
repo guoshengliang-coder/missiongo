@@ -41,3 +41,31 @@ export function groupTimeline(events: readonly WorkItemEvent[]): readonly Timeli
   }
   return entries;
 }
+
+export interface DispatchedEvent {
+  readonly nodeName: string;
+  readonly agentKind: string;
+  readonly mode: string;
+  readonly itemKeys: readonly string[];
+}
+
+/**
+ * What a `dispatched` event can say for itself.
+ *
+ * The line has to answer "where did this go", so a payload without a machine
+ * name has nothing to add and the timeline falls back to the plain event label.
+ * Every field is checked rather than cast: a payload is stored JSON, and one
+ * written by an older build -- or by a newer one -- must not take the pane down.
+ */
+export function dispatchedEvent(payload: Readonly<Record<string, unknown>>): DispatchedEvent | null {
+  const nodeName = typeof payload.nodeName === "string" ? payload.nodeName.trim() : "";
+  if (!nodeName) return null;
+  return {
+    nodeName,
+    agentKind: typeof payload.agentKind === "string" ? payload.agentKind : "",
+    mode: typeof payload.mode === "string" ? payload.mode : "",
+    itemKeys: Array.isArray(payload.itemKeys)
+      ? payload.itemKeys.filter((key): key is string => typeof key === "string")
+      : [],
+  };
+}

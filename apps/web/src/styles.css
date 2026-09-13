@@ -459,7 +459,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .item-row:last-child { border-bottom: 0; border-radius: 0 0 var(--radius-xl) var(--radius-xl); }
 .item-row:hover { background: var(--row-hover); }
-.item-row-main { min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 12px; padding: 0; color: inherit; background: transparent; border: 0; text-align: left; cursor: pointer; }
+/* The checkbox and the row's own button share the first cell rather than taking a
+   column of their own: the list's grid is repeated at four breakpoints, and a new
+   column would have to be threaded through every one of them. */
+.item-row-lead { min-width: 0; display: flex; align-items: center; gap: 11px; }
+.item-select { flex: 0 0 auto; width: 16px; height: 16px; margin: 0; accent-color: var(--mint-dark); cursor: pointer; }
+.item-select:disabled { cursor: default; opacity: 0.38; }
+.item-row-main { flex: 1; min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 12px; padding: 0; color: inherit; background: transparent; border: 0; text-align: left; cursor: pointer; }
 .type-icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--radius-md); }
 .type-icon.large { width: 40px; height: 40px; border-radius: var(--radius-lg); }
 .type-idea { color: var(--type-idea-fg); background: var(--type-idea-bg); }
@@ -548,7 +554,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
     gap: 6px 10px;
     padding: 11px 8px;
   }
-  .workspace.detail-open .item-row-main { grid-column: 1 / 3; grid-row: 1; }
+  .workspace.detail-open .item-row-lead { grid-column: 1 / 3; grid-row: 1; }
   /* Beside the text rather than under it: with room to spare the row stays one
      item tall, and the tiles read as belonging to it. */
   .workspace.detail-open .item-media-strip { grid-column: 3; grid-row: 1 / -1; align-self: center; }
@@ -583,7 +589,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
     gap: 8px 10px;
     padding: 12px 9px;
   }
-  .workspace.detail-open .item-row-main { grid-column: 1 / -1; grid-row: 1; }
+  .workspace.detail-open .item-row-lead { grid-column: 1 / -1; grid-row: 1; }
   .workspace.detail-open .item-context { grid-column: 1; grid-row: 2; }
   .workspace.detail-open .item-state { grid-column: 2; grid-row: 2; justify-self: end; }
   /* Full width under the text so the tiles are big enough to actually read. */
@@ -1000,7 +1006,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
     gap: 8px 10px;
     padding: 14px 13px;
   }
-  .item-row-main { grid-column: 1 / 4; grid-row: 1; }
+  .item-row-lead { grid-column: 1 / 4; grid-row: 1; }
   /* The title gets the width here rather than a single clipped line: on a phone
      "记录界面点击拍照并没..." stopped exactly where the useful part started. The
      badges go with it -- they are triage detail, and the counts are still on the
@@ -1068,7 +1074,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .toolbar-primary-action { min-height: 44px; padding: 0 9px; font-size: var(--text-sm); }
   .item-row .status-pill { display: inline-flex; }
   .item-row, .list-surface.without-media .item-row { grid-template-columns: minmax(0, 1fr) auto 44px; }
-  .item-row-main { grid-column: 1 / 3; }
+  .item-row-lead { grid-column: 1 / 3; }
   .item-context { grid-column: 1; }
   .item-state { grid-column: 2; justify-self: end; }
   .item-updated { display: none; }
@@ -1230,4 +1236,74 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 
 @media (max-width: 1080px) {
   .boot-search { display: none; }
+}
+
+/* Dispatching a batch to a machine. The bar only exists while something is
+   ticked, so it can afford the accent surface: it is a mode the list is in. */
+.bulk-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 46px; padding: 7px 13px; margin-bottom: 10px; color: var(--accent-text); background: var(--accent-bg); border: 1px solid var(--accent-line); border-radius: var(--radius-md); }
+.bulk-bar > svg { flex: 0 0 auto; color: var(--mint-dark); }
+.bulk-bar-count { font-size: var(--text-md); font-weight: 700; font-variant-numeric: tabular-nums; }
+.bulk-bar-clear { color: var(--accent-text); font-size: var(--text-md); font-weight: 650; text-decoration: underline; }
+.bulk-bar-clear:hover { color: var(--accent-text-strong); }
+.bulk-bar .primary-button { margin-left: auto; }
+
+.dispatch-form { display: flex; flex-direction: column; gap: 14px; }
+.dispatch-items { padding: 11px 13px; background: var(--surface-inset); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.dispatch-items .eyebrow { margin: 0 0 8px; }
+.dispatch-items ul { max-height: 168px; display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.dispatch-items li { min-width: 0; display: flex; align-items: baseline; gap: 8px; font-size: var(--text-sm); }
+.dispatch-items code { flex: 0 0 auto; color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-xs); font-weight: 750; }
+.dispatch-items li span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dispatch-note { margin: 0; color: var(--muted); font-size: var(--text-xs); line-height: 1.55; }
+/* Why the submit button is off, spelled out: a <select> shows one option at a
+   time, so the reason on the chosen machine's option is otherwise hidden. */
+.dispatch-blocked { margin: -6px 0 0; padding: 8px 10px; color: var(--warn-text); background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: var(--radius-sm); font-size: var(--text-xs); line-height: 1.5; }
+.dispatch-result { display: flex; flex-direction: column; gap: 13px; }
+.dispatch-result-headline { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--accent-text); font-size: var(--text-md); font-weight: 700; }
+.dispatch-result .context-grid { margin-top: 0; }
+.dispatch-session-link { margin: 0; font-size: var(--text-md); }
+.dispatch-session-link a { color: var(--mint-dark); font-weight: 680; }
+
+.dispatch-block { padding: 0 0 24px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
+.dispatch-block h3 { margin: 0 0 6px; font-size: 17px; }
+.dispatch-row { display: flex; flex-direction: column; gap: 4px; margin-top: 9px; padding: 11px 13px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.dispatch-row-head { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.dispatch-row-head strong { font-size: var(--text-md); font-weight: 680; }
+.dispatch-row-head small, .dispatch-row-detail { color: var(--muted); font-size: var(--text-xs); }
+.dispatch-row-head small { margin-left: auto; }
+.dispatch-status-queued { color: var(--status-inbox-fg); background: var(--status-inbox-bg); }
+.dispatch-status-delivered { color: var(--status-progress-fg); background: var(--status-progress-bg); }
+.dispatch-status-launched { color: var(--status-ready-fg); background: var(--status-ready-bg); }
+.dispatch-status-failed { color: var(--danger); background: var(--danger-bg-strong); }
+.dispatch-status-cancelled { color: var(--status-cancelled-fg); background: var(--status-cancelled-bg); }
+.timeline-dispatch { margin: 3px 0 0; color: var(--muted); font-size: var(--text-xs); line-height: 1.6; }
+.timeline-dispatch span { display: block; }
+
+.node-requirements { margin: 0 0 14px; padding: 10px 12px; color: var(--warn-text); background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: var(--radius-md); font-size: var(--text-xs); line-height: 1.6; }
+.sdk-token-reveal > small { display: block; margin-top: 8px; color: var(--accent-text); font-size: var(--text-xs); }
+.node-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.node-card { padding: 13px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.node-card.revoked { background: var(--surface); }
+.node-card > header { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 8px; margin-bottom: 10px; }
+.node-card > header .secondary-button { height: 38px; white-space: nowrap; }
+.node-name-field { min-width: 0; }
+.node-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 7px; }
+.node-facts small { color: var(--muted); font-size: var(--text-xs); }
+.node-facts code { font-family: "SFMono-Regular", Consolas, monospace; }
+.node-agent { padding: 2px 7px; background: var(--badge-bg); border-radius: var(--radius-xs); font-weight: 700; }
+.node-repos { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.node-repos strong { font-size: var(--text-md); }
+.node-repos > small { color: var(--muted); font-size: var(--text-xs); line-height: 1.55; }
+.node-repos .primary-button { align-self: flex-start; }
+.node-repo-row { display: grid; grid-template-columns: minmax(120px, 0.42fr) minmax(0, 1fr); align-items: center; gap: 10px; }
+.node-repo-row > span { min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; color: var(--ink-2); font-size: var(--text-xs); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.node-repo-row code { color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-xs); }
+.node-repo-row input, .node-repo-row select { font-family: "SFMono-Regular", Consolas, monospace; }
+.node-repo-choice { min-width: 0; display: grid; gap: 6px; }
+.node-repo-choice small { color: var(--muted); font-size: var(--text-xs); line-height: 1.5; }
+
+@media (max-width: 767px) {
+  .bulk-bar .primary-button { width: 100%; margin-left: 0; }
+  .node-card > header, .node-repo-row { grid-template-columns: 1fr; }
+  .node-card > header { align-items: stretch; }
 }

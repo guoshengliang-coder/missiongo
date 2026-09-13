@@ -10,6 +10,7 @@ import {
   WORK_ITEM_PRIORITIES,
   WORK_ITEM_STATUSES,
   WORK_ITEM_TYPES,
+  type AgentKind,
   type WorkItemEnvironment,
   type WorkItemReport,
 } from "@missiongo/domain";
@@ -28,6 +29,7 @@ import {
 import sharp from "sharp";
 
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
+import { DispatchStore } from "./dispatch-store.js";
 import { invalidInput, MissionGoError, notFound } from "./errors.js";
 import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
 import {
@@ -107,6 +109,19 @@ function booleanField(body: Record<string, unknown>, field: string): boolean {
   const value = body[field];
   if (typeof value !== "boolean") throw invalidInput(`${field} must be true or false.`);
   return value;
+}
+
+/**
+ * How long a node may ask the server to hold its poll open. Comfortably inside
+ * the reverse proxy's 300s read timeout, so the wait ends here rather than as a
+ * dropped connection the daemon has to interpret.
+ */
+const MAX_CLAIM_WAIT_MS = 25_000;
+
+/** For requests whose body is optional, unlike the ones objectBody guards. */
+function objectBodyOrEmpty(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
 }
 
 function objectBody(value: unknown): Record<string, unknown> {
@@ -330,6 +345,7 @@ function oauthLoginPage(
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? false, trustProxy: options.trustProxy ?? false });
   const store = new MissionGoStore(options.databasePath ?? ":memory:");
+  const dispatchStore = new DispatchStore(store.database);
   const attachmentStorage = new AttachmentStorage(options.attachmentsPath ?? "./data/attachments");
   const publicOrigin = new URL(options.publicOrigin ?? "http://127.0.0.1").origin;
   const writeTools: McpWriteTier = options.writeTools ?? "none";
@@ -410,6 +426,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       // hook answer instead would drop the `no-store` the reply needs, and would
       // admit a bearer-token caller the handler then has no session to serve.
       || path === "/api/v1/bootstrap"
+      // A node presents its own credential, exactly as the SDK does, and has no
+      // admin session to offer.
+      || path.startsWith("/api/v1/node/")
       || (!options.adminToken && !options.adminAccount)
     ) return;
     const bearerAuthorized = options.adminToken
@@ -751,6 +770,163 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/products", async (request) =>
     store.listProducts({ includeArchived: includeArchived(request.query) }));
+
+  // Dispatching work to a machine. The console half of this is account-scoped
+  // and needs a session; the node half below authenticates with the machine's
+  // own credential.
+  const requireAccountId = (request: FastifyRequest): string => {
+    const user = sessionUser(request);
+    if (!user) throw new MissionGoError("authentication_required", "A signed-in account is required.", 401);
+    return user.id;
+  };
+
+  app.get("/api/v1/nodes", async (request) => ({ nodes: dispatchStore.listNodes(requireAccountId(request)) }));
+
+  app.post("/api/v1/nodes/pairing-codes", async (request, reply) => {
+    const body = objectBody(request.body);
+    const created = dispatchStore.createPairingCode(requireAccountId(request), stringField(body, "name")!);
+    return reply.status(201).send(created);
+  });
+
+  app.patch("/api/v1/nodes/:nodeId", async (request) => {
+    const { nodeId } = request.params as { nodeId: string };
+    const body = objectBody(request.body);
+    return dispatchStore.renameNode(requireAccountId(request), nodeId, stringField(body, "name")!);
+  });
+
+  app.delete("/api/v1/nodes/:nodeId", async (request, reply) => {
+    const { nodeId } = request.params as { nodeId: string };
+    dispatchStore.revokeNode(requireAccountId(request), nodeId);
+    return reply.status(204).send();
+  });
+
+  app.put("/api/v1/nodes/:nodeId/repos", async (request) => {
+    const { nodeId } = request.params as { nodeId: string };
+    const body = objectBody(request.body);
+    const repos = Array.isArray(body.repos) ? body.repos : undefined;
+    if (!repos) throw invalidInput("repos must be an array.");
+    return {
+      repos: dispatchStore.replaceRepos(
+        requireAccountId(request),
+        nodeId,
+        repos.map((entry) => {
+          const repo = objectBody(entry);
+          return { productId: stringField(repo, "productId")!, repoPath: stringField(repo, "repoPath")! };
+        }),
+      ),
+    };
+  });
+
+  app.post("/api/v1/dispatches", async (request, reply) => {
+    const body = objectBody(request.body);
+    const accountId = requireAccountId(request);
+    const itemKeys = stringArrayField(body, "itemKeys");
+    if (!itemKeys) throw invalidInput("itemKeys must be an array of work item keys.");
+    const dispatch = dispatchStore.createDispatch({
+      accountId,
+      nodeId: stringField(body, "nodeId")!,
+      agentKind: stringField(body, "agentKind")! as AgentKind,
+      mode: stringField(body, "mode")!,
+      itemKeys,
+    });
+    for (const itemId of dispatchStore.listDispatchItemIds(dispatch.id)) {
+      store.appendSystemEvent(itemId, "dispatched", {
+        dispatchId: dispatch.id,
+        nodeName: dispatch.nodeName,
+        agentKind: dispatch.agentKind,
+        mode: dispatch.mode,
+        itemKeys: dispatch.itemKeys,
+      });
+    }
+    return reply.status(201).send(dispatch);
+  });
+
+  app.get("/api/v1/items/:itemKey/dispatches", async (request) => {
+    const { itemKey } = request.params as { itemKey: string };
+    return { dispatches: dispatchStore.listDispatchesForItem(requireAccountId(request), itemKey) };
+  });
+
+  app.post("/api/v1/node/pair", async (request, reply) => {
+    const body = objectBody(request.body);
+    const credential = dispatchStore.redeemPairingCode({
+      code: stringField(body, "code")!,
+      ...(stringField(body, "hostname", false) ? { hostname: body.hostname as string } : {}),
+    });
+    return reply.status(201).send(credential);
+  });
+
+  const requireNode = (request: FastifyRequest): { nodeId: string; accountId: string } => {
+    const node = dispatchStore.authenticateNode(suppliedBearerToken(request));
+    if (!node) throw new MissionGoError("authentication_required", "A valid node bearer token is required.", 401);
+    return node;
+  };
+
+  app.post("/api/v1/node/heartbeat", async (request) => {
+    const node = requireNode(request);
+    const body = objectBody(request.body);
+    const agents = Array.isArray(body.agents) ? body.agents : [];
+    const repoCandidates = Array.isArray(body.repoCandidates) ? body.repoCandidates : [];
+    return {
+      repos: dispatchStore.recordHeartbeat(
+        node.nodeId,
+        agents.map((entry) => {
+          const agent = objectBody(entry);
+          return {
+            kind: stringField(agent, "kind")! as AgentKind,
+            ...(stringField(agent, "version", false) ? { version: agent.version as string } : {}),
+          };
+        }),
+        repoCandidates.map((entry) => {
+          const candidate = objectBody(entry);
+          return {
+            path: stringField(candidate, "path")!,
+            name: stringField(candidate, "name")!,
+            ...(stringField(candidate, "lastUsedAt", false) ? { lastUsedAt: candidate.lastUsedAt as string } : {}),
+          };
+        }),
+      ),
+    };
+  });
+
+  // Long poll: the machine asks and the request is held open until there is work
+  // or the wait runs out. It keeps hand-off under a second without a second
+  // protocol — nginx already proxies /api/ with buffering off and a 300s read
+  // timeout, which a WebSocket upgrade would have needed configuring for.
+  app.post("/api/v1/node/dispatches/claim-next", async (request, reply) => {
+    const node = requireNode(request);
+    const immediate = dispatchStore.claimNextDispatch(node.nodeId);
+    if (immediate) return immediate;
+
+    const requested = Number((objectBodyOrEmpty(request.body).waitMs ?? 0));
+    const waitMs = Number.isFinite(requested) ? Math.min(Math.max(requested, 0), MAX_CLAIM_WAIT_MS) : 0;
+    if (waitMs > 0) {
+      // Stop waiting if the machine hangs up, so a reconnecting daemon does not
+      // leave a waiter behind on every retry.
+      const abort = new AbortController();
+      request.raw.on("close", () => abort.abort());
+      await dispatchStore.waitForDispatch(node.nodeId, waitMs, abort.signal);
+      const afterWait = dispatchStore.claimNextDispatch(node.nodeId);
+      if (afterWait) return afterWait;
+    }
+    return reply.status(204).send();
+  });
+
+  app.post("/api/v1/node/dispatches/:dispatchId/result", async (request, reply) => {
+    const node = requireNode(request);
+    const { dispatchId } = request.params as { dispatchId: string };
+    const body = objectBody(request.body);
+    const status = stringField(body, "status")!;
+    if (status !== "launched" && status !== "failed") throw invalidInput("status must be launched or failed.");
+    dispatchStore.recordDispatchResult({
+      nodeId: node.nodeId,
+      dispatchId,
+      status,
+      ...(stringField(body, "sessionName", false) ? { sessionName: body.sessionName as string } : {}),
+      ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
+      ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
+    });
+    return reply.status(204).send();
+  });
 
   app.get("/api/v1/sdk-tokens", async () => store.listSdkTokens());
 

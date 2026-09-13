@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { groupTimeline } from "./timeline";
+import { dispatchedEvent, groupTimeline } from "./timeline";
 import type { WorkItemEvent } from "./types";
 
 const event = (
@@ -72,6 +72,17 @@ describe("groupTimeline", () => {
     expect(entries[0]).toMatchObject({ count: 2, filenames: ["b.png"] });
   });
 
+  it("keeps every dispatch of the same item apart", () => {
+    // Two dispatches are two hand-offs, and the second one usually exists
+    // because the first came to nothing.
+    const entries = groupTimeline([
+      event("1", "dispatched", "2026-09-13T10:00:00Z", { nodeName: "MacBook" }, "system"),
+      event("2", "dispatched", "2026-09-13T11:00:00Z", { nodeName: "Mac mini" }, "system"),
+    ]);
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => entry.count)).toEqual([1, 1]);
+  });
+
   it("never folds comments together, however fast they arrive", () => {
     // Attachment uploads fold because four identical lines carry nothing. Two
     // comments are two different things somebody said.
@@ -82,5 +93,38 @@ describe("groupTimeline", () => {
     expect(entries).toHaveLength(2);
     expect(entries.map((entry) => entry.count)).toEqual([1, 1]);
     expect(entries.map((entry) => entry.event.actorKind)).toEqual(["agent", "human"]);
+  });
+});
+
+describe("the dispatched line", () => {
+  it("reads the machine, the agent, the mode and the batch", () => {
+    expect(dispatchedEvent({
+      dispatchId: "d1",
+      nodeName: "MacBook",
+      agentKind: "claude_code",
+      mode: "plan",
+      itemKeys: ["AND-37", "AND-38"],
+    })).toEqual({
+      nodeName: "MacBook",
+      agentKind: "claude_code",
+      mode: "plan",
+      itemKeys: ["AND-37", "AND-38"],
+    });
+  });
+
+  it("says nothing without a machine name, so the plain event label stands", () => {
+    expect(dispatchedEvent({})).toBeNull();
+    expect(dispatchedEvent({ nodeName: "   " })).toBeNull();
+    expect(dispatchedEvent({ nodeName: 7, agentKind: "claude_code" })).toBeNull();
+  });
+
+  it("survives a payload written by another version of the server", () => {
+    expect(dispatchedEvent({ nodeName: "MacBook", agentKind: 3, mode: null, itemKeys: "AND-37" })).toEqual({
+      nodeName: "MacBook",
+      agentKind: "",
+      mode: "",
+      itemKeys: [],
+    });
+    expect(dispatchedEvent({ nodeName: "MacBook", itemKeys: ["AND-37", 9] })?.itemKeys).toEqual(["AND-37"]);
   });
 });
