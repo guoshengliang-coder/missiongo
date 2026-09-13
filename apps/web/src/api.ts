@@ -7,7 +7,6 @@ import type {
   CreateWorkItemInput,
   Dispatch,
   DispatchNode,
-  NodePairingCode,
   NodeRepoMapping,
   Product,
   TransitionAction,
@@ -281,8 +280,6 @@ export const api = {
   revokeSdkToken: (tokenId: string) =>
     request<SdkToken>(`/api/v1/sdk-tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" }),
   listNodes: () => request<{ nodes: DispatchNode[] }>("/api/v1/nodes"),
-  createNodePairingCode: (input: { name: string }) =>
-    request<NodePairingCode>("/api/v1/nodes/pairing-codes", { method: "POST", body: JSON.stringify(input) }),
   renameNode: (nodeId: string, input: { name: string }) =>
     request<DispatchNode>(`/api/v1/nodes/${encodeURIComponent(nodeId)}`, {
       method: "PATCH",

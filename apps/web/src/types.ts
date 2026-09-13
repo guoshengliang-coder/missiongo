@@ -248,12 +248,6 @@ export interface DispatchNode {
   readonly createdAt: string;
 }
 
-/** Shown once, in the pairing command. The server only keeps its hash. */
-export interface NodePairingCode {
-  readonly code: string;
-  readonly expiresAt: string;
-}
-
 /**
  * One hand-off: the items, the machine, and what it was asked to start. The
  * status here is the session's, never the items' — those still move only when

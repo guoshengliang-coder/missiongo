@@ -1,0 +1,260 @@
+import XCTest
+@testable import MissionGoNodeCore
+
+final class LaunchPromptTests: XCTestCase {
+    func testNamesTheItemsTheDispatchAndTheOneBranchRule() throws {
+        let prompt = try LaunchPrompt.build(itemKeys: ["AND-37", "AND-38"], dispatchId: "d1f2a3b4")
+        XCTAssertTrue(prompt.contains("missiongo skill"))
+        XCTAssertTrue(prompt.contains("AND-37、AND-38"))
+        XCTAssertTrue(prompt.contains("d1f2a3b4"))
+        XCTAssertTrue(prompt.contains("一个分支和一个 PR"))
+    }
+
+    func testIsAFixedTemplateWithOnlyTheKeysAndTheIdFilledIn() throws {
+        // Pinned in full, identical to apps/node/src/prompt.test.ts: the server
+        // sends item keys, agent and mode and nothing else, so any wording that
+        // starts arriving from outside — or drifting from the TypeScript — shows up here.
+        XCTAssertEqual(
+            try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc"),
+            [
+                "使用 missiongo skill 处理这些工作条目：HG-8。",
+                "",
+                "本会话由 MissionGo 派单 abc 发起，上面列出的编号等同于用户给出的范围。",
+                "整批条目走一个分支和一个 PR，之后按 Skill 的规则推进条目状态。",
+                "会话起在仓库主目录，动手改代码前先按仓库规则建独立 worktree，不要直接在主工作区修改。",
+            ].joined(separator: "\n")
+        )
+    }
+
+    func testRejectsAnythingThatIsNotAWorkItemKey() {
+        // The keys reach the process argv and the session name as well, so a value
+        // that is not a key is refused instead of escaped.
+        for key in [
+            "and-37", "AND-37 ", "AND-", "-37", "AND-37; rm -rf /", "AND-37\nAND-38", "$(whoami)-1", "AND-37、AND-38", "",
+            // ICU's `$` would accept a trailing newline and `\d` a non-ASCII digit.
+            "AND-37\n", "AND-٣٧",
+        ] {
+            XCTAssertThrowsError(try LaunchPrompt.build(itemKeys: [key], dispatchId: "abc"), key) {
+                XCTAssertTrue($0.localizedDescription.hasPrefix("不是合法的工作条目编号："), $0.localizedDescription)
+            }
+        }
+    }
+
+    func testRejectsAnEmptyBatchAndANonIdentifierDispatchId() {
+        XCTAssertThrowsError(try LaunchPrompt.build(itemKeys: [], dispatchId: "abc")) {
+            XCTAssertTrue($0.localizedDescription.contains("至少要带一个"))
+        }
+        XCTAssertThrowsError(try LaunchPrompt.build(itemKeys: ["AND-1"], dispatchId: "a b")) {
+            XCTAssertEqual($0.localizedDescription, #"不是合法的派单编号："a b""#)
+        }
+        XCTAssertThrowsError(try LaunchPrompt.build(itemKeys: ["AND-1"], dispatchId: "abc\n"))
+    }
+
+    func testAcceptsTheKeyShapesTheProductsActuallyUse() {
+        XCTAssertNoThrow(try LaunchPrompt.build(itemKeys: ["AND-1", "HG-8", "WEB2-1024"], dispatchId: "0d8f-4c"))
+    }
+}
+
+final class LaunchCommandTests: XCTestCase {
+    func testWrapsClaudeInScriptWithEveryFlagInTheVerifiedOrder() throws {
+        // Verified on a real machine: without `script -q /dev/null` there is no TTY
+        // and the session never comes up, and without `--no-chrome` a first run
+        // stops on the Chrome extension prompt with nobody there to answer it.
+        let command = try SessionLauncher.launchCommand(
+            sessionName: "MissionGo AND-37+AND-38", mode: "plan", prompt: "使用 missiongo skill 处理这些工作条目：AND-37、AND-38。"
+        )
+        XCTAssertEqual(command.file, "script")
+        XCTAssertEqual(command.args, [
+            "-q", "/dev/null", "claude", "--no-chrome",
+            "--remote-control", "MissionGo AND-37+AND-38",
+            "--permission-mode", "plan",
+            "-n", "MissionGo AND-37+AND-38",
+            "使用 missiongo skill 处理这些工作条目：AND-37、AND-38。",
+        ])
+    }
+
+    func testPassesThePromptAsOneArgument() throws {
+        let prompt = try LaunchPrompt.build(itemKeys: ["AND-1"], dispatchId: "abc")
+        let command = try SessionLauncher.launchCommand(sessionName: "MissionGo AND-1", mode: "default", prompt: prompt)
+        XCTAssertEqual(command.args.filter { $0.contains("missiongo skill") }.count, 1)
+        XCTAssertTrue(command.args.last?.contains("\n") == true)
+    }
+
+    func testPassesNoWorktreeFlag() throws {
+        // Claude Code files sessions by working directory: a session started in a
+        // worktree shows up as its own project and is missing from /resume in the
+        // repository it belongs to. The session makes its own worktree instead.
+        let args = try SessionLauncher.launchCommand(sessionName: "MissionGo AND-1", mode: "plan", prompt: "x").args
+        XCTAssertFalse(args.contains("-w"))
+        XCTAssertFalse(args.contains("--worktree"))
+        XCTAssertTrue(try LaunchPrompt.build(itemKeys: ["AND-1"], dispatchId: "abc").contains("worktree"))
+    }
+
+    func testRefusesAModeTheConsoleIsNotAllowedToSend() {
+        // bypassPermissions and dontAsk are exactly the modes that remove the human
+        // from the loop, and a dispatched session has no human at the machine.
+        for mode in ["bypassPermissions", "dontAsk", "", "plan --dangerously-skip-permissions", "Plan"] {
+            XCTAssertThrowsError(try SessionLauncher.launchCommand(sessionName: "MissionGo AND-1", mode: mode, prompt: "x"), mode) {
+                XCTAssertTrue($0.localizedDescription.hasPrefix("不支持的 Claude Code 模式："))
+            }
+        }
+    }
+
+    func testAcceptsTheFourSupportedModes() throws {
+        XCTAssertEqual(ClaudeCodeModes.allowed, ["plan", "default", "acceptEdits", "auto"])
+        for mode in ClaudeCodeModes.allowed {
+            XCTAssertTrue(try SessionLauncher.launchCommand(sessionName: "MissionGo AND-1", mode: mode, prompt: "x").args.contains(mode))
+        }
+    }
+
+    func testTheModeListIsOneLiteralLineForTheRepositoryCheck() throws {
+        // scripts compare this line against CLAUDE_CODE_MODES in packages/domain.
+        let source = try String(contentsOfFile: #filePath.replacingOccurrences(
+            of: "Tests/MissionGoNodeCoreTests/LaunchTests.swift", with: "Sources/MissionGoNodeCore/ClaudeCodeModes.swift"
+        ))
+        XCTAssertTrue(source.contains(#"["plan", "default", "acceptEdits", "auto"]"#))
+    }
+
+    func testNamesTheSessionAfterTheWholeBatch() {
+        XCTAssertEqual(SessionLauncher.sessionName(for: ["AND-37", "AND-38"]), "MissionGo AND-37+AND-38")
+        XCTAssertEqual(SessionLauncher.sessionName(for: ["HG-8"]), "MissionGo HG-8")
+    }
+
+    func testKeepsTheLogInsideTheLogDirectory() {
+        XCTAssertEqual(SessionLauncher.logPath(for: "d1-a_B", in: "/logs"), "/logs/d1-a_B.log")
+        XCTAssertEqual(SessionLauncher.logPath(for: "../../etc/passwd", in: "/logs"), "/logs/______etc_passwd.log")
+    }
+
+    func testFindsTheSessionURLNextToTheRemoteControlNotice() {
+        let log = [
+            "Welcome to Claude Code",
+            "/remote-control is active — open https://claude.ai/code/session_01JQ8Z4KFW2N7VXR to take over",
+            "",
+        ].joined(separator: "\n")
+        XCTAssertEqual(SessionLauncher.scrapeSessionUrl(log), "https://claude.ai/code/session_01JQ8Z4KFW2N7VXR")
+    }
+
+    func testStopsAtTheURL() {
+        XCTAssertEqual(
+            SessionLauncher.scrapeSessionUrl("see https://claude.ai/code/session_abc-DEF_123, then approve"),
+            "https://claude.ai/code/session_abc-DEF_123"
+        )
+    }
+
+    func testReturnsNothingWhileTheLogHasNoSessionURL() {
+        XCTAssertNil(SessionLauncher.scrapeSessionUrl(""))
+        XCTAssertNil(SessionLauncher.scrapeSessionUrl("Loading...\nhttps://claude.ai/code\n"))
+    }
+}
+
+/// Runs the launcher for real against a fake `script` on PATH, so the process
+/// handling — cwd, argv, log redirection, exit detection — is exercised too.
+final class SessionLauncherProcessTests: XCTestCase {
+    private func fakeScript(_ body: String) throws -> (bin: String, root: String) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("missiongo-bin-\(UUID().uuidString)").path
+        let bin = "\(root)/bin"
+        try FileManager.default.createDirectory(atPath: bin, withIntermediateDirectories: true)
+        let path = "\(bin)/script"
+        try Data("#!/bin/sh\n\(body)\n".utf8).write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        return (bin, root)
+    }
+
+    func testStartsInTheRepositoryAndReturnsTheScrapedURL() async throws {
+        let (home, repoPath) = try makeTrustedRepo(trusted: true)
+        let script = try fakeScript(#"""
+        printf 'cwd=%s\n' "$PWD"
+        for arg in "$@"; do printf 'arg=%s\n' "$arg"; done
+        echo "/remote-control is active https://claude.ai/code/session_TEST-123"
+        sleep 5
+        """#)
+        let launcher = SessionLauncher(
+            environment: ShellEnvironment(path: "\(script.bin):/usr/bin:/bin"),
+            run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", sessionUrlTimeout: 10
+        )
+        let result = try await launcher.launch(DispatchJob(dispatchId: "d-1", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan"))
+        XCTAssertEqual(result.sessionName, "MissionGo AND-1")
+        XCTAssertEqual(result.sessionUrl, "https://claude.ai/code/session_TEST-123")
+        XCTAssertEqual(result.logPath, "\(script.root)/logs/d-1.log")
+
+        let log = try String(contentsOfFile: result.logPath)
+        // The temporary directory sits behind the /var → /private/var symlink.
+        let resolvedRepo = String(cString: realpath(repoPath, nil))
+        XCTAssertTrue(log.contains("cwd=\(repoPath)\n") || log.contains("cwd=\(resolvedRepo)\n"), log)
+        XCTAssertTrue(log.contains("arg=-q\narg=/dev/null\narg=claude\narg=--no-chrome\narg=--remote-control\narg=MissionGo AND-1\narg=--permission-mode\narg=plan\narg=-n\narg=MissionGo AND-1\narg=使用 missiongo skill"), log)
+    }
+
+    func testReportsAProcessThatExitsBeforeAURLWithTheLogTail() async throws {
+        let (home, repoPath) = try makeTrustedRepo(trusted: true)
+        let script = try fakeScript("echo 'Error: something went wrong'\nexit 3")
+        let launcher = SessionLauncher(
+            environment: ShellEnvironment(path: "\(script.bin):/usr/bin:/bin"),
+            run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", sessionUrlTimeout: 10
+        )
+        do {
+            _ = try await launcher.launch(DispatchJob(dispatchId: "d-2", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan"))
+            XCTFail("expected a failure")
+        } catch {
+            let message = error.localizedDescription
+            XCTAssertTrue(message.hasPrefix("claude 进程已退出（code=3），会话没有启动。"), message)
+            XCTAssertTrue(message.contains("Error: something went wrong"), message)
+        }
+    }
+
+    func testRunsThePreflightFirst() async throws {
+        let (home, repoPath) = try makeTrustedRepo(trusted: false)
+        let script = try fakeScript("touch \"$HOME/should-not-run\"")
+        let launcher = SessionLauncher(
+            environment: ShellEnvironment(path: "\(script.bin):/usr/bin:/bin"),
+            run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs"
+        )
+        do {
+            _ = try await launcher.launch(DispatchJob(dispatchId: "d-3", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan"))
+            XCTFail("expected a failure")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("信任确认"), error.localizedDescription)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(script.root)/logs/d-3.log"))
+    }
+}
+
+final class ShellEnvironmentTests: XCTestCase {
+    func testKeepsTheLoginShellOrderAndAddsMissingDefaults() {
+        XCTAssertEqual(
+            ShellEnvironment.mergePath("/opt/homebrew/bin:/usr/bin:/bin", defaults: ["/Users/dev/.local/bin", "/opt/homebrew/bin", "/usr/bin"]),
+            "/opt/homebrew/bin:/usr/bin:/bin:/Users/dev/.local/bin"
+        )
+        XCTAssertEqual(ShellEnvironment.mergePath(nil, defaults: ["/a", "/b"]), "/a:/b")
+    }
+
+    func testTakesThePathAfterTheMarkerSoProfileChatterIsIgnored() {
+        XCTAssertEqual(
+            ShellEnvironment.extractPath(fromShellOutput: "Welcome back!\n__MISSIONGO_PATH__/Users/dev/.local/bin:/usr/bin"),
+            "/Users/dev/.local/bin:/usr/bin"
+        )
+        XCTAssertNil(ShellEnvironment.extractPath(fromShellOutput: "no marker"))
+    }
+
+    func testDefaultsCoverTheUsualInstallLocations() {
+        let defaults = ShellEnvironment.defaultPathEntries(home: "/Users/dev")
+        XCTAssertTrue(defaults.contains("/Users/dev/.local/bin"))
+        XCTAssertTrue(defaults.contains("/opt/homebrew/bin"))
+        XCTAssertTrue(defaults.contains("/usr/local/bin"))
+    }
+
+    func testChildEnvironmentCarriesTheResolvedPath() {
+        let environment = ShellEnvironment(path: "/x:/y", base: ["HOME": "/Users/dev", "PATH": "/usr/bin:/bin"])
+        XCTAssertEqual(environment.environment["PATH"], "/x:/y")
+        XCTAssertEqual(environment.environment["HOME"], "/Users/dev")
+    }
+
+    func testResolvesALoginShellPathOnThisMachine() {
+        // Not asserting contents — only that the real shell answers in time and the
+        // result is a usable PATH that finds a system binary.
+        let shellPath = ShellEnvironment.loginShellPath(timeout: 5)
+        XCTAssertNotNil(shellPath, "zsh -l did not answer with a PATH")
+        XCTAssertTrue(shellPath?.contains("/usr/bin") == true, shellPath ?? "")
+        let environment = ShellEnvironment.resolve()
+        XCTAssertNotNil(environment.which("script"))
+    }
+}

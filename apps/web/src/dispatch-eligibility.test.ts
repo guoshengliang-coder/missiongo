@@ -121,7 +121,7 @@ describe("which machine can take a batch", () => {
       .toEqual({ reason: "offline" });
   });
 
-  it("refuses a revoked machine before anything else, since pairing it again is the fix", () => {
+  it("refuses a revoked machine before anything else, since signing in again from the client is the fix", () => {
     expect(nodeIneligibility(node({ online: false, revokedAt: "2026-09-13T11:00:00Z" }), batch))
       .toEqual({ reason: "revoked" });
   });

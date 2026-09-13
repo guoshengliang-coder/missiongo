@@ -664,7 +664,7 @@ describe("Claiming a dispatch on the node", () => {
   });
 
   it("ends an idle long poll with 204 rather than holding it open", async () => {
-    const { app, cookie } = await signedInApp();
+    const { app } = await signedInApp();
     const node = await registeredNode(app);
     await heartbeat(app, node.token);
 
@@ -691,7 +691,7 @@ describe("Claiming a dispatch on the node", () => {
   });
 
   it("keeps one node from reading or answering another node's dispatch", async () => {
-    const { app, cookie, dispatchId } = await queuedDispatch();
+    const { app, dispatchId } = await queuedDispatch();
     const other = await registeredNode(app, "Laptop");
     await heartbeat(app, other.token);
 
@@ -713,7 +713,7 @@ describe("Claiming a dispatch on the node", () => {
 
 describe("Account scoping", () => {
   it("hides another account's nodes and refuses to dispatch to them", async () => {
-    const { app, cookie } = await signedInApp();
+    const { app } = await signedInApp();
     const node = await registeredNode(app);
     await heartbeat(app, node.token);
 

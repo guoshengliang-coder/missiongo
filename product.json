@@ -13,5 +13,12 @@
       "applicationId": "io.missiongo.feedback.sample",
       "label": "MissionGo SDK 验证"
     }
+  },
+  "macos": {
+    "app": {
+      "path": "apps/macos",
+      "bundleIdentifier": "io.missiongo.macos",
+      "label": "MissionGo"
+    }
   }
 }

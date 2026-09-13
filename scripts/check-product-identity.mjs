@@ -163,6 +163,31 @@ check(
   `signing keys must not be tracked by git, found: ${trackedKeys.join(", ")}`,
 );
 
+// --- macOS client ------------------------------------------------------------
+// The bundle's Info.plist is generated from product.json at build time, so the
+// only way for it to drift is for the build script to stop reading the file and
+// start carrying its own copy. Guard that, and the version declaration the
+// release ledger reads.
+const macosApp = product.macos?.app;
+check(macosApp, "product.json must declare macos.app");
+if (macosApp) {
+  check(macosApp.label === product.name, `macos.app.label must be "${product.name}", found "${macosApp.label}"`);
+  check(
+    macosApp.bundleIdentifier !== app.applicationId && macosApp.bundleIdentifier !== sample.applicationId,
+    "macos.app.bundleIdentifier must differ from every Android application ID",
+  );
+  const buildScript = read("scripts/build-macos-app.sh");
+  check(
+    !buildScript.includes(macosApp.bundleIdentifier),
+    "scripts/build-macos-app.sh must read the bundle identifier from product.json, not carry a literal",
+  );
+  const macosVersion = read(`${macosApp.path}/version.properties`).match(/^missiongoMacosVersion=(.+)$/m)?.[1]?.trim();
+  check(
+    /^\d+\.\d+\.\d+$/.test(macosVersion ?? ""),
+    `${macosApp.path}/version.properties must declare missiongoMacosVersion as a numeric version, found "${macosVersion}"`,
+  );
+}
+
 // --- Report --------------------------------------------------------------
 if (failures.length > 0) {
   console.error(`Product identity does not match product.json:\n`);

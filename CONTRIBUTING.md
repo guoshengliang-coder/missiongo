@@ -6,6 +6,7 @@
 
 - Node.js 22.13+；
 - Android 相关改动需要 JDK 17 和 Android SDK；
+- macOS 客户端相关改动需要 Xcode 16+（只用到命令行工具，仓库里没有 Xcode 工程）；
 - 使用 `npm ci` 安装锁定依赖；
 - 从 `.env.example` 创建本机 `.env`，不要提交它。
 
@@ -25,6 +26,13 @@ cd sdks/android-feedback
 ./gradlew :missiongo-feedback:testDebugUnitTest \
   :sample:assembleDebug \
   :missiongo-android-app:assembleDebug
+```
+
+macOS 客户端相关改动还需运行：
+
+```bash
+swift test --package-path apps/macos
+./scripts/build-macos-app.sh
 ```
 
 ## 改动原则
