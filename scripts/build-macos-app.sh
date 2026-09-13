@@ -34,6 +34,17 @@ PRODUCT_NAME=$(node -e "process.stdout.write(require('$REPOSITORY_ROOT/product.j
 # someone has to remember to bump.
 BUILD_NUMBER=$(date -u +%Y%m%d%H%M)
 
+# The deployment the app signs in to. Supplied at build time, never committed
+# (AGENTS.md: no real domains in tracked files), the same way the Android app
+# gets its endpoint. A build without one still runs; the person enters the
+# address on the sign-in screen instead.
+SERVER_URL=${MISSIONGO_PUBLIC_ORIGIN:-https://example.invalid}
+case "$SERVER_URL" in
+  http://*|https://*) ;;
+  *) echo "MISSIONGO_PUBLIC_ORIGIN must be an http(s) origin, got '$SERVER_URL'" >&2; exit 1 ;;
+esac
+SERVER_URL=${SERVER_URL%/}
+
 echo "==> Building ${PRODUCT_NAME} ${VERSION} (${BUILD_NUMBER})"
 # Universal, so the same download runs on an Intel Mac mini and an Apple silicon
 # laptop without the person having to know which one they have.
@@ -66,6 +77,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <!-- A menu-bar app: no Dock icon, no main window to close by accident. -->
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>MissionGoServerURL</key><string>${SERVER_URL}</string>
 </dict>
 </plist>
 PLIST

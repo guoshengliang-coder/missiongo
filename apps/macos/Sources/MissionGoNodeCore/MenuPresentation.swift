@@ -1,0 +1,327 @@
+import Foundation
+
+/// The decisions behind what the menu bar shows, kept out of SwiftUI so each
+/// one can be pinned by a test: which address to sign in to, what a connection
+/// state reads as, whether a chosen folder can be saved, how a dispatch row is
+/// worded.
+
+// MARK: - Server address
+
+public enum ServerAddress {
+    /// What a build without `MISSIONGO_PUBLIC_ORIGIN` carries in its Info.plist.
+    /// It is a reserved name that never resolves, so signing in to it could only
+    /// end in a network error; the sign-in screen asks for an address instead.
+    public static let placeholderHost = "example.invalid"
+
+    public enum ValidationError: Error, Equatable, LocalizedError, Sendable {
+        case empty
+        case unsupportedScheme
+        case missingHost
+        case notAnOrigin
+        case placeholder
+
+        public var errorDescription: String? {
+            switch self {
+            case .empty: return "请填写服务器地址。"
+            case .unsupportedScheme: return "服务器地址必须以 http:// 或 https:// 开头。"
+            case .missingHost: return "服务器地址缺少主机名。"
+            case .notAnOrigin: return "服务器地址只填协议、主机和端口，不要带路径、参数或账号。"
+            case .placeholder: return "这是占位地址，不是真实的服务器，请填写你的 MissionGo 地址。"
+            }
+        }
+    }
+
+    /// An http(s) origin such as `https://missiongo.example.com:8443`, returned
+    /// without a trailing slash. A path is refused rather than dropped: someone
+    /// who pasted `…/admin/nodes` should see that the address is not what they
+    /// meant, not have it silently rewritten.
+    public static func validate(_ input: String) -> Result<String, ValidationError> {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return .failure(.empty) }
+        guard let components = URLComponents(string: trimmed), let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return .failure(.unsupportedScheme) }
+        guard let host = components.host, !host.isEmpty else { return .failure(.missingHost) }
+        let path = components.percentEncodedPath
+        if !(path.isEmpty || path == "/") || components.query != nil || components.fragment != nil
+            || components.user != nil || components.password != nil {
+            return .failure(.notAnOrigin)
+        }
+        if host.lowercased() == placeholderHost { return .failure(.placeholder) }
+        return .success(normalizeServerUrl(trimmed))
+    }
+
+    /// The address to sign in to: a saved override wins, then the one the build
+    /// was made with. `nil` when neither is usable, which the sign-in screen
+    /// shows as "请先填写服务器地址".
+    public static func effective(bundleValue: String?, override: String?) -> String? {
+        for candidate in [override, bundleValue] {
+            if let candidate, case let .success(origin) = validate(candidate) { return origin }
+        }
+        return nil
+    }
+
+    /// `host` or `host:port`, the way the menu names a server.
+    public static func displayHost(_ url: String) -> String {
+        guard let components = URLComponents(string: url), let host = components.host, !host.isEmpty else { return url }
+        if let port = components.port { return "\(host):\(port)" }
+        return host
+    }
+}
+
+// MARK: - Connection
+
+public struct ConnectionSummary: Equatable, Sendable {
+    public enum Tone: Equatable, Sendable {
+        case good
+        case pending
+        case bad
+        case idle
+    }
+
+    public let text: String
+    public let tone: Tone
+
+    public init(text: String, tone: Tone) {
+        self.text = text
+        self.tone = tone
+    }
+
+    public static func summarize(_ state: NodeLoopState) -> ConnectionSummary {
+        switch state.connection {
+        case .online:
+            return ConnectionSummary(text: "在线", tone: .good)
+        case .connecting:
+            return ConnectionSummary(text: "连接中", tone: .pending)
+        case .offline:
+            let reason = state.lastError?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return ConnectionSummary(text: "离线：\(reason.flatMap { $0.isEmpty ? nil : $0 } ?? "原因未知")", tone: .bad)
+        case .credentialRevoked:
+            return ConnectionSummary(text: "凭证已失效，需要重新登录", tone: .bad)
+        case .stopped:
+            return ConnectionSummary(text: "已停止", tone: .idle)
+        }
+    }
+}
+
+public enum MenuBarSymbol {
+    /// Readable without opening the menu: a filled plane only while the machine
+    /// is actually reachable, an outline while it is still connecting, and a
+    /// different glyph altogether when it cannot take work.
+    public static func name(signedIn: Bool, connection: NodeLoopState.Connection?) -> String {
+        guard signedIn else { return "person.crop.circle.badge.questionmark" }
+        switch connection {
+        case .online: return "paperplane.circle.fill"
+        case .connecting, .none: return "paperplane.circle"
+        case .offline, .credentialRevoked, .stopped: return "exclamationmark.circle"
+        }
+    }
+}
+
+// MARK: - Claude Code
+
+public enum ClaudeCodeStatus: Equatable, Sendable {
+    case checking
+    case ready(version: String)
+    case notInstalled
+    case notLoggedIn(version: String)
+    /// Installed, but `claude auth status` printed nothing this client can read.
+    case unreadable(version: String)
+
+    public static func evaluate(version: String?, auth: Preflight.AuthStatus?) -> ClaudeCodeStatus {
+        guard let version else { return .notInstalled }
+        guard let auth else { return .unreadable(version: version) }
+        return auth.loggedIn ? .ready(version: version) : .notLoggedIn(version: version)
+    }
+
+    public static func check(run: CommandRunner) async -> ClaudeCodeStatus {
+        guard let version = await Preflight.claudeVersion(run: run) else { return .notInstalled }
+        return evaluate(version: version, auth: await Preflight.claudeAuthStatus(run: run))
+    }
+
+    public var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+
+    public var summary: String {
+        switch self {
+        case .checking: return "检查中…"
+        case let .ready(version): return version
+        case .notInstalled: return "未安装"
+        case .notLoggedIn: return "未登录"
+        case .unreadable: return "无法确认登录状态"
+        }
+    }
+
+    /// What to do about it, in the words of docs/node.md.
+    public var fixHint: String? {
+        switch self {
+        case .checking, .ready: return nil
+        case .notInstalled: return "确认终端里能直接运行 claude，然后重新打开 MissionGo"
+        case .notLoggedIn: return "在终端运行 claude auth login"
+        case .unreadable: return "在终端运行 claude auth status 查看"
+        }
+    }
+
+    /// The command the copy button puts on the clipboard.
+    public var fixCommand: String? {
+        switch self {
+        case .notLoggedIn: return "claude auth login"
+        case .unreadable: return "claude auth status"
+        case .checking, .ready, .notInstalled: return nil
+        }
+    }
+}
+
+// MARK: - Repository folders
+
+public enum RepoFolderVerdict: Equatable, Sendable {
+    case accepted
+    /// Saved, but a dispatch to it will fail until Claude Code trusts it.
+    case acceptedUntrusted(warning: String)
+    /// Not saved.
+    case rejected(reason: String)
+
+    public var canSave: Bool {
+        if case .rejected = self { return false }
+        return true
+    }
+
+    public var message: String? {
+        switch self {
+        case .accepted: return nil
+        case let .acceptedUntrusted(warning): return warning
+        case let .rejected(reason): return reason
+        }
+    }
+}
+
+public enum RepoFolderCheck {
+    public static let untrustedWarning = "这个目录还没有被 Claude Code 信任：在该目录运行一次 claude 并选择信任，否则派单会失败"
+
+    /// The same conditions the launch preflight enforces, checked when the folder
+    /// is chosen instead of minutes later when a dispatch fails.
+    public static func evaluate(
+        path: String,
+        claudeJson: String?,
+        home: String = Paths.homeDirectory(),
+        isRepo: (String) -> Bool = RepoCandidates.isGitRepository
+    ) -> RepoFolderVerdict {
+        let shown = PathDisplay.abbreviate(path, home: home)
+        // A session's own worktree gets deleted when that session is done, and a
+        // dispatch started in it is filed under the wrong project in /resume.
+        if RepoCandidates.isSessionWorktree(path) {
+            return .rejected(reason: "\(shown) 是 Claude Code 会话的临时 worktree，随时可能被删除：请选择仓库主目录。")
+        }
+        if !isRepo(path) {
+            return .rejected(reason: "\(shown) 不是 git 仓库，没有保存：请选择仓库的根目录（包含 .git 的那一层）。")
+        }
+        guard let claudeJson, Preflight.isTrustedRepoPath(claudeJson: claudeJson, repoPath: path) else {
+            return .acceptedUntrusted(warning: untrustedWarning)
+        }
+        return .accepted
+    }
+
+    /// Candidates worth offering for one product: those whose folder name looks
+    /// like the product first, in their recency order otherwise.
+    public static func suggestions(
+        keyPrefix: String,
+        productName: String,
+        candidates: [RepoCandidate],
+        excluding currentPath: String?,
+        limit: Int = 8
+    ) -> [RepoCandidate] {
+        func squash(_ value: String) -> String {
+            return value.lowercased().filter { !$0.isWhitespace && $0 != "-" && $0 != "_" }
+        }
+        let key = squash(keyPrefix)
+        let name = squash(productName)
+        func matches(_ candidate: RepoCandidate) -> Bool {
+            let folder = squash(candidate.name)
+            if folder.isEmpty { return false }
+            return folder == key || (!name.isEmpty && (folder.contains(name) || name.contains(folder)))
+        }
+        let pool = candidates.filter { $0.path != currentPath }
+        return Array((pool.filter(matches) + pool.filter { !matches($0) }).prefix(limit))
+    }
+
+    /// The whole list `PUT /api/v1/node/repos` expects, with one product changed.
+    /// `nil` clears that product's mapping.
+    public static func assignments(
+        from repos: [RepoMapping],
+        setting productId: String,
+        to path: String?
+    ) -> [RepoAssignment] {
+        var result = repos
+            .filter { $0.productId != productId }
+            .map { RepoAssignment(productId: $0.productId, repoPath: $0.repoPath) }
+        if let path { result.append(RepoAssignment(productId: productId, repoPath: path)) }
+        return result
+    }
+}
+
+public enum PathDisplay {
+    /// `/Users/me/Projects/app` → `~/Projects/app`.
+    public static func abbreviate(_ path: String, home: String = Paths.homeDirectory()) -> String {
+        let trimmedHome = home.hasSuffix("/") ? String(home.dropLast()) : home
+        guard !trimmedHome.isEmpty else { return path }
+        if path == trimmedHome { return "~" }
+        if path.hasPrefix(trimmedHome + "/") { return "~" + path.dropFirst(trimmedHome.count) }
+        return path
+    }
+}
+
+// MARK: - Dispatches
+
+public enum DispatchPresentation {
+    public static let menuLimit = 5
+
+    public static func statusLabel(_ status: String) -> String {
+        switch status {
+        case "queued": return "排队中"
+        case "delivered": return "已送达"
+        case "launched": return "已启动"
+        case "failed": return "失败"
+        default: return status
+        }
+    }
+
+    public static func itemsLabel(_ itemKeys: [String]) -> String {
+        return itemKeys.isEmpty ? "（无条目）" : itemKeys.joined(separator: "、")
+    }
+
+    /// The first line, cut to `limit` characters. A launch failure carries the
+    /// log tail after a newline; the row only needs the reason, the full text is
+    /// in the tooltip.
+    public static func shortError(_ error: String?, limit: Int = 60) -> String? {
+        guard let error else { return nil }
+        let lines = error.split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard let first = lines.first else { return nil }
+        if first.count > limit { return String(first.prefix(limit)) + "…" }
+        return lines.count > 1 ? first + "…" : first
+    }
+
+    public static func parseDate(_ value: String) -> Date? {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFraction.date(from: value) { return date }
+        return ISO8601DateFormatter().date(from: value)
+    }
+
+    public static func relativeTime(_ iso: String, now: Date = Date(), calendar: Calendar = .current) -> String {
+        guard let date = parseDate(iso) else { return "" }
+        let seconds = now.timeIntervalSince(date)
+        // A server clock slightly ahead of this one is still "just now".
+        if seconds < 60 { return "刚刚" }
+        if seconds < 3600 { return "\(Int(seconds / 60)) 分钟前" }
+        if seconds < 86_400 { return "\(Int(seconds / 3600)) 小时前" }
+        if seconds < 7 * 86_400 { return "\(Int(seconds / 86_400)) 天前" }
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        let current = calendar.component(.year, from: now)
+        let monthDay = "\(parts.month ?? 0) 月 \(parts.day ?? 0) 日"
+        return parts.year == current ? monthDay : "\(parts.year ?? 0) 年 \(monthDay)"
+    }
+}

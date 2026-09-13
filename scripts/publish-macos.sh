@@ -25,6 +25,20 @@ LATEST_ZIP="$DOWNLOAD_DIRECTORY/missiongo-macos-latest.zip"
 TEMPORARY_ZIP="$DOWNLOAD_DIRECTORY/.missiongo-macos-latest.zip.tmp"
 RELEASE_METADATA="$DOWNLOAD_DIRECTORY/missiongo-macos-latest.release"
 
+# The published app must point at the real deployment, which lives only in the
+# private configuration beside the Android publishing files.
+PRODUCTION_ENV_FILE="${XDG_CONFIG_HOME:-"${HOME:?}/.config"}/missiongo/production.env"
+if [ ! -f "$PRODUCTION_ENV_FILE" ]; then
+  echo "Missing $PRODUCTION_ENV_FILE (it supplies MISSIONGO_PUBLIC_ORIGIN)." >&2
+  exit 1
+fi
+set -a
+# shellcheck disable=SC1090
+. "$PRODUCTION_ENV_FILE"
+set +a
+: "${MISSIONGO_PUBLIC_ORIGIN:?Missing MISSIONGO_PUBLIC_ORIGIN in $PRODUCTION_ENV_FILE}"
+export MISSIONGO_PUBLIC_ORIGIN
+
 if [ "$allow_republish" -eq 0 ]; then
   node "$REPOSITORY_ROOT/scripts/release-state.mjs" --check macosApp || {
     echo "Pass --allow-republish to publish anyway." >&2
