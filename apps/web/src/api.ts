@@ -1,9 +1,14 @@
 import type {
   Component,
   CreatedSdkToken,
+  CreateDispatchInput,
   SdkToken,
   ComponentKind,
   CreateWorkItemInput,
+  Dispatch,
+  DispatchNode,
+  NodePairingCode,
+  NodeRepoMapping,
   Product,
   TransitionAction,
   UpdateWorkItemInput,
@@ -90,6 +95,15 @@ async function attachmentRequest(path: string, init: RequestInit = {}): Promise<
     throw new ApiError(response.status, problem?.code ?? "request_failed", problem?.title ?? "Request failed.");
   }
   return response;
+}
+
+/**
+ * A 204 carries no body, so it cannot go through `request`, whose last step is
+ * `response.json()`. Reuses the same problem+json error handling as everything
+ * else rather than re-implementing it for the two endpoints that answer empty.
+ */
+async function requestNoContent(path: string, init: RequestInit = {}): Promise<void> {
+  await attachmentRequest(path, init);
 }
 
 /**
@@ -266,4 +280,25 @@ export const api = {
     request<CreatedSdkToken>("/api/v1/sdk-tokens", { method: "POST", body: JSON.stringify(input) }),
   revokeSdkToken: (tokenId: string) =>
     request<SdkToken>(`/api/v1/sdk-tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" }),
+  listNodes: () => request<{ nodes: DispatchNode[] }>("/api/v1/nodes"),
+  createNodePairingCode: (input: { name: string }) =>
+    request<NodePairingCode>("/api/v1/nodes/pairing-codes", { method: "POST", body: JSON.stringify(input) }),
+  renameNode: (nodeId: string, input: { name: string }) =>
+    request<DispatchNode>(`/api/v1/nodes/${encodeURIComponent(nodeId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  revokeNode: (nodeId: string) =>
+    requestNoContent(`/api/v1/nodes/${encodeURIComponent(nodeId)}`, { method: "DELETE" }),
+  // The whole mapping table at once: the server replaces it wholesale, so a
+  // removed row is a row left out rather than a second request.
+  setNodeRepos: (nodeId: string, repos: readonly { productId: string; repoPath: string }[]) =>
+    request<{ repos: NodeRepoMapping[] }>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/repos`, {
+      method: "PUT",
+      body: JSON.stringify({ repos }),
+    }),
+  createDispatch: (input: CreateDispatchInput) =>
+    request<Dispatch>("/api/v1/dispatches", { method: "POST", body: JSON.stringify(input) }),
+  listItemDispatches: (itemKey: string) =>
+    request<{ dispatches: Dispatch[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/dispatches`),
 };

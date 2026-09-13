@@ -375,6 +375,40 @@ export class MissionGoDatabase {
           .run(202609081100, new Date().toISOString());
       });
     }
+    // Dispatching work to a machine needs somewhere to record the machines, the
+    // checkout each product lives in on them, and what was handed over. The
+    // tables are created by INITIAL_SCHEMA for a fresh database; this migration
+    // is what brings an existing one up to the same shape.
+    const dispatchMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609131130")
+      .get() as unknown as { version: number } | undefined;
+    if (!dispatchMigration) {
+      this.transaction(() => {
+        this.connection.exec(INITIAL_SCHEMA);
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609131130, new Date().toISOString());
+      });
+    }
+    // The machines report which checkouts they already have, so the console can
+    // offer them instead of asking for a typed absolute path. Separate from the
+    // migration above because that one may already have run on a live database.
+    const repoCandidatesMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609131230")
+      .get() as unknown as { version: number } | undefined;
+    if (!repoCandidatesMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(nodes)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "repo_candidates_json")) {
+          this.connection.exec("ALTER TABLE nodes ADD COLUMN repo_candidates_json TEXT NOT NULL DEFAULT '[]';");
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609131230, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

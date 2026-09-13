@@ -72,6 +72,7 @@ import {
   type Component,
   type ComponentKind,
   type CreatedSdkToken,
+  type Dispatch,
   type TransitionAction,
   type WorkItem,
   type WorkItemAttachment,
@@ -84,11 +85,21 @@ import {
   type WorkItemType,
 } from "./types";
 import { androidFeedbackBridge, androidMediaDeletion, reportAndroidBackDepth } from "./android-bridge";
+import { DispatchDialog } from "./dispatch-dialog";
+import {
+  agentLabelKey,
+  dispatchModeLabelKey,
+  dispatchStatusLabelKey,
+  isDispatchable,
+  selectionScope,
+  toggleItemSelection,
+} from "./dispatch-eligibility";
 import { environmentSummary, platformName } from "./environment-summary";
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
+import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog } from "@missiongo/domain";
-import { groupTimeline } from "./timeline";
+import { dispatchedEvent, groupTimeline } from "./timeline";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import {
@@ -422,6 +433,15 @@ export function App() {
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [notice, setNotice] = useState<string | null>(null);
+  const [selectedItemKeys, setSelectedItemKeys] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * The batch the dispatch dialog is about, captured when it opens.
+   *
+   * Not read back from the selection while the dialog is up: a successful
+   * dispatch clears the selection, and the confirmation still has to say which
+   * items went out.
+   */
+  const [dispatchBatch, setDispatchBatch] = useState<readonly WorkItem[] | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
@@ -736,6 +756,23 @@ export function App() {
   );
   const visibleItems = items;
   const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(isMediaAttachment));
+  const selectedItems = visibleItems.filter((item) => selectedItemKeys.has(item.key));
+
+  /**
+   * A selection belongs to the rows it was made on. Once the filters move those
+   * rows off screen, keeping the ticks would mean dispatching work nobody can
+   * see -- and across products, items whose repository is not the one the batch
+   * would run in.
+   */
+  const listScope = selectionScope({
+    productId: selectedProductId,
+    status: statusFilter,
+    type: typeFilter,
+    search: deferredSearch,
+  });
+  // Returning the set unchanged when it is already empty keeps the first render
+  // after boot, and every filter change made with nothing ticked, free.
+  useEffect(() => setSelectedItemKeys((current) => current.size === 0 ? current : new Set()), [listScope]);
 
   const selectedProduct = products.find((product) => product.id === selectedProductId);
   const selectItemProduct = useCallback((item: WorkItem) => {
@@ -1028,6 +1065,24 @@ export function App() {
             </div>
           )}
 
+          {selectedItemKeys.size > 0 && (
+            <div className="bulk-bar" role="status">
+              <Rocket size={15} aria-hidden="true" />
+              <span className="bulk-bar-count">{t("selectedForDispatch", { count: selectedItemKeys.size })}</span>
+              <button type="button" className="text-button bulk-bar-clear" onClick={() => setSelectedItemKeys(new Set())}>
+                {t("clearSelection")}
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={selectedItems.length === 0}
+                onClick={() => setDispatchBatch(selectedItems)}
+              >
+                <Rocket size={16} /> {t("dispatchSelected")}
+              </button>
+            </div>
+          )}
+
           <section className={`list-surface ${showAttachmentColumn ? "with-media" : "without-media"}`} aria-label={t("workItems")}>
             <div className="list-columns" aria-hidden="true">
               <span>{t("itemInformation")}</span>
@@ -1053,6 +1108,8 @@ export function App() {
                   key={item.id}
                   item={item}
                   selected={item.key === selectedItemKey}
+                  checked={selectedItemKeys.has(item.key)}
+                  onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item))}
                   sourceComponent={item.sourceComponentId ? componentsById.get(item.sourceComponentId) : undefined}
                   showAttachmentColumn={showAttachmentColumn}
                   onOpen={() => openItemPage(item.key)}
@@ -1102,6 +1159,30 @@ export function App() {
                   : t(item.status === "ready" ? "submittedForProcessing" : "capturedInInbox", { key: item.key }),
               );
               void queryClient.invalidateQueries({ queryKey: ["items", selectedProduct.id] });
+            }}
+          />
+        </Modal>
+      )}
+      {dispatchBatch && (
+        <Modal
+          title={t("dispatchTitle")}
+          subtitle={t("dispatchSubtitle", { count: dispatchBatch.length })}
+          onClose={() => setDispatchBatch(null)}
+        >
+          <DispatchDialog
+            items={dispatchBatch}
+            products={products}
+            onClose={() => setDispatchBatch(null)}
+            onDispatched={(dispatch: Dispatch) => {
+              setSelectedItemKeys(new Set());
+              setNotice(t("dispatchSent", { node: dispatch.nodeName }));
+              void queryClient.invalidateQueries({ queryKey: ["items"] });
+              // The dispatch wrote a `dispatched` event on every item in the
+              // batch, so an open detail pane is already out of date.
+              for (const itemKey of dispatch.itemKeys) {
+                void queryClient.invalidateQueries({ queryKey: ["timeline", itemKey] });
+                void queryClient.invalidateQueries({ queryKey: ["dispatches", itemKey] });
+              }
             }}
           />
         </Modal>
@@ -1177,6 +1258,8 @@ function ItemRow({
   sourceComponent,
   showAttachmentColumn,
   selected,
+  checked,
+  onToggleChecked,
   onOpen,
   onEdit,
   onNotice,
@@ -1185,6 +1268,8 @@ function ItemRow({
   sourceComponent: Component | undefined;
   showAttachmentColumn: boolean;
   selected: boolean;
+  checked: boolean;
+  onToggleChecked: () => void;
   onOpen: () => void;
   onEdit: () => void;
   onNotice: (message: string) => void;
@@ -1202,6 +1287,7 @@ function ItemRow({
   const logCount = item.diagnosticSummary?.logCount ?? 0;
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
   const contextDetails = environmentSummary(environment, Boolean(sourceComponent), t);
+  const dispatchable = isDispatchable(item.status);
   return (
     <article
       className={`item-row ${selected ? "selected" : ""}`}
@@ -1212,22 +1298,36 @@ function ItemRow({
         onOpen();
       }}
     >
-      <button className="item-row-main" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
-        <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={15} /></span>
-        <span className="item-copy">
-          <span className="item-title-line">
-            <code>{item.key}</code>
-            <span className="item-title">{item.title}</span>
-            <span className="item-evidence-summary">
-              {item.type === "bug" && item.report?.reproductionSteps && <small className="evidence-strong">{t("hasReproduction")}</small>}
-              {logCount > 0 && <small>{t("logCount", { count: logCount })}</small>}
-              {logFileCount > 0 && <small className="evidence-strong">{t("logFileCount", { count: logFileCount })}</small>}
-              {(item.diagnosticSummary?.contextEntryCount ?? 0) > 0 && <small>{t("contextCount", { count: item.diagnosticSummary.contextEntryCount })}</small>}
+      <span className="item-row-lead">
+        {/* Dispatching is a batch action, so the pick has to happen in the list.
+            The click guard on the row above already exempts inputs, which is what
+            keeps ticking a box from opening the detail pane. */}
+        <input
+          type="checkbox"
+          className="item-select"
+          checked={checked}
+          disabled={!dispatchable}
+          aria-label={t("selectForDispatch", { key: item.key })}
+          title={dispatchable ? undefined : t("onlyReadyDispatchable")}
+          onChange={onToggleChecked}
+        />
+        <button className="item-row-main" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
+          <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={15} /></span>
+          <span className="item-copy">
+            <span className="item-title-line">
+              <code>{item.key}</code>
+              <span className="item-title">{item.title}</span>
+              <span className="item-evidence-summary">
+                {item.type === "bug" && item.report?.reproductionSteps && <small className="evidence-strong">{t("hasReproduction")}</small>}
+                {logCount > 0 && <small>{t("logCount", { count: logCount })}</small>}
+                {logFileCount > 0 && <small className="evidence-strong">{t("logFileCount", { count: logFileCount })}</small>}
+                {(item.diagnosticSummary?.contextEntryCount ?? 0) > 0 && <small>{t("contextCount", { count: item.diagnosticSummary.contextEntryCount })}</small>}
+              </span>
             </span>
+            <span className={`item-description ${overview ? "" : "muted"}`}>{overview || t("noDescription")}</span>
           </span>
-          <span className={`item-description ${overview ? "" : "muted"}`}>{overview || t("noDescription")}</span>
-        </span>
-      </button>
+        </button>
+      </span>
       <ItemMediaStrip itemKey={item.key} attachments={item.attachments} preserveColumn={showAttachmentColumn} />
       <span className="item-context">
         <strong>{contextPrimary}</strong>
@@ -1954,6 +2054,7 @@ function DetailPane({
                 </div>
               ) : <p className="section-empty">{t("noEnvironment")}</p>}
             </section>
+            <DispatchHistory itemKey={item.key} />
             <section className="timeline-block">
               <header className="timeline-head">
                 <h3>{t("timeline")}</h3>
@@ -2009,6 +2110,10 @@ function DetailPane({
                           </a>
                         </p>
                       )}
+                      {/* Which machine took it, with what. The batch is named too:
+                          one session handles all of it, so the other keys explain
+                          work that will appear on this item's branch. */}
+                      {event.eventType === "dispatched" && <DispatchedLine payload={event.payload} />}
                       <p>
                         {commentAuthor(
                           { ...event, agentName: eventAgentName(event.payload) },
@@ -2048,6 +2153,84 @@ function DetailPane({
         </Modal>
       )}
     </section>
+  );
+}
+
+/**
+ * Every dispatch this item has been part of.
+ *
+ * Its own section rather than timeline lines alone, because a dispatch has a
+ * life after the event: the machine picks it up, the session starts or fails to,
+ * and the link to that session is the thing worth clicking later.
+ */
+function DispatchHistory({ itemKey }: { itemKey: string }) {
+  const { t } = useI18n();
+  const dispatchesQuery = useQuery({
+    queryKey: ["dispatches", itemKey],
+    queryFn: () => api.listItemDispatches(itemKey),
+  });
+  const dispatches = dispatchesQuery.data?.dispatches ?? [];
+
+  return (
+    <section className="dispatch-block">
+      <h3>{t("dispatchHistory")}</h3>
+      {/* Said here as well as in the dialog: this is where somebody wonders why
+          the item is still "ready" after it was sent somewhere. */}
+      <p className="component-management-help">{t("dispatchDoesNotClaim")}</p>
+      {dispatchesQuery.isLoading && <LoaderCircle className="spin" size={18} />}
+      {dispatchesQuery.isError && <InlineError message={errorMessage(dispatchesQuery.error, t("somethingWentWrong"))} />}
+      {!dispatchesQuery.isLoading && dispatches.length === 0 && <p className="section-empty">{t("noDispatches")}</p>}
+      {dispatches.map((dispatch) => (
+        <DispatchRow key={dispatch.id} dispatch={dispatch} itemKey={itemKey} />
+      ))}
+    </section>
+  );
+}
+
+function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: string }) {
+  const { formatTime, t } = useI18n();
+  const agentKey = agentLabelKey(dispatch.agentKind);
+  const modeKey = dispatchModeLabelKey(dispatch.mode);
+  const statusKey = dispatchStatusLabelKey(dispatch.status);
+  const batch = dispatch.itemKeys.filter((key) => key !== itemKey);
+  return (
+    <article className="dispatch-row">
+      <div className="dispatch-row-head">
+        <strong>{dispatch.nodeName}</strong>
+        <span className={`status-pill dispatch-status-${dispatch.status}`}>{statusKey ? t(statusKey) : dispatch.status}</span>
+        <small>{formatTime(dispatch.createdAt)}</small>
+      </div>
+      <small className="dispatch-row-detail">
+        {agentKey ? t(agentKey) : dispatch.agentKind} · {modeKey ? t(modeKey) : dispatch.mode}
+        {dispatch.sessionName ? ` · ${dispatch.sessionName}` : ""}
+      </small>
+      {batch.length > 0 && <small className="dispatch-row-detail">{t("dispatchBatch", { keys: batch.join("、") })}</small>}
+      {dispatch.sessionUrl && (
+        <p className="dispatch-session-link">
+          <a href={dispatch.sessionUrl} target="_blank" rel="noopener noreferrer">{t("dispatchOpenSession")}</a>
+        </p>
+      )}
+      {dispatch.error && <InlineError message={dispatch.error} />}
+    </article>
+  );
+}
+
+/** The `dispatched` timeline line, when the payload can say where it went. */
+function DispatchedLine({ payload }: { payload: Readonly<Record<string, unknown>> }) {
+  const { t } = useI18n();
+  const summary = dispatchedEvent(payload);
+  if (!summary) return null;
+  const agentKey = agentLabelKey(summary.agentKind);
+  const modeKey = dispatchModeLabelKey(summary.mode);
+  return (
+    <p className="timeline-dispatch">
+      {t("dispatchedTo", {
+        node: summary.nodeName,
+        agent: agentKey ? t(agentKey) : summary.agentKind,
+        mode: modeKey ? t(modeKey) : summary.mode,
+      })}
+      {summary.itemKeys.length > 1 && <span>{t("dispatchBatch", { keys: summary.itemKeys.join("、") })}</span>}
+    </p>
   );
 }
 
@@ -3244,7 +3427,12 @@ function ProductManager({
             />
           </div>
         ) : (
-          <ProductSettings key={activeProduct.id} product={activeProduct} onSelected={() => onSelectProduct(activeProduct)} />
+          <ProductSettings
+            key={activeProduct.id}
+            product={activeProduct}
+            products={products}
+            onSelected={() => onSelectProduct(activeProduct)}
+          />
         )}
       </section>
       )}
@@ -3300,10 +3488,20 @@ function ProductIconField({ product }: { product: Product }) {
   );
 }
 
-function ProductSettings({ product, onSelected }: { product: Product; onSelected: () => void }) {
+function ProductSettings({
+  product,
+  products,
+  onSelected,
+}: {
+  product: Product;
+  // The machines tab needs every product, not this one: its table is the mapping
+  // from each product to that machine's checkout of it.
+  products: readonly Product[];
+  onSelected: () => void;
+}) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
-  const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components" | "tokens">("product");
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components" | "tokens" | "nodes">("product");
   const [name, setName] = useState(product.name);
   const [newComponentName, setNewComponentName] = useState("");
   const [newComponentKind, setNewComponentKind] = useState<ComponentKind>("android");
@@ -3376,8 +3574,19 @@ function ProductSettings({ product, onSelected }: { product: Product; onSelected
         >
           {t("sdkTokens")}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeSettingsTab === "nodes"}
+          className={activeSettingsTab === "nodes" ? "active" : ""}
+          onClick={() => setActiveSettingsTab("nodes")}
+        >
+          {t("nodeSettings")}
+        </button>
       </div>
-      {activeSettingsTab === "tokens" ? (
+      {activeSettingsTab === "nodes" ? (
+        <NodeSettings products={products} />
+      ) : activeSettingsTab === "tokens" ? (
         <SdkTokenSettings product={product} />
       ) : activeSettingsTab === "product" ? (
         <section className="product-settings-section" role="tabpanel">

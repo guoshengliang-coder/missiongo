@@ -1,3 +1,5 @@
+import type { AgentKind, DispatchStatus } from "@missiongo/domain";
+
 export const ITEM_TYPES = ["bug", "requirement", "idea", "task", "note"] as const;
 export type WorkItemType = (typeof ITEM_TYPES)[number];
 
@@ -195,4 +197,87 @@ export interface SdkToken {
 /** The plaintext token is returned once, at creation, and never stored client-side. */
 export interface CreatedSdkToken extends SdkToken {
   readonly token: string;
+}
+
+export interface NodeAgentReport {
+  readonly kind: AgentKind;
+  readonly version?: string;
+}
+
+/**
+ * Where a product's checkout lives on one machine. `productKey` travels with the
+ * mapping so a node row can name the product without the product list, which the
+ * settings panel has but the dispatch dialog does not always.
+ */
+export interface NodeRepoMapping {
+  readonly productId: string;
+  readonly productKey: string;
+  readonly repoPath: string;
+}
+
+/**
+ * A checkout the machine reported it can already work in, newest use first.
+ *
+ * A convenience for choosing a mapping, never a permission: the machine reports
+ * where it has been opened, and a person still decides which product lives
+ * there. `name` is the directory name only — the machine deliberately does not
+ * report git remotes, so it is all the matching has to go on.
+ */
+export interface RepoCandidate {
+  readonly path: string;
+  readonly name: string;
+  readonly lastUsedAt?: string;
+}
+
+/**
+ * A developer machine that pulls dispatched work. `online` is the server's
+ * verdict rather than something derived here: it owns the heartbeat window, and
+ * a clock skewed on this device must not make a silent machine look reachable.
+ */
+export interface DispatchNode {
+  readonly id: string;
+  readonly name: string;
+  readonly hostname?: string;
+  readonly agents: readonly NodeAgentReport[];
+  readonly repos: readonly NodeRepoMapping[];
+  /** Empty until the machine's first heartbeat on a build that reports them. */
+  readonly repoCandidates: readonly RepoCandidate[];
+  readonly lastSeenAt?: string;
+  readonly online: boolean;
+  readonly revokedAt?: string;
+  readonly createdAt: string;
+}
+
+/** Shown once, in the pairing command. The server only keeps its hash. */
+export interface NodePairingCode {
+  readonly code: string;
+  readonly expiresAt: string;
+}
+
+/**
+ * One hand-off: the items, the machine, and what it was asked to start. The
+ * status here is the session's, never the items' — those still move only when
+ * the session claims them.
+ */
+export interface Dispatch {
+  readonly id: string;
+  readonly nodeId: string;
+  readonly nodeName: string;
+  readonly agentKind: AgentKind;
+  readonly mode: string;
+  readonly status: DispatchStatus;
+  readonly itemKeys: readonly string[];
+  readonly sessionName?: string;
+  readonly sessionUrl?: string;
+  readonly error?: string;
+  readonly createdAt: string;
+  readonly deliveredAt?: string;
+  readonly completedAt?: string;
+}
+
+export interface CreateDispatchInput {
+  readonly nodeId: string;
+  readonly agentKind: AgentKind;
+  readonly mode: string;
+  readonly itemKeys: readonly string[];
 }

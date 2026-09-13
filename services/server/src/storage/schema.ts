@@ -153,6 +153,77 @@ export const INITIAL_SCHEMA = `
     updated_at TEXT NOT NULL
   ) STRICT;
 
+  -- A node is one developer machine that pulls dispatches and starts agent
+  -- sessions. Its credential lives here rather than in access_tokens because
+  -- that table binds a token to a single product and to platform 'android',
+  -- while a machine serves every product it has a checkout for.
+  CREATE TABLE IF NOT EXISTS nodes (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    hostname TEXT,
+    token_hash TEXT NOT NULL UNIQUE,
+    agents_json TEXT NOT NULL DEFAULT '[]',
+    -- Checkouts the machine reported it can already work in, so the console can
+    -- offer a list instead of asking someone to type an absolute path.
+    repo_candidates_json TEXT NOT NULL DEFAULT '[]',
+    last_seen_at TEXT,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  -- Pairing codes are short-lived and single-use: the machine trades one for a
+  -- token, so a code left in a terminal's scrollback stops being a credential
+  -- minutes after it is read.
+  CREATE TABLE IF NOT EXISTS node_pairing_codes (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    code_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+  ) STRICT;
+
+  -- Which checkout on that machine a product's items are worked in. A product
+  -- deliberately is not a git repo, so the mapping cannot be derived and has to
+  -- be stated per machine.
+  CREATE TABLE IF NOT EXISTS node_product_repos (
+    id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    repo_path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  -- One dispatch is one session. The batch shares a session, so the items hang
+  -- off the dispatch rather than the dispatch off an item.
+  CREATE TABLE IF NOT EXISTS dispatches (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    agent_kind TEXT NOT NULL CHECK (agent_kind IN ('claude_code', 'codex', 'hermes')),
+    mode TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'delivered', 'launched', 'failed', 'cancelled')),
+    repo_path TEXT NOT NULL,
+    session_name TEXT,
+    session_url TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    completed_at TEXT
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS dispatch_items (
+    dispatch_id TEXT NOT NULL REFERENCES dispatches(id) ON DELETE CASCADE,
+    item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (dispatch_id, item_id)
+  ) STRICT;
+
   CREATE TABLE IF NOT EXISTS access_tokens (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('sdk', 'mcp', 'node')),
@@ -223,6 +294,11 @@ export const INITIAL_SCHEMA = `
   CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_leases_active_item
     ON execution_leases(item_id) WHERE released_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_access_tokens_product ON access_tokens(product_id, kind);
+  CREATE INDEX IF NOT EXISTS idx_nodes_account ON nodes(account_id, created_at DESC);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_node_product_repos_unique ON node_product_repos(node_id, product_id);
+  CREATE INDEX IF NOT EXISTS idx_dispatches_account_created ON dispatches(account_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_dispatches_node_queued ON dispatches(node_id, status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_dispatch_items_item ON dispatch_items(item_id);
   CREATE INDEX IF NOT EXISTS idx_feedback_drafts_expiry ON feedback_drafts(status, expires_at);
   CREATE INDEX IF NOT EXISTS idx_feedback_web_sessions_expiry ON feedback_web_sessions(expires_at);
 `;

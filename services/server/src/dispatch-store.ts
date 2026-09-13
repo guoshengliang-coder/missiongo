@@ -1,0 +1,553 @@
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+
+import { AGENT_KINDS, isNodeOnline, isSupportedDispatchMode, type AgentKind } from "@missiongo/domain";
+
+import { conflict, invalidInput, notFound } from "./errors.js";
+import type { MissionGoDatabase } from "./storage/database.js";
+
+export interface NodeAgentReport {
+  readonly kind: AgentKind;
+  readonly version?: string;
+}
+
+/** A checkout the machine reported it can already work in. */
+export interface RepoCandidate {
+  readonly path: string;
+  readonly name: string;
+  readonly lastUsedAt?: string;
+}
+
+export const MAX_REPO_CANDIDATES = 50;
+
+export interface NodeRepoMapping {
+  readonly productId: string;
+  readonly productKey: string;
+  readonly repoPath: string;
+}
+
+export interface NodeSnapshot {
+  readonly id: string;
+  readonly name: string;
+  readonly hostname?: string;
+  readonly agents: readonly NodeAgentReport[];
+  readonly repos: readonly NodeRepoMapping[];
+  readonly repoCandidates: readonly RepoCandidate[];
+  readonly lastSeenAt?: string;
+  readonly online: boolean;
+  readonly revokedAt?: string;
+  readonly createdAt: string;
+}
+
+export interface CreatedNodeCredential {
+  readonly nodeId: string;
+  readonly name: string;
+  readonly token: string;
+}
+
+export interface DispatchSnapshot {
+  readonly id: string;
+  readonly nodeId: string;
+  readonly nodeName: string;
+  readonly agentKind: AgentKind;
+  readonly mode: string;
+  readonly status: string;
+  readonly itemKeys: readonly string[];
+  readonly sessionName?: string;
+  readonly sessionUrl?: string;
+  readonly error?: string;
+  readonly createdAt: string;
+  readonly deliveredAt?: string;
+  readonly completedAt?: string;
+}
+
+export interface DispatchJob {
+  readonly dispatchId: string;
+  readonly itemKeys: readonly string[];
+  readonly repoPath: string;
+  readonly agentKind: AgentKind;
+  readonly mode: string;
+}
+
+interface NodeRow {
+  id: string;
+  account_id: string;
+  name: string;
+  hostname: string | null;
+  agents_json: string;
+  repo_candidates_json: string | null;
+  last_seen_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+interface DispatchRow {
+  id: string;
+  node_id: string;
+  node_name: string;
+  agent_kind: string;
+  mode: string;
+  status: string;
+  session_name: string | null;
+  session_url: string | null;
+  error: string | null;
+  created_at: string;
+  delivered_at: string | null;
+  completed_at: string | null;
+}
+
+const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
+
+function nodeTokenHash(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+function text(value: string | undefined, field: string, maxLength: number): string {
+  const normalized = (value ?? "").trim();
+  if (!normalized) throw invalidInput(`${field} is required.`);
+  if (normalized.length > maxLength) throw invalidInput(`${field} must be ${maxLength} characters or fewer.`);
+  return normalized;
+}
+
+/**
+ * Machines, their per-product checkouts, and the dispatches handed to them.
+ *
+ * Everything here is scoped by account: every read and write takes the account
+ * id and filters on it, rather than trusting a caller to have filtered already.
+ * There is one admin account today, so the filter changes nothing that can be
+ * observed — which is exactly why it has to be written now. Added later, after
+ * a second account exists, it would be a migration of live data instead of a
+ * WHERE clause.
+ */
+export class DispatchStore {
+  private readonly database: MissionGoDatabase;
+
+  /**
+   * Machines waiting on a long poll, by node id.
+   *
+   * A queued dispatch wakes its machine's waiter instead of making every machine
+   * ask every few seconds. The waiters are in memory on purpose: a restart drops
+   * them, the polls time out, and the machines ask again — the queue itself is
+   * in SQLite, so nothing is lost by forgetting who was listening.
+   */
+  private readonly waiters = new Map<string, Set<() => void>>();
+
+  constructor(database: MissionGoDatabase) {
+    this.database = database;
+  }
+
+  /**
+   * Resolve once this node has work or the deadline passes. Returning on the
+   * timeout rather than hanging forever is what keeps a dead connection from
+   * looking like an idle one to either side.
+   */
+  async waitForDispatch(nodeId: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    if (timeoutMs <= 0 || signal?.aborted) return;
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", finish);
+        this.waiters.get(nodeId)?.delete(finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      // Never hold the process open: an idle poll must not delay a shutdown.
+      timer.unref?.();
+      signal?.addEventListener("abort", finish, { once: true });
+      const existing = this.waiters.get(nodeId) ?? new Set<() => void>();
+      existing.add(finish);
+      this.waiters.set(nodeId, existing);
+    });
+  }
+
+  private wake(nodeId: string): void {
+    const waiting = this.waiters.get(nodeId);
+    if (!waiting) return;
+    this.waiters.delete(nodeId);
+    for (const resolve of waiting) resolve();
+  }
+
+  createPairingCode(accountId: string, name: string): { code: string; expiresAt: string } {
+    const nodeName = text(name, "Node name", 100);
+    const now = Date.now();
+    // Grouped for the eye: a person reads this off one screen and types it on
+    // another, and a 24-character run of base32 gets miscounted.
+    const code = `${randomBytes(5).toString("hex")}-${randomBytes(5).toString("hex")}`;
+    const expiresAt = new Date(now + PAIRING_CODE_TTL_MS).toISOString();
+    this.database.connection
+      .prepare(
+        `INSERT INTO node_pairing_codes (id, account_id, name, code_hash, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(randomUUID(), accountId, nodeName, nodeTokenHash(code), expiresAt, new Date(now).toISOString());
+    return { code, expiresAt };
+  }
+
+  /**
+   * Trade a pairing code for a node credential. Single use and time limited, so
+   * a code read out of a terminal's scrollback later is worth nothing.
+   */
+  redeemPairingCode(input: { code: string; hostname?: string }): CreatedNodeCredential {
+    return this.database.transaction(() => {
+      const now = new Date().toISOString();
+      const row = this.database.connection
+        .prepare(
+          `SELECT id, account_id, name, expires_at, used_at
+           FROM node_pairing_codes WHERE code_hash = ?`,
+        )
+        .get(nodeTokenHash(input.code.trim())) as unknown as {
+          id: string;
+          account_id: string;
+          name: string;
+          expires_at: string;
+          used_at: string | null;
+        } | undefined;
+      if (!row) throw notFound("Pairing code");
+      if (row.used_at) throw conflict("pairing_code_used", "This pairing code was already used.");
+      if (row.expires_at <= now) throw conflict("pairing_code_expired", "This pairing code has expired.");
+
+      const nodeId = randomUUID();
+      const token = `mgn_${randomBytes(32).toString("base64url")}`;
+      this.database.connection
+        .prepare(
+          `INSERT INTO nodes (id, account_id, name, hostname, token_hash, agents_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, '[]', ?, ?)`,
+        )
+        .run(nodeId, row.account_id, row.name, input.hostname?.trim() || null, nodeTokenHash(token), now, now);
+      this.database.connection
+        .prepare("UPDATE node_pairing_codes SET used_at = ?, node_id = ? WHERE id = ?")
+        .run(now, nodeId, row.id);
+      return { nodeId, name: row.name, token };
+    });
+  }
+
+  authenticateNode(token: string): { nodeId: string; accountId: string } | undefined {
+    const row = this.database.connection
+      .prepare("SELECT id, account_id, revoked_at FROM nodes WHERE token_hash = ?")
+      .get(nodeTokenHash(token)) as unknown as { id: string; account_id: string; revoked_at: string | null } | undefined;
+    if (!row || row.revoked_at) return undefined;
+    return { nodeId: row.id, accountId: row.account_id };
+  }
+
+  recordHeartbeat(
+    nodeId: string,
+    agents: readonly NodeAgentReport[],
+    repoCandidates: readonly RepoCandidate[] = [],
+  ): readonly NodeRepoMapping[] {
+    for (const agent of agents) {
+      if (!AGENT_KINDS.includes(agent.kind)) throw invalidInput(`Unsupported agent kind: ${String(agent.kind)}.`);
+    }
+    // The machine offers these so the console can present a list instead of a
+    // path field. They are a convenience, not a permission: a mapping is still
+    // only what a person saved, and a path outside this list can still be typed.
+    const candidates = repoCandidates
+      .filter((candidate) => candidate.path.startsWith("/"))
+      .slice(0, MAX_REPO_CANDIDATES)
+      .map((candidate) => ({
+        path: candidate.path.slice(0, 500),
+        name: candidate.name.slice(0, 200),
+        ...(candidate.lastUsedAt ? { lastUsedAt: candidate.lastUsedAt } : {}),
+      }));
+    const now = new Date().toISOString();
+    this.database.connection
+      .prepare("UPDATE nodes SET agents_json = ?, repo_candidates_json = ?, last_seen_at = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(agents), JSON.stringify(candidates), now, now, nodeId);
+    return this.listRepos(nodeId);
+  }
+
+  listNodes(accountId: string): readonly NodeSnapshot[] {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT id, account_id, name, hostname, agents_json, repo_candidates_json,
+                last_seen_at, revoked_at, created_at
+         FROM nodes WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`,
+      )
+      .all(accountId) as unknown as NodeRow[];
+    return rows.map((row) => this.mapNode(row));
+  }
+
+  getNode(accountId: string, nodeId: string): NodeSnapshot {
+    const row = this.database.connection
+      .prepare(
+        `SELECT id, account_id, name, hostname, agents_json, repo_candidates_json,
+                last_seen_at, revoked_at, created_at
+         FROM nodes WHERE id = ? AND account_id = ?`,
+      )
+      .get(nodeId, accountId) as unknown as NodeRow | undefined;
+    if (!row) throw notFound("Node");
+    return this.mapNode(row);
+  }
+
+  renameNode(accountId: string, nodeId: string, name: string): NodeSnapshot {
+    this.getNode(accountId, nodeId);
+    this.database.connection
+      .prepare("UPDATE nodes SET name = ?, updated_at = ? WHERE id = ? AND account_id = ?")
+      .run(text(name, "Node name", 100), new Date().toISOString(), nodeId, accountId);
+    return this.getNode(accountId, nodeId);
+  }
+
+  revokeNode(accountId: string, nodeId: string): void {
+    this.getNode(accountId, nodeId);
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database.connection
+        .prepare("UPDATE nodes SET revoked_at = ?, updated_at = ? WHERE id = ? AND revoked_at IS NULL")
+        .run(now, now, nodeId);
+      // Work already handed over cannot be recalled, but work still queued for a
+      // machine that will never pull again would sit as "queued" forever and read
+      // as "about to start".
+      this.database.connection
+        .prepare("UPDATE dispatches SET status = 'cancelled', completed_at = ?, error = ? WHERE node_id = ? AND status = 'queued'")
+        .run(now, "节点已撤销", nodeId);
+    });
+  }
+
+  replaceRepos(accountId: string, nodeId: string, repos: readonly { productId: string; repoPath: string }[]): readonly NodeRepoMapping[] {
+    this.getNode(accountId, nodeId);
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database.connection.prepare("DELETE FROM node_product_repos WHERE node_id = ?").run(nodeId);
+      const insert = this.database.connection.prepare(
+        `INSERT INTO node_product_repos (id, node_id, product_id, repo_path, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      for (const repo of repos) {
+        const product = this.database.connection
+          .prepare("SELECT id FROM products WHERE id = ?")
+          .get(repo.productId) as unknown as { id: string } | undefined;
+        if (!product) throw notFound("Product");
+        const repoPath = text(repo.repoPath, "Repository path", 500);
+        // The machine checks that the path is a git checkout it can use; the
+        // server only checks the shape, because it cannot see that disk.
+        if (!repoPath.startsWith("/")) throw invalidInput("Repository path must be absolute.");
+        insert.run(randomUUID(), nodeId, repo.productId, repoPath, now, now);
+      }
+    });
+    return this.listRepos(nodeId);
+  }
+
+  listRepos(nodeId: string): readonly NodeRepoMapping[] {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT r.product_id, r.repo_path, p.key_prefix
+         FROM node_product_repos r JOIN products p ON p.id = r.product_id
+         WHERE r.node_id = ? ORDER BY p.key_prefix`,
+      )
+      .all(nodeId) as unknown as Array<{ product_id: string; repo_path: string; key_prefix: string }>;
+    return rows.map((row) => ({ productId: row.product_id, productKey: row.key_prefix, repoPath: row.repo_path }));
+  }
+
+  /**
+   * Queue one batch for one machine.
+   *
+   * Everything that can be checked before the hand-off is checked here, because
+   * a dispatch that fails on the machine fails out of sight: the console would
+   * show work as sent while nothing ever starts. Hence ready-only items, one
+   * repository per batch (one session cannot span two checkouts), an online
+   * machine, and an agent that machine actually reported.
+   */
+  createDispatch(input: {
+    accountId: string;
+    nodeId: string;
+    agentKind: AgentKind;
+    mode: string;
+    itemKeys: readonly string[];
+  }): DispatchSnapshot {
+    if (!AGENT_KINDS.includes(input.agentKind)) throw invalidInput("Unsupported agent kind.");
+    if (!isSupportedDispatchMode(input.agentKind, input.mode)) {
+      throw invalidInput(`Unsupported mode for this agent: ${input.mode}.`);
+    }
+    if (input.itemKeys.length === 0) throw invalidInput("Select at least one work item.");
+    if (input.itemKeys.length > 20) throw invalidInput("A dispatch can carry at most 20 work items.");
+
+    return this.database.transaction(() => {
+      const node = this.getNode(input.accountId, input.nodeId);
+      if (node.revokedAt) throw conflict("node_revoked", "This node was revoked.");
+      if (!node.online) throw conflict("node_offline", "This node is not currently connected.");
+      if (!node.agents.some((agent) => agent.kind === input.agentKind)) {
+        throw conflict("agent_unavailable", "This node did not report that agent.");
+      }
+
+      const keys = [...new Set(input.itemKeys.map((key) => key.trim().toUpperCase()))];
+      const items = keys.map((key) => {
+        const row = this.database.connection
+          .prepare("SELECT id, item_key, status, product_id FROM work_items WHERE item_key = ?")
+          .get(key) as unknown as { id: string; item_key: string; status: string; product_id: string } | undefined;
+        if (!row) throw notFound(`Work item ${key}`);
+        if (row.status !== "ready") {
+          throw conflict("item_not_dispatchable", `${row.item_key} is not ready, so it cannot be dispatched.`);
+        }
+        return row;
+      });
+
+      const repos = this.listRepos(node.id);
+      const repoPaths = new Set<string>();
+      for (const item of items) {
+        const repo = repos.find((entry) => entry.productId === item.product_id);
+        if (!repo) throw conflict("repo_unmapped", `${item.item_key}'s product has no repository on this node.`);
+        repoPaths.add(repo.repoPath);
+      }
+      if (repoPaths.size > 1) {
+        throw conflict("repo_conflict", "One session works in one checkout; these items span several repositories.");
+      }
+      const repoPath = [...repoPaths][0]!;
+
+      const now = new Date().toISOString();
+      const dispatchId = randomUUID();
+      this.database.connection
+        .prepare(
+          `INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+           VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)`,
+        )
+        .run(dispatchId, input.accountId, node.id, input.agentKind, input.mode, repoPath, now);
+      const insertItem = this.database.connection.prepare(
+        "INSERT INTO dispatch_items (dispatch_id, item_id, position) VALUES (?, ?, ?)",
+      );
+      items.forEach((item, index) => insertItem.run(dispatchId, item.id, index));
+      const created = this.getDispatch(input.accountId, dispatchId);
+      // The machine is usually already waiting on a poll, so it picks this up in
+      // well under a second rather than on its next scheduled ask.
+      this.wake(node.id);
+      return created;
+    });
+  }
+
+  /**
+   * Hand the oldest queued dispatch to the machine asking for it. Marking it
+   * delivered inside the same transaction is what keeps two polls from starting
+   * the same batch twice.
+   */
+  claimNextDispatch(nodeId: string): DispatchJob | undefined {
+    return this.database.transaction(() => {
+      const row = this.database.connection
+        .prepare(
+          `SELECT id, agent_kind, mode, repo_path FROM dispatches
+           WHERE node_id = ? AND status = 'queued' ORDER BY created_at LIMIT 1`,
+        )
+        .get(nodeId) as unknown as { id: string; agent_kind: string; mode: string; repo_path: string } | undefined;
+      if (!row) return undefined;
+      const now = new Date().toISOString();
+      this.database.connection
+        .prepare("UPDATE dispatches SET status = 'delivered', delivered_at = ? WHERE id = ?")
+        .run(now, row.id);
+      return {
+        dispatchId: row.id,
+        itemKeys: this.listDispatchItemKeys(row.id),
+        repoPath: row.repo_path,
+        agentKind: row.agent_kind as AgentKind,
+        mode: row.mode,
+      };
+    });
+  }
+
+  recordDispatchResult(input: {
+    nodeId: string;
+    dispatchId: string;
+    status: "launched" | "failed";
+    sessionName?: string;
+    sessionUrl?: string;
+    error?: string;
+  }): void {
+    const row = this.database.connection
+      .prepare("SELECT id, status FROM dispatches WHERE id = ? AND node_id = ?")
+      .get(input.dispatchId, input.nodeId) as unknown as { id: string; status: string } | undefined;
+    if (!row) throw notFound("Dispatch");
+    const sessionUrl = input.sessionUrl?.trim();
+    // The URL is shown to a person as a link, so only accept one that a click
+    // can safely follow.
+    if (sessionUrl && !sessionUrl.startsWith("https://")) throw invalidInput("Session URL must be an https:// address.");
+    this.database.connection
+      .prepare("UPDATE dispatches SET status = ?, session_name = ?, session_url = ?, error = ?, completed_at = ? WHERE id = ?")
+      .run(
+        input.status,
+        input.sessionName?.trim() || null,
+        sessionUrl || null,
+        input.error?.slice(0, 2_000) || null,
+        new Date().toISOString(),
+        input.dispatchId,
+      );
+  }
+
+  getDispatch(accountId: string, dispatchId: string): DispatchSnapshot {
+    const row = this.database.connection
+      .prepare(
+        `SELECT d.id, d.node_id, n.name AS node_name, d.agent_kind, d.mode, d.status,
+                d.session_name, d.session_url, d.error, d.created_at, d.delivered_at, d.completed_at
+         FROM dispatches d JOIN nodes n ON n.id = d.node_id
+         WHERE d.id = ? AND d.account_id = ?`,
+      )
+      .get(dispatchId, accountId) as unknown as DispatchRow | undefined;
+    if (!row) throw notFound("Dispatch");
+    return this.mapDispatch(row);
+  }
+
+  listDispatchesForItem(accountId: string, itemKey: string): readonly DispatchSnapshot[] {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT d.id, d.node_id, n.name AS node_name, d.agent_kind, d.mode, d.status,
+                d.session_name, d.session_url, d.error, d.created_at, d.delivered_at, d.completed_at
+         FROM dispatches d
+         JOIN nodes n ON n.id = d.node_id
+         JOIN dispatch_items di ON di.dispatch_id = d.id
+         JOIN work_items w ON w.id = di.item_id
+         WHERE w.item_key = ? AND d.account_id = ?
+         ORDER BY d.created_at DESC`,
+      )
+      .all(itemKey.toUpperCase(), accountId) as unknown as DispatchRow[];
+    return rows.map((row) => this.mapDispatch(row));
+  }
+
+  listDispatchItemIds(dispatchId: string): readonly string[] {
+    const rows = this.database.connection
+      .prepare("SELECT item_id FROM dispatch_items WHERE dispatch_id = ? ORDER BY position")
+      .all(dispatchId) as unknown as Array<{ item_id: string }>;
+    return rows.map((row) => row.item_id);
+  }
+
+  private listDispatchItemKeys(dispatchId: string): readonly string[] {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT w.item_key FROM dispatch_items di JOIN work_items w ON w.id = di.item_id
+         WHERE di.dispatch_id = ? ORDER BY di.position`,
+      )
+      .all(dispatchId) as unknown as Array<{ item_key: string }>;
+    return rows.map((row) => row.item_key);
+  }
+
+  private mapNode(row: NodeRow): NodeSnapshot {
+    return {
+      id: row.id,
+      name: row.name,
+      ...(row.hostname ? { hostname: row.hostname } : {}),
+      agents: JSON.parse(row.agents_json) as NodeAgentReport[],
+      repos: this.listRepos(row.id),
+      repoCandidates: row.repo_candidates_json
+        ? JSON.parse(row.repo_candidates_json) as RepoCandidate[]
+        : [],
+      ...(row.last_seen_at ? { lastSeenAt: row.last_seen_at } : {}),
+      online: !row.revoked_at && isNodeOnline(row.last_seen_at ?? undefined),
+      ...(row.revoked_at ? { revokedAt: row.revoked_at } : {}),
+      createdAt: row.created_at,
+    };
+  }
+
+  private mapDispatch(row: DispatchRow): DispatchSnapshot {
+    return {
+      id: row.id,
+      nodeId: row.node_id,
+      nodeName: row.node_name,
+      agentKind: row.agent_kind as AgentKind,
+      mode: row.mode,
+      status: row.status,
+      itemKeys: this.listDispatchItemKeys(row.id),
+      ...(row.session_name ? { sessionName: row.session_name } : {}),
+      ...(row.session_url ? { sessionUrl: row.session_url } : {}),
+      ...(row.error ? { error: row.error } : {}),
+      createdAt: row.created_at,
+      ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}),
+      ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+    };
+  }
+}
