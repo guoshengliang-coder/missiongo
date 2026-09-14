@@ -42,7 +42,7 @@ Android 反馈 SDK ───────┘
 
 Codex / Claude Code / 其他客户端 ── OAuth + MCP（读取 + 评论）
 
-macOS 客户端（执行机器）── OAuth 登录 + 长轮询拉取派单 ── 本机启动 Claude Code 会话
+macOS 客户端（执行机器）── OAuth 登录 + 长轮询拉取派单 ── 本机启动 Claude Code / Codex 会话
 ```
 
 | 目录 | 职责 |

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 //
 // Fail the build when the macOS client and the server disagree about which
-// Claude Code modes a dispatch may use.
+// modes a dispatch may use, for each agent the client can start.
 //
-// The list exists twice, in two languages: the server refuses a mode outside
-// CLAUDE_CODE_MODES, and the client refuses to start a session in a mode outside
+// Each list exists twice, in two languages: the server refuses a mode outside
+// CLAUDE_CODE_MODES / CODEX_MODES, and the client refuses to start a session in a mode outside
 // its own copy before the mode reaches argv. If they drift, the console offers a
 // mode that every Mac then rejects, or — worse — a mode is added to the client
 // that the server never agreed to offer. Swift cannot import the TypeScript, so
@@ -26,21 +26,32 @@ const listIn = (source, pattern, label) => {
   return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
 };
 
-const serverModes = listIn(
-  read("packages/domain/src/dispatch.ts"),
-  /CLAUDE_CODE_MODES\s*=\s*\[([^\]]*)\]/,
-  "CLAUDE_CODE_MODES in packages/domain/src/dispatch.ts",
-);
-const clientModes = listIn(
-  read("apps/macos/Sources/MissionGoNodeCore/ClaudeCodeModes.swift"),
-  /allowed[^=]*=\s*\[([^\]]*)\]/,
-  "ClaudeCodeModes.allowed in apps/macos/Sources/MissionGoNodeCore/ClaudeCodeModes.swift",
-);
+// [label, TypeScript constant, Swift file declaring `allowed`]
+const pairs = [
+  ["Claude Code", "CLAUDE_CODE_MODES", "ClaudeCodeModes.swift"],
+  ["Codex", "CODEX_MODES", "CodexModes.swift"],
+];
 
-if (serverModes.join(",") !== clientModes.join(",")) {
-  console.error("The macOS client and the server allow different Claude Code modes:");
-  console.error(`  server (packages/domain/src/dispatch.ts): ${serverModes.join(", ")}`);
-  console.error(`  client (apps/macos/.../ClaudeCodeModes.swift): ${clientModes.join(", ")}`);
-  process.exit(1);
+const domain = read("packages/domain/src/dispatch.ts");
+let failed = false;
+for (const [agent, constant, swiftFile] of pairs) {
+  const serverModes = listIn(
+    domain,
+    new RegExp(`${constant}\\s*=\\s*\\[([^\\]]*)\\]`),
+    `${constant} in packages/domain/src/dispatch.ts`,
+  );
+  const clientModes = listIn(
+    read(`apps/macos/Sources/MissionGoNodeCore/${swiftFile}`),
+    /allowed[^=]*=\s*\[([^\]]*)\]/,
+    `allowed in apps/macos/Sources/MissionGoNodeCore/${swiftFile}`,
+  );
+  if (serverModes.join(",") !== clientModes.join(",")) {
+    console.error(`The macOS client and the server allow different ${agent} modes:`);
+    console.error(`  server (packages/domain/src/dispatch.ts ${constant}): ${serverModes.join(", ")}`);
+    console.error(`  client (apps/macos/.../${swiftFile}): ${clientModes.join(", ")}`);
+    failed = true;
+  } else {
+    console.log(`macOS client and server agree on ${agent} modes: ${serverModes.join(", ")}`);
+  }
 }
-console.log(`macOS client and server agree on Claude Code modes: ${serverModes.join(", ")}`);
+if (failed) process.exit(1);

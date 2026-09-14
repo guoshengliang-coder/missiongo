@@ -214,7 +214,7 @@ final class SessionLauncherProcessTests: XCTestCase {
         XCTAssertEqual(result.sessionUrl, "https://claude.ai/code/session_TEST-123")
         XCTAssertEqual(result.logPath, "\(script.root)/logs/d-1.log")
 
-        let log = try String(contentsOfFile: result.logPath)
+        let log = try String(contentsOfFile: try XCTUnwrap(result.logPath))
         // The temporary directory sits behind the /var → /private/var symlink.
         let resolvedRepo = String(cString: realpath(repoPath, nil))
         XCTAssertTrue(log.contains("cwd=\(repoPath)\n") || log.contains("cwd=\(resolvedRepo)\n"), log)

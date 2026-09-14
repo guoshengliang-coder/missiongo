@@ -7,8 +7,8 @@ import Foundation
 /// protocol (docs §20): a mistaken or compromised server can pick which items to
 /// work on, but it cannot dictate instructions to an agent holding a checkout.
 ///
-/// The template must stay byte-for-byte identical to `apps/node/src/prompt.ts`:
-/// the same session started from either client has to be told the same thing.
+/// Claude Code and Codex are told exactly the same thing, including the plan
+/// paragraph: which agent runs a batch must not change what it is asked to do.
 public enum LaunchPrompt {
     public enum ValidationError: Error, Equatable, LocalizedError {
         case emptyBatch
@@ -44,7 +44,11 @@ public enum LaunchPrompt {
     /// validated rather than escaped: these values also end up in the session
     /// name and in the process argv, so anything that is not a key has no
     /// legitimate reading and is rejected before a session starts.
-    public static func build(itemKeys: [String], dispatchId: String) throws -> String {
+    ///
+    /// In plan mode a paragraph is added asking for a plan, written back as a
+    /// comment, and a stop until the person approves. For Codex that paragraph is
+    /// the whole of plan mode; Claude Code is also started in its own plan mode.
+    public static func build(itemKeys: [String], dispatchId: String, mode: String? = nil) throws -> String {
         if itemKeys.isEmpty {
             throw ValidationError.emptyBatch
         }
@@ -55,12 +59,20 @@ public enum LaunchPrompt {
             throw ValidationError.invalidDispatchId(dispatchId)
         }
 
-        return [
+        var lines = [
             "使用 missiongo skill 处理这些工作条目：\(itemKeys.joined(separator: "、"))。",
             "",
             "本会话由 MissionGo 派单 \(dispatchId) 发起，上面列出的编号等同于用户给出的范围。",
             "整批条目走一个分支和一个 PR，之后按 Skill 的规则推进条目状态。",
             "会话起在仓库主目录，动手改代码前先按仓库规则建独立 worktree，不要直接在主工作区修改。",
-        ].joined(separator: "\n")
+        ]
+        if mode == "plan" {
+            lines += [
+                "",
+                "本次派单是计划模式：先完整读取条目，给出处理计划，把计划写成结构化评论回写到各条条目，然后在本会话里停下，等用户批准。",
+                "用户批准之前不领取条目、不建分支、不改代码。",
+            ]
+        }
+        return lines.joined(separator: "\n")
     }
 }

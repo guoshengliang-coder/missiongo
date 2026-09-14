@@ -9,7 +9,7 @@ struct SignedInView: View {
         VStack(alignment: .leading, spacing: 12) {
             HeaderView(credential: credential)
             Divider()
-            ClaudeCodeRow()
+            AgentsSection()
             Divider()
             RepositoriesSection()
             Divider()
@@ -140,25 +140,69 @@ private struct MachineNameRow: View {
     }
 }
 
-private struct ClaudeCodeRow: View {
+private struct AgentsSection: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AgentRow(
+                title: "Claude Code",
+                summary: model.claude.summary,
+                checking: model.claude == .checking,
+                warn: !model.claude.isReady && model.claude != .checking,
+                hint: model.claude.fixHint,
+                command: model.claude.fixCommand
+            )
+            AgentRow(
+                title: "Codex",
+                summary: model.codex.summary,
+                checking: model.codex == .checking,
+                warn: model.codex.needsAttention,
+                hint: model.codex.fixHint,
+                command: model.codex.fixCommand(serverUrl: model.credential?.serverUrl)
+            )
+            if let skill = model.skillSyncSummary {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("missiongo Skill")
+                        .font(.caption)
+                    Spacer()
+                    Text(skill)
+                        .font(.caption)
+                        .foregroundColor(model.skillSyncFailed ? .orange : .secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.trailing)
+                        .help(skill)
+                }
+            }
+        }
+    }
+}
+
+private struct AgentRow: View {
     @EnvironmentObject private var model: AppModel
     @State private var copied = false
+    let title: String
+    let summary: String
+    let checking: Bool
+    let warn: Bool
+    let hint: String?
+    let command: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("Claude Code")
+                Text(title)
                 Spacer()
-                if model.claude == .checking {
+                if checking {
                     ProgressView().controlSize(.mini)
                 }
-                Text(model.claude.summary)
-                    .foregroundColor(model.claude.isReady || model.claude == .checking ? .secondary : .orange)
+                Text(summary)
+                    .foregroundColor(warn ? .orange : .secondary)
             }
-            if let hint = model.claude.fixHint {
+            if let hint {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     WrappingCaption(text: hint)
-                    if let command = model.claude.fixCommand {
+                    if let command {
                         Button {
                             model.copyToClipboard(command)
                             copied = true

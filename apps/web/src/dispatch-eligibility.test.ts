@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentLabelKey,
+  dispatchModeHelpKey,
+  dispatchModeLabelKey,
   dispatchProblemKey,
   isDispatchable,
   nodeIneligibility,
   selectionScope,
+  sessionLinkLabelKey,
   toggleItemSelection,
 } from "./dispatch-eligibility";
 import type { DispatchNode, WorkItemStatus } from "./types";
@@ -172,5 +175,24 @@ describe("wording for values that come from the server", () => {
   it("falls back rather than crashing on an agent kind it does not know", () => {
     expect(agentLabelKey("claude_code")).toBe("agentClaudeCode");
     expect(agentLabelKey("gemini")).toBeNull();
+  });
+
+  it("labels every Codex mode, and nothing that only looks like a mode", () => {
+    for (const mode of ["plan", "default", "auto"]) expect(dispatchModeLabelKey(mode)).not.toBeNull();
+    expect(dispatchModeLabelKey("never")).toBeNull();
+    // An inherited property name is not a mode.
+    expect(dispatchModeLabelKey("toString")).toBeNull();
+  });
+
+  it("does not promise a web page for a Codex thread", () => {
+    expect(sessionLinkLabelKey("codex://threads/01a09f35-d6fa-7eb2-9d90-1352cf2fb661")).toBe("dispatchOpenInCodex");
+    expect(sessionLinkLabelKey("https://claude.ai/code/session_1")).toBe("dispatchOpenSession");
+  });
+
+  it("warns that Codex plan mode rests on the prompt alone", () => {
+    expect(dispatchModeHelpKey("codex", "plan")).toBe("dispatchCodexPlanHelp");
+    expect(dispatchModeHelpKey("claude_code", "plan")).toBe("dispatchPlanHelp");
+    expect(dispatchModeHelpKey("codex", "auto")).toBe("dispatchCodexAutoHelp");
+    expect(dispatchModeHelpKey("claude_code", "default")).toBeNull();
   });
 });

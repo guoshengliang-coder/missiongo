@@ -39,9 +39,11 @@ public struct LaunchResult: Equatable, Sendable {
     /// Absent when the session started but never printed its URL within the
     /// launch window; the log is then the only way to find the session.
     public let sessionUrl: String?
-    public let logPath: String
+    /// Absent for an agent whose session is not a child process of this app
+    /// (Codex runs its threads inside the ChatGPT app).
+    public let logPath: String?
 
-    public init(sessionName: String, sessionUrl: String?, logPath: String) {
+    public init(sessionName: String, sessionUrl: String?, logPath: String?) {
         self.sessionName = sessionName
         self.sessionUrl = sessionUrl
         self.logPath = logPath
@@ -220,7 +222,7 @@ public struct SessionLauncher: AgentAdapter {
             throw LaunchError(reason)
         }
 
-        let prompt = try LaunchPrompt.build(itemKeys: job.itemKeys, dispatchId: job.dispatchId)
+        let prompt = try LaunchPrompt.build(itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode)
         let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys)
         let command = try SessionLauncher.launchCommand(sessionName: sessionName, mode: job.mode, prompt: prompt)
 

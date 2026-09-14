@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
-import { AGENT_KINDS, isNodeOnline, isSupportedDispatchMode, type AgentKind } from "@missiongo/domain";
+import { AGENT_KINDS, isAcceptedSessionUrl, isNodeOnline, isSupportedDispatchMode, type AgentKind } from "@missiongo/domain";
 
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
@@ -650,8 +650,10 @@ export class DispatchStore {
     if (!row) throw notFound("Dispatch");
     const sessionUrl = input.sessionUrl?.trim();
     // The URL is shown to a person as a link, so only accept one that a click
-    // can safely follow.
-    if (sessionUrl && !sessionUrl.startsWith("https://")) throw invalidInput("Session URL must be an https:// address.");
+    // can safely follow: an https address, or a bare Codex thread link.
+    if (sessionUrl && !isAcceptedSessionUrl(sessionUrl)) {
+      throw invalidInput("Session URL must be an https:// address or a codex://threads/<id> link.");
+    }
     this.database.connection
       .prepare("UPDATE dispatches SET status = ?, session_name = ?, session_url = ?, error = ?, completed_at = ? WHERE id = ?")
       .run(

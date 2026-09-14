@@ -39,7 +39,8 @@ public enum Preflight {
 
     private static let versionPattern = try! NSRegularExpression(pattern: "[0-9]+\\.[0-9]+\\.[0-9]+(?:[A-Za-z0-9_.-]*)?")
 
-    /// `claude --version` prints something like `2.1.232 (Claude Code)`.
+    /// `claude --version` prints something like `2.1.232 (Claude Code)`, and
+    /// `codex --version` `codex-cli 0.154.0`; the first dotted version wins.
     public static func parseClaudeVersion(_ raw: String) -> String? {
         let range = NSRange(raw.startIndex..<raw.endIndex, in: raw)
         guard let match = versionPattern.firstMatch(in: raw, range: range),
@@ -85,6 +86,22 @@ public enum Preflight {
         return false
     }
 
+    /// Why a mapped path cannot be worked in, or nil. Shared by every agent.
+    public static func repositoryProblem(_ repoPath: String) -> String? {
+        if !Paths.isAbsolute(repoPath) {
+            return "仓库路径必须是绝对路径：\(repoPath)"
+        }
+        if !Paths.isDirectory(repoPath) {
+            return "仓库目录不存在：\(repoPath)"
+        }
+        // A worktree records `.git` as a file, a normal clone as a directory; both
+        // are fine, only the absence matters.
+        if !Paths.exists(Paths.join(repoPath, ".git")) {
+            return "目录不是 git 仓库：\(repoPath)"
+        }
+        return nil
+    }
+
     /// Reasons are written for the person reading them, not for code: each one
     /// says what is missing and what to do about it, because the operator is the
     /// only one who can fix a login or a trust dialog.
@@ -104,16 +121,8 @@ public enum Preflight {
             return .failed(reason: "Claude Code 未登录（authMethod=\(auth.authMethod)）：在本机运行一次 claude 完成登录后再派单。")
         }
 
-        if !Paths.isAbsolute(repoPath) {
-            return .failed(reason: "仓库路径必须是绝对路径：\(repoPath)")
-        }
-        if !Paths.isDirectory(repoPath) {
-            return .failed(reason: "仓库目录不存在：\(repoPath)")
-        }
-        // A worktree records `.git` as a file, a normal clone as a directory; both
-        // are fine, only the absence matters.
-        if !Paths.exists(Paths.join(repoPath, ".git")) {
-            return .failed(reason: "目录不是 git 仓库：\(repoPath)")
+        if let problem = repositoryProblem(repoPath) {
+            return .failed(reason: problem)
         }
 
         guard let claudeJson = ClaudeJson.read(home: home),
