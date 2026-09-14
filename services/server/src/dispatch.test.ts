@@ -898,6 +898,72 @@ describe("Claiming a dispatch on the node", () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(100);
   });
 
+  it("runs a Codex dispatch and keeps its thread link", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "codex");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+
+    // A Claude Code mode is not offered to Codex.
+    const claudeOnly = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "codex", mode: "acceptEdits", itemKeys: [mission.itemKey] },
+    });
+    expect(claudeOnly.statusCode).toBe(400);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    expect(created.statusCode).toBe(201);
+    const dispatchId = created.json<{ id: string }>().id;
+
+    const claim = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(claim.json()).toMatchObject({ dispatchId, agentKind: "codex", mode: "plan" });
+
+    const link = "codex://threads/01a09f35-d6fa-7eb2-9d90-1352cf2fb661";
+    const result = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionUrl: link },
+    });
+    expect(result.statusCode).toBe(204);
+
+    const dispatches = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/${mission.itemKey}/dispatches`,
+      headers: { cookie },
+    });
+    expect(dispatches.json<{ dispatches: Array<{ sessionUrl: string }> }>().dispatches[0])
+      .toMatchObject({ sessionUrl: link });
+  });
+
+  it("refuses a Codex link that carries more than a thread id", async () => {
+    const { app, node, dispatchId } = await queuedDispatch();
+    const result = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionUrl: "codex://threads/abc?prompt=rm" },
+    });
+    expect(result.statusCode).toBe(400);
+  });
+
   it("refuses a session URL that is not an https link", async () => {
     const { app, node, dispatchId } = await queuedDispatch();
     const result = await app.inject({

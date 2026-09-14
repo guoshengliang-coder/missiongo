@@ -139,6 +139,7 @@ import {
   readListPaneWidth,
 } from "./pane-layout";
 import { productBadgeColor } from "./product-color";
+import { SessionLink } from "./session-link";
 import { registerMissionGoWebMcp } from "./webmcp";
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
@@ -2267,11 +2268,7 @@ function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: strin
         {dispatch.sessionName ? ` · ${dispatch.sessionName}` : ""}
       </small>
       {batch.length > 0 && <small className="dispatch-row-detail">{t("dispatchBatch", { keys: batch.join("、") })}</small>}
-      {dispatch.sessionUrl && (
-        <p className="dispatch-session-link">
-          <a href={dispatch.sessionUrl} target="_blank" rel="noopener noreferrer">{t("dispatchOpenSession")}</a>
-        </p>
-      )}
+      {dispatch.sessionUrl && <SessionLink url={dispatch.sessionUrl} />}
       {dispatch.error && <InlineError message={dispatch.error} />}
     </article>
   );

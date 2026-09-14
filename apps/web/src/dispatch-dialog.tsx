@@ -18,12 +18,14 @@ import {
   NODE_INELIGIBILITY_KEYS,
   SUPPORTED_AGENT_KINDS,
   agentLabelKey,
+  dispatchModeHelpKey,
   dispatchModeLabelKey,
   dispatchProblemKey,
   dispatchStatusLabelKey,
   nodeIneligibility,
   type NodeIneligibility,
 } from "./dispatch-eligibility";
+import { SessionLink } from "./session-link";
 import { useI18n } from "./i18n";
 import type { Dispatch, DispatchNode, Product, WorkItem } from "./types";
 
@@ -170,11 +172,7 @@ export function DispatchDialog({
           <span><small>{t("dispatchItemsLabel")}</small>{created.itemKeys.join("、")}</span>
           {created.sessionName && <span><small>{t("dispatchSessionName")}</small>{created.sessionName}</span>}
         </div>
-        {created.sessionUrl && (
-          <p className="dispatch-session-link">
-            <a href={created.sessionUrl} target="_blank" rel="noopener noreferrer">{t("dispatchOpenSession")}</a>
-          </p>
-        )}
+        {created.sessionUrl && <SessionLink url={created.sessionUrl} />}
         {created.error && <div className="inline-error"><CirclePause size={16} /><span>{created.error}</span></div>}
         <p className="dispatch-note">{t("dispatchSessionPending")}</p>
         <p className="dispatch-note">{t("dispatchDoesNotClaim")}</p>
@@ -187,6 +185,7 @@ export function DispatchDialog({
 
   const selectedReason = nodeId ? ineligibility.get(nodeId) ?? null : null;
   const modes = DISPATCH_MODES_BY_AGENT[agentKind];
+  const modeHelp = dispatchModeHelpKey(agentKind, mode);
   const blocked = !nodeId || Boolean(selectedReason) || itemKeys.length === 0 || (conflicts.length > 0 && !redispatchConfirmed);
 
   return (
@@ -286,7 +285,7 @@ export function DispatchDialog({
           </select>
         </label>
       </div>
-      {mode === DEFAULT_MODE && <p className="dispatch-note">{t("dispatchPlanHelp")}</p>}
+      {modeHelp && <p className="dispatch-note">{t(modeHelp)}</p>}
       <p className="dispatch-note">{t("dispatchDoesNotClaim")}</p>
 
       {mutation.isError && (

@@ -218,6 +218,85 @@ public enum ClaudeCodeStatus: Equatable, Sendable {
     }
 }
 
+/// The Codex row in the menu. Codex is optional, so "not installed" is a plain
+/// fact rather than a warning; everything past that is something a Codex
+/// dispatch would fail on, with the fix.
+public enum CodexStatus: Equatable, Sendable {
+    case checking
+    case notInstalled
+    case notLoggedIn(version: String)
+    case unreadable(version: String)
+    /// Installed and logged in, but the ChatGPT app is not running.
+    case appNotRunning(version: String)
+    case mcpMissing(version: String)
+    case mcpNotLoggedIn(version: String)
+    case ready(version: String)
+
+    public static func check(environment: ShellEnvironment, location: CodexLocation, run: CommandRunner) async -> CodexStatus {
+        guard let binary = CodexLocation.binary(environment: environment),
+              let version = await CodexPreflight.version(binary: binary, run: run)
+        else { return .notInstalled }
+        switch await CodexPreflight.isLoggedIn(binary: binary, run: run) {
+        case true?: break
+        case false?: return .notLoggedIn(version: version)
+        case nil: return .unreadable(version: version)
+        }
+        guard CodexLocation.isSocket(location.controlSocketPath) else { return .appNotRunning(version: version) }
+        switch await CodexPreflight.mcpState(binary: binary, run: run) {
+        case .ready: return .ready(version: version)
+        case .missing, .disabled: return .mcpMissing(version: version)
+        case .notLoggedIn: return .mcpNotLoggedIn(version: version)
+        case .unreadable: return .unreadable(version: version)
+        }
+    }
+
+    public var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+
+    /// Worth drawing attention to: installed, but a dispatch would fail.
+    public var needsAttention: Bool {
+        switch self {
+        case .checking, .notInstalled, .ready: return false
+        default: return true
+        }
+    }
+
+    public var summary: String {
+        switch self {
+        case .checking: return "检查中…"
+        case .notInstalled: return "未安装"
+        case .notLoggedIn: return "未登录"
+        case .unreadable: return "无法确认状态"
+        case .appNotRunning: return "ChatGPT App 未运行"
+        case .mcpMissing: return "未配置 missiongo MCP"
+        case .mcpNotLoggedIn: return "missiongo MCP 未登录"
+        case let .ready(version): return version
+        }
+    }
+
+    public var fixHint: String? {
+        switch self {
+        case .checking, .notInstalled, .ready: return nil
+        case .notLoggedIn: return "在 ChatGPT App 里登录，或在终端运行 codex login"
+        case .unreadable: return "在终端运行 codex login status 和 codex mcp list 查看"
+        case .appNotRunning: return "打开 ChatGPT App 并保持运行，Codex 派单要通过它启动会话"
+        case .mcpMissing: return "在终端添加 missiongo MCP 并登录"
+        case .mcpNotLoggedIn: return "在终端运行 codex mcp login missiongo"
+        }
+    }
+
+    public func fixCommand(serverUrl: String?) -> String? {
+        switch self {
+        case .notLoggedIn: return "codex login"
+        case .mcpMissing: return CodexPreflight.mcpSetupCommand(serverUrl: serverUrl)
+        case .mcpNotLoggedIn: return "codex mcp login missiongo"
+        case .checking, .notInstalled, .unreadable, .appNotRunning, .ready: return nil
+        }
+    }
+}
+
 // MARK: - Repository folders
 
 public enum RepoFolderVerdict: Equatable, Sendable {

@@ -37,6 +37,8 @@ final class AppModel: ObservableObject {
     }
 
     static let claudeRecheckInterval: TimeInterval = 5 * 60
+    /// The Skill changes with releases, not minutes; the first sync runs at login.
+    static let skillSyncInterval: TimeInterval = 60 * 60
     static let dispatchRefreshInterval: TimeInterval = 30
     /// Opening and closing the menu quickly should not start a process each time.
     static let openRefreshThrottle: TimeInterval = 10
@@ -59,6 +61,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var dispatches: [DispatchRecord] = []
     @Published private(set) var dispatchesError: String?
     @Published private(set) var claude: ClaudeCodeStatus = .checking
+    @Published private(set) var codex: CodexStatus = .checking
+    /// One line for the menu: the synced version, or why it failed.
+    @Published private(set) var skillSyncSummary: String?
+    @Published private(set) var skillSyncFailed = false
     @Published private(set) var launchAtLogin = LaunchAtLogin()
 
     // MARK: Private state
@@ -78,6 +84,7 @@ final class AppModel: ObservableObject {
     private var lastLoopRepos: [RepoMapping]?
     private var lastSeenLaunchId: String?
     private var claudeTimer: Task<Void, Never>?
+    private var skillTimer: Task<Void, Never>?
     private var menuTimer: Task<Void, Never>?
     private var lastClaudeCheck: Date?
     private var lastOpenRefresh: Date?
@@ -156,6 +163,7 @@ final class AppModel: ObservableObject {
         loginError = nil
         startLoop(credential)
         startClaudeTimer()
+        startSkillTimer(credential)
         refreshProfile()
         refreshDispatches()
         refreshCandidates()
@@ -165,6 +173,8 @@ final class AppModel: ObservableObject {
         stopLoop()
         claudeTimer?.cancel()
         claudeTimer = nil
+        skillTimer?.cancel()
+        skillTimer = nil
         do {
             // The installation id stays: logging in again finds the same machine
             // with its mappings and history.
@@ -185,6 +195,9 @@ final class AppModel: ObservableObject {
         dispatches = []
         dispatchesError = nil
         claude = .checking
+        codex = .checking
+        skillSyncSummary = nil
+        skillSyncFailed = false
         lastClaudeCheck = nil
     }
 
@@ -217,7 +230,10 @@ final class AppModel: ObservableObject {
         // A loop runs once; every login gets a fresh one.
         let loop = NodeLoop(
             api: APIClient(serverUrl: credential.serverUrl, token: credential.token),
-            adapters: [SessionLauncher(environment: environment)],
+            adapters: [
+                SessionLauncher(environment: environment),
+                CodexLauncher(environment: environment, serverUrl: credential.serverUrl),
+            ],
             fallbackNodeName: credential.name
         )
         loopStatesTask = Task { [weak self] in
@@ -394,8 +410,54 @@ final class AppModel: ObservableObject {
         if !force, let last = lastClaudeCheck, now.timeIntervalSince(last) < AppModel.openRefreshThrottle { return }
         lastClaudeCheck = now
         Task {
-            let status = await ClaudeCodeStatus.check(run: Commands.runner(environment: environment))
-            if credential != nil { claude = status }
+            let run = Commands.runner(environment: environment)
+            async let claudeStatus = ClaudeCodeStatus.check(run: run)
+            async let codexStatus = CodexStatus.check(
+                environment: environment, location: CodexLocation(environment: environment), run: run
+            )
+            let (claudeResult, codexResult) = await (claudeStatus, codexStatus)
+            if credential != nil {
+                claude = claudeResult
+                codex = codexResult
+            }
+        }
+    }
+
+    private func startSkillTimer(_ credential: NodeCredential) {
+        skillTimer?.cancel()
+        skillTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.syncSkill(credential)
+                try? await Task.sleep(nanoseconds: UInt64(AppModel.skillSyncInterval * 1_000_000_000))
+            }
+        }
+    }
+
+    /// Fetches the Skill from the server this Mac is logged in to and updates
+    /// the agents' copies. A failure is shown, never fatal: a session still
+    /// starts with whatever copy is installed.
+    private func syncSkill(_ credential: NodeCredential) async {
+        guard let environment else { return }
+        let targets = SkillSync.targets(
+            home: Paths.homeDirectory(), codexHome: CodexLocation(environment: environment).codexHome
+        )
+        do {
+            let outcome = try await SkillSync.run(serverUrl: credential.serverUrl, targets: targets)
+            guard self.credential == credential else { return }
+            if !outcome.updated.isEmpty {
+                NSLog("%@", "missiongo Skill 已更新到 \(outcome.version)：\(outcome.updated.joined(separator: "，"))")
+            }
+            if outcome.failures.isEmpty {
+                skillSyncSummary = outcome.version
+                skillSyncFailed = false
+            } else {
+                skillSyncSummary = "写入失败：\(outcome.failures.joined(separator: "；"))"
+                skillSyncFailed = true
+            }
+        } catch {
+            guard self.credential == credential else { return }
+            skillSyncSummary = error.localizedDescription
+            skillSyncFailed = true
         }
     }
 

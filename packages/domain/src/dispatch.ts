@@ -14,14 +14,47 @@ export type AgentKind = (typeof AGENT_KINDS)[number];
 export const CLAUDE_CODE_MODES = ["plan", "default", "acceptEdits", "auto"] as const;
 export type ClaudeCodeMode = (typeof CLAUDE_CODE_MODES)[number];
 
+// Codex has no permission modes of its own to pass through; each of these is a
+// fixed combination the node applies when it starts the thread. All three keep
+// the workspace-write sandbox and on-request approvals:
+// - plan: the launch prompt tells the session to write a plan and wait. Codex
+//   has no enforced plan mode, so this rests on the prompt alone.
+// - default: sandbox escapes are approved by a person in the Codex app.
+// - auto: sandbox escapes go to Codex's own auto-review instead of a person.
+// The approval policy `never` and the `danger-full-access` sandbox are
+// deliberately unreachable, for the same reason as bypassPermissions above.
+export const CODEX_MODES = ["plan", "default", "auto"] as const;
+export type CodexMode = (typeof CODEX_MODES)[number];
+
 export const DISPATCH_MODES_BY_AGENT: Readonly<Record<AgentKind, readonly string[]>> = {
   claude_code: CLAUDE_CODE_MODES,
-  codex: [],
+  codex: CODEX_MODES,
   hermes: [],
 };
 
 export function isSupportedDispatchMode(agentKind: AgentKind, mode: string): boolean {
   return DISPATCH_MODES_BY_AGENT[agentKind].includes(mode);
+}
+
+// A Codex thread has no web address; the Codex app opens it by id.
+const CODEX_THREAD_LINK = /^codex:\/\/threads\/[A-Za-z0-9-]{1,100}$/;
+
+/**
+ * Whether a session link reported by a node may be stored and shown as a link.
+ *
+ * The value comes from a machine, not a person, and ends up in an `href`, so
+ * only the two shapes a session actually has are accepted: an https address
+ * (Claude Code) or a Codex thread link with nothing but an id after the prefix.
+ * Anything else — `javascript:`, another custom scheme, a Codex link carrying a
+ * path or query — is refused.
+ */
+export function isAcceptedSessionUrl(value: string): boolean {
+  if (value.startsWith("https://")) return true;
+  return CODEX_THREAD_LINK.test(value);
+}
+
+export function isCodexThreadLink(value: string): boolean {
+  return CODEX_THREAD_LINK.test(value);
 }
 
 export const DISPATCH_STATUSES = ["queued", "delivered", "launched", "failed", "cancelled"] as const;

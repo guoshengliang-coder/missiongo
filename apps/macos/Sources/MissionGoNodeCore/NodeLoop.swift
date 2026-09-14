@@ -338,13 +338,13 @@ public final class NodeLoop: @unchecked Sendable {
                 // the console or the menu names the very next session.
                 nodeName: request.nodeName ?? fallbackNodeName
             ))
-            log("会话「\(launched.sessionName)」已启动，日志 \(launched.logPath)")
+            log("会话「\(launched.sessionName)」已启动" + (launched.logPath.map { "，日志 \($0)" } ?? ""))
             if let url = launched.sessionUrl {
                 log("会话地址 \(url)")
                 return (DispatchReport(status: .launched, sessionName: launched.sessionName, sessionUrl: url), launched.logPath)
             }
             // Started, but no URL in time. Still launched: the session exists and
-            // can be found in claude.ai/code by name, and reporting failed would be wrong.
+            // can be found by name, and reporting failed would be wrong.
             log("等待超时，日志里还没有出现会话地址。")
             return (DispatchReport(status: .launched, sessionName: launched.sessionName), launched.logPath)
         } catch {
