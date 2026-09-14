@@ -451,6 +451,8 @@ export class DispatchStore {
     agentKind: AgentKind;
     mode: string;
     itemKeys: readonly string[];
+    /** Dispatch again even though an earlier dispatch of these items was never claimed. */
+    force?: boolean;
   }): DispatchSnapshot {
     if (!AGENT_KINDS.includes(input.agentKind)) throw invalidInput("Unsupported agent kind.");
     if (!isSupportedDispatchMode(input.agentKind, input.mode)) {
@@ -479,6 +481,23 @@ export class DispatchStore {
         return row;
       });
 
+      // An item stays ready until a session claims it, and in plan mode that is
+      // only after a person approves the plan — minutes or hours after the
+      // dispatch. Without this, the same item could be sent again in that window,
+      // two sessions would plan it, and the one that lost the claim race had been
+      // told to carry on anyway. Refuse unless the person says the earlier
+      // session is gone.
+      const active = this.activeDispatchesFor(items.map((item) => item.id));
+      if (active.length > 0 && !input.force) {
+        const described = active
+          .map((entry) => `${entry.itemKey} → ${entry.nodeName}（${entry.status}）`)
+          .join("、");
+        throw conflict(
+          "item_already_dispatched",
+          `Already dispatched and not yet claimed: ${described}. Dispatch again only if that session is gone.`,
+        );
+      }
+
       const repos = this.listRepos(node.id);
       const repoPaths = new Set<string>();
       for (const item of items) {
@@ -492,6 +511,16 @@ export class DispatchStore {
       const repoPath = [...repoPaths][0]!;
 
       const now = new Date().toISOString();
+      // Dispatching again on purpose: an earlier dispatch the machine has not
+      // picked up yet would otherwise still start a second session the moment
+      // that machine comes back. One already delivered cannot be recalled.
+      if (input.force) {
+        const queuedIds = [...new Set(active.filter((entry) => entry.status === "queued").map((entry) => entry.dispatchId))];
+        const cancel = this.database.connection.prepare(
+          "UPDATE dispatches SET status = 'cancelled', completed_at = ?, error = ? WHERE id = ? AND status = 'queued'",
+        );
+        for (const queuedId of queuedIds) cancel.run(now, "已被重新派单取代", queuedId);
+      }
       const dispatchId = randomUUID();
       this.database.connection
         .prepare(
@@ -509,6 +538,71 @@ export class DispatchStore {
       this.wake(node.id);
       return created;
     });
+  }
+
+  /**
+   * Dispatches of these items that may still become, or already are, a session
+   * working on them: waiting for the machine, handed over, or launched. Callers
+   * only ask about items that are still ready, so a launched dispatch here is one
+   * whose session has not claimed the item.
+   */
+  private activeDispatchesFor(itemIds: readonly string[]): Array<{
+    dispatchId: string;
+    itemKey: string;
+    nodeName: string;
+    status: string;
+    createdAt: string;
+  }> {
+    if (itemIds.length === 0) return [];
+    const placeholders = itemIds.map(() => "?").join(", ");
+    return this.database.connection
+      .prepare(
+        `SELECT d.id AS dispatch_id, w.item_key, COALESCE(n.nickname, n.name) AS node_name, d.status, d.created_at
+         FROM dispatch_items di
+         JOIN dispatches d ON d.id = di.dispatch_id
+         JOIN nodes n ON n.id = d.node_id
+         JOIN work_items w ON w.id = di.item_id
+         WHERE di.item_id IN (${placeholders}) AND d.status IN ('queued', 'delivered', 'launched')
+         ORDER BY d.created_at DESC`,
+      )
+      .all(...itemIds)
+      .map((row) => {
+        const record = row as { dispatch_id: string; item_key: string; node_name: string; status: string; created_at: string };
+        return {
+          dispatchId: record.dispatch_id,
+          itemKey: record.item_key,
+          nodeName: record.node_name,
+          status: record.status,
+          createdAt: record.created_at,
+        };
+      });
+  }
+
+  /**
+   * For the console: ready items of this account that were dispatched and not
+   * yet claimed, so the list can say so before anyone dispatches them again.
+   */
+  listActiveDispatches(accountId: string): Array<{
+    dispatchId: string;
+    itemKey: string;
+    nodeName: string;
+    status: string;
+    createdAt: string;
+  }> {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT DISTINCT w.id FROM dispatch_items di
+         JOIN dispatches d ON d.id = di.dispatch_id
+         JOIN work_items w ON w.id = di.item_id
+         WHERE d.account_id = ? AND w.status = 'ready' AND d.status IN ('queued', 'delivered', 'launched')`,
+      )
+      .all(accountId) as unknown as Array<{ id: string }>;
+    const byItem = new Map<string, ReturnType<DispatchStore["activeDispatchesFor"]>[number]>();
+    // Newest first, so each item keeps its most recent dispatch.
+    for (const entry of this.activeDispatchesFor(rows.map((row) => row.id))) {
+      if (!byItem.has(entry.itemKey)) byItem.set(entry.itemKey, entry);
+    }
+    return [...byItem.values()];
   }
 
   /**

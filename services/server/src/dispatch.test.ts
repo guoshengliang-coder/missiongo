@@ -373,6 +373,123 @@ describe("A machine's nickname (AND-39)", () => {
   });
 });
 
+describe("Dispatching the same item twice", () => {
+  async function mappedNode(app: FastifyInstance, cookie: string, name = "Mac mini") {
+    const node = await registeredNode(app, name);
+    await heartbeat(app, node.token);
+    return node;
+  }
+
+  async function dispatchTo(
+    app: FastifyInstance,
+    cookie: string,
+    nodeId: string,
+    itemKeys: string[],
+    force?: boolean,
+  ) {
+    return app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId, agentKind: "claude_code", mode: "plan", itemKeys, ...(force === undefined ? {} : { force }) },
+    });
+  }
+
+  async function setup() {
+    const { app, cookie } = await signedInApp();
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    const mini = await mappedNode(app, cookie, "Mac mini");
+    const laptop = await mappedNode(app, cookie, "MacBook");
+    for (const node of [mini, laptop]) {
+      await app.inject({
+        method: "PUT",
+        url: "/api/v1/node/repos",
+        headers: { authorization: `Bearer ${node.token}` },
+        payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+      });
+    }
+    return { app, cookie, mission, mini, laptop };
+  }
+
+  it("refuses an item already dispatched and not yet claimed, to any machine", async () => {
+    // An item stays ready until its session claims it — in plan mode, hours
+    // later. A second dispatch in that window meant two sessions on one item.
+    const { app, cookie, mission, mini, laptop } = await setup();
+    expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(201);
+
+    for (const target of [mini, laptop]) {
+      const again = await dispatchTo(app, cookie, target.nodeId, [mission.itemKey]);
+      expect(again.statusCode).toBe(409);
+      expect(again.json()).toMatchObject({ code: "item_already_dispatched" });
+      expect(again.json<{ title: string }>().title).toContain(mission.itemKey);
+    }
+  });
+
+  it("dispatches again when told the earlier session is gone, cancelling one never picked up", async () => {
+    const { app, cookie, mission, mini, laptop } = await setup();
+    const first = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
+
+    const forced = await dispatchTo(app, cookie, laptop.nodeId, [mission.itemKey], true);
+    expect(forced.statusCode).toBe(201);
+
+    const history = await app.inject({ method: "GET", url: `/api/v1/items/${mission.itemKey}/dispatches`, headers: { cookie } });
+    const byId = new Map(history.json<{ dispatches: Array<{ id: string; status: string; error?: string }> }>().dispatches.map((d) => [d.id, d]));
+    // The Mac mini never pulled it, so it must not start a second session when it comes back.
+    expect(byId.get(first.id)).toMatchObject({ status: "cancelled", error: "已被重新派单取代" });
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${mini.token}` },
+    })).statusCode).toBe(204);
+  });
+
+  it("leaves a dispatch already handed to its machine alone, since it cannot be recalled", async () => {
+    const { app, cookie, mission, mini, laptop } = await setup();
+    const first = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${mini.token}` } });
+
+    expect((await dispatchTo(app, cookie, laptop.nodeId, [mission.itemKey], true)).statusCode).toBe(201);
+    const history = await app.inject({ method: "GET", url: `/api/v1/items/${mission.itemKey}/dispatches`, headers: { cookie } });
+    const earlier = history.json<{ dispatches: Array<{ id: string; status: string }> }>().dispatches.find((d) => d.id === first.id);
+    expect(earlier?.status).toBe("delivered");
+  });
+
+  it("does not block after a dispatch failed", async () => {
+    const { app, cookie, mission, mini } = await setup();
+    const first = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${mini.token}` } });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${first.id}/result`,
+      headers: { authorization: `Bearer ${mini.token}` },
+      payload: { status: "failed", error: "目录未信任" },
+    });
+
+    expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(201);
+  });
+
+  it("lists ready items with an unclaimed dispatch, and forgets them once claimed", async () => {
+    const { app, cookie, mission, mini } = await setup();
+    await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey]);
+
+    const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
+    expect(active.json()).toMatchObject({
+      active: [{ itemKey: mission.itemKey, nodeName: "Mac mini", status: "queued" }],
+    });
+
+    // The session claims the item: it is no longer ready, so there is nothing to warn about.
+    const claimed = await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${mission.itemKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "in_progress", reason: "claim" },
+    });
+    expect(claimed.json<{ status: string }>().status).toBe("in_progress");
+    const after = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
+    expect(after.json()).toEqual({ active: [] });
+  });
+});
+
 describe("The client's own view of its Mac", () => {
   it("shows its node, its mapping and the products it can map", async () => {
     const { app, cookie } = await signedInApp();
