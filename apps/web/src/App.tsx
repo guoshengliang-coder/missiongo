@@ -31,6 +31,7 @@ import {
   MoreHorizontal,
   Paperclip,
   Plus,
+  RefreshCw,
   Rocket,
   RotateCcw,
   Search,
@@ -1036,9 +1037,18 @@ export function App() {
               <p className="eyebrow">{t("productWorkspace", { prefix: selectedProduct?.keyPrefix ?? "" })}</p>
               <h1>{statusFilter === "all" ? t("allWork") : statusLabel(statusFilter)}</h1>
             </div>
-            <div className="workspace-stats" aria-label={t("workspaceSummary")}>
-              <span><strong>{openCount}</strong> {t("open")}</span>
-              <span><strong>{verifyCount}</strong> {t("toVerify")}</span>
+            <div className="workspace-head-side">
+              <div className="workspace-stats" aria-label={t("workspaceSummary")}>
+                <span><strong>{openCount}</strong> {t("open")}</span>
+                <span><strong>{verifyCount}</strong> {t("toVerify")}</span>
+              </div>
+              {/* Nothing pushes changes to the console: items the SDK or an AI
+                  creates elsewhere only show up on a refetch, so give people
+                  one they can ask for. Counts come from the same query. */}
+              <RefreshButton
+                refreshing={itemsQuery.isFetching}
+                onRefresh={() => queryClient.invalidateQueries({ queryKey: ["items"] })}
+              />
             </div>
           </section>
 
@@ -1947,6 +1957,7 @@ function DetailPane({
               {quickActionLabel(item.status, t)}
             </button>
           )}
+          <RefreshButton refreshing={itemQuery.isFetching || timelineQuery.isFetching} onRefresh={refreshItem} />
           <button className="secondary-button" onClick={() => setEditing(true)}>{t("edit")}</button>
           <details className="detail-more-menu" ref={moreActionsRef}>
             <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={19} /></summary>
@@ -3893,6 +3904,22 @@ function AccountPanel({ user, onLoggedOut }: { user: AuthenticatedUser; onLogged
         {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <LogOut size={16} />} {t("signOut")}
       </button>
     </div>
+  );
+}
+
+function RefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: () => unknown }) {
+  const { t } = useI18n();
+  return (
+    <button
+      type="button"
+      className="secondary-button refresh-button"
+      disabled={refreshing}
+      onClick={() => void onRefresh()}
+      aria-label={t("refresh")}
+      title={t("refresh")}
+    >
+      <RefreshCw className={refreshing ? "spin" : undefined} size={16} />
+    </button>
   );
 }
 
