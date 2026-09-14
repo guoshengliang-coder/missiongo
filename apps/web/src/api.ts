@@ -280,10 +280,12 @@ export const api = {
   revokeSdkToken: (tokenId: string) =>
     request<SdkToken>(`/api/v1/sdk-tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" }),
   listNodes: () => request<{ nodes: DispatchNode[] }>("/api/v1/nodes"),
-  renameNode: (nodeId: string, input: { name: string }) =>
+  // Null clears it, so the machine goes back to its device name. The server
+  // still reads `name` for pages loaded before nicknames, but this is the field.
+  setNodeNickname: (nodeId: string, nickname: string | null) =>
     request<DispatchNode>(`/api/v1/nodes/${encodeURIComponent(nodeId)}`, {
       method: "PATCH",
-      body: JSON.stringify(input),
+      body: JSON.stringify({ nickname }),
     }),
   revokeNode: (nodeId: string) =>
     requestNoContent(`/api/v1/nodes/${encodeURIComponent(nodeId)}`, { method: "DELETE" }),

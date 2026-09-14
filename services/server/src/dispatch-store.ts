@@ -27,7 +27,11 @@ export interface NodeRepoMapping {
 
 export interface NodeSnapshot {
   readonly id: string;
+  /** What to call this machine: the nickname when one is set, the device name otherwise. */
   readonly name: string;
+  /** The Mac's own name, as the client reported it when signing in. */
+  readonly deviceName: string;
+  readonly nickname?: string;
   readonly hostname?: string;
   readonly agents: readonly NodeAgentReport[];
   readonly repos: readonly NodeRepoMapping[];
@@ -62,6 +66,8 @@ export interface DispatchSnapshot {
 
 export interface DispatchJob {
   readonly dispatchId: string;
+  /** What this machine is called, for naming the session: nickname, else device name. */
+  readonly nodeName: string;
   readonly itemKeys: readonly string[];
   readonly repoPath: string;
   readonly agentKind: AgentKind;
@@ -72,6 +78,7 @@ interface NodeRow {
   id: string;
   account_id: string;
   name: string;
+  nickname: string | null;
   hostname: string | null;
   agents_json: string;
   repo_candidates_json: string | null;
@@ -97,6 +104,26 @@ interface DispatchRow {
 
 function nodeTokenHash(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+export const MAX_NICKNAME_LENGTH = 40;
+
+/**
+ * Empty clears the nickname. It becomes the prefix of every session name in
+ * claude.ai, so it stays short and free of control characters, which would
+ * break the one-line name there.
+ */
+function normalizeNickname(value: string | null): string | null {
+  const nickname = (value ?? "").trim();
+  if (!nickname) return null;
+  if (nickname.length > MAX_NICKNAME_LENGTH) {
+    throw invalidInput(`Nickname must be ${MAX_NICKNAME_LENGTH} characters or fewer.`);
+  }
+  for (let position = 0; position < nickname.length; position += 1) {
+    const code = nickname.charCodeAt(position);
+    if (code <= 0x1f || code === 0x7f) throw invalidInput("Nickname cannot contain control characters.");
+  }
+  return nickname;
 }
 
 function text(value: string | undefined, field: string, maxLength: number): string {
@@ -195,19 +222,19 @@ export class DispatchStore {
       const now = new Date().toISOString();
       const token = `mgn_${randomBytes(32).toString("base64url")}`;
       const existing = this.database.connection
-        .prepare("SELECT id, name FROM nodes WHERE account_id = ? AND installation_id = ?")
-        .get(input.accountId, installationId) as unknown as { id: string; name: string } | undefined;
+        .prepare("SELECT id, nickname FROM nodes WHERE account_id = ? AND installation_id = ?")
+        .get(input.accountId, installationId) as unknown as { id: string; nickname: string | null } | undefined;
 
       if (existing) {
         this.database.connection
           .prepare(
-            `UPDATE nodes SET token_hash = ?, hostname = ?, revoked_at = NULL, updated_at = ?
+            `UPDATE nodes SET token_hash = ?, name = ?, hostname = ?, revoked_at = NULL, updated_at = ?
              WHERE id = ?`,
           )
-          .run(nodeTokenHash(token), hostname, now, existing.id);
-        // A name someone set in the console is theirs; the client only proposes
-        // one for a machine it is seeing for the first time.
-        return { nodeId: existing.id, name: existing.name, token };
+          .run(nodeTokenHash(token), name, hostname, now, existing.id);
+        // The device name follows the Mac, which may have been renamed since; a
+        // nickname is the person's choice and survives signing in again.
+        return { nodeId: existing.id, name: existing.nickname ?? name, token };
       }
 
       const nodeId = randomUUID();
@@ -223,7 +250,15 @@ export class DispatchStore {
 
   /** Everything the client shows about the machine it is running on. */
   describeSelf(nodeId: string, products: readonly { id: string; keyPrefix: string; name: string }[]): {
-    node: { id: string; name: string; hostname?: string; online: boolean; lastSeenAt?: string };
+    node: {
+      id: string;
+      name: string;
+      deviceName: string;
+      nickname?: string;
+      hostname?: string;
+      online: boolean;
+      lastSeenAt?: string;
+    };
     repos: readonly NodeRepoMapping[];
     products: readonly { id: string; keyPrefix: string; name: string }[];
   } {
@@ -233,6 +268,8 @@ export class DispatchStore {
       node: {
         id: node.id,
         name: node.name,
+        deviceName: node.deviceName,
+        ...(node.nickname ? { nickname: node.nickname } : {}),
         ...(node.hostname ? { hostname: node.hostname } : {}),
         online: node.online,
         ...(node.lastSeenAt ? { lastSeenAt: node.lastSeenAt } : {}),
@@ -250,7 +287,7 @@ export class DispatchStore {
   listDispatchesForNode(nodeId: string, limit = 20): readonly DispatchSnapshot[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT d.id, d.node_id, n.name AS node_name, d.agent_kind, d.mode, d.status,
+        `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
                 d.session_name, d.session_url, d.error, d.created_at, d.delivered_at, d.completed_at
          FROM dispatches d JOIN nodes n ON n.id = d.node_id
          WHERE d.node_id = ?
@@ -264,7 +301,7 @@ export class DispatchStore {
   private nodeRow(nodeId: string): NodeRow {
     const row = this.database.connection
       .prepare(
-        `SELECT id, account_id, name, hostname, agents_json, repo_candidates_json,
+        `SELECT id, account_id, name, nickname, hostname, agents_json, repo_candidates_json,
                 last_seen_at, revoked_at, created_at
          FROM nodes WHERE id = ?`,
       )
@@ -310,7 +347,7 @@ export class DispatchStore {
   listNodes(accountId: string): readonly NodeSnapshot[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT id, account_id, name, hostname, agents_json, repo_candidates_json,
+        `SELECT id, account_id, name, nickname, hostname, agents_json, repo_candidates_json,
                 last_seen_at, revoked_at, created_at
          FROM nodes WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`,
       )
@@ -321,7 +358,7 @@ export class DispatchStore {
   getNode(accountId: string, nodeId: string): NodeSnapshot {
     const row = this.database.connection
       .prepare(
-        `SELECT id, account_id, name, hostname, agents_json, repo_candidates_json,
+        `SELECT id, account_id, name, nickname, hostname, agents_json, repo_candidates_json,
                 last_seen_at, revoked_at, created_at
          FROM nodes WHERE id = ? AND account_id = ?`,
       )
@@ -330,12 +367,22 @@ export class DispatchStore {
     return this.mapNode(row);
   }
 
-  renameNode(accountId: string, nodeId: string, name: string): NodeSnapshot {
+  /**
+   * Set or clear what this machine is called. One nickname, editable from the
+   * console and from the Mac itself: two names for one machine would be two
+   * places for them to disagree. Clearing it goes back to the device name.
+   */
+  setNickname(accountId: string, nodeId: string, nickname: string | null): NodeSnapshot {
     this.getNode(accountId, nodeId);
     this.database.connection
-      .prepare("UPDATE nodes SET name = ?, updated_at = ? WHERE id = ? AND account_id = ?")
-      .run(text(name, "Node name", 100), new Date().toISOString(), nodeId, accountId);
+      .prepare("UPDATE nodes SET nickname = ?, updated_at = ? WHERE id = ? AND account_id = ?")
+      .run(normalizeNickname(nickname), new Date().toISOString(), nodeId, accountId);
     return this.getNode(accountId, nodeId);
+  }
+
+  /** The client's own nickname edit; the same rules as the console's. */
+  setOwnNickname(nodeId: string, nickname: string | null): NodeSnapshot {
+    return this.setNickname(this.nodeRow(nodeId).account_id, nodeId, nickname);
   }
 
   revokeNode(accountId: string, nodeId: string): void {
@@ -473,10 +520,12 @@ export class DispatchStore {
     return this.database.transaction(() => {
       const row = this.database.connection
         .prepare(
-          `SELECT id, agent_kind, mode, repo_path FROM dispatches
-           WHERE node_id = ? AND status = 'queued' ORDER BY created_at LIMIT 1`,
+          `SELECT d.id, d.agent_kind, d.mode, d.repo_path, COALESCE(n.nickname, n.name) AS node_name
+           FROM dispatches d JOIN nodes n ON n.id = d.node_id
+           WHERE d.node_id = ? AND d.status = 'queued' ORDER BY d.created_at LIMIT 1`,
         )
-        .get(nodeId) as unknown as { id: string; agent_kind: string; mode: string; repo_path: string } | undefined;
+        .get(nodeId) as unknown as
+          { id: string; agent_kind: string; mode: string; repo_path: string; node_name: string } | undefined;
       if (!row) return undefined;
       const now = new Date().toISOString();
       this.database.connection
@@ -488,6 +537,7 @@ export class DispatchStore {
         repoPath: row.repo_path,
         agentKind: row.agent_kind as AgentKind,
         mode: row.mode,
+        nodeName: row.node_name,
       };
     });
   }
@@ -523,7 +573,7 @@ export class DispatchStore {
   getDispatch(accountId: string, dispatchId: string): DispatchSnapshot {
     const row = this.database.connection
       .prepare(
-        `SELECT d.id, d.node_id, n.name AS node_name, d.agent_kind, d.mode, d.status,
+        `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
                 d.session_name, d.session_url, d.error, d.created_at, d.delivered_at, d.completed_at
          FROM dispatches d JOIN nodes n ON n.id = d.node_id
          WHERE d.id = ? AND d.account_id = ?`,
@@ -536,7 +586,7 @@ export class DispatchStore {
   listDispatchesForItem(accountId: string, itemKey: string): readonly DispatchSnapshot[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT d.id, d.node_id, n.name AS node_name, d.agent_kind, d.mode, d.status,
+        `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
                 d.session_name, d.session_url, d.error, d.created_at, d.delivered_at, d.completed_at
          FROM dispatches d
          JOIN nodes n ON n.id = d.node_id
@@ -569,7 +619,9 @@ export class DispatchStore {
   private mapNode(row: NodeRow): NodeSnapshot {
     return {
       id: row.id,
-      name: row.name,
+      name: row.nickname ?? row.name,
+      deviceName: row.name,
+      ...(row.nickname ? { nickname: row.nickname } : {}),
       ...(row.hostname ? { hostname: row.hostname } : {}),
       agents: JSON.parse(row.agents_json) as NodeAgentReport[],
       repos: this.listRepos(row.id),

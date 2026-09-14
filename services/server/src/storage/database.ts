@@ -434,6 +434,27 @@ export class MissionGoDatabase {
           .run(202609140100, new Date().toISOString());
       });
     }
+    // A machine gets a nickname separate from its device name (AND-39), so that
+    // clearing the nickname can go back to what the Mac calls itself. Existing
+    // names stay where they are, as device names, and every nickname starts
+    // empty: nothing recorded which names a person typed and which the client
+    // sent, and the client overwrites the device name on its next sign-in anyway.
+    const nicknameMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609141000")
+      .get() as unknown as { version: number } | undefined;
+    if (!nicknameMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(nodes)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "nickname")) {
+          this.connection.exec("ALTER TABLE nodes ADD COLUMN nickname TEXT;");
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609141000, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

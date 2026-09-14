@@ -271,6 +271,108 @@ describe("The macOS client's sign-in, end to end", () => {
   });
 });
 
+describe("A machine's nickname (AND-39)", () => {
+  const nodeHeaders = (token: string) => ({ authorization: `Bearer ${token}` });
+
+  it("is called by its device name until someone gives it a nickname", async () => {
+    const { app, cookie } = await signedInApp();
+    await registeredNode(app, "Macbook-M5");
+    const nodes = await app.inject({ method: "GET", url: "/api/v1/nodes", headers: { cookie } });
+    const node = nodes.json<{ nodes: Array<Record<string, unknown>> }>().nodes[0]!;
+    expect(node).toMatchObject({ name: "Macbook-M5", deviceName: "Macbook-M5" });
+    expect(node.nickname).toBeUndefined();
+  });
+
+  it("is one field, set from the client and seen in the console, and cleared back to the device name", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app, "Macbook-M5");
+
+    const set = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/node/me",
+      headers: nodeHeaders(node.token),
+      payload: { nickname: "  办公室 Mac mini  " },
+    });
+    expect(set.statusCode).toBe(200);
+    expect(set.json()).toMatchObject({ node: { name: "办公室 Mac mini", nickname: "办公室 Mac mini", deviceName: "Macbook-M5" } });
+
+    const listed = await app.inject({ method: "GET", url: "/api/v1/nodes", headers: { cookie } });
+    expect(listed.json<{ nodes: Array<{ name: string }> }>().nodes[0]!.name).toBe("办公室 Mac mini");
+
+    const cleared = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/nodes/${node.nodeId}`,
+      headers: { cookie },
+      payload: { nickname: null },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json()).toMatchObject({ name: "Macbook-M5", deviceName: "Macbook-M5" });
+    expect(cleared.json<Record<string, unknown>>().nickname).toBeUndefined();
+  });
+
+  it("still accepts a rename sent as name, from a console page loaded before this change", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app, "Macbook-M5");
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/nodes/${node.nodeId}`,
+      headers: { cookie },
+      payload: { name: "Mac mini" },
+    });
+    expect(renamed.json()).toMatchObject({ name: "Mac mini", nickname: "Mac mini", deviceName: "Macbook-M5" });
+  });
+
+  it("refuses a nickname too long for a session name, or one with a line break", async () => {
+    const { app } = await signedInApp();
+    const node = await registeredNode(app);
+    for (const nickname of ["x".repeat(41), "Mac\nmini"]) {
+      const refused = await app.inject({
+        method: "PATCH",
+        url: "/api/v1/node/me",
+        headers: nodeHeaders(node.token),
+        payload: { nickname },
+      });
+      expect(refused.statusCode).toBe(400);
+    }
+  });
+
+  it("survives signing in again, while the device name follows the Mac", async () => {
+    const { app } = await signedInApp();
+    const installationId = randomUUID();
+    const node = await registeredNode(app, "Macbook-M5", installationId);
+    await app.inject({ method: "PATCH", url: "/api/v1/node/me", headers: nodeHeaders(node.token), payload: { nickname: "主力机" } });
+
+    const again = await registeredNode(app, "Liang's MacBook Pro", installationId);
+    expect(again.name).toBe("主力机");
+    const me = await app.inject({ method: "GET", url: "/api/v1/node/me", headers: nodeHeaders(again.token) });
+    expect(me.json()).toMatchObject({ node: { name: "主力机", nickname: "主力机", deviceName: "Liang's MacBook Pro" } });
+  });
+
+  it("names the machine in the job it pulls and in the dispatch record", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app, "Macbook-M5");
+    await heartbeat(app, node.token);
+    await app.inject({ method: "PATCH", url: "/api/v1/node/me", headers: nodeHeaders(node.token), payload: { nickname: "Mac mini" } });
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: "/api/v1/node/repos",
+      headers: nodeHeaders(node.token),
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const dispatch = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    expect(dispatch.json()).toMatchObject({ nodeName: "Mac mini" });
+
+    const job = await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: nodeHeaders(node.token) });
+    expect(job.json()).toMatchObject({ nodeName: "Mac mini", itemKeys: [mission.itemKey] });
+  });
+});
+
 describe("The client's own view of its Mac", () => {
   it("shows its node, its mapping and the products it can map", async () => {
     const { app, cookie } = await signedInApp();

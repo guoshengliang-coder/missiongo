@@ -34,14 +34,14 @@ final class APIClientTests: XCTestCase {
     func testReportResultAcceptsThe204ItAnswers() async throws {
         StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
         try await client().reportResult(
-            dispatchId: "d1", report: DispatchReport(status: .launched, sessionName: "MissionGo AND-1")
+            dispatchId: "d1", report: DispatchReport(status: .launched, sessionName: "Mac mini-AND-1")
         )
         let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
         XCTAssertEqual(sent.request.url?.path, "/api/v1/node/dispatches/d1/result")
         XCTAssertEqual(sent.request.value(forHTTPHeaderField: "Authorization"), "Bearer mgn_x")
         let body = jsonObject(sent.body)
         XCTAssertEqual(body["status"] as? String, "launched")
-        XCTAssertEqual(body["sessionName"] as? String, "MissionGo AND-1")
+        XCTAssertEqual(body["sessionName"] as? String, "Mac mini-AND-1")
         // Absent fields are left out rather than sent as null.
         XCTAssertNil(body["sessionUrl"])
         XCTAssertNil(body["error"])
@@ -65,6 +65,19 @@ final class APIClientTests: XCTestCase {
         let request = try await client().claimNext()
         XCTAssertEqual(request, DispatchRequest(
             dispatchId: "d9", itemKeys: ["AND-37", "AND-38"], repoPath: "/Users/dev/p", agentKind: "claude_code", mode: "plan"
+        ))
+        // A server from before nicknames sends no node name; that is not an error.
+        XCTAssertNil(request?.nodeName)
+    }
+
+    func testClaimNextDecodesTheNodeNameWhenTheServerSendsIt() async throws {
+        StubURLProtocol.install { _, _ in
+            .response(status: 200, body: #"{"dispatchId":"d9","itemKeys":["HG-49"],"repoPath":"/Users/dev/p","agentKind":"claude_code","mode":"plan","nodeName":"老王的 Mac"}"#)
+        }
+        let request = try await client().claimNext()
+        XCTAssertEqual(request, DispatchRequest(
+            dispatchId: "d9", itemKeys: ["HG-49"], repoPath: "/Users/dev/p", agentKind: "claude_code", mode: "plan",
+            nodeName: "老王的 Mac"
         ))
     }
 
@@ -150,18 +163,75 @@ final class APIClientTests: XCTestCase {
             default:
                 return .response(status: 200, body: #"""
                 {"dispatches":[{"id":"d1","nodeName":"Mac mini","agentKind":"claude_code","mode":"plan","status":"launched",
-                 "itemKeys":["AND-1"],"sessionName":"MissionGo AND-1","sessionUrl":"https://claude.ai/code/session_x",
+                 "itemKeys":["AND-1"],"sessionName":"Mac mini-AND-1","sessionUrl":"https://claude.ai/code/session_x",
                  "createdAt":"2026-09-13T00:00:00.000Z"}]}
                 """#)
             }
         }
         let profile = try await client().me()
         XCTAssertEqual(profile.node.name, "Mac mini")
+        // An older server: no device name and no nickname, which is also what
+        // keeps the menu from offering an edit it cannot store.
+        XCTAssertNil(profile.node.deviceName)
+        XCTAssertNil(profile.node.nickname)
         XCTAssertEqual(profile.repos.first?.productKey, "AND")
         XCTAssertEqual(profile.products.first?.keyPrefix, "AND")
         let dispatches = try await client().dispatches()
         XCTAssertEqual(dispatches.first?.sessionUrl, "https://claude.ai/code/session_x")
         XCTAssertNil(dispatches.first?.completedAt)
+    }
+
+    func testMeDecodesTheDeviceNameAndTheNickname() async throws {
+        StubURLProtocol.install { _, _ in
+            .response(status: 200, body: #"""
+            {"node":{"id":"n1","name":"二号机","deviceName":"Mac mini","nickname":"二号机","hostname":"mini","online":true},
+             "repos":[],"products":[]}
+            """#)
+        }
+        let profile = try await client().me()
+        XCTAssertEqual(profile.node.name, "二号机")
+        XCTAssertEqual(profile.node.deviceName, "Mac mini")
+        XCTAssertEqual(profile.node.nickname, "二号机")
+    }
+
+    private static let nicknameProfile = #"""
+    {"node":{"id":"n1","name":"Mac mini","deviceName":"Mac mini","hostname":"mini","online":true},"repos":[],"products":[]}
+    """#
+
+    func testUpdateNicknameSendsAPatchWithTheNickname() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: APIClientTests.nicknameProfile) }
+        let profile = try await client().updateNickname("二号机")
+        XCTAssertEqual(profile.node.deviceName, "Mac mini")
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertEqual(sent.request.httpMethod, "PATCH")
+        XCTAssertEqual(sent.request.url?.absoluteString, "http://127.0.0.1:8799/api/v1/node/me")
+        XCTAssertEqual(sent.request.value(forHTTPHeaderField: "Authorization"), "Bearer mgn_x")
+        XCTAssertEqual(sent.request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(String(decoding: sent.body, as: UTF8.self), #"{"nickname":"二号机"}"#)
+    }
+
+    func testClearingTheNicknameSendsAnExplicitNull() async throws {
+        // Left out, the key would be refused as neither a string nor null.
+        StubURLProtocol.install { _, _ in .response(status: 200, body: APIClientTests.nicknameProfile) }
+        let profile = try await client().updateNickname(nil)
+        XCTAssertNil(profile.node.nickname)
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertEqual(sent.request.httpMethod, "PATCH")
+        XCTAssertEqual(sent.request.url?.path, "/api/v1/node/me")
+        XCTAssertEqual(String(decoding: sent.body, as: UTF8.self), #"{"nickname":null}"#)
+    }
+
+    func testARefusedNicknameSurfacesTheProblemTitle() async {
+        StubURLProtocol.install { _, _ in
+            .response(status: 400, body: #"{"title":"Nickname must be 40 characters or fewer.","status":400}"#,
+                      headers: ["Content-Type": "application/problem+json"])
+        }
+        do {
+            _ = try await client().updateNickname(String(repeating: "x", count: 41))
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "保存昵称 失败（HTTP 400）：Nickname must be 40 characters or fewer.")
+        }
     }
 
     func testReplaceReposSendsPut() async throws {

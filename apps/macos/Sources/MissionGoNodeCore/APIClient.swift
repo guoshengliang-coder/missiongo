@@ -55,13 +55,25 @@ public struct DispatchRequest: Codable, Equatable, Sendable {
     public let repoPath: String
     public let agentKind: String
     public let mode: String
+    /// What the session is named after: the machine's nickname, or its device
+    /// name when none is set. Optional because a server from before nicknames
+    /// does not send it; the loop then falls back to the name stored at login.
+    public let nodeName: String?
 
-    public init(dispatchId: String, itemKeys: [String], repoPath: String, agentKind: String, mode: String) {
+    public init(
+        dispatchId: String,
+        itemKeys: [String],
+        repoPath: String,
+        agentKind: String,
+        mode: String,
+        nodeName: String? = nil
+    ) {
         self.dispatchId = dispatchId
         self.itemKeys = itemKeys
         self.repoPath = repoPath
         self.agentKind = agentKind
         self.mode = mode
+        self.nodeName = nodeName
     }
 }
 
@@ -87,7 +99,13 @@ public struct DispatchReport: Codable, Equatable, Sendable {
 public struct NodeProfile: Codable, Equatable, Sendable {
     public struct Node: Codable, Equatable, Sendable {
         public let id: String
+        /// For display: the nickname when one is set, else the device name.
         public let name: String
+        /// The name the machine registered with. Optional only so a server from
+        /// before nicknames still decodes; its absence is also how the menu knows
+        /// that server cannot store a nickname.
+        public let deviceName: String?
+        public let nickname: String?
         public let hostname: String?
         public let online: Bool
         public let lastSeenAt: String?
@@ -410,6 +428,30 @@ public struct APIClient: Sendable {
         let response = try await send("GET", "/api/v1/node/me", body: Optional<String>.none, bearer: try nodeToken())
         try requireSuccess(response, operation: "读取本机信息")
         return try decode(response, operation: "读取本机信息")
+    }
+
+    /// Sets this machine's nickname, or clears it with `nil`. The server answers
+    /// with the same body as `me()`, so the caller gets the updated profile
+    /// without asking again.
+    public func updateNickname(_ nickname: String?) async throws -> NodeProfile {
+        struct Body: Encodable {
+            let nickname: String?
+
+            // Written out so a cleared nickname goes over the wire as an explicit
+            // `null`; the synthesized encoder would leave the key out, and the
+            // server refuses a body without it as neither a string nor null.
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                try container.encode(nickname, forKey: .nickname)
+            }
+
+            enum CodingKeys: String, CodingKey {
+                case nickname
+            }
+        }
+        let response = try await send("PATCH", "/api/v1/node/me", body: Body(nickname: nickname), bearer: try nodeToken())
+        try requireSuccess(response, operation: "保存昵称")
+        return try decode(response, operation: "保存昵称")
     }
 
     public func replaceRepos(_ repos: [RepoAssignment]) async throws -> [RepoMapping] {

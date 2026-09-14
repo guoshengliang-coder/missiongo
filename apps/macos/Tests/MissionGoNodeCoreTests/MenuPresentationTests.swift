@@ -38,6 +38,42 @@ final class ServerAddressTests: XCTestCase {
     }
 }
 
+final class NodeNicknameTests: XCTestCase {
+    func testTrimsWhatItKeeps() {
+        XCTAssertEqual(NodeNickname.validate("  二号机 \n"), .success("二号机"))
+        XCTAssertEqual(NodeNickname.validate("老王的 MacBook Pro"), .success("老王的 MacBook Pro"))
+        // Full-width spaces and a BOM are trimmed too, as JavaScript's trim does.
+        XCTAssertEqual(NodeNickname.validate("\u{3000}办公室\u{FEFF}"), .success("办公室"))
+    }
+
+    func testAnEmptyFieldClearsTheNickname() {
+        XCTAssertEqual(NodeNickname.validate(""), .success(nil))
+        XCTAssertEqual(NodeNickname.validate(" \t\n "), .success(nil))
+    }
+
+    func testAllowsFortyCharactersAndNoMore() {
+        XCTAssertEqual(NodeNickname.validate(String(repeating: "机", count: 40)), .success(String(repeating: "机", count: 40)))
+        XCTAssertEqual(NodeNickname.validate(String(repeating: "a", count: 41)), .failure(.tooLong))
+        // Outer whitespace does not count against the limit.
+        XCTAssertEqual(NodeNickname.validate("  " + String(repeating: "a", count: 40) + "  "), .success(String(repeating: "a", count: 40)))
+        // Counted like the server's JavaScript length: an emoji is two.
+        XCTAssertEqual(NodeNickname.validate(String(repeating: "💻", count: 20)), .success(String(repeating: "💻", count: 20)))
+        XCTAssertEqual(NodeNickname.validate(String(repeating: "💻", count: 21)), .failure(.tooLong))
+    }
+
+    func testRefusesControlCharactersInside() {
+        XCTAssertEqual(NodeNickname.validate("Mac\nmini"), .failure(.controlCharacter))
+        XCTAssertEqual(NodeNickname.validate("Mac\tmini"), .failure(.controlCharacter))
+        XCTAssertEqual(NodeNickname.validate("Mac\u{7F}mini"), .failure(.controlCharacter))
+        XCTAssertEqual(NodeNickname.validate("Mac\u{0}mini"), .failure(.controlCharacter))
+    }
+
+    func testErrorsReadInChinese() {
+        XCTAssertEqual(NodeNickname.ValidationError.tooLong.localizedDescription, "昵称最多 40 个字符。")
+        XCTAssertEqual(NodeNickname.ValidationError.controlCharacter.localizedDescription, "昵称不能包含换行、制表符等控制字符。")
+    }
+}
+
 final class ConnectionPresentationTests: XCTestCase {
     private func state(_ connection: NodeLoopState.Connection, error: String? = nil) -> NodeLoopState {
         var value = NodeLoopState()

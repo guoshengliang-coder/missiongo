@@ -61,21 +61,21 @@ final class LaunchCommandTests: XCTestCase {
         // and the session never comes up, and without `--no-chrome` a first run
         // stops on the Chrome extension prompt with nobody there to answer it.
         let command = try SessionLauncher.launchCommand(
-            sessionName: "MissionGo AND-37+AND-38", mode: "plan", prompt: "使用 missiongo skill 处理这些工作条目：AND-37、AND-38。"
+            sessionName: "Mac mini-AND-37+AND-38", mode: "plan", prompt: "使用 missiongo skill 处理这些工作条目：AND-37、AND-38。"
         )
         XCTAssertEqual(command.file, "script")
         XCTAssertEqual(command.args, [
             "-q", "/dev/null", "claude", "--no-chrome",
-            "--remote-control", "MissionGo AND-37+AND-38",
+            "--remote-control", "Mac mini-AND-37+AND-38",
             "--permission-mode", "plan",
-            "-n", "MissionGo AND-37+AND-38",
+            "-n", "Mac mini-AND-37+AND-38",
             "使用 missiongo skill 处理这些工作条目：AND-37、AND-38。",
         ])
     }
 
     func testPassesThePromptAsOneArgument() throws {
         let prompt = try LaunchPrompt.build(itemKeys: ["AND-1"], dispatchId: "abc")
-        let command = try SessionLauncher.launchCommand(sessionName: "MissionGo AND-1", mode: "default", prompt: prompt)
+        let command = try SessionLauncher.launchCommand(sessionName: "Mac mini-AND-1", mode: "default", prompt: prompt)
         XCTAssertEqual(command.args.filter { $0.contains("missiongo skill") }.count, 1)
         XCTAssertTrue(command.args.last?.contains("\n") == true)
     }
@@ -84,7 +84,7 @@ final class LaunchCommandTests: XCTestCase {
         // Claude Code files sessions by working directory: a session started in a
         // worktree shows up as its own project and is missing from /resume in the
         // repository it belongs to. The session makes its own worktree instead.
-        let args = try SessionLauncher.launchCommand(sessionName: "MissionGo AND-1", mode: "plan", prompt: "x").args
+        let args = try SessionLauncher.launchCommand(sessionName: "Mac mini-AND-1", mode: "plan", prompt: "x").args
         XCTAssertFalse(args.contains("-w"))
         XCTAssertFalse(args.contains("--worktree"))
         XCTAssertTrue(try LaunchPrompt.build(itemKeys: ["AND-1"], dispatchId: "abc").contains("worktree"))
@@ -94,7 +94,7 @@ final class LaunchCommandTests: XCTestCase {
         // bypassPermissions and dontAsk are exactly the modes that remove the human
         // from the loop, and a dispatched session has no human at the machine.
         for mode in ["bypassPermissions", "dontAsk", "", "plan --dangerously-skip-permissions", "Plan"] {
-            XCTAssertThrowsError(try SessionLauncher.launchCommand(sessionName: "MissionGo AND-1", mode: mode, prompt: "x"), mode) {
+            XCTAssertThrowsError(try SessionLauncher.launchCommand(sessionName: "Mac mini-AND-1", mode: mode, prompt: "x"), mode) {
                 XCTAssertTrue($0.localizedDescription.hasPrefix("不支持的 Claude Code 模式："))
             }
         }
@@ -103,7 +103,7 @@ final class LaunchCommandTests: XCTestCase {
     func testAcceptsTheFourSupportedModes() throws {
         XCTAssertEqual(ClaudeCodeModes.allowed, ["plan", "default", "acceptEdits", "auto"])
         for mode in ClaudeCodeModes.allowed {
-            XCTAssertTrue(try SessionLauncher.launchCommand(sessionName: "MissionGo AND-1", mode: mode, prompt: "x").args.contains(mode))
+            XCTAssertTrue(try SessionLauncher.launchCommand(sessionName: "Mac mini-AND-1", mode: mode, prompt: "x").args.contains(mode))
         }
     }
 
@@ -115,9 +115,46 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertTrue(source.contains(#"["plan", "default", "acceptEdits", "auto"]"#))
     }
 
-    func testNamesTheSessionAfterTheWholeBatch() {
-        XCTAssertEqual(SessionLauncher.sessionName(for: ["AND-37", "AND-38"]), "MissionGo AND-37+AND-38")
-        XCTAssertEqual(SessionLauncher.sessionName(for: ["HG-8"]), "MissionGo HG-8")
+    func testNamesTheSessionAfterTheMachineAndTheWholeBatch() {
+        // No "MissionGo" prefix and no spaces around the hyphen: the machine is
+        // what tells sessions from several Macs apart.
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["HG-49"]), "Mac mini-HG-49")
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["AND-37", "AND-38"]), "Mac mini-AND-37+AND-38")
+        XCTAssertEqual(
+            SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["AND-37", "AND-38", "AND-40"]),
+            "Mac mini-AND-37+AND-38+AND-40"
+        )
+    }
+
+    func testListsTheFirstThreeAndTheTotalForALargerBatch() {
+        XCTAssertEqual(
+            SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["AND-37", "AND-38", "AND-40", "AND-41"]),
+            "Mac mini-AND-37+AND-38+AND-40 等 4 条"
+        )
+        XCTAssertEqual(
+            SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["AND-37", "AND-38", "AND-40", "AND-41", "AND-42"]),
+            "Mac mini-AND-37+AND-38+AND-40 等 5 条"
+        )
+    }
+
+    func testKeepsANicknameAsWrittenApartFromTheOuterWhitespace() {
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "  老王的 MacBook Pro \n", itemKeys: ["HG-8"]), "老王的 MacBook Pro-HG-8")
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "办公室 · 二号机", itemKeys: ["HG-8", "HG-9"]), "办公室 · 二号机-HG-8+HG-9")
+    }
+
+    func testFallsBackToMissionGoWhenTheNameIsBlank() {
+        // Never `-HG-49`.
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "", itemKeys: ["HG-49"]), "MissionGo-HG-49")
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: " \t\n ", itemKeys: ["HG-49"]), "MissionGo-HG-49")
+    }
+
+    func testTheNewNameGoesToBothRemoteControlAndTheSessionTitle() throws {
+        let name = SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["AND-37", "AND-38", "AND-40", "AND-41", "AND-42"])
+        let args = try SessionLauncher.launchCommand(sessionName: name, mode: "plan", prompt: "x").args
+        XCTAssertEqual(args[try XCTUnwrap(args.firstIndex(of: "--remote-control")) + 1], "Mac mini-AND-37+AND-38+AND-40 等 5 条")
+        XCTAssertEqual(args[try XCTUnwrap(args.firstIndex(of: "-n")) + 1], "Mac mini-AND-37+AND-38+AND-40 等 5 条")
+        XCTAssertFalse(args.contains("-w"))
+        XCTAssertFalse(args.contains("--worktree"))
     }
 
     func testKeepsTheLogInsideTheLogDirectory() {
@@ -172,8 +209,8 @@ final class SessionLauncherProcessTests: XCTestCase {
             environment: ShellEnvironment(path: "\(script.bin):/usr/bin:/bin"),
             run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", sessionUrlTimeout: 10
         )
-        let result = try await launcher.launch(DispatchJob(dispatchId: "d-1", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan"))
-        XCTAssertEqual(result.sessionName, "MissionGo AND-1")
+        let result = try await launcher.launch(DispatchJob(dispatchId: "d-1", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan", nodeName: " Mac mini "))
+        XCTAssertEqual(result.sessionName, "Mac mini-AND-1")
         XCTAssertEqual(result.sessionUrl, "https://claude.ai/code/session_TEST-123")
         XCTAssertEqual(result.logPath, "\(script.root)/logs/d-1.log")
 
@@ -181,7 +218,7 @@ final class SessionLauncherProcessTests: XCTestCase {
         // The temporary directory sits behind the /var → /private/var symlink.
         let resolvedRepo = String(cString: realpath(repoPath, nil))
         XCTAssertTrue(log.contains("cwd=\(repoPath)\n") || log.contains("cwd=\(resolvedRepo)\n"), log)
-        XCTAssertTrue(log.contains("arg=-q\narg=/dev/null\narg=claude\narg=--no-chrome\narg=--remote-control\narg=MissionGo AND-1\narg=--permission-mode\narg=plan\narg=-n\narg=MissionGo AND-1\narg=使用 missiongo skill"), log)
+        XCTAssertTrue(log.contains("arg=-q\narg=/dev/null\narg=claude\narg=--no-chrome\narg=--remote-control\narg=Mac mini-AND-1\narg=--permission-mode\narg=plan\narg=-n\narg=Mac mini-AND-1\narg=使用 missiongo skill"), log)
     }
 
     func testReportsAProcessThatExitsBeforeAURLWithTheLogTail() async throws {
@@ -192,7 +229,7 @@ final class SessionLauncherProcessTests: XCTestCase {
             run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", sessionUrlTimeout: 10
         )
         do {
-            _ = try await launcher.launch(DispatchJob(dispatchId: "d-2", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan"))
+            _ = try await launcher.launch(DispatchJob(dispatchId: "d-2", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan", nodeName: "Mac mini"))
             XCTFail("expected a failure")
         } catch {
             let message = error.localizedDescription
@@ -209,7 +246,7 @@ final class SessionLauncherProcessTests: XCTestCase {
             run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs"
         )
         do {
-            _ = try await launcher.launch(DispatchJob(dispatchId: "d-3", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan"))
+            _ = try await launcher.launch(DispatchJob(dispatchId: "d-3", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan", nodeName: "Mac mini"))
             XCTFail("expected a failure")
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("信任确认"), error.localizedDescription)

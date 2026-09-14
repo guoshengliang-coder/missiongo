@@ -119,6 +119,18 @@ function booleanField(body: Record<string, unknown>, field: string): boolean {
  */
 const MAX_CLAIM_WAIT_MS = 25_000;
 
+/**
+ * A machine's nickname from a request body: a string sets it, empty or null
+ * clears it. `name` is still read, because a console page loaded before this
+ * change sends the rename that way until it refreshes onto the new build.
+ */
+function nicknameField(body: Record<string, unknown>): string | null {
+  const value = body.nickname !== undefined ? body.nickname : body.name;
+  if (value === null) return null;
+  if (typeof value !== "string") throw invalidInput("nickname must be a string or null.");
+  return value;
+}
+
 /** For requests whose body is optional, unlike the ones objectBody guards. */
 function objectBodyOrEmpty(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -788,8 +800,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.patch("/api/v1/nodes/:nodeId", async (request) => {
     const { nodeId } = request.params as { nodeId: string };
-    const body = objectBody(request.body);
-    return dispatchStore.renameNode(requireAccountId(request), nodeId, stringField(body, "name")!);
+    return dispatchStore.setNickname(requireAccountId(request), nodeId, nicknameField(objectBody(request.body)));
   });
 
   app.delete("/api/v1/nodes/:nodeId", async (request, reply) => {
@@ -879,6 +890,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // What the client shows and edits about its own Mac. These take the node
   // credential rather than a console session: the client has no browser cookie,
   // and a machine may only ever see and change its own mapping.
+  app.patch("/api/v1/node/me", async (request) => {
+    const node = requireNode(request);
+    dispatchStore.setOwnNickname(node.nodeId, nicknameField(objectBody(request.body)));
+    const products = store.listProducts().map((product) => ({
+      id: product.id,
+      keyPrefix: product.keyPrefix,
+      name: product.name,
+    }));
+    return dispatchStore.describeSelf(node.nodeId, products);
+  });
+
   app.get("/api/v1/node/me", async (request) => {
     const node = requireNode(request);
     const products = store.listProducts().map((product) => ({

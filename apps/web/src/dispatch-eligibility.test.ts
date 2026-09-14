@@ -15,6 +15,7 @@ const item = (key: string, status: WorkItemStatus) => ({ key, status });
 const node = (overrides: Partial<DispatchNode> = {}): DispatchNode => ({
   id: "node-1",
   name: "MacBook",
+  deviceName: "MacBook",
   agents: [{ kind: "claude_code", version: "2.1.0" }],
   repos: [],
   repoCandidates: [],

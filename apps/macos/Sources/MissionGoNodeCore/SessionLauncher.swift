@@ -22,12 +22,15 @@ public struct DispatchJob: Equatable, Sendable {
     public let itemKeys: [String]
     public let repoPath: String
     public let mode: String
+    /// The machine name the session is named after (see `SessionLauncher.sessionName`).
+    public let nodeName: String
 
-    public init(dispatchId: String, itemKeys: [String], repoPath: String, mode: String) {
+    public init(dispatchId: String, itemKeys: [String], repoPath: String, mode: String, nodeName: String) {
         self.dispatchId = dispatchId
         self.itemKeys = itemKeys
         self.repoPath = repoPath
         self.mode = mode
+        self.nodeName = nodeName
     }
 }
 
@@ -99,9 +102,28 @@ public struct SessionLauncher: AgentAdapter {
         return "\(home)/Library/Logs/MissionGo"
     }
 
-    /// e.g. `MissionGo AND-37+AND-38` — the whole batch is one session.
-    public static func sessionName(for itemKeys: [String]) -> String {
-        return "MissionGo \(itemKeys.joined(separator: "+"))"
+    /// Used when the machine name is blank, so a session is never named `-HG-49`.
+    public static let fallbackNodeName = "MissionGo"
+    /// Past this many items the name lists the first few and a count instead.
+    static let sessionNameKeyLimit = 3
+
+    /// e.g. `Mac mini-AND-37+AND-38` — the whole batch is one session.
+    ///
+    /// The machine comes first because that is what tells sessions apart in
+    /// claude.ai/code once several Macs take dispatches: every one of them used
+    /// to start with the same `MissionGo`. A large batch is cut to
+    /// `Mac mini-AND-37+AND-38+AND-40 等 5 条` so the name stays short enough to
+    /// read at a glance; the full list is in the prompt either way.
+    public static func sessionName(nodeName: String, itemKeys: [String]) -> String {
+        let trimmed = nodeName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let machine = trimmed.isEmpty ? fallbackNodeName : trimmed
+        let keys: String
+        if itemKeys.count > sessionNameKeyLimit {
+            keys = "\(itemKeys.prefix(sessionNameKeyLimit).joined(separator: "+")) 等 \(itemKeys.count) 条"
+        } else {
+            keys = itemKeys.joined(separator: "+")
+        }
+        return "\(machine)-\(keys)"
     }
 
     /// The log of one dispatch, named after the dispatch id. The id arrives over
@@ -199,7 +221,7 @@ public struct SessionLauncher: AgentAdapter {
         }
 
         let prompt = try LaunchPrompt.build(itemKeys: job.itemKeys, dispatchId: job.dispatchId)
-        let sessionName = SessionLauncher.sessionName(for: job.itemKeys)
+        let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys)
         let command = try SessionLauncher.launchCommand(sessionName: sessionName, mode: job.mode, prompt: prompt)
 
         let logPath = SessionLauncher.logPath(for: job.dispatchId, in: logsDirectory)
