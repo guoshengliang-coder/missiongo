@@ -98,6 +98,7 @@ import {
 import { environmentSummary, platformName } from "./environment-summary";
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
+import { DownloadsPanel } from "./downloads-panel";
 import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog } from "@missiongo/domain";
 import { dispatchedEvent, groupTimeline } from "./timeline";
@@ -150,8 +151,6 @@ const TYPE_ICONS: Record<WorkItemType, typeof Inbox> = {
   task: ListTodo,
   note: FileText,
 };
-
-const ANDROID_APK_DOWNLOAD_PATH = "/downloads/missiongo-android-latest.apk";
 
 /**
  * Items per list page. Shared with the bootstrap request so the page it returns
@@ -430,6 +429,7 @@ export function App() {
   const [captureOpen, setCaptureOpen] = useState(false);
   const [productOpen, setProductOpen] = useState(false);
   const [connectionOpen, setConnectionOpen] = useState(false);
+  const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
@@ -982,17 +982,13 @@ export function App() {
             }}
           ><MessageSquarePlus size={15} /> {t("submitFeedback")}</button>
         )}
-        <a
+        <button
           className="text-button add-product"
-          href={ANDROID_APK_DOWNLOAD_PATH}
-          download
-          onClick={() => closeSidebar()}
-        ><Download size={15} /> {t("downloadAndroid")}</a>
-        {/* Transitional. The app moved from the SDK sample's applicationId to
-            io.missiongo.android, so Android installs it beside the old build
-            instead of replacing it. Remove this notice, its two message keys and
-            .download-note once the testers are known to be off the old package. */}
-        <p className="download-note">{t("androidReinstallNotice")}</p>
+          onClick={() => {
+            closeSidebar();
+            setDownloadsOpen(true);
+          }}
+        ><Download size={15} /> {t("downloadsEntry")}</button>
         <button className="text-button add-product" onClick={() => setProductOpen(true)}><Settings2 size={15} /> {t("manageProductsEntry")}</button>
         <div className="sidebar-utilities">
           <LanguageSwitch sidebar />
@@ -1207,6 +1203,11 @@ export function App() {
               clearItemPage();
             }}
           />
+        </Modal>
+      )}
+      {downloadsOpen && (
+        <Modal title={t("downloadsTitle")} subtitle={t("downloadsSubtitle")} onClose={() => setDownloadsOpen(false)}>
+          <DownloadsPanel />
         </Modal>
       )}
       {connectionOpen && (

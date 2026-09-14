@@ -48,19 +48,13 @@ apps/android/build/outputs/apk/debug/missiongo-android-app-debug.apk
 npm run publish:android-internal
 ```
 
-该命令读取开发机私密配置，生成递增 `versionCode` 的 **release** 签名 APK，原子替换网站的固定下载文件，把版本号记录到同目录的 `missiongo-android-latest.release`，并重新构建 Web。版本名只在 `sdks/android-feedback/gradle.properties` 的 `missiongoAndroidVersionName` 里声明一次，Gradle 和发布脚本都读它，改版本只改那一处。APK 被 Git 忽略；网站的“下载安卓版”始终指向 `/downloads/missiongo-android-latest.apk`。
+该命令读取开发机私密配置，生成递增 `versionCode` 的 **release** 签名 APK，原子替换网站的固定下载文件，把版本号记录到同目录的 `missiongo-android-latest.release`，并重新构建 Web。版本名只在 `sdks/android-feedback/gradle.properties` 的 `missiongoAndroidVersionName` 里声明一次，Gradle 和发布脚本都读它，改版本只改那一处。APK 被 Git 忽略；网站侧边栏「下载」里的安卓版始终指向 `/downloads/missiongo-android-latest.apk`。
 
 生产环境的下载文件由宿主机反向代理从自己的目录提供，`scripts/deploy.sh` 会在部署时把本次快照携带的 APK 发布到那里并原子切换软链接。因此请先执行上面的发布命令，再执行部署；否则部署会把过期的 APK 当作最新版发布出去。详见[部署说明](../../deploy/README.md)。
 
 ## 应用身份
 
 正式 App 的 applicationId 是 `io.missiongo.android`，名称取自 `@string/app_name`，图标与 `apps/web/public/icon.svg` 同源。这些值在 `product.json` 里声明一次，`npm run check` 会校验各处没有跑偏。
-
-> **一次性过渡**：该 ID 此前是 `io.missiongo.feedback.sample`，与 SDK 验证 Sample 相同，两者在同一台手机上会互相顶掉。
->
-> 改为正式 ID 后，Android 会把新版当作**另一个应用**，而不是升级——不卸载旧版的话，两个都叫 MissionGo、图标相同的条目会同时留在桌面上，且不会有任何报错提示。所以**已装旧版的手机必须先卸载再安装**。工作条目都在服务端，卸载不丢数据。
->
-> 网页下载入口已加了对应提示（`androidReinstallNotice`）。确认试用者都已切到新包名后，可以把该提示、它的两个文案键和 `.download-note` 一并删掉——`apps/web/src/App.tsx` 里有标注。此后原地升级恢复正常。
 
 ## 签名
 

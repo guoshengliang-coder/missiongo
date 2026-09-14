@@ -403,7 +403,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .mission-card p { margin: 0 0 5px; font-size: var(--text-sm); font-weight: 750; }
 .mission-card > span:last-child { display: block; color: var(--primary-fg-soft); font-size: var(--text-sm); line-height: 1.5; }
 .add-product { justify-content: flex-start; margin: 0 5px; text-decoration: none; }
-.download-note { margin: 1px 5px 4px 27px; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
 .sidebar-utilities { display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--line); }
 .sidebar-utility-button { min-height: 34px; justify-content: flex-start; gap: 7px; margin: 0 5px; text-align: left; }
 
@@ -1311,6 +1310,27 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .node-install-steps > li { padding-left: 0; }
   .node-install-steps > li::before { position: static; }
   .node-download { width: 100%; }
+}
+/* Downloads dialog: one card per thing to install, stacked so each keeps its
+   own instructions beside its own button. */
+.download-cards { display: flex; flex-direction: column; gap: 12px; }
+.download-card { padding: 14px; background: var(--surface-inset); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.download-card > header { display: flex; align-items: flex-start; gap: 11px; }
+.download-card-icon { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; color: var(--accent-text); background: var(--accent-bg); border: 1px solid var(--accent-line); border-radius: var(--radius-md); }
+.download-card h3 { margin: 1px 0 3px; font-size: var(--text-base); }
+.download-card > header p { margin: 0; color: var(--muted); font-size: var(--text-sm); line-height: 1.5; }
+.download-card-body { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 12px; padding-left: 45px; }
+.download-card-body > .node-requirements { margin: 0; }
+/* Links dressed as buttons, so the underline has to go. */
+.download-link { display: inline-flex; align-items: center; gap: 7px; text-decoration: none; }
+.download-link.secondary-button { color: var(--ink); }
+.download-skill-url { max-width: 100%; padding: 9px 11px; overflow-x: auto; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--ink); font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-sm); white-space: nowrap; user-select: all; }
+.download-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.download-actions > .secondary-button { display: inline-flex; align-items: center; gap: 7px; }
+@media (max-width: 520px) {
+  .download-card-body { align-items: stretch; padding-left: 0; }
+  .download-link, .download-actions > .secondary-button { justify-content: center; min-height: 44px; }
+  .download-actions > * { flex: 1 1 auto; }
 }
 .node-card { padding: 13px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .node-card.revoked { background: var(--surface); }
