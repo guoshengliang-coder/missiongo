@@ -14,6 +14,7 @@ import type { DispatchNode } from "./types";
 const node = (id: string, overrides: Partial<DispatchNode> = {}): DispatchNode => ({
   id,
   name: `machine ${id}`,
+  deviceName: `machine ${id}`,
   agents: [],
   repos: [],
   repoCandidates: [],

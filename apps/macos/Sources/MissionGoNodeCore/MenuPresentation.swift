@@ -69,6 +69,50 @@ public enum ServerAddress {
     }
 }
 
+// MARK: - Nickname
+
+public enum NodeNickname {
+    /// The server's limit, counted the way it counts: JavaScript string length,
+    /// i.e. UTF-16 code units, so an emoji takes two.
+    public static let maxLength = 40
+
+    public enum ValidationError: Error, Equatable, LocalizedError, Sendable {
+        case tooLong
+        case controlCharacter
+
+        public var errorDescription: String? {
+            switch self {
+            case .tooLong: return "昵称最多 \(NodeNickname.maxLength) 个字符。"
+            case .controlCharacter: return "昵称不能包含换行、制表符等控制字符。"
+            }
+        }
+    }
+
+    /// What JavaScript's `String.prototype.trim` removes. Foundation's
+    /// `whitespacesAndNewlines` differs at the edges (it keeps U+FEFF and drops
+    /// U+0085), and a name the menu accepted must not be refused by the server.
+    static let trimmed: CharacterSet = {
+        var set = CharacterSet.whitespaces
+        set.insert(charactersIn: "\u{000A}\u{000B}\u{000C}\u{000D}\u{FEFF}\u{2028}\u{2029}")
+        return set
+    }()
+
+    /// The server's rules, applied before sending so a mistake shows up next to
+    /// the field instead of as an HTTP error. Success carries what to send:
+    /// the trimmed nickname, or `nil` to clear it — an empty field means "use the
+    /// device name", exactly like 恢复为设备名.
+    public static func validate(_ input: String) -> Result<String?, ValidationError> {
+        let value = input.trimmingCharacters(in: trimmed)
+        if value.isEmpty { return .success(nil) }
+        if value.utf16.count > maxLength { return .failure(.tooLong) }
+        // The server refuses C0 controls and DEL, and nothing else.
+        if value.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
+            return .failure(.controlCharacter)
+        }
+        return .success(value)
+    }
+}
+
 // MARK: - Connection
 
 public struct ConnectionSummary: Equatable, Sendable {

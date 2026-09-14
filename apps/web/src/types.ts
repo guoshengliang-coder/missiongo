@@ -236,7 +236,12 @@ export interface RepoCandidate {
  */
 export interface DispatchNode {
   readonly id: string;
+  /** What to call the machine everywhere: the nickname when one is set, the device name otherwise. */
   readonly name: string;
+  /** What the Mac calls itself; the fallback, and what the nickname field shows as its placeholder. */
+  readonly deviceName: string;
+  /** The one name somebody chose, from this console or the macOS client. Absent when unset. */
+  readonly nickname?: string;
   readonly hostname?: string;
   readonly agents: readonly NodeAgentReport[];
   readonly repos: readonly NodeRepoMapping[];

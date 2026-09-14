@@ -14,6 +14,7 @@ import {
   type ArrivalProgress,
   type PendingArrival,
 } from "./node-install";
+import { draftDisplayName, MAX_NODE_NICKNAME_LENGTH, nicknameDraftChanged, parseNicknameDraft } from "./node-nickname";
 import { startsInManualMode, suggestRepoCandidate } from "./repo-match";
 import type { DispatchNode, Product } from "./types";
 
@@ -225,7 +226,12 @@ function NodeCard({
   onChanged: () => void | Promise<unknown>;
 }) {
   const { formatTime, t } = useI18n();
-  const [name, setName] = useState(node.name);
+  /**
+   * The nickname as typed. It starts from the nickname rather than the display
+   * name: showing the device name as the field's value would make it look like a
+   * nickname somebody set, and saving it would pin the name the Mac reports.
+   */
+  const [nicknameDraft, setNicknameDraft] = useState(node.nickname ?? "");
   /**
    * Only the fields somebody has typed in. The machine heartbeats, so this list
    * is refetched while the form is open; holding every path in state meant each
@@ -242,7 +248,10 @@ function NodeCard({
   const saved = repoPaths(node);
   const candidates = node.repoCandidates;
   const configured: Readonly<Record<string, string>> = { ...saved, ...drafts };
-  useEffect(() => setName(node.name), [node.name]);
+  // Keyed on the nickname alone: it changes when somebody saves one here or in
+  // the macOS client, not on every heartbeat, so a half-typed draft survives.
+  useEffect(() => setNicknameDraft(node.nickname ?? ""), [node.nickname]);
+  const parsedNickname = parseNicknameDraft(nicknameDraft);
 
   const mappableProducts = products.filter((product) => !product.archivedAt || configured[product.id]);
   /**
@@ -272,10 +281,20 @@ function NodeCard({
     ...Object.fromEntries(rows.map((row) => [row.product.id, row.value])),
   };
 
-  const renameMutation = useMutation({
-    mutationFn: () => api.renameNode(node.id, { name: name.trim() }),
-    onSuccess: async () => { await onChanged(); },
+  const nicknameMutation = useMutation({
+    // Takes the value rather than reading the draft, so "use device name" can
+    // clear the nickname without first emptying the field and waiting a render.
+    mutationFn: (nickname: string | null) => api.setNodeNickname(node.id, nickname),
+    onSuccess: async (_updated, nickname) => {
+      setNicknameDraft(nickname ?? "");
+      await onChanged();
+    },
   });
+  // Any key product works for the example; one of this workspace's reads as a
+  // real session name rather than a placeholder.
+  const exampleKeyPrefix = products.find((product) => !product.archivedAt)?.keyPrefix ?? products[0]?.keyPrefix;
+  const exampleName = draftDisplayName(nicknameDraft, node);
+  const sessionNameExample = exampleKeyPrefix ? `${exampleName}-${exampleKeyPrefix}-37` : exampleName;
   const revokeMutation = useMutation({
     mutationFn: () => api.revokeNode(node.id),
     onSuccess: async () => { await onChanged(); },
@@ -301,17 +320,41 @@ function NodeCard({
   return (
     <article className={`node-card ${node.revokedAt ? "revoked" : ""}`}>
       <header>
-        <label className="node-name-field">{t("nodeName")}
-          <input value={name} onChange={(event) => setName(event.target.value)} maxLength={100} disabled={Boolean(node.revokedAt)} />
+        {/* No maxLength: the browser would silently cut a pasted name at the
+            limit, where the message below says why it cannot be saved. */}
+        <label className="node-name-field">{t("nodeNickname")}
+          <input
+            value={nicknameDraft}
+            onChange={(event) => {
+              setNicknameDraft(event.target.value);
+              // A refusal is about the value that was sent; once it is edited,
+              // the old message would describe something no longer on screen.
+              if (nicknameMutation.isError) nicknameMutation.reset();
+            }}
+            placeholder={node.deviceName}
+            disabled={Boolean(node.revokedAt)}
+          />
         </label>
         <button
           type="button"
           className="secondary-button"
-          disabled={!name.trim() || name.trim() === node.name || renameMutation.isPending || Boolean(node.revokedAt)}
-          onClick={() => renameMutation.mutate()}
+          disabled={!parsedNickname.ok || !nicknameDraftChanged(nicknameDraft, node) || nicknameMutation.isPending || Boolean(node.revokedAt)}
+          onClick={() => {
+            if (parsedNickname.ok) nicknameMutation.mutate(parsedNickname.nickname);
+          }}
         >
-          {renameMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
+          {nicknameMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
         </button>
+        {node.nickname && !node.revokedAt && (
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={nicknameMutation.isPending}
+            onClick={() => nicknameMutation.mutate(null)}
+          >
+            {t("nodeRestoreDeviceName")}
+          </button>
+        )}
         {!node.revokedAt && (
           <button
             type="button"
@@ -325,6 +368,22 @@ function NodeCard({
           </button>
         )}
       </header>
+      <div className="node-nickname-notes">
+        {node.nickname && <small>{t("nodeDeviceName", { name: node.deviceName })}</small>}
+        {!node.revokedAt && <small>{t("nodeNicknameHelp", { example: sessionNameExample })}</small>}
+        {/* Next to the field rather than with the card's other errors: the
+            server's rules here are about what was just typed into it. */}
+        {!parsedNickname.ok && (
+          <div className="inline-error" role="alert">
+            <CirclePause size={16} /><span>{t("nodeNicknameTooLong", { max: MAX_NODE_NICKNAME_LENGTH })}</span>
+          </div>
+        )}
+        {nicknameMutation.error && (
+          <div className="inline-error" role="alert">
+            <CirclePause size={16} /><span>{nodeErrorMessage(nicknameMutation.error, t("somethingWentWrong"))}</span>
+          </div>
+        )}
+      </div>
       <div className="node-facts">
         <span className={`status-pill ${node.revokedAt ? "status-cancelled" : node.online ? "status-ready" : "status-inbox"}`}>{state}</span>
         <small>{node.lastSeenAt ? t("nodeLastSeen", { time: formatTime(node.lastSeenAt) }) : t("nodeNeverSeen")}</small>
@@ -403,7 +462,7 @@ function NodeCard({
       </div>
 
       {/* The absolute-path rule is the server's, so its wording is the server's too. */}
-      {[renameMutation.error, revokeMutation.error, reposMutation.error].map((error, index) => error && (
+      {[revokeMutation.error, reposMutation.error].map((error, index) => error && (
         <div className="inline-error" key={index}><CirclePause size={16} /><span>{nodeErrorMessage(error, t("somethingWentWrong"))}</span></div>
       ))}
     </article>

@@ -117,6 +117,10 @@ public final class NodeLoop: @unchecked Sendable {
 
     let api: NodeAPI
     let adapters: [AgentAdapter]
+    /// The name sessions carry when the server does not say (one from before
+    /// nicknames). Such a server has no nickname to offer, so the name stored at
+    /// login is exactly what it would have sent.
+    let fallbackNodeName: String
     let detectRepoCandidates: @Sendable () -> [RepoCandidate]
     let timing: Timing
     let log: @Sendable (String) -> Void
@@ -134,6 +138,7 @@ public final class NodeLoop: @unchecked Sendable {
     public init(
         api: NodeAPI,
         adapters: [AgentAdapter],
+        fallbackNodeName: String,
         detectRepoCandidates: @escaping @Sendable () -> [RepoCandidate] = { RepoCandidates.detect() },
         timing: Timing = Timing(),
         log: @escaping @Sendable (String) -> Void = { NSLog("%@", $0) },
@@ -141,6 +146,7 @@ public final class NodeLoop: @unchecked Sendable {
     ) {
         self.api = api
         self.adapters = adapters
+        self.fallbackNodeName = fallbackNodeName
         self.detectRepoCandidates = detectRepoCandidates
         self.timing = timing
         self.log = log
@@ -327,7 +333,10 @@ public final class NodeLoop: @unchecked Sendable {
         do {
             let launched = try await adapter.launch(DispatchJob(
                 dispatchId: request.dispatchId, itemKeys: request.itemKeys,
-                repoPath: request.repoPath, mode: request.mode
+                repoPath: request.repoPath, mode: request.mode,
+                // Read per dispatch rather than at login, so a nickname changed in
+                // the console or the menu names the very next session.
+                nodeName: request.nodeName ?? fallbackNodeName
             ))
             log("会话「\(launched.sessionName)」已启动，日志 \(launched.logPath)")
             if let url = launched.sessionUrl {

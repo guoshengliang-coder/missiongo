@@ -119,7 +119,10 @@ function normalizeNickname(value: string | null): string | null {
   if (nickname.length > MAX_NICKNAME_LENGTH) {
     throw invalidInput(`Nickname must be ${MAX_NICKNAME_LENGTH} characters or fewer.`);
   }
-  if (/[\u0000-\u001f\u007f]/.test(nickname)) throw invalidInput("Nickname cannot contain control characters.");
+  for (let position = 0; position < nickname.length; position += 1) {
+    const code = nickname.charCodeAt(position);
+    if (code <= 0x1f || code === 0x7f) throw invalidInput("Nickname cannot contain control characters.");
+  }
   return nickname;
 }
 

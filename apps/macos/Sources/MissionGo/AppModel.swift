@@ -50,6 +50,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var loopState = NodeLoopState()
     @Published private(set) var profile: NodeProfile?
     @Published private(set) var profileError: String?
+    @Published private(set) var savingNickname = false
+    @Published private(set) var nicknameError: String?
     @Published private(set) var repos: [RepoMapping] = []
     @Published private(set) var repoNotices: [String: RepoNotice] = [:]
     @Published private(set) var savingProductIds: Set<String> = []
@@ -176,6 +178,8 @@ final class AppModel: ObservableObject {
         loopState = NodeLoopState()
         profile = nil
         profileError = nil
+        savingNickname = false
+        nicknameError = nil
         repos = []
         repoNotices = [:]
         dispatches = []
@@ -213,7 +217,8 @@ final class AppModel: ObservableObject {
         // A loop runs once; every login gets a fresh one.
         let loop = NodeLoop(
             api: APIClient(serverUrl: credential.serverUrl, token: credential.token),
-            adapters: [SessionLauncher(environment: environment)]
+            adapters: [SessionLauncher(environment: environment)],
+            fallbackNodeName: credential.name
         )
         loopStatesTask = Task { [weak self] in
             for await state in loop.states {
@@ -428,6 +433,57 @@ final class AppModel: ObservableObject {
     private func refreshCandidates() {
         Task {
             candidates = await Task.detached { RepoCandidates.detect() }.value
+        }
+    }
+
+    // MARK: Nickname
+
+    /// Whether the server behind this login can store a nickname. One from
+    /// before nicknames sends no `deviceName`, and offering an edit that server
+    /// can only refuse is worse than not offering it.
+    var canEditNickname: Bool {
+        return profile?.node.deviceName != nil
+    }
+
+    func clearNicknameError() {
+        nicknameError = nil
+    }
+
+    /// Validates, sends, and takes the answer as the new profile. `true` once
+    /// the server has it, so the field can close; on `false` the reason is in
+    /// `nicknameError`, next to the field.
+    func saveNickname(_ input: String) async -> Bool {
+        guard let credential, !savingNickname else { return false }
+        let nickname: String?
+        switch NodeNickname.validate(input) {
+        case let .success(value):
+            nickname = value
+        case let .failure(error):
+            nicknameError = error.localizedDescription
+            return false
+        }
+        // Nothing to change: close without a request.
+        if nickname == profile?.node.nickname {
+            nicknameError = nil
+            return true
+        }
+        savingNickname = true
+        nicknameError = nil
+        defer { savingNickname = false }
+        do {
+            // The PATCH answers with the whole profile, so it is applied as the
+            // refreshed one instead of asking again.
+            let updated = try await APIClient(serverUrl: credential.serverUrl, token: credential.token)
+                .updateNickname(nickname)
+            guard self.credential == credential else { return false }
+            profile = updated
+            repos = updated.repos
+            profileError = nil
+            return true
+        } catch {
+            guard self.credential == credential, !isRevoked(error) else { return false }
+            nicknameError = error.localizedDescription
+            return false
         }
     }
 

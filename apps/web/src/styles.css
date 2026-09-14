@@ -1310,9 +1310,14 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 }
 .node-card { padding: 13px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .node-card.revoked { background: var(--surface); }
-.node-card > header { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 8px; margin-bottom: 10px; }
+/* Flex rather than a fixed grid: "use device name" only exists while a nickname
+   is set, and a grid would keep an empty column's gap for it. */
+.node-card > header { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-bottom: 10px; }
 .node-card > header .secondary-button { height: 38px; white-space: nowrap; }
-.node-name-field { min-width: 0; }
+.node-name-field { flex: 1 1 200px; min-width: 0; }
+.node-nickname-notes { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.node-nickname-notes:empty { display: none; }
+.node-nickname-notes small { color: var(--muted); font-size: var(--text-xs); line-height: 1.55; }
 .node-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 7px; }
 .node-facts small { color: var(--muted); font-size: var(--text-xs); }
 .node-facts code { font-family: "SFMono-Regular", Consolas, monospace; }
