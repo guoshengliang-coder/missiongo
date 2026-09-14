@@ -165,7 +165,11 @@ export const INITIAL_SCHEMA = `
     -- that adds it: this schema runs before migrations, when an existing database
     -- does not have the column yet.
     installation_id TEXT,
+    -- The Mac's own name, as the client reports it on every sign-in.
     name TEXT NOT NULL,
+    -- What a person chose to call it, from the console or the client. Null means
+    -- the device name is used; it prefixes every session name the Mac starts.
+    nickname TEXT,
     hostname TEXT,
     token_hash TEXT NOT NULL UNIQUE,
     agents_json TEXT NOT NULL DEFAULT '[]',
