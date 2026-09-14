@@ -73,6 +73,7 @@ import {
   type Component,
   type ComponentKind,
   type CreatedSdkToken,
+  type ActiveDispatch,
   type Dispatch,
   type TransitionAction,
   type WorkItem,
@@ -86,6 +87,12 @@ import {
   type WorkItemType,
 } from "./types";
 import { androidFeedbackBridge, androidMediaDeletion, reportAndroidBackDepth } from "./android-bridge";
+import {
+  ACTIVE_DISPATCHES_QUERY_KEY,
+  ACTIVE_DISPATCHES_REFETCH_MS,
+  activeDispatchStatusKey,
+  activeDispatchesByItem,
+} from "./dispatch-conflicts";
 import { DispatchDialog } from "./dispatch-dialog";
 import {
   agentLabelKey,
@@ -755,6 +762,19 @@ export function App() {
     () => new Map((componentsQuery.data ?? []).map((component) => [component.id, component])),
     [componentsQuery.data],
   );
+  // Marks rows that were dispatched and not claimed yet. Its own query rather
+  // than a field on the item: the list pages are cached on disk and refetched on
+  // their own schedule, and whether a Mac has picked the work up moves faster.
+  const activeDispatchesQuery = useQuery({
+    queryKey: ACTIVE_DISPATCHES_QUERY_KEY,
+    queryFn: api.listActiveDispatches,
+    enabled: bootstrapQuery.isSuccess,
+    refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
+  });
+  const activeDispatches = useMemo(
+    () => activeDispatchesByItem(activeDispatchesQuery.data?.active ?? []),
+    [activeDispatchesQuery.data],
+  );
   const visibleItems = items;
   const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(isMediaAttachment));
   const selectedItems = visibleItems.filter((item) => selectedItemKeys.has(item.key));
@@ -1115,6 +1135,7 @@ export function App() {
                   item={item}
                   selected={item.key === selectedItemKey}
                   checked={selectedItemKeys.has(item.key)}
+                  activeDispatch={activeDispatches.get(item.key)}
                   onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item))}
                   sourceComponent={item.sourceComponentId ? componentsById.get(item.sourceComponentId) : undefined}
                   showAttachmentColumn={showAttachmentColumn}
@@ -1183,6 +1204,7 @@ export function App() {
               setSelectedItemKeys(new Set());
               setNotice(t("dispatchSent", { node: dispatch.nodeName }));
               void queryClient.invalidateQueries({ queryKey: ["items"] });
+              void queryClient.invalidateQueries({ queryKey: ACTIVE_DISPATCHES_QUERY_KEY });
               // The dispatch wrote a `dispatched` event on every item in the
               // batch, so an open detail pane is already out of date.
               for (const itemKey of dispatch.itemKeys) {
@@ -1270,6 +1292,7 @@ function ItemRow({
   showAttachmentColumn,
   selected,
   checked,
+  activeDispatch,
   onToggleChecked,
   onOpen,
   onEdit,
@@ -1280,12 +1303,14 @@ function ItemRow({
   showAttachmentColumn: boolean;
   selected: boolean;
   checked: boolean;
+  /** The dispatch of this item nobody has claimed yet, if there is one. */
+  activeDispatch: ActiveDispatch | undefined;
   onToggleChecked: () => void;
   onOpen: () => void;
   onEdit: () => void;
   onNotice: (message: string) => void;
 }) {
-  const { formatTime, priorityLabel, statusLabel, t, typeLabel } = useI18n();
+  const { formatTime, locale, priorityLabel, statusLabel, t, typeLabel } = useI18n();
   const TypeIcon = TYPE_ICONS[item.type];
   const environment = item.environment;
   const overview = item.report?.overview ?? item.description;
@@ -1299,6 +1324,10 @@ function ItemRow({
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
   const contextDetails = environmentSummary(environment, Boolean(sourceComponent), t);
   const dispatchable = isDispatchable(item.status);
+  // Only on a ready row: the list can refetch before the dispatch list does, and
+  // an item a session has just claimed must not still read as waiting on a Mac.
+  const pendingDispatch = dispatchable ? activeDispatch : undefined;
+  const pendingDispatchStatusKey = pendingDispatch ? activeDispatchStatusKey(pendingDispatch.status) : null;
   return (
     <article
       className={`item-row ${selected ? "selected" : ""}`}
@@ -1327,6 +1356,27 @@ function ItemRow({
           <span className="item-copy">
             <span className="item-title-line">
               <code>{item.key}</code>
+              {/* Before the title so it is never the part cut off: it is what
+                  stops a second session being started on this item. The time is
+                  given absolutely too, since a relative one goes stale in a tab
+                  left open. */}
+              {pendingDispatch && (
+                <small
+                  className="item-dispatch-badge"
+                  title={t("activeDispatchBadgeTitle", {
+                    status: pendingDispatchStatusKey ? t(pendingDispatchStatusKey) : pendingDispatch.status,
+                    time: formatTime(pendingDispatch.createdAt),
+                    at: new Date(pendingDispatch.createdAt).toLocaleString(locale, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    }),
+                  })}
+                >
+                  {t("activeDispatchBadge", { node: pendingDispatch.nodeName })}
+                </small>
+              )}
               <span className="item-title">{item.title}</span>
               <span className="item-evidence-summary">
                 {item.type === "bug" && item.report?.reproductionSteps && <small className="evidence-strong">{t("hasReproduction")}</small>}

@@ -49,6 +49,50 @@ describe("administrator account API", () => {
   });
 });
 
+describe("dispatch API", () => {
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": status === 200 ? "application/json" : "application/problem+json" },
+  });
+  const input = { nodeId: "node-1", agentKind: "claude_code", mode: "plan", itemKeys: ["AND-37"] } as const;
+
+  it("lists the unclaimed dispatches with the session cookie", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ active: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await api.listActiveDispatches()).toEqual({ active: [] });
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/dispatches/active", expect.objectContaining({ credentials: "same-origin" }));
+  });
+
+  it("leaves force out of an ordinary dispatch, so the server still refuses a duplicate", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.createDispatch(input);
+
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).not.toHaveProperty("force");
+  });
+
+  it("sends force when the person confirmed the earlier session is gone", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.createDispatch({ ...input, force: true });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/dispatches", expect.objectContaining({ method: "POST" }));
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toEqual({ ...input, force: true });
+  });
+
+  it("carries the duplicate refusal's code, which the dialog turns into its own wording", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({
+      code: "item_already_dispatched",
+      title: "Already dispatched and not yet claimed: AND-37 → Mac mini（launched）.",
+    }, 409)));
+
+    await expect(api.createDispatch(input)).rejects.toMatchObject({ status: 409, code: "item_already_dispatched" });
+  });
+});
+
 describe("machine nickname API", () => {
   const nodeResponse = () => new Response(JSON.stringify({ id: "node 1", name: "Mac mini", deviceName: "Mac mini" }), {
     status: 200,

@@ -1,10 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { CirclePause, LoaderCircle, Rocket } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CirclePause, LoaderCircle, Rocket, TriangleAlert } from "lucide-react";
 
 import { AGENT_KINDS, DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
+import {
+  ACTIVE_DISPATCHES_QUERY_KEY,
+  ACTIVE_DISPATCHES_REFETCH_MS,
+  activeDispatchStatusKey,
+  activeDispatchesByItem,
+  conflictSignature,
+  dispatchConflicts,
+  includesQueued,
+} from "./dispatch-conflicts";
 import {
   NODE_INELIGIBILITY_KEYS,
   SUPPORTED_AGENT_KINDS,
@@ -71,18 +80,35 @@ export function DispatchDialog({
   onDispatched: (dispatch: Dispatch) => void;
   onClose: () => void;
 }) {
-  const { t } = useI18n();
+  const { formatTime, t } = useI18n();
+  const queryClient = useQueryClient();
   const [agentKind, setAgentKind] = useState<AgentKind>("claude_code");
   const [mode, setMode] = useState<string>(DEFAULT_MODE);
   const [nodeId, setNodeId] = useState("");
   // Held here rather than read back from the selection: dispatching clears the
   // selection, and the confirmation has to keep saying what was sent.
   const [created, setCreated] = useState<Dispatch | null>(null);
+  // Which set of earlier dispatches the person said were gone, rather than a
+  // plain boolean: if a refetch turns up another one, that tick was not about it.
+  const [acknowledgedConflicts, setAcknowledgedConflicts] = useState<string | null>(null);
 
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
   const nodes = nodesQuery.data?.nodes ?? [];
   const itemKeys = useMemo(() => items.map((item) => item.key), [items]);
   const productIds = useMemo(() => [...new Set(items.map((item) => item.productId))], [items]);
+  const activeQuery = useQuery({
+    queryKey: ACTIVE_DISPATCHES_QUERY_KEY,
+    queryFn: api.listActiveDispatches,
+    refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
+  });
+  // Not waited for: while it loads, or if it fails, the server still refuses a
+  // second dispatch, and that refusal brings the notice below with it.
+  const conflicts = useMemo(
+    () => dispatchConflicts(itemKeys, activeDispatchesByItem(activeQuery.data?.active ?? [])),
+    [activeQuery.data, itemKeys],
+  );
+  const conflictsKey = conflictSignature(conflicts);
+  const redispatchConfirmed = conflicts.length > 0 && acknowledgedConflicts === conflictsKey;
   const ineligibility = useMemo(
     () => new Map(nodes.map((node) => [node.id, nodeIneligibility(node, { productIds, agentKind })])),
     [agentKind, nodes, productIds],
@@ -98,10 +124,19 @@ export function DispatchDialog({
   }, [ineligibility, nodeId, nodes]);
 
   const mutation = useMutation({
-    mutationFn: () => api.createDispatch({ nodeId, agentKind, mode, itemKeys }),
+    // `force` only ever follows the tick: without conflicts it is left off, so
+    // a dispatch that raced another one is refused instead of silently doubled.
+    mutationFn: () => api.createDispatch({ nodeId, agentKind, mode, itemKeys, ...(redispatchConfirmed ? { force: true } : {}) }),
     onSuccess: (dispatch) => {
       setCreated(dispatch);
       onDispatched(dispatch);
+    },
+    onError: (error) => {
+      // Someone dispatched one of these after the dialog last looked. Fetch now
+      // so the notice and its checkbox are there when the person reads the error.
+      if (error instanceof ApiError && error.code === "item_already_dispatched") {
+        void queryClient.invalidateQueries({ queryKey: ACTIVE_DISPATCHES_QUERY_KEY });
+      }
     },
   });
 
@@ -152,7 +187,7 @@ export function DispatchDialog({
 
   const selectedReason = nodeId ? ineligibility.get(nodeId) ?? null : null;
   const modes = DISPATCH_MODES_BY_AGENT[agentKind];
-  const blocked = !nodeId || Boolean(selectedReason) || itemKeys.length === 0;
+  const blocked = !nodeId || Boolean(selectedReason) || itemKeys.length === 0 || (conflicts.length > 0 && !redispatchConfirmed);
 
   return (
     <form
@@ -170,6 +205,37 @@ export function DispatchDialog({
           ))}
         </ul>
       </div>
+
+      {conflicts.length > 0 && (
+        <div className="dispatch-conflict" role="alert">
+          <p className="dispatch-conflict-heading"><TriangleAlert size={15} aria-hidden="true" /> {t("dispatchConflictHeading")}</p>
+          <ul>
+            {conflicts.map((entry) => {
+              const statusKey = activeDispatchStatusKey(entry.status);
+              return (
+                <li key={entry.itemKey}>
+                  {t("dispatchConflictLine", {
+                    key: entry.itemKey,
+                    node: entry.nodeName,
+                    status: statusKey ? t(statusKey) : entry.status,
+                    time: formatTime(entry.createdAt),
+                  })}
+                </li>
+              );
+            })}
+          </ul>
+          <p>{t("dispatchConflictExplain")}</p>
+          {includesQueued(conflicts) && <p>{t("dispatchConflictQueuedCancelled")}</p>}
+          <label className="dispatch-conflict-confirm">
+            <input
+              type="checkbox"
+              checked={redispatchConfirmed}
+              onChange={(event) => setAcknowledgedConflicts(event.target.checked ? conflictsKey : null)}
+            />
+            <span>{t("dispatchConflictConfirm")}</span>
+          </label>
+        </div>
+      )}
 
       <label>{t("dispatchNode")}
         <select value={nodeId} onChange={(event) => setNodeId(event.target.value)} disabled={nodes.length === 0}>

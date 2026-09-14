@@ -1,4 +1,5 @@
 import type {
+  ActiveDispatch,
   Component,
   CreatedSdkToken,
   CreateDispatchInput,
@@ -298,6 +299,9 @@ export const api = {
     }),
   createDispatch: (input: CreateDispatchInput) =>
     request<Dispatch>("/api/v1/dispatches", { method: "POST", body: JSON.stringify(input) }),
+  // Ready items already sent to a machine and not yet claimed, so the list can
+  // say so before somebody sends one again.
+  listActiveDispatches: () => request<{ active: ActiveDispatch[] }>("/api/v1/dispatches/active"),
   listItemDispatches: (itemKey: string) =>
     request<{ dispatches: Dispatch[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/dispatches`),
 };
