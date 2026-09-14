@@ -31,6 +31,7 @@ import {
   MoreHorizontal,
   Paperclip,
   Plus,
+  RefreshCw,
   Rocket,
   RotateCcw,
   Search,
@@ -97,6 +98,7 @@ import {
 import { environmentSummary, platformName } from "./environment-summary";
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
+import { DownloadsPanel } from "./downloads-panel";
 import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog } from "@missiongo/domain";
 import { dispatchedEvent, groupTimeline } from "./timeline";
@@ -149,8 +151,6 @@ const TYPE_ICONS: Record<WorkItemType, typeof Inbox> = {
   task: ListTodo,
   note: FileText,
 };
-
-const ANDROID_APK_DOWNLOAD_PATH = "/downloads/missiongo-android-latest.apk";
 
 /**
  * Items per list page. Shared with the bootstrap request so the page it returns
@@ -429,6 +429,7 @@ export function App() {
   const [captureOpen, setCaptureOpen] = useState(false);
   const [productOpen, setProductOpen] = useState(false);
   const [connectionOpen, setConnectionOpen] = useState(false);
+  const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
@@ -981,17 +982,13 @@ export function App() {
             }}
           ><MessageSquarePlus size={15} /> {t("submitFeedback")}</button>
         )}
-        <a
+        <button
           className="text-button add-product"
-          href={ANDROID_APK_DOWNLOAD_PATH}
-          download
-          onClick={() => closeSidebar()}
-        ><Download size={15} /> {t("downloadAndroid")}</a>
-        {/* Transitional. The app moved from the SDK sample's applicationId to
-            io.missiongo.android, so Android installs it beside the old build
-            instead of replacing it. Remove this notice, its two message keys and
-            .download-note once the testers are known to be off the old package. */}
-        <p className="download-note">{t("androidReinstallNotice")}</p>
+          onClick={() => {
+            closeSidebar();
+            setDownloadsOpen(true);
+          }}
+        ><Download size={15} /> {t("downloadsEntry")}</button>
         <button className="text-button add-product" onClick={() => setProductOpen(true)}><Settings2 size={15} /> {t("manageProductsEntry")}</button>
         <div className="sidebar-utilities">
           <LanguageSwitch sidebar />
@@ -1036,9 +1033,18 @@ export function App() {
               <p className="eyebrow">{t("productWorkspace", { prefix: selectedProduct?.keyPrefix ?? "" })}</p>
               <h1>{statusFilter === "all" ? t("allWork") : statusLabel(statusFilter)}</h1>
             </div>
-            <div className="workspace-stats" aria-label={t("workspaceSummary")}>
-              <span><strong>{openCount}</strong> {t("open")}</span>
-              <span><strong>{verifyCount}</strong> {t("toVerify")}</span>
+            <div className="workspace-head-side">
+              <div className="workspace-stats" aria-label={t("workspaceSummary")}>
+                <span><strong>{openCount}</strong> {t("open")}</span>
+                <span><strong>{verifyCount}</strong> {t("toVerify")}</span>
+              </div>
+              {/* Nothing pushes changes to the console: items the SDK or an AI
+                  creates elsewhere only show up on a refetch, so give people
+                  one they can ask for. Counts come from the same query. */}
+              <RefreshButton
+                refreshing={itemsQuery.isFetching}
+                onRefresh={() => queryClient.invalidateQueries({ queryKey: ["items"] })}
+              />
             </div>
           </section>
 
@@ -1197,6 +1203,11 @@ export function App() {
               clearItemPage();
             }}
           />
+        </Modal>
+      )}
+      {downloadsOpen && (
+        <Modal title={t("downloadsTitle")} subtitle={t("downloadsSubtitle")} onClose={() => setDownloadsOpen(false)}>
+          <DownloadsPanel />
         </Modal>
       )}
       {connectionOpen && (
@@ -1947,6 +1958,7 @@ function DetailPane({
               {quickActionLabel(item.status, t)}
             </button>
           )}
+          <RefreshButton refreshing={itemQuery.isFetching || timelineQuery.isFetching} onRefresh={refreshItem} />
           <button className="secondary-button" onClick={() => setEditing(true)}>{t("edit")}</button>
           <details className="detail-more-menu" ref={moreActionsRef}>
             <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={19} /></summary>
@@ -3893,6 +3905,22 @@ function AccountPanel({ user, onLoggedOut }: { user: AuthenticatedUser; onLogged
         {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <LogOut size={16} />} {t("signOut")}
       </button>
     </div>
+  );
+}
+
+function RefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: () => unknown }) {
+  const { t } = useI18n();
+  return (
+    <button
+      type="button"
+      className="secondary-button refresh-button"
+      disabled={refreshing}
+      onClick={() => void onRefresh()}
+      aria-label={t("refresh")}
+      title={t("refresh")}
+    >
+      <RefreshCw className={refreshing ? "spin" : undefined} size={16} />
+    </button>
   );
 }
 
