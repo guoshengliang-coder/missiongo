@@ -465,8 +465,8 @@ export function ImageAnnotator({
       <footer className="annotator-actions">
         <p className="annotator-hint">{t("annotateOverwriteHint")}</p>
         <div>
-          <button type="button" className="ghost" onClick={onCancel} disabled={saving}>{t("cancel")}</button>
-          <button type="button" className="primary" onClick={save} disabled={!ready || saving || Boolean(loadError)}>
+          <button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>{t("cancel")}</button>
+          <button type="button" className="primary-button" onClick={save} disabled={!ready || saving || Boolean(loadError)}>
             {saving ? <Loader2 size={16} className="spin" aria-hidden="true" /> : null}
             {t("annotateSave")}
           </button>
