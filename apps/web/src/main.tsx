@@ -6,6 +6,9 @@ import { BootSkeleton } from "./BootSkeleton";
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { I18nProvider } from "./i18n";
 import { persistQueryCache, restorePersistedQueryCache } from "./query-persistence";
+import { hasUnsavedInput } from "./unsaved-changes";
+import { UpdateBanner } from "./UpdateBanner";
+import { startVersionWatch } from "./version-check";
 import "./styles.css";
 
 const queryClient = new QueryClient({
@@ -47,6 +50,7 @@ createRoot(document.getElementById("root")!).render(
             <RootPage />
           </Suspense>
         </ErrorBoundary>
+        <UpdateBanner />
       </I18nProvider>
     </QueryClientProvider>
   </StrictMode>,
@@ -56,4 +60,11 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     void navigator.serviceWorker.register("/sw.js");
   });
+}
+
+// Independent of the service worker: a browser that never installed one, or an
+// Android app left in the background for days, still has to find out that the
+// build it is running has been replaced.
+if (import.meta.env.PROD) {
+  startVersionWatch({ hasUnsavedInput });
 }
