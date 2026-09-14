@@ -3489,7 +3489,6 @@ function ProductManager({
           <ProductSettings
             key={activeProduct.id}
             product={activeProduct}
-            products={products}
             onSelected={() => onSelectProduct(activeProduct)}
           />
         )}
@@ -3549,13 +3548,9 @@ function ProductIconField({ product }: { product: Product }) {
 
 function ProductSettings({
   product,
-  products,
   onSelected,
 }: {
   product: Product;
-  // The machines tab needs every product, not this one: its table is the mapping
-  // from each product to that machine's checkout of it.
-  products: readonly Product[];
   onSelected: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -3644,7 +3639,7 @@ function ProductSettings({
         </button>
       </div>
       {activeSettingsTab === "nodes" ? (
-        <NodeSettings products={products} />
+        <NodeSettings product={product} />
       ) : activeSettingsTab === "tokens" ? (
         <SdkTokenSettings product={product} />
       ) : activeSettingsTab === "product" ? (
