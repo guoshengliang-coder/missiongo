@@ -1,5 +1,13 @@
 import { useEffect } from "react";
 
+// How many forms currently hold input that only lives in memory. Read by the
+// version watcher, which must not reload a page out from under someone typing.
+let activeGuards = 0;
+
+export function hasUnsavedInput(): boolean {
+  return activeGuards > 0;
+}
+
 /**
  * Make the browser confirm before a form with typed-but-unsent input is left.
  *
@@ -25,6 +33,10 @@ export function useUnsavedChangesGuard(hasUnsavedInput: boolean): void {
     };
 
     window.addEventListener("beforeunload", confirmLeaving);
-    return () => window.removeEventListener("beforeunload", confirmLeaving);
+    activeGuards += 1;
+    return () => {
+      window.removeEventListener("beforeunload", confirmLeaving);
+      activeGuards -= 1;
+    };
   }, [hasUnsavedInput]);
 }

@@ -6,6 +6,9 @@
 // so a client that cached a shell before v4 kept serving it indefinitely and had
 // no way out. Editing this file at all is what re-runs install; the bump is what
 // throws the poisoned cache away.
+//
+// Not bumped for the build-update notice: that changes no cached content, and
+// editing this file is already what makes browsers install the new worker.
 const CACHE_NAME = "missiongo-shell-v4";
 const SHELL = ["/", "/icon.svg", "/manifest.webmanifest"];
 
@@ -52,10 +55,21 @@ self.addEventListener("fetch", (event) => {
       // path before; serving from cache while online makes it load-bearing.
       const cached = (await caches.match(request)) || (await caches.match("/"));
       if (cached && await shellIsComplete(cached.clone())) {
+        const servedEntry = entryScriptOf(await cached.clone().text());
         event.waitUntil((async () => {
           try {
             const fresh = await fetch(request);
-            if (fresh.ok) await putDocument(request, fresh);
+            if (!fresh.ok) return;
+            const freshEntry = entryScriptOf(await fresh.clone().text());
+            await putDocument(request, fresh);
+            // The page just got yesterday's build. Say so now, instead of leaving
+            // it to be discovered on a launch that — for an Android app parked in
+            // the background — may not happen for days. The page decides whether
+            // reloading is safe.
+            if (freshEntry && servedEntry && freshEntry !== servedEntry) {
+              const windows = await self.clients.matchAll({ type: "window" });
+              for (const client of windows) client.postMessage({ type: "missiongo:document-updated" });
+            }
           } catch {
             // Offline. The copy just served is still the right answer.
           }
@@ -119,6 +133,13 @@ async function dropCachedDocuments() {
       .filter((key) => key.mode === "navigate" || new URL(key.url).pathname === "/")
       .map((key) => cache.delete(key)),
   );
+}
+
+/** The hashed entry module a document loads. Mirrors entryScriptOf in src/version-check.ts. */
+function entryScriptOf(html) {
+  const match = /<script\b[^>]*\btype="module"[^>]*\bsrc="(\/assets\/[^"]+\.js)"/i.exec(html)
+    || /<script\b[^>]*\bsrc="(\/assets\/[^"]+\.js)"[^>]*\btype="module"/i.exec(html);
+  return match ? match[1] : undefined;
 }
 
 /** True when every hashed asset the cached document references is cached as well. */
