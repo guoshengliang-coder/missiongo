@@ -279,4 +279,24 @@ export interface CreateDispatchInput {
   readonly agentKind: AgentKind;
   readonly mode: string;
   readonly itemKeys: readonly string[];
+  /**
+   * Dispatch even though some of these items were already sent and not yet
+   * claimed. Only set after a person has said the earlier session is gone: the
+   * server otherwise refuses, because two sessions would start on one item.
+   */
+  readonly force?: boolean;
+}
+
+/**
+ * A ready item that was dispatched and has not been claimed yet, as the server
+ * reports it: one entry per item, its most recent such dispatch. `status` is
+ * typed as the three active states but read as a string wherever it is shown,
+ * for the same reason `dispatchStatusLabelKey` takes one.
+ */
+export interface ActiveDispatch {
+  readonly dispatchId: string;
+  readonly itemKey: string;
+  readonly nodeName: string;
+  readonly status: Extract<DispatchStatus, "queued" | "delivered" | "launched">;
+  readonly createdAt: string;
 }

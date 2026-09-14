@@ -826,6 +826,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     };
   });
 
+  // Ready items that were dispatched and not yet claimed, for the list to mark
+  // before someone sends them a second time.
+  app.get("/api/v1/dispatches/active", async (request) => ({
+    active: dispatchStore.listActiveDispatches(requireAccountId(request)),
+  }));
+
   app.post("/api/v1/dispatches", async (request, reply) => {
     const body = objectBody(request.body);
     const accountId = requireAccountId(request);
@@ -837,6 +843,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       agentKind: stringField(body, "agentKind")! as AgentKind,
       mode: stringField(body, "mode")!,
       itemKeys,
+      force: body.force === true,
     });
     for (const itemId of dispatchStore.listDispatchItemIds(dispatch.id)) {
       store.appendSystemEvent(itemId, "dispatched", {

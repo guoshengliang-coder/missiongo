@@ -160,7 +160,7 @@ describe("which machine can take a batch", () => {
 
 describe("wording for values that come from the server", () => {
   it("has a message for every problem code the dispatch endpoint returns", () => {
-    for (const code of ["node_offline", "agent_unavailable", "repo_unmapped", "repo_conflict", "item_not_dispatchable"]) {
+    for (const code of ["node_offline", "agent_unavailable", "repo_unmapped", "repo_conflict", "item_not_dispatchable", "item_already_dispatched"]) {
       expect(dispatchProblemKey(code)).not.toBeNull();
     }
   });
