@@ -1,8 +1,16 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, LoaderCircle, Plus, Trash2, UserRound } from "lucide-react";
+import { Check, LoaderCircle, Plus, Trash2, Unplug, UserRound } from "lucide-react";
 
-import { api, ApiError, type Account, type AccountRole, type AuthenticatedUser, type ProductPermission } from "./api";
+import {
+  api,
+  ApiError,
+  type Account,
+  type AccountRole,
+  type AuthenticatedUser,
+  type AiAuthorization,
+  type ProductPermission,
+} from "./api";
 import { useI18n, type MessageKey } from "./i18n";
 import type { Product } from "./types";
 
@@ -102,6 +110,134 @@ function InlineNote({ message, danger = false }: { message: string; danger?: boo
 }
 
 /**
+ * Change your own sign-in address.
+ *
+ * Gated on the current password for the same reason the password form is: the
+ * address is what you sign in with, so taking it over is taking over the
+ * account.
+ */
+function EmailForm({ user }: { user: AuthenticatedUser }) {
+  const { t } = useI18n();
+  const [current, setCurrent] = useState("");
+  const [email, setEmail] = useState(user.username);
+  const [done, setDone] = useState(false);
+
+  const mutation = useMutation({
+    mutationFn: () => api.changeEmail({ currentPassword: current, email: email.trim() }),
+    onSuccess: () => {
+      setCurrent("");
+      setDone(true);
+    },
+  });
+
+  const changed = email.trim().length > 0 && email.trim() !== user.username;
+
+  return (
+    <form
+      className="account-password-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        setDone(false);
+        mutation.mutate();
+      }}
+    >
+      <label>
+        {t("newEmail")}
+        <input
+          type="email"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+          autoComplete="username"
+          autoCapitalize="none"
+          spellCheck={false}
+          required
+        />
+      </label>
+      <label>
+        {t("currentPassword")}
+        <input
+          type="password"
+          value={current}
+          onChange={(event) => setCurrent(event.target.value)}
+          autoComplete="current-password"
+          required
+        />
+      </label>
+      {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
+      {done && <InlineNote message={t("emailChanged")} />}
+      <button className="secondary-button" disabled={!changed || current.length === 0 || mutation.isPending}>
+        {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("changeEmail")}
+      </button>
+    </form>
+  );
+}
+
+function AuthorizationRow({ authorization }: { authorization: AiAuthorization }) {
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const revoke = useMutation({
+    mutationFn: () => api.revokeAiAuthorization(authorization.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ai-authorizations"] }),
+  });
+
+  const when = (value: string) => new Date(value).toLocaleDateString(locale);
+  const name = authorization.clientName ?? t("unknownAiClient");
+
+  return (
+    <article className="account-row">
+      <header>
+        <div className="ai-authorization-identity">
+          <strong>{name}</strong>
+          <small>
+            {t("aiAuthorizedAt", { date: when(authorization.issuedAt) })}
+            {" · "}
+            {authorization.lastUsedAt ? t("aiLastUsed", { date: when(authorization.lastUsedAt) }) : t("aiNeverUsed")}
+            {" · "}
+            {t("aiExpires", { date: when(authorization.expiresAt) })}
+          </small>
+        </div>
+        <button
+          type="button"
+          className="secondary-button archive-button"
+          disabled={revoke.isPending}
+          onClick={() => {
+            if (window.confirm(t("confirmRevokeAi", { client: name }))) revoke.mutate();
+          }}
+        >
+          {revoke.isPending ? <LoaderCircle className="spin" size={15} /> : <Unplug size={15} />} {t("revokeAi")}
+        </button>
+      </header>
+      <p className="account-note">{authorization.scopes.join(" · ")}</p>
+      {revoke.isError && <InlineNote danger message={messageFor(revoke.error, t, t("somethingWentWrong"))} />}
+    </article>
+  );
+}
+
+/** What is connected to your account, and the way to disconnect one of them. */
+function ConnectedAiClients() {
+  const { t } = useI18n();
+  const query = useQuery({ queryKey: ["ai-authorizations"], queryFn: api.listAiAuthorizations });
+
+  return (
+    <section className="account-authorizations">
+      <h3>{t("connectedAi")}</h3>
+      <p className="account-note">{t("connectedAiHelp")}</p>
+      {query.isPending && <p className="account-note"><LoaderCircle className="spin" size={15} /></p>}
+      {query.isError && <InlineNote danger message={messageFor(query.error, t, t("somethingWentWrong"))} />}
+      {query.data && (query.data.authorizations.length === 0
+        ? <InlineNote message={t("noConnectedAi")} />
+        : (
+          <div className="account-list">
+            {query.data.authorizations.map((authorization) => (
+              <AuthorizationRow key={authorization.id} authorization={authorization} />
+            ))}
+          </div>
+        ))}
+    </section>
+  );
+}
+
+/**
  * One account's product reach, as a grid of three switches per product.
  *
  * Saved whole rather than per tick: the server replaces the set, so sending the
@@ -188,6 +324,7 @@ function AccountRow({ account, products, isSelf }: { account: Account; products:
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState(account.email);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["accounts"] });
   const suspend = useMutation({
@@ -195,8 +332,12 @@ function AccountRow({ account, products, isSelf }: { account: Account; products:
     onSuccess: invalidate,
   });
   const remove = useMutation({ mutationFn: () => api.deleteAccount(account.id), onSuccess: invalidate });
+  const rename = useMutation({
+    mutationFn: () => api.updateAccount(account.id, { email: email.trim() }),
+    onSuccess: invalidate,
+  });
 
-  const error = suspend.error ?? remove.error;
+  const error = suspend.error ?? remove.error ?? rename.error;
 
   return (
     <article className={account.disabledAt ? "account-row suspended" : "account-row"}>
@@ -230,7 +371,33 @@ function AccountRow({ account, products, isSelf }: { account: Account; products:
         )}
       </header>
       {error && <InlineNote danger message={messageFor(error, t, t("somethingWentWrong"))} />}
-      {open && <PermissionGrid account={account} products={products} />}
+      {open && (
+        <>
+          {/* How an account seeded before addresses were required gets a real
+              one: until this existed, nothing could change it. */}
+          <div className="account-email-row">
+            <label>
+              {t("newAccountEmail")}
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={rename.isPending || !email.trim() || email.trim() === account.email}
+              onClick={() => rename.mutate()}
+            >
+              {rename.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
+            </button>
+          </div>
+          <PermissionGrid account={account} products={products} />
+        </>
+      )}
     </article>
   );
 }
@@ -368,7 +535,9 @@ export function AccountSettings({
               <em>{t(user.role === "admin" ? "administratorRole" : "memberRole")}</em>
             </div>
           </div>
+          <EmailForm user={user} />
           <PasswordForm />
+          <ConnectedAiClients />
           {logout.isError && <InlineNote danger message={messageFor(logout.error, t, t("somethingWentWrong"))} />}
           <button className="secondary-button wide" disabled={logout.isPending} onClick={() => logout.mutate()}>
             {logout.isPending ? <LoaderCircle className="spin" size={16} /> : null} {t("signOut")}

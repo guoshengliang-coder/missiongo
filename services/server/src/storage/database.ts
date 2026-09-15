@@ -497,6 +497,25 @@ export class MissionGoDatabase {
           .run(202609150500, new Date().toISOString());
       });
     }
+    // An AI authorization could not be listed or revoked on its own: the token
+    // was signed, stateless, and recorded nowhere, so the only way to cut one
+    // off was to change the account's password and cut off all of them.
+    // docs/security-boundaries.md has listed this as owed since before accounts
+    // were plural.
+    //
+    // Only adds a table, so the previous release keeps running against it --
+    // scripts/rollback.sh reverts code and not schema.
+    const aiAuthorizationsMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609151500")
+      .get() as unknown as { version: number } | undefined;
+    if (!aiAuthorizationsMigration) {
+      this.transaction(() => {
+        this.connection.exec(INITIAL_SCHEMA);
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609151500, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

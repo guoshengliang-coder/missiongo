@@ -6,6 +6,8 @@ import type { MissionGoDatabase } from "./storage/database.js";
 
 export const MIN_PASSWORD_LENGTH = 12;
 export const MAX_PASSWORD_LENGTH = 1_024;
+/** How stale "last used" is allowed to get, so reading does not cost a write every time. */
+export const AI_AUTHORIZATION_TOUCH_INTERVAL_MS = 5 * 60_000;
 
 /**
  * What an account may do with one product.
@@ -50,6 +52,25 @@ interface AccountRow {
   disabled_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** One AI client's standing authorization, as the console lists it. */
+export interface AiAuthorizationSnapshot {
+  readonly id: string;
+  readonly clientId: string;
+  readonly scopes: readonly string[];
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+  readonly lastUsedAt?: string;
+}
+
+interface AiAuthorizationRow {
+  id: string;
+  client_id: string;
+  scopes_json: string;
+  issued_at: string;
+  expires_at: string;
+  last_used_at: string | null;
 }
 
 interface PermissionRow {
@@ -180,12 +201,16 @@ export class AccountStore {
    * has just been suspended still holds a signed session cookie, and a password
    * the owner did not choose has to invalidate whatever the old one issued.
    */
-  updateAccount(accountId: string, input: { role?: AccountRole; disabled?: boolean; password?: string }): AccountSnapshot {
+  updateAccount(
+    accountId: string,
+    input: { email?: string; role?: AccountRole; disabled?: boolean; password?: string },
+  ): AccountSnapshot {
     const current = this.getAccount(accountId);
     if (input.role !== undefined && input.role !== "admin" && input.role !== "member") {
       throw invalidInput("Account role must be admin or member.");
     }
     const now = new Date().toISOString();
+    if (input.email !== undefined) this.writeEmail(accountId, normalizeEmail(input.email), now);
     const role = input.role ?? current.role;
     const disabledAt = input.disabled === undefined
       ? current.disabledAt ?? null
@@ -217,6 +242,27 @@ export class AccountStore {
     // rather than as a dangling reference -- the alternative is deleting a
     // product, and its work items, because a person left.
     this.database.connection.prepare("DELETE FROM accounts WHERE id = ?").run(accountId);
+  }
+
+  /**
+   * Change your own sign-in address.
+   *
+   * The current password is required for the same reason changing a password is:
+   * the address is what you sign in with, so taking it over is taking over the
+   * account, and a borrowed unlocked browser should not be enough.
+   *
+   * Credentials are deliberately left alone. The address is an identifier, not a
+   * secret -- bumping the stamp would sign every other session out for what is,
+   * to the owner, a correction.
+   */
+  changeOwnEmail(accountId: string, currentPassword: string, email: string): AccountSnapshot {
+    const row = this.row(accountId);
+    if (!row || row.disabled_at) throw notFound("Account");
+    if (!verifyPassword(row.password_scrypt, currentPassword)) {
+      throw new MissionGoError("invalid_credentials", "The current password is not correct.", 401);
+    }
+    this.writeEmail(accountId, normalizeEmail(email), new Date().toISOString());
+    return this.getAccount(accountId);
   }
 
   /**
@@ -391,6 +437,107 @@ export class AccountStore {
       .prepare("SELECT 1 AS present FROM account_products WHERE account_id = ? AND can_use_ai = 1 LIMIT 1")
       .get(accountId) as unknown as { present: number } | undefined;
     return row !== undefined;
+  }
+
+  /** Record an authorization as it is handed out, so it can later be listed and revoked. */
+  recordAiAuthorization(input: {
+    readonly tokenId: string;
+    readonly accountId: string;
+    readonly clientId: string;
+    readonly scopes: readonly string[];
+    readonly issuedAt: number;
+    readonly expiresAt: number;
+  }): void {
+    this.database.connection
+      .prepare(
+        `INSERT OR REPLACE INTO ai_authorizations
+           (id, account_id, client_id, scopes_json, issued_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.tokenId,
+        input.accountId,
+        input.clientId,
+        JSON.stringify([...input.scopes]),
+        new Date(input.issuedAt * 1_000).toISOString(),
+        new Date(input.expiresAt * 1_000).toISOString(),
+      );
+  }
+
+  /**
+   * Whether this authorization has been cut off.
+   *
+   * Only a row that exists and carries a revocation refuses. A token with no row
+   * predates the table and stays valid until it expires -- shipping revocation
+   * must not itself revoke everything.
+   */
+  aiAuthorizationRevoked(tokenId: string): boolean {
+    const row = this.database.connection
+      .prepare("SELECT revoked_at FROM ai_authorizations WHERE id = ?")
+      .get(tokenId) as unknown as { revoked_at: string | null } | undefined;
+    return row?.revoked_at != null;
+  }
+
+  /**
+   * Note that an authorization was used, at most once every few minutes.
+   *
+   * "Last used" is what tells a reader which of five connected clients is the
+   * one they forgot about. Writing it on every MCP call would put a database
+   * write in front of every read for a field nobody needs to the second.
+   */
+  touchAiAuthorization(tokenId: string, now = Date.now()): void {
+    const stamp = new Date(now).toISOString();
+    this.database.connection
+      .prepare(
+        `UPDATE ai_authorizations
+         SET last_used_at = ?
+         WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)`,
+      )
+      .run(stamp, tokenId, new Date(now - AI_AUTHORIZATION_TOUCH_INTERVAL_MS).toISOString());
+  }
+
+  /** Live authorizations for one account, newest first. Expired and revoked ones are left out. */
+  listAiAuthorizations(accountId: string, now = Date.now()): readonly AiAuthorizationSnapshot[] {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT id, client_id, scopes_json, issued_at, expires_at, last_used_at
+         FROM ai_authorizations
+         WHERE account_id = ? AND revoked_at IS NULL AND expires_at > ?
+         ORDER BY issued_at DESC`,
+      )
+      .all(accountId, new Date(now).toISOString()) as unknown as AiAuthorizationRow[];
+    return rows.map((row) => ({
+      id: row.id,
+      clientId: row.client_id,
+      scopes: JSON.parse(row.scopes_json) as string[],
+      issuedAt: row.issued_at,
+      expiresAt: row.expires_at,
+      ...(row.last_used_at ? { lastUsedAt: row.last_used_at } : {}),
+    }));
+  }
+
+  /** Cut one authorization off. The client has to be authorized again to come back. */
+  revokeAiAuthorization(accountId: string, tokenId: string): void {
+    const changes = this.database.connection
+      .prepare("UPDATE ai_authorizations SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL")
+      .run(new Date().toISOString(), tokenId, accountId);
+    // Scoped to the account on purpose: revoking by id alone would let one
+    // account cut off another's client, and answering "not found" keeps it from
+    // learning whether the id exists.
+    if (Number(changes.changes) === 0) throw notFound("Authorization");
+  }
+
+  private writeEmail(accountId: string, email: string, now: string): void {
+    try {
+      this.database.connection
+        .prepare("UPDATE accounts SET email = ?, updated_at = ? WHERE id = ?")
+        .run(email, now, accountId);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
+        throw conflict("account_email_conflict", "That email address already has an account.");
+      }
+      throw error;
+    }
   }
 
   private assertNotLastActiveAdmin(accountId: string): void {

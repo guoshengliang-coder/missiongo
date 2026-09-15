@@ -957,6 +957,14 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .account-permissions thead th { color: var(--muted); font-size: var(--text-xs); }
 .account-permissions tbody tr { border-top: 1px solid var(--line); }
 .account-permissions-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.account-email-row { display: flex; align-items: flex-end; gap: 10px; margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--line); }
+.account-email-row label { flex: 1 1 auto; min-width: 0; display: grid; gap: 6px; font-size: var(--text-sm); font-weight: 700; }
+.account-email-row input { height: 38px; padding: 0 11px; border: 1px solid var(--line-dark); border-radius: var(--radius-md); font: inherit; }
+.account-email-row .secondary-button { height: 38px; white-space: nowrap; }
+.account-authorizations { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--line); }
+.account-authorizations h3 { margin: 0; font-size: var(--text-base); }
+.ai-authorization-identity { flex: 1 1 auto; min-width: 0; display: grid; gap: 3px; }
+.ai-authorization-identity small { color: var(--muted); font-size: var(--text-xs); }
 .inline-error { display: flex; align-items: center; gap: 7px; padding: 10px 11px; color: var(--danger); background: var(--danger-bg-strong); border: 1px solid var(--danger-line); border-radius: var(--radius-md); font-size: var(--text-xs); }
 .toast { position: fixed; right: 22px; bottom: 22px; z-index: 150; display: flex; align-items: center; gap: 8px; padding: 11px 12px; color: var(--primary-fg); background: var(--primary-bg); border-radius: var(--radius-md); box-shadow: var(--shadow); font-size: var(--text-xs); }
 .toast > svg { color: var(--mint); }

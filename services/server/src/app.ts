@@ -465,6 +465,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!claims) return undefined;
     const account = accountStore.resolveActive(claims.id, claims.credentialsAt);
     if (!account) return undefined;
+    // Cut off on its own, without touching the account's other clients. A token
+    // with no record predates the table and is not refused by this -- see
+    // ai_authorizations in the schema.
+    if (accountStore.aiAuthorizationRevoked(claims.tokenId)) return undefined;
+    accountStore.touchAiAuthorization(claims.tokenId);
     return {
       ...claims,
       username: account.email,
@@ -686,6 +691,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           redirectUri: form.get("redirect_uri") ?? "",
           codeVerifier: form.get("code_verifier") ?? "",
         });
+        // Recorded here rather than inside the provider: the provider mints and
+        // signs, the database is this layer's business. From now on this
+        // authorization can be listed and cut off on its own.
+        accountStore.recordAiAuthorization({
+          tokenId: issued.claims.tokenId,
+          accountId: issued.claims.id,
+          clientId: issued.claims.clientId,
+          scopes: issued.claims.scopes,
+          issuedAt: issued.claims.issuedAt,
+          expiresAt: issued.claims.expiresAt,
+        });
         return reply.header("cache-control", "no-store").send({
           access_token: issued.accessToken,
           token_type: "Bearer",
@@ -811,6 +827,45 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply
       .header("cache-control", "no-store")
       .header("set-cookie", adminSessionCookie(options.adminAccount, token))
+      .send({ user });
+  });
+
+  /**
+   * Change your own sign-in address.
+   *
+   * Separate from the administrator's route below, and gated on the current
+   * password rather than on the session: the address is what you sign in with.
+   */
+  app.post("/api/v1/auth/email", async (request, reply) => {
+    if (!options.adminAccount) {
+      return reply.status(503).send({
+        type: "urn:missiongo:problem:authentication_unavailable",
+        title: "Administrator account login is not configured.",
+        status: 503,
+        code: "authentication_unavailable",
+      });
+    }
+    const current = requireAccount(request);
+    const body = objectBody(request.body);
+    const account = accountStore.changeOwnEmail(
+      current.id,
+      stringField(body, "currentPassword")!,
+      stringField(body, "email")!,
+    );
+    // The signed cookie carries the address it was minted with, and sessionUser
+    // reads the account back on every request, so nothing here invalidates it --
+    // but the console shows the name from the session, so hand back a cookie
+    // that already says the new one.
+    const user: AdminSessionUser = { id: account.id, username: account.email, role: account.role };
+    return reply
+      .header("cache-control", "no-store")
+      .header(
+        "set-cookie",
+        adminSessionCookie(
+          options.adminAccount,
+          createAdminSession(options.adminAccount, user, accountStore.credentialsStamp(account)),
+        ),
+      )
       .send({ user });
   });
 
@@ -1039,6 +1094,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { accountId } = request.params as { accountId: string };
     const body = objectBody(request.body);
     const account = accountStore.updateAccount(accountId, {
+      ...(body.email !== undefined ? { email: stringField(body, "email")! } : {}),
       ...(body.role !== undefined ? { role: enumField(body, "role", ["admin", "member"] as const)! } : {}),
       ...(body.disabled !== undefined ? { disabled: booleanField(body, "disabled") } : {}),
       ...(body.password !== undefined ? { password: stringField(body, "password")! } : {}),
@@ -1081,6 +1137,33 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       };
     });
     return { permissions: accountStore.replacePermissions(accountId, permissions) };
+  });
+
+  /**
+   * The AI clients connected to your account, and cutting one off.
+   *
+   * Your own, not anyone else's: an administrator manages accounts, but an
+   * authorization is a credential its owner granted, and reading or revoking
+   * someone else's is not account management. Suspending the account remains the
+   * administrator's lever, and stops all of them at once.
+   */
+  app.get("/api/v1/ai-authorizations", async (request) => {
+    const account = requireAccount(request);
+    return {
+      authorizations: accountStore.listAiAuthorizations(account.id).map((authorization) => ({
+        ...authorization,
+        ...(oauthProvider?.clientDisplayName(authorization.clientId)
+          ? { clientName: oauthProvider.clientDisplayName(authorization.clientId) }
+          : {}),
+      })),
+    };
+  });
+
+  app.delete("/api/v1/ai-authorizations/:authorizationId", async (request, reply) => {
+    const account = requireAccount(request);
+    const { authorizationId } = request.params as { authorizationId: string };
+    accountStore.revokeAiAuthorization(account.id, authorizationId);
+    return reply.status(204).send();
   });
 
   // Dispatching work to a machine. The console half of this is account-scoped

@@ -56,6 +56,31 @@ export const INITIAL_SCHEMA = `
     PRIMARY KEY (account_id, product_id)
   ) STRICT;
 
+  -- One record per AI authorization handed out through OAuth, so a person can
+  -- see what is connected to their account and cut off one client without
+  -- touching the rest.
+  --
+  -- The token itself stays signed and stateless; this is not a copy of it and
+  -- holds no secret. Verification still rests on the signature, and consults
+  -- this table for one question only: has this authorization been revoked. A
+  -- token with no row here is therefore still valid -- which is deliberate, so
+  -- that shipping this does not invalidate every authorization already in the
+  -- wild. Those stay revocable the way they always were, by changing the
+  -- account's password, and age out within the token lifetime.
+  CREATE TABLE IF NOT EXISTS ai_authorizations (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    -- The signed client id, which carries the client's registered name; the
+    -- console decodes it for display rather than storing a name that could
+    -- disagree with the one the token was issued to.
+    client_id TEXT NOT NULL,
+    scopes_json TEXT NOT NULL,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    last_used_at TEXT
+  ) STRICT;
+
   CREATE TABLE IF NOT EXISTS components (
     id TEXT PRIMARY KEY,
     product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -325,6 +350,8 @@ export const INITIAL_SCHEMA = `
   -- The primary key already serves "which products can this account reach".
   -- This one serves the reverse, "which accounts can reach this product".
   CREATE INDEX IF NOT EXISTS idx_account_products_product ON account_products(product_id);
+  CREATE INDEX IF NOT EXISTS idx_ai_authorizations_account
+    ON ai_authorizations(account_id, issued_at DESC);
   -- idx_products_created_by is not here. This whole script runs before the
   -- migrations, and on a database created before AND-33 the products table has
   -- no created_by_account_id yet, so indexing it here fails the start. The

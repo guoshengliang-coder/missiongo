@@ -62,6 +62,18 @@ export interface ProductPermission {
   readonly canUseAi: boolean;
 }
 
+/** One AI client standing authorized against your account. */
+export interface AiAuthorization {
+  readonly id: string;
+  readonly clientId: string;
+  /** The client's registered name, decoded from its signed id when it is still readable. */
+  readonly clientName?: string;
+  readonly scopes: string[];
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+  readonly lastUsedAt?: string;
+}
+
 export interface Account {
   readonly id: string;
   readonly email: string;
@@ -172,10 +184,16 @@ export const api = {
   logout: () => request<{ ok: true }>("/api/v1/auth/logout", { method: "POST" }),
   changePassword: (input: { currentPassword: string; newPassword: string }) =>
     request<AuthSession>("/api/v1/auth/password", { method: "POST", body: JSON.stringify(input) }),
+  changeEmail: (input: { currentPassword: string; email: string }) =>
+    request<AuthSession>("/api/v1/auth/email", { method: "POST", body: JSON.stringify(input) }),
+  listAiAuthorizations: () =>
+    request<{ authorizations: AiAuthorization[] }>("/api/v1/ai-authorizations"),
+  revokeAiAuthorization: (authorizationId: string) =>
+    request<void>(`/api/v1/ai-authorizations/${encodeURIComponent(authorizationId)}`, { method: "DELETE" }),
   listAccounts: () => request<{ accounts: Account[] }>("/api/v1/accounts"),
   createAccount: (input: { email: string; password: string; role: AccountRole }) =>
     request<Account>("/api/v1/accounts", { method: "POST", body: JSON.stringify(input) }),
-  updateAccount: (accountId: string, input: { role?: AccountRole; disabled?: boolean; password?: string }) =>
+  updateAccount: (accountId: string, input: { email?: string; role?: AccountRole; disabled?: boolean; password?: string }) =>
     request<Account>(`/api/v1/accounts/${encodeURIComponent(accountId)}`, {
       method: "PATCH",
       body: JSON.stringify(input),
