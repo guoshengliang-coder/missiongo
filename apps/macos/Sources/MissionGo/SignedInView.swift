@@ -165,20 +165,41 @@ private struct AgentsSection: View {
                 hint: model.codex.fixHint,
                 command: model.codex.fixCommand(serverUrl: model.credential?.serverUrl)
             )
-            if let skill = model.skillSyncSummary {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("missiongo Skill")
-                        .font(.caption)
-                    Spacer()
-                    Text(skill)
-                        .font(.caption)
-                        .foregroundColor(model.skillSyncFailed ? .orange : .secondary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.trailing)
-                        .help(skill)
-                }
+            if let skill = model.skillSync {
+                SkillRow(status: skill)
             }
             UpdateRow()
+        }
+    }
+}
+
+/// The missiongo Skill every dispatched session relies on. A failure gets its
+/// whole reason, wrapped and selectable, and a way to try again now (AND-47).
+private struct SkillRow: View {
+    @EnvironmentObject private var model: AppModel
+    let status: SkillSyncStatus
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("missiongo Skill")
+                    .font(.caption)
+                Spacer()
+                if status == .syncing {
+                    ProgressView().controlSize(.mini)
+                }
+                Text(status.summary)
+                    .font(.caption)
+                    .foregroundColor(status.failureReason == nil ? .secondary : .orange)
+                if status.failureReason != nil {
+                    Button("重试") { model.retrySkillSync() }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                }
+            }
+            if let reason = status.failureReason {
+                WrappingCaption(text: reason, color: .orange)
+            }
         }
     }
 }

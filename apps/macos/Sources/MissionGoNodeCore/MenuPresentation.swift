@@ -177,6 +177,41 @@ public enum AppVersionLabel {
     }
 }
 
+// MARK: - missiongo Skill
+
+/// The Skill row in the menu (AND-47). A failure used to be squeezed into two
+/// trailing lines, so "The Internet connection ap…" was all anyone saw, and
+/// nothing offered to try again short of waiting an hour.
+public enum SkillSyncStatus: Equatable, Sendable {
+    case syncing
+    case synced(version: String)
+    /// The whole reason, for the menu to show in full.
+    case failed(reason: String)
+
+    /// What a finished sync amounts to: any copy that could not be written
+    /// is a failure, named with where it was going.
+    public static func outcome(_ outcome: SkillSync.Outcome) -> SkillSyncStatus {
+        guard outcome.failures.isEmpty else {
+            return .failed(reason: "写入失败：\(outcome.failures.joined(separator: "；"))")
+        }
+        return .synced(version: outcome.version)
+    }
+
+    /// The short text beside the row's title.
+    public var summary: String {
+        switch self {
+        case .syncing: return "同步中…"
+        case let .synced(version): return version
+        case .failed: return "同步失败"
+        }
+    }
+
+    public var failureReason: String? {
+        if case let .failed(reason) = self { return reason }
+        return nil
+    }
+}
+
 // MARK: - Claude Code
 
 public enum ClaudeCodeStatus: Equatable, Sendable {
