@@ -102,6 +102,42 @@ final class ConnectionPresentationTests: XCTestCase {
     }
 }
 
+final class AppVersionLabelTests: XCTestCase {
+    func testNamesTheVersionOrSaysThereIsNone() {
+        XCTAssertEqual(AppVersionLabel.text("0.3.2"), "版本 0.3.2")
+        XCTAssertEqual(AppVersionLabel.text(nil), "开发构建")
+    }
+}
+
+final class SkillSyncStatusTests: XCTestCase {
+    func testASyncWithEveryCopyWrittenShowsTheVersion() {
+        let status = SkillSyncStatus.outcome(SkillSync.Outcome(version: "5.6.0", updated: ["~/.claude"], failures: []))
+        XCTAssertEqual(status, .synced(version: "5.6.0"))
+        XCTAssertEqual(status.summary, "5.6.0")
+        XCTAssertNil(status.failureReason)
+    }
+
+    func testEveryCopyThatCouldNotBeWrittenIsNamed() {
+        let status = SkillSyncStatus.outcome(SkillSync.Outcome(
+            version: "5.6.0", updated: [], failures: ["~/.claude/skills/missiongo/SKILL.md：权限不足", "~/.codex/skills/missiongo/SKILL.md：磁盘已满"]
+        ))
+        XCTAssertEqual(status.summary, "同步失败")
+        XCTAssertEqual(
+            status.failureReason,
+            "写入失败：~/.claude/skills/missiongo/SKILL.md：权限不足；~/.codex/skills/missiongo/SKILL.md：磁盘已满"
+        )
+    }
+
+    // The reason is shown whole: the menu wraps it rather than cutting it off.
+    func testADownloadFailureKeepsItsWholeReason() {
+        let reason = SkillSync.SyncError.download("The Internet connection appears to be offline.").localizedDescription
+        let status = SkillSyncStatus.failed(reason: reason)
+        XCTAssertEqual(status.failureReason, "下载 missiongo Skill 失败：The Internet connection appears to be offline.")
+        XCTAssertEqual(SkillSyncStatus.syncing.summary, "同步中…")
+        XCTAssertNil(SkillSyncStatus.syncing.failureReason)
+    }
+}
+
 final class ClaudeCodeStatusTests: XCTestCase {
     func testEvaluatesInstallAndLogin() {
         let loggedIn = Preflight.AuthStatus(loggedIn: true, authMethod: "oauth", apiProvider: "firstParty")
