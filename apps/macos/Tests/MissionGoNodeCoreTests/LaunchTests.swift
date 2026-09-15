@@ -22,6 +22,7 @@ final class LaunchPromptTests: XCTestCase {
                 "本会话由 MissionGo 派单 abc 发起，上面列出的编号等同于用户给出的范围。",
                 "整批条目走一个分支和一个 PR，之后按 Skill 的规则推进条目状态。",
                 "会话起在仓库主目录，动手改代码前先按仓库规则建独立 worktree，不要直接在主工作区修改。",
+                "建 worktree 用 git worktree add 再 cd 进去；不要用 EnterWorktree 一类的工具——仓库规定的 worktree 位置在它默认放行的范围之外，它会弹出授权框，而派单会话旁边没有人能回答。",
             ].joined(separator: "\n")
         )
     }
