@@ -74,6 +74,14 @@ export interface AiAuthorization {
   readonly lastUsedAt?: string;
 }
 
+/** One account's standing on one product, as the product-side editor shows it. */
+export interface ProductAccessEntry {
+  readonly account: Account;
+  readonly permission: ProductPermission;
+  /** True for an administrator, who reaches the product whatever the row says. */
+  readonly reachesByRole: boolean;
+}
+
 export interface Account {
   readonly id: string;
   readonly email: string;
@@ -200,6 +208,16 @@ export const api = {
     }),
   deleteAccount: (accountId: string) =>
     request<void>(`/api/v1/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" }),
+  listProductAccounts: (productId: string) =>
+    request<{ accounts: ProductAccessEntry[] }>(`/api/v1/products/${encodeURIComponent(productId)}/accounts`),
+  setProductAccounts: (
+    productId: string,
+    accounts: Array<{ accountId: string; canView: boolean; canOperate: boolean; canUseAi: boolean }>,
+  ) =>
+    request<{ accounts: ProductAccessEntry[] }>(`/api/v1/products/${encodeURIComponent(productId)}/accounts`, {
+      method: "PUT",
+      body: JSON.stringify({ accounts }),
+    }),
   setAccountProducts: (accountId: string, permissions: ProductPermission[]) =>
     request<{ permissions: ProductPermission[] }>(`/api/v1/accounts/${encodeURIComponent(accountId)}/products`, {
       method: "PUT",

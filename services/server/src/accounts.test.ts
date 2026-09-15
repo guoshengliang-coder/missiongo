@@ -924,3 +924,106 @@ describe("Listing and revoking AI authorizations", () => {
     expect((await read()).lastUsedAt).toBe(first);
   });
 });
+
+describe("Setting permissions from the product's side (item 2.2)", () => {
+  it("lists every account against one product, marking the ones that reach it by role", async () => {
+    const { app, adminCookie, member, shared } = await twoAccountWorkspace();
+    const listed = (await app.inject({
+      method: "GET",
+      url: `/api/v1/products/${shared.id}/accounts`,
+      headers: { cookie: adminCookie },
+    })).json<{ accounts: Array<{ account: { email: string; role: string }; permission: { canView: boolean }; reachesByRole: boolean }> }>().accounts;
+
+    // An administrator that holds no row still reaches the product. Leaving it
+    // off the list would make the list lie about who can open this product.
+    expect(listed.find((entry) => entry.account.role === "admin")).toMatchObject({
+      reachesByRole: true,
+      permission: { canView: false },
+    });
+    expect(listed.find((entry) => entry.account.id === member.id)).toMatchObject({
+      reachesByRole: false,
+      permission: { canView: true, canOperate: true, canUseAi: false },
+    });
+  });
+
+  it("grants and revokes from this side, and the account side agrees", async () => {
+    const { app, adminCookie, memberCookie, member, hidden } = await twoAccountWorkspace();
+    expect((await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: memberCookie } })).json())
+      .toHaveLength(1);
+
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${hidden.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: member.id, canView: true, canOperate: false, canUseAi: false }] },
+    });
+    expect((await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: memberCookie } })).json())
+      .toHaveLength(2);
+    expect(app.missionGoAccounts.listPermissions(member.id).find((entry) => entry.productId === hidden.id))
+      .toMatchObject({ canView: true, canOperate: false });
+
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${hidden.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: member.id, canView: false, canOperate: false, canUseAi: false }] },
+    });
+    expect((await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: memberCookie } })).json())
+      .toHaveLength(1);
+  });
+
+  it("leaves an account's other products alone, which the account-side editor does not", async () => {
+    // The two editors replace different things on purpose. From a product you
+    // cannot see what else an account holds, so replacing its whole set here
+    // would revoke permissions that were never on screen.
+    const { app, adminCookie, member, shared, hidden } = await twoAccountWorkspace();
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${hidden.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: member.id, canView: true, canOperate: false, canUseAi: false }] },
+    });
+    const held = app.missionGoAccounts.listPermissions(member.id).map((entry) => entry.productId).sort();
+    expect(held).toEqual([shared.id, hidden.id].sort());
+  });
+
+  it("stores operate and AI as implying view here too", async () => {
+    const { app, adminCookie, member, hidden } = await twoAccountWorkspace();
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${hidden.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: member.id, canView: false, canOperate: false, canUseAi: true }] },
+    });
+    expect(app.missionGoAccounts.listPermissions(member.id).find((entry) => entry.productId === hidden.id))
+      .toMatchObject({ canView: true, canOperate: false, canUseAi: true });
+  });
+
+  it("is invisible to a member, and refuses an unknown product or account", async () => {
+    const { app, adminCookie, memberCookie, member, shared } = await twoAccountWorkspace();
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/products/${shared.id}/accounts`,
+      headers: { cookie: memberCookie },
+    })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${shared.id}/accounts`,
+      headers: { cookie: memberCookie },
+      payload: { accounts: [] },
+    })).statusCode).toBe(404);
+
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/v1/products/no-such-product/accounts",
+      headers: { cookie: adminCookie },
+    })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${shared.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: "no-such-account", canView: true, canOperate: false, canUseAi: false }] },
+    })).statusCode).toBe(404);
+    expect(member.id).toBeTruthy();
+  });
+});

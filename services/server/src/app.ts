@@ -1140,6 +1140,47 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   /**
+   * The same account-and-product relation, read and written from the product's
+   * side (item 2.2). The account side answers "what may this person reach";
+   * this answers "who may reach this product", which is the question you have
+   * while looking at a product's settings.
+   *
+   * Administrators only, like the rest of account management -- deciding who
+   * else may reach a product is not something a member does to a product that
+   * was shared with them.
+   */
+  app.get("/api/v1/products/:productId/accounts", async (request) => {
+    requireAdmin(request);
+    const { productId } = request.params as { productId: string };
+    store.getProduct(productId);
+    return { accounts: accountStore.listProductAccess(productId) };
+  });
+
+  app.put("/api/v1/products/:productId/accounts", async (request) => {
+    requireAdmin(request);
+    const { productId } = request.params as { productId: string };
+    store.getProduct(productId);
+    const body = objectBody(request.body);
+    const entries = Array.isArray(body.accounts) ? body.accounts : undefined;
+    if (!entries) throw invalidInput("accounts must be an array.");
+    accountStore.replaceProductAccess(
+      productId,
+      entries.map((entry) => {
+        const record = objectBody(entry);
+        return {
+          accountId: stringField(record, "accountId")!,
+          permission: {
+            canView: record.canView === true,
+            canOperate: record.canOperate === true,
+            canUseAi: record.canUseAi === true,
+          },
+        };
+      }),
+    );
+    return { accounts: accountStore.listProductAccess(productId) };
+  });
+
+  /**
    * The AI clients connected to your account, and cutting one off.
    *
    * Your own, not anyone else's: an administrator manages accounts, but an

@@ -549,3 +549,106 @@ export function AccountSettings({
     </div>
   );
 }
+
+/**
+ * Who can reach one product, edited from that product's settings (item 2.2).
+ *
+ * The same relation as the grid in the account panel, read the other way round.
+ * Only this product's rows are sent, because from here you cannot see what else
+ * an account holds -- replacing its whole set would revoke permissions that were
+ * never on screen.
+ */
+export function ProductAccessSettings({ productId }: { productId: string }) {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<Record<string, ProductPermission> | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  const query = useQuery({
+    queryKey: ["product-accounts", productId],
+    queryFn: () => api.listProductAccounts(productId),
+  });
+
+  const mutation = useMutation({
+    mutationFn: () => api.setProductAccounts(
+      productId,
+      Object.entries(draft ?? {}).map(([accountId, permission]) => ({
+        accountId,
+        canView: permission.canView,
+        canOperate: permission.canOperate,
+        canUseAi: permission.canUseAi,
+      })),
+    ),
+    onSuccess: async () => {
+      setSaved(true);
+      setDraft(null);
+      await queryClient.invalidateQueries({ queryKey: ["product-accounts", productId] });
+      // A permission change can add or remove a product from someone's list.
+      await queryClient.invalidateQueries({ queryKey: ["accounts"] });
+    },
+  });
+
+  if (query.isPending) return <p className="account-note"><LoaderCircle className="spin" size={15} /></p>;
+  if (query.isError) return <InlineNote danger message={messageFor(query.error, t, t("somethingWentWrong"))} />;
+
+  const entries = query.data.accounts;
+  const permissionFor = (accountId: string): ProductPermission =>
+    draft?.[accountId] ?? entries.find((entry) => entry.account.id === accountId)!.permission;
+
+  const toggle = (accountId: string, field: "canView" | "canOperate" | "canUseAi", checked: boolean) => {
+    setSaved(false);
+    const base = Object.fromEntries(entries.map((entry) => [entry.account.id, permissionFor(entry.account.id)]));
+    setDraft({ ...base, [accountId]: { ...permissionFor(accountId), [field]: checked } });
+  };
+
+  return (
+    <div className="account-permissions">
+      <p className="account-note">{t("productAccessHelp")}</p>
+      <table>
+        <thead>
+          <tr>
+            <th>{t("newAccountEmail")}</th>
+            <th>{t("permissionView")}</th>
+            <th>{t("permissionOperate")}</th>
+            <th>{t("permissionUseAi")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((entry) => {
+            const permission = permissionFor(entry.account.id);
+            return (
+              <tr key={entry.account.id}>
+                <td>
+                  {entry.account.email}
+                  {/* An administrator reaches this product whatever the row
+                      says, so a list that did not mark them would mislead. */}
+                  {entry.reachesByRole && <em className="account-role-note"> · {t("reachesByRole")}</em>}
+                </td>
+                {(["canView", "canOperate", "canUseAi"] as const).map((field) => (
+                  <td key={field}>
+                    <input
+                      type="checkbox"
+                      checked={field === "canView"
+                        ? permission.canView || permission.canOperate || permission.canUseAi
+                        : permission[field]}
+                      disabled={field === "canView" && (permission.canOperate || permission.canUseAi)}
+                      onChange={(event) => toggle(entry.account.id, field, event.target.checked)}
+                      aria-label={`${entry.account.email} · ${t(field === "canView" ? "permissionView" : field === "canOperate" ? "permissionOperate" : "permissionUseAi")}`}
+                    />
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
+      <div className="account-permissions-footer">
+        {saved && <span className="account-note">{t("productAccessSaved")}</span>}
+        <button className="secondary-button" disabled={mutation.isPending || !draft} onClick={() => mutation.mutate()}>
+          {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
+        </button>
+      </div>
+    </div>
+  );
+}

@@ -104,7 +104,7 @@ import { environmentSummary, platformName } from "./environment-summary";
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
-import { AccountSettings } from "./account-settings";
+import { AccountSettings, ProductAccessSettings } from "./account-settings";
 import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog } from "@missiongo/domain";
 import { dispatchedEvent, groupTimeline } from "./timeline";
@@ -3562,7 +3562,7 @@ function ProductSettings({
 }) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
-  const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components" | "tokens" | "nodes">("product");
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components" | "tokens" | "nodes" | "access">("product");
   const [name, setName] = useState(product.name);
   // Retiring a product retires it for everyone who shares it, so it stays with
   // whoever created it, or an administrator. The server refuses either way; this
@@ -3651,8 +3651,27 @@ function ProductSettings({
         >
           {t("nodeSettings")}
         </button>
+        {/* Who else can reach this product is an administrator's question; a
+            member looking at a product shared with them has no say in it, and
+            the endpoint answers them 404 anyway. */}
+        {user?.role === "admin" && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSettingsTab === "access"}
+            className={activeSettingsTab === "access" ? "active" : ""}
+            onClick={() => setActiveSettingsTab("access")}
+          >
+            {t("productAccess")}
+          </button>
+        )}
       </div>
-      {activeSettingsTab === "nodes" ? (
+      {activeSettingsTab === "access" ? (
+        <section className="product-settings-section" role="tabpanel">
+          <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("productAccess")}</h3></div></header>
+          <ProductAccessSettings productId={product.id} />
+        </section>
+      ) : activeSettingsTab === "nodes" ? (
         <NodeSettings product={product} />
       ) : activeSettingsTab === "tokens" ? (
         <SdkTokenSettings product={product} />

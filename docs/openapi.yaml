@@ -188,6 +188,149 @@ paths:
               schema: { $ref: "#/components/schemas/AuthSession" }
         "400": { $ref: "#/components/responses/ValidationFailed" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/auth/email:
+    post:
+      operationId: changeOwnEmail
+      summary: Change your own sign-in address.
+      description: >-
+        The current password is required: the address is what you sign in with,
+        so taking it over is taking over the account. Credentials are left alone
+        -- an address is an identifier, not a secret -- so other sessions stay
+        signed in.
+      security:
+        - adminSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, email]
+              properties:
+                currentPassword: { type: string, maxLength: 1024, format: password }
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        "200":
+          description: Address changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: That email address already has an account.
+  /api/v1/ai-authorizations:
+    get:
+      operationId: listAiAuthorizations
+      summary: The AI clients currently authorized against your account.
+      description: >-
+        Your own only. An administrator manages accounts, but an authorization is
+        a credential its owner granted; the administrator's lever is suspending
+        the account, which stops all of them at once. Revoked and expired
+        authorizations are left out.
+      security:
+        - adminSessionCookie: []
+      responses:
+        "200":
+          description: Live authorizations, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizations]
+                properties:
+                  authorizations:
+                    type: array
+                    items: { $ref: "#/components/schemas/AiAuthorization" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/ai-authorizations/{authorizationId}:
+    parameters:
+      - name: authorizationId
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      operationId: revokeAiAuthorization
+      summary: Disconnect one AI client.
+      description: >-
+        Cuts off this authorization alone; the account's other clients and its
+        browser sessions are untouched. The client has to be authorized again to
+        come back.
+      security:
+        - adminSessionCookie: []
+      responses:
+        "204":
+          description: Authorization revoked.
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/products/{productId}/accounts:
+    parameters:
+      - $ref: "#/components/parameters/ProductId"
+    get:
+      operationId: listProductAccounts
+      summary: Who can reach this product.
+      description: >-
+        The account-and-product relation read from the product's side.
+        Administrators only. Every account is listed, including administrators,
+        who are marked as reaching the product by role whatever their row says --
+        a list that omitted them would misstate who can open it.
+      security:
+        - adminSessionCookie: []
+      responses:
+        "200":
+          description: Every account, with its standing on this product.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProductAccessEntry" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      operationId: setProductAccounts
+      summary: Set who can reach this product.
+      description: >-
+        Only this product's rows are touched, unlike the account-side editor
+        which replaces an account's whole set: from here you cannot see what else
+        an account holds, so replacing everything would revoke permissions that
+        were never on screen. Clearing all three switches for an account removes
+        its row.
+      security:
+        - adminSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accounts]
+              properties:
+                accounts:
+                  type: array
+                  items:
+                    type: object
+                    required: [accountId]
+                    properties:
+                      accountId: { type: string }
+                      canView: { type: boolean }
+                      canOperate: { type: boolean }
+                      canUseAi: { type: boolean }
+      responses:
+        "200":
+          description: The stored access list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProductAccessEntry" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/v1/accounts:
     get:
       operationId: listAccounts
@@ -262,6 +405,14 @@ paths:
             schema:
               type: object
               properties:
+                email:
+                  type: string
+                  format: email
+                  maxLength: 254
+                  description: >-
+                    How an account seeded before addresses were required gets a
+                    real one -- the bootstrap account keeps whatever
+                    ADMIN_USERNAME said.
                 role: { $ref: "#/components/schemas/AccountRole" }
                 disabled: { type: boolean }
                 password: { type: string, minLength: 12, maxLength: 1024, format: password }
@@ -1008,6 +1159,37 @@ components:
         canView: { type: boolean }
         canOperate: { type: boolean }
         canUseAi: { type: boolean }
+    AiAuthorization:
+      type: object
+      required: [id, clientId, scopes, issuedAt, expiresAt]
+      properties:
+        id: { type: string }
+        clientId:
+          type: string
+          description: The signed OAuth client id the token was issued to.
+        clientName:
+          type: string
+          description: The client's registered name, decoded from its signed id when still readable.
+        scopes:
+          type: array
+          items: { type: string }
+        issuedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: >-
+            Written at most once every five minutes, so reading through MCP does
+            not cost a database write per call. Absent until first use.
+    ProductAccessEntry:
+      type: object
+      required: [account, permission, reachesByRole]
+      properties:
+        account: { $ref: "#/components/schemas/Account" }
+        permission: { $ref: "#/components/schemas/ProductPermission" }
+        reachesByRole:
+          type: boolean
+          description: True for an administrator, who reaches the product whatever the row says.
     Account:
       type: object
       required: [id, email, role, createdAt, updatedAt, permissions]

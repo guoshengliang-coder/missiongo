@@ -27,6 +27,14 @@ export interface ProductPermission {
 
 export type ProductCapability = "view" | "operate" | "ai";
 
+/** One account's standing on one product, as the product-side editor shows it. */
+export interface ProductAccessEntry {
+  readonly account: AccountSnapshot;
+  readonly permission: ProductPermission;
+  /** True for an administrator, who reaches the product whatever the row says. */
+  readonly reachesByRole: boolean;
+}
+
 export interface AccountSnapshot {
   readonly id: string;
   readonly email: string;
@@ -348,6 +356,73 @@ export class AccountStore {
       canOperate: row.can_operate === 1,
       canUseAi: row.can_use_ai === 1,
     }));
+  }
+
+  /**
+   * The same relation read from the product's side: every account, and what it
+   * holds on this one product.
+   *
+   * Administrators are included and marked, because a list of "who can reach
+   * this product" that silently omits the people who reach everything is a list
+   * that misleads.
+   */
+  listProductAccess(productId: string): readonly ProductAccessEntry[] {
+    const accounts = this.listAccounts();
+    const rows = this.database.connection
+      .prepare("SELECT account_id, can_view, can_operate, can_use_ai FROM account_products WHERE product_id = ?")
+      .all(productId) as unknown as Array<PermissionRow & { account_id: string }>;
+    const byAccount = new Map(rows.map((row) => [row.account_id, row]));
+    return accounts.map((account) => {
+      const row = byAccount.get(account.id);
+      return {
+        account,
+        permission: {
+          productId,
+          canView: row?.can_view === 1,
+          canOperate: row?.can_operate === 1,
+          canUseAi: row?.can_use_ai === 1,
+        },
+        reachesByRole: account.role === "admin",
+      };
+    });
+  }
+
+  /**
+   * Set who reaches one product, from the product's side.
+   *
+   * Only this product's rows are touched: the caller is looking at one product
+   * and cannot see what else an account holds, so replacing the whole set --
+   * the way the account-side editor does -- would silently revoke permissions
+   * that were never on screen.
+   */
+  replaceProductAccess(productId: string, entries: readonly { accountId: string; permission: Omit<ProductPermission, "productId"> }[]): void {
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      for (const entry of entries) {
+        this.getAccount(entry.accountId);
+        const canOperate = entry.permission.canOperate;
+        const canUseAi = entry.permission.canUseAi;
+        const canView = entry.permission.canView || canOperate || canUseAi;
+        if (!canView) {
+          this.database.connection
+            .prepare("DELETE FROM account_products WHERE account_id = ? AND product_id = ?")
+            .run(entry.accountId, productId);
+          continue;
+        }
+        this.database.connection
+          .prepare(
+            `INSERT INTO account_products
+               (account_id, product_id, can_view, can_operate, can_use_ai, created_at, updated_at)
+             VALUES (?, ?, 1, ?, ?, ?, ?)
+             ON CONFLICT (account_id, product_id) DO UPDATE SET
+               can_view = 1,
+               can_operate = excluded.can_operate,
+               can_use_ai = excluded.can_use_ai,
+               updated_at = excluded.updated_at`,
+          )
+          .run(entry.accountId, productId, canOperate ? 1 : 0, canUseAi ? 1 : 0, now, now);
+      }
+    });
   }
 
   /** Replace an account's whole permission set. Rows not listed are removed. */
