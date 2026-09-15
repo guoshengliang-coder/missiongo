@@ -85,7 +85,8 @@ const PRODUCT_ICON_EDGE = 96;
 
 /** Two rows of 84px tiles at 2x, which covers every list layout we render. */
 const DEFAULT_THUMBNAIL_EDGE = 192;
-const MAX_THUMBNAIL_EDGE = 512;
+/** The detail view's preview cards run to a few hundred CSS pixels, drawn at 2x. */
+const MAX_THUMBNAIL_EDGE = 1024;
 
 const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "server", "shared", "other"] as const;
 
@@ -1982,17 +1983,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.send(createReadStream(path, range));
   });
 
-  // The list shows thumbnails, and serving the original for each one meant
-  // pushing megabytes to draw a 72px tile. Rendered on demand rather than at
-  // upload time so it also covers everything already stored, and cached hard:
-  // the bytes are derived from an attachment that can only be replaced through
-  // an endpoint that changes the id-scoped content, and the query string
-  // carries the size, so a stale hit is not reachable.
+  // The list and the detail view show thumbnails, and serving the original for
+  // each one meant pushing megabytes to draw a small preview. Rendered on demand
+  // rather than at upload time so it also covers everything already stored.
+  //
+  // Annotating replaces the bytes under the same attachment id, so the id alone
+  // does not pin the content. Clients put the attachment's `revision` in the
+  // query string; a replacement changes it, the URL changes with it, and that is
+  // what lets the response be cached as immutable. A request without one still
+  // works but only gets a short cache.
   app.get("/api/v1/items/:itemKey/attachments/:attachmentId/thumbnail", async (request, reply) => {
     const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
     const attachment = store.getAttachmentRecord(requireItemPermission(request, itemKey), attachmentId);
     if (attachment.kind !== "image") throw invalidInput("Only image attachments have thumbnails.");
-    const requested = Number((request.query as { width?: string }).width);
+    const query = request.query as { width?: string; rev?: string };
+    const requested = Number(query.width);
     const width = Number.isFinite(requested)
       ? Math.min(Math.max(Math.round(requested), 32), MAX_THUMBNAIL_EDGE)
       : DEFAULT_THUMBNAIL_EDGE;
@@ -2004,10 +2009,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .resize({ width, height: width, fit: "inside", withoutEnlargement: true })
       .jpeg({ quality: 78, mozjpeg: true })
       .toBuffer();
+    // Only a URL naming the current revision may be cached for good; an old
+    // revision would otherwise pin the pre-edit bytes under a URL that looks
+    // current to whoever still holds it.
+    const pinned = query.rev !== undefined && query.rev === attachment.revision;
     return reply
       .type("image/jpeg")
       .header("content-length", thumbnail.length)
-      .header("cache-control", "private, max-age=86400")
+      .header("cache-control", pinned ? "private, max-age=2592000, immutable" : "private, no-cache")
       .header("x-content-type-options", "nosniff")
       .send(thumbnail);
   });

@@ -704,7 +704,7 @@ describe("MissionGo REST API", () => {
       payload,
     });
 
-    const image = (await upload("screenshot.png", "image/png", original)).json<{ id: string }>();
+    const image = (await upload("screenshot.png", "image/png", original)).json<{ id: string; revision: string }>();
     const log = (await upload("run.log", "text/plain", "boot\nready\n")).json<{ id: string }>();
 
     const thumbnail = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail` });
@@ -722,8 +722,23 @@ describe("MissionGo REST API", () => {
     expect((await sharp(wider.rawPayload).metadata()).height).toBe(384);
 
     // An absurd request is clamped rather than allowed to render a huge image.
+    // 1024 is enough for a detail-view preview card at 2x.
     const clamped = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail?width=99999` });
-    expect((await sharp(clamped.rawPayload).metadata()).height).toBe(512);
+    expect((await sharp(clamped.rawPayload).metadata()).height).toBe(1024);
+
+    // Only a URL that names the current revision is cached for good; without
+    // it the browser has to revalidate, or an edit would stay invisible.
+    expect(thumbnail.headers["cache-control"]).toBe("private, no-cache");
+    const pinned = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail?width=192&rev=${image.revision}`,
+    });
+    expect(pinned.headers["cache-control"]).toBe("private, max-age=2592000, immutable");
+    const outdated = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail?width=192&rev=000000000000`,
+    });
+    expect(outdated.headers["cache-control"]).toBe("private, no-cache");
 
     const notAnImage = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${log.id}/thumbnail` });
     expect(notAnImage.statusCode).toBe(400);
@@ -758,7 +773,9 @@ describe("MissionGo REST API", () => {
       payload,
     });
 
-    const first = (await upload("image", "before.png", "image/png", "original-bytes")).json<{ id: string; displayNumber: number }>();
+    const first = (await upload("image", "before.png", "image/png", "original-bytes"))
+      .json<{ id: string; displayNumber: number; revision: string }>();
+    expect(first.revision).toMatch(/^[0-9a-f]{12}$/);
     const second = (await upload("image", "other.png", "image/png", "second-bytes")).json<{ displayNumber: number }>();
     expect(first.displayNumber).toBe(1);
     expect(second.displayNumber).toBe(2);
@@ -786,6 +803,12 @@ describe("MissionGo REST API", () => {
       filename: "before.jpg",
       contentType: "image/jpeg",
     });
+    // Same id, new bytes: the revision is what tells a cached thumbnail apart.
+    expect(replaced.json<{ revision: string }>().revision).not.toBe(first.revision);
+    const detail = (await app.inject({ method: "GET", url: "/api/v1/items/AND-1" }))
+      .json<{ attachments: readonly { id: string; revision: string }[] }>();
+    expect(detail.attachments.find((attachment) => attachment.id === first.id)?.revision)
+      .toBe(replaced.json<{ revision: string }>().revision);
 
     const content = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${first.id}/content` });
     expect(content.body).toBe("annotated-bytes");

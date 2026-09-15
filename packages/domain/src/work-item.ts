@@ -58,6 +58,12 @@ export interface WorkItemAttachment {
   readonly contentType: string;
   readonly sizeBytes: number;
   readonly createdAt: string;
+  /**
+   * Changes whenever the stored bytes do. Annotating an image replaces its
+   * content under the same id, so anything cached by id alone -- a thumbnail
+   * URL above all -- needs this to tell the edited image from the original.
+   */
+  readonly revision: string;
 }
 
 export interface WorkItemSnapshot {

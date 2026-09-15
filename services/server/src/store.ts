@@ -1848,6 +1848,9 @@ export class MissionGoStore {
       contentType: row.content_type,
       sizeBytes: row.size_bytes,
       createdAt: row.created_at,
+      // Every replacement writes a new random storage name, so a digest of it
+      // moves with the content without handing out the name itself.
+      revision: createHash("sha256").update(row.storage_filename).digest("hex").slice(0, 12),
     };
   }
 

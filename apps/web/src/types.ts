@@ -53,6 +53,8 @@ export interface WorkItemAttachment {
   readonly contentType: string;
   readonly sizeBytes: number;
   readonly createdAt: string;
+  /** Changes when the stored bytes do, e.g. after annotating; part of the thumbnail URL. */
+  readonly revision: string;
 }
 
 export interface Product {

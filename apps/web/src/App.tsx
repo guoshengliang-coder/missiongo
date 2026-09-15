@@ -118,6 +118,7 @@ import {
   eventAgentName,
 } from "./comment-summary";
 import { isAnnotatableImage } from "./image-annotation";
+import { LIST_THUMBNAIL_EDGE, previewThumbnailEdge } from "./attachment-thumbnail";
 import {
   DEFAULT_STATUS,
   ITEM_HISTORY_MARKER,
@@ -1663,9 +1664,6 @@ function ItemMediaStrip({
     </div>
   );
 }
-/** Tiles are drawn at 84px and can land on a 2x screen, so ask for 192. */
-const THUMBNAIL_EDGE = 192;
-
 /** Holds a blob URL for the life of the blob and revokes it on the way out. */
 function useObjectUrl(blob: Blob | undefined): string | null {
   const [url, setUrl] = useState<string | null>(null);
@@ -1699,8 +1697,8 @@ function ItemMediaThumbnail({
   // fetched as soon as the row nears the viewport; the original is worth
   // megabytes and is only worth fetching once someone actually opens it.
   const thumbnailQuery = useQuery({
-    queryKey: ["attachment-thumbnail", itemKey, attachment.id, THUMBNAIL_EDGE],
-    queryFn: () => api.downloadAttachmentThumbnail(itemKey, attachment.id, THUMBNAIL_EDGE),
+    queryKey: ["attachment-thumbnail", itemKey, attachment.id, attachment.revision, LIST_THUMBNAIL_EDGE],
+    queryFn: () => api.downloadAttachmentThumbnail(itemKey, attachment.id, LIST_THUMBNAIL_EDGE, attachment.revision),
     enabled: attachment.kind === "image" && isNearViewport,
     staleTime: Infinity,
   });
@@ -3282,13 +3280,30 @@ function AttachmentCard({
   const [cardRef, isNearViewport] = useNearViewport<HTMLElement>("180px");
   const [previewRequested, setPreviewRequested] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
-  const shouldLoad = attachment.kind === "image" ? isNearViewport : previewRequested;
+  const isImage = attachment.kind === "image";
+  // An image previews from its thumbnail, fetched once the card nears the
+  // viewport. The original is megabytes and served no-store, so it is only
+  // fetched when someone opens it, annotates it or downloads it -- fetching it
+  // for the card is what made a detail view with a few screenshots slow.
+  const shouldLoad = previewRequested;
+  const [thumbnailEdge, setThumbnailEdge] = useState<number | null>(null);
+  useEffect(() => {
+    if (!isImage || !isNearViewport || thumbnailEdge !== null) return;
+    setThumbnailEdge(previewThumbnailEdge(cardRef.current?.clientWidth ?? 0, window.devicePixelRatio));
+  }, [cardRef, isImage, isNearViewport, thumbnailEdge]);
+  const thumbnailQuery = useQuery({
+    queryKey: ["attachment-thumbnail", itemKey, attachment.id, attachment.revision, thumbnailEdge],
+    queryFn: () => api.downloadAttachmentThumbnail(itemKey, attachment.id, thumbnailEdge!, attachment.revision),
+    enabled: isImage && thumbnailEdge !== null,
+    staleTime: Infinity,
+  });
+  const thumbnailUrl = useObjectUrl(thumbnailQuery.data);
   // A log and a text document are both read as text, and only their head is
   // worth fetching for a preview. A PDF is neither: it can only be downloaded.
   const readsAsText = attachment.kind === "log"
     || (attachment.kind === "document" && attachment.contentType !== "application/pdf");
   const contentQuery = useQuery({
-    queryKey: ["attachment-content", itemKey, attachment.id],
+    queryKey: ["attachment-content", itemKey, attachment.id, attachment.revision],
     queryFn: () => api.downloadAttachment(
       itemKey,
       attachment.id,
@@ -3339,6 +3354,26 @@ function AttachmentCard({
     [attachment.contentType, attachment.filename, contentQuery.data],
   );
 
+  const openImage = () => {
+    setPreviewRequested(true);
+    setViewerOpen(true);
+  };
+
+  // The annotator needs the original, which is fetched only now; the button
+  // shows a spinner until it arrives and the annotator opens by itself.
+  const startAnnotating = () => {
+    setReplaceError("");
+    setPreviewRequested(true);
+    setAnnotating(true);
+    if (contentQuery.isError) void contentQuery.refetch();
+  };
+  const annotationLoadFailed = annotating && !annotationSource && contentQuery.isError && !contentQuery.isFetching;
+  useEffect(() => {
+    if (!annotationLoadFailed) return;
+    setAnnotating(false);
+    setReplaceError(t("attachmentFailed"));
+  }, [annotationLoadFailed, t]);
+
   const saveAnnotation = async (annotated: File) => {
     setReplacing(true);
     setReplaceError("");
@@ -3367,12 +3402,14 @@ function AttachmentCard({
             <Icon size={22} /> {t("loadPreview")}
           </button>
         )}
-        {!shouldLoad && attachment.kind === "image" && <span><ImageIcon size={22} /></span>}
-        {contentQuery.isLoading && <span><LoaderCircle className="spin" size={18} /> {t("attachmentLoading")}</span>}
-        {contentQuery.isError && <button type="button" className="attachment-load-button attachment-error" onClick={() => void contentQuery.refetch()}>{t("retryAttachment")}</button>}
-        {attachment.kind === "image" && objectUrl && (
-          <button type="button" className="attachment-media-open" onClick={() => setViewerOpen(true)} aria-label={t("previewAttachment", { filename: attachment.filename })}>
-            <img src={objectUrl} alt={attachment.filename} />
+        {isImage && !thumbnailUrl && !thumbnailQuery.isLoading && !thumbnailQuery.isError && <span><ImageIcon size={22} /></span>}
+        {isImage && thumbnailQuery.isLoading && <span><LoaderCircle className="spin" size={18} /> {t("attachmentLoading")}</span>}
+        {isImage && thumbnailQuery.isError && <button type="button" className="attachment-load-button attachment-error" onClick={() => void thumbnailQuery.refetch()}>{t("retryAttachment")}</button>}
+        {!isImage && contentQuery.isLoading && <span><LoaderCircle className="spin" size={18} /> {t("attachmentLoading")}</span>}
+        {!isImage && contentQuery.isError && <button type="button" className="attachment-load-button attachment-error" onClick={() => void contentQuery.refetch()}>{t("retryAttachment")}</button>}
+        {isImage && thumbnailUrl && (
+          <button type="button" className="attachment-media-open" onClick={openImage} aria-label={t("previewAttachment", { filename: attachment.filename })}>
+            <img src={thumbnailUrl} alt={attachment.filename} decoding="async" />
             <span><Maximize2 size={15} /> {t("preview")}</span>
           </button>
         )}
@@ -3392,11 +3429,11 @@ function AttachmentCard({
           {onReplaced && attachment.kind === "image" && isAnnotatableImage({ name: attachment.filename, type: attachment.contentType }) && (
             <button
               type="button"
-              disabled={!contentQuery.data || replacing}
-              onClick={() => setAnnotating(true)}
+              disabled={replacing || (annotating && !annotationSource)}
+              onClick={startAnnotating}
               aria-label={t("annotateTitle")}
               title={t("annotate")}
-            >{replacing ? <LoaderCircle className="spin" size={15} /> : <Highlighter size={15} />}</button>
+            >{replacing || (annotating && !annotationSource) ? <LoaderCircle className="spin" size={15} /> : <Highlighter size={15} />}</button>
           )}
           {onDelete && <button
             type="button"
@@ -3415,10 +3452,12 @@ function AttachmentCard({
           onSave={saveAnnotation}
         />
       )}
-      {viewerOpen && objectUrl && attachment.kind !== "log" && (
+      {viewerOpen && (objectUrl || isImage) && attachment.kind !== "log" && (
         <MediaLightbox title={`${referenceLabel} · ${attachment.filename}`} onClose={() => setViewerOpen(false)}>
-          {attachment.kind === "image" && <img src={objectUrl} alt={attachment.filename} />}
-          {attachment.kind === "video" && <video src={objectUrl} controls autoPlay playsInline preload="metadata" />}
+          {isImage && contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
+          {isImage && contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
+          {isImage && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
+          {attachment.kind === "video" && objectUrl && <video src={objectUrl} controls autoPlay playsInline preload="metadata" />}
         </MediaLightbox>
       )}
     </article>
