@@ -186,6 +186,7 @@ apk_link="${downloads_dir}/missiongo-android-latest.apk"
 local_maven="apps/web/public/maven"
 local_macos_zip="apps/web/public/downloads/missiongo-macos-latest.zip"
 local_macos_meta="apps/web/public/downloads/missiongo-macos-latest.release"
+local_macos_manifest="apps/web/public/downloads/missiongo-macos-latest.json"
 
 # macOS ships shasum without sha256sum; a minimal Linux host ships the reverse.
 sha256_of() {
@@ -281,6 +282,23 @@ if [ -s "$local_macos_zip" ]; then
     echo "Run npm run publish:macos to rebuild and record it." >&2
     exit 1
   fi
+  # The manifest is what an installed client reads to decide whether it is out of
+  # date. Shipping a zip without it leaves every Mac on its current build with no
+  # way to find out, and shipping one that names a different build is worse: the
+  # client would download this zip and reject it on the digest.
+  [ -s "$local_macos_manifest" ] || {
+    echo "No update manifest beside the macOS client: ${local_macos_manifest}" >&2
+    echo "Run npm run publish:macos to rebuild and record it." >&2
+    exit 1
+  }
+  macos_manifest_sha="$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' "$local_macos_manifest" | head -n 1)"
+  if [ "$macos_sha" != "$macos_manifest_sha" ]; then
+    echo "The macOS update manifest names a different build than the zip beside it." >&2
+    echo "  zip      ${macos_sha}" >&2
+    echo "  manifest ${macos_manifest_sha}" >&2
+    echo "Run npm run publish:macos to rebuild and record it." >&2
+    exit 1
+  fi
   echo "==> Shipping macOS client ${macos_version} (sha256 ${macos_sha})"
 else
   echo "Note: this checkout carries no macOS client under apps/web/public/downloads/." >&2
@@ -335,7 +353,8 @@ if [ ! -s "$local_macos_zip" ]; then
   remote "if [ -s '${current_link}/${local_macos_zip}' ]; then \
       sudo mkdir -p '${target}/apps/web/public/downloads' && \
       sudo cp -a '${current_link}/${local_macos_zip}' '${target}/apps/web/public/downloads/' && \
-      { [ ! -s '${current_link}/${local_macos_meta}' ] || sudo cp -a '${current_link}/${local_macos_meta}' '${target}/apps/web/public/downloads/'; }; \
+      { [ ! -s '${current_link}/${local_macos_meta}' ] || sudo cp -a '${current_link}/${local_macos_meta}' '${target}/apps/web/public/downloads/'; } && \
+      { [ ! -s '${current_link}/${local_macos_manifest}' ] || sudo cp -a '${current_link}/${local_macos_manifest}' '${target}/apps/web/public/downloads/'; }; \
     else echo '    nothing to carry over: the live release has no macOS client either'; fi"
 fi
 

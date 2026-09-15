@@ -174,6 +174,68 @@ private struct AgentsSection: View {
                         .help(skill)
                 }
             }
+            UpdateRow()
+        }
+    }
+}
+
+/// The client's own version, beside the agents it checks on. Until now the app
+/// never said which build it was, which made "is this Mac up to date?" a
+/// question nobody could answer from the menu.
+private struct UpdateRow: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        // Nothing to say when the version cannot be read -- `swift run` has no
+        // Info.plist, and an empty row would only raise the question.
+        if case .unavailable = model.updateState {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("MissionGo")
+                        .font(.caption)
+                    Spacer()
+                    detail
+                }
+                if case let .failed(_, reason) = model.updateState {
+                    WrappingCaption(text: reason, color: .orange)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var detail: some View {
+        switch model.updateState {
+        case .unavailable:
+            EmptyView()
+        case let .current(version):
+            Text(version).font(.caption).foregroundColor(.secondary)
+        case let .checking(version):
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text(version).font(.caption).foregroundColor(.secondary)
+            }
+        case let .available(update):
+            HStack(spacing: 6) {
+                Text(update.current).font(.caption).foregroundColor(.secondary)
+                Button("更新到 \(update.version)") { model.installUpdate() }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+            }
+        case let .downloading(update):
+            progress("正在下载 \(update.version)…")
+        case let .installing(update):
+            progress("正在安装 \(update.version)…")
+        case let .failed(current, _):
+            Text(current).font(.caption).foregroundColor(.orange)
+        }
+    }
+
+    private func progress(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.mini)
+            Text(text).font(.caption).foregroundColor(.secondary)
         }
     }
 }

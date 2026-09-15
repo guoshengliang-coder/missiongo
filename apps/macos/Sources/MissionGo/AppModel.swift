@@ -30,6 +30,41 @@ final class AppModel: ObservableObject {
         var error: String?
     }
 
+    /// Where this Mac is in updating its own client.
+    ///
+    /// `unavailable` is the answer for a build with no version to compare --
+    /// `swift run`, mostly. It is not an error and gets no warning colour: the
+    /// menu simply says nothing about updates.
+    enum UpdateState: Equatable {
+        case unavailable
+        case current(String)
+        case checking(String)
+        case available(AppUpdater.Available)
+        case downloading(AppUpdater.Available)
+        case installing(AppUpdater.Available)
+        case failed(current: String, reason: String)
+
+        /// The running version, once it is known.
+        var current: String? {
+            switch self {
+            case .unavailable: return nil
+            case let .current(version), let .checking(version): return version
+            case let .available(update), let .downloading(update), let .installing(update):
+                return update.current
+            case let .failed(current, _): return current
+            }
+        }
+
+        /// True while an update is being fetched or written: the button has to
+        /// stay out of reach, and a timer tick must not restart the check.
+        var isBusy: Bool {
+            switch self {
+            case .downloading, .installing: return true
+            case .unavailable, .current, .checking, .available, .failed: return false
+            }
+        }
+    }
+
     private enum DefaultsKey {
         static let serverOverride = "serverURLOverride"
         static let revokedNotice = "lastSessionRevoked"
@@ -39,6 +74,10 @@ final class AppModel: ObservableObject {
     static let claudeRecheckInterval: TimeInterval = 5 * 60
     /// The Skill changes with releases, not minutes; the first sync runs at login.
     static let skillSyncInterval: TimeInterval = 60 * 60
+    /// Releases are days apart, and the check costs a request against the
+    /// deployment this Mac is already heartbeating to every 30 seconds. Once at
+    /// login is what actually catches most of them.
+    static let updateCheckInterval: TimeInterval = 6 * 60 * 60
     static let dispatchRefreshInterval: TimeInterval = 30
     /// Opening and closing the menu quickly should not start a process each time.
     static let openRefreshThrottle: TimeInterval = 10
@@ -69,6 +108,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var skillSyncSummary: String?
     @Published private(set) var skillSyncFailed = false
     @Published private(set) var launchAtLogin = LaunchAtLogin()
+    /// The client's own version, and whether a newer one is published.
+    @Published private(set) var updateState: UpdateState = .unavailable
 
     // MARK: Private state
 
@@ -88,6 +129,7 @@ final class AppModel: ObservableObject {
     private var lastSeenLaunchId: String?
     private var claudeTimer: Task<Void, Never>?
     private var skillTimer: Task<Void, Never>?
+    private var updateTimer: Task<Void, Never>?
     private var menuTimer: Task<Void, Never>?
     private var lastClaudeCheck: Date?
     private var lastOpenRefresh: Date?
@@ -141,6 +183,9 @@ final class AppModel: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        // Before any network call: the menu should be able to say which version
+        // this is even when the check never gets to run.
+        updateState = AppUpdater.currentVersion().map { .current($0) } ?? .unavailable
         refreshLaunchAtLogin()
         Task {
             // The login shell can take seconds to answer; never on the main thread.
@@ -167,6 +212,7 @@ final class AppModel: ObservableObject {
         startLoop(credential)
         startClaudeTimer()
         startSkillTimer(credential)
+        startUpdateTimer(credential)
         refreshProfile()
         refreshDispatches()
         refreshCandidates()
@@ -178,6 +224,8 @@ final class AppModel: ObservableObject {
         claudeTimer = nil
         skillTimer?.cancel()
         skillTimer = nil
+        updateTimer?.cancel()
+        updateTimer = nil
         do {
             // The installation id stays: logging in again finds the same machine
             // with its mappings and history.
@@ -201,6 +249,9 @@ final class AppModel: ObservableObject {
         codex = .checking
         skillSyncSummary = nil
         skillSyncFailed = false
+        // The version is a property of this build, not of the session, so it
+        // stays; anything in flight does not.
+        updateState = AppUpdater.currentVersion().map { .current($0) } ?? .unavailable
         lastClaudeCheck = nil
     }
 
@@ -470,6 +521,81 @@ final class AppModel: ObservableObject {
             skillSyncSummary = error.localizedDescription
             skillSyncFailed = true
         }
+    }
+
+    private func startUpdateTimer(_ credential: NodeCredential) {
+        updateTimer?.cancel()
+        updateTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.checkForUpdate(credential)
+                try? await Task.sleep(nanoseconds: UInt64(AppModel.updateCheckInterval * 1_000_000_000))
+            }
+        }
+    }
+
+    /// Asks the server this Mac is signed in to whether a newer client is
+    /// published. Shown, never fatal: a machine that cannot reach the manifest
+    /// keeps taking dispatches on the build it has.
+    private func checkForUpdate(_ credential: NodeCredential) async {
+        guard let current = AppUpdater.currentVersion() else {
+            updateState = .unavailable
+            return
+        }
+        // A download or an install already under way owns this state.
+        guard !updateState.isBusy else { return }
+        updateState = .checking(current)
+        do {
+            let found = try await AppUpdater.check(serverUrl: credential.serverUrl, currentVersion: current)
+            guard self.credential == credential, !updateState.isBusy else { return }
+            updateState = found.map { .available($0) } ?? .current(current)
+        } catch {
+            guard self.credential == credential, !updateState.isBusy else { return }
+            updateState = .failed(current: current, reason: error.localizedDescription)
+        }
+    }
+
+    /// Called from the menu. Downloading is automatic; this part is not, because
+    /// it ends with the app quitting and coming back.
+    func installUpdate() {
+        guard case let .available(update) = updateState, let credential else { return }
+        updateState = .downloading(update)
+        Task {
+            do {
+                let zip = try await AppUpdater.download(update.manifest, serverUrl: credential.serverUrl)
+                updateState = .installing(update)
+                let bundle = try await AppUpdater.install(
+                    zip: zip,
+                    manifest: update.manifest,
+                    replacing: Bundle.main.bundleURL,
+                    expectedIdentifier: Bundle.main.bundleIdentifier
+                )
+                relaunch(bundle)
+            } catch {
+                updateState = .failed(current: update.current, reason: error.localizedDescription)
+            }
+        }
+    }
+
+    /// Hands the relaunch to a detached child and quits. Sessions this app
+    /// started are in their own process groups and keep running throughout --
+    /// see SessionLauncher, which relies on the same thing for quit and logout.
+    private func relaunch(_ bundle: URL) {
+        let command = AppUpdater.relaunchCommand(bundle: bundle, pid: ProcessInfo.processInfo.processIdentifier)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: command.file)
+        process.arguments = command.args
+        process.standardInput = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            // Installed but not restarted: saying so beats quitting into silence.
+            updateState = .failed(
+                current: updateState.current ?? "",
+                reason: "新版本已装好，但没能自动重启，请手动打开 MissionGo。"
+            )
+            return
+        }
+        quit()
     }
 
     func refreshProfile() {

@@ -38,6 +38,11 @@ apps/web/public/downloads/*.zip
 # Metadata recorded beside the APK by scripts/publish-android-internal.sh.
 apps/web/public/downloads/*.release
 
+# The macOS update manifest written beside the client by scripts/publish-macos.sh.
+# Unlike the .release above, this one is meant to be served: it is public build
+# output, not something the repository declares.
+apps/web/public/downloads/*.json
+
 # Locally published SDK Maven artifacts. Built on demand and shipped with the next
 # website deployment; the repository keeps no binaries.
 apps/web/public/maven/
