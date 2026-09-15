@@ -32,7 +32,7 @@ AI 接入负责按编号完整读取条目、时间线、日志和图片；在�
 - 忘记密码找回；
 - macOS/iOS 反馈 SDK；
 - AI 决定任务是否通过验收（验收、退回、搁置都由人做）；AI 修改条目内容与字段；
-- 定时扫描和无人值守任务队列（管理端派单已经可用，但始终要人点一下，见 [执行机器](docs/node.md)）；
+- 定时扫描和无人值守任务队列（管理端派单已经可用，但始终要人点一下，见 [Agent 与设备](docs/node.md)）；
 - 公共 Maven Central 发布、多实例部署和对象存储。
 
 这些方向保留在 [产品与技术路线图](docs/product-and-technical-plan.md)，不应被当作当前接口承诺。
@@ -46,14 +46,14 @@ Android 反馈 SDK ───────┘
 
 Codex / Claude Code / 其他客户端 ── OAuth + MCP（读取 + 评论）
 
-macOS 客户端（执行机器）── OAuth 登录 + 长轮询拉取派单 ── 本机启动 Claude Code / Codex 会话
+macOS 客户端（设备）── OAuth 登录 + 长轮询拉取派单 ── 本机启动 Claude Code / Codex 会话
 ```
 
 | 目录 | 职责 |
 |---|---|
 | `apps/web` | React/Vite Web 与 H5 管理端 |
 | `apps/android` | 正式 Android 管理 App |
-| `apps/macos` | macOS 菜单栏客户端：把 Mac 登记为执行机器，接收派单并启动会话 |
+| `apps/macos` | macOS 菜单栏客户端：把 Mac 登记为设备，接收派单并启动会话 |
 | `services/server` | Fastify REST、OAuth、MCP、SQLite 与附件服务 |
 | `packages/domain` | 状态机和领域规则 |
 | `packages/contracts` | 跨端类型与公开 MCP 工具契约 |

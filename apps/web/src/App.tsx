@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Archive,
   ArrowRight,
+  Bot,
   Bug,
   Camera,
   Check,
@@ -439,6 +440,7 @@ export function App() {
   const [productOpen, setProductOpen] = useState(false);
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
@@ -1006,6 +1008,13 @@ export function App() {
             setDownloadsOpen(true);
           }}
         ><Download size={15} /> {t("downloadsEntry")}</button>
+        <button
+          className="text-button add-product"
+          onClick={() => {
+            closeSidebar();
+            setAgentsOpen(true);
+          }}
+        ><Bot size={15} /> {t("agentManagementEntry")}</button>
         <button className="text-button add-product" onClick={() => setProductOpen(true)}><Settings2 size={15} /> {t("manageProductsEntry")}</button>
         <div className="sidebar-utilities">
           <LanguageSwitch sidebar />
@@ -1223,6 +1232,11 @@ export function App() {
               clearItemPage();
             }}
           />
+        </Modal>
+      )}
+      {agentsOpen && (
+        <Modal title={t("nodeSettings")} subtitle={t("nodeSettingsHelp")} onClose={() => setAgentsOpen(false)} wide>
+          <NodeSettings products={products} />
         </Modal>
       )}
       {downloadsOpen && (
@@ -3635,7 +3649,7 @@ function ProductSettings({
 }) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
-  const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components" | "tokens" | "nodes" | "access">("product");
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components" | "tokens" | "access">("product");
   const [name, setName] = useState(product.name);
   // Retiring a product retires it for everyone who shares it, so it stays with
   // whoever created it, or an administrator. The server refuses either way; this
@@ -3715,15 +3729,6 @@ function ProductSettings({
         >
           {t("sdkTokens")}
         </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeSettingsTab === "nodes"}
-          className={activeSettingsTab === "nodes" ? "active" : ""}
-          onClick={() => setActiveSettingsTab("nodes")}
-        >
-          {t("nodeSettings")}
-        </button>
         {/* Who else can reach this product is an administrator's question; a
             member looking at a product shared with them has no say in it, and
             the endpoint answers them 404 anyway. */}
@@ -3744,8 +3749,6 @@ function ProductSettings({
           <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("productAccess")}</h3></div></header>
           <ProductAccessSettings productId={product.id} />
         </section>
-      ) : activeSettingsTab === "nodes" ? (
-        <NodeSettings product={product} />
       ) : activeSettingsTab === "tokens" ? (
         <SdkTokenSettings product={product} />
       ) : activeSettingsTab === "product" ? (

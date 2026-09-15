@@ -257,7 +257,7 @@ describe("The macOS client's sign-in, end to end", () => {
     });
     expect(authorize.statusCode).toBe(200);
     // The person is told what signing in here grants.
-    expect(authorize.body).toContain("把这台 Mac 登记为执行机器");
+    expect(authorize.body).toContain("把这台 Mac 登记为你的设备");
     const requestToken = /name="request" value="([^"]+)"/.exec(authorize.body)?.[1];
 
     const approved = await app.inject({

@@ -332,8 +332,8 @@ function oauthLoginPage(
     + "只有这两个状态变更——验收、退回、搁置，以及做不了怎么办，都由你决定。"
     + "<strong>在你于会话里确认内容后，从正在处理的条目拆出衍生条目</strong>。"
     + "它不能修改你写的内容，不能删除条目，不能撤回评论。";
-  const nodeGrant = "<strong>把这台 Mac 登记为执行机器</strong>：接收你在控制台派出的任务，并在本机启动会话处理。"
-    + "随时可以在控制台「执行机器」里撤销。";
+  const nodeGrant = "<strong>把这台 Mac 登记为你的设备</strong>：接收你在控制台派出的任务，并在本机启动 agent 会话处理。"
+    + "随时可以在控制台「Agent 管理」里撤销。";
   const scopeNote = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools === "none"
     ? "本次只会签发读取授权：这个部署当前没有开放 AI 写入。"
     : writes
@@ -1214,7 +1214,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // own credential.
   const requireAccountId = (request: FastifyRequest): string => requireAccount(request).id;
 
-  app.get("/api/v1/nodes", async (request) => ({ nodes: dispatchStore.listNodes(requireAccountId(request)) }));
+  // Mappings are shown and replaced only for products the signed-in account can
+  // still see; one it has lost stays on the machine untouched rather than
+  // turning every later save into a 404.
+  const consoleProductScope = (request: FastifyRequest): "*" | readonly string[] =>
+    accountStore.reachableProductIds(requireAccount(request), "view");
+
+  app.get("/api/v1/nodes", async (request) => ({
+    nodes: dispatchStore.listNodes(requireAccountId(request), consoleProductScope(request)),
+  }));
 
   app.patch("/api/v1/nodes/:nodeId", async (request) => {
     const { nodeId } = request.params as { nodeId: string };
@@ -1245,6 +1253,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           requireProductPermission(request, productId);
           return { productId, repoPath: stringField(repo, "repoPath")! };
         }),
+        consoleProductScope(request),
       ),
     };
   });
@@ -1316,7 +1325,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   const requireNode = (request: FastifyRequest): { nodeId: string; accountId: string } => {
     const node = dispatchStore.authenticateNode(suppliedBearerToken(request));
-    if (!node) throw new MissionGoError("authentication_required", "A valid node bearer token is required.", 401);
+    // A machine acts for the account that registered it, so it stops when that
+    // account does: disabling or deleting an account has to cut off its Macs
+    // too, or they keep pulling queued work and product names.
+    if (!node || (!unauthenticatedDeployment && !accountStore.findActive(node.accountId))) {
+      throw new MissionGoError("authentication_required", "A valid node bearer token is required.", 401);
+    }
     return node;
   };
 
@@ -1329,9 +1343,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    * menu from this, so an unfiltered list would name other people's products on
    * someone's Mac.
    */
+  const nodeProductScope = (accountId: string): "*" | readonly string[] => {
+    if (unauthenticatedDeployment) return "*";
+    // No active account means nothing to reach. This used to fall back to "*",
+    // which handed a disabled account's Mac every product on the deployment.
+    const account = accountStore.findActive(accountId);
+    return account ? accountStore.reachableProductIds(account, "view") : [];
+  };
   const nodeProducts = (accountId: string) => {
-    const account = unauthenticatedDeployment ? undefined : accountStore.findActive(accountId);
-    const reachable = account ? accountStore.reachableProductIds(account, "view") : "*" as const;
+    const reachable = nodeProductScope(accountId);
     return store.listProducts()
       .filter((product) => reachable === "*" || reachable.includes(product.id))
       .map((product) => ({ id: product.id, keyPrefix: product.keyPrefix, name: product.name }));
@@ -1367,6 +1387,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           requireNodeAccountPermission(node.accountId, productId);
           return { productId, repoPath: stringField(repo, "repoPath")! };
         }),
+        nodeProductScope(node.accountId),
       ),
     };
   });
@@ -1403,6 +1424,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             ...(stringField(candidate, "lastUsedAt", false) ? { lastUsedAt: candidate.lastUsedAt as string } : {}),
           };
         }),
+        nodeProductScope(node.accountId),
       ),
     };
   });
