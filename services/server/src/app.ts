@@ -428,7 +428,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!options.adminAccount) return undefined;
     const claims = readAdminSession(options.adminAccount, cookieValue(request, ADMIN_SESSION_COOKIE));
     if (!claims) return undefined;
-    return accountStore.resolveActive(claims.id, claims.issuedAt);
+    return accountStore.resolveActive(claims.id, claims.credentialsAt);
   };
 
   const sessionUser = (request: FastifyRequest): AdminSessionUser | undefined => {
@@ -463,7 +463,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!options.adminAccount) return undefined;
     const claims = readAiAccessToken(options.adminAccount, token);
     if (!claims) return undefined;
-    const account = accountStore.resolveActive(claims.id, claims.issuedAt);
+    const account = accountStore.resolveActive(claims.id, claims.credentialsAt);
     if (!account) return undefined;
     return {
       ...claims,
@@ -659,11 +659,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       try {
         // The token is issued to whoever just signed in on the consent page, so
         // the AI client inherits that account's product reach and no more.
-        const completed = oauthProvider.finishAuthorization(requestToken, {
-          id: account.id,
-          username: account.email,
-          role: account.role,
-        });
+        const completed = oauthProvider.finishAuthorization(
+          requestToken,
+          { id: account.id, username: account.email, role: account.role },
+          accountStore.credentialsStamp(account),
+        );
         const redirect = new URL(completed.redirectUri);
         redirect.searchParams.set("code", completed.code);
         if (completed.state) redirect.searchParams.set("state", completed.state);
@@ -807,7 +807,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
     loginFailures.delete(request.ip);
     const user: AdminSessionUser = { id: account.id, username: account.email, role: account.role };
-    const token = createAdminSession(options.adminAccount, user, now);
+    const token = createAdminSession(options.adminAccount, user, accountStore.credentialsStamp(account), now);
     return reply
       .header("cache-control", "no-store")
       .header("set-cookie", adminSessionCookie(options.adminAccount, token))
@@ -842,7 +842,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const user: AdminSessionUser = { id: account.id, username: account.email, role: account.role };
     return reply
       .header("cache-control", "no-store")
-      .header("set-cookie", adminSessionCookie(options.adminAccount, createAdminSession(options.adminAccount, user)))
+      .header(
+        "set-cookie",
+        adminSessionCookie(
+          options.adminAccount,
+          createAdminSession(options.adminAccount, user, accountStore.credentialsStamp(account)),
+        ),
+      )
       .send({ user });
   });
 

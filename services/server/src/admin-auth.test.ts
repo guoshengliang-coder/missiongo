@@ -17,6 +17,8 @@ import {
 } from "./admin-auth.js";
 
 const salt = randomBytes(16);
+/** Stands in for the account's credentials_changed_at, which the token is signed under. */
+const CREDENTIALS_AT = Date.parse("2026-09-15T00:00:00.000Z");
 const storedDigest = `scrypt:${salt.toString("base64url")}:${scryptSync("correct horse", salt, 64).toString("base64url")}`;
 
 function account(overrides: Partial<AdminAccountConfig> = {}): AdminAccountConfig {
@@ -84,29 +86,46 @@ describe("password digests", () => {
 describe("admin session tokens", () => {
   it("round-trips the signed session", () => {
     const config = account();
-    expect(readAdminSession(config, createAdminSession(config, user()))).toMatchObject({
+    expect(readAdminSession(config, createAdminSession(config, user(), CREDENTIALS_AT))).toMatchObject({
       id: "account-1",
       username: "owner@example.com",
       role: "admin",
     });
   });
 
-  it("carries the issue time, which is what the accounts table checks a session against", () => {
+  it("carries the credential stamp the accounts table checks a session against", () => {
     const config = account();
     const issuedAt = Date.now();
-    const claims = readAdminSession(config, createAdminSession(config, user(), issuedAt));
+    const claims = readAdminSession(config, createAdminSession(config, user(), CREDENTIALS_AT, issuedAt));
+    expect(claims?.credentialsAt).toBe(CREDENTIALS_AT);
     expect(claims?.issuedAt).toBe(Math.floor(issuedAt / 1_000));
+  });
+
+  it("refuses a session with no credential stamp, such as one the previous release signed", () => {
+    // Everyone signs in once after the upgrade. The alternative is accepting a
+    // cookie there is no way to invalidate.
+    const config = account();
+    const legacy = Buffer.from(JSON.stringify({
+      version: 1,
+      id: "account-1",
+      username: "owner@example.com",
+      role: "admin",
+      issuedAt: Math.floor(Date.now() / 1_000),
+      expiresAt: Math.floor(Date.now() / 1_000) + 10_000,
+    })).toString("base64url");
+    const signature = createAdminSession(config, user(), CREDENTIALS_AT).split(".")[1]!;
+    expect(readAdminSession(config, `${legacy}.${signature}`)).toBeUndefined();
   });
 
   it("signs a member session as a member", () => {
     const config = account();
-    const token = createAdminSession(config, user({ id: "account-2", username: "member@example.com", role: "member" }));
+    const token = createAdminSession(config, user({ id: "account-2", username: "member@example.com", role: "member" }), CREDENTIALS_AT);
     expect(readAdminSession(config, token)).toMatchObject({ id: "account-2", role: "member" });
   });
 
   it("rejects a tampered payload, signature, or secret", () => {
     const config = account();
-    const token = createAdminSession(config, user());
+    const token = createAdminSession(config, user(), CREDENTIALS_AT);
     const [payload, signature] = token.split(".") as [string, string];
 
     const forged = Buffer.from(JSON.stringify({
@@ -114,6 +133,7 @@ describe("admin session tokens", () => {
       id: "account-1",
       username: "owner@example.com",
       role: "admin",
+      credentialsAt: CREDENTIALS_AT,
       issuedAt: Math.floor(Date.now() / 1_000),
       expiresAt: Math.floor(Date.now() / 1_000) + 10_000,
     })).toString("base64url");
@@ -138,11 +158,12 @@ describe("admin session tokens", () => {
       id: "account-1",
       username: "owner@example.com",
       role: "superuser",
+      credentialsAt: CREDENTIALS_AT,
       issuedAt: Math.floor(Date.now() / 1_000),
       expiresAt: Math.floor(Date.now() / 1_000) + 10_000,
     })).toString("base64url");
     // Signed with the real secret, so only the shape check can catch it.
-    const signed = createAdminSession(config, user());
+    const signed = createAdminSession(config, user(), CREDENTIALS_AT);
     const secretSignature = signed.split(".")[1]!;
     expect(readAdminSession(config, `${forged}.${secretSignature}`)).toBeUndefined();
   });
@@ -150,7 +171,7 @@ describe("admin session tokens", () => {
   it("rejects an expired session and one issued in the future", () => {
     const config = account();
     const issuedAt = Date.now();
-    const token = createAdminSession(config, user(), issuedAt);
+    const token = createAdminSession(config, user(), CREDENTIALS_AT, issuedAt);
     expect(readAdminSession(config, token, issuedAt + ADMIN_SESSION_SECONDS * 1_000 + 1_000)).toBeUndefined();
     expect(readAdminSession(config, token, issuedAt - 120_000)).toBeUndefined();
   });
@@ -168,7 +189,7 @@ describe("admin session tokens", () => {
 describe("AI access tokens", () => {
   it("carries the account, client and scope", () => {
     const config = account();
-    const { token } = createAiAccessToken(config, user(), "codex-client");
+    const { token } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client");
     expect(readAiAccessToken(config, token)).toMatchObject({
       id: "account-1",
       clientId: "codex-client",
@@ -181,7 +202,7 @@ describe("AI access tokens", () => {
     // resolved on every request. Freezing them into a 30-day token is what would
     // let a revoked product stay readable for 30 days.
     const config = account();
-    const { token } = createAiAccessToken(config, user(), "codex-client");
+    const { token } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client");
     expect(readAiAccessToken(config, token)).not.toHaveProperty("productIds");
     expect(Buffer.from(token.slice("mgai_".length).split(".")[0]!, "base64url").toString("utf8"))
       .not.toContain("productIds");
@@ -192,6 +213,7 @@ describe("AI access tokens", () => {
     const { token } = createAiAccessToken(
       config,
       user({ id: "account-2", username: "member@example.com", role: "member" }),
+      CREDENTIALS_AT,
       "codex-client",
     );
     expect(readAiAccessToken(config, token)).toMatchObject({ id: "account-2", role: "member" });
@@ -199,8 +221,8 @@ describe("AI access tokens", () => {
 
   it("does not accept a session token, and the session reader does not accept it", () => {
     const config = account();
-    const sessionToken = createAdminSession(config, user());
-    const { token: aiToken } = createAiAccessToken(config, user(), "codex-client");
+    const sessionToken = createAdminSession(config, user(), CREDENTIALS_AT);
+    const { token: aiToken } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client");
 
     expect(readAiAccessToken(config, sessionToken)).toBeUndefined();
     expect(readAdminSession(config, aiToken)).toBeUndefined();
@@ -208,7 +230,7 @@ describe("AI access tokens", () => {
 
   it("rejects a tampered token or a foreign secret", () => {
     const config = account();
-    const { token } = createAiAccessToken(config, user(), "codex-client");
+    const { token } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client");
     const body = token.slice("mgai_".length);
     const [payload, signature] = body.split(".") as [string, string];
 
@@ -221,7 +243,7 @@ describe("AI access tokens", () => {
   it("rejects an expired token", () => {
     const config = account();
     const issuedAt = Date.now();
-    const { token, claims } = createAiAccessToken(config, user(), "codex-client", ["missiongo:read"], issuedAt);
+    const { token, claims } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client", ["missiongo:read"], issuedAt);
     expect(readAiAccessToken(config, token, claims.expiresAt * 1_000 + 1_000)).toBeUndefined();
   });
 });

@@ -16,6 +16,8 @@ const account: AdminAccountConfig = {
 
 /** Whoever typed their password on the consent page; the token is issued to them. */
 const consentingUser: AdminSessionUser = { id: "account-1", username: "owner@example.com", role: "admin" };
+/** Their credentials_changed_at at consent time, signed into the issued token. */
+const CREDENTIALS_AT = Date.parse("2026-09-15T00:00:00.000Z");
 
 const REDIRECT_URI = "http://127.0.0.1:9321/callback";
 const verifier = randomBytes(32).toString("base64url");
@@ -117,15 +119,15 @@ describe("authorization request", () => {
   it("rejects an expired or tampered authorization request", () => {
     const now = Date.now();
     const { requestToken } = provider.beginAuthorization(authorizationInput(), now);
-    expect(() => provider.finishAuthorization(requestToken, consentingUser, now + 11 * 60_000))
+    expect(() => provider.finishAuthorization(requestToken, consentingUser, CREDENTIALS_AT, now + 11 * 60_000))
       .toThrowError(/invalid_authorization_request/);
-    expect(() => provider.finishAuthorization(`${requestToken}tampered`, consentingUser, now))
+    expect(() => provider.finishAuthorization(`${requestToken}tampered`, consentingUser, CREDENTIALS_AT, now))
       .toThrowError(/invalid_authorization_request/);
   });
 
   it("carries the client state through to the redirect", () => {
     const { requestToken } = provider.beginAuthorization(authorizationInput({ state: "opaque-state" }));
-    const completed = provider.finishAuthorization(requestToken, consentingUser);
+    const completed = provider.finishAuthorization(requestToken, consentingUser, CREDENTIALS_AT);
     expect(completed).toMatchObject({ redirectUri: REDIRECT_URI, state: "opaque-state" });
     expect(completed.code).toHaveLength(43);
   });
@@ -134,7 +136,7 @@ describe("authorization request", () => {
 describe("code exchange", () => {
   function issueCode(now = Date.now(), user: AdminSessionUser = consentingUser) {
     const { requestToken } = provider.beginAuthorization(authorizationInput(), now);
-    return provider.finishAuthorization(requestToken, user, now);
+    return provider.finishAuthorization(requestToken, user, CREDENTIALS_AT, now);
   }
 
   function exchange(overrides: Record<string, unknown> = {}, now = Date.now()) {
@@ -159,7 +161,7 @@ describe("code exchange", () => {
 
   it("carries the granted scope from the consent onto the token", () => {
     const { requestToken } = provider.beginAuthorization(authorizationInput({ scope: "missiongo:write" }));
-    const { code } = provider.finishAuthorization(requestToken, consentingUser);
+    const { code } = provider.finishAuthorization(requestToken, consentingUser, CREDENTIALS_AT);
     const result = exchange({ code });
     expect(result.claims.scopes).toEqual(["missiongo:read", "missiongo:write"]);
     expect(result.scope).toBe("missiongo:read missiongo:write");

@@ -255,21 +255,28 @@ export class AccountStore {
   }
 
   /**
-   * Whether a signed session or AI token issued at `issuedAtSeconds` is still
-   * good for this account.
+   * Whether a signed session or AI token is still good for this account.
    *
    * The signature only proves the server minted it. Everything that should end a
-   * session early -- the account was deleted, suspended, or its password changed
-   * -- is recorded here, not in the token.
+   * session early -- the account was deleted, suspended, or its credentials
+   * changed -- is recorded here, not in the token.
+   *
+   * `credentialsAt` is the stamp the token was signed under, and it has to match
+   * exactly. "Issued after the change" would be wrong in both directions at
+   * once: tokens carry whole seconds, so it would refuse the replacement cookie
+   * minted in the same second as the password change, and admit a stale one from
+   * that same second.
    */
-  resolveActive(accountId: string, issuedAtSeconds: number): AccountSnapshot | undefined {
+  resolveActive(accountId: string, credentialsAt: number): AccountSnapshot | undefined {
     const row = this.row(accountId);
     if (!row || row.disabled_at) return undefined;
-    // Second resolution on both sides: the token carries whole seconds, so a
-    // password changed in the same second as the token was issued must not
-    // invalidate it by a rounding artefact.
-    if (Math.floor(Date.parse(row.credentials_changed_at) / 1_000) > issuedAtSeconds) return undefined;
+    if (Date.parse(row.credentials_changed_at) !== credentialsAt) return undefined;
     return mapAccount(row);
+  }
+
+  /** The stamp to sign into a token so `resolveActive` will accept it. */
+  credentialsStamp(account: AccountSnapshot): number {
+    return Date.parse(account.credentialsChangedAt);
   }
 
   /**

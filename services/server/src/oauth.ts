@@ -66,6 +66,8 @@ interface AuthorizationCode {
    * password on the consent page, not to whoever the deployment starts with.
    */
   readonly user: AdminSessionUser;
+  /** Their credentials_changed_at at consent time; the token is signed under it. */
+  readonly credentialsAt: number;
   readonly expiresAt: number;
 }
 
@@ -232,6 +234,7 @@ export class MissionGoOAuthProvider {
   finishAuthorization(
     requestToken: string,
     user: AdminSessionUser,
+    credentialsAt: number,
     now = Date.now(),
   ): { redirectUri: string; code: string; state?: string } {
     const request = readSignedValue<Partial<AuthorizationRequest>>(requestToken, this.account.sessionSecret);
@@ -258,6 +261,7 @@ export class MissionGoOAuthProvider {
       codeChallenge: request.codeChallenge,
       scopes,
       user,
+      credentialsAt,
       expiresAt: nowSeconds + AUTHORIZATION_CODE_SECONDS,
     });
     return {
@@ -287,7 +291,7 @@ export class MissionGoOAuthProvider {
       || !/^[A-Za-z0-9._~-]{43,128}$/.test(input.codeVerifier)
       || !safeEqual(calculatedChallenge, record.codeChallenge)
     ) throw new Error("invalid_grant");
-    const issued = createAiAccessToken(this.account, record.user, input.clientId, record.scopes, now);
+    const issued = createAiAccessToken(this.account, record.user, record.credentialsAt, input.clientId, record.scopes, now);
     return {
       accessToken: issued.token,
       claims: issued.claims,

@@ -90,8 +90,10 @@ describe("Commenting over MCP", () => {
     };
 
     const aiUser = { id: adminAccount.id, username: adminAccount.username, role: "admin" as const };
-    const readToken = createAiAccessToken(adminAccount, aiUser, "read-client", ["missiongo:read"]).token;
-    const writeToken = createAiAccessToken(adminAccount, aiUser, "write-client", ["missiongo:read", "missiongo:write"]).token;
+    // The seeded account's credential stamp; the server checks the token against it.
+    const credentialsAt = app.missionGoAccounts.credentialsStamp(app.missionGoAccounts.getAccount(adminAccount.id));
+    const readToken = createAiAccessToken(adminAccount, aiUser, credentialsAt, "read-client", ["missiongo:read"]).token;
+    const writeToken = createAiAccessToken(adminAccount, aiUser, credentialsAt, "write-client", ["missiongo:read", "missiongo:write"]).token;
     return { app, call, readToken, writeToken };
   }
 
@@ -377,11 +379,6 @@ describe("MissionGo REST API", () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-mcp-"));
     temporaryDirectories.push(directory);
     const adminAccount = testAdminAccount();
-    const mcpAccessToken = createAiAccessToken(
-      adminAccount,
-      { id: adminAccount.id, username: adminAccount.username, role: "admin" },
-      "missiongo-test-client",
-    ).token;
     const app = buildApp({
       databasePath: join(directory, "missiongo.sqlite"),
       attachmentsPath: join(directory, "attachments"),
@@ -390,6 +387,12 @@ describe("MissionGo REST API", () => {
       publicOrigin: "https://missiongo.test",
     });
     apps.push(app);
+    const mcpAccessToken = createAiAccessToken(
+      adminAccount,
+      { id: adminAccount.id, username: adminAccount.username, role: "admin" },
+      app.missionGoAccounts.credentialsStamp(app.missionGoAccounts.getAccount(adminAccount.id)),
+      "missiongo-test-client",
+    ).token;
 
     const unauthorized = await app.inject({
       method: "POST",

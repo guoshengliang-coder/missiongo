@@ -29,6 +29,17 @@ export interface AdminSessionUser {
 
 interface SessionPayload extends AdminSessionUser {
   readonly version: 1;
+  /**
+   * The account's credentials_changed_at, as milliseconds, at the moment this
+   * was signed. The accounts table refuses the token unless its own value still
+   * matches, which is what ends every other session when a password changes.
+   *
+   * Exact equality rather than "issued after": the replacement cookie handed
+   * back to whoever changed the password is minted in the same millisecond, and
+   * a comparison at second resolution would either refuse that one or let a
+   * stale cookie from the same second through.
+   */
+  readonly credentialsAt: number;
   readonly issuedAt: number;
   readonly expiresAt: number;
 }
@@ -42,6 +53,7 @@ interface SessionPayload extends AdminSessionUser {
  * the accounts table, and it needs to know when this was issued to answer it.
  */
 export interface AdminSessionClaims extends AdminSessionUser {
+  readonly credentialsAt: number;
   readonly issuedAt: number;
   readonly expiresAt: number;
 }
@@ -55,6 +67,7 @@ export interface AiAccessPrincipal extends AdminSessionUser {
    * product takes effect on the next request instead of in thirty days.
    */
   readonly productIds: "*" | readonly string[];
+  readonly credentialsAt: number;
   readonly issuedAt: number;
   readonly expiresAt: number;
 }
@@ -65,6 +78,7 @@ interface AiAccessPayload extends AdminSessionUser {
   readonly tokenId: string;
   readonly clientId: string;
   readonly scopes: readonly string[];
+  readonly credentialsAt: number;
   readonly issuedAt: number;
   readonly expiresAt: number;
 }
@@ -134,13 +148,19 @@ function readSignedPayload<T>(token: string, prefix: string, secret: string): T 
   }
 }
 
-export function createAdminSession(config: AdminAccountConfig, user: AdminSessionUser, now = Date.now()): string {
+export function createAdminSession(
+  config: AdminAccountConfig,
+  user: AdminSessionUser,
+  credentialsAt: number,
+  now = Date.now(),
+): string {
   const issuedAt = Math.floor(now / 1_000);
   const payload: SessionPayload = {
     version: 1,
     id: user.id,
     username: user.username,
     role: user.role,
+    credentialsAt,
     issuedAt,
     expiresAt: issuedAt + ADMIN_SESSION_SECONDS,
   };
@@ -153,7 +173,8 @@ export function createAdminSession(config: AdminAccountConfig, user: AdminSessio
  *
  * This says the cookie is genuine and unexpired, not that the account behind it
  * is still allowed in. The caller resolves the id against the accounts table --
- * with `issuedAt`, so a password changed after the cookie was minted refuses it.
+ * with `credentialsAt`, so a password changed after the cookie was minted
+ * refuses it.
  */
 export function readAdminSession(config: AdminAccountConfig, token: string, now = Date.now()): AdminSessionClaims | undefined {
   const separator = token.indexOf(".");
@@ -172,6 +193,7 @@ export function readAdminSession(config: AdminAccountConfig, token: string, now 
       || typeof payload.username !== "string"
       || !payload.username
       || (payload.role !== "admin" && payload.role !== "member")
+      || !Number.isSafeInteger(payload.credentialsAt)
       || !Number.isSafeInteger(payload.issuedAt)
       || !Number.isSafeInteger(payload.expiresAt)
       || payload.expiresAt! <= nowSeconds
@@ -181,6 +203,7 @@ export function readAdminSession(config: AdminAccountConfig, token: string, now 
       id: payload.id,
       username: payload.username,
       role: payload.role,
+      credentialsAt: payload.credentialsAt!,
       issuedAt: payload.issuedAt!,
       expiresAt: payload.expiresAt!,
     };
@@ -192,6 +215,7 @@ export function readAdminSession(config: AdminAccountConfig, token: string, now 
 export function createAiAccessToken(
   config: AdminAccountConfig,
   user: AdminSessionUser,
+  credentialsAt: number,
   clientId: string,
   scopes: readonly string[] = ["missiongo:read"],
   now = Date.now(),
@@ -206,6 +230,7 @@ export function createAiAccessToken(
     role: user.role,
     clientId,
     scopes: [...scopes],
+    credentialsAt,
     issuedAt,
     expiresAt: issuedAt + AI_ACCESS_SESSION_SECONDS,
   };
@@ -244,6 +269,7 @@ export function readAiAccessToken(
     || !payload.clientId
     || !Array.isArray(payload.scopes)
     || payload.scopes.some((scope) => typeof scope !== "string")
+    || !Number.isSafeInteger(payload.credentialsAt)
     || !Number.isSafeInteger(payload.issuedAt)
     || !Number.isSafeInteger(payload.expiresAt)
     || payload.expiresAt! <= nowSeconds
@@ -255,6 +281,7 @@ export function readAiAccessToken(
     role: payload.role,
     clientId: payload.clientId,
     scopes: payload.scopes,
+    credentialsAt: payload.credentialsAt!,
     issuedAt: payload.issuedAt!,
     expiresAt: payload.expiresAt!,
   };
