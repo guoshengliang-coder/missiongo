@@ -414,6 +414,36 @@ public enum DispatchPresentation {
         return itemKeys.isEmpty ? "（无条目）" : itemKeys.joined(separator: "、")
     }
 
+    /// Which agent took the dispatch. An unknown kind is shown as it arrived:
+    /// a server that learned a new agent should not turn into a blank row here.
+    public static func agentLabel(_ agentKind: String) -> String {
+        switch agentKind {
+        case "claude_code": return "Claude Code"
+        case "codex": return "Codex"
+        case "hermes": return "Hermes"
+        default: return agentKind
+        }
+    }
+
+    /// The permission mode it was dispatched with, worded as the console words
+    /// it. Unknown modes are shown as they arrived, for the same reason.
+    public static func modeLabel(_ mode: String) -> String {
+        switch mode {
+        case "plan": return "计划"
+        case "default": return "默认"
+        case "acceptEdits": return "自动接受编辑"
+        case "auto": return "自动"
+        default: return mode
+        }
+    }
+
+    /// The one line under the item keys: which agent, in which mode.
+    public static func agentLine(agentKind: String, mode: String) -> String {
+        let agent = agentLabel(agentKind)
+        let mode = modeLabel(mode)
+        return mode.isEmpty ? agent : "\(agent) · \(mode)"
+    }
+
     /// The first line, cut to `limit` characters. A launch failure carries the
     /// log tail after a newline; the row only needs the reason, the full text is
     /// in the tooltip.

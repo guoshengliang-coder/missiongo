@@ -46,6 +46,11 @@ private struct DispatchRow: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    Text(DispatchPresentation.agentLine(agentKind: record.agentKind, mode: record.mode))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     if let error = DispatchPresentation.shortError(record.error) {
                         Text(error)
                             .font(.caption)
