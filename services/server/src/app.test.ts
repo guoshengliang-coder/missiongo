@@ -89,8 +89,11 @@ describe("Commenting over MCP", () => {
       return JSON.parse(payload!) as { result?: Record<string, unknown>; error?: unknown };
     };
 
-    const readToken = createAiAccessToken(adminAccount, "read-client", ["missiongo:read"]).token;
-    const writeToken = createAiAccessToken(adminAccount, "write-client", ["missiongo:read", "missiongo:write"]).token;
+    const aiUser = { id: adminAccount.id, username: adminAccount.username, role: "admin" as const };
+    // The seeded account's credential stamp; the server checks the token against it.
+    const credentialsAt = app.missionGoAccounts.credentialsStamp(app.missionGoAccounts.getAccount(adminAccount.id));
+    const readToken = createAiAccessToken(adminAccount, aiUser, credentialsAt, "read-client", ["missiongo:read"]).token;
+    const writeToken = createAiAccessToken(adminAccount, aiUser, credentialsAt, "write-client", ["missiongo:read", "missiongo:write"]).token;
     return { app, call, readToken, writeToken };
   }
 
@@ -376,7 +379,6 @@ describe("MissionGo REST API", () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-mcp-"));
     temporaryDirectories.push(directory);
     const adminAccount = testAdminAccount();
-    const mcpAccessToken = createAiAccessToken(adminAccount, "missiongo-test-client").token;
     const app = buildApp({
       databasePath: join(directory, "missiongo.sqlite"),
       attachmentsPath: join(directory, "attachments"),
@@ -385,6 +387,12 @@ describe("MissionGo REST API", () => {
       publicOrigin: "https://missiongo.test",
     });
     apps.push(app);
+    const mcpAccessToken = createAiAccessToken(
+      adminAccount,
+      { id: adminAccount.id, username: adminAccount.username, role: "admin" },
+      app.missionGoAccounts.credentialsStamp(app.missionGoAccounts.getAccount(adminAccount.id)),
+      "missiongo-test-client",
+    ).token;
 
     const unauthorized = await app.inject({
       method: "POST",
@@ -519,14 +527,19 @@ describe("MissionGo REST API", () => {
   });
 
   it("uses first-time account login and limits AI reads to authorized products", async () => {
-    const allowedProductIds: string[] = [];
-    const adminAccount = testAdminAccount(allowedProductIds);
+    const adminAccount = testAdminAccount();
     const app = buildApp({ adminAccount, publicOrigin: "https://missiongo.test" });
     apps.push(app);
 
     const allowed = app.missionGoStore.createProduct({ name: "Allowed", keyPrefix: "OK" });
     const blocked = app.missionGoStore.createProduct({ name: "Blocked", keyPrefix: "NO" });
-    allowedProductIds.push(allowed.id);
+    // The console reaches both products -- this account is an administrator.
+    // What is narrowed here is the reach of AI clients signing in as it, which
+    // is what ADMIN_AUTHORIZED_PRODUCT_IDS used to express and what the seed now
+    // turns into rows.
+    app.missionGoAccounts.replacePermissions(adminAccount.id, [
+      { productId: allowed.id, canView: true, canOperate: true, canUseAi: true },
+    ]);
     app.missionGoStore.createWorkItem({
       productId: blocked.id,
       type: "bug",
@@ -577,16 +590,16 @@ describe("MissionGo REST API", () => {
       method: "POST",
       url: "/oauth/authorize",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      payload: new URLSearchParams({ request: requestToken!, username: "mission-owner", password: "wrong" }).toString(),
+      payload: new URLSearchParams({ request: requestToken!, username: adminAccount.username, password: "wrong" }).toString(),
     });
     expect(invalidLogin.statusCode).toBe(401);
-    expect(invalidLogin.body).toContain("用户名或密码不正确");
+    expect(invalidLogin.body).toContain("邮箱或密码不正确");
 
     const login = await app.inject({
       method: "POST",
       url: "/oauth/authorize",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      payload: new URLSearchParams({ request: requestToken!, username: "mission-owner", password: "correct horse" }).toString(),
+      payload: new URLSearchParams({ request: requestToken!, username: adminAccount.username, password: "correct horse" }).toString(),
     });
     expect(login.statusCode).toBe(302);
     const callback = new URL(login.headers.location!);

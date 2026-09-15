@@ -24,7 +24,6 @@ import {
   Lightbulb,
   ListTodo,
   LoaderCircle,
-  LogOut,
   Maximize2,
   Menu,
   MessageSquarePlus,
@@ -38,7 +37,6 @@ import {
   Settings2,
   Sparkles,
   Trash2,
-  UserRound,
   Video,
   WifiOff,
   X,
@@ -106,6 +104,7 @@ import { environmentSummary, platformName } from "./environment-summary";
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
+import { AccountSettings } from "./account-settings";
 import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog } from "@missiongo/domain";
 import { dispatchedEvent, groupTimeline } from "./timeline";
@@ -1220,6 +1219,7 @@ export function App() {
         <Modal title={t("manageProducts")} subtitle={t("productManagementHelp")} onClose={() => setProductOpen(false)} wide>
           <ProductManager
             products={products}
+            {...(bootstrapQuery.data ? { user: bootstrapQuery.data.user } : {})}
             selectedProductId={selectedProductId}
             onSelectProduct={(product) => {
               setSelectedProductId(product.id);
@@ -1240,8 +1240,9 @@ export function App() {
           {!bootstrapQuery.data ? (
             <div className="centered-state"><LoaderCircle className="spin" size={22} /></div>
           ) : (
-          <AccountPanel
+          <AccountSettings
             user={bootstrapQuery.data.user}
+            products={bootstrapQuery.data.products}
             onLoggedOut={() => {
               // Before the reload, not after: the cache on disk holds this
               // account's work items, and a restore on the next start would
@@ -3426,10 +3427,13 @@ function AttachmentCard({
 
 function ProductManager({
   products,
+  user,
   selectedProductId,
   onSelectProduct,
 }: {
   products: readonly Product[];
+  /** Absent only while the shell is drawn from cache and the session is still loading. */
+  user?: AuthenticatedUser;
   selectedProductId: string;
   onSelectProduct: (product: Product) => void;
 }) {
@@ -3489,6 +3493,7 @@ function ProductManager({
           <ProductSettings
             key={activeProduct.id}
             product={activeProduct}
+            {...(user ? { user } : {})}
             onSelected={() => onSelectProduct(activeProduct)}
           />
         )}
@@ -3548,15 +3553,24 @@ function ProductIconField({ product }: { product: Product }) {
 
 function ProductSettings({
   product,
+  user,
   onSelected,
 }: {
   product: Product;
+  user?: AuthenticatedUser;
   onSelected: () => void;
 }) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
   const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components" | "tokens" | "nodes">("product");
   const [name, setName] = useState(product.name);
+  // Retiring a product retires it for everyone who shares it, so it stays with
+  // whoever created it, or an administrator. The server refuses either way; this
+  // only keeps the button from offering something that will come back a 403.
+  // Unknown user means the session is still loading -- assume allowed rather
+  // than flashing the control disabled, since the server has the final say.
+  const mayArchive = !user || user.role === "admin" || !product.createdByAccountId
+    || product.createdByAccountId === user.id;
   const [newComponentName, setNewComponentName] = useState("");
   const [newComponentKind, setNewComponentKind] = useState<ComponentKind>("android");
   const [addingComponent, setAddingComponent] = useState(false);
@@ -3656,11 +3670,11 @@ function ProductSettings({
             {productMutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {t("saveProduct")}
           </button>
           <div className="archive-row">
-            <p>{t("archiveProductHelp")}</p>
+            <p>{mayArchive ? t("archiveProductHelp") : t("archiveNotOwner")}</p>
             <button
               type="button"
               className="secondary-button archive-button"
-              disabled={archiveMutation.isPending}
+              disabled={archiveMutation.isPending || !mayArchive}
               onClick={() => {
                 if (product.archivedAt) archiveMutation.mutate(false);
                 else if (window.confirm(t("confirmArchiveProduct", { name: product.name }))) archiveMutation.mutate(true);
@@ -3922,7 +3936,7 @@ function LoginForm({ onAuthenticated }: { onAuthenticated: (session: AuthSession
       : null;
   return (
     <form className="login-form" onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}>
-      <label>{t("username")}<input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("usernamePlaceholder")} autoComplete="username" autoCapitalize="none" spellCheck={false} required autoFocus /></label>
+      <label>{t("username")}<input type="email" value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("usernamePlaceholder")} autoComplete="username" autoCapitalize="none" spellCheck={false} required autoFocus /></label>
       <label>{t("password")}<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("passwordPlaceholder")} autoComplete="current-password" required /></label>
       {loginError && <InlineError message={loginError} />}
       <p className="privacy-note"><KeyRound size={14} /> {t("noRegistration")}</p>
@@ -3930,23 +3944,6 @@ function LoginForm({ onAuthenticated }: { onAuthenticated: (session: AuthSession
         {mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />} {t("signIn")}
       </button>
     </form>
-  );
-}
-
-function AccountPanel({ user, onLoggedOut }: { user: AuthenticatedUser; onLoggedOut: () => void }) {
-  const { t } = useI18n();
-  const mutation = useMutation({ mutationFn: api.logout, onSuccess: onLoggedOut });
-  return (
-    <div className="account-panel">
-      <div className="account-identity">
-        <span><UserRound size={21} /></span>
-        <div><small>{t("signedInAs")}</small><strong>{user.username}</strong><em>{t("administratorRole")}</em></div>
-      </div>
-      {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
-      <button className="secondary-button wide" disabled={mutation.isPending} onClick={() => mutation.mutate()}>
-        {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <LogOut size={16} />} {t("signOut")}
-      </button>
-    </div>
   );
 }
 

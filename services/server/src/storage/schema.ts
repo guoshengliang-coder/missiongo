@@ -14,7 +14,46 @@ export const INITIAL_SCHEMA = `
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     archived_at TEXT,
-    icon_png TEXT
+    icon_png TEXT,
+    -- Who may archive it. Deliberately not a foreign key: deleting an account
+    -- must not take its products with it, and ON DELETE SET NULL would silently
+    -- hand every one of them to nobody.
+    created_by_account_id TEXT
+  ) STRICT;
+
+  -- Accounts sign in by email. The password format is the same scrypt string the
+  -- environment variable used to carry, so an existing deployment's hash moves
+  -- into the table unchanged.
+  --
+  -- credentials_changed_at is what makes "change the password and the other
+  -- browser is signed out" work without a sessions table. Sessions and AI tokens
+  -- are signed and stateless, and each carries the value this column held when it
+  -- was minted; a token whose copy no longer matches is refused. Moving this
+  -- column therefore invalidates every credential the account holds -- which is
+  -- also the cost: a single session cannot be revoked on its own.
+  CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_scrypt TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+    credentials_changed_at TEXT NOT NULL,
+    disabled_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  -- Three independent switches rather than one level: an account can be allowed
+  -- to read a product in the console without its AI clients getting the same
+  -- reach, which a ranked scale could not express.
+  CREATE TABLE IF NOT EXISTS account_products (
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    can_view INTEGER NOT NULL DEFAULT 0 CHECK (can_view IN (0, 1)),
+    can_operate INTEGER NOT NULL DEFAULT 0 CHECK (can_operate IN (0, 1)),
+    can_use_ai INTEGER NOT NULL DEFAULT 0 CHECK (can_use_ai IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, product_id)
   ) STRICT;
 
   CREATE TABLE IF NOT EXISTS components (
@@ -72,10 +111,12 @@ export const INITIAL_SCHEMA = `
     PRIMARY KEY (item_id, kind)
   ) STRICT;
 
-  -- account_id / client_id / execution_id say which AI wrote an event, not just
-  -- that an AI did. They stay null for human events: this deployment has a single
-  -- administrator, so actor_kind = 'human' already names the account. They are also
-  -- null for events written before migration 13.
+  -- account_id / client_id / execution_id say who wrote an event, not just
+  -- whether a person or a machine did. Human events carry an account as well
+  -- since accounts became plural: actor_kind = 'human' named somebody only while
+  -- there was one of them. Still null on events written before migration 13, and
+  -- on ones written through the deployment's operator token, which has no
+  -- account behind it.
   CREATE TABLE IF NOT EXISTS work_item_events (
     id TEXT PRIMARY KEY,
     item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
@@ -281,6 +322,13 @@ export const INITIAL_SCHEMA = `
   ) STRICT;
 
   CREATE INDEX IF NOT EXISTS idx_components_product ON components(product_id);
+  -- The primary key already serves "which products can this account reach".
+  -- This one serves the reverse, "which accounts can reach this product".
+  CREATE INDEX IF NOT EXISTS idx_account_products_product ON account_products(product_id);
+  -- idx_products_created_by is not here. This whole script runs before the
+  -- migrations, and on a database created before AND-33 the products table has
+  -- no created_by_account_id yet, so indexing it here fails the start. The
+  -- migration adds the column and the index together.
   CREATE INDEX IF NOT EXISTS idx_work_items_product_sequence ON work_items(product_id, sequence DESC);
   CREATE INDEX IF NOT EXISTS idx_work_items_product_status ON work_items(product_id, status);
   CREATE INDEX IF NOT EXISTS idx_work_item_attachments_item_created ON work_item_attachments(item_id, created_at);

@@ -8,40 +8,46 @@ import {
   createAdminSession,
   createAiAccessToken,
   expiredAdminSessionCookie,
+  hashPassword,
   readAdminSession,
   readAiAccessToken,
-  verifyAdminCredentials,
+  verifyPassword,
   type AdminAccountConfig,
+  type AdminSessionUser,
 } from "./admin-auth.js";
 
 const salt = randomBytes(16);
+/** Stands in for the account's credentials_changed_at, which the token is signed under. */
+const CREDENTIALS_AT = Date.parse("2026-09-15T00:00:00.000Z");
+const storedDigest = `scrypt:${salt.toString("base64url")}:${scryptSync("correct horse", salt, 64).toString("base64url")}`;
 
 function account(overrides: Partial<AdminAccountConfig> = {}): AdminAccountConfig {
   return {
     id: "account-1",
-    username: "mission-owner",
-    passwordScrypt: `scrypt:${salt.toString("base64url")}:${scryptSync("correct horse", salt, 64).toString("base64url")}`,
+    username: "owner@example.com",
+    passwordScrypt: storedDigest,
     sessionSecret: "a-long-test-session-secret",
     cookieSecure: true,
     ...overrides,
   };
 }
 
-describe("verifyAdminCredentials", () => {
-  it("accepts the configured credentials", () => {
-    expect(verifyAdminCredentials(account(), "mission-owner", "correct horse")).toBe(true);
+function user(overrides: Partial<AdminSessionUser> = {}): AdminSessionUser {
+  return { id: "account-1", username: "owner@example.com", role: "admin", ...overrides };
+}
+
+describe("password digests", () => {
+  it("accepts the stored password", () => {
+    expect(verifyPassword(storedDigest, "correct horse")).toBe(true);
   });
 
-  it("rejects a wrong password, username, or case variant", () => {
-    expect(verifyAdminCredentials(account(), "mission-owner", "correct horse ")).toBe(false);
-    expect(verifyAdminCredentials(account(), "someone-else", "correct horse")).toBe(false);
-    expect(verifyAdminCredentials(account(), "Mission-Owner", "correct horse")).toBe(false);
-    expect(verifyAdminCredentials(account(), "", "")).toBe(false);
+  it("rejects a wrong password", () => {
+    expect(verifyPassword(storedDigest, "correct horse ")).toBe(false);
+    expect(verifyPassword(storedDigest, "")).toBe(false);
   });
 
   it("rejects oversized input before hashing it", () => {
-    expect(verifyAdminCredentials(account(), "mission-owner", "x".repeat(1_025))).toBe(false);
-    expect(verifyAdminCredentials(account(), "x".repeat(129), "correct horse")).toBe(false);
+    expect(verifyPassword(storedDigest, "x".repeat(1_025))).toBe(false);
   });
 
   it("rejects a malformed stored digest instead of trusting it", () => {
@@ -52,37 +58,82 @@ describe("verifyAdminCredentials", () => {
       `scrypt:${salt.toString("base64url")}`,
       "",
     ];
-    for (const passwordScrypt of cases) {
-      expect(verifyAdminCredentials(account({ passwordScrypt }), "mission-owner", "correct horse")).toBe(false);
+    for (const digest of cases) {
+      expect(verifyPassword(digest, "correct horse")).toBe(false);
     }
   });
 
   it("supports both the ':' and '$' digest separators", () => {
-    const dollar = account().passwordScrypt.replaceAll(":", "$");
-    expect(verifyAdminCredentials(account({ passwordScrypt: dollar }), "mission-owner", "correct horse")).toBe(true);
+    expect(verifyPassword(storedDigest.replaceAll(":", "$"), "correct horse")).toBe(true);
+  });
+
+  it("produces a digest the same verifier accepts, with a fresh salt each time", () => {
+    const first = hashPassword("a new long password");
+    const second = hashPassword("a new long password");
+    expect(verifyPassword(first, "a new long password")).toBe(true);
+    expect(verifyPassword(second, "a new long password")).toBe(true);
+    expect(verifyPassword(first, "a different password")).toBe(false);
+    // Equal passwords must not produce equal digests, or the stored table leaks
+    // which accounts share one.
+    expect(first).not.toEqual(second);
+  });
+
+  it("matches the digest shape scripts/create-admin-password-hash.mjs writes", () => {
+    expect(hashPassword("a new long password")).toMatch(/^scrypt:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{86}$/);
   });
 });
 
 describe("admin session tokens", () => {
   it("round-trips the signed session", () => {
     const config = account();
-    expect(readAdminSession(config, createAdminSession(config))).toEqual({
+    expect(readAdminSession(config, createAdminSession(config, user(), CREDENTIALS_AT))).toMatchObject({
       id: "account-1",
-      username: "mission-owner",
+      username: "owner@example.com",
       role: "admin",
     });
   });
 
+  it("carries the credential stamp the accounts table checks a session against", () => {
+    const config = account();
+    const issuedAt = Date.now();
+    const claims = readAdminSession(config, createAdminSession(config, user(), CREDENTIALS_AT, issuedAt));
+    expect(claims?.credentialsAt).toBe(CREDENTIALS_AT);
+    expect(claims?.issuedAt).toBe(Math.floor(issuedAt / 1_000));
+  });
+
+  it("refuses a session with no credential stamp, such as one the previous release signed", () => {
+    // Everyone signs in once after the upgrade. The alternative is accepting a
+    // cookie there is no way to invalidate.
+    const config = account();
+    const legacy = Buffer.from(JSON.stringify({
+      version: 1,
+      id: "account-1",
+      username: "owner@example.com",
+      role: "admin",
+      issuedAt: Math.floor(Date.now() / 1_000),
+      expiresAt: Math.floor(Date.now() / 1_000) + 10_000,
+    })).toString("base64url");
+    const signature = createAdminSession(config, user(), CREDENTIALS_AT).split(".")[1]!;
+    expect(readAdminSession(config, `${legacy}.${signature}`)).toBeUndefined();
+  });
+
+  it("signs a member session as a member", () => {
+    const config = account();
+    const token = createAdminSession(config, user({ id: "account-2", username: "member@example.com", role: "member" }), CREDENTIALS_AT);
+    expect(readAdminSession(config, token)).toMatchObject({ id: "account-2", role: "member" });
+  });
+
   it("rejects a tampered payload, signature, or secret", () => {
     const config = account();
-    const token = createAdminSession(config);
+    const token = createAdminSession(config, user(), CREDENTIALS_AT);
     const [payload, signature] = token.split(".") as [string, string];
 
     const forged = Buffer.from(JSON.stringify({
       version: 1,
       id: "account-1",
-      username: "mission-owner",
+      username: "owner@example.com",
       role: "admin",
+      credentialsAt: CREDENTIALS_AT,
       issuedAt: Math.floor(Date.now() / 1_000),
       expiresAt: Math.floor(Date.now() / 1_000) + 10_000,
     })).toString("base64url");
@@ -100,19 +151,29 @@ describe("admin session tokens", () => {
     expect(readAdminSession(config, `${payload}.${signature}.extra`)).toBeUndefined();
   });
 
+  it("rejects a session claiming a role that does not exist", () => {
+    const config = account();
+    const forged = Buffer.from(JSON.stringify({
+      version: 1,
+      id: "account-1",
+      username: "owner@example.com",
+      role: "superuser",
+      credentialsAt: CREDENTIALS_AT,
+      issuedAt: Math.floor(Date.now() / 1_000),
+      expiresAt: Math.floor(Date.now() / 1_000) + 10_000,
+    })).toString("base64url");
+    // Signed with the real secret, so only the shape check can catch it.
+    const signed = createAdminSession(config, user(), CREDENTIALS_AT);
+    const secretSignature = signed.split(".")[1]!;
+    expect(readAdminSession(config, `${forged}.${secretSignature}`)).toBeUndefined();
+  });
+
   it("rejects an expired session and one issued in the future", () => {
     const config = account();
     const issuedAt = Date.now();
-    const token = createAdminSession(config, issuedAt);
+    const token = createAdminSession(config, user(), CREDENTIALS_AT, issuedAt);
     expect(readAdminSession(config, token, issuedAt + ADMIN_SESSION_SECONDS * 1_000 + 1_000)).toBeUndefined();
     expect(readAdminSession(config, token, issuedAt - 120_000)).toBeUndefined();
-  });
-
-  it("stops accepting a session after the account identity changes", () => {
-    const config = account();
-    const token = createAdminSession(config);
-    expect(readAdminSession(account({ username: "renamed" }), token)).toBeUndefined();
-    expect(readAdminSession(account({ id: "account-2" }), token)).toBeUndefined();
   });
 
   it("marks the cookie HttpOnly, SameSite=Strict, and Secure when configured", () => {
@@ -126,29 +187,42 @@ describe("admin session tokens", () => {
 });
 
 describe("AI access tokens", () => {
-  it("carries the client, scope, and all-product permission", () => {
+  it("carries the account, client and scope", () => {
     const config = account();
-    const { token } = createAiAccessToken(config, "codex-client");
+    const { token } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client");
     expect(readAiAccessToken(config, token)).toMatchObject({
       id: "account-1",
       clientId: "codex-client",
       scopes: ["missiongo:read"],
-      productIds: "*",
     });
   });
 
-  it("re-reads the product scope from configuration on every verification", () => {
-    // A token minted while the account could read everything must not keep that
-    // access after the deployment narrows ADMIN_AUTHORIZED_PRODUCT_IDS.
-    const { token } = createAiAccessToken(account(), "codex-client");
-    const narrowed = readAiAccessToken(account({ authorizedProductIds: ["product-a"] }), token);
-    expect(narrowed?.productIds).toEqual(["product-a"]);
+  it("carries no product list at all", () => {
+    // Which products the token reaches is the account's current permissions,
+    // resolved on every request. Freezing them into a 30-day token is what would
+    // let a revoked product stay readable for 30 days.
+    const config = account();
+    const { token } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client");
+    expect(readAiAccessToken(config, token)).not.toHaveProperty("productIds");
+    expect(Buffer.from(token.slice("mgai_".length).split(".")[0]!, "base64url").toString("utf8"))
+      .not.toContain("productIds");
+  });
+
+  it("is issued to whoever authorized it, not to the deployment's first account", () => {
+    const config = account();
+    const { token } = createAiAccessToken(
+      config,
+      user({ id: "account-2", username: "member@example.com", role: "member" }),
+      CREDENTIALS_AT,
+      "codex-client",
+    );
+    expect(readAiAccessToken(config, token)).toMatchObject({ id: "account-2", role: "member" });
   });
 
   it("does not accept a session token, and the session reader does not accept it", () => {
     const config = account();
-    const sessionToken = createAdminSession(config);
-    const { token: aiToken } = createAiAccessToken(config, "codex-client");
+    const sessionToken = createAdminSession(config, user(), CREDENTIALS_AT);
+    const { token: aiToken } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client");
 
     expect(readAiAccessToken(config, sessionToken)).toBeUndefined();
     expect(readAdminSession(config, aiToken)).toBeUndefined();
@@ -156,7 +230,7 @@ describe("AI access tokens", () => {
 
   it("rejects a tampered token or a foreign secret", () => {
     const config = account();
-    const { token } = createAiAccessToken(config, "codex-client");
+    const { token } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client");
     const body = token.slice("mgai_".length);
     const [payload, signature] = body.split(".") as [string, string];
 
@@ -169,7 +243,7 @@ describe("AI access tokens", () => {
   it("rejects an expired token", () => {
     const config = account();
     const issuedAt = Date.now();
-    const { token, principal } = createAiAccessToken(config, "codex-client", ["missiongo:read"], issuedAt);
-    expect(readAiAccessToken(config, token, principal.expiresAt * 1_000 + 1_000)).toBeUndefined();
+    const { token, claims } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client", ["missiongo:read"], issuedAt);
+    expect(readAiAccessToken(config, token, claims.expiresAt * 1_000 + 1_000)).toBeUndefined();
   });
 });

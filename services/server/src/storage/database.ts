@@ -455,6 +455,48 @@ export class MissionGoDatabase {
           .run(202609141000, new Date().toISOString());
       });
     }
+    // Accounts move out of the environment and into the database (AND-33), so
+    // that there can be more than one of them and each can be told which
+    // products it may reach. The tables are in INITIAL_SCHEMA for a fresh
+    // database; this brings an existing one up to the same shape.
+    //
+    // Only adds: two tables and a nullable column. scripts/rollback.sh rolls
+    // back code and not schema, so the previous release has to keep running
+    // against the new shape, and it does -- it reads neither.
+    //
+    // The environment administrator is not written here. Seeding needs the
+    // configured id, email and password hash, which this class has no access
+    // to, and a version row would record "done" for a database that never got
+    // one. seedBootstrapAccount() does it from the server's config instead, on
+    // every start, and is idempotent.
+    //
+    // The bare account_id columns on work_item_events, work_item_comments,
+    // nodes and dispatches stay bare: making them foreign keys means proving
+    // every historical value resolves, and the values that are there came from
+    // the environment administrator, whose id the seed reuses. Worth doing,
+    // worth doing on its own.
+    const accountsMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609150500")
+      .get() as unknown as { version: number } | undefined;
+    if (!accountsMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(products)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "created_by_account_id")) {
+          this.connection.exec("ALTER TABLE products ADD COLUMN created_by_account_id TEXT;");
+        }
+        this.connection.exec(INITIAL_SCHEMA);
+        // Kept out of INITIAL_SCHEMA on purpose: that script runs before any
+        // migration, when the column may not exist yet.
+        this.connection.exec(
+          "CREATE INDEX IF NOT EXISTS idx_products_created_by ON products(created_by_account_id);",
+        );
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609150500, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

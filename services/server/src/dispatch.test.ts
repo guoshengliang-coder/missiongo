@@ -70,7 +70,13 @@ async function readyItem(app: FastifyInstance, cookie: string, productName: stri
 }
 
 function loginToken(app: FastifyInstance, scopes: readonly string[] = ["missiongo:read", "missiongo:node"]): string {
-  return createAiAccessToken(accountsByApp.get(app)!, "mgc_macos_test", scopes).token;
+  const account = accountsByApp.get(app)!;
+  // The token is issued to an account, and the server resolves that id against
+  // the accounts table on every request -- so it has to be the account the
+  // bootstrap seed created, which reuses the configured id.
+  const user = { id: account.id, username: account.username, role: "admin" as const };
+  const credentialsAt = app.missionGoAccounts.credentialsStamp(app.missionGoAccounts.getAccount(account.id));
+  return createAiAccessToken(account, user, credentialsAt, "mgc_macos_test", scopes).token;
 }
 
 async function register(

@@ -13,10 +13,11 @@ MISSIONGO_BIND_PORT=8788
 MISSIONGO_DATA_PATH=/path/to/missiongo-data
 ADMIN_API_TOKEN=replace-with-a-random-secret
 ADMIN_ACCOUNT_ID=replace-with-a-stable-random-id
-ADMIN_USERNAME=replace-with-the-initial-admin-username
+ADMIN_USERNAME=replace-with-the-initial-admin-email
 ADMIN_PASSWORD_SCRYPT=replace-with-a-scrypt-password-digest
 SESSION_SECRET=replace-with-a-long-random-secret
-# Optional: comma-separated product IDs. Omit to let the initial administrator read all products.
+# Optional: comma-separated product IDs. Omit to let AI clients signed in as the
+# initial administrator read all products.
 ADMIN_AUTHORIZED_PRODUCT_IDS=
 # Optional: peers allowed to set X-Forwarded-For. Defaults to loopback,uniquelocal.
 TRUST_PROXY=
@@ -40,6 +41,21 @@ npm run admin:hash-password
 Generate `ADMIN_ACCOUNT_ID`, `ADMIN_API_TOKEN`, and `SESSION_SECRET` with a
 cryptographically secure random generator. Keep the complete environment file
 outside the repository and restrict its filesystem permissions.
+
+The `ADMIN_*` values describe the account to create on a database that has none.
+They are read once, on the first start against an empty `accounts` table, and
+ignored afterwards -- so a password changed from the console survives the next
+deploy rather than being reset by the environment file. `ADMIN_ACCOUNT_ID` must
+stay put: it is the id already recorded against this deployment's machines,
+dispatches and comments, and changing it orphans all of them.
+
+`ADMIN_API_TOKEN` is a deployment-level operator credential. It carries no
+account, so it reaches every product regardless of permissions -- treat it as a
+machine credential for scripts and backups, never as a way for a person to sign
+in.
+
+Every other account is created from the console: sign in as the administrator,
+open Account, and add it there. There is no public sign-up.
 
 Start or update the service from the `deploy` directory:
 

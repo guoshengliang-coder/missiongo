@@ -42,7 +42,7 @@ MissionGo 是一套面向独立开发者的个人自托管工作事项与 AI 执
 
 | 事项 | 首版决策 |
 |---|---|
-| 使用对象 | 个人使用、单用户、不开启公开注册 |
+| 使用对象 | 自托管、小范围协作、不开启公开注册（账号由管理员创建；AND-33 之前是单用户） |
 | 产品数量 | 支持多个产品 |
 | 顶层概念 | 使用“产品”，避免与代码项目、Git 仓库混淆 |
 | 管理端 | Android 管理 App + 响应式 Web/H5 |
@@ -81,7 +81,7 @@ MissionGo 是一套面向独立开发者的个人自托管工作事项与 AI 执
 
 以下内容明确不进入首版：
 
-- 多用户、团队、组织、角色协作。
+- 团队、组织与跨组织协作。（多账号与两种角色已在 AND-33 落地，见 [领域模型](domain-model.md)；这一条收窄为团队与组织。）
 - iOS 管理 App 和 iOS 反馈 SDK。
 - Google Play 或其他应用市场发布。
 - 自动崩溃采集和崩溃聚合分析。
@@ -460,7 +460,7 @@ macOS Swift 反馈 SDK
 - **附件存储**：服务器本地目录，通过统一存储接口访问。
 - **Android 反馈 SDK**：Kotlin Library/AAR。
 - **macOS 反馈 SDK**：Swift Package，兼容 SwiftUI 与 AppKit。
-- **管理端认证**：单管理员账号和会话。
+- **管理端认证**：邮箱账号与签名会话，账号存在 `accounts` 表，权限存在 `account_products` 表。
 - **MCP 认证**：可撤销、可限定产品和权限范围的 Bearer Token。
 
 Capacitor 的官方定位是以 Web 为核心、通过插件访问 Android/iOS 原生能力，符合“共享 Web + Android 原生外壳 + 未来复用到 iOS”的方向。Swift Package Manager 可以将 macOS SDK 作为库产品供现有 Swift 工程依赖。
@@ -498,7 +498,8 @@ missiongo/
 
 | 实体 | 作用 |
 |---|---|
-| `users` | 单管理员账号，为未来扩展保留结构 |
+| `accounts` | 邮箱账号、密码摘要、角色和凭据时间戳 |
+| `account_products` | 账号 × 产品的查看 / 操作 / AI 调用三个开关 |
 | `products` | 产品与编号前缀 |
 | `components` | 模块及其所属平台；表名暂沿用历史命名 |
 | `areas` | 预留字段，MVP 不作为独立概念使用 |
