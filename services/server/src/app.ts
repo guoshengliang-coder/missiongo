@@ -894,28 +894,28 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return node;
   };
 
+  // The products a machine may be given a repository for. Every answer the
+  // client gets carries the current list, so a product created in the console
+  // reaches the menu without the client being restarted.
+  const nodeProducts = () =>
+    store.listProducts().map((product) => ({
+      id: product.id,
+      keyPrefix: product.keyPrefix,
+      name: product.name,
+    }));
+
   // What the client shows and edits about its own Mac. These take the node
   // credential rather than a console session: the client has no browser cookie,
   // and a machine may only ever see and change its own mapping.
   app.patch("/api/v1/node/me", async (request) => {
     const node = requireNode(request);
     dispatchStore.setOwnNickname(node.nodeId, nicknameField(objectBody(request.body)));
-    const products = store.listProducts().map((product) => ({
-      id: product.id,
-      keyPrefix: product.keyPrefix,
-      name: product.name,
-    }));
-    return dispatchStore.describeSelf(node.nodeId, products);
+    return dispatchStore.describeSelf(node.nodeId, nodeProducts());
   });
 
   app.get("/api/v1/node/me", async (request) => {
     const node = requireNode(request);
-    const products = store.listProducts().map((product) => ({
-      id: product.id,
-      keyPrefix: product.keyPrefix,
-      name: product.name,
-    }));
-    return dispatchStore.describeSelf(node.nodeId, products);
+    return dispatchStore.describeSelf(node.nodeId, nodeProducts());
   });
 
   app.put("/api/v1/node/repos", async (request) => {
@@ -945,6 +945,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const agents = Array.isArray(body.agents) ? body.agents : [];
     const repoCandidates = Array.isArray(body.repoCandidates) ? body.repoCandidates : [];
     return {
+      // The client polls this every 30 seconds whether or not its menu is open,
+      // so it is the one channel that can carry a new product to a machine
+      // nobody is looking at.
+      products: nodeProducts(),
       repos: dispatchStore.recordHeartbeat(
         node.nodeId,
         agents.map((entry) => {

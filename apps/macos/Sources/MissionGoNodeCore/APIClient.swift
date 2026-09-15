@@ -122,6 +122,22 @@ public struct NodeProfile: Codable, Equatable, Sendable {
     public let products: [Product]
 }
 
+/// What a heartbeat answers with: the mappings this machine has, and the
+/// products it could be given one for.
+///
+/// `products` is nil against a server from before the heartbeat carried them;
+/// the client then keeps whatever list it already had rather than emptying the
+/// menu.
+public struct HeartbeatReply: Equatable, Sendable {
+    public let repos: [RepoMapping]
+    public let products: [NodeProfile.Product]?
+
+    public init(repos: [RepoMapping], products: [NodeProfile.Product]? = nil) {
+        self.repos = repos
+        self.products = products
+    }
+}
+
 public struct DispatchRecord: Codable, Equatable, Sendable {
     public let id: String
     public let nodeName: String
@@ -371,13 +387,14 @@ public struct APIClient: Sendable {
         return node
     }
 
-    public func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate] = []) async throws -> [RepoMapping] {
+    public func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate] = []) async throws -> HeartbeatReply {
         struct Body: Encodable {
             let agents: [DetectedAgent]
             let repoCandidates: [RepoCandidate]
         }
         struct Reply: Decodable {
             let repos: [RepoMapping]?
+            let products: [NodeProfile.Product]?
         }
         let response = try await send(
             "POST", "/api/v1/node/heartbeat",
@@ -386,7 +403,7 @@ public struct APIClient: Sendable {
         )
         try requireSuccess(response, operation: "heartbeat")
         let reply: Reply = try decode(response, operation: "heartbeat")
-        return reply.repos ?? []
+        return HeartbeatReply(repos: reply.repos ?? [], products: reply.products)
     }
 
     /// Long poll: `waitMs` asks the server to hold the request open until there

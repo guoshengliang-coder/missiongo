@@ -5,12 +5,12 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     let calls = Locked<[String]>([])
     let reports = Locked<[(String, DispatchReport)]>([])
     let queue: Locked<[Result<DispatchRequest?, Error>]>
-    let heartbeatResult: Locked<Result<[RepoMapping], Error>>
+    let heartbeatResult: Locked<Result<HeartbeatReply, Error>>
     let reportFailuresBeforeSuccess: Locked<Int>
 
     init(
         claims: [Result<DispatchRequest?, Error>],
-        heartbeat: Result<[RepoMapping], Error> = .success([]),
+        heartbeat: Result<HeartbeatReply, Error> = .success(HeartbeatReply(repos: [])),
         reportFailures: Int = 0
     ) {
         queue = Locked(claims)
@@ -18,7 +18,7 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
         reportFailuresBeforeSuccess = Locked(reportFailures)
     }
 
-    func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate]) async throws -> [RepoMapping] {
+    func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate]) async throws -> HeartbeatReply {
         calls.withLock { $0.append("heartbeat:\(agents.map(\.version).joined(separator: ",")):\(repoCandidates.count)") }
         return try heartbeatResult.current.get()
     }
