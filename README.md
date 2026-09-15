@@ -23,7 +23,7 @@ MissionGo 是面向个人开发者的开源、自托管工作记录中心。它�
 - OAuth 保护的 MCP（读取，以及可选开启的评论与领取），以及可移植的 MissionGo Skill；
 - 浏览器原生 WebMCP 的条目列表、打开和创建入口。
 
-AI 接入负责按编号完整读取条目、时间线、日志和图片；在部署开启写入档位、且用户授予 `missiongo:write` 后，还可以发表评论、把「待处理」的条目领为「处理中」，并在 PR 确实合并后推到「待验证」——只有这两个状态流转。不开放修改条目内容与字段、创建或删除条目、撤回评论，或决定任务是否通过验收。视频只提供元数据。详见 [AI 客户端接入说明](docs/ai-client-setup.md) 和 [MCP 契约](docs/mcp-contract.md)。
+AI 接入负责按编号完整读取条目、时间线、日志和图片；在部署开启写入档位、且用户授予 `missiongo:write` 后，还可以发表评论、把「待处理」的条目领为「处理中」、在 PR 确实合并后推到「待验证」——只有这两个状态流转——以及在用户于会话里确认内容后，从正在处理的条目拆出衍生条目。不开放修改条目内容与字段、创建无来源的独立条目、删除条目、撤回评论，或决定任务是否通过验收。视频只提供元数据。详见 [AI 客户端接入说明](docs/ai-client-setup.md) 和 [MCP 契约](docs/mcp-contract.md)。
 
 ## 尚未开放
 
@@ -32,7 +32,7 @@ AI 接入负责按编号完整读取条目、时间线、日志和图片；在�
 - 忘记密码找回；
 - macOS/iOS 反馈 SDK；
 - AI 决定任务是否通过验收（验收、退回、搁置都由人做）；AI 修改条目内容与字段；
-- 定时扫描和无人值守任务队列（管理端派单已经可用，但始终要人点一下，见 [执行机器](docs/node.md)）；
+- 定时扫描和无人值守任务队列（管理端派单已经可用，但始终要人点一下，见 [Agent 与设备](docs/node.md)）；
 - 公共 Maven Central 发布、多实例部署和对象存储。
 
 这些方向保留在 [产品与技术路线图](docs/product-and-technical-plan.md)，不应被当作当前接口承诺。
@@ -46,14 +46,14 @@ Android 反馈 SDK ───────┘
 
 Codex / Claude Code / 其他客户端 ── OAuth + MCP（读取 + 评论）
 
-macOS 客户端（执行机器）── OAuth 登录 + 长轮询拉取派单 ── 本机启动 Claude Code / Codex 会话
+macOS 客户端（设备）── OAuth 登录 + 长轮询拉取派单 ── 本机启动 Claude Code / Codex 会话
 ```
 
 | 目录 | 职责 |
 |---|---|
 | `apps/web` | React/Vite Web 与 H5 管理端 |
 | `apps/android` | 正式 Android 管理 App |
-| `apps/macos` | macOS 菜单栏客户端：把 Mac 登记为执行机器，接收派单并启动会话 |
+| `apps/macos` | macOS 菜单栏客户端：把 Mac 登记为设备，接收派单并启动会话 |
 | `services/server` | Fastify REST、OAuth、MCP、SQLite 与附件服务 |
 | `packages/domain` | 状态机和领域规则 |
 | `packages/contracts` | 跨端类型与公开 MCP 工具契约 |

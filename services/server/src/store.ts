@@ -13,6 +13,7 @@ import {
   type AttachmentKind,
   type WorkItemEnvironment,
   type WorkItemPriority,
+  type WorkItemReference,
   type WorkItemReport,
   type WorkItemSnapshot,
   type WorkItemStatus,
@@ -35,6 +36,7 @@ import {
   type WorkItemCommentSnapshot,
   type ComponentKind,
   type ComponentSnapshot,
+  type CreateDerivedWorkItemInput,
   type CreateWorkItemInput,
   type EventAttribution,
   type FeedbackDraftSnapshot,
@@ -93,6 +95,7 @@ interface WorkItemRow {
   environment_json: string | null;
   created_at: string;
   updated_at: string;
+  derived_from_item_id: string | null;
 }
 
 interface EventRow {
@@ -173,6 +176,14 @@ interface FeedbackDraftRow {
 }
 
 const PRODUCT_PREFIX_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
+
+/**
+ * How many items AI may split off one source item per hour. Well above what a
+ * person approves one at a time in a session, and low enough that content
+ * injected into an item cannot use an agent to flood the queue.
+ */
+const DERIVED_ITEM_LIMIT_PER_WINDOW = 10;
+const DERIVED_ITEM_WINDOW_MILLISECONDS = 60 * 60_000;
 
 function requiredText(value: string, field: string): string {
   const normalized = value.trim();
@@ -679,19 +690,7 @@ export class MissionGoStore {
   }
 
   createWorkItem(input: CreateWorkItemInput): WorkItemSnapshot {
-    const title = requiredText(input.title, "Title");
-    const description = input.description.trim();
-    if (description.length > 20_000) throw invalidInput("Description must be 20,000 characters or fewer.");
-    if (input.status !== undefined && !isOneOf(input.status, ["inbox", "ready"] as const)) {
-      throw invalidInput("A work item can only be created as a draft or ready for processing.");
-    }
-    if (input.status === "ready" && !input.environment) {
-      throw invalidInput("environment.platform is required when submitting an item for processing.");
-    }
-    if (!isOneOf(input.type, WORK_ITEM_TYPES)) throw invalidInput(`Unsupported work-item type: ${String(input.type)}.`);
-    if (!isOneOf(input.priority, WORK_ITEM_PRIORITIES)) {
-      throw invalidInput(`Unsupported priority: ${String(input.priority)}.`);
-    }
+    const { title, description } = this.validateNewWorkItem(input);
 
     const now = new Date().toISOString();
     const id = randomUUID();
@@ -700,6 +699,79 @@ export class MissionGoStore {
     }));
 
     return this.getWorkItem(itemKey);
+  }
+
+  /**
+   * Record a follow-up split off from an item an AI is working on (AND-50).
+   *
+   * The user approves each one in the AI session, which this server cannot see,
+   * so nothing here claims that approval happened. What it enforces instead:
+   * the new item lives in the source item's product, it is attributed to the
+   * agent connection that wrote it rather than passed off as a person's, and one
+   * source item can only spawn so many an hour -- content injected into an item
+   * should not be able to drive an agent into filling the queue.
+   */
+  createDerivedWorkItem(input: CreateDerivedWorkItemInput): WorkItemSnapshot {
+    const agentName = this.validateByline(input.agentName, "Agent name", 100);
+    const summary = this.validateByline(input.summary, "Summary", 300);
+    const idempotencyKey = this.validateIdempotencyKey(input.idempotencyKey);
+    const operation = `create_item:${input.sourceItemKey.toUpperCase()}`;
+
+    return this.database.transaction(() => {
+      const repeated = this.getIdempotentResult<WorkItemSnapshot>(idempotencyKey, operation);
+      if (repeated) return repeated;
+
+      const source = this.getWorkItemRow(input.sourceItemKey.toUpperCase());
+      if (!source) throw notFound("Work item");
+      const itemInput: CreateWorkItemInput = {
+        productId: source.product_id,
+        status: input.status,
+        type: input.type,
+        priority: input.priority,
+        title: input.title,
+        description: input.description,
+        ...(input.environment ? { environment: input.environment } : {}),
+      };
+      const { title, description } = this.validateNewWorkItem(itemInput);
+      if (input.status === undefined) throw invalidInput("status is required: inbox or ready.");
+
+      const nowMs = Date.now();
+      const recent = this.database.connection
+        .prepare(
+          `SELECT COUNT(*) AS count FROM work_items w
+           JOIN work_item_events e ON e.item_id = w.id AND e.event_type = 'item_created'
+           WHERE w.derived_from_item_id = ? AND e.actor_kind = 'agent' AND w.created_at >= ?`,
+        )
+        .get(source.id, new Date(nowMs - DERIVED_ITEM_WINDOW_MILLISECONDS).toISOString()) as unknown as { count: number };
+      if (recent.count >= DERIVED_ITEM_LIMIT_PER_WINDOW) {
+        throw new MissionGoError(
+          "rate_limit_exceeded",
+          `${source.item_key} already has ${DERIVED_ITEM_LIMIT_PER_WINDOW} items created from it by AI in the last hour.`,
+          429,
+        );
+      }
+
+      const now = new Date(nowMs).toISOString();
+      const id = randomUUID();
+      const attribution = input.attribution ?? {};
+      const key = this.insertWorkItem(itemInput, title, description, id, now, {
+        type: input.type,
+        derivedFrom: source.item_key,
+        ...(agentName ? { agentName } : {}),
+        ...(summary ? { summary } : {}),
+      }, { actor: "agent", attribution, derivedFromItemId: source.id });
+      this.insertEvent(source.id, "derived_item_created", "agent", null, null, {
+        itemKey: key,
+        title,
+        type: input.type,
+        ...(agentName ? { agentName } : {}),
+      }, now, attribution);
+      this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, source.id);
+
+      const result = this.getWorkItem(key);
+      this.saveIdempotentResult(idempotencyKey, operation, result, now);
+      return result;
+    });
   }
 
   /** Filter clauses shared by the listing and its summary, so the two never disagree. */
@@ -1419,6 +1491,23 @@ export class MissionGoStore {
     return key;
   }
 
+  private validateNewWorkItem(input: CreateWorkItemInput): { readonly title: string; readonly description: string } {
+    const title = requiredText(input.title, "Title");
+    const description = input.description.trim();
+    if (description.length > 20_000) throw invalidInput("Description must be 20,000 characters or fewer.");
+    if (input.status !== undefined && !isOneOf(input.status, ["inbox", "ready"] as const)) {
+      throw invalidInput("A work item can only be created as a draft or ready for processing.");
+    }
+    if (input.status === "ready" && !input.environment) {
+      throw invalidInput("environment.platform is required when submitting an item for processing.");
+    }
+    if (!isOneOf(input.type, WORK_ITEM_TYPES)) throw invalidInput(`Unsupported work-item type: ${String(input.type)}.`);
+    if (!isOneOf(input.priority, WORK_ITEM_PRIORITIES)) {
+      throw invalidInput(`Unsupported priority: ${String(input.priority)}.`);
+    }
+    return { title, description };
+  }
+
   private insertWorkItem(
     input: CreateWorkItemInput,
     title: string,
@@ -1426,6 +1515,11 @@ export class MissionGoStore {
     id: string,
     now: string,
     createdPayload: Readonly<Record<string, unknown>>,
+    origin: {
+      readonly actor: ActorKind;
+      readonly attribution?: EventAttribution;
+      readonly derivedFromItemId?: string;
+    } = { actor: "human" },
   ): string {
     const status = input.status ?? "inbox";
     const affectedComponentIds = [...new Set(input.affectedComponentIds ?? [])];
@@ -1448,8 +1542,9 @@ export class MissionGoStore {
       .prepare(
         `INSERT INTO work_items (
            id, item_key, sequence, product_id, source_component_id, area_id,
-           type, priority, status, title, description, report_json, environment_json, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           type, priority, status, title, description, report_json, environment_json, created_at, updated_at,
+           derived_from_item_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -1467,13 +1562,14 @@ export class MissionGoStore {
         input.environment ? JSON.stringify(input.environment) : null,
         now,
         now,
+        origin.derivedFromItemId ?? null,
       );
 
     const insertAffected = this.database.connection.prepare(
       "INSERT INTO work_item_affected_components (item_id, component_id) VALUES (?, ?)",
     );
     for (const componentId of affectedComponentIds) insertAffected.run(id, componentId);
-    this.insertEvent(id, "item_created", "human", null, status, createdPayload, now);
+    this.insertEvent(id, "item_created", origin.actor, null, status, createdPayload, now, origin.attribution);
     return key;
   }
 
@@ -1848,6 +1944,30 @@ export class MissionGoStore {
       contentType: row.content_type,
       sizeBytes: row.size_bytes,
       createdAt: row.created_at,
+      // Every replacement writes a new random storage name, so a digest of it
+      // moves with the content without handing out the name itself.
+      revision: createHash("sha256").update(row.storage_filename).digest("hex").slice(0, 12),
+    };
+  }
+
+  private derivationOf(row: WorkItemRow): Pick<WorkItemSnapshot, "derivedFrom" | "derivedItems"> {
+    const reference = this.database.connection.prepare(
+      "SELECT item_key AS key, title, status FROM work_items WHERE id = ?",
+    );
+    const derivedFrom = row.derived_from_item_id
+      ? reference.get(row.derived_from_item_id) as unknown as WorkItemReference | undefined
+      : undefined;
+    const derivedItems = this.database.connection
+      .prepare(
+        `SELECT item_key AS key, title, status FROM work_items
+         WHERE derived_from_item_id = ? ORDER BY sequence`,
+      )
+      .all(row.id) as unknown as WorkItemReference[];
+    return {
+      ...(derivedFrom ? { derivedFrom: { key: derivedFrom.key, title: derivedFrom.title, status: derivedFrom.status } } : {}),
+      ...(derivedItems.length > 0
+        ? { derivedItems: derivedItems.map(({ key, title, status }) => ({ key, title, status })) }
+        : {}),
     };
   }
 
@@ -1871,6 +1991,7 @@ export class MissionGoStore {
       diagnosticSummary: this.getDiagnosticSummary(row.id, attachments),
       ...(environment ? { environment } : {}),
       attachments: attachments.map(({ storageFilename: _, ...attachment }) => attachment),
+      ...this.derivationOf(row),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

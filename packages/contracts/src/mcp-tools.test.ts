@@ -16,10 +16,10 @@ describe("MCP tool catalog", () => {
     expect(names).not.toContain("complete_item");
   });
 
-  it("publishes the seven read tools, commenting, and the two status changes", () => {
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(10);
+  it("publishes the seven read tools, commenting, the two status changes, and derived items", () => {
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(11);
     expect(MCP_TOOL_DEFINITIONS.filter((tool) => tool.access === "write").map((tool) => tool.name))
-      .toEqual(["append_comment", "claim_item", "submit_for_verification"]);
+      .toEqual(["append_comment", "claim_item", "submit_for_verification", "create_item"]);
     expect(findMcpTool("get_item_context")?.access).toBe("read");
     // Deciding an item is finished, paused or abandoned is the user's, so no
     // tool for it exists at any tier.

@@ -30,14 +30,15 @@ function nodeErrorMessage(error: unknown, fallback: string): string {
 const MANUAL_OPTION = "manual";
 
 /**
- * Machines that run dispatched work: getting the macOS client onto a Mac, what
- * each machine reported, and where this product's checkout lives on it.
+ * Agent management (AND-51): the Macs that run dispatched work, the agents each
+ * reported, and where every product's checkout lives on each of them.
  *
- * Machines are account-wide, but this screen only exposes the repository
- * mapping for the product whose settings opened it. The save payload preserves
- * the other mappings, because the server replaces the table wholesale.
+ * Account-level rather than tucked into one product's settings. A machine
+ * belongs to the signed-in account and serves every product it can see, and the
+ * repository table only reads right with those products side by side -- reached
+ * through a product, it had to be configured once per product.
  */
-export function NodeSettings({ product }: { product: Product }) {
+export function NodeSettings({ products }: { products: readonly Product[] }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   // Set when the download is clicked. There is no code tying a Mac to this
@@ -102,12 +103,11 @@ export function NodeSettings({ product }: { product: Product }) {
   const guideShown = nodes.length === 0 || guideOpen || Boolean(arrival);
 
   return (
-    <section className="product-settings-section" role="tabpanel">
+    <section className="product-settings-section">
       <header>
-        <div><p className="eyebrow">{t("workspace")}</p><h3>{t("nodeSettings")}</h3></div>
+        <div><h3>{t("nodeDevices")}</h3></div>
         <div className="component-header-actions"><span>{nodes.filter((node) => node.online).length}</span></div>
       </header>
-      <p className="component-management-help">{t("nodeSettingsHelp")}</p>
       <p className="component-management-help">{t("nodeSettingsScopeNote")}</p>
 
       {arrived !== null && (
@@ -123,7 +123,7 @@ export function NodeSettings({ product }: { product: Product }) {
           <NodeCard
             key={node.id}
             node={node}
-            product={product}
+            products={products}
             onChanged={() => queryClient.invalidateQueries({ queryKey: ["nodes"] })}
           />
         ))}
@@ -217,11 +217,11 @@ function NodeInstallGuide({
 
 function NodeCard({
   node,
-  product,
+  products,
   onChanged,
 }: {
   node: DispatchNode;
-  product: Product;
+  products: readonly Product[];
   onChanged: () => void | Promise<unknown>;
 }) {
   const { formatTime, t } = useI18n();
@@ -252,18 +252,33 @@ function NodeCard({
   useEffect(() => setNicknameDraft(node.nickname ?? ""), [node.nickname]);
   const parsedNickname = parseNicknameDraft(nicknameDraft);
 
-  // A suggestion goes only to an unconfigured row: pre-selecting one over a
-  // saved mapping, or over a path somebody is typing, would quietly change it.
-  const suggestion = configured[product.id] === undefined
-    ? suggestRepoCandidate(product, candidates)
-    : undefined;
-  const value = configured[product.id] ?? suggestion?.path ?? "";
-  const isManual = manual[product.id] ?? startsInManualMode(saved[product.id], candidates);
-  // The server replaces the complete mapping table. Keep hidden products' saved
-  // paths in the request so saving this product cannot remove their mappings.
+  const mappableProducts = products.filter((product) => !product.archivedAt || configured[product.id]);
+  /**
+   * One row each, with what it is showing.
+   *
+   * A suggestion goes only to a row with nothing configured: pre-selecting one
+   * over a saved mapping, or over a path somebody is in the middle of typing,
+   * would quietly change a mapping while claiming to help. It is also what save
+   * would send, which is why the rows -- not the saved table -- are the source
+   * of the payload: the form must save what it shows.
+   */
+  const rows = mappableProducts.map((product) => {
+    const suggestion = configured[product.id] === undefined
+      ? suggestRepoCandidate(product, candidates)
+      : undefined;
+    return {
+      product,
+      suggestion,
+      value: configured[product.id] ?? suggestion?.path ?? "",
+      manual: manual[product.id] ?? startsInManualMode(saved[product.id], candidates),
+    };
+  });
+  // Saved rows whose product is not in this list keep their mapping: a product
+  // the console cannot show is not a product somebody asked to unmap. (The
+  // server leaves mappings for products this account cannot see alone anyway.)
   const paths: Readonly<Record<string, string>> = {
     ...saved,
-    [product.id]: value,
+    ...Object.fromEntries(rows.map((row) => [row.product.id, row.value])),
   };
 
   const nicknameMutation = useMutation({
@@ -275,9 +290,9 @@ function NodeCard({
       await onChanged();
     },
   });
-  // The selected product keeps the example relevant without exposing the rest
-  // of the workspace's product list on this settings page.
-  const exampleKeyPrefix = product.keyPrefix;
+  // Any key product works for the example; one of this account's reads as a
+  // real session name rather than a placeholder.
+  const exampleKeyPrefix = products.find((product) => !product.archivedAt)?.keyPrefix ?? products[0]?.keyPrefix;
   const exampleName = draftDisplayName(nicknameDraft, node);
   const sessionNameExample = exampleKeyPrefix ? `${exampleName}-${exampleKeyPrefix}-37` : exampleName;
   const revokeMutation = useMutation({
@@ -391,49 +406,51 @@ function NodeCard({
         <strong>{t("nodeRepos")}</strong>
         <small>{t("nodeReposHelp")}</small>
         {candidates.length === 0 && <small>{t("nodeNoRepoCandidates")}</small>}
-        <label className="node-repo-row">
-          <span>{product.name} <code>{product.keyPrefix}</code></span>
-          <div className="node-repo-choice">
-            {candidates.length > 0 && (
-              <select
-                value={isManual ? MANUAL_OPTION : value}
-                disabled={Boolean(node.revokedAt)}
-                onChange={(event) => {
-                  const next = event.target.value;
-                  setManual({ ...manual, [product.id]: next === MANUAL_OPTION });
-                  // Switching to manual keeps the path on screen as the text to
-                  // edit, and makes it an explicit edit: from here on it is
-                  // this person's path rather than the list's or a suggestion.
-                  setDrafts({ ...drafts, [product.id]: next === MANUAL_OPTION ? value : next });
-                }}
-              >
-                <option value="">{t("repoNotMapped")}</option>
-                {candidates.map((candidate) => (
-                  <option key={candidate.path} value={candidate.path}>
-                    {t(candidate.path === suggestion?.path ? "repoSuggestedOption" : "repoCandidateOption", {
-                      name: candidate.name,
-                      path: candidate.path,
-                    })}
-                  </option>
-                ))}
-                <option value={MANUAL_OPTION}>{t("repoEnterManually")}</option>
-              </select>
-            )}
-            {isManual && (
-              <input
-                value={value}
-                onChange={(event) => setDrafts({ ...drafts, [product.id]: event.target.value })}
-                placeholder={t("repoPathPlaceholder")}
-                spellCheck={false}
-                // The row's own label belongs to the select when there is one,
-                // so the path field has to name itself.
-                aria-label={candidates.length > 0 ? t("repoPathManualLabel", { product: product.name }) : undefined}
-                disabled={Boolean(node.revokedAt)}
-              />
-            )}
-            {suggestion && <small>{t("repoSuggestedHint")}</small>}
-          </div>
-        </label>
+        {rows.map(({ product, suggestion, value, manual: isManual }) => (
+          <label key={product.id} className="node-repo-row">
+            <span>{product.name} <code>{product.keyPrefix}</code></span>
+            <div className="node-repo-choice">
+              {candidates.length > 0 && (
+                <select
+                  value={isManual ? MANUAL_OPTION : value}
+                  disabled={Boolean(node.revokedAt)}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setManual({ ...manual, [product.id]: next === MANUAL_OPTION });
+                    // Switching to manual keeps the path on screen as the text to
+                    // edit, and makes it an explicit edit: from here on it is
+                    // this person's path rather than the list's or a suggestion.
+                    setDrafts({ ...drafts, [product.id]: next === MANUAL_OPTION ? value : next });
+                  }}
+                >
+                  <option value="">{t("repoNotMapped")}</option>
+                  {candidates.map((candidate) => (
+                    <option key={candidate.path} value={candidate.path}>
+                      {t(candidate.path === suggestion?.path ? "repoSuggestedOption" : "repoCandidateOption", {
+                        name: candidate.name,
+                        path: candidate.path,
+                      })}
+                    </option>
+                  ))}
+                  <option value={MANUAL_OPTION}>{t("repoEnterManually")}</option>
+                </select>
+              )}
+              {isManual && (
+                <input
+                  value={value}
+                  onChange={(event) => setDrafts({ ...drafts, [product.id]: event.target.value })}
+                  placeholder={t("repoPathPlaceholder")}
+                  spellCheck={false}
+                  // The row's own label belongs to the select when there is one,
+                  // so the path field has to name itself.
+                  aria-label={candidates.length > 0 ? t("repoPathManualLabel", { product: product.name }) : undefined}
+                  disabled={Boolean(node.revokedAt)}
+                />
+              )}
+              {suggestion && <small>{t("repoSuggestedHint")}</small>}
+            </div>
+          </label>
+        ))}
         <button
           type="button"
           className="primary-button"

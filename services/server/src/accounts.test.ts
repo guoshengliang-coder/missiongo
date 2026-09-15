@@ -728,6 +728,74 @@ describe("Dispatch configuration per account (item 2.3)", () => {
     });
     expect(response.statusCode).toBe(404);
   });
+
+  it("cuts a machine off when its account is disabled, instead of handing it every product", async () => {
+    const { app, adminCookie, member } = await twoAccountWorkspace();
+    const node = await registerNode(app, member.id, "Member's Mac");
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/accounts/${member.id}`,
+      headers: { cookie: adminCookie },
+      payload: { disabled: true },
+    });
+
+    // The heartbeat used to fall back to every product on the deployment when
+    // the owning account could not be found, and queued work could still be
+    // pulled. A machine acts for its account; with the account gone, so is it.
+    const authorization = { authorization: `Bearer ${node.token}` };
+    for (const request of [
+      { method: "POST" as const, url: "/api/v1/node/heartbeat", payload: { agents: [], repoCandidates: [] } },
+      { method: "GET" as const, url: "/api/v1/node/me", payload: undefined },
+      { method: "POST" as const, url: "/api/v1/node/dispatches/claim-next", payload: {} },
+    ]) {
+      const response = await app.inject({
+        method: request.method,
+        url: request.url,
+        headers: authorization,
+        ...(request.payload ? { payload: request.payload } : {}),
+      });
+      expect(response.statusCode, `${request.method} ${request.url}`).toBe(401);
+    }
+  });
+
+  it("keeps saving after a mapped product is taken away, and keeps that product's mapping", async () => {
+    const { app, adminCookie, memberCookie, member, shared, hidden } = await twoAccountWorkspace();
+    const grant = (productIds: readonly string[]) => app.inject({
+      method: "PUT",
+      url: `/api/v1/accounts/${member.id}/products`,
+      headers: { cookie: adminCookie },
+      payload: { permissions: productIds.map((productId) => ({ productId, canView: true, canOperate: true, canUseAi: false })) },
+    });
+    await grant([shared.id, hidden.id]);
+    const node = await registerNode(app, member.id, "Member's Mac");
+    const save = (repos: ReadonlyArray<{ productId: string; repoPath: string }>) => app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie: memberCookie },
+      payload: { repos },
+    });
+    const mappings = async () => (await app.inject({ method: "GET", url: "/api/v1/nodes", headers: { cookie: memberCookie } }))
+      .json<{ nodes: Array<{ repos: Array<{ productId: string; repoPath: string }> }> }>().nodes[0]!.repos;
+
+    expect((await save([
+      { productId: shared.id, repoPath: "/Users/dev/shared" },
+      { productId: hidden.id, repoPath: "/Users/dev/hidden" },
+    ])).statusCode).toBe(200);
+
+    await grant([shared.id]);
+    // The product it lost is no longer named to it...
+    expect(await mappings()).toEqual([expect.objectContaining({ productId: shared.id })]);
+    // ...so a save carries only what it can see, and that has to succeed. It
+    // used to have to send every saved row back, and the hidden one was a 404.
+    expect((await save([{ productId: shared.id, repoPath: "/Users/dev/shared-2" }])).statusCode).toBe(200);
+
+    // Nobody asked to unmap the product it could not see: given back, it is still there.
+    await grant([shared.id, hidden.id]);
+    expect(await mappings()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ productId: shared.id, repoPath: "/Users/dev/shared-2" }),
+      expect.objectContaining({ productId: hidden.id, repoPath: "/Users/dev/hidden" }),
+    ]));
+  });
 });
 
 describe("Changing a sign-in address", () => {

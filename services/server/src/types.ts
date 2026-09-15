@@ -69,6 +69,28 @@ export interface CreateWorkItemInput {
   readonly environment?: WorkItemEnvironment;
 }
 
+/**
+ * A follow-up an AI records on the user's behalf while working on another item.
+ *
+ * The user approves the content in the AI session; the server cannot see that
+ * conversation and does not pretend to. What it can do is keep the item tied to
+ * the one it came from, attribute it to the connection that wrote it, and cap
+ * how many one source item can spawn.
+ */
+export interface CreateDerivedWorkItemInput {
+  readonly sourceItemKey: string;
+  readonly status: "inbox" | "ready";
+  readonly type: WorkItemType;
+  readonly priority: WorkItemPriority;
+  readonly title: string;
+  readonly description: string;
+  readonly environment?: WorkItemEnvironment;
+  readonly agentName?: string;
+  readonly summary?: string;
+  readonly attribution?: EventAttribution;
+  readonly idempotencyKey: string;
+}
+
 export interface ListWorkItemsInput {
   readonly productId: string;
   readonly status?: WorkItemStatus;

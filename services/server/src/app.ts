@@ -85,7 +85,8 @@ const PRODUCT_ICON_EDGE = 96;
 
 /** Two rows of 84px tiles at 2x, which covers every list layout we render. */
 const DEFAULT_THUMBNAIL_EDGE = 192;
-const MAX_THUMBNAIL_EDGE = 512;
+/** The detail view's preview cards run to a few hundred CSS pixels, drawn at 2x. */
+const MAX_THUMBNAIL_EDGE = 1024;
 
 const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "server", "shared", "other"] as const;
 
@@ -329,9 +330,10 @@ function oauthLoginPage(
   const writes = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools !== "none";
   const writeGrant = "<strong>发表评论、把待处理的任务领为处理中、并在 PR 合并后推到待验证</strong>。"
     + "只有这两个状态变更——验收、退回、搁置，以及做不了怎么办，都由你决定。"
-    + "它不能修改你写的内容，不能创建或删除条目，不能撤回评论。";
-  const nodeGrant = "<strong>把这台 Mac 登记为执行机器</strong>：接收你在控制台派出的任务，并在本机启动会话处理。"
-    + "随时可以在控制台「执行机器」里撤销。";
+    + "<strong>在你于会话里确认内容后，从正在处理的条目拆出衍生条目</strong>。"
+    + "它不能修改你写的内容，不能删除条目，不能撤回评论。";
+  const nodeGrant = "<strong>把这台 Mac 登记为你的设备</strong>：接收你在控制台派出的任务，并在本机启动 agent 会话处理。"
+    + "随时可以在控制台「Agent 管理」里撤销。";
   const scopeNote = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools === "none"
     ? "本次只会签发读取授权：这个部署当前没有开放 AI 写入。"
     : writes
@@ -1212,7 +1214,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // own credential.
   const requireAccountId = (request: FastifyRequest): string => requireAccount(request).id;
 
-  app.get("/api/v1/nodes", async (request) => ({ nodes: dispatchStore.listNodes(requireAccountId(request)) }));
+  // Mappings are shown and replaced only for products the signed-in account can
+  // still see; one it has lost stays on the machine untouched rather than
+  // turning every later save into a 404.
+  const consoleProductScope = (request: FastifyRequest): "*" | readonly string[] =>
+    accountStore.reachableProductIds(requireAccount(request), "view");
+
+  app.get("/api/v1/nodes", async (request) => ({
+    nodes: dispatchStore.listNodes(requireAccountId(request), consoleProductScope(request)),
+  }));
 
   app.patch("/api/v1/nodes/:nodeId", async (request) => {
     const { nodeId } = request.params as { nodeId: string };
@@ -1243,6 +1253,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           requireProductPermission(request, productId);
           return { productId, repoPath: stringField(repo, "repoPath")! };
         }),
+        consoleProductScope(request),
       ),
     };
   });
@@ -1314,7 +1325,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   const requireNode = (request: FastifyRequest): { nodeId: string; accountId: string } => {
     const node = dispatchStore.authenticateNode(suppliedBearerToken(request));
-    if (!node) throw new MissionGoError("authentication_required", "A valid node bearer token is required.", 401);
+    // A machine acts for the account that registered it, so it stops when that
+    // account does: disabling or deleting an account has to cut off its Macs
+    // too, or they keep pulling queued work and product names.
+    if (!node || (!unauthenticatedDeployment && !accountStore.findActive(node.accountId))) {
+      throw new MissionGoError("authentication_required", "A valid node bearer token is required.", 401);
+    }
     return node;
   };
 
@@ -1327,9 +1343,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    * menu from this, so an unfiltered list would name other people's products on
    * someone's Mac.
    */
+  const nodeProductScope = (accountId: string): "*" | readonly string[] => {
+    if (unauthenticatedDeployment) return "*";
+    // No active account means nothing to reach. This used to fall back to "*",
+    // which handed a disabled account's Mac every product on the deployment.
+    const account = accountStore.findActive(accountId);
+    return account ? accountStore.reachableProductIds(account, "view") : [];
+  };
   const nodeProducts = (accountId: string) => {
-    const account = unauthenticatedDeployment ? undefined : accountStore.findActive(accountId);
-    const reachable = account ? accountStore.reachableProductIds(account, "view") : "*" as const;
+    const reachable = nodeProductScope(accountId);
     return store.listProducts()
       .filter((product) => reachable === "*" || reachable.includes(product.id))
       .map((product) => ({ id: product.id, keyPrefix: product.keyPrefix, name: product.name }));
@@ -1365,6 +1387,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           requireNodeAccountPermission(node.accountId, productId);
           return { productId, repoPath: stringField(repo, "repoPath")! };
         }),
+        nodeProductScope(node.accountId),
       ),
     };
   });
@@ -1401,6 +1424,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             ...(stringField(candidate, "lastUsedAt", false) ? { lastUsedAt: candidate.lastUsedAt as string } : {}),
           };
         }),
+        nodeProductScope(node.accountId),
       ),
     };
   });
@@ -1982,17 +2006,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.send(createReadStream(path, range));
   });
 
-  // The list shows thumbnails, and serving the original for each one meant
-  // pushing megabytes to draw a 72px tile. Rendered on demand rather than at
-  // upload time so it also covers everything already stored, and cached hard:
-  // the bytes are derived from an attachment that can only be replaced through
-  // an endpoint that changes the id-scoped content, and the query string
-  // carries the size, so a stale hit is not reachable.
+  // The list and the detail view show thumbnails, and serving the original for
+  // each one meant pushing megabytes to draw a small preview. Rendered on demand
+  // rather than at upload time so it also covers everything already stored.
+  //
+  // Annotating replaces the bytes under the same attachment id, so the id alone
+  // does not pin the content. Clients put the attachment's `revision` in the
+  // query string; a replacement changes it, the URL changes with it, and that is
+  // what lets the response be cached as immutable. A request without one still
+  // works but only gets a short cache.
   app.get("/api/v1/items/:itemKey/attachments/:attachmentId/thumbnail", async (request, reply) => {
     const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
     const attachment = store.getAttachmentRecord(requireItemPermission(request, itemKey), attachmentId);
     if (attachment.kind !== "image") throw invalidInput("Only image attachments have thumbnails.");
-    const requested = Number((request.query as { width?: string }).width);
+    const query = request.query as { width?: string; rev?: string };
+    const requested = Number(query.width);
     const width = Number.isFinite(requested)
       ? Math.min(Math.max(Math.round(requested), 32), MAX_THUMBNAIL_EDGE)
       : DEFAULT_THUMBNAIL_EDGE;
@@ -2004,10 +2032,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .resize({ width, height: width, fit: "inside", withoutEnlargement: true })
       .jpeg({ quality: 78, mozjpeg: true })
       .toBuffer();
+    // Only a URL naming the current revision may be cached for good; an old
+    // revision would otherwise pin the pre-edit bytes under a URL that looks
+    // current to whoever still holds it.
+    const pinned = query.rev !== undefined && query.rev === attachment.revision;
     return reply
       .type("image/jpeg")
       .header("content-length", thumbnail.length)
-      .header("cache-control", "private, max-age=86400")
+      .header("cache-control", pinned ? "private, max-age=2592000, immutable" : "private, no-cache")
       .header("x-content-type-options", "nosniff")
       .send(thumbnail);
   });

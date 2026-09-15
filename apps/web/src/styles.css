@@ -398,10 +398,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .nav-item.active { color: var(--ink); background: var(--surface-strong); box-shadow: 0 1px 3px rgba(24,31,45,0.08); }
 .nav-item.active small { background: var(--mint); color: var(--on-mint); font-weight: 800; }
 .sidebar-spacer { flex: 1; }
-.mission-card { padding: 13px; background: var(--primary-bg); color: var(--primary-fg); border-radius: var(--radius-lg); }
-.mission-card .mission-orbit { width: 28px; height: 28px; display: grid; place-items: center; margin-bottom: 12px; background: var(--mint); color: var(--navy); border-radius: var(--radius-md); }
-.mission-card p { margin: 0 0 5px; font-size: var(--text-sm); font-weight: 750; }
-.mission-card > span:last-child { display: block; color: var(--primary-fg-soft); font-size: var(--text-sm); line-height: 1.5; }
 .add-product { justify-content: flex-start; margin: 0 5px; text-decoration: none; }
 .sidebar-utilities { display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--line); }
 .sidebar-utility-button { min-height: 34px; justify-content: flex-start; gap: 7px; margin: 0 5px; text-align: left; }
@@ -494,6 +490,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    badges, but has a floor so the machine's name is never cut to nothing, and
    stays on phones where those badges are hidden: it is the one that decides
    whether ticking this row is a mistake. */
+.item-derived-badge { flex: 0 0 auto; padding: 2px 6px; color: var(--muted); background: var(--tile-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 700; white-space: nowrap; }
 .item-dispatch-badge { flex: 0 1 auto; min-width: 5em; max-width: 12em; overflow: hidden; padding: 2px 6px; color: var(--warn-text); background: var(--warn-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .item-updated { overflow: hidden; color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .item-context { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
@@ -630,6 +627,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .detail-title-block { display: flex; gap: 13px; align-items: flex-start; margin-bottom: 27px; }
 .detail-title-block h2 { max-width: 680px; margin: 0; font-size: clamp(22px, 2.3vw, 30px); letter-spacing: -0.035em; line-height: 1.17; }
 .detail-title-block .eyebrow { margin-top: 2px; }
+.item-relations { display: grid; gap: 6px; margin: -15px 0 22px; }
+.item-relations > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.item-relations-label { color: var(--muted); font-size: var(--text-xs); font-weight: 700; }
+.item-relation-link { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; padding: 3px 8px; color: inherit; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: var(--text-xs); cursor: pointer; }
+.item-relation-link > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-relation-link:hover, .item-relation-link:focus-visible { border-color: var(--accent-line); }
 .detail-pane h3 { margin: 0; font-size: var(--text-sm); letter-spacing: -0.01em; }
 .description-block, .environment-block, .attachment-block, .timeline-block { padding: 0 0 24px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
 .description-block p { margin: 10px 0 0; color: var(--ink-2); font-size: var(--text-md); line-height: 1.75; white-space: pre-wrap; }

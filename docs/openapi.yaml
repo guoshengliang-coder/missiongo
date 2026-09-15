@@ -1055,6 +1055,33 @@ paths:
           description: Requested attachment byte range.
         "416":
           description: Requested byte range is invalid or outside the attachment.
+  /api/v1/items/{itemKey}/attachments/{attachmentId}/thumbnail:
+    parameters:
+      - $ref: "#/components/parameters/WorkItemKey"
+      - in: path
+        name: attachmentId
+        required: true
+        schema: { type: string }
+    get:
+      operationId: downloadItemAttachmentThumbnail
+      description: >-
+        A JPEG rendition of an image attachment that fits inside a width x width box, never
+        enlarged. Pass the attachment's current revision as rev: only then is the response
+        cacheable as immutable, because annotating replaces the bytes under the same id.
+      parameters:
+        - in: query
+          name: width
+          description: Edge of the bounding box in pixels, clamped to 32-1024. Defaults to 192.
+          schema: { type: integer }
+        - in: query
+          name: rev
+          description: The attachment's revision field.
+          schema: { type: string }
+      responses:
+        "200":
+          description: JPEG thumbnail.
+        "400":
+          description: The attachment is not an image.
 components:
   securitySchemes:
     adminSessionCookie:
@@ -1475,16 +1502,19 @@ components:
           items: { type: string }
     WorkItemAttachment:
       type: object
-      required: [id, itemKey, kind, displayNumber, filename, contentType, sizeBytes, createdAt]
+      required: [id, itemKey, kind, displayNumber, filename, contentType, sizeBytes, createdAt, revision]
       properties:
         id: { type: string }
         itemKey: { type: string }
-        kind: { enum: [image, video, log] }
+        kind: { enum: [image, video, log, document] }
         displayNumber: { type: integer, minimum: 1 }
         filename: { type: string }
         contentType: { type: string }
         sizeBytes: { type: integer, minimum: 1 }
         createdAt: { type: string, format: date-time }
+        revision:
+          type: string
+          description: Changes whenever the stored bytes are replaced, for example after annotating.
     TransitionWorkItemRequest:
       type: object
       required: [to, reason]
