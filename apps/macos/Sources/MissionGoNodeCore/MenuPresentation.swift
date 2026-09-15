@@ -228,11 +228,21 @@ public enum CodexStatus: Equatable, Sendable {
     case unreadable(version: String)
     /// Installed and logged in, but the ChatGPT app is not running.
     case appNotRunning(version: String)
+    /// The app is running, but nothing answers on its control socket. A
+    /// separate state because it asks something different of the operator, and
+    /// because reporting it as "not running" sends them to look at an app that
+    /// is plainly open.
+    case controlUnreachable(version: String, path: String)
     case mcpMissing(version: String)
     case mcpNotLoggedIn(version: String)
     case ready(version: String)
 
-    public static func check(environment: ShellEnvironment, location: CodexLocation, run: CommandRunner) async -> CodexStatus {
+    public static func check(
+        environment: ShellEnvironment,
+        location: CodexLocation,
+        run: CommandRunner,
+        appRunning: () -> Bool = CodexApp.isRunning
+    ) async -> CodexStatus {
         guard let binary = CodexLocation.binary(environment: environment),
               let version = await CodexPreflight.version(binary: binary, run: run)
         else { return .notInstalled }
@@ -241,7 +251,10 @@ public enum CodexStatus: Equatable, Sendable {
         case false?: return .notLoggedIn(version: version)
         case nil: return .unreadable(version: version)
         }
-        guard CodexLocation.isSocket(location.controlSocketPath) else { return .appNotRunning(version: version) }
+        guard CodexLocation.controlChannelIsUp(location.controlSocketPath) else {
+            guard appRunning() else { return .appNotRunning(version: version) }
+            return .controlUnreachable(version: version, path: location.controlSocketPath)
+        }
         switch await CodexPreflight.mcpState(binary: binary, run: run) {
         case .ready: return .ready(version: version)
         case .missing, .disabled: return .mcpMissing(version: version)
@@ -270,6 +283,7 @@ public enum CodexStatus: Equatable, Sendable {
         case .notLoggedIn: return "未登录"
         case .unreadable: return "无法确认状态"
         case .appNotRunning: return "ChatGPT App 未运行"
+        case .controlUnreachable: return "Codex 控制通道不可达"
         case .mcpMissing: return "未配置 missiongo MCP"
         case .mcpNotLoggedIn: return "missiongo MCP 未登录"
         case let .ready(version): return version
@@ -282,6 +296,7 @@ public enum CodexStatus: Equatable, Sendable {
         case .notLoggedIn: return "在 ChatGPT App 里登录，或在终端运行 codex login"
         case .unreadable: return "在终端运行 codex login status 和 codex mcp list 查看"
         case .appNotRunning: return "打开 ChatGPT App 并保持运行，Codex 派单要通过它启动会话"
+        case let .controlUnreachable(_, path): return "ChatGPT App 在运行，但连不上它的 Codex 控制通道：\(path)"
         case .mcpMissing: return "在终端添加 missiongo MCP 并登录"
         case .mcpNotLoggedIn: return "在终端运行 codex mcp login missiongo"
         }
@@ -292,7 +307,7 @@ public enum CodexStatus: Equatable, Sendable {
         case .notLoggedIn: return "codex login"
         case .mcpMissing: return CodexPreflight.mcpSetupCommand(serverUrl: serverUrl)
         case .mcpNotLoggedIn: return "codex mcp login missiongo"
-        case .checking, .notInstalled, .unreadable, .appNotRunning, .ready: return nil
+        case .checking, .notInstalled, .unreadable, .appNotRunning, .controlUnreachable, .ready: return nil
         }
     }
 }
