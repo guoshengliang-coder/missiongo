@@ -990,11 +990,6 @@ export function App() {
           })}
         </nav>
         <div className="sidebar-spacer" />
-        <div className="mission-card">
-          <span className="mission-orbit"><Sparkles size={16} /></span>
-          <p>{t("aiDispatchNext")}</p>
-          <span>{t("aiDispatchDescription")}</span>
-        </div>
         {androidFeedbackBridge() && (
           <button
             className="text-button add-product"

@@ -398,10 +398,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .nav-item.active { color: var(--ink); background: var(--surface-strong); box-shadow: 0 1px 3px rgba(24,31,45,0.08); }
 .nav-item.active small { background: var(--mint); color: var(--on-mint); font-weight: 800; }
 .sidebar-spacer { flex: 1; }
-.mission-card { padding: 13px; background: var(--primary-bg); color: var(--primary-fg); border-radius: var(--radius-lg); }
-.mission-card .mission-orbit { width: 28px; height: 28px; display: grid; place-items: center; margin-bottom: 12px; background: var(--mint); color: var(--navy); border-radius: var(--radius-md); }
-.mission-card p { margin: 0 0 5px; font-size: var(--text-sm); font-weight: 750; }
-.mission-card > span:last-child { display: block; color: var(--primary-fg-soft); font-size: var(--text-sm); line-height: 1.5; }
 .add-product { justify-content: flex-start; margin: 0 5px; text-decoration: none; }
 .sidebar-utilities { display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--line); }
 .sidebar-utility-button { min-height: 34px; justify-content: flex-start; gap: 7px; margin: 0 5px; text-align: left; }
