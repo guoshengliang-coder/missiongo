@@ -188,7 +188,117 @@ describe("Commenting over MCP", () => {
 
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
-      capabilities: { writeTools: ["append_comment", "claim_item", "submit_for_verification"], canComment: true },
+      capabilities: {
+        writeTools: ["append_comment", "claim_item", "submit_for_verification", "create_item"],
+        canComment: true,
+        canCreateItems: true,
+      },
+    });
+  });
+
+  describe("creating a derived item", () => {
+    const followUp = {
+      sourceItemKey: "hg-1",
+      title: "Cold start leaks the session",
+      description: "Found while fixing HG-1.",
+      type: "bug",
+      priority: "normal",
+      status: "ready",
+      platform: "android",
+      agentName: "Claude Code · studio-mac",
+    };
+
+    it("creates the item under its own key, linked both ways and attributed to the agent", async () => {
+      const { app, call, writeToken } = await commentingApp();
+      const created = await call(writeToken, 1, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, idempotencyKey: "follow-up-1" },
+      });
+      expect(created.error).toBeUndefined();
+      expect(created.result?.structuredContent).toMatchObject({
+        statusChanged: false,
+        item: { key: "HG-2", status: "ready", environment: { platform: "android" }, derivedFrom: { key: "HG-1", title: "Crash" } },
+      });
+
+      const source = (await app.inject({
+        method: "GET",
+        url: "/api/v1/items/HG-1",
+        headers: { authorization: "Bearer management-test-token" },
+      })).json<{ derivedItems?: unknown }>();
+      expect(source.derivedItems).toEqual([{ key: "HG-2", title: "Cold start leaks the session", status: "ready" }]);
+
+      const timeline = (key: string) => app.inject({
+        method: "GET",
+        url: `/api/v1/items/${key}/timeline`,
+        headers: { authorization: "Bearer management-test-token" },
+      }).then((response) => response.json<{ events: Array<{ eventType: string; actorKind: string; payload: Record<string, unknown> }> }>().events);
+      expect((await timeline("HG-2")).find((event) => event.eventType === "item_created")).toMatchObject({
+        actorKind: "agent",
+        payload: { derivedFrom: "HG-1", agentName: "Claude Code · studio-mac" },
+      });
+      expect((await timeline("HG-1")).find((event) => event.eventType === "derived_item_created")).toMatchObject({
+        actorKind: "agent",
+        payload: { itemKey: "HG-2" },
+      });
+
+      // A retry after a lost response must not file the follow-up twice.
+      const retried = await call(writeToken, 2, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, idempotencyKey: "follow-up-1" },
+      });
+      expect(retried.result?.structuredContent).toMatchObject({ item: { key: "HG-2" } });
+      const listed = (await app.inject({
+        method: "GET",
+        url: "/api/v1/items/HG-1",
+        headers: { authorization: "Bearer management-test-token" },
+      })).json<{ derivedItems?: unknown[] }>();
+      expect(listed.derivedItems).toHaveLength(1);
+    });
+
+    it("refuses a token that was only granted reading", async () => {
+      const { call, readToken } = await commentingApp();
+      const refused = await call(readToken, 1, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, idempotencyKey: "follow-up-1" },
+      });
+      expect(JSON.stringify(refused)).toMatch(/does not include write access/);
+    });
+
+    it("refuses a ready item without a platform, and a source that does not exist", async () => {
+      const { call, writeToken } = await commentingApp();
+      const { platform: _, ...withoutPlatform } = followUp;
+      expect(JSON.stringify(await call(writeToken, 1, "tools/call", {
+        name: "create_item",
+        arguments: { ...withoutPlatform, idempotencyKey: "follow-up-1" },
+      }))).toMatch(/needs a platform/);
+      expect(JSON.stringify(await call(writeToken, 2, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, sourceItemKey: "HG-99", idempotencyKey: "follow-up-2" },
+      }))).toMatch(/not found/i);
+
+      // A draft needs no platform: the person triaging it fills that in.
+      const draft = await call(writeToken, 3, "tools/call", {
+        name: "create_item",
+        arguments: { ...withoutPlatform, status: "inbox", idempotencyKey: "follow-up-3" },
+      });
+      expect(draft.result?.structuredContent).toMatchObject({ item: { status: "inbox", derivedFrom: { key: "HG-1" } } });
+    });
+
+    it("caps how many items one source item can spawn in an hour", async () => {
+      const { call, writeToken } = await commentingApp();
+      for (let index = 0; index < 10; index += 1) {
+        const created = await call(writeToken, index + 1, "tools/call", {
+          name: "create_item",
+          arguments: { ...followUp, title: `Follow-up ${index}`, idempotencyKey: `follow-up-${index}` },
+        });
+        expect(created.error).toBeUndefined();
+        expect(JSON.stringify(created)).not.toMatch(/isError":true/);
+      }
+      const eleventh = await call(writeToken, 99, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, title: "One too many", idempotencyKey: "follow-up-10" },
+      });
+      expect(JSON.stringify(eleventh)).toMatch(/last hour/);
     });
   });
 

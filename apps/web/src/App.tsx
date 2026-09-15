@@ -77,6 +77,7 @@ import {
   type WorkItem,
   type WorkItemAttachment,
   type WorkItemEnvironment,
+  type WorkItemReference,
   type WorkItemEvent,
   type WorkItemOccurrenceFrequency,
   type WorkItemPriority,
@@ -1166,7 +1167,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} />
+            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} />
           </div>
         )}
       </main>
@@ -1380,6 +1381,7 @@ function ItemRow({
                   {t("activeDispatchBadge", { node: pendingDispatch.nodeName })}
                 </small>
               )}
+              {item.derivedFrom && <small className="item-derived-badge" title={item.derivedFrom.title}>{t("derivedFromBadge", { key: item.derivedFrom.key })}</small>}
               <span className="item-title">{item.title}</span>
               <span className="item-evidence-summary">
                 {item.type === "bug" && item.report?.reproductionSteps && <small className="evidence-strong">{t("hasReproduction")}</small>}
@@ -1880,12 +1882,14 @@ function DetailPane({
   onClose,
   onItemLoaded,
   onNotice,
+  onOpenItem,
 }: {
   itemKey: string | null;
   openInEdit: boolean;
   onClose: () => void;
   onItemLoaded: (item: WorkItem) => void;
   onNotice: (message: string) => void;
+  onOpenItem: (itemKey: string) => void;
 }) {
   const queryClient = useQueryClient();
   const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
@@ -2069,6 +2073,7 @@ function DetailPane({
               <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
               <div><p className="eyebrow">{typeLabel(item.type)} · {priorityLabel(item.priority)}</p><h2>{item.title}</h2></div>
             </div>
+            <ItemRelations item={item} onOpenItem={onOpenItem} />
             {/* Read the item, then the evidence a person went and looked at --
                 screenshots, documents, logs. The captured environment is the
                 machine's own footnote to all of it, so it sits underneath them
@@ -2176,6 +2181,14 @@ function DetailPane({
                           one session handles all of it, so the other keys explain
                           work that will appear on this item's branch. */}
                       {event.eventType === "dispatched" && <DispatchedLine payload={event.payload} />}
+                      {event.eventType === "derived_item_created" && typeof event.payload.itemKey === "string" && (
+                        <p className="timeline-dispatch">
+                          <button type="button" className="text-button" onClick={() => onOpenItem(event.payload.itemKey as string)}>
+                            {t("derivedItemCreated", { key: event.payload.itemKey })}
+                          </button>
+                          {typeof event.payload.title === "string" && <span>{event.payload.title}</span>}
+                        </p>
+                      )}
                       <p>
                         {commentAuthor(
                           { ...event, agentName: eventAgentName(event.payload) },
@@ -2274,6 +2287,32 @@ function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: strin
 }
 
 /** The `dispatched` timeline line, when the payload can say where it went. */
+/**
+ * Where this item came from and what came out of it (AND-50). Follow-ups keep
+ * their own sequential keys, so this is the only place the lineage shows.
+ */
+function ItemRelations({ item, onOpenItem }: { item: WorkItem; onOpenItem: (itemKey: string) => void }) {
+  const { statusLabel, t } = useI18n();
+  if (!item.derivedFrom && !item.derivedItems?.length) return null;
+  const link = (reference: WorkItemReference) => (
+    <button key={reference.key} type="button" className="item-relation-link" onClick={() => onOpenItem(reference.key)}>
+      <code>{reference.key}</code>
+      <span>{reference.title}</span>
+      <small className={`status-pill status-${reference.status}`}>{statusLabel(reference.status)}</small>
+    </button>
+  );
+  return (
+    <div className="item-relations">
+      {item.derivedFrom && (
+        <div><span className="item-relations-label">{t("derivedFrom")}</span>{link(item.derivedFrom)}</div>
+      )}
+      {item.derivedItems && item.derivedItems.length > 0 && (
+        <div><span className="item-relations-label">{t("derivedItems")}</span>{item.derivedItems.map(link)}</div>
+      )}
+    </div>
+  );
+}
+
 function DispatchedLine({ payload }: { payload: Readonly<Record<string, unknown>> }) {
   const { t } = useI18n();
   const summary = dispatchedEvent(payload);

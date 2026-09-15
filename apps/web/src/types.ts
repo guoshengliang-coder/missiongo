@@ -109,8 +109,18 @@ export interface WorkItem {
   readonly diagnosticSummary: WorkItemDiagnosticSummary;
   readonly environment?: WorkItemEnvironment;
   readonly attachments: readonly WorkItemAttachment[];
+  /** The item this one was split off from (AND-50). */
+  readonly derivedFrom?: WorkItemReference;
+  /** Items split off from this one. Absent when there are none. */
+  readonly derivedItems?: readonly WorkItemReference[];
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+export interface WorkItemReference {
+  readonly key: string;
+  readonly title: string;
+  readonly status: WorkItemStatus;
 }
 
 export type ActorKind = "human" | "agent" | "system";

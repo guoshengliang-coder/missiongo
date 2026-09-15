@@ -296,6 +296,10 @@ const EN_MESSAGES = {
   analysisOpenQuestions: "Needs your call",
   agentAnalysis: "AI analysis",
   mergedPullRequest: "Merged pull request",
+  derivedFrom: "Split off from",
+  derivedItems: "Split-off items",
+  derivedFromBadge: "From {key}",
+  derivedItemCreated: "Created {key}",
   commentWithdrawn: "Withdrawn",
   commentExpand: "Show the full comment",
   commentCollapse: "Show less",
@@ -845,6 +849,10 @@ const ZH_MESSAGES: Record<MessageKey, string> = {
   analysisOpenQuestions: "待你确认",
   agentAnalysis: "AI 分析",
   mergedPullRequest: "已合并的 PR",
+  derivedFrom: "衍生自",
+  derivedItems: "衍生条目",
+  derivedFromBadge: "衍生自 {key}",
+  derivedItemCreated: "新建了 {key}",
   commentWithdrawn: "已撤回",
   commentExpand: "展开全文",
   commentCollapse: "收起",
@@ -1156,8 +1164,8 @@ const ACTOR_LABELS: Record<Locale, Record<string, string>> = {
 };
 
 const EVENT_LABELS: Record<Locale, Record<string, string>> = {
-  en: { item_created: "Item created", item_updated: "Item updated", attachment_added: "Attachment added", attachment_removed: "Attachment deleted", comment_added: "Comment", comment_withdrawn: "Comment withdrawn", dispatched: "Dispatched to a machine" },
-  "zh-CN": { item_created: "已创建条目", item_updated: "已更新详情", attachment_added: "已添加附件", attachment_removed: "已删除附件", comment_added: "评论", comment_withdrawn: "已撤回评论", dispatched: "已派单到机器" },
+  en: { item_created: "Item created", item_updated: "Item updated", attachment_added: "Attachment added", attachment_removed: "Attachment deleted", attachment_replaced: "Attachment edited", derived_item_created: "Split off an item", comment_added: "Comment", comment_withdrawn: "Comment withdrawn", dispatched: "Dispatched to a machine" },
+  "zh-CN": { item_created: "已创建条目", item_updated: "已更新详情", attachment_added: "已添加附件", attachment_removed: "已删除附件", attachment_replaced: "已编辑附件", derived_item_created: "已衍生条目", comment_added: "评论", comment_withdrawn: "已撤回评论", dispatched: "已派单到机器" },
 };
 
 interface I18nValue {
