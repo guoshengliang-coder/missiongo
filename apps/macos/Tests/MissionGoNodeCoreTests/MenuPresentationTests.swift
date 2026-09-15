@@ -102,6 +102,13 @@ final class ConnectionPresentationTests: XCTestCase {
     }
 }
 
+final class AppVersionLabelTests: XCTestCase {
+    func testNamesTheVersionOrSaysThereIsNone() {
+        XCTAssertEqual(AppVersionLabel.text("0.3.2"), "版本 0.3.2")
+        XCTAssertEqual(AppVersionLabel.text(nil), "开发构建")
+    }
+}
+
 final class ClaudeCodeStatusTests: XCTestCase {
     func testEvaluatesInstallAndLogin() {
         let loggedIn = Preflight.AuthStatus(loggedIn: true, authMethod: "oauth", apiProvider: "firstParty")

@@ -162,6 +162,21 @@ public enum MenuBarSymbol {
     }
 }
 
+// MARK: - Client version
+
+/// The client's own version, where the menu says which server it is on
+/// (AND-53). It used to sit at the foot of the agents list as a bare number,
+/// and was hidden outright on a build with no version -- so "which version is
+/// this Mac on?" still had no answer anyone could find.
+public enum AppVersionLabel {
+    /// `version` is `AppUpdater.currentVersion()`: nil for `swift run`, which
+    /// has no Info.plist, and that is worth saying rather than hiding.
+    public static func text(_ version: String?) -> String {
+        guard let version else { return "开发构建" }
+        return "版本 \(version)"
+    }
+}
+
 // MARK: - Claude Code
 
 public enum ClaudeCodeStatus: Equatable, Sendable {

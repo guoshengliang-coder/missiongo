@@ -110,6 +110,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var launchAtLogin = LaunchAtLogin()
     /// The client's own version, and whether a newer one is published.
     @Published private(set) var updateState: UpdateState = .unavailable
+    /// This build's version, for the menu to name; nil when run without a bundle.
+    let appVersion: String? = AppUpdater.currentVersion()
 
     // MARK: Private state
 

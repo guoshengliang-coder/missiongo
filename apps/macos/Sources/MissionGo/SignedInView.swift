@@ -39,9 +39,13 @@ private struct HeaderView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
-            Text(ServerAddress.displayHost(credential.serverUrl))
+            // The version rides along with the server: both answer "what is
+            // this Mac running against", and the top of the menu is where
+            // somebody looks for that.
+            Text("\(ServerAddress.displayHost(credential.serverUrl)) · \(AppVersionLabel.text(model.appVersion))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .textSelection(.enabled)
         }
     }
 
@@ -179,18 +183,17 @@ private struct AgentsSection: View {
     }
 }
 
-/// The client's own version, beside the agents it checks on. Until now the app
-/// never said which build it was, which made "is this Mac up to date?" a
-/// question nobody could answer from the menu.
+/// Client updates, beside the agents it checks on. The version itself is in
+/// the header (AND-53), so this row only appears when there is something to
+/// say about an update: one being looked for, offered, installed, or failing.
 private struct UpdateRow: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        // Nothing to say when the version cannot be read -- `swift run` has no
-        // Info.plist, and an empty row would only raise the question.
-        if case .unavailable = model.updateState {
+        switch model.updateState {
+        case .unavailable, .current:
             EmptyView()
-        } else {
+        default:
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
                     Text("MissionGo")
@@ -207,15 +210,10 @@ private struct UpdateRow: View {
 
     @ViewBuilder private var detail: some View {
         switch model.updateState {
-        case .unavailable:
+        case .unavailable, .current:
             EmptyView()
-        case let .current(version):
-            Text(version).font(.caption).foregroundColor(.secondary)
-        case let .checking(version):
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text(version).font(.caption).foregroundColor(.secondary)
-            }
+        case .checking:
+            progress("正在检查更新…")
         case let .available(update):
             HStack(spacing: 6) {
                 Text(update.current).font(.caption).foregroundColor(.secondary)
