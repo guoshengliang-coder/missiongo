@@ -1235,7 +1235,7 @@ export function App() {
         </Modal>
       )}
       {agentsOpen && (
-        <Modal title={t("nodeSettings")} subtitle={t("nodeSettingsHelp")} onClose={() => setAgentsOpen(false)} wide>
+        <Modal title={t("nodeSettings")} subtitle={t("nodeSettingsHelp")} onClose={() => setAgentsOpen(false)} wide scrolls>
           <NodeSettings products={products} />
         </Modal>
       )}
@@ -4058,7 +4058,15 @@ function RefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefre
   );
 }
 
-function Modal({ title, subtitle, onClose, children, wide = false }: { title: string; subtitle: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+function Modal({ title, subtitle, onClose, children, wide = false, scrolls = false }: {
+  title: string;
+  subtitle: string;
+  onClose: () => void;
+  children: ReactNode;
+  wide?: boolean;
+  /** Wide modals leave scrolling to their content; set when the content has no scroller of its own. */
+  scrolls?: boolean;
+}) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -4084,7 +4092,7 @@ function Modal({ title, subtitle, onClose, children, wide = false }: { title: st
       }}
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
-      <section className={`modal ${wide ? "wide" : ""}`}>
+      <section className={`modal ${wide ? "wide" : ""} ${scrolls ? "scrolls" : ""}`}>
         <header><div><p className="eyebrow">{subtitle}</p><h2 id={titleId}>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
         {children}
       </section>

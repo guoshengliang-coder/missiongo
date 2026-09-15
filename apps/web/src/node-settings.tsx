@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, CirclePause, Download, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { Check, ChevronRight, CirclePause, Download, LoaderCircle, Plus, Trash2 } from "lucide-react";
 
 import { api, ApiError } from "./api";
 import { agentLabelKey } from "./dispatch-eligibility";
@@ -15,6 +15,7 @@ import {
   type PendingArrival,
 } from "./node-install";
 import { draftDisplayName, MAX_NODE_NICKNAME_LENGTH, nicknameDraftChanged, parseNicknameDraft } from "./node-nickname";
+import { deviceStartsOpen, hasRepoDrafts, repoCoverage } from "./node-summary";
 import { startsInManualMode, suggestRepoCandidate } from "./repo-match";
 import type { DispatchNode, Product } from "./types";
 
@@ -124,6 +125,7 @@ export function NodeSettings({ products }: { products: readonly Product[] }) {
             key={node.id}
             node={node}
             products={products}
+            startsOpen={deviceStartsOpen(nodes.length)}
             onChanged={() => queryClient.invalidateQueries({ queryKey: ["nodes"] })}
           />
         ))}
@@ -215,16 +217,29 @@ function NodeInstallGuide({
   );
 }
 
+/**
+ * One device: a row that says what it is and what it can take, opening onto the
+ * form that changes it (AND-54). With every form laid out at once the screen was
+ * a wall of fields before anyone could see how many Macs there were.
+ *
+ * A native <details> rather than rendering the form only when open: collapsed,
+ * the form stays mounted, so a half-typed nickname or path survives both closing
+ * the card and the heartbeat refetch.
+ */
 function NodeCard({
   node,
   products,
+  startsOpen,
   onChanged,
 }: {
   node: DispatchNode;
   products: readonly Product[];
+  /** Read once, when the card first renders; after that the card is the person's to open. */
+  startsOpen: boolean;
   onChanged: () => void | Promise<unknown>;
 }) {
   const { formatTime, t } = useI18n();
+  const [open, setOpen] = useState(startsOpen);
   /**
    * The nickname as typed. It starts from the nickname rather than the display
    * name: showing the device name as the field's value would make it look like a
@@ -316,156 +331,177 @@ function NodeCard({
   });
 
   const state = node.revokedAt ? t("nodeRevoked") : node.online ? t("nodeOnline") : t("nodeOffline");
+  const coverage = repoCoverage(node, products);
+  const unsaved = (!node.revokedAt && nicknameDraftChanged(nicknameDraft, node)) || hasRepoDrafts(drafts, saved);
 
   return (
-    <article className={`node-card ${node.revokedAt ? "revoked" : ""}`}>
-      <header>
-        {/* No maxLength: the browser would silently cut a pasted name at the
-            limit, where the message below says why it cannot be saved. */}
-        <label className="node-name-field">{t("nodeNickname")}
-          <input
-            value={nicknameDraft}
-            onChange={(event) => {
-              setNicknameDraft(event.target.value);
-              // A refusal is about the value that was sent; once it is edited,
-              // the old message would describe something no longer on screen.
-              if (nicknameMutation.isError) nicknameMutation.reset();
-            }}
-            placeholder={node.deviceName}
-            disabled={Boolean(node.revokedAt)}
-          />
-        </label>
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={!parsedNickname.ok || !nicknameDraftChanged(nicknameDraft, node) || nicknameMutation.isPending || Boolean(node.revokedAt)}
-          onClick={() => {
-            if (parsedNickname.ok) nicknameMutation.mutate(parsedNickname.nickname);
-          }}
-        >
-          {nicknameMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
-        </button>
-        {node.nickname && !node.revokedAt && (
+    <details
+      className={`node-card ${node.revokedAt ? "revoked" : ""}`}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="node-summary">
+        <ChevronRight size={16} />
+        <strong className="node-summary-name">{node.name}</strong>
+        <span className={`status-pill ${node.revokedAt ? "status-cancelled" : node.online ? "status-ready" : "status-inbox"}`}>{state}</span>
+        <span className="node-summary-agents">
+          {node.agents.length === 0 && <small>{t("nodeNoAgents")}</small>}
+          {node.agents.map((agent) => {
+            const key = agentLabelKey(agent.kind);
+            return (
+              <small key={agent.kind} className="node-agent">
+                {key ? t(key) : agent.kind}{agent.version ? ` ${agent.version}` : ""}
+              </small>
+            );
+          })}
+        </span>
+        {coverage.total > 0 && (
+          <small
+            className={`node-summary-repos ${!node.revokedAt && coverage.configured < coverage.total ? "incomplete" : ""}`}
+            title={t("nodeRepoCoverageHelp")}
+          >
+            {t("nodeRepoCoverage", { configured: coverage.configured, total: coverage.total })}
+          </small>
+        )}
+        {unsaved && <small className="node-summary-unsaved">{t("nodeUnsaved")}</small>}
+      </summary>
+      <div className="node-card-body">
+        <header>
+          {/* No maxLength: the browser would silently cut a pasted name at the
+              limit, where the message below says why it cannot be saved. */}
+          <label className="node-name-field">{t("nodeNickname")}
+            <input
+              value={nicknameDraft}
+              onChange={(event) => {
+                setNicknameDraft(event.target.value);
+                // A refusal is about the value that was sent; once it is edited,
+                // the old message would describe something no longer on screen.
+                if (nicknameMutation.isError) nicknameMutation.reset();
+              }}
+              placeholder={node.deviceName}
+              disabled={Boolean(node.revokedAt)}
+            />
+          </label>
           <button
             type="button"
             className="secondary-button"
-            disabled={nicknameMutation.isPending}
-            onClick={() => nicknameMutation.mutate(null)}
-          >
-            {t("nodeRestoreDeviceName")}
-          </button>
-        )}
-        {!node.revokedAt && (
-          <button
-            type="button"
-            className="secondary-button sdk-token-revoke"
-            disabled={revokeMutation.isPending}
+            disabled={!parsedNickname.ok || !nicknameDraftChanged(nicknameDraft, node) || nicknameMutation.isPending || Boolean(node.revokedAt)}
             onClick={() => {
-              if (window.confirm(t("confirmRevokeNode", { name: node.name }))) revokeMutation.mutate();
+              if (parsedNickname.ok) nicknameMutation.mutate(parsedNickname.nickname);
             }}
           >
-            <Trash2 size={14} /> {t("revoke")}
+            {nicknameMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
           </button>
-        )}
-      </header>
-      <div className="node-nickname-notes">
-        {node.nickname && <small>{t("nodeDeviceName", { name: node.deviceName })}</small>}
-        {!node.revokedAt && <small>{t("nodeNicknameHelp", { example: sessionNameExample })}</small>}
-        {/* Next to the field rather than with the card's other errors: the
-            server's rules here are about what was just typed into it. */}
-        {!parsedNickname.ok && (
-          <div className="inline-error" role="alert">
-            <CirclePause size={16} /><span>{t("nodeNicknameTooLong", { max: MAX_NODE_NICKNAME_LENGTH })}</span>
-          </div>
-        )}
-        {nicknameMutation.error && (
-          <div className="inline-error" role="alert">
-            <CirclePause size={16} /><span>{nodeErrorMessage(nicknameMutation.error, t("somethingWentWrong"))}</span>
-          </div>
-        )}
-      </div>
-      <div className="node-facts">
-        <span className={`status-pill ${node.revokedAt ? "status-cancelled" : node.online ? "status-ready" : "status-inbox"}`}>{state}</span>
-        <small>{node.lastSeenAt ? t("nodeLastSeen", { time: formatTime(node.lastSeenAt) }) : t("nodeNeverSeen")}</small>
-        {node.hostname && <small>{t("nodeHostname")}: <code>{node.hostname}</code></small>}
-      </div>
-      <div className="node-facts">
-        <small>{t("nodeAgents")}:</small>
-        {node.agents.length === 0 && <small>{t("nodeNoAgents")}</small>}
-        {node.agents.map((agent) => {
-          const key = agentLabelKey(agent.kind);
-          return (
-            <small key={agent.kind} className="node-agent">
-              {key ? t(key) : agent.kind}{agent.version ? ` ${agent.version}` : ""}
-            </small>
-          );
-        })}
-      </div>
-
-      <div className="node-repos">
-        <strong>{t("nodeRepos")}</strong>
-        <small>{t("nodeReposHelp")}</small>
-        {candidates.length === 0 && <small>{t("nodeNoRepoCandidates")}</small>}
-        {rows.map(({ product, suggestion, value, manual: isManual }) => (
-          <label key={product.id} className="node-repo-row">
-            <span>{product.name} <code>{product.keyPrefix}</code></span>
-            <div className="node-repo-choice">
-              {candidates.length > 0 && (
-                <select
-                  value={isManual ? MANUAL_OPTION : value}
-                  disabled={Boolean(node.revokedAt)}
-                  onChange={(event) => {
-                    const next = event.target.value;
-                    setManual({ ...manual, [product.id]: next === MANUAL_OPTION });
-                    // Switching to manual keeps the path on screen as the text to
-                    // edit, and makes it an explicit edit: from here on it is
-                    // this person's path rather than the list's or a suggestion.
-                    setDrafts({ ...drafts, [product.id]: next === MANUAL_OPTION ? value : next });
-                  }}
-                >
-                  <option value="">{t("repoNotMapped")}</option>
-                  {candidates.map((candidate) => (
-                    <option key={candidate.path} value={candidate.path}>
-                      {t(candidate.path === suggestion?.path ? "repoSuggestedOption" : "repoCandidateOption", {
-                        name: candidate.name,
-                        path: candidate.path,
-                      })}
-                    </option>
-                  ))}
-                  <option value={MANUAL_OPTION}>{t("repoEnterManually")}</option>
-                </select>
-              )}
-              {isManual && (
-                <input
-                  value={value}
-                  onChange={(event) => setDrafts({ ...drafts, [product.id]: event.target.value })}
-                  placeholder={t("repoPathPlaceholder")}
-                  spellCheck={false}
-                  // The row's own label belongs to the select when there is one,
-                  // so the path field has to name itself.
-                  aria-label={candidates.length > 0 ? t("repoPathManualLabel", { product: product.name }) : undefined}
-                  disabled={Boolean(node.revokedAt)}
-                />
-              )}
-              {suggestion && <small>{t("repoSuggestedHint")}</small>}
+          {node.nickname && !node.revokedAt && (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={nicknameMutation.isPending}
+              onClick={() => nicknameMutation.mutate(null)}
+            >
+              {t("nodeRestoreDeviceName")}
+            </button>
+          )}
+          {!node.revokedAt && (
+            <button
+              type="button"
+              className="secondary-button sdk-token-revoke"
+              disabled={revokeMutation.isPending}
+              onClick={() => {
+                if (window.confirm(t("confirmRevokeNode", { name: node.name }))) revokeMutation.mutate();
+              }}
+            >
+              <Trash2 size={14} /> {t("revoke")}
+            </button>
+          )}
+        </header>
+        <div className="node-nickname-notes">
+          {node.nickname && <small>{t("nodeDeviceName", { name: node.deviceName })}</small>}
+          {!node.revokedAt && <small>{t("nodeNicknameHelp", { example: sessionNameExample })}</small>}
+          {/* Next to the field rather than with the card's other errors: the
+              server's rules here are about what was just typed into it. */}
+          {!parsedNickname.ok && (
+            <div className="inline-error" role="alert">
+              <CirclePause size={16} /><span>{t("nodeNicknameTooLong", { max: MAX_NODE_NICKNAME_LENGTH })}</span>
             </div>
-          </label>
-        ))}
-        <button
-          type="button"
-          className="primary-button"
-          disabled={reposMutation.isPending || Boolean(node.revokedAt)}
-          onClick={() => reposMutation.mutate()}
-        >
-          {reposMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("saveRepoPaths")}
-        </button>
-      </div>
+          )}
+          {nicknameMutation.error && (
+            <div className="inline-error" role="alert">
+              <CirclePause size={16} /><span>{nodeErrorMessage(nicknameMutation.error, t("somethingWentWrong"))}</span>
+            </div>
+          )}
+        </div>
+        <div className="node-facts">
+          <span className={`status-pill ${node.revokedAt ? "status-cancelled" : node.online ? "status-ready" : "status-inbox"}`}>{state}</span>
+          <small>{node.lastSeenAt ? t("nodeLastSeen", { time: formatTime(node.lastSeenAt) }) : t("nodeNeverSeen")}</small>
+          {node.hostname && <small>{t("nodeHostname")}: <code>{node.hostname}</code></small>}
+        </div>
 
-      {/* The absolute-path rule is the server's, so its wording is the server's too. */}
-      {[revokeMutation.error, reposMutation.error].map((error, index) => error && (
-        <div className="inline-error" key={index}><CirclePause size={16} /><span>{nodeErrorMessage(error, t("somethingWentWrong"))}</span></div>
-      ))}
-    </article>
+        <div className="node-repos">
+          <strong>{t("nodeRepos")}</strong>
+          <small>{t("nodeReposHelp")}</small>
+          {candidates.length === 0 && <small>{t("nodeNoRepoCandidates")}</small>}
+          {rows.map(({ product, suggestion, value, manual: isManual }) => (
+            <label key={product.id} className="node-repo-row">
+              <span>{product.name} <code>{product.keyPrefix}</code></span>
+              <div className="node-repo-choice">
+                {candidates.length > 0 && (
+                  <select
+                    value={isManual ? MANUAL_OPTION : value}
+                    disabled={Boolean(node.revokedAt)}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      setManual({ ...manual, [product.id]: next === MANUAL_OPTION });
+                      // Switching to manual keeps the path on screen as the text to
+                      // edit, and makes it an explicit edit: from here on it is
+                      // this person's path rather than the list's or a suggestion.
+                      setDrafts({ ...drafts, [product.id]: next === MANUAL_OPTION ? value : next });
+                    }}
+                  >
+                    <option value="">{t("repoNotMapped")}</option>
+                    {candidates.map((candidate) => (
+                      <option key={candidate.path} value={candidate.path}>
+                        {t(candidate.path === suggestion?.path ? "repoSuggestedOption" : "repoCandidateOption", {
+                          name: candidate.name,
+                          path: candidate.path,
+                        })}
+                      </option>
+                    ))}
+                    <option value={MANUAL_OPTION}>{t("repoEnterManually")}</option>
+                  </select>
+                )}
+                {isManual && (
+                  <input
+                    value={value}
+                    onChange={(event) => setDrafts({ ...drafts, [product.id]: event.target.value })}
+                    placeholder={t("repoPathPlaceholder")}
+                    spellCheck={false}
+                    // The row's own label belongs to the select when there is one,
+                    // so the path field has to name itself.
+                    aria-label={candidates.length > 0 ? t("repoPathManualLabel", { product: product.name }) : undefined}
+                    disabled={Boolean(node.revokedAt)}
+                  />
+                )}
+                {suggestion && <small>{t("repoSuggestedHint")}</small>}
+              </div>
+            </label>
+          ))}
+          <button
+            type="button"
+            className="primary-button"
+            disabled={reposMutation.isPending || Boolean(node.revokedAt)}
+            onClick={() => reposMutation.mutate()}
+          >
+            {reposMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("saveRepoPaths")}
+          </button>
+        </div>
+
+        {/* The absolute-path rule is the server's, so its wording is the server's too. */}
+        {[revokeMutation.error, reposMutation.error].map((error, index) => error && (
+          <div className="inline-error" key={index}><CirclePause size={16} /><span>{nodeErrorMessage(error, t("somethingWentWrong"))}</span></div>
+        ))}
+      </div>
+    </details>
   );
 }
 
