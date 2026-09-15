@@ -115,31 +115,60 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertTrue(source.contains(#"["plan", "default", "acceptEdits", "auto"]"#))
     }
 
-    func testNamesTheSessionAfterTheMachineAndTheWholeBatch() {
+    func testWritesTheProductPrefixOnceAndThenOnlyTheNumbers() {
         // No "MissionGo" prefix and no spaces around the hyphen: the machine is
         // what tells sessions from several Macs apart.
         XCTAssertEqual(SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["HG-49"]), "Mac mini-HG-49")
-        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["AND-37", "AND-38"]), "Mac mini-AND-37+AND-38")
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["AND-37", "AND-38"]), "Mac mini-AND-37,38")
         XCTAssertEqual(
-            SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["AND-37", "AND-38", "AND-40"]),
-            "Mac mini-AND-37+AND-38+AND-40"
+            SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["HG-52", "HG-51", "HG-50", "HG-48", "HG-44", "HG-43"]),
+            "Mac mini-HG-52,51,50,48,44,43"
         )
     }
 
-    func testListsTheFirstThreeAndTheTotalForALargerBatch() {
+    func testStartsANewRunWhenTheProductChanges() {
         XCTAssertEqual(
-            SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["AND-37", "AND-38", "AND-40", "AND-41"]),
-            "Mac mini-AND-37+AND-38+AND-40 等 4 条"
+            SessionLauncher.sessionName(nodeName: "M4", itemKeys: ["HG-52", "HG-51", "AND-43"]),
+            "M4-HG-52,51+AND-43"
         )
         XCTAssertEqual(
-            SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["AND-37", "AND-38", "AND-40", "AND-41", "AND-42"]),
-            "Mac mini-AND-37+AND-38+AND-40 等 5 条"
+            SessionLauncher.sessionName(nodeName: "M4", itemKeys: ["HG-52", "AND-43", "HG-51"]),
+            "M4-HG-52+AND-43+HG-51"
         )
+    }
+
+    func testKeepsTheOrderTheDispatchCarried() {
+        // The console's selection order is the order that reaches here; nothing
+        // is sorted, so an ascending batch stays ascending.
+        XCTAssertEqual(
+            SessionLauncher.sessionName(nodeName: "M4", itemKeys: ["HG-43", "HG-44", "HG-48"]),
+            "M4-HG-43,44,48"
+        )
+    }
+
+    func testWritesAKeyInFullWhenItIsNotAPrefixAndNumber() {
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "M4", itemKeys: ["HG-52", "SPIKE"]), "M4-HG-52+SPIKE")
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "M4", itemKeys: ["HG-9a", "HG-10"]), "M4-HG-9a+HG-10")
+    }
+
+    func testCutsALongListByLengthAndSaysHowManyThereWere() {
+        let twenty = (33...52).reversed().map { "HG-\($0)" }
+        XCTAssertEqual(twenty.count, 20)
+        XCTAssertEqual(
+            SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: twenty),
+            "Mac mini-HG-52,51,50,49,48,47,46,45,44,43,42,41 等 20 条"
+        )
+    }
+
+    func testAlwaysWritesTheFirstKeyInFullHoweverLongItIs() {
+        // A name of only "等 N 条" would not tell two sessions apart.
+        let long = "VERYLONGPRODUCTPREFIX-1234567890123456789"
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "M4", itemKeys: [long, "HG-2"]), "M4-\(long) 等 2 条")
     }
 
     func testKeepsANicknameAsWrittenApartFromTheOuterWhitespace() {
         XCTAssertEqual(SessionLauncher.sessionName(nodeName: "  老王的 MacBook Pro \n", itemKeys: ["HG-8"]), "老王的 MacBook Pro-HG-8")
-        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "办公室 · 二号机", itemKeys: ["HG-8", "HG-9"]), "办公室 · 二号机-HG-8+HG-9")
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "办公室 · 二号机", itemKeys: ["HG-8", "HG-9"]), "办公室 · 二号机-HG-8,9")
     }
 
     func testFallsBackToMissionGoWhenTheNameIsBlank() {
@@ -151,8 +180,8 @@ final class LaunchCommandTests: XCTestCase {
     func testTheNewNameGoesToBothRemoteControlAndTheSessionTitle() throws {
         let name = SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["AND-37", "AND-38", "AND-40", "AND-41", "AND-42"])
         let args = try SessionLauncher.launchCommand(sessionName: name, mode: "plan", prompt: "x").args
-        XCTAssertEqual(args[try XCTUnwrap(args.firstIndex(of: "--remote-control")) + 1], "Mac mini-AND-37+AND-38+AND-40 等 5 条")
-        XCTAssertEqual(args[try XCTUnwrap(args.firstIndex(of: "-n")) + 1], "Mac mini-AND-37+AND-38+AND-40 等 5 条")
+        XCTAssertEqual(args[try XCTUnwrap(args.firstIndex(of: "--remote-control")) + 1], "Mac mini-AND-37,38,40,41,42")
+        XCTAssertEqual(args[try XCTUnwrap(args.firstIndex(of: "-n")) + 1], "Mac mini-AND-37,38,40,41,42")
         XCTAssertFalse(args.contains("-w"))
         XCTAssertFalse(args.contains("--worktree"))
     }

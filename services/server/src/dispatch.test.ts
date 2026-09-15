@@ -161,6 +161,22 @@ describe("Registering a Mac by signing in", () => {
     expect(nodes.json<{ nodes: unknown[] }>().nodes).toHaveLength(1);
   });
 
+  it("answers every heartbeat with the current product list", async () => {
+    // The client polls this every 30 seconds whether or not its menu is open.
+    // Before it carried the products, a product created in the console only
+    // reached the machine when someone quit the client and opened it again.
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await readyItem(app, cookie, "Mission GO", "AND");
+    expect((await heartbeat(app, node.token)).json()).toMatchObject({
+      products: [{ keyPrefix: "AND", name: "Mission GO" }],
+    });
+
+    await readyItem(app, cookie, "HitGO", "HIG");
+    const after = (await heartbeat(app, node.token)).json<{ products: Array<{ keyPrefix: string }> }>();
+    expect(after.products.map((product) => product.keyPrefix).sort()).toEqual(["AND", "HIG"]);
+  });
+
   it("brings a revoked Mac back on the next login, with a new credential only", async () => {
     const { app, cookie } = await signedInApp();
     const installationId = randomUUID();

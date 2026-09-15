@@ -181,6 +181,28 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(dispatches.first?.completedAt)
     }
 
+    func testHeartbeatCarriesTheProductList() async throws {
+        StubURLProtocol.install { _, _ in
+            .response(status: 200, body: #"""
+            {"repos":[{"productId":"p1","productKey":"AND","repoPath":"/Users/dev/p"}],
+             "products":[{"id":"p1","keyPrefix":"AND","name":"Android"},
+                         {"id":"p2","keyPrefix":"HIG","name":"HitGO"}]}
+            """#)
+        }
+        let beat = try await client().heartbeat(agents: [])
+        XCTAssertEqual(beat.repos.first?.productKey, "AND")
+        XCTAssertEqual(beat.products?.map(\.keyPrefix), ["AND", "HIG"])
+    }
+
+    func testHeartbeatFromAServerWithoutProductsLeavesThemUnsaid() async throws {
+        // nil rather than [], so the client keeps the list it has instead of
+        // emptying the repository menu against an older server.
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"repos":[]}"#) }
+        let beat = try await client().heartbeat(agents: [])
+        XCTAssertEqual(beat.repos, [])
+        XCTAssertNil(beat.products)
+    }
+
     func testMeDecodesTheDeviceNameAndTheNickname() async throws {
         StubURLProtocol.install { _, _ in
             .response(status: 200, body: #"""

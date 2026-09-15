@@ -58,6 +58,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var repoNotices: [String: RepoNotice] = [:]
     @Published private(set) var savingProductIds: Set<String> = []
     @Published private(set) var candidates: [RepoCandidate] = []
+    /// The product list from whichever answer arrived last — the heartbeat every
+    /// 30 seconds, or a profile refresh. nil until one of them has answered.
+    @Published private var latestProducts: [NodeProfile.Product]?
     @Published private(set) var dispatches: [DispatchRecord] = []
     @Published private(set) var dispatchesError: String?
     @Published private(set) var claude: ClaudeCodeStatus = .checking
@@ -120,7 +123,7 @@ final class AppModel: ObservableObject {
     }
 
     var products: [NodeProfile.Product] {
-        return (profile?.products ?? []).sorted { $0.keyPrefix < $1.keyPrefix }
+        return (latestProducts ?? profile?.products ?? []).sorted { $0.keyPrefix < $1.keyPrefix }
     }
 
     func repoPath(for productId: String) -> String? {
@@ -224,6 +227,7 @@ final class AppModel: ObservableObject {
         loopGeneration += 1
         let generation = loopGeneration
         lastLoopRepos = nil
+        latestProducts = nil
         lastSeenLaunchId = nil
         loopState = NodeLoopState()
 
@@ -271,6 +275,13 @@ final class AppModel: ObservableObject {
         if state.lastHeartbeatAt != nil, state.repos != lastLoopRepos {
             lastLoopRepos = state.repos
             repos = state.repos
+        }
+        // The same beat carries the product list, so a product created in the
+        // console appears in the repository menu without waiting for the menu to
+        // be opened. A server too old to send it leaves this nil and the list
+        // stands as it was.
+        if let products = state.products, products != latestProducts {
+            latestProducts = products
         }
         if let launch = state.recentLaunches.first, launch.dispatchId != lastSeenLaunchId {
             lastSeenLaunchId = launch.dispatchId
@@ -469,6 +480,7 @@ final class AppModel: ObservableObject {
                 guard self.credential == credential else { return }
                 self.profile = profile
                 self.repos = profile.repos
+                self.latestProducts = profile.products
                 self.profileError = nil
             } catch {
                 guard self.credential == credential, !isRevoked(error) else { return }
@@ -540,6 +552,7 @@ final class AppModel: ObservableObject {
             guard self.credential == credential else { return false }
             profile = updated
             repos = updated.repos
+            latestProducts = updated.products
             profileError = nil
             return true
         } catch {

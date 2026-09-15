@@ -2,7 +2,7 @@ import Foundation
 
 /// The protocol calls the loop makes, so a test can stand in for the server.
 public protocol NodeAPI: Sendable {
-    func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate]) async throws -> [RepoMapping]
+    func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate]) async throws -> HeartbeatReply
     func claimNext(waitMs: Int) async throws -> DispatchRequest?
     func reportResult(dispatchId: String, report: DispatchReport) async throws
 }
@@ -28,6 +28,11 @@ public struct NodeLoopState: Equatable, Sendable {
     public var lastHeartbeatAt: Date?
     public var agents: [DetectedAgent] = []
     public var repos: [RepoMapping] = []
+    /// The products this machine can be given a repository for. Carried by the
+    /// heartbeat so a product created in the console reaches the menu without
+    /// the client being restarted. nil means no server has said yet — an empty
+    /// array is a real answer and means there are none.
+    public var products: [NodeProfile.Product]?
     /// Most recent first, capped at `NodeLoop.recentLaunchLimit`.
     public var recentLaunches: [LocalLaunch] = []
 
@@ -204,14 +209,17 @@ public final class NodeLoop: @unchecked Sendable {
                     // operator just opened for the first time should appear in the
                     // mapping list without restarting the app.
                     let candidates = self.detectRepoCandidates()
-                    let repos = try await self.api.heartbeat(agents: agents, repoCandidates: candidates)
-                    self.noteReposChanged(repos)
+                    let beat = try await self.api.heartbeat(agents: agents, repoCandidates: candidates)
+                    self.noteReposChanged(beat.repos)
                     self.update {
                         $0.connection = .online
                         $0.lastError = nil
                         $0.lastHeartbeatAt = Date()
                         $0.agents = agents
-                        $0.repos = repos
+                        $0.repos = beat.repos
+                        // A server from before this field keeps the list it had:
+                        // an older server must not empty the repository menu.
+                        if let products = beat.products { $0.products = products }
                     }
                 } catch {
                     self.handle(error, what: "上报心跳出错", stop: stop, fatal: fatal)

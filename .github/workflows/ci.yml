@@ -28,7 +28,14 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      # platform-tools only. The action installs "tools platform-tools" by
+      # default, and Google has withdrawn the obsolete "tools" package from the
+      # SDK repository, so the default now fails every run before any of this
+      # repository's code is reached. Gradle downloads the platform and
+      # build-tools it needs by itself.
       - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
       - uses: gradle/actions/setup-gradle@v6
       - name: Test SDK and build Android apps
         working-directory: sdks/android-feedback

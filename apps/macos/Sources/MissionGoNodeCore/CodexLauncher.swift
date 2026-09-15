@@ -34,8 +34,22 @@ public struct CodexLocation: Equatable, Sendable {
 
     public static func isSocket(_ path: String) -> Bool {
         var info = stat()
-        guard lstat(path, &info) == 0 else { return false }
+        // stat, not lstat: the path may be a symlink to the real socket, and
+        // lstat would answer "this is a symlink" and be read as "not running".
+        guard stat(path, &info) == 0 else { return false }
         return (info.st_mode & S_IFMT) == S_IFSOCK
+    }
+
+    /// Whether the Codex app-server is actually listening there.
+    ///
+    /// The file being present is not the answer in either direction: a socket
+    /// file outlives the app that made it, so the menu would say ready and the
+    /// dispatch would fail. The only honest check is to connect and hang up.
+    public static func controlChannelIsUp(_ path: String) -> Bool {
+        guard isSocket(path) else { return false }
+        guard let socket = try? UnixSocket(path: path, timeout: 1) else { return false }
+        socket.close()
+        return true
     }
 }
 
@@ -96,7 +110,8 @@ public enum CodexPreflight {
         environment: ShellEnvironment,
         location: CodexLocation,
         serverUrl: String?,
-        run: CommandRunner
+        run: CommandRunner,
+        appRunning: () -> Bool = CodexApp.isRunning
     ) async -> Preflight.Result {
         guard let binary = CodexLocation.binary(environment: environment),
               let version = await version(binary: binary, run: run)
@@ -111,8 +126,12 @@ public enum CodexPreflight {
         if let problem = Preflight.repositoryProblem(repoPath) {
             return .failed(reason: problem)
         }
-        guard CodexLocation.isSocket(location.controlSocketPath) else {
-            return .failed(reason: "找不到 Codex 的控制通道（\(location.controlSocketPath)）：打开 ChatGPT App 并保持运行后再派单。")
+        guard CodexLocation.controlChannelIsUp(location.controlSocketPath) else {
+            // Which of the two it is decides what the operator has to do, so it
+            // is worth one more question before reporting.
+            return .failed(reason: appRunning()
+                ? "ChatGPT App 在运行，但连不上它的 Codex 控制通道（\(location.controlSocketPath)）：确认 App 里的 Codex 已经启动，必要时重启 App 后再派单。"
+                : "找不到 Codex 的控制通道（\(location.controlSocketPath)）：打开 ChatGPT App 并保持运行后再派单。")
         }
         switch await mcpState(binary: binary, run: run) {
         case .ready: break
@@ -146,19 +165,23 @@ public struct CodexLauncher: AgentAdapter {
     let control: CodexControl
     /// The MissionGo server this machine is logged in to, for the MCP hint.
     let serverUrl: String?
+    /// Only used to word a failure: see `CodexApp`.
+    let appRunning: @Sendable () -> Bool
 
     public init(
         environment: ShellEnvironment,
         serverUrl: String?,
         run: CommandRunner? = nil,
         location: CodexLocation? = nil,
-        control: CodexControl = CodexAppServerControl()
+        control: CodexControl = CodexAppServerControl(),
+        appRunning: @escaping @Sendable () -> Bool = CodexApp.isRunning
     ) {
         self.environment = environment
         self.serverUrl = serverUrl
         self.run = run ?? Commands.runner(environment: environment)
         self.location = location ?? CodexLocation(environment: environment)
         self.control = control
+        self.appRunning = appRunning
     }
 
     public func detect() async -> String? {
@@ -171,7 +194,8 @@ public struct CodexLauncher: AgentAdapter {
             throw LaunchError("不支持的 Codex 模式：\(JSONValues.quote(job.mode))")
         }
         if case let .failed(reason) = await CodexPreflight.check(
-            repoPath: job.repoPath, environment: environment, location: location, serverUrl: serverUrl, run: run
+            repoPath: job.repoPath, environment: environment, location: location, serverUrl: serverUrl, run: run,
+            appRunning: appRunning
         ) {
             throw LaunchError(reason)
         }

@@ -224,6 +224,23 @@ final class DispatchPresentationTests: XCTestCase {
         XCTAssertEqual(DispatchPresentation.itemsLabel(["AND-1", "AND-2"]), "AND-1、AND-2")
     }
 
+    func testNamesTheAgentAndTheModeItWasDispatchedWith() {
+        XCTAssertEqual(DispatchPresentation.agentLabel("claude_code"), "Claude Code")
+        XCTAssertEqual(DispatchPresentation.agentLabel("codex"), "Codex")
+        XCTAssertEqual(DispatchPresentation.agentLabel("hermes"), "Hermes")
+        XCTAssertEqual(DispatchPresentation.modeLabel("plan"), "计划")
+        XCTAssertEqual(DispatchPresentation.modeLabel("acceptEdits"), "自动接受编辑")
+        XCTAssertEqual(DispatchPresentation.agentLine(agentKind: "claude_code", mode: "plan"), "Claude Code · 计划")
+        XCTAssertEqual(DispatchPresentation.agentLine(agentKind: "codex", mode: "default"), "Codex · 默认")
+    }
+
+    func testShowsAnUnknownAgentOrModeAsItArrived() {
+        // A server that learned a new agent or mode must not leave a blank row.
+        XCTAssertEqual(DispatchPresentation.agentLabel("hermes_v2"), "hermes_v2")
+        XCTAssertEqual(DispatchPresentation.modeLabel("yolo"), "yolo")
+        XCTAssertEqual(DispatchPresentation.agentLine(agentKind: "hermes_v2", mode: ""), "hermes_v2")
+    }
+
     func testErrorsAreCutToTheirFirstLine() {
         XCTAssertNil(DispatchPresentation.shortError(nil))
         XCTAssertNil(DispatchPresentation.shortError(" \n "))

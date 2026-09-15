@@ -16,8 +16,9 @@
 
 用 Codex 派单时（两个 agent 可以只装一个）：
 
-- **ChatGPT App 已安装、已登录并保持运行**。Codex 会话是通过 ChatGPT App 内置的 Codex 后台服务创建的，
-  App 没开，客户端连不上它的控制通道，派单会失败并提示打开 App。终端里 `codex login status` 应显示已登录。
+- **ChatGPT App 已安装、已登录并保持运行**。Codex 会话是通过 ChatGPT App 内置的 Codex 后台服务创建的。
+  客户端是靠连一次 `$CODEX_HOME/app-server-control/app-server-control.sock` 来判断这条通道通不通的——
+  App 没开就提示打开 App；App 开着而通道连不上，会另说一句并写明检查的路径。终端里 `codex login status` 应显示已登录。
 - **Codex 配好了 missiongo MCP 并已登录**：
 
   ```bash
@@ -42,7 +43,8 @@
 
 ## 3. 选择仓库
 
-在客户端菜单里，每个产品一行「选择文件夹…」，选中这个产品在本机对应的仓库目录即可。选好的映射会同步到
+在客户端菜单里，每个产品一行「选择文件夹…」，选中这个产品在本机对应的仓库目录即可。控制台里新建的产品
+最多 30 秒就会自己出现在这个列表里，不用退出客户端重进。选好的映射会同步到
 服务端，控制台上也能看到、也能改。目录不是 git 仓库、或没被 Claude Code 信任过时，客户端当场提示。
 
 一次派单里的条目必须落在同一个仓库：一个会话只能在一个 checkout 里跑。
@@ -51,9 +53,10 @@
 
 - Claude Code 会话在后台运行，可以在 claude.ai/code 或手机上接管、批准计划。
 - Codex 会话出现在 Codex App（包括远程控制这台 Mac 的另一台电脑）和 ChatGPT 手机 App 里，名字是
-  「机器昵称-条目编号」，在那里查看、回复和批准。它的链接是 `codex://threads/<ID>`，只能在装了 Codex App
+  「机器昵称-条目编号」，在那里查看、回复和批准。一次派多条时，同一产品的编号只写一次前缀，
+  例如 `M4-HG-52,51,50,48,44,43`；名字太长才截断成「…等 N 条」。它的链接是 `codex://threads/<ID>`，只能在装了 Codex App
   的 Mac 上点开。
-- 客户端菜单的「最近派单」里能看到状态和失败原因，点一下打开会话链接。
+- 客户端菜单的「最近派单」里能看到派给了哪个 agent、什么模式、状态和失败原因，点一下打开会话链接。
 - 会话起在仓库主目录（不带 `-w`），这样它归在这个项目下，在主目录 `/resume` 能找到；动手改代码前，会话会
   按仓库规则自己建独立 worktree。
 - 派单不改条目状态。条目仍是待处理，由会话按 Skill 自己领取。
@@ -92,7 +95,8 @@ Codex 没有强制的计划模式，这完全依赖模型遵守提示词和 Skil
 | 派单失败，原因写着目录未信任 | 仓库没被 Claude Code 信任过 | 在该目录手动运行一次 `claude` 并确认信任 |
 | 显示离线 | 网络不通，或凭证被撤销 | 菜单里会写明原因；被撤销就重新登录 |
 | 会话起来了但没有链接 | 日志里还没出现会话地址，或 Remote Control 没连上 | 看 `~/Library/Logs/MissionGo/<派单 ID>.log` |
-| Codex 派单失败，提示找不到控制通道 | ChatGPT App 没在运行 | 打开 ChatGPT App 并保持运行 |
+| 菜单显示 ChatGPT App 未运行 | 找不到控制通道，且 App 进程也不在 | 打开 ChatGPT App 并保持运行 |
+| 菜单显示 Codex 控制通道不可达 | App 在运行，但它的 Codex 后台服务没有应答 | 提示里写明了检查的 socket 路径；确认 App 里的 Codex 已启动，必要时重启 App |
 | Codex 派单失败，提示 missiongo MCP 未配置或未登录 | Codex 连不上 MissionGo | 运行菜单里复制出的命令 |
 | 菜单里 missiongo Skill 一行显示失败 | 下载不到，或写不进 skills 目录 | 看提示里的路径和原因 |
 

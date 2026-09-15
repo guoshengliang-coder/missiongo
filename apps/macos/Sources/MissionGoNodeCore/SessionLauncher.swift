@@ -106,26 +106,61 @@ public struct SessionLauncher: AgentAdapter {
 
     /// Used when the machine name is blank, so a session is never named `-HG-49`.
     public static let fallbackNodeName = "MissionGo"
-    /// Past this many items the name lists the first few and a count instead.
-    static let sessionNameKeyLimit = 3
+    /// Past this many characters the key list stops and says how many there were.
+    /// A cap on characters rather than on items: a batch of six should be
+    /// readable in full, and it is length, not count, that makes a name unusable.
+    static let sessionNameKeyLength = 40
 
-    /// e.g. `Mac mini-AND-37+AND-38` — the whole batch is one session.
+    /// `HG-52` as `("HG", "52")`; nil when the key is not `<prefix>-<digits>`,
+    /// and such a key is then never abbreviated.
+    static func splitItemKey(_ key: String) -> (prefix: String, number: String)? {
+        guard let dash = key.lastIndex(of: "-") else { return nil }
+        let number = key[key.index(after: dash)...]
+        let prefix = key[key.startIndex..<dash]
+        guard !number.isEmpty, !prefix.isEmpty else { return nil }
+        guard number.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        return (String(prefix), String(number))
+    }
+
+    /// e.g. `HG-52,51,50,48+AND-43` — a run of items from one product writes the
+    /// prefix once and then only the numbers, so a batch of six reads as six
+    /// numbers instead of six repetitions of `HG-`. A new prefix starts a new
+    /// run, written in full after a `+`.
+    ///
+    /// Order is the order the dispatch carried; nothing is sorted here.
+    static func itemKeyList(_ itemKeys: [String]) -> String {
+        var pieces: [String] = []
+        var runPrefix: String?
+        for key in itemKeys {
+            let parts = splitItemKey(key)
+            if let parts, !pieces.isEmpty, parts.prefix == runPrefix {
+                pieces.append(",\(parts.number)")
+            } else {
+                pieces.append(pieces.isEmpty ? key : "+\(key)")
+                runPrefix = parts?.prefix
+            }
+        }
+        guard var list = pieces.first else { return "" }
+        // The first key is always written in full, however long it is: a name
+        // that says only "等 N 条" would not tell two sessions apart.
+        for piece in pieces.dropFirst() {
+            if list.count + piece.count > sessionNameKeyLength {
+                return "\(list) 等 \(itemKeys.count) 条"
+            }
+            list += piece
+        }
+        return list
+    }
+
+    /// e.g. `Mac mini-AND-37,38` — the whole batch is one session.
     ///
     /// The machine comes first because that is what tells sessions apart in
     /// claude.ai/code once several Macs take dispatches: every one of them used
-    /// to start with the same `MissionGo`. A large batch is cut to
-    /// `Mac mini-AND-37+AND-38+AND-40 等 5 条` so the name stays short enough to
-    /// read at a glance; the full list is in the prompt either way.
+    /// to start with the same `MissionGo`.
     public static func sessionName(nodeName: String, itemKeys: [String]) -> String {
         let trimmed = nodeName.trimmingCharacters(in: .whitespacesAndNewlines)
         let machine = trimmed.isEmpty ? fallbackNodeName : trimmed
-        let keys: String
-        if itemKeys.count > sessionNameKeyLimit {
-            keys = "\(itemKeys.prefix(sessionNameKeyLimit).joined(separator: "+")) 等 \(itemKeys.count) 条"
-        } else {
-            keys = itemKeys.joined(separator: "+")
-        }
-        return "\(machine)-\(keys)"
+        return "\(machine)-\(itemKeyList(itemKeys))"
     }
 
     /// The log of one dispatch, named after the dispatch id. The id arrives over
