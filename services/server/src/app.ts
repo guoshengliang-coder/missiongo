@@ -1533,7 +1533,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       keyPrefix: stringField(body, "keyPrefix")!,
       ...(account ? { createdByAccountId: account.id } : {}),
     });
-    if (account) accountStore.grantCreatorPermissions(account.id, product.id);
+    // Members only. An administrator already reaches every product by role, so
+    // the row would grant nothing -- except that a can_use_ai row is what bounds
+    // an administrator's AI clients. Writing one here would take an
+    // administrator whose AI could read everything and quietly narrow it to
+    // "products I created myself" the first time they made one.
+    if (account?.role === "member") accountStore.grantCreatorPermissions(account.id, product.id);
     return reply.status(201).send(product);
   });
 

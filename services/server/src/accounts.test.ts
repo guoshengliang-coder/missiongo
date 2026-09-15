@@ -592,6 +592,33 @@ describe("What an AI client reaches", () => {
     expect(JSON.stringify(forbidden)).not.toContain("Must stay private");
   });
 
+  it("keeps an administrator's full reach when they create a product", async () => {
+    // An administrator with no can_use_ai rows reaches every product; one with
+    // rows is bounded by them. Recording the creator as a permission row would
+    // therefore narrow an administrator's AI to "products I made myself" the
+    // first time they made one -- silently, and after the fact for everything
+    // that already existed.
+    const { app, adminCookie, shared, hidden } = await twoAccountWorkspace();
+    const adminId = app.missionGoAccounts.listAccounts().find((account) => account.role === "admin")!.id;
+    expect(app.missionGoAccounts.listPermissions(adminId)).toEqual([]);
+
+    const token = aiToken(app, adminAccount(), adminId);
+    expect((await callMcp(app, token, 1, "get_current_account")).structuredContent)
+      .toMatchObject({ permission: { allProducts: true } });
+    expect((await callMcp(app, token, 2, "list_products")).structuredContent)
+      .toMatchObject({ products: [{ id: hidden.id }, { id: shared.id }] });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/products",
+      headers: { cookie: adminCookie },
+      payload: { name: "One more", keyPrefix: "ONE" },
+    });
+    expect(app.missionGoAccounts.listPermissions(adminId)).toEqual([]);
+    expect((await callMcp(app, token, 3, "get_current_account")).structuredContent)
+      .toMatchObject({ permission: { allProducts: true } });
+  });
+
   it("stops working when the account is suspended", async () => {
     const { app, adminCookie, member } = await twoAccountWorkspace();
     const token = aiToken(app, adminAccount(), member.id);
