@@ -64,6 +64,12 @@ export interface Product {
   /** Set when the product is retired; it leaves the switcher but keeps its items. */
   readonly archivedAt?: string;
   /**
+   * The account that created it. Only that account, or an administrator, can
+   * archive it -- so the archive button is drawn from this. Absent on a product
+   * that predates accounts.
+   */
+  readonly createdByAccountId?: string;
+  /**
    * Whether an icon has been uploaded. The bytes are fetched separately, from
    * `/api/v1/products/:id/icon`, so the product listing stays small enough not to
    * delay the first paint. False means the generated badge is used.

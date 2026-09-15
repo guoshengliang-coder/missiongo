@@ -41,14 +41,35 @@ export interface ListItemsOptions {
   readonly beforeSequence?: number;
 }
 
+export type AccountRole = "admin" | "member";
+
 export interface AuthenticatedUser {
   readonly id: string;
+  /** The email address the account signs in with. */
   readonly username: string;
-  readonly role: "admin";
+  readonly role: AccountRole;
 }
 
 export interface AuthSession {
   readonly user: AuthenticatedUser;
+}
+
+/** What one account may do with one product. Three switches, not a ranked scale. */
+export interface ProductPermission {
+  readonly productId: string;
+  readonly canView: boolean;
+  readonly canOperate: boolean;
+  readonly canUseAi: boolean;
+}
+
+export interface Account {
+  readonly id: string;
+  readonly email: string;
+  readonly role: AccountRole;
+  readonly disabledAt?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly permissions: ProductPermission[];
 }
 
 export class ApiError extends Error {
@@ -149,6 +170,23 @@ export const api = {
   login: (input: { username: string; password: string }) =>
     request<AuthSession>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(input) }),
   logout: () => request<{ ok: true }>("/api/v1/auth/logout", { method: "POST" }),
+  changePassword: (input: { currentPassword: string; newPassword: string }) =>
+    request<AuthSession>("/api/v1/auth/password", { method: "POST", body: JSON.stringify(input) }),
+  listAccounts: () => request<{ accounts: Account[] }>("/api/v1/accounts"),
+  createAccount: (input: { email: string; password: string; role: AccountRole }) =>
+    request<Account>("/api/v1/accounts", { method: "POST", body: JSON.stringify(input) }),
+  updateAccount: (accountId: string, input: { role?: AccountRole; disabled?: boolean; password?: string }) =>
+    request<Account>(`/api/v1/accounts/${encodeURIComponent(accountId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  deleteAccount: (accountId: string) =>
+    request<void>(`/api/v1/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" }),
+  setAccountProducts: (accountId: string, permissions: ProductPermission[]) =>
+    request<{ permissions: ProductPermission[] }>(`/api/v1/accounts/${encodeURIComponent(accountId)}/products`, {
+      method: "PUT",
+      body: JSON.stringify({ permissions }),
+    }),
   listProducts: (options: { includeArchived?: boolean } = {}) =>
     request<Product[]>(`/api/v1/products${options.includeArchived ? "?includeArchived=true" : ""}`),
   createProduct: (input: { name: string; keyPrefix: string }) =>

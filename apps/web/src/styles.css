@@ -932,6 +932,31 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .account-identity small { grid-column: 1 / -1; color: var(--muted); font-size: var(--text-xs); }
 .account-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-base); }
 .account-identity em { padding: 3px 6px; color: var(--on-mint); background: var(--status-progress-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-style: normal; font-weight: 750; }
+.account-tabs { display: flex; gap: 4px; padding-bottom: 2px; border-bottom: 1px solid var(--line); }
+.account-tabs .text-button { padding: 8px 12px; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); font-weight: 700; }
+.account-tabs .text-button.selected { color: var(--ink); border-bottom-color: var(--mint-dark); }
+.account-note { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--muted); font-size: var(--text-xs); line-height: 1.6; }
+.account-note.danger { color: var(--danger); }
+.account-password-form, .account-add-form { display: flex; flex-direction: column; gap: 12px; padding: 15px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+.account-password-form label, .account-add-form label { display: grid; gap: 6px; font-size: var(--text-sm); font-weight: 700; }
+.account-password-form small, .account-add-form small { color: var(--muted); font-size: var(--text-xs); font-weight: 400; }
+.account-password-form input, .account-add-form input, .account-add-form select { height: 42px; padding: 0 11px; border: 1px solid var(--line-dark); border-radius: var(--radius-md); font: inherit; }
+.account-management, .account-list { display: flex; flex-direction: column; gap: 14px; }
+.account-row { padding: 13px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+.account-row.suspended { opacity: 0.72; }
+.account-row > header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.account-row > header .text-button { flex: 1 1 auto; min-width: 0; padding: 0; text-align: left; }
+.account-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-base); }
+.account-row em { padding: 3px 6px; color: var(--on-mint); background: var(--status-progress-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-style: normal; font-weight: 750; }
+.account-row .secondary-button { height: 34px; white-space: nowrap; }
+.account-permissions { display: flex; flex-direction: column; gap: 10px; margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--line); }
+/* The grid can outgrow a narrow modal; it scrolls rather than pushing the dialog wider. */
+.account-permissions table { width: 100%; display: block; overflow-x: auto; border-collapse: collapse; font-size: var(--text-sm); }
+.account-permissions th, .account-permissions td { padding: 7px 9px; text-align: center; white-space: nowrap; }
+.account-permissions th:first-child, .account-permissions td:first-child { text-align: left; }
+.account-permissions thead th { color: var(--muted); font-size: var(--text-xs); }
+.account-permissions tbody tr { border-top: 1px solid var(--line); }
+.account-permissions-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .inline-error { display: flex; align-items: center; gap: 7px; padding: 10px 11px; color: var(--danger); background: var(--danger-bg-strong); border: 1px solid var(--danger-line); border-radius: var(--radius-md); font-size: var(--text-xs); }
 .toast { position: fixed; right: 22px; bottom: 22px; z-index: 150; display: flex; align-items: center; gap: 8px; padding: 11px 12px; color: var(--primary-fg); background: var(--primary-bg); border-radius: var(--radius-md); box-shadow: var(--shadow); font-size: var(--text-xs); }
 .toast > svg { color: var(--mint); }
