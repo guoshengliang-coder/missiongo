@@ -59,6 +59,12 @@ export interface AdminSessionClaims extends AdminSessionUser {
 }
 
 export interface AiAccessPrincipal extends AdminSessionUser {
+  /**
+   * Identifies this one authorization, so it can be listed and revoked on its
+   * own. Minted with the token and recorded beside it; the token stays signed
+   * and stateless, and the record is what revocation acts on.
+   */
+  readonly tokenId: string;
   readonly clientId: string;
   readonly scopes: readonly string[];
   /**
@@ -235,7 +241,7 @@ export function createAiAccessToken(
     expiresAt: issuedAt + AI_ACCESS_SESSION_SECONDS,
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const { version: _version, kind: _kind, tokenId: _tokenId, ...claims } = payload;
+  const { version: _version, kind: _kind, ...claims } = payload;
   return {
     token: `mgai_${encodedPayload}.${signPayload(encodedPayload, config.sessionSecret)}`,
     claims,
@@ -265,6 +271,8 @@ export function readAiAccessToken(
     || typeof payload.username !== "string"
     || !payload.username
     || (payload.role !== "admin" && payload.role !== "member")
+    || typeof payload.tokenId !== "string"
+    || !payload.tokenId
     || typeof payload.clientId !== "string"
     || !payload.clientId
     || !Array.isArray(payload.scopes)
@@ -279,6 +287,7 @@ export function readAiAccessToken(
     id: payload.id,
     username: payload.username,
     role: payload.role,
+    tokenId: payload.tokenId,
     clientId: payload.clientId,
     scopes: payload.scopes,
     credentialsAt: payload.credentialsAt!,

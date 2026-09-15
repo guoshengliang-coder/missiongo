@@ -729,3 +729,301 @@ describe("Dispatch configuration per account (item 2.3)", () => {
     expect(response.statusCode).toBe(404);
   });
 });
+
+describe("Changing a sign-in address", () => {
+  it("lets an account change its own, with the current password", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/email",
+      headers: { cookie: memberCookie },
+      payload: { currentPassword: MEMBER_PASSWORD, email: "moved@example.com" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ user: { username: "moved@example.com" } });
+    await expect(signIn(app, "moved@example.com", MEMBER_PASSWORD)).resolves.toBeTruthy();
+  });
+
+  it("refuses without the current password, so a borrowed browser cannot take the account over", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/email",
+      headers: { cookie: memberCookie },
+      payload: { currentPassword: "not the password", email: "attacker@example.com" },
+    });
+    expect(response.statusCode).toBe(401);
+    await expect(signIn(app, "member@example.com", MEMBER_PASSWORD)).resolves.toBeTruthy();
+  });
+
+  it("keeps other sessions signed in: an address is an identifier, not a secret", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    const otherBrowser = await signIn(app, "member@example.com", MEMBER_PASSWORD);
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/email",
+      headers: { cookie: memberCookie },
+      payload: { currentPassword: MEMBER_PASSWORD, email: "moved@example.com" },
+    });
+    expect((await app.inject({ method: "GET", url: "/api/v1/auth/session", headers: { cookie: otherBrowser } })).statusCode)
+      .toBe(200);
+  });
+
+  it("refuses an address that is not one, and one another account already has", async () => {
+    const { app, adminCookie, memberCookie, member } = await twoAccountWorkspace();
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/email",
+      headers: { cookie: memberCookie },
+      payload: { currentPassword: MEMBER_PASSWORD, email: "liangguosheng" },
+    })).statusCode).toBe(400);
+
+    expect((await app.inject({
+      method: "PATCH",
+      url: `/api/v1/accounts/${member.id}`,
+      headers: { cookie: adminCookie },
+      payload: { email: "owner@example.com" },
+    })).statusCode).toBe(409);
+  });
+
+  it("lets an administrator correct someone else's address", async () => {
+    // How a deployment seeded before addresses were required gets out of it:
+    // the bootstrap account keeps whatever ADMIN_USERNAME said, and until now
+    // nothing could change it.
+    const { app, adminCookie, member } = await twoAccountWorkspace();
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/accounts/${member.id}`,
+      headers: { cookie: adminCookie },
+      payload: { email: "corrected@example.com" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ email: "corrected@example.com" });
+    await expect(signIn(app, "corrected@example.com", MEMBER_PASSWORD)).resolves.toBeTruthy();
+  });
+});
+
+describe("Listing and revoking AI authorizations", () => {
+  /** Mint a token and record it, the way the OAuth exchange does. */
+  function authorize(app: FastifyInstance, accountId: string, clientId = "mgc_test_client") {
+    const account = app.missionGoAccounts.getAccount(accountId);
+    const issued = createAiAccessToken(
+      adminAccount(),
+      { id: account.id, username: account.email, role: account.role },
+      app.missionGoAccounts.credentialsStamp(account),
+      clientId,
+      ["missiongo:read"],
+    );
+    app.missionGoAccounts.recordAiAuthorization({
+      tokenId: issued.claims.tokenId,
+      accountId: account.id,
+      clientId,
+      scopes: issued.claims.scopes,
+      issuedAt: issued.claims.issuedAt,
+      expiresAt: issued.claims.expiresAt,
+    });
+    return issued;
+  }
+
+  it("lists what is connected, and revoking one leaves the others working", async () => {
+    const { app, memberCookie, member } = await twoAccountWorkspace();
+    const first = authorize(app, member.id, "mgc_first");
+    const second = authorize(app, member.id, "mgc_second");
+
+    const listed = (await app.inject({ method: "GET", url: "/api/v1/ai-authorizations", headers: { cookie: memberCookie } }))
+      .json<{ authorizations: Array<{ id: string; clientId: string }> }>().authorizations;
+    expect(listed.map((entry) => entry.clientId).sort()).toEqual(["mgc_first", "mgc_second"]);
+
+    expect((await app.inject({
+      method: "DELETE",
+      url: `/api/v1/ai-authorizations/${first.claims.tokenId}`,
+      headers: { cookie: memberCookie },
+    })).statusCode).toBe(204);
+
+    // This is the whole point: one client cut off, the rest untouched. Before
+    // this the only lever was the account password, which stopped all of them.
+    expect((await callMcp(app, second.token, 1, "get_current_account")).structuredContent)
+      .toMatchObject({ account: { id: member.id } });
+    const refused = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        authorization: `Bearer ${first.token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_current_account", arguments: {} } },
+    });
+    expect(refused.statusCode).toBe(401);
+  });
+
+  it("drops a revoked authorization out of the list", async () => {
+    const { app, memberCookie, member } = await twoAccountWorkspace();
+    const issued = authorize(app, member.id);
+    await app.inject({
+      method: "DELETE",
+      url: `/api/v1/ai-authorizations/${issued.claims.tokenId}`,
+      headers: { cookie: memberCookie },
+    });
+    expect((await app.inject({ method: "GET", url: "/api/v1/ai-authorizations", headers: { cookie: memberCookie } })).json())
+      .toEqual({ authorizations: [] });
+  });
+
+  it("shows an account only its own, and refuses to revoke another account's", async () => {
+    const { app, adminCookie, memberCookie, member } = await twoAccountWorkspace();
+    const adminId = app.missionGoAccounts.listAccounts().find((account) => account.role === "admin")!.id;
+    const memberAuthorization = authorize(app, member.id, "mgc_member_client");
+    authorize(app, adminId, "mgc_admin_client");
+
+    expect((await app.inject({ method: "GET", url: "/api/v1/ai-authorizations", headers: { cookie: memberCookie } }))
+      .json<{ authorizations: Array<{ clientId: string }> }>().authorizations.map((e) => e.clientId))
+      .toEqual(["mgc_member_client"]);
+
+    // An administrator manages accounts; an authorization is a credential its
+    // owner granted. Suspending the account is the administrator's lever.
+    expect((await app.inject({
+      method: "DELETE",
+      url: `/api/v1/ai-authorizations/${memberAuthorization.claims.tokenId}`,
+      headers: { cookie: adminCookie },
+    })).statusCode).toBe(404);
+  });
+
+  it("does not refuse a token minted before the table existed", async () => {
+    // Shipping revocation must not itself revoke everything. A token with no
+    // record stays valid until it expires.
+    const { app, member } = await twoAccountWorkspace();
+    const account = app.missionGoAccounts.getAccount(member.id);
+    const unrecorded = createAiAccessToken(
+      adminAccount(),
+      { id: account.id, username: account.email, role: account.role },
+      app.missionGoAccounts.credentialsStamp(account),
+      "mgc_legacy_client",
+      ["missiongo:read"],
+    );
+    expect((await callMcp(app, unrecorded.token, 1, "get_current_account")).structuredContent)
+      .toMatchObject({ account: { id: member.id } });
+    // It simply has nothing to list or revoke.
+    expect(app.missionGoAccounts.listAiAuthorizations(member.id)).toEqual([]);
+  });
+
+  it("records when an authorization was last used, without writing on every call", async () => {
+    const { app, memberCookie, member } = await twoAccountWorkspace();
+    const issued = authorize(app, member.id);
+    const read = async () =>
+      (await app.inject({ method: "GET", url: "/api/v1/ai-authorizations", headers: { cookie: memberCookie } }))
+        .json<{ authorizations: Array<{ lastUsedAt?: string }> }>().authorizations[0]!;
+
+    expect((await read()).lastUsedAt).toBeUndefined();
+    await callMcp(app, issued.token, 1, "get_current_account");
+    const first = (await read()).lastUsedAt;
+    expect(first).toBeTruthy();
+
+    // A second call inside the interval must not move it, or every MCP read
+    // would carry a database write for a field nobody needs to the second.
+    await callMcp(app, issued.token, 2, "get_current_account");
+    expect((await read()).lastUsedAt).toBe(first);
+  });
+});
+
+describe("Setting permissions from the product's side (item 2.2)", () => {
+  it("lists every account against one product, marking the ones that reach it by role", async () => {
+    const { app, adminCookie, member, shared } = await twoAccountWorkspace();
+    const listed = (await app.inject({
+      method: "GET",
+      url: `/api/v1/products/${shared.id}/accounts`,
+      headers: { cookie: adminCookie },
+    })).json<{ accounts: Array<{ account: { email: string; role: string }; permission: { canView: boolean }; reachesByRole: boolean }> }>().accounts;
+
+    // An administrator that holds no row still reaches the product. Leaving it
+    // off the list would make the list lie about who can open this product.
+    expect(listed.find((entry) => entry.account.role === "admin")).toMatchObject({
+      reachesByRole: true,
+      permission: { canView: false },
+    });
+    expect(listed.find((entry) => entry.account.id === member.id)).toMatchObject({
+      reachesByRole: false,
+      permission: { canView: true, canOperate: true, canUseAi: false },
+    });
+  });
+
+  it("grants and revokes from this side, and the account side agrees", async () => {
+    const { app, adminCookie, memberCookie, member, hidden } = await twoAccountWorkspace();
+    expect((await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: memberCookie } })).json())
+      .toHaveLength(1);
+
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${hidden.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: member.id, canView: true, canOperate: false, canUseAi: false }] },
+    });
+    expect((await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: memberCookie } })).json())
+      .toHaveLength(2);
+    expect(app.missionGoAccounts.listPermissions(member.id).find((entry) => entry.productId === hidden.id))
+      .toMatchObject({ canView: true, canOperate: false });
+
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${hidden.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: member.id, canView: false, canOperate: false, canUseAi: false }] },
+    });
+    expect((await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: memberCookie } })).json())
+      .toHaveLength(1);
+  });
+
+  it("leaves an account's other products alone, which the account-side editor does not", async () => {
+    // The two editors replace different things on purpose. From a product you
+    // cannot see what else an account holds, so replacing its whole set here
+    // would revoke permissions that were never on screen.
+    const { app, adminCookie, member, shared, hidden } = await twoAccountWorkspace();
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${hidden.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: member.id, canView: true, canOperate: false, canUseAi: false }] },
+    });
+    const held = app.missionGoAccounts.listPermissions(member.id).map((entry) => entry.productId).sort();
+    expect(held).toEqual([shared.id, hidden.id].sort());
+  });
+
+  it("stores operate and AI as implying view here too", async () => {
+    const { app, adminCookie, member, hidden } = await twoAccountWorkspace();
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${hidden.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: member.id, canView: false, canOperate: false, canUseAi: true }] },
+    });
+    expect(app.missionGoAccounts.listPermissions(member.id).find((entry) => entry.productId === hidden.id))
+      .toMatchObject({ canView: true, canOperate: false, canUseAi: true });
+  });
+
+  it("is invisible to a member, and refuses an unknown product or account", async () => {
+    const { app, adminCookie, memberCookie, member, shared } = await twoAccountWorkspace();
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/products/${shared.id}/accounts`,
+      headers: { cookie: memberCookie },
+    })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${shared.id}/accounts`,
+      headers: { cookie: memberCookie },
+      payload: { accounts: [] },
+    })).statusCode).toBe(404);
+
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/v1/products/no-such-product/accounts",
+      headers: { cookie: adminCookie },
+    })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${shared.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: "no-such-account", canView: true, canOperate: false, canUseAi: false }] },
+    })).statusCode).toBe(404);
+    expect(member.id).toBeTruthy();
+  });
+});
