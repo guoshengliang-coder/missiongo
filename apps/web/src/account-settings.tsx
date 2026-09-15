@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, LoaderCircle, Plus, Trash2, Unplug, UserRound } from "lucide-react";
+import { Check, LoaderCircle, Pencil, Plus, Trash2, Unplug, UserRound, X } from "lucide-react";
 
 import {
   api,
@@ -11,6 +11,7 @@ import {
   type AiAuthorization,
   type ProductPermission,
 } from "./api";
+import { closeAccountEditor, openAccountEditor, type AccountEditor } from "./account-edit-state";
 import { useI18n, type MessageKey } from "./i18n";
 import type { Product } from "./types";
 
@@ -33,7 +34,7 @@ function messageFor(error: unknown, t: (key: MessageKey) => string, fallback: st
  * cookie proves the browser was left signed in, not that the owner is at it.
  * Succeeding ends every other session, which is the point of the notice.
  */
-function PasswordForm() {
+function PasswordForm({ onCancel }: { onCancel: () => void }) {
   const { t } = useI18n();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -98,9 +99,14 @@ function PasswordForm() {
       {mismatch && <p className="account-note">{t("passwordsDoNotMatch")}</p>}
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
       {done && <InlineNote message={t("passwordChanged")} />}
-      <button className="secondary-button" disabled={!ready || mutation.isPending}>
-        {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("changePassword")}
-      </button>
+      <div className="account-form-actions">
+        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>
+          <X size={15} /> {t("cancel")}
+        </button>
+        <button className="secondary-button" disabled={!ready || mutation.isPending}>
+          {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("changePassword")}
+        </button>
+      </div>
     </form>
   );
 }
@@ -116,7 +122,7 @@ function InlineNote({ message, danger = false }: { message: string; danger?: boo
  * address is what you sign in with, so taking it over is taking over the
  * account.
  */
-function EmailForm({ user }: { user: AuthenticatedUser }) {
+function EmailForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: () => void }) {
   const { t } = useI18n();
   const [current, setCurrent] = useState("");
   const [email, setEmail] = useState(user.username);
@@ -165,9 +171,14 @@ function EmailForm({ user }: { user: AuthenticatedUser }) {
       </label>
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
       {done && <InlineNote message={t("emailChanged")} />}
-      <button className="secondary-button" disabled={!changed || current.length === 0 || mutation.isPending}>
-        {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("changeEmail")}
-      </button>
+      <div className="account-form-actions">
+        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>
+          <X size={15} /> {t("cancel")}
+        </button>
+        <button className="secondary-button" disabled={!changed || current.length === 0 || mutation.isPending}>
+          {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("changeEmail")}
+        </button>
+      </div>
     </form>
   );
 }
@@ -320,11 +331,24 @@ function PermissionGrid({ account, products }: { account: Account; products: rea
   );
 }
 
-function AccountRow({ account, products, isSelf }: { account: Account; products: readonly Product[]; isSelf: boolean }) {
+function AccountRow({
+  account,
+  products,
+  isSelf,
+  editor,
+  setEditor,
+}: {
+  account: Account;
+  products: readonly Product[];
+  isSelf: boolean;
+  editor: AccountEditor | null;
+  setEditor: (editor: AccountEditor | null) => void;
+}) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
   const [email, setEmail] = useState(account.email);
+  const editIntent = `account:${account.id}` as const;
+  const open = editor === editIntent;
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["accounts"] });
   const suspend = useMutation({
@@ -342,11 +366,17 @@ function AccountRow({ account, products, isSelf }: { account: Account; products:
   return (
     <article className={account.disabledAt ? "account-row suspended" : "account-row"}>
       <header>
-        <button type="button" className="text-button" onClick={() => setOpen(!open)}>
-          <strong>{account.email}</strong>
-        </button>
+        <strong>{account.email}</strong>
         <em>{t(account.role === "admin" ? "administratorRole" : "memberRole")}</em>
         {account.disabledAt && <span className="status-pill status-cancelled">{t("suspendedAccount")}</span>}
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={editor !== null}
+          onClick={() => setEditor(openAccountEditor(editor, editIntent))}
+        >
+          <Pencil size={15} /> {t("editAccount")}
+        </button>
         {!isSelf && (
           <>
             <button
@@ -396,6 +426,15 @@ function AccountRow({ account, products, isSelf }: { account: Account; products:
             </button>
           </div>
           <PermissionGrid account={account} products={products} />
+          <div className="account-form-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setEditor(closeAccountEditor(editor, editIntent))}
+            >
+              <X size={15} /> {t("cancel")}
+            </button>
+          </div>
         </>
       )}
     </article>
@@ -406,7 +445,7 @@ function AccountRow({ account, products, isSelf }: { account: Account; products:
  * Create an account. There is no public sign-up: an administrator sets a first
  * password and passes it on, and the owner replaces it from their own settings.
  */
-function NewAccountForm() {
+function NewAccountForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: () => void }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [email, setEmail] = useState("");
@@ -420,6 +459,7 @@ function NewAccountForm() {
       setPassword("");
       setRole("member");
       await queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      onCreated();
     },
   });
 
@@ -462,9 +502,14 @@ function NewAccountForm() {
         </select>
       </label>
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
-      <button className="primary-button" disabled={mutation.isPending || !email.trim() || password.length < MIN_PASSWORD_LENGTH}>
-        {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("addAccount")}
-      </button>
+      <div className="account-form-actions">
+        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>
+          <X size={15} /> {t("cancel")}
+        </button>
+        <button className="primary-button" disabled={mutation.isPending || !email.trim() || password.length < MIN_PASSWORD_LENGTH}>
+          {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("addAccount")}
+        </button>
+      </div>
     </form>
   );
 }
@@ -472,6 +517,7 @@ function NewAccountForm() {
 /** The accounts on this deployment, and what each of them reaches. Administrators only. */
 export function AccountManagement({ user, products }: { user: AuthenticatedUser; products: readonly Product[] }) {
   const { t } = useI18n();
+  const [editor, setEditor] = useState<AccountEditor | null>(null);
   const accountsQuery = useQuery({ queryKey: ["accounts"], queryFn: api.listAccounts });
 
   if (accountsQuery.isPending) return <p className="account-note"><LoaderCircle className="spin" size={15} /></p>;
@@ -481,13 +527,35 @@ export function AccountManagement({ user, products }: { user: AuthenticatedUser;
 
   return (
     <div className="account-management">
-      <p className="account-note">{t("accountsHelp")}</p>
+      <div className="account-management-header">
+        <p className="account-note">{t("accountsHelp")}</p>
+        <button
+          type="button"
+          className="primary-button"
+          disabled={editor !== null}
+          onClick={() => setEditor(openAccountEditor(editor, "new-account"))}
+        >
+          <Plus size={15} /> {t("addAccount")}
+        </button>
+      </div>
+      {editor === "new-account" && (
+        <NewAccountForm
+          onCancel={() => setEditor(closeAccountEditor(editor, "new-account"))}
+          onCreated={() => setEditor(closeAccountEditor(editor, "new-account"))}
+        />
+      )}
       <div className="account-list">
         {accountsQuery.data.accounts.map((account) => (
-          <AccountRow key={account.id} account={account} products={products} isSelf={account.id === user.id} />
+          <AccountRow
+            key={account.id}
+            account={account}
+            products={products}
+            isSelf={account.id === user.id}
+            editor={editor}
+            setEditor={setEditor}
+          />
         ))}
       </div>
-      <NewAccountForm />
     </div>
   );
 }
@@ -504,6 +572,7 @@ export function AccountSettings({
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<"me" | "accounts">("me");
+  const [editor, setEditor] = useState<AccountEditor | null>(null);
   const logout = useMutation({ mutationFn: api.logout, onSuccess: onLoggedOut });
 
   return (
@@ -517,7 +586,10 @@ export function AccountSettings({
               role="tab"
               aria-selected={tab === value}
               className={tab === value ? "text-button selected" : "text-button"}
-              onClick={() => setTab(value)}
+              onClick={() => {
+                setTab(value);
+                setEditor(null);
+              }}
             >
               {t(value === "me" ? "myAccountTab" : "manageAccountsTab")}
             </button>
@@ -535,8 +607,30 @@ export function AccountSettings({
               <em>{t(user.role === "admin" ? "administratorRole" : "memberRole")}</em>
             </div>
           </div>
-          <EmailForm user={user} />
-          <PasswordForm />
+          <div className="account-edit-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={editor !== null}
+              onClick={() => setEditor(openAccountEditor(editor, "email"))}
+            >
+              <Pencil size={15} /> {t("changeEmail")}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={editor !== null}
+              onClick={() => setEditor(openAccountEditor(editor, "password"))}
+            >
+              <Pencil size={15} /> {t("changePassword")}
+            </button>
+          </div>
+          {editor === "email" && (
+            <EmailForm user={user} onCancel={() => setEditor(closeAccountEditor(editor, "email"))} />
+          )}
+          {editor === "password" && (
+            <PasswordForm onCancel={() => setEditor(closeAccountEditor(editor, "password"))} />
+          )}
           <ConnectedAiClients />
           {logout.isError && <InlineNote danger message={messageFor(logout.error, t, t("somethingWentWrong"))} />}
           <button className="secondary-button wide" disabled={logout.isPending} onClick={() => logout.mutate()}>
