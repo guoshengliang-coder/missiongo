@@ -24,6 +24,11 @@ DOWNLOAD_DIRECTORY="$REPOSITORY_ROOT/apps/web/public/downloads"
 LATEST_ZIP="$DOWNLOAD_DIRECTORY/missiongo-macos-latest.zip"
 TEMPORARY_ZIP="$DOWNLOAD_DIRECTORY/.missiongo-macos-latest.zip.tmp"
 RELEASE_METADATA="$DOWNLOAD_DIRECTORY/missiongo-macos-latest.release"
+# What an installed client reads to decide whether it is out of date. Separate
+# from the .release beside it on purpose: that one carries source_commit and
+# source_dirty and is kept out of the web image by .dockerignore, so it can
+# never answer this question. Both are written below from the same values.
+UPDATE_MANIFEST="$DOWNLOAD_DIRECTORY/missiongo-macos-latest.json"
 
 # The published app must point at the real deployment, which lives only in the
 # private configuration beside the Android publishing files.
@@ -68,15 +73,39 @@ chmod 0644 "$TEMPORARY_ZIP"
 mv "$TEMPORARY_ZIP" "$LATEST_ZIP"
 trap - EXIT HUP INT TERM
 
+# Computed once and written to both files below, so the record a deploy checks
+# and the manifest a client updates from can never disagree about this build.
+BUILD_TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
+SHA256=$(shasum -a 256 "$LATEST_ZIP" | awk '{print $1}')
+SIZE=$(wc -c < "$LATEST_ZIP" | tr -d ' ')
+# Read back from the bundle rather than repeated here: build-macos-app.sh is the
+# one place that decides which macOS versions this build runs on.
+MINIMUM_SYSTEM_VERSION=$(plutil -extract LSMinimumSystemVersion raw "$PACKAGE_DIRECTORY/build/MissionGo.app/Contents/Info.plist")
+
 # The zip has a fixed name, so this file is the only record of what is in it;
 # scripts/deploy.sh refuses a zip whose digest no longer matches it.
 cat > "$RELEASE_METADATA" <<METADATA
 version=$VERSION
-build_timestamp=$(date -u +%Y%m%d%H%M%S)
+build_timestamp=$BUILD_TIMESTAMP
 source_commit=$SOURCE_COMMIT
 source_dirty=$SOURCE_DIRTY
-sha256=$(shasum -a 256 "$LATEST_ZIP" | awk '{print $1}')
+sha256=$SHA256
 METADATA
+
+# The public half: only what an installed client needs to decide whether to
+# update and to check what it downloaded. No source_commit, no source_dirty --
+# this file is served at /downloads/ and build provenance does not belong there.
+cat > "$UPDATE_MANIFEST" <<MANIFEST
+{
+  "version": "$VERSION",
+  "sha256": "$SHA256",
+  "size": $SIZE,
+  "buildTimestamp": "$BUILD_TIMESTAMP",
+  "minimumSystemVersion": "$MINIMUM_SYSTEM_VERSION",
+  "downloadPath": "/downloads/missiongo-macos-latest.zip"
+}
+MANIFEST
+chmod 0644 "$UPDATE_MANIFEST"
 
 if [ "$SOURCE_DIRTY" = "false" ]; then
   node "$REPOSITORY_ROOT/scripts/release-state.mjs" --record macosApp --commit "$SOURCE_COMMIT"
@@ -86,4 +115,5 @@ fi
 
 echo "macOS client staged: ${VERSION}"
 echo "Website path: /downloads/missiongo-macos-latest.zip (ships with the next deploy)"
+echo "Update manifest: /downloads/missiongo-macos-latest.json"
 shasum -a 256 "$LATEST_ZIP"

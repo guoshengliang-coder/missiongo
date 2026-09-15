@@ -17,6 +17,10 @@ const sdkIntegrationSourcePath = resolve(repositoryRoot, "sdks/android-feedback/
 const skillOriginPlaceholder = "__MISSIONGO_PUBLIC_ORIGIN__";
 const macosDownloadPath = "/downloads/missiongo-macos-latest.zip";
 const macosZipPath = resolve(repositoryRoot, "apps/web/public/downloads/missiongo-macos-latest.zip");
+// Keep in sync with AppUpdater.manifestPath in apps/macos and the location block in
+// deploy/nginx-container.conf; scripts/check-macos-contract.mjs compares the three.
+const macosManifestPath = "/downloads/missiongo-macos-latest.json";
+const macosManifestFilePath = resolve(repositoryRoot, "apps/web/public/downloads/missiongo-macos-latest.json");
 
 /**
  * Serves the macOS client at the address the machines tab links to, so the
@@ -29,7 +33,23 @@ const macosZipPath = resolve(repositoryRoot, "apps/web/public/downloads/missiong
  */
 function macosDownload(): Plugin {
   const middleware = (request: IncomingMessage, response: ServerResponse, next: () => void): void => {
-    if (request.url?.split("?", 1)[0] !== macosDownloadPath) {
+    const path = request.url?.split("?", 1)[0];
+    if (path === macosManifestPath) {
+      // The manifest an installed client checks for a newer build. Same 404
+      // reasoning as the zip: a client parsing index.html as JSON reports a
+      // broken server, which is not what is wrong.
+      if (!existsSync(macosManifestFilePath)) {
+        response.statusCode = 404;
+        response.setHeader("Content-Type", "text/plain; charset=utf-8");
+        response.end("missiongo-macos-latest.json has not been built. Run: npm run publish:macos\n");
+        return;
+      }
+      response.setHeader("Content-Type", "application/json");
+      response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      response.end(readFileSync(macosManifestFilePath));
+      return;
+    }
+    if (path !== macosDownloadPath) {
       next();
       return;
     }
