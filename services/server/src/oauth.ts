@@ -4,7 +4,8 @@ import {
   AI_ACCESS_SESSION_SECONDS,
   createAiAccessToken,
   type AdminAccountConfig,
-  type AiAccessPrincipal,
+  type AdminSessionUser,
+  type AiAccessClaims,
 } from "./admin-auth.js";
 
 const AUTHORIZATION_REQUEST_SECONDS = 10 * 60;
@@ -59,6 +60,12 @@ interface AuthorizationCode {
   readonly redirectUri: string;
   readonly codeChallenge: string;
   readonly scopes: readonly string[];
+  /**
+   * Who approved this. Once there is more than one account, "the administrator"
+   * is no longer an answer: the token has to be issued to whoever typed their
+   * password on the consent page, not to whoever the deployment starts with.
+   */
+  readonly user: AdminSessionUser;
   readonly expiresAt: number;
 }
 
@@ -80,7 +87,7 @@ export interface OAuthAuthorizationInput {
 
 export interface OAuthTokenResult {
   readonly accessToken: string;
-  readonly principal: AiAccessPrincipal;
+  readonly claims: AiAccessClaims;
   readonly expiresIn: number;
   readonly scope: string;
 }
@@ -222,7 +229,11 @@ export class MissionGoOAuthProvider {
     }
   }
 
-  finishAuthorization(requestToken: string, now = Date.now()): { redirectUri: string; code: string; state?: string } {
+  finishAuthorization(
+    requestToken: string,
+    user: AdminSessionUser,
+    now = Date.now(),
+  ): { redirectUri: string; code: string; state?: string } {
     const request = readSignedValue<Partial<AuthorizationRequest>>(requestToken, this.account.sessionSecret);
     const nowSeconds = Math.floor(now / 1_000);
     if (
@@ -246,6 +257,7 @@ export class MissionGoOAuthProvider {
       redirectUri: request.redirectUri,
       codeChallenge: request.codeChallenge,
       scopes,
+      user,
       expiresAt: nowSeconds + AUTHORIZATION_CODE_SECONDS,
     });
     return {
@@ -275,10 +287,10 @@ export class MissionGoOAuthProvider {
       || !/^[A-Za-z0-9._~-]{43,128}$/.test(input.codeVerifier)
       || !safeEqual(calculatedChallenge, record.codeChallenge)
     ) throw new Error("invalid_grant");
-    const issued = createAiAccessToken(this.account, input.clientId, record.scopes, now);
+    const issued = createAiAccessToken(this.account, record.user, input.clientId, record.scopes, now);
     return {
       accessToken: issued.token,
-      principal: issued.principal,
+      claims: issued.claims,
       expiresIn: AI_ACCESS_SESSION_SECONDS,
       scope: record.scopes.join(" "),
     };

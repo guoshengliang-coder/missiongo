@@ -89,8 +89,9 @@ describe("Commenting over MCP", () => {
       return JSON.parse(payload!) as { result?: Record<string, unknown>; error?: unknown };
     };
 
-    const readToken = createAiAccessToken(adminAccount, "read-client", ["missiongo:read"]).token;
-    const writeToken = createAiAccessToken(adminAccount, "write-client", ["missiongo:read", "missiongo:write"]).token;
+    const aiUser = { id: adminAccount.id, username: adminAccount.username, role: "admin" as const };
+    const readToken = createAiAccessToken(adminAccount, aiUser, "read-client", ["missiongo:read"]).token;
+    const writeToken = createAiAccessToken(adminAccount, aiUser, "write-client", ["missiongo:read", "missiongo:write"]).token;
     return { app, call, readToken, writeToken };
   }
 
@@ -376,7 +377,11 @@ describe("MissionGo REST API", () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-mcp-"));
     temporaryDirectories.push(directory);
     const adminAccount = testAdminAccount();
-    const mcpAccessToken = createAiAccessToken(adminAccount, "missiongo-test-client").token;
+    const mcpAccessToken = createAiAccessToken(
+      adminAccount,
+      { id: adminAccount.id, username: adminAccount.username, role: "admin" },
+      "missiongo-test-client",
+    ).token;
     const app = buildApp({
       databasePath: join(directory, "missiongo.sqlite"),
       attachmentsPath: join(directory, "attachments"),
@@ -519,14 +524,19 @@ describe("MissionGo REST API", () => {
   });
 
   it("uses first-time account login and limits AI reads to authorized products", async () => {
-    const allowedProductIds: string[] = [];
-    const adminAccount = testAdminAccount(allowedProductIds);
+    const adminAccount = testAdminAccount();
     const app = buildApp({ adminAccount, publicOrigin: "https://missiongo.test" });
     apps.push(app);
 
     const allowed = app.missionGoStore.createProduct({ name: "Allowed", keyPrefix: "OK" });
     const blocked = app.missionGoStore.createProduct({ name: "Blocked", keyPrefix: "NO" });
-    allowedProductIds.push(allowed.id);
+    // The console reaches both products -- this account is an administrator.
+    // What is narrowed here is the reach of AI clients signing in as it, which
+    // is what ADMIN_AUTHORIZED_PRODUCT_IDS used to express and what the seed now
+    // turns into rows.
+    app.missionGoAccounts.replacePermissions(adminAccount.id, [
+      { productId: allowed.id, canView: true, canOperate: true, canUseAi: true },
+    ]);
     app.missionGoStore.createWorkItem({
       productId: blocked.id,
       type: "bug",

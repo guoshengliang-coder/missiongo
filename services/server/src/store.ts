@@ -64,6 +64,7 @@ interface ProductRow {
   updated_at: string;
   archived_at: string | null;
   icon_png: string | null;
+  created_by_account_id: string | null;
 }
 
 interface ComponentRow {
@@ -210,7 +211,7 @@ export class MissionGoStore {
     this.database.close();
   }
 
-  createProduct(input: { name: string; keyPrefix: string }): ProductSnapshot {
+  createProduct(input: { name: string; keyPrefix: string; createdByAccountId?: string }): ProductSnapshot {
     const name = requiredText(input.name, "Product name");
     const keyPrefix = input.keyPrefix.trim().toUpperCase();
     if (!PRODUCT_PREFIX_PATTERN.test(keyPrefix)) {
@@ -222,10 +223,10 @@ export class MissionGoStore {
     try {
       this.database.connection
         .prepare(
-          `INSERT INTO products (id, key_prefix, name, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO products (id, key_prefix, name, created_at, updated_at, created_by_account_id)
+           VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, keyPrefix, name, now, now);
+        .run(id, keyPrefix, name, now, now, input.createdByAccountId ?? null);
     } catch (error) {
       if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
         throw conflict("product_prefix_conflict", `Product prefix ${keyPrefix} is already in use.`);
@@ -239,7 +240,8 @@ export class MissionGoStore {
   listProducts(options: { includeArchived?: boolean } = {}): readonly ProductSnapshot[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at, icon_png
+        `SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at, icon_png,
+                created_by_account_id
          FROM products${options.includeArchived ? "" : " WHERE archived_at IS NULL"}
          ORDER BY archived_at IS NOT NULL, name`,
       )
@@ -1504,7 +1506,11 @@ export class MissionGoStore {
 
   private getProductRow(productId: string): ProductRow | undefined {
     return this.database.connection
-      .prepare("SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at, icon_png FROM products WHERE id = ?")
+      .prepare(
+        `SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at, icon_png,
+                created_by_account_id
+         FROM products WHERE id = ?`,
+      )
       .get(productId) as unknown as ProductRow | undefined;
   }
 
@@ -1702,6 +1708,7 @@ export class MissionGoStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
+      ...(row.created_by_account_id ? { createdByAccountId: row.created_by_account_id } : {}),
       hasIcon: Boolean(row.icon_png),
     };
   }

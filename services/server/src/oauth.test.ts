@@ -2,7 +2,7 @@ import { createHash, randomBytes, scryptSync } from "node:crypto";
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { AdminAccountConfig } from "./admin-auth.js";
+import type { AdminAccountConfig, AdminSessionUser } from "./admin-auth.js";
 import { MISSIONGO_READ_SCOPE, MissionGoOAuthProvider } from "./oauth.js";
 
 const salt = randomBytes(16);
@@ -13,6 +13,9 @@ const account: AdminAccountConfig = {
   sessionSecret: "a-long-test-session-secret",
   cookieSecure: true,
 };
+
+/** Whoever typed their password on the consent page; the token is issued to them. */
+const consentingUser: AdminSessionUser = { id: "account-1", username: "owner@example.com", role: "admin" };
 
 const REDIRECT_URI = "http://127.0.0.1:9321/callback";
 const verifier = randomBytes(32).toString("base64url");
@@ -114,24 +117,24 @@ describe("authorization request", () => {
   it("rejects an expired or tampered authorization request", () => {
     const now = Date.now();
     const { requestToken } = provider.beginAuthorization(authorizationInput(), now);
-    expect(() => provider.finishAuthorization(requestToken, now + 11 * 60_000))
+    expect(() => provider.finishAuthorization(requestToken, consentingUser, now + 11 * 60_000))
       .toThrowError(/invalid_authorization_request/);
-    expect(() => provider.finishAuthorization(`${requestToken}tampered`, now))
+    expect(() => provider.finishAuthorization(`${requestToken}tampered`, consentingUser, now))
       .toThrowError(/invalid_authorization_request/);
   });
 
   it("carries the client state through to the redirect", () => {
     const { requestToken } = provider.beginAuthorization(authorizationInput({ state: "opaque-state" }));
-    const completed = provider.finishAuthorization(requestToken);
+    const completed = provider.finishAuthorization(requestToken, consentingUser);
     expect(completed).toMatchObject({ redirectUri: REDIRECT_URI, state: "opaque-state" });
     expect(completed.code).toHaveLength(43);
   });
 });
 
 describe("code exchange", () => {
-  function issueCode(now = Date.now()) {
+  function issueCode(now = Date.now(), user: AdminSessionUser = consentingUser) {
     const { requestToken } = provider.beginAuthorization(authorizationInput(), now);
-    return provider.finishAuthorization(requestToken, now);
+    return provider.finishAuthorization(requestToken, user, now);
   }
 
   function exchange(overrides: Record<string, unknown> = {}, now = Date.now()) {
@@ -149,17 +152,25 @@ describe("code exchange", () => {
   it("issues a scoped access token for a valid verifier", () => {
     const { code } = issueCode();
     const result = exchange({ code });
-    expect(result.principal).toMatchObject({ clientId: expect.stringContaining("mgc_"), scopes: [MISSIONGO_READ_SCOPE] });
+    expect(result.claims).toMatchObject({ clientId: expect.stringContaining("mgc_"), scopes: [MISSIONGO_READ_SCOPE] });
     expect(result.accessToken.startsWith("mgai_")).toBe(true);
     expect(result.expiresIn).toBeGreaterThan(0);
   });
 
   it("carries the granted scope from the consent onto the token", () => {
     const { requestToken } = provider.beginAuthorization(authorizationInput({ scope: "missiongo:write" }));
-    const { code } = provider.finishAuthorization(requestToken);
+    const { code } = provider.finishAuthorization(requestToken, consentingUser);
     const result = exchange({ code });
-    expect(result.principal.scopes).toEqual(["missiongo:read", "missiongo:write"]);
+    expect(result.claims.scopes).toEqual(["missiongo:read", "missiongo:write"]);
     expect(result.scope).toBe("missiongo:read missiongo:write");
+  });
+
+  it("issues the token to the account that signed in on the consent page", () => {
+    // With one account this was indistinguishable from issuing to "the
+    // administrator". With several, a member's AI client must not come back
+    // holding the administrator's reach.
+    const { code } = issueCode(Date.now(), { id: "account-2", username: "member@example.com", role: "member" });
+    expect(exchange({ code }).claims).toMatchObject({ id: "account-2", role: "member" });
   });
 
   it("burns the authorization code after one attempt", () => {

@@ -27,6 +27,13 @@ export interface ProductSnapshot {
   /** Set when the product is retired. Its items stay readable; it leaves the pickers. */
   readonly archivedAt?: string;
   /**
+   * The account that created it, and the only non-administrator allowed to
+   * archive it. Absent on a product created before accounts existed and before
+   * the backfill ran, or by the deployment's operator token, which carries no
+   * account.
+   */
+  readonly createdByAccountId?: string;
+  /**
    * Whether an icon has been uploaded. The bytes are not inlined here: a 96px PNG
    * base64s to roughly 13 KB that gzip cannot shrink (it is already compressed),
    * and one icon took the product listing from 483 B to 17.7 KB -- paid on every

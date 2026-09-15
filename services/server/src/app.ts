@@ -22,12 +22,18 @@ import {
   expiredAdminSessionCookie,
   readAiAccessToken,
   readAdminSession,
-  verifyAdminCredentials,
   type AdminAccountConfig,
   type AdminSessionUser,
 } from "./admin-auth.js";
 import sharp from "sharp";
 
+import {
+  AccountStore,
+  normalizeEmail,
+  type AccountSnapshot,
+  type ProductCapability,
+  type ProductPermission,
+} from "./accounts-store.js";
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
 import { DispatchStore } from "./dispatch-store.js";
 import { invalidInput, MissionGoError, notFound } from "./errors.js";
@@ -362,6 +368,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? false, trustProxy: options.trustProxy ?? false });
   const store = new MissionGoStore(options.databasePath ?? ":memory:");
   const dispatchStore = new DispatchStore(store.database);
+  const accountStore = new AccountStore(store.database);
+  if (options.adminAccount) {
+    accountStore.seedBootstrapAdmin({
+      id: options.adminAccount.id,
+      email: options.adminAccount.username,
+      passwordScrypt: options.adminAccount.passwordScrypt,
+      ...(options.adminAccount.authorizedProductIds
+        ? { authorizedProductIds: options.adminAccount.authorizedProductIds }
+        : {}),
+    });
+  }
   const attachmentStorage = new AttachmentStorage(options.attachmentsPath ?? "./data/attachments");
   const publicOrigin = new URL(options.publicOrigin ?? "http://127.0.0.1").origin;
   const writeTools: McpWriteTier = options.writeTools ?? "none";
@@ -398,9 +415,63 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   };
 
-  const sessionUser = (request: FastifyRequest): AdminSessionUser | undefined => options.adminAccount
-    ? readAdminSession(options.adminAccount, cookieValue(request, ADMIN_SESSION_COOKIE))
-    : undefined;
+  /**
+   * The account behind the request's session cookie, or nothing.
+   *
+   * Two steps, and both matter. The signature says the server minted this
+   * cookie; the accounts table says the account still exists, is still enabled,
+   * and has not changed its password since -- which is what stands in for a
+   * sessions table. A cookie that passes the first check and fails the second is
+   * exactly the case this exists for.
+   */
+  const sessionAccount = (request: FastifyRequest): AccountSnapshot | undefined => {
+    if (!options.adminAccount) return undefined;
+    const claims = readAdminSession(options.adminAccount, cookieValue(request, ADMIN_SESSION_COOKIE));
+    if (!claims) return undefined;
+    return accountStore.resolveActive(claims.id, claims.issuedAt);
+  };
+
+  const sessionUser = (request: FastifyRequest): AdminSessionUser | undefined => {
+    const account = sessionAccount(request);
+    return account ? { id: account.id, username: account.email, role: account.role } : undefined;
+  };
+
+  /**
+   * Whether this request is exempt from per-product authorization.
+   *
+   * Two cases, both of which already bypass the sign-in hook below. A deployment
+   * with neither an account nor an operator token is a local run with no sign-in
+   * at all, so there is no account to check permissions for. A request carrying
+   * the operator token is a machine, not a person: the token names no account,
+   * which is exactly why docs/security-boundaries.md records it as reaching
+   * every product.
+   */
+  const unauthenticatedDeployment = !options.adminAccount && !options.adminToken;
+
+  const bearerAuthorized = (request: FastifyRequest): boolean =>
+    unauthenticatedDeployment
+    || (options.adminToken ? hasBearerToken(request.headers.authorization, options.adminToken) : false);
+
+  /**
+   * The account behind an AI bearer token, with the products it currently
+   * reaches.
+   *
+   * The reach is read here rather than taken from the token, so unticking a
+   * product in the console applies to authorizations already in the wild.
+   */
+  const aiPrincipal = (token: string) => {
+    if (!options.adminAccount) return undefined;
+    const claims = readAiAccessToken(options.adminAccount, token);
+    if (!claims) return undefined;
+    const account = accountStore.resolveActive(claims.id, claims.issuedAt);
+    if (!account) return undefined;
+    return {
+      ...claims,
+      username: account.email,
+      role: account.role,
+      productIds: accountStore.reachableProductIds(account, "ai"),
+    };
+  };
 
   app.addContentTypeParser(
     "application/octet-stream",
@@ -414,6 +485,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   );
 
   app.decorate("missionGoStore", store);
+  app.decorate("missionGoAccounts", accountStore);
   app.addHook("onClose", async () => {
     await mcpHandler?.close();
     store.close();
@@ -447,10 +519,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       || path.startsWith("/api/v1/node/")
       || (!options.adminToken && !options.adminAccount)
     ) return;
-    const bearerAuthorized = options.adminToken
-      ? hasBearerToken(request.headers.authorization, options.adminToken)
-      : false;
-    if (!bearerAuthorized && !sessionUser(request)) {
+    // This hook only answers "is anyone here". Which products that someone may
+    // reach is decided per route, by requireProductPermission below: a single
+    // gate that lets every signed-in account at every route is what AND-33 is
+    // fixing.
+    if (!bearerAuthorized(request) && !sessionUser(request)) {
       return reply.status(401).send({
         type: "urn:missiongo:problem:authentication_required",
         title: "A valid bearer token is required.",
@@ -569,7 +642,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const password = form.get("password") ?? "";
       const now = Date.now();
       if (loginIsRateLimited(request, reply, now)) return reply;
-      if (!verifyAdminCredentials(options.adminAccount!, username, password)) {
+      const account = accountStore.verifyCredentials(username, password);
+      if (!account) {
         recordLoginFailure(request, now);
         return reply.header("cache-control", "no-store").type("text/html; charset=utf-8").status(401).send(
           oauthLoginPage(
@@ -583,7 +657,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
       loginFailures.delete(request.ip);
       try {
-        const completed = oauthProvider.finishAuthorization(requestToken);
+        // The token is issued to whoever just signed in on the consent page, so
+        // the AI client inherits that account's product reach and no more.
+        const completed = oauthProvider.finishAuthorization(requestToken, {
+          id: account.id,
+          username: account.email,
+          role: account.role,
+        });
         const redirect = new URL(completed.redirectUri);
         redirect.searchParams.set("code", completed.code);
         if (completed.state) redirect.searchParams.set("state", completed.state);
@@ -669,7 +749,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       });
     }
 
-    const products = store.listProducts({ includeArchived: includeArchived(query) });
+    // Same filter the /products route applies. The first screen must not show a
+    // product the account cannot open, or the console lands on a picker whose
+    // every later request 404s.
+    const allProducts = store.listProducts({ includeArchived: includeArchived(query) });
+    const reachable = bearerAuthorized(request)
+      ? "*" as const
+      : accountStore.reachableProductIds(requireAccount(request), "view");
+    const products = reachable === "*" ? allProducts : allProducts.filter((entry) => reachable.includes(entry.id));
     // The client's remembered product only counts if it still exists and is still
     // visible; otherwise the first one wins. Resolving it here is what lets the
     // items query run in this same request instead of a round trip later, and it
@@ -704,22 +791,59 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const body = objectBody(request.body);
     const username = stringField(body, "username")!.trim();
     const password = stringField(body, "password")!;
-    if (!verifyAdminCredentials(options.adminAccount, username, password)) {
+    const account = accountStore.verifyCredentials(username, password);
+    if (!account) {
       recordLoginFailure(request, now);
+      // One answer for a wrong password, an unknown address and a suspended
+      // account. Distinguishing them turns the sign-in form into a way to find
+      // out who has an account here.
       return reply.header("cache-control", "no-store").status(401).send({
         type: "urn:missiongo:problem:invalid_credentials",
-        title: "The username or password is incorrect.",
+        title: "The email address or password is incorrect.",
         status: 401,
         code: "invalid_credentials",
       });
     }
 
     loginFailures.delete(request.ip);
-    const token = createAdminSession(options.adminAccount, now);
+    const user: AdminSessionUser = { id: account.id, username: account.email, role: account.role };
+    const token = createAdminSession(options.adminAccount, user, now);
     return reply
       .header("cache-control", "no-store")
       .header("set-cookie", adminSessionCookie(options.adminAccount, token))
-      .send({ user: { id: options.adminAccount.id, username: options.adminAccount.username, role: "admin" } });
+      .send({ user });
+  });
+
+  /**
+   * Change your own password.
+   *
+   * The current password is required even though the caller already holds a
+   * session: a cookie proves the browser was left signed in, not that the person
+   * at the keyboard is the owner. Succeeding invalidates every session and AI
+   * token the account holds, so a fresh cookie goes back with the response --
+   * otherwise changing your password would sign you out of the tab you did it in.
+   */
+  app.post("/api/v1/auth/password", async (request, reply) => {
+    if (!options.adminAccount) {
+      return reply.status(503).send({
+        type: "urn:missiongo:problem:authentication_unavailable",
+        title: "Administrator account login is not configured.",
+        status: 503,
+        code: "authentication_unavailable",
+      });
+    }
+    const current = requireAccount(request);
+    const body = objectBody(request.body);
+    const account = accountStore.changeOwnPassword(
+      current.id,
+      stringField(body, "currentPassword")!,
+      stringField(body, "newPassword")!,
+    );
+    const user: AdminSessionUser = { id: account.id, username: account.email, role: account.role };
+    return reply
+      .header("cache-control", "no-store")
+      .header("set-cookie", adminSessionCookie(options.adminAccount, createAdminSession(options.adminAccount, user)))
+      .send({ user });
   });
 
   app.post("/api/v1/auth/logout", async (_request, reply) => {
@@ -733,7 +857,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       url: "/mcp",
       handler: async (request, reply) => {
         const token = suppliedBearerToken(request);
-        const principal = readAiAccessToken(options.adminAccount!, token);
+        const principal = aiPrincipal(token);
         if (!principal || !principal.scopes.includes(MISSIONGO_READ_SCOPE)) {
           return reply
             .header("www-authenticate", `Bearer realm="MissionGo MCP", resource_metadata="${publicOrigin}/.well-known/oauth-protected-resource/mcp", scope="${MISSIONGO_READ_SCOPE}"`)
@@ -784,17 +908,179 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const includeArchived = (query: unknown): boolean =>
     typeof query === "object" && query !== null && (query as Record<string, unknown>).includeArchived === "true";
 
-  app.get("/api/v1/products", async (request) =>
-    store.listProducts({ includeArchived: includeArchived(request.query) }));
+  const requireAccount = (request: FastifyRequest): AccountSnapshot => {
+    const account = sessionAccount(request);
+    if (!account) throw new MissionGoError("authentication_required", "A signed-in account is required.", 401);
+    return account;
+  };
+
+  /**
+   * Authorize the caller for one product, the same way mcp.ts does for AI
+   * clients -- one judgement, applied at both doors.
+   *
+   * A deployment-level bearer token (ADMIN_API_TOKEN) carries no account, so
+   * there is nobody to check permissions for and it passes. That is a known
+   * trade-off, recorded in docs/security-boundaries.md: it is an operator
+   * credential for a machine, not a way for a person to sign in.
+   *
+   * Refusal is `notFound`, never 403. Telling someone "you may not see product
+   * X" confirms that product X exists, which is the thing they were not allowed
+   * to learn. docs/mcp-contract.md already fixes this for the MCP surface.
+   */
+  const requireProductPermission = (
+    request: FastifyRequest,
+    productId: string,
+    capability: ProductCapability = "view",
+  ): void => {
+    if (bearerAuthorized(request)) return;
+    if (!accountStore.allows(requireAccount(request), productId, capability)) throw notFound("Product");
+  };
+
+  const requireItemPermission = (
+    request: FastifyRequest,
+    itemKey: string,
+    capability: ProductCapability = "view",
+  ): string => {
+    const normalizedKey = itemKey.toUpperCase();
+    if (bearerAuthorized(request)) return normalizedKey;
+    // getWorkItem throws notFound for an unknown key, which is the same answer
+    // an unauthorized one gets -- so the two stay indistinguishable.
+    requireProductPermission(request, store.getWorkItem(normalizedKey).productId, capability);
+    return normalizedKey;
+  };
+
+  /**
+   * Retiring a product is the creator's call, or an administrator's.
+   *
+   * Item 3.2: a member archives what they created, not what was shared with
+   * them. A product with no recorded creator predates this and belongs to the
+   * administrator who ran the deployment, which is what the seed backfill
+   * records -- so an unowned product here means a member, and a member does not
+   * get to retire it.
+   */
+  const requireProductOwnership = (request: FastifyRequest, productId: string): void => {
+    if (bearerAuthorized(request)) return;
+    const account = requireAccount(request);
+    if (account.role === "admin") return;
+    if (store.getProduct(productId).createdByAccountId !== account.id) {
+      throw new MissionGoError(
+        "product_not_owned",
+        "Only the account that created this product, or an administrator, can archive it.",
+        403,
+      );
+    }
+  };
+
+  /**
+   * The same product check, for a machine rather than a person.
+   *
+   * A node presents its own credential and has no session, but it was
+   * registered by an account and inherits that account's reach -- otherwise a
+   * member's Mac could map a checkout to a product its owner cannot see.
+   */
+  const requireNodeAccountPermission = (accountId: string, productId: string): void => {
+    if (unauthenticatedDeployment) return;
+    const account = accountStore.findActive(accountId);
+    if (!account || !accountStore.allows(account, productId, "view")) throw notFound("Product");
+  };
+
+  /** Only an administrator manages accounts. Everyone else is told there is nothing there. */
+  const requireAdmin = (request: FastifyRequest): void => {
+    if (bearerAuthorized(request)) return;
+    if (requireAccount(request).role !== "admin") throw notFound("Account");
+  };
+
+  app.get("/api/v1/products", async (request) => {
+    const products = store.listProducts({ includeArchived: includeArchived(request.query) });
+    if (bearerAuthorized(request)) return products;
+    const reachable = accountStore.reachableProductIds(requireAccount(request), "view");
+    return reachable === "*" ? products : products.filter((product) => reachable.includes(product.id));
+  });
+
+  /**
+   * Account management. Administrators only, and invisible to everyone else --
+   * a member asking who else has an account is told there is nothing here, not
+   * that they are not allowed to know.
+   *
+   * There is no public registration: an administrator creates the account and
+   * sets a first password, and the owner changes it from their own settings.
+   * That is what README and docs/product-and-technical-plan.md have always said
+   * this deployment is, and multi-account does not change it.
+   */
+  app.get("/api/v1/accounts", async (request) => {
+    requireAdmin(request);
+    return {
+      accounts: accountStore.listAccounts().map((account) => ({
+        ...account,
+        permissions: accountStore.listPermissions(account.id),
+      })),
+    };
+  });
+
+  app.post("/api/v1/accounts", async (request, reply) => {
+    requireAdmin(request);
+    const body = objectBody(request.body);
+    const account = accountStore.createAccount({
+      email: normalizeEmail(stringField(body, "email")!),
+      password: stringField(body, "password")!,
+      role: enumField(body, "role", ["admin", "member"] as const) ?? "member",
+    });
+    return reply.status(201).send({ ...account, permissions: accountStore.listPermissions(account.id) });
+  });
+
+  app.patch("/api/v1/accounts/:accountId", async (request) => {
+    requireAdmin(request);
+    const { accountId } = request.params as { accountId: string };
+    const body = objectBody(request.body);
+    const account = accountStore.updateAccount(accountId, {
+      ...(body.role !== undefined ? { role: enumField(body, "role", ["admin", "member"] as const)! } : {}),
+      ...(body.disabled !== undefined ? { disabled: booleanField(body, "disabled") } : {}),
+      ...(body.password !== undefined ? { password: stringField(body, "password")! } : {}),
+    });
+    return { ...account, permissions: accountStore.listPermissions(account.id) };
+  });
+
+  app.delete("/api/v1/accounts/:accountId", async (request, reply) => {
+    requireAdmin(request);
+    const { accountId } = request.params as { accountId: string };
+    accountStore.deleteAccount(accountId);
+    return reply.status(204).send();
+  });
+
+  /**
+   * Set what one account reaches, from the account's side.
+   *
+   * The whole set is replaced rather than patched, so what the console shows and
+   * what it sends are the same shape and a dropped row cannot be mistaken for
+   * "leave that one alone". The product's side of the same relation -- picking
+   * accounts from a product's settings -- is a later item.
+   */
+  app.put("/api/v1/accounts/:accountId/products", async (request) => {
+    requireAdmin(request);
+    const { accountId } = request.params as { accountId: string };
+    const body = objectBody(request.body);
+    const entries = Array.isArray(body.permissions) ? body.permissions : undefined;
+    if (!entries) throw invalidInput("permissions must be an array.");
+    const permissions: ProductPermission[] = entries.map((entry) => {
+      const permission = objectBody(entry);
+      const productId = stringField(permission, "productId")!;
+      // Reject unknown products here rather than storing a row that points at
+      // nothing; the foreign key would refuse it anyway, less legibly.
+      store.getProduct(productId);
+      return {
+        productId,
+        canView: permission.canView === true,
+        canOperate: permission.canOperate === true,
+        canUseAi: permission.canUseAi === true,
+      };
+    });
+    return { permissions: accountStore.replacePermissions(accountId, permissions) };
+  });
 
   // Dispatching work to a machine. The console half of this is account-scoped
   // and needs a session; the node half below authenticates with the machine's
   // own credential.
-  const requireAccountId = (request: FastifyRequest): string => {
-    const user = sessionUser(request);
-    if (!user) throw new MissionGoError("authentication_required", "A signed-in account is required.", 401);
-    return user.id;
-  };
+  const requireAccountId = (request: FastifyRequest): string => requireAccount(request).id;
 
   app.get("/api/v1/nodes", async (request) => ({ nodes: dispatchStore.listNodes(requireAccountId(request)) }));
 
@@ -820,7 +1106,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         nodeId,
         repos.map((entry) => {
           const repo = objectBody(entry);
-          return { productId: stringField(repo, "productId")!, repoPath: stringField(repo, "repoPath")! };
+          const productId = stringField(repo, "productId")!;
+          // A checkout mapping names a product, so it is as product-scoped as
+          // anything else -- otherwise it is a way to learn that a product you
+          // cannot see exists.
+          requireProductPermission(request, productId);
+          return { productId, repoPath: stringField(repo, "repoPath")! };
         }),
       ),
     };
@@ -837,12 +1128,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const accountId = requireAccountId(request);
     const itemKeys = stringArrayField(body, "itemKeys");
     if (!itemKeys) throw invalidInput("itemKeys must be an array of work item keys.");
+    // Handing work to a machine is acting on it, so every key in the batch has
+    // to be one this account may operate on. Checked before anything is created,
+    // so a batch with one unreachable item dispatches nothing.
+    const authorizedKeys = itemKeys.map((key) => requireItemPermission(request, key, "operate"));
     const dispatch = dispatchStore.createDispatch({
       accountId,
       nodeId: stringField(body, "nodeId")!,
       agentKind: stringField(body, "agentKind")! as AgentKind,
       mode: stringField(body, "mode")!,
-      itemKeys,
+      itemKeys: authorizedKeys,
       force: body.force === true,
     });
     for (const itemId of dispatchStore.listDispatchItemIds(dispatch.id)) {
@@ -859,7 +1154,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/items/:itemKey/dispatches", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
-    return { dispatches: dispatchStore.listDispatchesForItem(requireAccountId(request), itemKey) };
+    const key = requireItemPermission(request, itemKey);
+    return { dispatches: dispatchStore.listDispatchesForItem(requireAccountId(request), key) };
   });
 
   // The macOS client signs in through the same OAuth flow as an AI client, with
@@ -868,9 +1164,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // straight after: it lasts 30 days and cannot be revoked on its own, while the
   // node credential can be revoked from the console at any time.
   app.post("/api/v1/node/register", async (request, reply) => {
-    const principal = options.adminAccount
-      ? readAiAccessToken(options.adminAccount, suppliedBearerToken(request))
-      : undefined;
+    const principal = aiPrincipal(suppliedBearerToken(request));
     if (!principal || !principal.scopes.includes(MISSIONGO_NODE_SCOPE)) {
       throw new MissionGoError(
         "authentication_required",
@@ -897,12 +1191,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // The products a machine may be given a repository for. Every answer the
   // client gets carries the current list, so a product created in the console
   // reaches the menu without the client being restarted.
-  const nodeProducts = () =>
-    store.listProducts().map((product) => ({
-      id: product.id,
-      keyPrefix: product.keyPrefix,
-      name: product.name,
-    }));
+  /**
+   * The products a machine may be given a checkout for: the ones its owning
+   * account reaches, not every product on the deployment. The client draws its
+   * menu from this, so an unfiltered list would name other people's products on
+   * someone's Mac.
+   */
+  const nodeProducts = (accountId: string) => {
+    const account = unauthenticatedDeployment ? undefined : accountStore.findActive(accountId);
+    const reachable = account ? accountStore.reachableProductIds(account, "view") : "*" as const;
+    return store.listProducts()
+      .filter((product) => reachable === "*" || reachable.includes(product.id))
+      .map((product) => ({ id: product.id, keyPrefix: product.keyPrefix, name: product.name }));
+  };
 
   // What the client shows and edits about its own Mac. These take the node
   // credential rather than a console session: the client has no browser cookie,
@@ -910,12 +1211,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.patch("/api/v1/node/me", async (request) => {
     const node = requireNode(request);
     dispatchStore.setOwnNickname(node.nodeId, nicknameField(objectBody(request.body)));
-    return dispatchStore.describeSelf(node.nodeId, nodeProducts());
+    return dispatchStore.describeSelf(node.nodeId, nodeProducts(node.accountId));
   });
 
   app.get("/api/v1/node/me", async (request) => {
     const node = requireNode(request);
-    return dispatchStore.describeSelf(node.nodeId, nodeProducts());
+    return dispatchStore.describeSelf(node.nodeId, nodeProducts(node.accountId));
   });
 
   app.put("/api/v1/node/repos", async (request) => {
@@ -928,7 +1229,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         node.nodeId,
         repos.map((entry) => {
           const repo = objectBody(entry);
-          return { productId: stringField(repo, "productId")!, repoPath: stringField(repo, "repoPath")! };
+          const productId = stringField(repo, "productId")!;
+          // The machine presents its own credential, not a session, so the
+          // account to check is the one that registered it.
+          requireNodeAccountPermission(node.accountId, productId);
+          return { productId, repoPath: stringField(repo, "repoPath")! };
         }),
       ),
     };
@@ -948,7 +1253,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       // The client polls this every 30 seconds whether or not its menu is open,
       // so it is the one channel that can carry a new product to a machine
       // nobody is looking at.
-      products: nodeProducts(),
+      products: nodeProducts(node.accountId),
       repos: dispatchStore.recordHeartbeat(
         node.nodeId,
         agents.map((entry) => {
@@ -1010,10 +1315,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.status(204).send();
   });
 
-  app.get("/api/v1/sdk-tokens", async () => store.listSdkTokens());
+  // An SDK token names a product, so the list is product-scoped like everything
+  // else. It used to take no scope at all and hand every caller every token.
+  app.get("/api/v1/sdk-tokens", async (request) => {
+    const tokens = store.listSdkTokens();
+    if (bearerAuthorized(request)) return tokens;
+    const reachable = accountStore.reachableProductIds(requireAccount(request), "view");
+    return reachable === "*" ? tokens : tokens.filter((token) => reachable.includes(token.productId));
+  });
 
   app.post("/api/v1/sdk-tokens", async (request, reply) => {
     const body = objectBody(request.body);
+    requireProductPermission(request, stringField(body, "productId")!, "operate");
     const token = store.createSdkToken({
       name: stringField(body, "name")!,
       productId: stringField(body, "productId")!,
@@ -1027,6 +1340,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.delete("/api/v1/sdk-tokens/:tokenId", async (request) => {
     const { tokenId } = request.params as { tokenId: string };
+    // Read it first so an unreachable product's token answers "not found"
+    // rather than being revoked by someone who cannot see it.
+    const token = store.listSdkTokens().find((entry) => entry.id === tokenId);
+    if (!token) throw notFound("SDK token");
+    requireProductPermission(request, token.productId, "operate");
     return store.revokeSdkToken(tokenId);
   });
 
@@ -1194,12 +1512,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.status(201).send(publicAttachment(attachment));
   });
 
+  /**
+   * Anyone signed in may start a product; they own what they start.
+   *
+   * The creator is recorded and immediately granted all three capabilities over
+   * it. Without that grant a member creates a product and it vanishes from their
+   * own list, which is indistinguishable from the creation having failed.
+   */
   app.post("/api/v1/products", async (request, reply) => {
     const body = objectBody(request.body);
+    const account = bearerAuthorized(request) ? undefined : requireAccount(request);
     const product = store.createProduct({
       name: stringField(body, "name")!,
       keyPrefix: stringField(body, "keyPrefix")!,
+      ...(account ? { createdByAccountId: account.id } : {}),
     });
+    if (account) accountStore.grantCreatorPermissions(account.id, product.id);
     return reply.status(201).send(product);
   });
 
@@ -1215,6 +1543,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    */
   app.get("/api/v1/products/:productId/icon", async (request, reply) => {
     const { productId } = request.params as { productId: string };
+    requireProductPermission(request, productId);
     const product = store.getProduct(productId);
     const pngBase64 = store.getProductIconPng(productId);
     if (!pngBase64) throw notFound("Product icon");
@@ -1241,6 +1570,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // ever renders one format.
   app.put("/api/v1/products/:productId/icon", async (request) => {
     const { productId } = request.params as { productId: string };
+    requireProductPermission(request, productId, "operate");
     if (!Buffer.isBuffer(request.body)) throw invalidInput("Icon body must be binary image data.");
     if (request.body.length === 0) throw invalidInput("Icon body is empty.");
     let png: Buffer;
@@ -1258,12 +1588,23 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.delete("/api/v1/products/:productId/icon", async (request) => {
     const { productId } = request.params as { productId: string };
+    requireProductPermission(request, productId, "operate");
     return store.setProductIcon(productId, null);
   });
 
+  /**
+   * Rename or archive a product.
+   *
+   * Archiving is the one product action that is not just "operate": it retires
+   * the whole workspace for everybody who shares it. An administrator may
+   * archive anything; a member only what they created. Renaming stays with
+   * operate, because it is reversible and visible.
+   */
   app.patch("/api/v1/products/:productId", async (request) => {
     const { productId } = request.params as { productId: string };
     const body = objectBody(request.body);
+    requireProductPermission(request, productId, "operate");
+    if (body.archived !== undefined) requireProductOwnership(request, productId);
     return store.updateProduct(productId, {
       ...(body.name !== undefined ? { name: stringField(body, "name")! } : {}),
       ...(body.archived !== undefined ? { archived: booleanField(body, "archived") } : {}),
@@ -1272,11 +1613,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/products/:productId/components", async (request) => {
     const { productId } = request.params as { productId: string };
+    requireProductPermission(request, productId);
     return store.listComponents(productId, { includeArchived: includeArchived(request.query) });
   });
 
   app.post("/api/v1/products/:productId/components", async (request, reply) => {
     const { productId } = request.params as { productId: string };
+    requireProductPermission(request, productId, "operate");
     const body = objectBody(request.body);
     const component = store.createComponent({
       productId,
@@ -1288,6 +1631,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.patch("/api/v1/products/:productId/components/:componentId", async (request) => {
     const { productId, componentId } = request.params as { productId: string; componentId: string };
+    requireProductPermission(request, productId, "operate");
     const body = objectBody(request.body);
     return store.updateComponent(productId, componentId, {
       ...(body.name !== undefined ? { name: stringField(body, "name")! } : {}),
@@ -1338,12 +1682,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const query = request.query as Record<string, unknown>;
     const productId = typeof query.productId === "string" ? query.productId : undefined;
     if (!productId) throw invalidInput("productId is required.");
+    requireProductPermission(request, productId);
     return workItemListPage(query, productId);
   });
 
   app.post("/api/v1/items", async (request, reply) => {
     const body = objectBody(request.body);
     const environment = environmentBody(body.environment);
+    requireProductPermission(request, stringField(body, "productId")!, "operate");
     const item = store.createWorkItem({
       productId: stringField(body, "productId")!,
       ...(body.status !== undefined ? { status: enumField(body, "status", ["inbox", "ready"] as const)! } : {}),
@@ -1364,13 +1710,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/items/:itemKey", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
-    return store.getWorkItem(itemKey);
+    return store.getWorkItem(requireItemPermission(request, itemKey));
   });
 
   app.patch("/api/v1/items/:itemKey", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
     const body = objectBody(request.body);
-    return store.updateWorkItem(itemKey, {
+    return store.updateWorkItem(requireItemPermission(request, itemKey, "operate"), {
       ...(stringField(body, "title", false) !== undefined ? { title: body.title as string } : {}),
       ...(stringField(body, "description", false) !== undefined ? { description: body.description as string } : {}),
       ...(body.report !== undefined ? { report: workItemReportBody(body.report)! } : {}),
@@ -1390,7 +1736,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { itemKey } = request.params as { itemKey: string };
     const body = objectBody(request.body);
     return store.transitionWorkItem({
-      itemKey,
+      itemKey: requireItemPermission(request, itemKey, "operate"),
       to: enumField(body, "to", WORK_ITEM_STATUSES)!,
       actor: "human",
       reason: enumField(body, "reason", TRANSITION_REASONS)!,
@@ -1411,12 +1757,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { itemKey } = request.params as { itemKey: string };
     // The web folds withdrawn comments rather than hiding them, so a reader can
     // see that something was said and taken back. MCP gets the pruned view.
-    return { events: store.getTimeline(itemKey, { includeWithdrawn: true }).map(withClientName) };
+    const key = requireItemPermission(request, itemKey);
+    return { events: store.getTimeline(key, { includeWithdrawn: true }).map(withClientName) };
   });
 
   app.get("/api/v1/items/:itemKey/comments", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
-    return { comments: store.listComments(itemKey, { includeWithdrawn: true }).map(withClientName) };
+    const key = requireItemPermission(request, itemKey);
+    return { comments: store.listComments(key, { includeWithdrawn: true }).map(withClientName) };
   });
 
   app.post("/api/v1/items/:itemKey/comments", async (request, reply) => {
@@ -1424,7 +1772,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const body = objectBody(request.body);
     const bodyKind = body.bodyKind === undefined ? "free" : enumField(body, "bodyKind", COMMENT_BODY_KINDS)!;
     const comment = store.createComment({
-      itemKey,
+      itemKey: requireItemPermission(request, itemKey, "operate"),
       actorKind: "human",
       bodyKind,
       body: bodyKind === "free"
@@ -1445,7 +1793,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.post("/api/v1/items/:itemKey/comments/:commentId/withdraw", async (request) => {
     const { itemKey, commentId } = request.params as { itemKey: string; commentId: string };
     return store.withdrawComment({
-      itemKey,
+      itemKey: requireItemPermission(request, itemKey, "operate"),
       commentId,
       ...(sessionUser(request) ? { accountId: sessionUser(request)!.id } : {}),
     });
@@ -1453,21 +1801,23 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.post("/api/v1/items/:itemKey/attachments", async (request, reply) => {
     const { itemKey } = request.params as { itemKey: string };
+    const key = requireItemPermission(request, itemKey, "operate");
     if (!Buffer.isBuffer(request.body)) throw invalidInput("Attachment body must be binary data.");
     const filename = headerText(request.headers["x-missiongo-filename"], "X-MissionGo-Filename");
     const contentType = headerText(request.headers["x-missiongo-content-type"], "X-MissionGo-Content-Type");
-    const attachment = await attachmentStorage.save(store, itemKey, filename, contentType, request.body);
+    const attachment = await attachmentStorage.save(store, key, filename, contentType, request.body);
     return reply.status(201).send(publicAttachment(attachment));
   });
 
   app.get("/api/v1/items/:itemKey/attachments", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
-    return { attachments: store.listAttachments(itemKey).map(publicAttachment) };
+    const key = requireItemPermission(request, itemKey);
+    return { attachments: store.listAttachments(key).map(publicAttachment) };
   });
 
   app.get("/api/v1/items/:itemKey/attachments/:attachmentId/content", async (request, reply) => {
     const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
-    const attachment = store.getAttachmentRecord(itemKey, attachmentId);
+    const attachment = store.getAttachmentRecord(requireItemPermission(request, itemKey), attachmentId);
     const path = attachmentStorage.resolveStoredFile(attachment.storageFilename);
     const details = await stat(path);
     const disposition = attachment.kind === "log" ? "attachment" : "inline";
@@ -1502,7 +1852,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // carries the size, so a stale hit is not reachable.
   app.get("/api/v1/items/:itemKey/attachments/:attachmentId/thumbnail", async (request, reply) => {
     const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
-    const attachment = store.getAttachmentRecord(itemKey, attachmentId);
+    const attachment = store.getAttachmentRecord(requireItemPermission(request, itemKey), attachmentId);
     if (attachment.kind !== "image") throw invalidInput("Only image attachments have thumbnails.");
     const requested = Number((request.query as { width?: string }).width);
     const width = Number.isFinite(requested)
@@ -1529,16 +1879,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // the item detail view and the MCP item context already refer to.
   app.put("/api/v1/items/:itemKey/attachments/:attachmentId/content", async (request) => {
     const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
+    const key = requireItemPermission(request, itemKey, "operate");
     if (!Buffer.isBuffer(request.body)) throw invalidInput("Attachment body must be binary data.");
     const filename = headerText(request.headers["x-missiongo-filename"], "X-MissionGo-Filename");
     const contentType = headerText(request.headers["x-missiongo-content-type"], "X-MissionGo-Content-Type");
-    const attachment = await attachmentStorage.replace(store, itemKey, attachmentId, filename, contentType, request.body);
+    const attachment = await attachmentStorage.replace(store, key, attachmentId, filename, contentType, request.body);
     return publicAttachment(attachment);
   });
 
   app.delete("/api/v1/items/:itemKey/attachments/:attachmentId", async (request, reply) => {
     const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
-    await attachmentStorage.remove(store, itemKey, attachmentId);
+    await attachmentStorage.remove(store, requireItemPermission(request, itemKey, "operate"), attachmentId);
     return reply.status(204).send();
   });
 
@@ -1548,5 +1899,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 declare module "fastify" {
   interface FastifyInstance {
     missionGoStore: MissionGoStore;
+    missionGoAccounts: AccountStore;
   }
 }

@@ -1,19 +1,30 @@
-import { createHmac, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 
+/**
+ * The deployment's signing secrets and the account it starts life with.
+ *
+ * Accounts live in the database (AND-33); what stays here is what a database
+ * cannot supply. `sessionSecret` and `cookieSecure` belong to the deployment.
+ * The id, username, password hash and authorized product ids describe the
+ * administrator to create on a database that has none -- read once, at startup,
+ * by AccountStore.seedBootstrapAdmin, and never consulted again afterwards.
+ */
 export interface AdminAccountConfig {
   readonly id: string;
   readonly username: string;
   readonly passwordScrypt: string;
   readonly sessionSecret: string;
   readonly cookieSecure: boolean;
-  /** Product IDs this account can read through AI clients. Omit for all products. */
+  /** Product IDs the initial account can read through AI clients. Omit for all products. */
   readonly authorizedProductIds?: readonly string[];
 }
+
+export type AccountRole = "admin" | "member";
 
 export interface AdminSessionUser {
   readonly id: string;
   readonly username: string;
-  readonly role: "admin";
+  readonly role: AccountRole;
 }
 
 interface SessionPayload extends AdminSessionUser {
@@ -22,19 +33,44 @@ interface SessionPayload extends AdminSessionUser {
   readonly expiresAt: number;
 }
 
-export interface AiAccessPrincipal extends AdminSessionUser {
-  readonly clientId: string;
-  readonly scopes: readonly string[];
-  readonly productIds: "*" | readonly string[];
+/**
+ * A verified session cookie.
+ *
+ * `issuedAt` is carried out of the payload deliberately: the signature proves
+ * the server minted this, and nothing more. Whether the account still exists,
+ * is still enabled, and has not changed its password since is a question for
+ * the accounts table, and it needs to know when this was issued to answer it.
+ */
+export interface AdminSessionClaims extends AdminSessionUser {
+  readonly issuedAt: number;
   readonly expiresAt: number;
 }
 
-interface AiAccessPayload extends AiAccessPrincipal {
+export interface AiAccessPrincipal extends AdminSessionUser {
+  readonly clientId: string;
+  readonly scopes: readonly string[];
+  /**
+   * Which products this authorization reaches. Resolved from the account's
+   * permissions at every use rather than frozen into the token, so revoking a
+   * product takes effect on the next request instead of in thirty days.
+   */
+  readonly productIds: "*" | readonly string[];
+  readonly issuedAt: number;
+  readonly expiresAt: number;
+}
+
+interface AiAccessPayload extends AdminSessionUser {
   readonly version: 1;
   readonly kind: "ai_access";
   readonly tokenId: string;
+  readonly clientId: string;
+  readonly scopes: readonly string[];
   readonly issuedAt: number;
+  readonly expiresAt: number;
 }
+
+/** A verified AI token, before its product reach has been looked up. */
+export type AiAccessClaims = Omit<AiAccessPrincipal, "productIds">;
 
 export const ADMIN_SESSION_COOKIE = "missiongo_session";
 export const ADMIN_SESSION_SECONDS = 30 * 24 * 60 * 60;
@@ -60,11 +96,23 @@ function passwordHashParts(value: string): { salt: Buffer; hash: Buffer } | unde
   }
 }
 
-export function verifyAdminCredentials(config: AdminAccountConfig, username: string, password: string): boolean {
-  const stored = passwordHashParts(config.passwordScrypt);
-  if (!stored || password.length > 1_024 || username.length > 128) return false;
+/** Check a password against a stored `scrypt:salt:hash` string. */
+export function verifyPassword(passwordScrypt: string, password: string): boolean {
+  const stored = passwordHashParts(passwordScrypt);
+  if (!stored || password.length > 1_024) return false;
   const suppliedHash = scryptSync(password, stored.salt, stored.hash.length);
-  return safeEqualText(username, config.username) && timingSafeEqual(suppliedHash, stored.hash);
+  return timingSafeEqual(suppliedHash, stored.hash);
+}
+
+/**
+ * Hash a password into the same `scrypt:salt:hash` string the environment
+ * variable carries, so a hash produced by `npm run admin:hash-password` and one
+ * produced here are the same kind of thing.
+ */
+export function hashPassword(password: string): string {
+  const salt = randomBytes(16);
+  const hash = scryptSync(password, salt, 64);
+  return `scrypt:${salt.toString("base64url")}:${hash.toString("base64url")}`;
 }
 
 function signPayload(encodedPayload: string, secret: string): string {
@@ -86,13 +134,13 @@ function readSignedPayload<T>(token: string, prefix: string, secret: string): T 
   }
 }
 
-export function createAdminSession(config: AdminAccountConfig, now = Date.now()): string {
+export function createAdminSession(config: AdminAccountConfig, user: AdminSessionUser, now = Date.now()): string {
   const issuedAt = Math.floor(now / 1_000);
   const payload: SessionPayload = {
     version: 1,
-    id: config.id,
-    username: config.username,
-    role: "admin",
+    id: user.id,
+    username: user.username,
+    role: user.role,
     issuedAt,
     expiresAt: issuedAt + ADMIN_SESSION_SECONDS,
   };
@@ -100,7 +148,14 @@ export function createAdminSession(config: AdminAccountConfig, now = Date.now())
   return `${encodedPayload}.${signPayload(encodedPayload, config.sessionSecret)}`;
 }
 
-export function readAdminSession(config: AdminAccountConfig, token: string, now = Date.now()): AdminSessionUser | undefined {
+/**
+ * Verify a session cookie's signature, shape and expiry.
+ *
+ * This says the cookie is genuine and unexpired, not that the account behind it
+ * is still allowed in. The caller resolves the id against the accounts table --
+ * with `issuedAt`, so a password changed after the cookie was minted refuses it.
+ */
+export function readAdminSession(config: AdminAccountConfig, token: string, now = Date.now()): AdminSessionClaims | undefined {
   const separator = token.indexOf(".");
   if (separator < 1 || token.indexOf(".", separator + 1) !== -1) return undefined;
   const encodedPayload = token.slice(0, separator);
@@ -112,15 +167,23 @@ export function readAdminSession(config: AdminAccountConfig, token: string, now 
     const nowSeconds = Math.floor(now / 1_000);
     if (
       payload.version !== 1
-      || payload.id !== config.id
-      || payload.username !== config.username
-      || payload.role !== "admin"
+      || typeof payload.id !== "string"
+      || !payload.id
+      || typeof payload.username !== "string"
+      || !payload.username
+      || (payload.role !== "admin" && payload.role !== "member")
       || !Number.isSafeInteger(payload.issuedAt)
       || !Number.isSafeInteger(payload.expiresAt)
       || payload.expiresAt! <= nowSeconds
       || payload.issuedAt! > nowSeconds + 60
     ) return undefined;
-    return { id: payload.id, username: payload.username, role: "admin" };
+    return {
+      id: payload.id,
+      username: payload.username,
+      role: payload.role,
+      issuedAt: payload.issuedAt!,
+      expiresAt: payload.expiresAt!,
+    };
   } catch {
     return undefined;
   }
@@ -128,49 +191,59 @@ export function readAdminSession(config: AdminAccountConfig, token: string, now 
 
 export function createAiAccessToken(
   config: AdminAccountConfig,
+  user: AdminSessionUser,
   clientId: string,
   scopes: readonly string[] = ["missiongo:read"],
   now = Date.now(),
-): { token: string; principal: AiAccessPrincipal } {
+): { token: string; claims: AiAccessClaims } {
   const issuedAt = Math.floor(now / 1_000);
   const payload: AiAccessPayload = {
     version: 1,
     kind: "ai_access",
     tokenId: randomUUID(),
-    id: config.id,
-    username: config.username,
-    role: "admin",
+    id: user.id,
+    username: user.username,
+    role: user.role,
     clientId,
     scopes: [...scopes],
-    productIds: config.authorizedProductIds ? [...new Set(config.authorizedProductIds)] : "*",
     issuedAt,
     expiresAt: issuedAt + AI_ACCESS_SESSION_SECONDS,
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const { version: _version, kind: _kind, tokenId: _tokenId, ...claims } = payload;
   return {
     token: `mgai_${encodedPayload}.${signPayload(encodedPayload, config.sessionSecret)}`,
-    principal: payload,
+    claims,
   };
 }
 
+/**
+ * Verify an AI token's signature, shape and expiry.
+ *
+ * No product list comes back: which products the authorization reaches is the
+ * account's current permission set, looked up by the caller. Keeping it out of
+ * the token is what makes "untick a product and the AI loses it now" true
+ * rather than true in thirty days.
+ */
 export function readAiAccessToken(
   config: AdminAccountConfig,
   token: string,
   now = Date.now(),
-): AiAccessPrincipal | undefined {
+): AiAccessClaims | undefined {
   const payload = readSignedPayload<Partial<AiAccessPayload>>(token, "mgai_", config.sessionSecret);
   const nowSeconds = Math.floor(now / 1_000);
   if (
     payload?.version !== 1
     || payload.kind !== "ai_access"
-    || payload.id !== config.id
-    || payload.username !== config.username
-    || payload.role !== "admin"
+    || typeof payload.id !== "string"
+    || !payload.id
+    || typeof payload.username !== "string"
+    || !payload.username
+    || (payload.role !== "admin" && payload.role !== "member")
     || typeof payload.clientId !== "string"
     || !payload.clientId
     || !Array.isArray(payload.scopes)
     || payload.scopes.some((scope) => typeof scope !== "string")
-    || (payload.productIds !== "*" && (!Array.isArray(payload.productIds) || payload.productIds.some((id) => typeof id !== "string")))
     || !Number.isSafeInteger(payload.issuedAt)
     || !Number.isSafeInteger(payload.expiresAt)
     || payload.expiresAt! <= nowSeconds
@@ -179,10 +252,10 @@ export function readAiAccessToken(
   return {
     id: payload.id,
     username: payload.username,
-    role: "admin",
+    role: payload.role,
     clientId: payload.clientId,
     scopes: payload.scopes,
-    productIds: config.authorizedProductIds ? [...new Set(config.authorizedProductIds)] : "*",
+    issuedAt: payload.issuedAt!,
     expiresAt: payload.expiresAt!,
   };
 }
