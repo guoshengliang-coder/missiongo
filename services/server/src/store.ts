@@ -1064,6 +1064,7 @@ export class MissionGoStore {
         input.to,
         input.note ? { reason: input.reason, note: input.note } : { reason: input.reason },
         now,
+        input.attribution ?? {},
       );
     });
     return this.getWorkItem(input.itemKey);

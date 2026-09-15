@@ -138,6 +138,11 @@ export interface TransitionWorkItemInput {
   readonly actor: ActorKind;
   readonly reason: TransitionReason;
   readonly note?: string;
+  /**
+   * Who moved it. Recorded for people as well as agents since AND-33: with more
+   * than one account, `actorKind: "human"` no longer names anybody.
+   */
+  readonly attribution?: EventAttribution;
 }
 
 export interface AppendAnalysisInput {
@@ -177,11 +182,14 @@ export interface ClaimExecutionInput {
 }
 
 /**
- * Which AI wrote an event. `actorKind` says a machine acted; this says which
- * account authorized it, which OAuth client it came through, and which execution
- * it belonged to. Absent on human events -- a single administrator owns this
- * deployment, so `actorKind: "human"` already names the account -- and on every
- * event written before migration 13.
+ * Who wrote an event. `actorKind` says whether a person or a machine acted; this
+ * says which account, which OAuth client it came through, and which execution it
+ * belonged to.
+ *
+ * Human events carry an account too, since AND-33: with more than one account,
+ * `actorKind: "human"` stopped naming anybody. Still absent on events written
+ * before migration 13, and on ones written through the deployment's operator
+ * token, which has no account behind it.
  */
 export interface EventAttribution {
   readonly accountId?: string;

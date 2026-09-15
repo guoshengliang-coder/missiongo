@@ -590,16 +590,16 @@ describe("MissionGo REST API", () => {
       method: "POST",
       url: "/oauth/authorize",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      payload: new URLSearchParams({ request: requestToken!, username: "mission-owner", password: "wrong" }).toString(),
+      payload: new URLSearchParams({ request: requestToken!, username: adminAccount.username, password: "wrong" }).toString(),
     });
     expect(invalidLogin.statusCode).toBe(401);
-    expect(invalidLogin.body).toContain("用户名或密码不正确");
+    expect(invalidLogin.body).toContain("邮箱或密码不正确");
 
     const login = await app.inject({
       method: "POST",
       url: "/oauth/authorize",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      payload: new URLSearchParams({ request: requestToken!, username: "mission-owner", password: "correct horse" }).toString(),
+      payload: new URLSearchParams({ request: requestToken!, username: adminAccount.username, password: "correct horse" }).toString(),
     });
     expect(login.statusCode).toBe(302);
     const callback = new URL(login.headers.location!);

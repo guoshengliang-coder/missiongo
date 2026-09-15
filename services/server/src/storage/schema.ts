@@ -26,10 +26,11 @@ export const INITIAL_SCHEMA = `
   -- into the table unchanged.
   --
   -- credentials_changed_at is what makes "change the password and the other
-  -- browser is signed out" work without a sessions table: sessions and AI tokens
-  -- are signed, stateless and carry their issue time, so anything issued before
-  -- this moment is refused. The cost is that a single session cannot be revoked
-  -- on its own -- only every credential the account holds, at once.
+  -- browser is signed out" work without a sessions table. Sessions and AI tokens
+  -- are signed and stateless, and each carries the value this column held when it
+  -- was minted; a token whose copy no longer matches is refused. Moving this
+  -- column therefore invalidates every credential the account holds -- which is
+  -- also the cost: a single session cannot be revoked on its own.
   CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -110,10 +111,12 @@ export const INITIAL_SCHEMA = `
     PRIMARY KEY (item_id, kind)
   ) STRICT;
 
-  -- account_id / client_id / execution_id say which AI wrote an event, not just
-  -- that an AI did. They stay null for human events: this deployment has a single
-  -- administrator, so actor_kind = 'human' already names the account. They are also
-  -- null for events written before migration 13.
+  -- account_id / client_id / execution_id say who wrote an event, not just
+  -- whether a person or a machine did. Human events carry an account as well
+  -- since accounts became plural: actor_kind = 'human' named somebody only while
+  -- there was one of them. Still null on events written before migration 13, and
+  -- on ones written through the deployment's operator token, which has no
+  -- account behind it.
   CREATE TABLE IF NOT EXISTS work_item_events (
     id TEXT PRIMARY KEY,
     item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,

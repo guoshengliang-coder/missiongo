@@ -25,7 +25,8 @@ paths:
                     const: ok
   /api/v1/auth/login:
     post:
-      operationId: loginAdministrator
+      operationId: signIn
+      summary: Sign in with an email address and password.
       security: []
       requestBody:
         required: true
@@ -35,11 +36,18 @@ paths:
               type: object
               required: [username, password]
               properties:
-                username: { type: string, minLength: 1, maxLength: 128 }
+                username:
+                  type: string
+                  format: email
+                  maxLength: 254
+                  description: The account's email address. Matched case-insensitively.
                 password: { type: string, minLength: 1, maxLength: 1024, format: password }
       responses:
         "200":
-          description: Administrator session created.
+          description: >-
+            Session created. A wrong password, an unknown address and a suspended
+            account all answer 401 with the same body, so the form cannot be used
+            to find out who has an account here.
           headers:
             Set-Cookie:
               schema: { type: string }
@@ -50,12 +58,12 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/auth/session:
     get:
-      operationId: getAdministratorSession
+      operationId: getSession
       security:
         - adminSessionCookie: []
       responses:
         "200":
-          description: Current administrator session.
+          description: The signed-in account.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuthSession" }
@@ -142,12 +150,185 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
   /api/v1/auth/logout:
     post:
-      operationId: logoutAdministrator
+      operationId: signOut
       security:
         - adminSessionCookie: []
       responses:
         "200":
           description: Browser session cookie cleared.
+  /api/v1/auth/password:
+    post:
+      operationId: changeOwnPassword
+      summary: Change your own password.
+      description: >-
+        The current password is required even though the caller already holds a
+        session: a cookie proves the browser was left signed in, not that the
+        owner is at it. Succeeding invalidates every other session and AI token
+        the account holds, so a replacement cookie comes back with the response.
+      security:
+        - adminSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, maxLength: 1024, format: password }
+                newPassword: { type: string, minLength: 12, maxLength: 1024, format: password }
+      responses:
+        "200":
+          description: Password changed, and this session reissued.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/accounts:
+    get:
+      operationId: listAccounts
+      summary: Every account, with its product permissions.
+      description: >-
+        Administrators only. A member gets 404 rather than 403, so the endpoint
+        does not confirm that account management exists for them to be refused.
+      security:
+        - adminSessionCookie: []
+      responses:
+        "200":
+          description: The accounts on this deployment.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items: { $ref: "#/components/schemas/Account" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      operationId: createAccount
+      summary: Create an account and set its first password.
+      description: >-
+        There is no public sign-up. An administrator creates the account and
+        passes on the first password; the owner replaces it from their own
+        settings.
+      security:
+        - adminSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                password: { type: string, minLength: 12, maxLength: 1024, format: password }
+                role: { $ref: "#/components/schemas/AccountRole" }
+      responses:
+        "201":
+          description: Account created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Account" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: That email address already has an account.
+  /api/v1/accounts/{accountId}:
+    parameters:
+      - name: accountId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      operationId: updateAccount
+      summary: Change a role, suspend or restore, or reset a password.
+      description: >-
+        Suspending and resetting both end every session and AI token the account
+        holds. The last active administrator cannot be demoted, which would leave
+        nobody able to manage accounts.
+      security:
+        - adminSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { $ref: "#/components/schemas/AccountRole" }
+                disabled: { type: boolean }
+                password: { type: string, minLength: 12, maxLength: 1024, format: password }
+      responses:
+        "200":
+          description: Account updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Account" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The last active administrator cannot be removed or demoted.
+    delete:
+      operationId: deleteAccount
+      summary: Delete an account.
+      description: >-
+        Its sessions end immediately. Products it created stay, with their
+        createdByAccountId pointing at an id that no longer resolves -- deleting
+        a person must not delete a product and its work items.
+      security:
+        - adminSessionCookie: []
+      responses:
+        "204":
+          description: Account deleted.
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The last active administrator cannot be removed.
+  /api/v1/accounts/{accountId}/products:
+    parameters:
+      - name: accountId
+        in: path
+        required: true
+        schema: { type: string }
+    put:
+      operationId: setAccountProducts
+      summary: Replace one account's product permissions.
+      description: >-
+        The whole set is replaced, so a product left out of the list is revoked.
+        Operate and AI each imply view, and are stored that way. An administrator
+        reaches every product regardless; AI rows are the exception, and bound
+        even an administrator's AI clients when present.
+      security:
+        - adminSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissions]
+              properties:
+                permissions:
+                  type: array
+                  items: { $ref: "#/components/schemas/ProductPermission" }
+      responses:
+        "200":
+          description: The stored permissions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [permissions]
+                properties:
+                  permissions:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProductPermission" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/v1/products:
     get:
       operationId: listProducts
@@ -762,6 +943,12 @@ components:
       required: true
       schema: { type: string }
   responses:
+    ValidationFailed:
+      description: The request body failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     Unauthorized:
       description: Authentication is missing, invalid, expired, or revoked.
       content:
@@ -797,8 +984,46 @@ components:
       required: [id, username, role]
       properties:
         id: { type: string }
-        username: { type: string }
-        role: { const: admin }
+        username:
+          type: string
+          format: email
+          description: The email address this account signs in with.
+        role: { $ref: "#/components/schemas/AccountRole" }
+    AccountRole:
+      type: string
+      enum: [admin, member]
+      description: >-
+        An administrator reaches every product and manages accounts. A member
+        reaches only what it was granted, and can create products and archive the
+        ones it created.
+    ProductPermission:
+      type: object
+      required: [productId, canView, canOperate, canUseAi]
+      description: >-
+        Three independent switches, not a ranked scale: an account can be allowed
+        to read a product in the console without its AI clients getting the same
+        reach. Operate and AI each imply view when stored.
+      properties:
+        productId: { type: string }
+        canView: { type: boolean }
+        canOperate: { type: boolean }
+        canUseAi: { type: boolean }
+    Account:
+      type: object
+      required: [id, email, role, createdAt, updatedAt, permissions]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/AccountRole" }
+        disabledAt:
+          type: string
+          format: date-time
+          description: Set while the account is suspended. Its sessions and AI tokens stop working.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        permissions:
+          type: array
+          items: { $ref: "#/components/schemas/ProductPermission" }
     Product:
       type: object
       required: [id, keyPrefix, name, createdAt, updatedAt, hasIcon]
@@ -809,6 +1034,12 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         archivedAt: { type: string, format: date-time }
+        createdByAccountId:
+          type: string
+          description: >-
+            The account that created it, and the only non-administrator allowed
+            to archive it. Absent on a product that predates accounts, or one
+            created through the deployment's operator token.
         hasIcon:
           type: boolean
           description: >-

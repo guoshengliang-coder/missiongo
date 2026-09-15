@@ -347,16 +347,16 @@ function oauthLoginPage(
 </head>
 <body><main class="card">
   <div class="mark">🚀</div><p class="eyebrow">${writes ? "AI 读写授权" : "AI 读取授权"}</p><h1 class="title">连接 MissionGo</h1>
-  <p class="copy"><span class="client">${escapedHtml(clientName)}</span> 请求以下权限。首次连接请验证账号。</p>
+  <p class="copy"><span class="client">${escapedHtml(clientName)}</span> 请求以下权限。首次连接请验证账号。授权后它读到的范围，就是你这个账号的产品权限。</p>
   <ul class="scopes">
     <li>读取你有权限查看的 MissionGo 内容</li>
     ${writes ? `<li>${writeGrant}</li>` : ""}
     ${scopes.includes(MISSIONGO_NODE_SCOPE) ? `<li>${nodeGrant}</li>` : ""}
   </ul>
-  ${invalidCredentials ? '<p class="error">用户名或密码不正确，请重新输入。</p>' : ""}
+  ${invalidCredentials ? '<p class="error">邮箱或密码不正确，请重新输入。</p>' : ""}
   <form method="post" action="/oauth/authorize">
     <input type="hidden" name="request" value="${escapedHtml(requestToken)}">
-    <label for="username">用户名</label><input id="username" name="username" autocomplete="username" required autofocus>
+    <label for="username">邮箱</label><input id="username" name="username" type="email" autocomplete="username" required autofocus>
     <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required>
     <button type="submit">确认并连接</button>
   </form>
@@ -1747,6 +1747,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       actor: "human",
       reason: enumField(body, "reason", TRANSITION_REASONS)!,
       ...(stringField(body, "note", false) !== undefined ? { note: body.note as string } : {}),
+      // Who moved it. With one account "a human did" was enough; with several it
+      // is the difference between a timeline and a rumour.
+      ...(sessionUser(request) ? { attribution: { accountId: sessionUser(request)!.id } } : {}),
     });
   });
 
