@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
 import { MissionGoDatabase } from "./storage/database.js";
-import type { AdminAccountConfig } from "./admin-auth.js";
+import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
 
 const apps: FastifyInstance[] = [];
 const temporaryDirectories: string[] = [];
@@ -38,6 +38,37 @@ function open(databasePath: string, account: AdminAccountConfig = adminAccount()
   const app = buildApp({ databasePath, adminAccount: account, publicOrigin: "https://missiongo.test" });
   apps.push(app);
   return app;
+}
+
+/** An AI token for one of this deployment's accounts, as the OAuth exchange would mint it. */
+function aiToken(app: FastifyInstance, config: AdminAccountConfig, accountId: string): string {
+  const account = app.missionGoAccounts.getAccount(accountId);
+  return createAiAccessToken(
+    config,
+    { id: account.id, username: account.email, role: account.role },
+    app.missionGoAccounts.credentialsStamp(account),
+    "mgc_test_client",
+    ["missiongo:read"],
+  ).token;
+}
+
+/** Call an MCP tool over the real /mcp route, the way a connected AI client would. */
+async function callMcp(app: FastifyInstance, token: string, id: number, name: string, args: Record<string, unknown> = {}) {
+  const response = await app.inject({
+    method: "POST",
+    url: "/mcp",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    },
+    payload: { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } },
+  });
+  const payload = response.headers["content-type"]?.includes("text/event-stream")
+    ? response.body.split("\n").find((line) => line.startsWith("data: "))?.slice(6)
+    : response.body;
+  if (!payload) throw new Error(`MCP response carried no JSON payload: ${response.statusCode} ${response.body}`);
+  return (JSON.parse(payload) as { result: { structuredContent?: unknown; isError?: boolean } }).result;
 }
 
 async function signIn(app: FastifyInstance, username: string, password: string): Promise<string> {
@@ -512,5 +543,162 @@ describe("Products a member creates", () => {
       headers: { cookie: adminCookie },
       payload: { archived: true },
     })).statusCode).toBe(200);
+  });
+});
+
+describe("What an AI client reaches", () => {
+  it("loses a product the moment it is unticked, without waiting for the token to expire", async () => {
+    // The reason product reach is not written into the token. A 30-day token that
+    // froze its own permissions would keep reading a revoked product for 30 days.
+    const { app, adminCookie, member, shared } = await twoAccountWorkspace();
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/accounts/${member.id}/products`,
+      headers: { cookie: adminCookie },
+      payload: { permissions: [{ productId: shared.id, canView: true, canOperate: true, canUseAi: true }] },
+    });
+    const token = aiToken(app, adminAccount(), member.id);
+
+    expect((await callMcp(app, token, 1, "get_current_account")).structuredContent)
+      .toMatchObject({ permission: { allProducts: false, productIds: [shared.id] } });
+    expect((await callMcp(app, token, 2, "list_products")).structuredContent)
+      .toMatchObject({ products: [{ id: shared.id }] });
+
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/accounts/${member.id}/products`,
+      headers: { cookie: adminCookie },
+      payload: { permissions: [{ productId: shared.id, canView: true, canOperate: true, canUseAi: false }] },
+    });
+
+    // Same token, no re-authorization.
+    expect((await callMcp(app, token, 3, "get_current_account")).structuredContent)
+      .toMatchObject({ permission: { allProducts: false, productIds: [] } });
+    expect((await callMcp(app, token, 4, "list_products")).structuredContent).toMatchObject({ products: [] });
+  });
+
+  it("reaches only what the account that authorized it reaches, not what an administrator would", async () => {
+    const { app, adminCookie, member, shared, hidden } = await twoAccountWorkspace();
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/accounts/${member.id}/products`,
+      headers: { cookie: adminCookie },
+      payload: { permissions: [{ productId: shared.id, canView: true, canOperate: true, canUseAi: true }] },
+    });
+    const itemKey = await createItem(app, adminCookie, hidden.id, "Must stay private");
+
+    const forbidden = await callMcp(app, aiToken(app, adminAccount(), member.id), 1, "get_item_context", { itemKey });
+    expect(forbidden.isError).toBe(true);
+    expect(JSON.stringify(forbidden)).not.toContain("Must stay private");
+  });
+
+  it("stops working when the account is suspended", async () => {
+    const { app, adminCookie, member } = await twoAccountWorkspace();
+    const token = aiToken(app, adminAccount(), member.id);
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/accounts/${member.id}`,
+      headers: { cookie: adminCookie },
+      payload: { disabled: true },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_current_account", arguments: {} } },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+});
+
+describe("Dispatch configuration per account (item 2.3)", () => {
+  /** Register a Mac the way the macOS client does: an AI login carrying the node scope. */
+  async function registerNode(app: FastifyInstance, accountId: string, name: string) {
+    const account = app.missionGoAccounts.getAccount(accountId);
+    const token = createAiAccessToken(
+      adminAccount(),
+      { id: account.id, username: account.email, role: account.role },
+      app.missionGoAccounts.credentialsStamp(account),
+      "mgc_macos_test",
+      ["missiongo:read", "missiongo:node"],
+    ).token;
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/register",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { installationId: `installation-${accountId}`, name, hostname: "test-host" },
+    });
+    if (response.statusCode !== 201) throw new Error(`register failed: ${response.statusCode} ${response.body}`);
+    return response.json<{ nodeId: string; token: string }>();
+  }
+
+  it("keeps one account's machines invisible to the other, including to an administrator", async () => {
+    const { app, adminCookie, memberCookie, member } = await twoAccountWorkspace();
+    const adminId = app.missionGoAccounts.listAccounts().find((account) => account.role === "admin")!.id;
+
+    await registerNode(app, adminId, "Admin's Mac");
+    await registerNode(app, member.id, "Member's Mac");
+
+    const seenBy = async (cookie: string) =>
+      (await app.inject({ method: "GET", url: "/api/v1/nodes", headers: { cookie } }))
+        .json<{ nodes: Array<{ name: string }> }>().nodes.map((node) => node.name);
+
+    // Machines belong to the account that registered them. The administrator
+    // role reaches every product; it does not reach another person's Macs.
+    expect(await seenBy(adminCookie)).toEqual(["Admin's Mac"]);
+    expect(await seenBy(memberCookie)).toEqual(["Member's Mac"]);
+  });
+
+  it("refuses to let one account revoke or rename another account's machine", async () => {
+    const { app, adminCookie, memberCookie, member } = await twoAccountWorkspace();
+    const memberNode = await registerNode(app, member.id, "Member's Mac");
+
+    for (const request of [
+      { method: "PATCH" as const, url: `/api/v1/nodes/${memberNode.nodeId}`, payload: { nickname: "Taken over" } },
+      { method: "DELETE" as const, url: `/api/v1/nodes/${memberNode.nodeId}`, payload: undefined },
+    ]) {
+      const response = await app.inject({
+        method: request.method,
+        url: request.url,
+        headers: { cookie: adminCookie },
+        ...(request.payload ? { payload: request.payload } : {}),
+      });
+      expect(response.statusCode, `${request.method} ${request.url}`).toBe(404);
+    }
+
+    // Still there, still called what its owner calls it.
+    expect((await app.inject({ method: "GET", url: "/api/v1/nodes", headers: { cookie: memberCookie } }))
+      .json<{ nodes: Array<{ name: string }> }>().nodes).toMatchObject([{ name: "Member's Mac" }]);
+  });
+
+  it("offers a machine only the products its owning account reaches", async () => {
+    const { app, member, shared } = await twoAccountWorkspace();
+    const node = await registerNode(app, member.id, "Member's Mac");
+
+    // The client draws its product menu from the heartbeat. An unfiltered list
+    // would name the administrator's other products on a member's Mac.
+    const heartbeat = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/heartbeat",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { agents: [{ kind: "claude_code", version: "2.1.232" }], repoCandidates: [] },
+    });
+    expect(heartbeat.json<{ products: Array<{ id: string }> }>().products).toMatchObject([{ id: shared.id }]);
+  });
+
+  it("refuses to map a machine's checkout to a product its owner cannot reach", async () => {
+    const { app, member, hidden } = await twoAccountWorkspace();
+    const node = await registerNode(app, member.id, "Member's Mac");
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/v1/node/repos",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { repos: [{ productId: hidden.id, repoPath: "/Users/dev/Projects/hidden" }] },
+    });
+    expect(response.statusCode).toBe(404);
   });
 });
