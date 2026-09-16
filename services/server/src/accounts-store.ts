@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 
+import { MIN_PASSWORD_LENGTH } from "@missiongo/domain";
+
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { hashPassword, verifyPassword, type AccountRole } from "./admin-auth.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
-export const MIN_PASSWORD_LENGTH = 12;
+export { MIN_PASSWORD_LENGTH };
 export const MAX_PASSWORD_LENGTH = 1_024;
 /** How stale "last used" is allowed to get, so reading does not cost a write every time. */
 export const AI_AUTHORIZATION_TOUCH_INTERVAL_MS = 5 * 60_000;

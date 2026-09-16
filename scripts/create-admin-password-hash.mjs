@@ -52,6 +52,9 @@ try {
   const confirmation = await readHidden("Confirm password: ");
 
   if (password !== confirmation) throw new Error("Passwords do not match.");
+  // Deliberately stricter than an account password (MIN_PASSWORD_LENGTH in @missiongo/domain):
+  // this one is the deployment's first key, set once in an environment variable, and it never
+  // goes through the sign-in path that rate-limits guesses. Not an oversight -- leave it at 12.
   if (password.length < 12) throw new Error("Use at least 12 characters.");
   if (password.length > 1_024) throw new Error("Password is too long.");
 
