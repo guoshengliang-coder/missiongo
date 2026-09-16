@@ -1,3 +1,4 @@
+import { attachmentThumbnailPath } from "./attachment-thumbnail";
 import type {
   ActiveDispatch,
   Component,
@@ -47,6 +48,10 @@ export interface AuthenticatedUser {
   readonly id: string;
   /** The email address the account signs in with. */
   readonly username: string;
+  /** What to show on screen: the nickname, or the address up to the @. Never empty. */
+  readonly displayName: string;
+  /** The nickname as stored. Absent when none is set -- see account-nickname.ts. */
+  readonly nickname?: string;
   readonly role: AccountRole;
 }
 
@@ -74,9 +79,23 @@ export interface AiAuthorization {
   readonly lastUsedAt?: string;
 }
 
+/**
+ * Just enough of an account to name it in the product-side editor.
+ *
+ * This is what the route actually sends, and it used to be typed as `Account`,
+ * which claimed a `permissions` field that was never there. It stays this narrow
+ * on purpose: a product's creator can read this list now, so it must not carry
+ * when some other account last changed its password.
+ */
+export interface AccountSummary {
+  readonly id: string;
+  readonly email: string;
+  readonly role: AccountRole;
+}
+
 /** One account's standing on one product, as the product-side editor shows it. */
 export interface ProductAccessEntry {
-  readonly account: Account;
+  readonly account: AccountSummary;
   readonly permission: ProductPermission;
   /** True for an administrator, who reaches the product whatever the row says. */
   readonly reachesByRole: boolean;
@@ -195,14 +214,20 @@ export const api = {
     request<AuthSession>("/api/v1/auth/password", { method: "POST", body: JSON.stringify(input) }),
   changeEmail: (input: { currentPassword: string; email: string }) =>
     request<AuthSession>("/api/v1/auth/email", { method: "POST", body: JSON.stringify(input) }),
+  // No password: a nickname is a label on your comments, not what signs you in.
+  changeNickname: (nickname: string | null) =>
+    request<AuthSession>("/api/v1/auth/nickname", { method: "POST", body: JSON.stringify({ nickname }) }),
   listAiAuthorizations: () =>
     request<{ authorizations: AiAuthorization[] }>("/api/v1/ai-authorizations"),
   revokeAiAuthorization: (authorizationId: string) =>
     request<void>(`/api/v1/ai-authorizations/${encodeURIComponent(authorizationId)}`, { method: "DELETE" }),
   listAccounts: () => request<{ accounts: Account[] }>("/api/v1/accounts"),
-  createAccount: (input: { email: string; nickname?: string; password: string; role: AccountRole }) =>
+  createAccount: (input: { email: string; password: string; role: AccountRole }) =>
     request<Account>("/api/v1/accounts", { method: "POST", body: JSON.stringify(input) }),
-  updateAccount: (accountId: string, input: { email?: string; nickname?: string | null; role?: AccountRole; disabled?: boolean; password?: string }) =>
+  updateAccount: (
+    accountId: string,
+    input: { email?: string; nickname?: string | null; role?: AccountRole; disabled?: boolean; password?: string },
+  ) =>
     request<Account>(`/api/v1/accounts/${encodeURIComponent(accountId)}`, {
       method: "PATCH",
       body: JSON.stringify(input),
@@ -213,7 +238,12 @@ export const api = {
     request<{ accounts: ProductAccessEntry[] }>(`/api/v1/products/${encodeURIComponent(productId)}/accounts`),
   setProductAccounts: (
     productId: string,
-    accounts: Array<{ accountId: string; canView: boolean; canOperate: boolean; canUseAi: boolean }>,
+    // An entry names its account by id, or by the address someone typed -- which
+    // is how a product's creator adds a person without being able to list who
+    // has an account here.
+    accounts: Array<
+      { accountId?: string; email?: string; canView: boolean; canOperate: boolean; canUseAi: boolean }
+    >,
   ) =>
     request<{ accounts: ProductAccessEntry[] }>(`/api/v1/products/${encodeURIComponent(productId)}/accounts`, {
       method: "PUT",
@@ -300,14 +330,12 @@ export const api = {
     );
     return response.blob();
   },
-  // List tiles are ~84px; the originals behind them run to megabytes. The
-  // server renders the small version so scrolling a list does not pull down
-  // full-resolution screenshots nobody is looking at yet.
-  downloadAttachmentThumbnail: async (itemKey: string, attachmentId: string, width: number) => {
-    const response = await attachmentRequest(
-      `/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}/thumbnail?width=${width}`,
-      {},
-    );
+  // List tiles and detail previews are a few hundred pixels at most; the
+  // originals behind them run to megabytes. The server renders the small
+  // version so neither a list nor a detail view pulls down full-resolution
+  // screenshots nobody has opened yet.
+  downloadAttachmentThumbnail: async (itemKey: string, attachmentId: string, width: number, revision: string) => {
+    const response = await attachmentRequest(attachmentThumbnailPath(itemKey, attachmentId, width, revision), {});
     return response.blob();
   },
   // Annotating an image sends the result back over the same attachment, so the
@@ -333,10 +361,16 @@ export const api = {
       method: "DELETE",
     });
   },
-  transitionItem: (itemKey: string, action: TransitionAction) =>
+  // `note` is why the item is moving. The domain demands one on the ways back to
+  // ready; everywhere else it is simply left out.
+  transitionItem: (itemKey: string, action: TransitionAction, note?: string) =>
     request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transitions`, {
       method: "POST",
-      body: JSON.stringify({ to: action.to, reason: action.reason }),
+      body: JSON.stringify({
+        to: action.to,
+        reason: action.reason,
+        ...(note?.trim() ? { note: note.trim() } : {}),
+      }),
     }),
   getTimeline: (itemKey: string) =>
     request<{ events: WorkItemEvent[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/timeline`),

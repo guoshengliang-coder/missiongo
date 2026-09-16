@@ -1,11 +1,20 @@
 import { randomUUID } from "node:crypto";
 
+import { MIN_PASSWORD_LENGTH } from "@missiongo/domain";
+
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { hashPassword, verifyPassword, type AccountRole } from "./admin-auth.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
-export const MIN_PASSWORD_LENGTH = 12;
+export { MIN_PASSWORD_LENGTH };
 export const MAX_PASSWORD_LENGTH = 1_024;
+/**
+ * How long a nickname may be. It signs comments and timeline events, where a
+ * long one pushes the timestamp off the line; the same 40 a machine nickname
+ * gets, counted the same way (`String.length`), so the console never offers a
+ * name the server would then refuse.
+ */
+export const MAX_ACCOUNT_NICKNAME_LENGTH = 40;
 /** How stale "last used" is allowed to get, so reading does not cost a write every time. */
 export const AI_AUTHORIZATION_TOUCH_INTERVAL_MS = 5 * 60_000;
 
@@ -27,9 +36,24 @@ export interface ProductPermission {
 
 export type ProductCapability = "view" | "operate" | "ai";
 
+/**
+ * Just enough of an account to name it in the product-side editor.
+ *
+ * Deliberately not an AccountSnapshot. A product's creator can read this list
+ * now (AND-58), and `credentialsChangedAt` says when some other account last
+ * changed its password or was suspended. Choosing which rows a member may see
+ * while still sending that column would give away the thing the choosing was
+ * for.
+ */
+export interface AccountSummary {
+  readonly id: string;
+  readonly email: string;
+  readonly role: AccountRole;
+}
+
 /** One account's standing on one product, as the product-side editor shows it. */
 export interface ProductAccessEntry {
-  readonly account: AccountSnapshot;
+  readonly account: AccountSummary;
   readonly permission: ProductPermission;
   /** True for an administrator, who reaches the product whatever the row says. */
   readonly reachesByRole: boolean;
@@ -38,6 +62,7 @@ export interface ProductAccessEntry {
 export interface AccountSnapshot {
   readonly id: string;
   readonly email: string;
+  /** What this account calls itself. Absent means "use the address". */
   readonly nickname?: string;
   readonly role: AccountRole;
   /** Set when the account is suspended. Its sessions and AI tokens stop working. */
@@ -94,22 +119,44 @@ interface PermissionRow {
 // RFC permits; a real address proves itself by receiving mail, and nothing here
 // sends any.
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
-export const MAX_ACCOUNT_NICKNAME_LENGTH = 80;
-
-export function normalizeAccountNickname(value: string | null | undefined): string | null {
-  if (value === undefined || value === null) return null;
-  const nickname = value.trim();
-  if (!nickname) return null;
-  if (nickname.length > MAX_ACCOUNT_NICKNAME_LENGTH || /[\r\n]/u.test(nickname)) {
-    throw invalidInput(`An account nickname must be ${MAX_ACCOUNT_NICKNAME_LENGTH} characters or fewer and on one line.`);
-  }
-  return nickname;
-}
 
 export function normalizeEmail(value: string): string {
   const email = value.trim();
   if (email.length > 254 || !EMAIL_PATTERN.test(email)) throw invalidInput("Enter a valid email address.");
   return email;
+}
+
+/**
+ * A nickname on its way into the table.
+ *
+ * Blank of any kind means "no nickname" rather than an empty one, so a row never
+ * holds a name that renders as nothing. Whitespace is folded because this is a
+ * byline: it goes on one line next to a timestamp, and a newline in it would
+ * break that line rather than say anything.
+ */
+export function normalizeNickname(value: string | null): string | null {
+  const nickname = (value ?? "").replaceAll(/\s+/gu, " ").trim();
+  if (!nickname) return null;
+  if (nickname.length > MAX_ACCOUNT_NICKNAME_LENGTH) {
+    throw invalidInput(`A nickname must be ${MAX_ACCOUNT_NICKNAME_LENGTH} characters or fewer.`);
+  }
+  for (let position = 0; position < nickname.length; position += 1) {
+    const code = nickname.charCodeAt(position);
+    if (code <= 0x1f || code === 0x7f) throw invalidInput("A nickname cannot contain control characters.");
+  }
+  return nickname;
+}
+
+/**
+ * What to call this account on screen.
+ *
+ * The one place the fallback is written. Nothing is backfilled into the table,
+ * so an account that never set a nickname is named from its address here and
+ * follows the address if it is corrected later. A nickname is self-declared and
+ * not unique -- it says who wrote something, it does not prove it.
+ */
+export function accountDisplayName(account: Pick<AccountSnapshot, "email" | "nickname">): string {
+  return account.nickname?.trim() || account.email.split("@")[0] || account.email;
 }
 
 function assertPassword(value: string): string {
@@ -187,13 +234,38 @@ export class AccountStore {
     return rows.map((row) => mapAccount(row));
   }
 
+  /**
+   * Display names for a batch of account ids, in one query.
+   *
+   * A timeline asks about every event at once, so resolving them one at a time
+   * would cost a statement per row. An item's events come from a handful of
+   * people, and the whole table is created by hand, so the id list is short and
+   * an IN clause does not need paging.
+   *
+   * Suspended and demoted accounts are included on purpose: the question here is
+   * who wrote something, not who may sign in today, and filtering them would
+   * quietly turn their history back into "human". An id with no row -- a deleted
+   * account -- is simply absent, and the caller falls back.
+   */
+  displayNames(accountIds: readonly string[]): ReadonlyMap<string, string> {
+    const ids = [...new Set(accountIds)];
+    if (ids.length === 0) return new Map();
+    const rows = this.database.connection
+      .prepare(`SELECT id, email, nickname FROM accounts WHERE id IN (${ids.map(() => "?").join(", ")})`)
+      .all(...ids) as unknown as Array<{ id: string; email: string; nickname: string | null }>;
+    return new Map(rows.map((row) => [
+      row.id,
+      accountDisplayName({ email: row.email, ...(row.nickname ? { nickname: row.nickname } : {}) }),
+    ]));
+  }
+
   getAccount(accountId: string): AccountSnapshot {
     const row = this.row(accountId);
     if (!row) throw notFound("Account");
     return mapAccount(row);
   }
 
-  createAccount(input: { email: string; nickname?: string | null; password: string; role: AccountRole }): AccountSnapshot {
+  createAccount(input: { email: string; password: string; role: AccountRole }): AccountSnapshot {
     const email = normalizeEmail(input.email);
     const password = assertPassword(input.password);
     if (input.role !== "admin" && input.role !== "member") throw invalidInput("Account role must be admin or member.");
@@ -202,10 +274,10 @@ export class AccountStore {
     try {
       this.database.connection
         .prepare(
-          `INSERT INTO accounts (id, email, nickname, password_scrypt, role, credentials_changed_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO accounts (id, email, password_scrypt, role, credentials_changed_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, email, normalizeAccountNickname(input.nickname), hashPassword(password), input.role, now, now, now);
+        .run(id, email, hashPassword(password), input.role, now, now, now);
     } catch (error) {
       if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
         throw conflict("account_email_conflict", "That email address already has an account.");
@@ -232,10 +304,10 @@ export class AccountStore {
     }
     const now = new Date().toISOString();
     if (input.email !== undefined) this.writeEmail(accountId, normalizeEmail(input.email), now);
-    if (input.nickname !== undefined) {
-      this.database.connection.prepare("UPDATE accounts SET nickname = ?, updated_at = ? WHERE id = ?")
-        .run(normalizeAccountNickname(input.nickname), now, accountId);
-    }
+    // Deliberately not folded into the credentials stamp below: a name is not a
+    // credential, and correcting somebody's would otherwise sign them out of
+    // every device they own.
+    if (input.nickname !== undefined) this.writeNickname(accountId, normalizeNickname(input.nickname), now);
     const role = input.role ?? current.role;
     const disabledAt = input.disabled === undefined
       ? current.disabledAt ?? null
@@ -287,6 +359,22 @@ export class AccountStore {
       throw new MissionGoError("invalid_credentials", "The current password is not correct.", 401);
     }
     this.writeEmail(accountId, normalizeEmail(email), new Date().toISOString());
+    return this.getAccount(accountId);
+  }
+
+  /**
+   * Change your own display name.
+   *
+   * No password, unlike the address next door. That one is what you sign in
+   * with, so taking it over is taking over the account; a nickname is a label on
+   * comments, and asking for a password to edit a label only teaches people to
+   * type it wherever they are asked. Credentials are untouched for the same
+   * reason -- nobody is signed out over a name.
+   */
+  changeOwnNickname(accountId: string, nickname: string | null): AccountSnapshot {
+    const row = this.row(accountId);
+    if (!row || row.disabled_at) throw notFound("Account");
+    this.writeNickname(accountId, normalizeNickname(nickname), new Date().toISOString());
     return this.getAccount(accountId);
   }
 
@@ -382,26 +470,63 @@ export class AccountStore {
    * Administrators are included and marked, because a list of "who can reach
    * this product" that silently omits the people who reach everything is a list
    * that misleads.
+   *
+   * `rosterHidden` is for a caller who may administer this product without being
+   * allowed to know who else has an account here -- a product's creator
+   * (AND-58). It keeps the accounts that actually hold something on this
+   * product, plus the administrators, and drops everyone else: an account with
+   * no row is not part of the answer to "who can reach this product", and
+   * listing it would hand a member the whole roster of emails. Administrators
+   * stay for the reason above; they are the one group a member learns about, and
+   * they are who a member goes to for an account in the first place.
+   *
+   * The caller passes this rather than the store deciding, because the store
+   * does not know which door the request came through.
    */
-  listProductAccess(productId: string): readonly ProductAccessEntry[] {
+  listProductAccess(productId: string, options: { rosterHidden?: boolean } = {}): readonly ProductAccessEntry[] {
     const accounts = this.listAccounts();
     const rows = this.database.connection
       .prepare("SELECT account_id, can_view, can_operate, can_use_ai FROM account_products WHERE product_id = ?")
       .all(productId) as unknown as Array<PermissionRow & { account_id: string }>;
     const byAccount = new Map(rows.map((row) => [row.account_id, row]));
-    return accounts.map((account) => {
-      const row = byAccount.get(account.id);
-      return {
-        account,
-        permission: {
-          productId,
-          canView: row?.can_view === 1,
-          canOperate: row?.can_operate === 1,
-          canUseAi: row?.can_use_ai === 1,
-        },
-        reachesByRole: account.role === "admin",
-      };
-    });
+    return accounts
+      .filter((account) => !options.rosterHidden || account.role === "admin" || byAccount.has(account.id))
+      .map((account) => {
+        const row = byAccount.get(account.id);
+        return {
+          account: { id: account.id, email: account.email, role: account.role },
+          permission: {
+            productId,
+            canView: row?.can_view === 1,
+            canOperate: row?.can_operate === 1,
+            canUseAi: row?.can_use_ai === 1,
+          },
+          reachesByRole: account.role === "admin",
+        };
+      });
+  }
+
+  /**
+   * The account to hand a product permission to, found by the email someone
+   * typed.
+   *
+   * `COLLATE NOCASE`, like `verifyCredentials`, because the column is unique
+   * that way and `normalizeEmail` only trims: without it "Member@Example.com"
+   * comes back empty and the caller is told the address has no account, which is
+   * a lie that looks like a typo.
+   *
+   * A suspended account is not grantable and comes back undefined -- the same
+   * answer as an address nobody holds. Writing the row would show up in the
+   * editor as if it had worked while the account's sessions and tokens stay
+   * refused, and telling the caller "suspended" instead of "no such account"
+   * would leak a fact about an account they are not allowed to enumerate.
+   */
+  findGrantableByEmail(email: string): AccountSnapshot | undefined {
+    const row = this.database.connection
+      .prepare("SELECT * FROM accounts WHERE email = ? COLLATE NOCASE")
+      .get(email.trim()) as unknown as AccountRow | undefined;
+    if (!row || row.disabled_at) return undefined;
+    return mapAccount(row);
   }
 
   /**
@@ -617,6 +742,14 @@ export class AccountStore {
     // account cut off another's client, and answering "not found" keeps it from
     // learning whether the id exists.
     if (Number(changes.changes) === 0) throw notFound("Authorization");
+  }
+
+  private writeNickname(accountId: string, nickname: string | null, now: string): void {
+    // No UNIQUE on the column, so there is no conflict to catch here -- which is
+    // the whole difference from writeEmail below.
+    this.database.connection
+      .prepare("UPDATE accounts SET nickname = ?, updated_at = ? WHERE id = ?")
+      .run(nickname, now, accountId);
   }
 
   private writeEmail(accountId: string, email: string, now: string): void {

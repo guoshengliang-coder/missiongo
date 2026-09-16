@@ -25,11 +25,13 @@ export interface WorkItemTransitionRequest {
   readonly to: WorkItemStatus;
   readonly actor: ActorKind;
   readonly reason: TransitionReason;
+  /** Why the item is moving. Required on the edges `transitionRequiresNote` names. */
+  readonly note?: string;
 }
 
 export interface WorkItemTransitionDecision {
   readonly allowed: boolean;
-  readonly code: "allowed" | "invalid_transition" | "actor_not_allowed" | "reason_mismatch";
+  readonly code: "allowed" | "invalid_transition" | "actor_not_allowed" | "reason_mismatch" | "note_required";
   readonly message: string;
 }
 
@@ -90,6 +92,37 @@ const TRANSITIONS: Readonly<
 };
 
 /**
+ * How much room a transition note has. Long enough for what failed and what the
+ * next attempt needs to know; short enough that the timeline stays readable.
+ *
+ * Deliberately below the 4,000 a pull-request summary gets: that one is written
+ * once by a machine, this one is typed by a person who is annoyed.
+ */
+export const TRANSITION_NOTE_MAX_LENGTH = 2_000;
+
+/**
+ * Coming back to `ready` from one of these means work was already done and the
+ * result did not hold. Whoever dispatches the item next -- and whichever AI
+ * picks it up -- has no other place to learn why, so the move has to say it.
+ *
+ * `inbox` is absent on purpose: triaging a draft into the queue is the first
+ * pass, not a retreat from one.
+ */
+const NOTE_REQUIRED_FROM = new Set<WorkItemStatus>(["in_progress", "pending_verification", "on_hold", "done"]);
+
+/**
+ * Whether this edge has to carry a note.
+ *
+ * Keyed on from/to rather than on the reason, because `reopened` serves both
+ * `on_hold -> ready` and `ready -> inbox`, and only the first of those is a
+ * retreat. Keying on the reason would demand a note for sending a queued item
+ * back to drafts, which explains nothing to anybody.
+ */
+export function transitionRequiresNote(from: WorkItemStatus, to: WorkItemStatus): boolean {
+  return to === "ready" && NOTE_REQUIRED_FROM.has(from);
+}
+
+/**
  * The table above is the pipeline: it is what an agent may do, and it is how a
  * person moves an item when the pipeline describes what actually happened. But
  * a person also knows things the pipeline does not — an item was already fixed,
@@ -103,11 +136,29 @@ function isManualOverride(request: WorkItemTransitionRequest): boolean {
   return request.actor === "human" && request.reason === "manual_override" && request.from !== request.to;
 }
 
+/** The note this edge needs and did not get. */
+function noteMissing(request: WorkItemTransitionRequest): boolean {
+  return transitionRequiresNote(request.from, request.to) && !(request.note ?? "").trim();
+}
+
+const NOTE_REQUIRED = (request: WorkItemTransitionRequest): WorkItemTransitionDecision => ({
+  allowed: false,
+  code: "note_required",
+  message: `Moving a work item from ${request.from} back to ready requires a note saying why.`,
+});
+
 export function evaluateWorkItemTransition(request: WorkItemTransitionRequest): WorkItemTransitionDecision {
   const transition = TRANSITIONS[request.from]?.[request.to];
 
   if (isManualOverride(request)) {
-    return { allowed: true, code: "allowed", message: "Transition is allowed." };
+    // Checked here too, and not once at the top, so that an edge an actor may not
+    // walk at all still says so rather than complaining about a missing note. The
+    // requirement belongs to the edge, not to the reason written on it: leaving
+    // the override exempt would keep one path back to `ready` that explains
+    // nothing, and that is the path somebody in a hurry would find.
+    return noteMissing(request)
+      ? NOTE_REQUIRED(request)
+      : { allowed: true, code: "allowed", message: "Transition is allowed." };
   }
 
   if (!transition) {
@@ -133,6 +184,8 @@ export function evaluateWorkItemTransition(request: WorkItemTransitionRequest): 
       message: `${request.reason} is not valid for the transition from ${request.from} to ${request.to}.`,
     };
   }
+
+  if (noteMissing(request)) return NOTE_REQUIRED(request);
 
   return {
     allowed: true,

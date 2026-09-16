@@ -41,7 +41,7 @@ public enum OAuthLoginError: Error, Equatable, LocalizedError, Sendable {
         case .timedOut:
             return "10 分钟内没有在浏览器里完成登录，本次登录已取消。请重新点击登录。"
         case let .missingNodeScope(granted):
-            return "授权里缺少 missiongo:node 权限（实际授予：\(granted)）：登录时需要允许登记这台 Mac 为执行机器。"
+            return "授权里缺少 missiongo:node 权限（实际授予：\(granted)）：登录时需要允许登记这台 Mac 为设备。"
         case let .invalidResponse(message):
             return message
         }

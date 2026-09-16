@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateWorkItemTransition } from "@missiongo/domain";
+import { evaluateWorkItemTransition, transitionRequiresNote } from "@missiongo/domain";
 
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import { ITEM_STATUSES, type WorkItemStatus } from "./types";
@@ -28,8 +28,36 @@ describe("web transition table", () => {
           to: action.to,
           actor: "human",
           reason: action.reason,
+          // Ways back to Ready need one; the dialog collects it before the
+          // request is made, so a placeholder stands in for the person here.
+          ...(transitionRequiresNote(from, action.to) ? { note: "why" } : {}),
         });
         expect(decision.allowed, `${from} → ${action.to} (${action.reason}): ${decision.message}`).toBe(true);
+      }
+    }
+  });
+
+  it("asks for a reason on every menu entry that sends work back to ready", () => {
+    // These are the four the console can reach. If one stopped asking, a person
+    // could retreat silently and the next session would find no explanation.
+    const asking = ITEM_STATUSES.flatMap((from) =>
+      TRANSITIONS[from].filter((action) => transitionRequiresNote(from, action.to)).map((action) => [from, action.reason]),
+    );
+    expect(asking).toEqual([
+      ["in_progress", "released"],
+      ["on_hold", "reopened"],
+      ["pending_verification", "verification_failed"],
+      ["done", "reopened"],
+    ]);
+  });
+
+  it("never offers a direct jump that would skip the reason", () => {
+    // "Move directly to" is built by subtracting what the pipeline already
+    // offers, so Ready is absent from exactly the statuses that owe a reason.
+    // The domain refuses such a jump anyway; this keeps the menu honest.
+    for (const from of ITEM_STATUSES) {
+      for (const action of manualMoves(from)) {
+        expect(transitionRequiresNote(from, action.to), `${from} offers a silent jump to ${action.to}`).toBe(false);
       }
     }
   });

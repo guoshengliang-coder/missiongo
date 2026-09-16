@@ -15,6 +15,12 @@ struct SignedOutView: View {
                     Text(model.loginServerUrl.map(ServerAddress.displayHost) ?? "尚未设置服务器地址")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    // Before signing in too: "which version is this?" is often
+                    // the first question when sign-in is what does not work.
+                    Text(AppVersionLabel.text(model.appVersion))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
             }
 

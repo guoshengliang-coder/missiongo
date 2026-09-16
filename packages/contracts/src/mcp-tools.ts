@@ -23,6 +23,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "append_comment", access: "write", purpose: "Add one comment to a work item without changing anything a person wrote." },
   { name: "claim_item", access: "write", purpose: "Take a ready work item into progress." },
   { name: "submit_for_verification", access: "write", purpose: "Hand merged work over for a person to verify, naming the pull request that carried it." },
+  { name: "create_item", access: "write", purpose: "Record a follow-up item split off from another, after the user approved its content in the session." },
 ] as const satisfies readonly McpToolDefinition[];
 
 export interface ListItemsInput {
@@ -42,6 +43,21 @@ export interface GetItemContextInput {
 export interface ClaimItemInput {
   readonly itemKey: string;
   readonly agentId: string;
+  readonly idempotencyKey: string;
+}
+
+export interface CreateItemInput {
+  /** The item being worked on; the new item is created in its product and linked to it. */
+  readonly sourceItemKey: string;
+  readonly title: string;
+  readonly description: string;
+  readonly type: WorkItemType;
+  readonly priority: WorkItemPriority;
+  readonly status: "inbox" | "ready";
+  /** Required when status is "ready". */
+  readonly platform?: "android" | "macos" | "web" | "server" | "shared" | "other";
+  readonly agentName?: string;
+  readonly summary?: string;
   readonly idempotencyKey: string;
 }
 

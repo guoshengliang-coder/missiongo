@@ -516,17 +516,56 @@ export class MissionGoDatabase {
           .run(202609151500, new Date().toISOString());
       });
     }
-    // A person's byline is distinct from the email used to sign in. Existing
-    // accounts remain unsigned until an administrator gives them a nickname.
+    // An item can be split off from another (AND-50): an AI working on one item
+    // records a follow-up the user approved in the session, and both items show
+    // the relation. A nullable column rather than a link table, because an item
+    // comes from at most one other.
+    //
+    // Only adds a column and an index, so the previous release keeps running
+    // against it -- scripts/rollback.sh reverts code and not schema.
+    const derivedFromMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609151610")
+      .get() as unknown as { version: number } | undefined;
+    if (!derivedFromMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(work_items)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "derived_from_item_id")) {
+          this.connection.exec(
+            "ALTER TABLE work_items ADD COLUMN derived_from_item_id TEXT REFERENCES work_items(id) ON DELETE SET NULL;",
+          );
+        }
+        this.connection.exec(
+          "CREATE INDEX IF NOT EXISTS idx_work_items_derived_from ON work_items(derived_from_item_id);",
+        );
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609151610, new Date().toISOString());
+      });
+    }
+    // Accounts were only ever an email address, so every comment a person wrote
+    // was signed "human" and nothing else. A nickname gives them a name on the
+    // timeline; empty means "use the part of the address before the @", decided
+    // when the name is rendered rather than backfilled here, so that correcting
+    // an address does not leave a stale name behind.
+    //
+    // Only adds a nullable column, so the previous release keeps running against
+    // it -- scripts/rollback.sh reverts code and not schema.
     const accountNicknameMigration = this.connection
-      .prepare("SELECT version FROM schema_migrations WHERE version = 202609160922")
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609160637")
       .get() as unknown as { version: number } | undefined;
     if (!accountNicknameMigration) {
       this.transaction(() => {
-        const columns = this.connection.prepare("PRAGMA table_info(accounts)").all() as unknown as Array<{ name: string }>;
-        if (!columns.some((column) => column.name === "nickname")) this.connection.exec("ALTER TABLE accounts ADD COLUMN nickname TEXT;");
-        this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
-          .run(202609160922, new Date().toISOString());
+        const columns = this.connection
+          .prepare("PRAGMA table_info(accounts)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "nickname")) {
+          this.connection.exec("ALTER TABLE accounts ADD COLUMN nickname TEXT;");
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609160637, new Date().toISOString());
       });
     }
     this.connection.exec("PRAGMA optimize;");

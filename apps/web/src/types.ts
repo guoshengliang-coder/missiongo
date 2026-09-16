@@ -53,6 +53,8 @@ export interface WorkItemAttachment {
   readonly contentType: string;
   readonly sizeBytes: number;
   readonly createdAt: string;
+  /** Changes when the stored bytes do, e.g. after annotating; part of the thumbnail URL. */
+  readonly revision: string;
 }
 
 export interface Product {
@@ -107,8 +109,18 @@ export interface WorkItem {
   readonly diagnosticSummary: WorkItemDiagnosticSummary;
   readonly environment?: WorkItemEnvironment;
   readonly attachments: readonly WorkItemAttachment[];
+  /** The item this one was split off from (AND-50). */
+  readonly derivedFrom?: WorkItemReference;
+  /** Items split off from this one. Absent when there are none. */
+  readonly derivedItems?: readonly WorkItemReference[];
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+export interface WorkItemReference {
+  readonly key: string;
+  readonly title: string;
+  readonly status: WorkItemStatus;
 }
 
 export type ActorKind = "human" | "agent" | "system";
@@ -126,8 +138,8 @@ export interface WorkItemEvent {
   readonly clientId?: string;
   /** The client's registered name, decoded server-side from clientId. Not self-reported. */
   readonly clientName?: string;
-  /** The current nickname of the human account that wrote this entry. */
-  readonly actorNickname?: string;
+  /** What the account behind accountId calls itself. Resolved server-side, not stored. */
+  readonly accountName?: string;
   readonly executionId?: string;
   readonly createdAt: string;
 }
@@ -142,6 +154,7 @@ export interface WorkItemComment {
   readonly body: Readonly<Record<string, unknown>>;
   readonly accountId?: string;
   readonly clientId?: string;
+  readonly accountName?: string;
   readonly createdAt: string;
   readonly withdrawnAt?: string;
   readonly withdrawnBy?: string;

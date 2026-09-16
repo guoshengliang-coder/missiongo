@@ -219,6 +219,38 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409":
           description: That email address already has an account.
+  /api/v1/auth/nickname:
+    post:
+      operationId: changeOwnNickname
+      summary: Change what your comments are signed with.
+      description: >-
+        No current password, unlike the address above: a nickname is a label on
+        what you write, not what you sign in with. Credentials are untouched and
+        no cookie is reissued -- the name is resolved per response and was never
+        in the signed payload. Null or blank clears it, and the display name
+        falls back to the part of the address before the @. Nicknames are not
+        unique.
+      security:
+        - adminSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nickname:
+                  type: string
+                  nullable: true
+                  maxLength: 40
+      responses:
+        "200":
+          description: Nickname changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/v1/ai-authorizations:
     get:
       operationId: listAiAuthorizations
@@ -269,10 +301,14 @@ paths:
       operationId: listProductAccounts
       summary: Who can reach this product.
       description: >-
-        The account-and-product relation read from the product's side.
-        Administrators only. Every account is listed, including administrators,
-        who are marked as reaching the product by role whatever their row says --
-        a list that omitted them would misstate who can open it.
+        The account-and-product relation read from the product's side. An
+        administrator or the product's creator. A member who holds nothing on the
+        product gets 404; one who can see it but did not create it gets 403, so
+        the 403 never confirms a product they were not allowed to know about.
+        An administrator sees every account. A creator sees the accounts that
+        hold something on this product, plus the administrators -- the roster
+        itself stays an administrator's to know, and administrators are listed
+        because they do reach the product whatever their row says.
       security:
         - adminSessionCookie: []
       responses:
@@ -292,11 +328,25 @@ paths:
       operationId: setProductAccounts
       summary: Set who can reach this product.
       description: >-
-        Only this product's rows are touched, unlike the account-side editor
+        An administrator or the product's creator, refused the same way as the
+        GET. Only this product's rows are touched, unlike the account-side editor
         which replaces an account's whole set: from here you cannot see what else
         an account holds, so replacing everything would revoke permissions that
         were never on screen. Clearing all three switches for an account removes
-        its row.
+        its row; operate and AI each imply view when stored.
+
+
+        Each entry names its account by `accountId` or by `email`. The address is
+        how a creator adds someone without being able to list who has an account
+        here, and it is resolved case-insensitively. At most 200 entries, and no
+        account may appear twice.
+
+
+        A creator may not change its own row, or any administrator's: clearing
+        its own would drop the product off its own list, and a row on an
+        administrator would move that administrator's AI reach, which is bounded
+        by exactly these rows. An entry asking for what is already stored is
+        accepted either way, because the editor posts every row it drew.
       security:
         - adminSessionCookie: []
       requestBody:
@@ -309,17 +359,28 @@ paths:
               properties:
                 accounts:
                   type: array
+                  maxItems: 200
                   items:
                     type: object
-                    required: [accountId]
+                    description: Give exactly one of accountId or email.
                     properties:
                       accountId: { type: string }
+                      email:
+                        type: string
+                        format: email
+                        description: >-
+                          Resolved to an account, case-insensitively. An address
+                          with no account, or one whose account is suspended,
+                          is refused with account_not_grantable -- one answer for
+                          both, so the reply says only whether it can be added.
                       canView: { type: boolean }
                       canOperate: { type: boolean }
                       canUseAi: { type: boolean }
       responses:
         "200":
-          description: The stored access list.
+          description: >-
+            The stored access list, narrowed for the caller exactly as the GET
+            narrows it.
           content:
             application/json:
               schema:
@@ -330,6 +391,11 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/ProductAccessEntry" }
         "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403":
+          description: >-
+            product_not_owned when the caller can see the product but did not
+            create it; own_access_unchangeable or admin_access_unchangeable when a
+            creator tried to change its own row or an administrator's.
         "404": { $ref: "#/components/responses/NotFound" }
   /api/v1/accounts:
     get:
@@ -413,6 +479,14 @@ paths:
                     How an account seeded before addresses were required gets a
                     real one -- the bootstrap account keeps whatever
                     ADMIN_USERNAME said.
+                nickname:
+                  type: string
+                  nullable: true
+                  maxLength: 40
+                  description: >-
+                    Correcting a name somebody else chose. Unlike the address and
+                    the password, this moves no credential stamp, so their
+                    sessions are undisturbed.
                 role: { $ref: "#/components/schemas/AccountRole" }
                 disabled: { type: boolean }
                 password: { type: string, minLength: 12, maxLength: 1024, format: password }
@@ -892,6 +966,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkItem"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
         "409":
           $ref: "#/components/responses/Conflict"
   /api/v1/items/{itemKey}/timeline:
@@ -1055,6 +1131,33 @@ paths:
           description: Requested attachment byte range.
         "416":
           description: Requested byte range is invalid or outside the attachment.
+  /api/v1/items/{itemKey}/attachments/{attachmentId}/thumbnail:
+    parameters:
+      - $ref: "#/components/parameters/WorkItemKey"
+      - in: path
+        name: attachmentId
+        required: true
+        schema: { type: string }
+    get:
+      operationId: downloadItemAttachmentThumbnail
+      description: >-
+        A JPEG rendition of an image attachment that fits inside a width x width box, never
+        enlarged. Pass the attachment's current revision as rev: only then is the response
+        cacheable as immutable, because annotating replaces the bytes under the same id.
+      parameters:
+        - in: query
+          name: width
+          description: Edge of the bounding box in pixels, clamped to 32-1024. Defaults to 192.
+          schema: { type: integer }
+        - in: query
+          name: rev
+          description: The attachment's revision field.
+          schema: { type: string }
+      responses:
+        "200":
+          description: JPEG thumbnail.
+        "400":
+          description: The attachment is not an image.
 components:
   securitySchemes:
     adminSessionCookie:
@@ -1132,13 +1235,25 @@ components:
         user: { $ref: "#/components/schemas/AuthUser" }
     AuthUser:
       type: object
-      required: [id, username, role]
+      required: [id, username, displayName, role]
       properties:
         id: { type: string }
         username:
           type: string
           format: email
           description: The email address this account signs in with.
+        displayName:
+          type: string
+          description: >-
+            What to show on screen: the nickname, or the part of the address
+            before the @ when none is set. Never empty.
+        nickname:
+          type: string
+          maxLength: 40
+          description: >-
+            The nickname as stored, absent when none is set. The console seeds
+            its input from this rather than from displayName, so saving an
+            untouched field cannot turn the fallback into a stored name.
         role: { $ref: "#/components/schemas/AccountRole" }
     AccountRole:
       type: string
@@ -1185,17 +1300,32 @@ components:
       type: object
       required: [account, permission, reachesByRole]
       properties:
-        account: { $ref: "#/components/schemas/Account" }
+        account: { $ref: "#/components/schemas/AccountSummary" }
         permission: { $ref: "#/components/schemas/ProductPermission" }
         reachesByRole:
           type: boolean
           description: True for an administrator, who reaches the product whatever the row says.
+    AccountSummary:
+      type: object
+      required: [id, email, role]
+      description: >-
+        Just enough of an account to name it. Deliberately narrower than Account:
+        a product's creator can read the product-side list, so it must not carry
+        credentialsChangedAt, which says when some other account last changed its
+        password or was suspended. This is also what the route has always sent --
+        it used to be documented as Account, which claimed a permissions field
+        that was never there.
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/AccountRole" }
     Account:
       type: object
       required: [id, email, role, createdAt, updatedAt, permissions]
       properties:
         id: { type: string }
         email: { type: string, format: email }
+        nickname: { type: string, maxLength: 40 }
         role: { $ref: "#/components/schemas/AccountRole" }
         disabledAt:
           type: string
@@ -1475,24 +1605,38 @@ components:
           items: { type: string }
     WorkItemAttachment:
       type: object
-      required: [id, itemKey, kind, displayNumber, filename, contentType, sizeBytes, createdAt]
+      required: [id, itemKey, kind, displayNumber, filename, contentType, sizeBytes, createdAt, revision]
       properties:
         id: { type: string }
         itemKey: { type: string }
-        kind: { enum: [image, video, log] }
+        kind: { enum: [image, video, log, document] }
         displayNumber: { type: integer, minimum: 1 }
         filename: { type: string }
         contentType: { type: string }
         sizeBytes: { type: integer, minimum: 1 }
         createdAt: { type: string, format: date-time }
+        revision:
+          type: string
+          description: Changes whenever the stored bytes are replaced, for example after annotating.
     TransitionWorkItemRequest:
       type: object
       required: [to, reason]
       properties:
         to: { $ref: "#/components/schemas/WorkItemStatus" }
         reason:
-          enum: [triaged, claim, request_human_input, resume, resolution_submitted, verification_passed, verification_failed, lease_expired, released, cancelled, reopened, restored]
-        note: { type: string }
+          enum: [triaged, claim, request_human_input, resume, resolution_submitted, verification_passed, verification_failed, lease_expired, released, cancelled, reopened, restored, manual_override]
+        note:
+          type: string
+          maxLength: 2000
+          description: >-
+            Why the item is moving, stored on the status_changed event. Required
+            when `to` is `ready` and the item is currently in_progress,
+            pending_verification, on_hold or done -- coming back from those means
+            work was already done and did not hold, and whoever picks the item up
+            next has nowhere else to learn why. A blank one does not count, and
+            manual_override is not a way around it. Omitting it on those edges
+            returns 400 with code `transition_note_required`. Triage
+            (inbox to ready) needs none.
     WorkItemEvent:
       type: object
       required: [id, itemKey, eventType, actorKind, payload, createdAt]
@@ -1508,10 +1652,27 @@ components:
           additionalProperties: true
         accountId:
           type: string
-          description: Which account authorized an agent's write. Absent on human events.
+          description: >-
+            Who wrote this: the account behind a person's action, or the one that
+            authorized an agent's. Absent on events written before accounts were
+            plural, on ones written through the deployment operator token, on
+            system events, and on the kinds that have never recorded an account
+            at all -- item_created, item_updated and the attachment events.
         clientId:
           type: string
           description: Which OAuth client an agent wrote through.
+        clientName:
+          type: string
+          description: >-
+            That client's registered name, decoded server-side from clientId.
+            Not self-reported.
+        accountName:
+          type: string
+          description: >-
+            What the account behind accountId calls itself -- its nickname, or
+            the part of its address before the @. Resolved when the event is
+            read, not stored, so renaming renames past writing too. Self-declared
+            and not unique: it says who wrote something, it does not prove it.
         executionId: { type: string }
         createdAt: { type: string, format: date-time }
     WorkItemComment:
@@ -1528,6 +1689,10 @@ components:
             - $ref: "#/components/schemas/FreeCommentBody"
         accountId: { type: string }
         clientId: { type: string }
+        clientName: { type: string }
+        accountName:
+          type: string
+          description: See WorkItemEvent.accountName.
         executionId: { type: string }
         createdAt: { type: string, format: date-time }
         withdrawnAt: { type: string, format: date-time }

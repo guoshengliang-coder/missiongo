@@ -58,6 +58,19 @@ export interface WorkItemAttachment {
   readonly contentType: string;
   readonly sizeBytes: number;
   readonly createdAt: string;
+  /**
+   * Changes whenever the stored bytes do. Annotating an image replaces its
+   * content under the same id, so anything cached by id alone -- a thumbnail
+   * URL above all -- needs this to tell the edited image from the original.
+   */
+  readonly revision: string;
+}
+
+/** Just enough of another item to name it and link to it. */
+export interface WorkItemReference {
+  readonly key: string;
+  readonly title: string;
+  readonly status: WorkItemStatus;
 }
 
 export interface WorkItemSnapshot {
@@ -76,6 +89,15 @@ export interface WorkItemSnapshot {
   readonly diagnosticSummary: WorkItemDiagnosticSummary;
   readonly environment?: WorkItemEnvironment;
   readonly attachments: readonly WorkItemAttachment[];
+  /**
+   * The item this one was split off from while that one was being worked on
+   * (AND-50). A relation rather than a key like AND-50.1: keys stay
+   * prefix-plus-integer, which sequencing, paging and the Mac client's
+   * dispatch check all rely on.
+   */
+  readonly derivedFrom?: WorkItemReference;
+  /** Items split off from this one, oldest first. Absent when there are none. */
+  readonly derivedItems?: readonly WorkItemReference[];
   readonly createdAt: string;
   readonly updatedAt: string;
 }

@@ -3,22 +3,28 @@ import type { ActorKind } from "./types";
 /**
  * How a comment is signed.
  *
- * Two sources, deliberately kept apart until the last moment. `clientName` is
+ * Three sources, deliberately kept apart until the last moment. `clientName` is
  * decoded server-side from the signed OAuth client id, so it is the program
  * that actually holds the token and cannot be faked. `agentName` is whatever
  * the agent typed, which is the only way to learn *which machine* it was
- * running on -- nothing in the system knows that otherwise.
+ * running on -- nothing in the system knows that otherwise. `accountName` is
+ * the person behind the entry, resolved server-side from the account id: a
+ * self-declared label, and not unique, so it says who wrote something rather
+ * than proving it.
  */
 export function commentAuthor(
   entry: {
     readonly actorKind: ActorKind;
     readonly clientName?: string | undefined;
     readonly agentName?: string | undefined;
-    readonly actorNickname?: string | undefined;
+    readonly accountName?: string | undefined;
   },
   actorLabel: string,
 ): string {
-  if (entry.actorKind !== "agent") return entry.actorNickname?.trim() || actorLabel;
+  // An AI comment carries the authorizing account too, and signing its output
+  // with a person's name would say they wrote it.
+  if (entry.actorKind === "human") return entry.accountName?.trim() || actorLabel;
+  if (entry.actorKind !== "agent") return actorLabel;
   const agentName = entry.agentName?.trim();
   const clientName = entry.clientName?.trim();
   if (agentName && clientName) {
