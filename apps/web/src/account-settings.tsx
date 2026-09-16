@@ -15,6 +15,12 @@ import {
   type ProductPermission,
 } from "./api";
 import { closeAccountEditor, openAccountEditor, type AccountEditor } from "./account-edit-state";
+import {
+  draftDisplayName,
+  MAX_ACCOUNT_NICKNAME_LENGTH,
+  nicknameDraftChanged,
+  parseNicknameDraft,
+} from "./account-nickname";
 import { useI18n, type MessageKey } from "./i18n";
 import type { Product } from "./types";
 
@@ -117,6 +123,73 @@ function PasswordForm({ onCancel }: { onCancel: () => void }) {
 
 function InlineNote({ message, danger = false }: { message: string; danger?: boolean }) {
   return <p className={danger ? "account-note danger" : "account-note"}>{message}</p>;
+}
+
+/**
+ * Choose what your comments are signed with.
+ *
+ * No password field, unlike the two forms below it. Those guard the account;
+ * this is a label, and asking for a password to edit a label only teaches people
+ * to type theirs wherever they are asked.
+ */
+function NicknameForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: () => void }) {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  // Seeded from the stored nickname, never from displayName: starting the field
+  // with the fallback would let one Save turn it into a name the owner never
+  // chose, and the address could then change without it following.
+  const [draft, setDraft] = useState(user.nickname ?? "");
+  const [done, setDone] = useState(false);
+
+  const parsed = parseNicknameDraft(draft);
+  const mutation = useMutation({
+    mutationFn: () => api.changeNickname(parsed.ok ? parsed.nickname : null),
+    onSuccess: async () => {
+      setDone(true);
+      // The signed-in-as line above reads from the bootstrap payload, so without
+      // this the page keeps showing the old name back at you.
+      await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+    },
+  });
+
+  return (
+    <form
+      className="account-password-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        setDone(false);
+        mutation.mutate();
+      }}
+    >
+      <label>
+        {t("nickname")}
+        <input
+          type="text"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder={draftDisplayName("", user)}
+          maxLength={MAX_ACCOUNT_NICKNAME_LENGTH * 2}
+          autoComplete="nickname"
+        />
+      </label>
+      <p className="account-note">{t("nicknameHelp")}</p>
+      {!parsed.ok && <InlineNote danger message={t("nicknameTooLong", { max: MAX_ACCOUNT_NICKNAME_LENGTH })} />}
+      {parsed.ok && <p className="account-note">{t("nicknamePreview", { name: draftDisplayName(draft, user) })}</p>}
+      {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
+      {done && <InlineNote message={t("nicknameChanged")} />}
+      <div className="account-form-actions">
+        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>
+          <X size={15} /> {t("cancel")}
+        </button>
+        <button
+          className="secondary-button"
+          disabled={!parsed.ok || !nicknameDraftChanged(draft, user) || mutation.isPending}
+        >
+          {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("changeNickname")}
+        </button>
+      </div>
+    </form>
+  );
 }
 
 /**
@@ -351,6 +424,7 @@ function AccountRow({
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [email, setEmail] = useState(account.email);
+  const [nickname, setNickname] = useState(account.nickname ?? "");
   const editIntent = `account:${account.id}` as const;
   const open = editor === editIntent;
 
@@ -364,8 +438,13 @@ function AccountRow({
     mutationFn: () => api.updateAccount(account.id, { email: email.trim() }),
     onSuccess: invalidate,
   });
+  const nicknameDraft = parseNicknameDraft(nickname);
+  const renameNickname = useMutation({
+    mutationFn: () => api.updateAccount(account.id, { nickname: nicknameDraft.ok ? nicknameDraft.nickname : null }),
+    onSuccess: invalidate,
+  });
 
-  const error = suspend.error ?? remove.error ?? rename.error;
+  const error = suspend.error ?? remove.error ?? rename.error ?? renameNickname.error;
 
   return (
     <article className={account.disabledAt ? "account-row suspended" : "account-row"}>
@@ -427,6 +506,32 @@ function AccountRow({
               onClick={() => rename.mutate()}
             >
               {rename.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
+            </button>
+          </div>
+          {/* Correcting a name somebody else chose. Unlike the address above it
+              changes nothing they hold, so no session is disturbed. */}
+          <div className="account-email-row">
+            <label>
+              {t("nickname")}
+              <input
+                type="text"
+                value={nickname}
+                onChange={(event) => setNickname(event.target.value)}
+                placeholder={account.email.split("@")[0] || account.email}
+                autoComplete="off"
+              />
+            </label>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={
+                renameNickname.isPending
+                || !nicknameDraft.ok
+                || nicknameDraft.nickname === (account.nickname ?? null)
+              }
+              onClick={() => renameNickname.mutate()}
+            >
+              {renameNickname.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
             </button>
           </div>
           <PermissionGrid account={account} products={products} />
@@ -610,11 +715,19 @@ export function AccountSettings({
             <span><UserRound size={21} /></span>
             <div>
               <small>{t("signedInAs")}</small>
-              <strong>{user.username}</strong>
-              <em>{t(user.role === "admin" ? "administratorRole" : "memberRole")}</em>
+              <strong>{user.displayName}</strong>
+              <em>{user.username} · {t(user.role === "admin" ? "administratorRole" : "memberRole")}</em>
             </div>
           </div>
           <div className="account-edit-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={editor !== null}
+              onClick={() => setEditor(openAccountEditor(editor, "nickname"))}
+            >
+              <Pencil size={15} /> {t("changeNickname")}
+            </button>
             <button
               type="button"
               className="secondary-button"
@@ -632,6 +745,9 @@ export function AccountSettings({
               <Pencil size={15} /> {t("changePassword")}
             </button>
           </div>
+          {editor === "nickname" && (
+            <NicknameForm user={user} onCancel={() => setEditor(closeAccountEditor(editor, "nickname"))} />
+          )}
           {editor === "email" && (
             <EmailForm user={user} onCancel={() => setEditor(closeAccountEditor(editor, "email"))} />
           )}

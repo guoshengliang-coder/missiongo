@@ -52,6 +52,8 @@ export interface MissionGoMcpOptions {
 interface McpAccountAccess {
   readonly accountId: string;
   readonly username: string;
+  /** What the owner calls themselves. Falls back to the address. */
+  readonly displayName: string;
   readonly clientId?: string;
   readonly productIds: "*" | readonly string[];
 }
@@ -68,6 +70,9 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
   return {
     accountId: extra.accountId,
     username: extra.username,
+    // Not part of the guard above: a session opened before this shipped carries
+    // no display name, and refusing it would disconnect clients over a label.
+    displayName: typeof extra.displayName === "string" && extra.displayName ? extra.displayName : extra.username,
     ...(typeof clientId === "string" && clientId ? { clientId } : {}),
     productIds: productIds as "*" | string[],
   };
@@ -160,7 +165,10 @@ export function createMissionGoMcpServer(
       const access = accountAccess(ctx);
       const writeTools = connectionWriteTools(ctx, writeToolsTier);
       return textResult({
-        account: { id: access.accountId, username: access.username },
+        // username stays the sign-in address: it is how the AI confirms whose
+        // account it is on. displayName is the label, alongside rather than
+        // instead.
+        account: { id: access.accountId, username: access.username, displayName: access.displayName },
         permission: access.productIds === "*"
           ? { allProducts: true }
           : { allProducts: false, productIds: access.productIds },

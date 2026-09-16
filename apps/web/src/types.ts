@@ -138,6 +138,8 @@ export interface WorkItemEvent {
   readonly clientId?: string;
   /** The client's registered name, decoded server-side from clientId. Not self-reported. */
   readonly clientName?: string;
+  /** What the account behind accountId calls itself. Resolved server-side, not stored. */
+  readonly accountName?: string;
   readonly executionId?: string;
   readonly createdAt: string;
 }
@@ -152,6 +154,7 @@ export interface WorkItemComment {
   readonly body: Readonly<Record<string, unknown>>;
   readonly accountId?: string;
   readonly clientId?: string;
+  readonly accountName?: string;
   readonly createdAt: string;
   readonly withdrawnAt?: string;
   readonly withdrawnBy?: string;

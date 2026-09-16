@@ -71,3 +71,25 @@ describe("reading a comment body as plain text", () => {
     expect(commentPlainText("free", { text: 42 })).toBe("");
   });
 });
+
+describe("commentAuthor, with accounts", () => {
+  it("signs what a person wrote with their name", () => {
+    expect(commentAuthor({ actorKind: "human", accountName: "阿亮" }, "人工")).toBe("阿亮");
+  });
+
+  it("falls back where there is no account to name", () => {
+    // Events written before accounts were plural, ones written through the
+    // deployment's operator token, and anything from a deleted account.
+    expect(commentAuthor({ actorKind: "human" }, "人工")).toBe("人工");
+    expect(commentAuthor({ actorKind: "human", accountName: "   " }, "人工")).toBe("人工");
+  });
+
+  it("never signs the system with a person's name", () => {
+    expect(commentAuthor({ actorKind: "system", accountName: "阿亮" }, "系统")).toBe("系统");
+  });
+
+  it("never signs an AI's output with the account that authorized it", () => {
+    expect(commentAuthor({ actorKind: "agent", clientName: "Codex", accountName: "阿亮" }, "AI")).toBe("Codex");
+    expect(commentAuthor({ actorKind: "agent", accountName: "阿亮" }, "AI")).toBe("AI");
+  });
+});

@@ -544,6 +544,30 @@ export class MissionGoDatabase {
           .run(202609151610, new Date().toISOString());
       });
     }
+    // Accounts were only ever an email address, so every comment a person wrote
+    // was signed "human" and nothing else. A nickname gives them a name on the
+    // timeline; empty means "use the part of the address before the @", decided
+    // when the name is rendered rather than backfilled here, so that correcting
+    // an address does not leave a stale name behind.
+    //
+    // Only adds a nullable column, so the previous release keeps running against
+    // it -- scripts/rollback.sh reverts code and not schema.
+    const accountNicknameMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609160637")
+      .get() as unknown as { version: number } | undefined;
+    if (!accountNicknameMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(accounts)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "nickname")) {
+          this.connection.exec("ALTER TABLE accounts ADD COLUMN nickname TEXT;");
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609160637, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

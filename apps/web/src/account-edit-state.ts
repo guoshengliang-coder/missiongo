@@ -1,4 +1,4 @@
-export type AccountEditor = "email" | "password" | "new-account" | `account:${string}`;
+export type AccountEditor = "nickname" | "email" | "password" | "new-account" | `account:${string}`;
 
 /**
  * Account settings are read-only until one explicit editor is chosen. While an

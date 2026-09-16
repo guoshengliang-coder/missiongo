@@ -48,6 +48,10 @@ export interface AuthenticatedUser {
   readonly id: string;
   /** The email address the account signs in with. */
   readonly username: string;
+  /** What to show on screen: the nickname, or the address up to the @. Never empty. */
+  readonly displayName: string;
+  /** The nickname as stored. Absent when none is set -- see account-nickname.ts. */
+  readonly nickname?: string;
   readonly role: AccountRole;
 }
 
@@ -100,6 +104,7 @@ export interface ProductAccessEntry {
 export interface Account {
   readonly id: string;
   readonly email: string;
+  readonly nickname?: string;
   readonly role: AccountRole;
   readonly disabledAt?: string;
   readonly createdAt: string;
@@ -209,6 +214,9 @@ export const api = {
     request<AuthSession>("/api/v1/auth/password", { method: "POST", body: JSON.stringify(input) }),
   changeEmail: (input: { currentPassword: string; email: string }) =>
     request<AuthSession>("/api/v1/auth/email", { method: "POST", body: JSON.stringify(input) }),
+  // No password: a nickname is a label on your comments, not what signs you in.
+  changeNickname: (nickname: string | null) =>
+    request<AuthSession>("/api/v1/auth/nickname", { method: "POST", body: JSON.stringify({ nickname }) }),
   listAiAuthorizations: () =>
     request<{ authorizations: AiAuthorization[] }>("/api/v1/ai-authorizations"),
   revokeAiAuthorization: (authorizationId: string) =>
@@ -216,7 +224,10 @@ export const api = {
   listAccounts: () => request<{ accounts: Account[] }>("/api/v1/accounts"),
   createAccount: (input: { email: string; password: string; role: AccountRole }) =>
     request<Account>("/api/v1/accounts", { method: "POST", body: JSON.stringify(input) }),
-  updateAccount: (accountId: string, input: { email?: string; role?: AccountRole; disabled?: boolean; password?: string }) =>
+  updateAccount: (
+    accountId: string,
+    input: { email?: string; nickname?: string | null; role?: AccountRole; disabled?: boolean; password?: string },
+  ) =>
     request<Account>(`/api/v1/accounts/${encodeURIComponent(accountId)}`, {
       method: "PATCH",
       body: JSON.stringify(input),
@@ -350,10 +361,16 @@ export const api = {
       method: "DELETE",
     });
   },
-  transitionItem: (itemKey: string, action: TransitionAction) =>
+  // `note` is why the item is moving. The domain demands one on the ways back to
+  // ready; everywhere else it is simply left out.
+  transitionItem: (itemKey: string, action: TransitionAction, note?: string) =>
     request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transitions`, {
       method: "POST",
-      body: JSON.stringify({ to: action.to, reason: action.reason }),
+      body: JSON.stringify({
+        to: action.to,
+        reason: action.reason,
+        ...(note?.trim() ? { note: note.trim() } : {}),
+      }),
     }),
   getTimeline: (itemKey: string) =>
     request<{ events: WorkItemEvent[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/timeline`),

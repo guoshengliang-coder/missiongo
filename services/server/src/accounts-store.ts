@@ -8,6 +8,13 @@ import type { MissionGoDatabase } from "./storage/database.js";
 
 export { MIN_PASSWORD_LENGTH };
 export const MAX_PASSWORD_LENGTH = 1_024;
+/**
+ * How long a nickname may be. It signs comments and timeline events, where a
+ * long one pushes the timestamp off the line; the same 40 a machine nickname
+ * gets, counted the same way (`String.length`), so the console never offers a
+ * name the server would then refuse.
+ */
+export const MAX_ACCOUNT_NICKNAME_LENGTH = 40;
 /** How stale "last used" is allowed to get, so reading does not cost a write every time. */
 export const AI_AUTHORIZATION_TOUCH_INTERVAL_MS = 5 * 60_000;
 
@@ -55,6 +62,8 @@ export interface ProductAccessEntry {
 export interface AccountSnapshot {
   readonly id: string;
   readonly email: string;
+  /** What this account calls itself. Absent means "use the address". */
+  readonly nickname?: string;
   readonly role: AccountRole;
   /** Set when the account is suspended. Its sessions and AI tokens stop working. */
   readonly disabledAt?: string;
@@ -71,6 +80,7 @@ export interface AccountSnapshot {
 interface AccountRow {
   id: string;
   email: string;
+  nickname: string | null;
   password_scrypt: string;
   role: AccountRole;
   credentials_changed_at: string;
@@ -114,6 +124,39 @@ export function normalizeEmail(value: string): string {
   const email = value.trim();
   if (email.length > 254 || !EMAIL_PATTERN.test(email)) throw invalidInput("Enter a valid email address.");
   return email;
+}
+
+/**
+ * A nickname on its way into the table.
+ *
+ * Blank of any kind means "no nickname" rather than an empty one, so a row never
+ * holds a name that renders as nothing. Whitespace is folded because this is a
+ * byline: it goes on one line next to a timestamp, and a newline in it would
+ * break that line rather than say anything.
+ */
+export function normalizeNickname(value: string | null): string | null {
+  const nickname = (value ?? "").replaceAll(/\s+/gu, " ").trim();
+  if (!nickname) return null;
+  if (nickname.length > MAX_ACCOUNT_NICKNAME_LENGTH) {
+    throw invalidInput(`A nickname must be ${MAX_ACCOUNT_NICKNAME_LENGTH} characters or fewer.`);
+  }
+  for (let position = 0; position < nickname.length; position += 1) {
+    const code = nickname.charCodeAt(position);
+    if (code <= 0x1f || code === 0x7f) throw invalidInput("A nickname cannot contain control characters.");
+  }
+  return nickname;
+}
+
+/**
+ * What to call this account on screen.
+ *
+ * The one place the fallback is written. Nothing is backfilled into the table,
+ * so an account that never set a nickname is named from its address here and
+ * follows the address if it is corrected later. A nickname is self-declared and
+ * not unique -- it says who wrote something, it does not prove it.
+ */
+export function accountDisplayName(account: Pick<AccountSnapshot, "email" | "nickname">): string {
+  return account.nickname?.trim() || account.email.split("@")[0] || account.email;
 }
 
 function assertPassword(value: string): string {
@@ -191,6 +234,31 @@ export class AccountStore {
     return rows.map((row) => mapAccount(row));
   }
 
+  /**
+   * Display names for a batch of account ids, in one query.
+   *
+   * A timeline asks about every event at once, so resolving them one at a time
+   * would cost a statement per row. An item's events come from a handful of
+   * people, and the whole table is created by hand, so the id list is short and
+   * an IN clause does not need paging.
+   *
+   * Suspended and demoted accounts are included on purpose: the question here is
+   * who wrote something, not who may sign in today, and filtering them would
+   * quietly turn their history back into "human". An id with no row -- a deleted
+   * account -- is simply absent, and the caller falls back.
+   */
+  displayNames(accountIds: readonly string[]): ReadonlyMap<string, string> {
+    const ids = [...new Set(accountIds)];
+    if (ids.length === 0) return new Map();
+    const rows = this.database.connection
+      .prepare(`SELECT id, email, nickname FROM accounts WHERE id IN (${ids.map(() => "?").join(", ")})`)
+      .all(...ids) as unknown as Array<{ id: string; email: string; nickname: string | null }>;
+    return new Map(rows.map((row) => [
+      row.id,
+      accountDisplayName({ email: row.email, ...(row.nickname ? { nickname: row.nickname } : {}) }),
+    ]));
+  }
+
   getAccount(accountId: string): AccountSnapshot {
     const row = this.row(accountId);
     if (!row) throw notFound("Account");
@@ -228,7 +296,7 @@ export class AccountStore {
    */
   updateAccount(
     accountId: string,
-    input: { email?: string; role?: AccountRole; disabled?: boolean; password?: string },
+    input: { email?: string; nickname?: string | null; role?: AccountRole; disabled?: boolean; password?: string },
   ): AccountSnapshot {
     const current = this.getAccount(accountId);
     if (input.role !== undefined && input.role !== "admin" && input.role !== "member") {
@@ -236,6 +304,10 @@ export class AccountStore {
     }
     const now = new Date().toISOString();
     if (input.email !== undefined) this.writeEmail(accountId, normalizeEmail(input.email), now);
+    // Deliberately not folded into the credentials stamp below: a name is not a
+    // credential, and correcting somebody's would otherwise sign them out of
+    // every device they own.
+    if (input.nickname !== undefined) this.writeNickname(accountId, normalizeNickname(input.nickname), now);
     const role = input.role ?? current.role;
     const disabledAt = input.disabled === undefined
       ? current.disabledAt ?? null
@@ -287,6 +359,22 @@ export class AccountStore {
       throw new MissionGoError("invalid_credentials", "The current password is not correct.", 401);
     }
     this.writeEmail(accountId, normalizeEmail(email), new Date().toISOString());
+    return this.getAccount(accountId);
+  }
+
+  /**
+   * Change your own display name.
+   *
+   * No password, unlike the address next door. That one is what you sign in
+   * with, so taking it over is taking over the account; a nickname is a label on
+   * comments, and asking for a password to edit a label only teaches people to
+   * type it wherever they are asked. Credentials are untouched for the same
+   * reason -- nobody is signed out over a name.
+   */
+  changeOwnNickname(accountId: string, nickname: string | null): AccountSnapshot {
+    const row = this.row(accountId);
+    if (!row || row.disabled_at) throw notFound("Account");
+    this.writeNickname(accountId, normalizeNickname(nickname), new Date().toISOString());
     return this.getAccount(accountId);
   }
 
@@ -656,6 +744,14 @@ export class AccountStore {
     if (Number(changes.changes) === 0) throw notFound("Authorization");
   }
 
+  private writeNickname(accountId: string, nickname: string | null, now: string): void {
+    // No UNIQUE on the column, so there is no conflict to catch here -- which is
+    // the whole difference from writeEmail below.
+    this.database.connection
+      .prepare("UPDATE accounts SET nickname = ?, updated_at = ? WHERE id = ?")
+      .run(nickname, now, accountId);
+  }
+
   private writeEmail(accountId: string, email: string, now: string): void {
     try {
       this.database.connection
@@ -689,6 +785,7 @@ function mapAccount(row: AccountRow): AccountSnapshot {
   return {
     id: row.id,
     email: row.email,
+    ...(row.nickname ? { nickname: row.nickname } : {}),
     role: row.role,
     ...(row.disabled_at ? { disabledAt: row.disabled_at } : {}),
     credentialsChangedAt: row.credentials_changed_at,

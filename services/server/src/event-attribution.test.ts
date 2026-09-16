@@ -119,6 +119,31 @@ describe("work-item event attribution", () => {
     });
   });
 
+  it("keeps the handover summary's own length limit, which is twice a transition note's", async () => {
+    // Both travel to the timeline as `note`, so a cap written into the shared
+    // path would quietly halve this one. The agent's summary is allowed 4,000.
+    const { store, item } = await seed();
+    store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+
+    const summary = "详细说明".repeat(750);
+    expect(summary.length).toBeGreaterThan(2_000);
+    const submitted = store.submitForVerification({
+      itemKey: item.key,
+      pullRequestUrl: "https://github.com/owner/repo/pull/43",
+      summary,
+      idempotencyKey: "submit-long",
+    });
+    expect(submitted.status).toBe("pending_verification");
+
+    expect(() => store.submitForVerification({
+      itemKey: item.key,
+      pullRequestUrl: "https://github.com/owner/repo/pull/44",
+      summary: "x".repeat(4_001),
+      idempotencyKey: "submit-too-long",
+    })).toThrowError(/4,000 characters or fewer/);
+  });
+
   it("refuses a handover without an https pull request, or from the wrong status", async () => {
     const { store, item } = await seed();
     // The item is still in inbox, so there is nothing to hand over yet.

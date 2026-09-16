@@ -69,3 +69,16 @@ export function dispatchedEvent(payload: Readonly<Record<string, unknown>>): Dis
       : [],
   };
 }
+
+/**
+ * What a person typed when they moved the item.
+ *
+ * Sending work back to Ready has to carry one, which is the case this exists
+ * for; handing merged work over carries the agent's summary in the same field,
+ * and that is worth showing too. Older events have nothing here and render as
+ * they always did.
+ */
+export function statusChangeNote(payload: Readonly<Record<string, unknown>>): string | null {
+  const note = typeof payload.note === "string" ? payload.note.trim() : "";
+  return note || null;
+}

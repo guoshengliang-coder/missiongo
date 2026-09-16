@@ -34,6 +34,8 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 
 - `get_current_account`：确认当前连接账号及其全部产品或指定产品读取范围，并返回服务端期望的
   Skill 版本 `skill.expectedVersion`；已配置公开地址时同时返回 `skill.updateUrl`。
+  `account.username` 始终是登录邮箱，`account.displayName` 是该账号的昵称（未设置时为邮箱 `@` 前
+  的部分）——昵称是自述标签，不构成身份，确认连的是哪个账号要看 `username`。
 - `list_products`：读取可见产品。
 - `list_components`：读取某个产品的一层组件。
 - `list_items`：按产品、状态或类型分页查找条目。

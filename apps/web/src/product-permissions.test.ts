@@ -5,7 +5,7 @@ import type { AuthenticatedUser } from "./api";
 import type { Product } from "./types";
 
 function user(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
-  return { id: "account-1", username: "member@example.com", role: "member", ...overrides };
+  return { id: "account-1", username: "member@example.com", displayName: "member", role: "member", ...overrides };
 }
 
 function product(overrides: Partial<Product> = {}): Product {

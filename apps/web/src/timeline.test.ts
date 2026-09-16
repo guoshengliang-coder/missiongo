@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { dispatchedEvent, groupTimeline } from "./timeline";
+import { dispatchedEvent, groupTimeline, statusChangeNote } from "./timeline";
 import type { WorkItemEvent } from "./types";
 
 const event = (
@@ -126,5 +126,28 @@ describe("the dispatched line", () => {
       itemKeys: [],
     });
     expect(dispatchedEvent({ nodeName: "MacBook", itemKeys: ["AND-37", 9] })?.itemKeys).toEqual(["AND-37"]);
+  });
+});
+
+describe("statusChangeNote", () => {
+  it("returns the reason a person typed, trimmed", () => {
+    expect(statusChangeNote({ reason: "released", note: "  Wrong branch got merged.\n" }))
+      .toBe("Wrong branch got merged.");
+  });
+
+  it("has nothing to show for a move that carried no reason", () => {
+    // Every status change written before the reason was required is in this
+    // position, and so is triage, which never needs one.
+    expect(statusChangeNote({ reason: "triaged" })).toBeNull();
+    expect(statusChangeNote({})).toBeNull();
+    expect(statusChangeNote({ note: "   " })).toBeNull();
+  });
+
+  it("ignores a payload that is not what this build expects", () => {
+    // Payloads are stored JSON. One written by another build must not take the
+    // pane down.
+    expect(statusChangeNote({ note: 12 })).toBeNull();
+    expect(statusChangeNote({ note: null })).toBeNull();
+    expect(statusChangeNote({ note: ["why"] })).toBeNull();
   });
 });
