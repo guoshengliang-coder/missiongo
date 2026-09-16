@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 
+import { MIN_PASSWORD_LENGTH } from "@missiongo/domain";
+
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { hashPassword, verifyPassword, type AccountRole } from "./admin-auth.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
-export const MIN_PASSWORD_LENGTH = 12;
+export { MIN_PASSWORD_LENGTH };
 export const MAX_PASSWORD_LENGTH = 1_024;
 /** How stale "last used" is allowed to get, so reading does not cost a write every time. */
 export const AI_AUTHORIZATION_TOUCH_INTERVAL_MS = 5 * 60_000;
@@ -27,9 +29,24 @@ export interface ProductPermission {
 
 export type ProductCapability = "view" | "operate" | "ai";
 
+/**
+ * Just enough of an account to name it in the product-side editor.
+ *
+ * Deliberately not an AccountSnapshot. A product's creator can read this list
+ * now (AND-58), and `credentialsChangedAt` says when some other account last
+ * changed its password or was suspended. Choosing which rows a member may see
+ * while still sending that column would give away the thing the choosing was
+ * for.
+ */
+export interface AccountSummary {
+  readonly id: string;
+  readonly email: string;
+  readonly role: AccountRole;
+}
+
 /** One account's standing on one product, as the product-side editor shows it. */
 export interface ProductAccessEntry {
-  readonly account: AccountSnapshot;
+  readonly account: AccountSummary;
   readonly permission: ProductPermission;
   /** True for an administrator, who reaches the product whatever the row says. */
   readonly reachesByRole: boolean;
@@ -365,26 +382,63 @@ export class AccountStore {
    * Administrators are included and marked, because a list of "who can reach
    * this product" that silently omits the people who reach everything is a list
    * that misleads.
+   *
+   * `rosterHidden` is for a caller who may administer this product without being
+   * allowed to know who else has an account here -- a product's creator
+   * (AND-58). It keeps the accounts that actually hold something on this
+   * product, plus the administrators, and drops everyone else: an account with
+   * no row is not part of the answer to "who can reach this product", and
+   * listing it would hand a member the whole roster of emails. Administrators
+   * stay for the reason above; they are the one group a member learns about, and
+   * they are who a member goes to for an account in the first place.
+   *
+   * The caller passes this rather than the store deciding, because the store
+   * does not know which door the request came through.
    */
-  listProductAccess(productId: string): readonly ProductAccessEntry[] {
+  listProductAccess(productId: string, options: { rosterHidden?: boolean } = {}): readonly ProductAccessEntry[] {
     const accounts = this.listAccounts();
     const rows = this.database.connection
       .prepare("SELECT account_id, can_view, can_operate, can_use_ai FROM account_products WHERE product_id = ?")
       .all(productId) as unknown as Array<PermissionRow & { account_id: string }>;
     const byAccount = new Map(rows.map((row) => [row.account_id, row]));
-    return accounts.map((account) => {
-      const row = byAccount.get(account.id);
-      return {
-        account,
-        permission: {
-          productId,
-          canView: row?.can_view === 1,
-          canOperate: row?.can_operate === 1,
-          canUseAi: row?.can_use_ai === 1,
-        },
-        reachesByRole: account.role === "admin",
-      };
-    });
+    return accounts
+      .filter((account) => !options.rosterHidden || account.role === "admin" || byAccount.has(account.id))
+      .map((account) => {
+        const row = byAccount.get(account.id);
+        return {
+          account: { id: account.id, email: account.email, role: account.role },
+          permission: {
+            productId,
+            canView: row?.can_view === 1,
+            canOperate: row?.can_operate === 1,
+            canUseAi: row?.can_use_ai === 1,
+          },
+          reachesByRole: account.role === "admin",
+        };
+      });
+  }
+
+  /**
+   * The account to hand a product permission to, found by the email someone
+   * typed.
+   *
+   * `COLLATE NOCASE`, like `verifyCredentials`, because the column is unique
+   * that way and `normalizeEmail` only trims: without it "Member@Example.com"
+   * comes back empty and the caller is told the address has no account, which is
+   * a lie that looks like a typo.
+   *
+   * A suspended account is not grantable and comes back undefined -- the same
+   * answer as an address nobody holds. Writing the row would show up in the
+   * editor as if it had worked while the account's sessions and tokens stay
+   * refused, and telling the caller "suspended" instead of "no such account"
+   * would leak a fact about an account they are not allowed to enumerate.
+   */
+  findGrantableByEmail(email: string): AccountSnapshot | undefined {
+    const row = this.database.connection
+      .prepare("SELECT * FROM accounts WHERE email = ? COLLATE NOCASE")
+      .get(email.trim()) as unknown as AccountRow | undefined;
+    if (!row || row.disabled_at) return undefined;
+    return mapAccount(row);
   }
 
   /**

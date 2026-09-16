@@ -337,7 +337,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .primary-button:hover { transform: translateY(-1px); background: var(--primary-bg-hover); }
 .primary-button.positive { color: var(--primary-fg); background: var(--mint-dark); }
 .primary-button.wide, .secondary-button.wide { width: 100%; }
-.primary-button:disabled, .secondary-button:disabled { opacity: 0.58; cursor: wait; transform: none; }
+.primary-button:disabled, .secondary-button:disabled { opacity: 0.58; cursor: not-allowed; transform: none; }
 .secondary-button {
   min-height: 36px;
   padding: 0 12px;

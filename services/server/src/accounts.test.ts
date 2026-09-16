@@ -7,6 +7,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
+import type { ProductAccessEntry } from "./accounts-store.js";
 import { MissionGoDatabase } from "./storage/database.js";
 import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
 
@@ -315,6 +316,17 @@ describe("Managing accounts", () => {
     });
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ code: "account_email_conflict" });
+  });
+
+  it("refuses to open an account on a password shorter than the minimum", async () => {
+    const { app, adminCookie } = await twoAccountWorkspace();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts",
+      headers: { cookie: adminCookie },
+      payload: { email: "new@example.com", password: "short", role: "member" },
+    });
+    expect(response.statusCode).toBe(400);
   });
 
   it("refuses to remove or demote the last administrator, which would lock everyone out of management", async () => {
@@ -1067,20 +1079,49 @@ describe("Setting permissions from the product's side (item 2.2)", () => {
       .toMatchObject({ canView: true, canOperate: false, canUseAi: true });
   });
 
-  it("is invisible to a member, and refuses an unknown product or account", async () => {
-    const { app, adminCookie, memberCookie, member, shared } = await twoAccountWorkspace();
-    expect((await app.inject({
+  // AND-58 opened these two routes to a product's creator, which splits the one
+  // refusal a member used to get into two: 404 for a product they cannot see at
+  // all, 403 for one they can see but did not create. The 404 is what keeps the
+  // 403 from confirming that a product they were not allowed to know about
+  // exists.
+  it("refuses a member the product side of a product shared with them, without hiding that it exists", async () => {
+    const { app, memberCookie, shared } = await twoAccountWorkspace();
+    const listed = await app.inject({
       method: "GET",
       url: `/api/v1/products/${shared.id}/accounts`,
       headers: { cookie: memberCookie },
-    })).statusCode).toBe(404);
-    expect((await app.inject({
+    });
+    expect(listed.statusCode).toBe(403);
+    expect(listed.json()).toMatchObject({ code: "product_not_owned" });
+    const written = await app.inject({
       method: "PUT",
       url: `/api/v1/products/${shared.id}/accounts`,
       headers: { cookie: memberCookie },
       payload: { accounts: [] },
-    })).statusCode).toBe(404);
+    });
+    expect(written.statusCode).toBe(403);
+    expect(written.json()).toMatchObject({ code: "product_not_owned" });
+  });
 
+  it("answers a member 404 for a product they hold nothing on, rather than 403", async () => {
+    // 403 here would say "this product is not yours", which tells them it is
+    // somebody's -- the one thing a product they cannot see must not reveal.
+    const { app, memberCookie, hidden } = await twoAccountWorkspace();
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/products/${hidden.id}/accounts`,
+      headers: { cookie: memberCookie },
+    })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${hidden.id}/accounts`,
+      headers: { cookie: memberCookie },
+      payload: { accounts: [] },
+    })).statusCode).toBe(404);
+  });
+
+  it("refuses an unknown product or account", async () => {
+    const { app, adminCookie, member, shared } = await twoAccountWorkspace();
     expect((await app.inject({
       method: "GET",
       url: "/api/v1/products/no-such-product/accounts",
@@ -1095,3 +1136,380 @@ describe("Setting permissions from the product's side (item 2.2)", () => {
     expect(member.id).toBeTruthy();
   });
 });
+
+/**
+ * AND-58: a product's creator delegates access to it, not only an administrator.
+ *
+ * The creator's own reach comes from grantCreatorPermissions, so these read and
+ * write through a product the member made, not one that was shared with them.
+ */
+describe("Delegating product access to its creator (AND-58)", () => {
+  async function creatorWorkspace() {
+    const base = await twoAccountWorkspace();
+    const owned = (await base.app.inject({
+      method: "POST",
+      url: "/api/v1/products",
+      headers: { cookie: base.memberCookie },
+      payload: { name: "Member's own", keyPrefix: "OWN" },
+    })).json<{ id: string }>();
+    const outsider = (await base.app.inject({
+      method: "POST",
+      url: "/api/v1/accounts",
+      headers: { cookie: base.adminCookie },
+      payload: { email: "outsider@example.com", password: MEMBER_PASSWORD, role: "member" },
+    })).json<{ id: string }>();
+    const adminId = base.app.missionGoAccounts.listAccounts().find((account) => account.role === "admin")!.id;
+    return { ...base, owned, outsider, adminId };
+  }
+
+  const listFor = async (app: FastifyInstance, cookie: string, productId: string) =>
+    (await app.inject({ method: "GET", url: `/api/v1/products/${productId}/accounts`, headers: { cookie } }))
+      .json<{ accounts: ProductAccessEntry[] }>().accounts;
+
+  const save = (app: FastifyInstance, cookie: string, productId: string, accounts: unknown[]) =>
+    app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${productId}/accounts`,
+      headers: { cookie },
+      payload: { accounts },
+    });
+
+  it("lets the creator read the product side of a product they made", async () => {
+    const { app, memberCookie, owned } = await creatorWorkspace();
+    const listed = await listFor(app, memberCookie, owned.id);
+    expect(listed.find((entry) => entry.account.email === "member@example.com")?.permission)
+      .toMatchObject({ canView: true, canOperate: true, canUseAi: true });
+  });
+
+  it("shows the creator only who holds something, plus the administrators", async () => {
+    // The roster itself stays an administrator's to know: app.ts answers a member
+    // asking who else has an account here with "there is nothing here". Listing
+    // every account from the product side would hand that same roster to anyone
+    // who made a product. Administrators stay because they do reach it, and
+    // because they are who a member asks for a new account.
+    const { app, memberCookie, adminCookie, owned } = await creatorWorkspace();
+    const emails = (await listFor(app, memberCookie, owned.id)).map((entry) => entry.account.email).sort();
+    expect(emails).toEqual(["member@example.com", "owner@example.com"]);
+
+    // Same product, same relation, read by an administrator: everyone.
+    expect((await listFor(app, adminCookie, owned.id)).map((entry) => entry.account.email).sort())
+      .toEqual(["member@example.com", "outsider@example.com", "owner@example.com"]);
+  });
+
+  it("does not tell the creator when anyone else last changed their password", async () => {
+    // Narrowing which rows a member sees while still sending
+    // credentialsChangedAt would give away what the narrowing was for.
+    const { app, memberCookie, owned } = await creatorWorkspace();
+    for (const entry of await listFor(app, memberCookie, owned.id)) {
+      expect(Object.keys(entry.account).sort()).toEqual(["email", "id", "role"]);
+    }
+  });
+
+  it("returns the same narrowed list from a save as from a read", async () => {
+    // The PUT answers with the list too. If only the GET narrowed it, one save
+    // would hand back the whole roster and the decision above would be worth
+    // nothing.
+    const { app, memberCookie, owned, outsider } = await creatorWorkspace();
+    const saved = await save(app, memberCookie, owned.id, [
+      { accountId: outsider.id, canView: true, canOperate: false, canUseAi: false },
+    ]);
+    expect(saved.statusCode).toBe(400);
+
+    const added = await save(app, memberCookie, owned.id, [
+      { email: "outsider@example.com", canView: true, canOperate: false, canUseAi: false },
+    ]);
+    expect(added.statusCode).toBe(200);
+    expect(added.json<{ accounts: ProductAccessEntry[] }>().accounts.map((entry) => entry.account.email).sort())
+      .toEqual(["member@example.com", "outsider@example.com", "owner@example.com"]);
+  });
+
+  it("adds someone by the address that was typed, whatever its case", async () => {
+    // accounts.email is unique COLLATE NOCASE and normalizeEmail only trims, so
+    // a case-sensitive lookup would report a typo for an address that is there.
+    const { app, memberCookie, outsider, owned } = await creatorWorkspace();
+    expect((await save(app, memberCookie, owned.id, [
+      { email: "  OutSider@Example.COM ", canView: false, canOperate: true, canUseAi: false },
+    ])).statusCode).toBe(200);
+    expect(app.missionGoAccounts.listPermissions(outsider.id).find((entry) => entry.productId === owned.id))
+      // Operate implies view, stored that way by the one write path.
+      .toMatchObject({ canView: true, canOperate: true, canUseAi: false });
+  });
+
+  it("takes access away again", async () => {
+    const { app, memberCookie, outsider, owned } = await creatorWorkspace();
+    await save(app, memberCookie, owned.id, [{ email: "outsider@example.com", canView: true, canOperate: false, canUseAi: false }]);
+    const outsiderCookie = await signIn(app, "outsider@example.com", MEMBER_PASSWORD);
+    expect((await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: outsiderCookie } })).json())
+      .toHaveLength(1);
+
+    expect((await save(app, memberCookie, owned.id, [
+      { accountId: outsider.id, canView: false, canOperate: false, canUseAi: false },
+    ])).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: outsiderCookie } })).json())
+      .toHaveLength(0);
+  });
+
+  it("refuses an address nobody holds, and a suspended account, with the same answer", async () => {
+    // Telling them apart would say something about an account this caller is not
+    // allowed to enumerate. Granting a suspended account would also look like it
+    // worked while its sessions and tokens stay refused.
+    const { app, adminCookie, memberCookie, outsider, owned } = await creatorWorkspace();
+    const unknown = await save(app, memberCookie, owned.id, [
+      { email: "nobody@example.com", canView: true, canOperate: false, canUseAi: false },
+    ]);
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.json()).toMatchObject({ code: "account_not_grantable" });
+
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/accounts/${outsider.id}`,
+      headers: { cookie: adminCookie },
+      payload: { disabled: true },
+    });
+    const suspended = await save(app, memberCookie, owned.id, [
+      { email: "outsider@example.com", canView: true, canOperate: false, canUseAi: false },
+    ]);
+    expect(suspended.statusCode).toBe(400);
+    expect(suspended.json()).toMatchObject({ code: "account_not_grantable" });
+  });
+
+  it("refuses an account id the creator was never shown", async () => {
+    // The roster is hidden by not listing it; it would be hidden for nothing if a
+    // guessed id still reached an account through the write side.
+    const { app, memberCookie, outsider, owned } = await creatorWorkspace();
+    const guessed = await save(app, memberCookie, owned.id, [
+      { accountId: outsider.id, canView: true, canOperate: false, canUseAi: false },
+    ]);
+    expect(guessed.statusCode).toBe(400);
+    expect(guessed.json()).toMatchObject({ code: "account_not_grantable" });
+    expect(app.missionGoAccounts.listPermissions(outsider.id)).toEqual([]);
+  });
+
+  it("will not let the creator change their own row, by id or by address", async () => {
+    // Clearing their own view drops the product off their own list, and clearing
+    // operate costs them renaming and archiving it -- while the button still
+    // looks live. This editor is for other people's rows.
+    const { app, memberCookie, member, owned } = await creatorWorkspace();
+    for (const entry of [
+      { accountId: member.id, canView: false, canOperate: false, canUseAi: false },
+      { email: "member@example.com", canView: true, canOperate: false, canUseAi: false },
+    ]) {
+      const refused = await save(app, memberCookie, owned.id, [entry]);
+      expect(refused.statusCode).toBe(403);
+      expect(refused.json()).toMatchObject({ code: "own_access_unchangeable" });
+    }
+    expect(app.missionGoAccounts.listPermissions(member.id).find((entry) => entry.productId === owned.id))
+      .toMatchObject({ canView: true, canOperate: true, canUseAi: true });
+  });
+
+  it("saves the rows the editor draws read-only without refusing the whole request", async () => {
+    // The editor posts every row it drew, including the creator's own and the
+    // administrators'. An entry asking for exactly what is stored is not an
+    // attempt to cross those lines, and refusing it would make every save fail.
+    const { app, memberCookie, member, adminId, owned } = await creatorWorkspace();
+    const saved = await save(app, memberCookie, owned.id, [
+      { accountId: member.id, canView: true, canOperate: true, canUseAi: true },
+      { accountId: adminId, canView: false, canOperate: false, canUseAi: false },
+      { email: "outsider@example.com", canView: true, canOperate: false, canUseAi: false },
+    ]);
+    expect(saved.statusCode).toBe(200);
+  });
+
+  it("will not let the creator narrow an administrator's AI reach", async () => {
+    // What commit 0637733 found: an administrator with no can_use_ai row reaches
+    // every product, and one with rows is bounded by them. A member writing a row
+    // onto an administrator would cut that administrator's AI down to this one
+    // product, silently and after the fact.
+    const { app, memberCookie, adminId, owned } = await creatorWorkspace();
+    const token = aiToken(app, adminAccount(), adminId);
+    expect((await callMcp(app, token, 1, "get_current_account")).structuredContent)
+      .toMatchObject({ permission: { allProducts: true } });
+
+    const refused = await save(app, memberCookie, owned.id, [
+      { accountId: adminId, canView: true, canOperate: true, canUseAi: true },
+    ]);
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toMatchObject({ code: "admin_access_unchangeable" });
+
+    expect(app.missionGoAccounts.listPermissions(adminId)).toEqual([]);
+    expect((await callMcp(app, token, 2, "get_current_account")).structuredContent)
+      .toMatchObject({ permission: { allProducts: true } });
+  });
+
+  it("will not let the creator widen an administrator's AI reach either", async () => {
+    // The same row read the other way round. An administrator bounded to a
+    // whitelist by ADMIN_AUTHORIZED_PRODUCT_IDS holds exactly one can_use_ai row;
+    // clearing it removes the bound instead of tightening it, so a member could
+    // lift a deployment-level whitelist from inside a product they happen to own.
+    const app = open(join(await temporaryDirectory(), "missiongo.sqlite"));
+    const adminCookie = await signIn(app, "owner@example.com", ADMIN_PASSWORD);
+    const adminId = app.missionGoAccounts.listAccounts().find((account) => account.role === "admin")!.id;
+    const member = (await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts",
+      headers: { cookie: adminCookie },
+      payload: { email: "member@example.com", password: MEMBER_PASSWORD, role: "member" },
+    })).json<{ id: string }>();
+    const memberCookie = await signIn(app, "member@example.com", MEMBER_PASSWORD);
+    const owned = (await app.inject({
+      method: "POST",
+      url: "/api/v1/products",
+      headers: { cookie: memberCookie },
+      payload: { name: "Member's own", keyPrefix: "OWN" },
+    })).json<{ id: string }>();
+
+    // The shape ADMIN_AUTHORIZED_PRODUCT_IDS leaves behind: one row, on this
+    // product, bounding the administrator's AI to it.
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/accounts/${adminId}/products`,
+      headers: { cookie: adminCookie },
+      payload: { permissions: [{ productId: owned.id, canView: true, canOperate: true, canUseAi: true }] },
+    });
+    const token = aiToken(app, adminAccount(), adminId);
+    expect((await callMcp(app, token, 1, "get_current_account")).structuredContent)
+      .toMatchObject({ permission: { allProducts: false, productIds: [owned.id] } });
+
+    const refused = await save(app, memberCookie, owned.id, [
+      { accountId: adminId, canView: false, canOperate: false, canUseAi: false },
+    ]);
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toMatchObject({ code: "admin_access_unchangeable" });
+    expect((await callMcp(app, token, 2, "get_current_account")).structuredContent)
+      .toMatchObject({ permission: { allProducts: false, productIds: [owned.id] } });
+    expect(member.id).toBeTruthy();
+  });
+
+  it("does not pass the power to delegate along with the access", async () => {
+    // The item asked for no authorization or claiming flow, and this is what
+    // makes that true: the right to delegate comes from role and
+    // created_by_account_id, never from a row in account_products.
+    const { app, memberCookie, owned } = await creatorWorkspace();
+    await save(app, memberCookie, owned.id, [
+      { email: "outsider@example.com", canView: true, canOperate: true, canUseAi: true },
+    ]);
+    const outsiderCookie = await signIn(app, "outsider@example.com", MEMBER_PASSWORD);
+
+    const delegated = await app.inject({
+      method: "GET",
+      url: `/api/v1/products/${owned.id}/accounts`,
+      headers: { cookie: outsiderCookie },
+    });
+    expect(delegated.statusCode).toBe(403);
+    expect(delegated.json()).toMatchObject({ code: "product_not_owned" });
+    // Nor archiving it, which is the other thing ownership decides.
+    expect((await app.inject({
+      method: "PATCH",
+      url: `/api/v1/products/${owned.id}`,
+      headers: { cookie: outsiderCookie },
+      payload: { archived: true },
+    })).statusCode).toBe(403);
+  });
+
+  it("gives a granted account's AI client the product, without re-authorization", async () => {
+    const { app, memberCookie, outsider, owned } = await creatorWorkspace();
+    const token = aiToken(app, adminAccount(), outsider.id);
+    expect((await callMcp(app, token, 1, "get_current_account")).structuredContent)
+      .toMatchObject({ permission: { allProducts: false, productIds: [] } });
+
+    await save(app, memberCookie, owned.id, [
+      { email: "outsider@example.com", canView: true, canOperate: false, canUseAi: true },
+    ]);
+    expect((await callMcp(app, token, 2, "get_current_account")).structuredContent)
+      .toMatchObject({ permission: { allProducts: false, productIds: [owned.id] } });
+  });
+
+  it("leaves a product whose creator was deleted to administrators only", async () => {
+    // deleteAccount leaves created_by_account_id pointing at an id nobody holds,
+    // and nothing backfills that one. It matches no live account, so every member
+    // is refused and only an administrator can act -- the safe way to fail.
+    const { app, adminCookie, memberCookie, member, owned } = await creatorWorkspace();
+    const secondMemberCookie = await (async () => {
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/accounts",
+        headers: { cookie: adminCookie },
+        payload: { email: "heir@example.com", password: MEMBER_PASSWORD, role: "member" },
+      });
+      await save(app, memberCookie, owned.id, [
+        { email: "heir@example.com", canView: true, canOperate: true, canUseAi: false },
+      ]);
+      return signIn(app, "heir@example.com", MEMBER_PASSWORD);
+    })();
+
+    await app.inject({ method: "DELETE", url: `/api/v1/accounts/${member.id}`, headers: { cookie: adminCookie } });
+    expect(app.missionGoStore.getProduct(owned.id).createdByAccountId).toBe(member.id);
+
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/products/${owned.id}/accounts`,
+      headers: { cookie: secondMemberCookie },
+    })).statusCode).toBe(403);
+    expect((await listFor(app, adminCookie, owned.id)).length).toBeGreaterThan(0);
+  });
+
+  it("still lets access be fixed after the product is archived", async () => {
+    // Deliberate: needing to repair who reaches a product is a reason to un-retire
+    // it, and refusing here would mean an archived product's permissions could
+    // never be corrected.
+    const { app, memberCookie, owned } = await creatorWorkspace();
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/products/${owned.id}`,
+      headers: { cookie: memberCookie },
+      payload: { archived: true },
+    });
+    expect((await save(app, memberCookie, owned.id, [
+      { email: "outsider@example.com", canView: true, canOperate: false, canUseAi: false },
+    ])).statusCode).toBe(200);
+  });
+
+  it("refuses two entries for one account, and more entries than it will take", async () => {
+    const { app, memberCookie, outsider, owned } = await creatorWorkspace();
+    expect((await save(app, memberCookie, owned.id, [
+      { accountId: outsider.id, canView: true, canOperate: false, canUseAi: false },
+      { email: "outsider@example.com", canView: false, canOperate: false, canUseAi: false },
+    ])).statusCode).toBe(400);
+
+    expect((await save(
+      app,
+      memberCookie,
+      owned.id,
+      Array.from({ length: 201 }, () => ({ accountId: outsider.id, canView: true, canOperate: false, canUseAi: false })),
+    )).statusCode).toBe(400);
+  });
+
+  it("keeps working for a deployment token, which has no account to narrow for", async () => {
+    // requireProductOwnership and the guards both step aside for a deployment
+    // credential: it is already past every product check, so there is nobody to
+    // hide the roster from. What must not happen is it starting to need a
+    // session, which is what reading the caller's role carelessly would cause.
+    const operatorToken = "product-access-operator-token";
+    const app = buildApp({
+      databasePath: join(await temporaryDirectory(), "missiongo.sqlite"),
+      adminAccount: adminAccount(),
+      adminToken: operatorToken,
+      publicOrigin: "https://missiongo.test",
+    });
+    apps.push(app);
+    const adminCookie = await signIn(app, "owner@example.com", ADMIN_PASSWORD);
+    const product = (await app.inject({
+      method: "POST",
+      url: "/api/v1/products",
+      headers: { cookie: adminCookie },
+      payload: { name: "Operator", keyPrefix: "OPS" },
+    })).json<{ id: string }>();
+
+    const headers = { authorization: `Bearer ${operatorToken}` };
+    const listed = await app.inject({ method: "GET", url: `/api/v1/products/${product.id}/accounts`, headers });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json<{ accounts: ProductAccessEntry[] }>().accounts.length).toBeGreaterThan(0);
+    expect((await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${product.id}/accounts`,
+      headers,
+      payload: { accounts: [] },
+    })).statusCode).toBe(200);
+  });
+});
+

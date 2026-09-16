@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, LoaderCircle, Pencil, Plus, Trash2, Unplug, UserRound, X } from "lucide-react";
 
+import { MIN_PASSWORD_LENGTH } from "@missiongo/domain";
+
 import {
   api,
   ApiError,
@@ -9,19 +11,21 @@ import {
   type AccountRole,
   type AuthenticatedUser,
   type AiAuthorization,
+  type ProductAccessEntry,
   type ProductPermission,
 } from "./api";
 import { closeAccountEditor, openAccountEditor, type AccountEditor } from "./account-edit-state";
 import { useI18n, type MessageKey } from "./i18n";
 import type { Product } from "./types";
 
-export const MIN_PASSWORD_LENGTH = 12;
-
 function messageFor(error: unknown, t: (key: MessageKey) => string, fallback: string): string {
   if (error instanceof ApiError) {
     if (error.code === "account_email_conflict") return t("emailInUse");
     if (error.code === "last_admin_required") return t("lastAdminRequired");
     if (error.code === "invalid_credentials") return t("currentPasswordWrong");
+    if (error.code === "account_not_grantable") return t("accountNotGrantable");
+    if (error.code === "own_access_unchangeable") return t("ownAccessUnchangeable");
+    if (error.code === "admin_access_unchangeable") return t("adminAccessUnchangeable");
     return error.message || fallback;
   }
   return error instanceof Error && error.message ? error.message : fallback;
@@ -95,7 +99,7 @@ function PasswordForm({ onCancel }: { onCancel: () => void }) {
           required
         />
       </label>
-      {tooShort && <p className="account-note">{t("passwordTooShort")}</p>}
+      {tooShort && <p className="account-note">{t("passwordTooShort", { count: MIN_PASSWORD_LENGTH })}</p>}
       {mismatch && <p className="account-note">{t("passwordsDoNotMatch")}</p>}
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
       {done && <InlineNote message={t("passwordChanged")} />}
@@ -463,6 +467,8 @@ function NewAccountForm({ onCancel, onCreated }: { onCancel: () => void; onCreat
     },
   });
 
+  const tooShort = password.length > 0 && password.length < MIN_PASSWORD_LENGTH;
+
   return (
     <form
       className="account-add-form"
@@ -492,7 +498,7 @@ function NewAccountForm({ onCancel, onCreated }: { onCancel: () => void; onCreat
           minLength={MIN_PASSWORD_LENGTH}
           required
         />
-        <small>{t("newAccountPasswordHelp")}</small>
+        <small>{t("newAccountPasswordHelp", { count: MIN_PASSWORD_LENGTH })}</small>
       </label>
       <label>
         {t("accountRole")}
@@ -501,6 +507,7 @@ function NewAccountForm({ onCancel, onCreated }: { onCancel: () => void; onCreat
           <option value="admin">{t("administratorRole")}</option>
         </select>
       </label>
+      {tooShort && <p className="account-note">{t("passwordTooShort", { count: MIN_PASSWORD_LENGTH })}</p>}
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
       <div className="account-form-actions">
         <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>
@@ -652,10 +659,17 @@ export function AccountSettings({
  * an account holds -- replacing its whole set would revoke permissions that were
  * never on screen.
  */
-export function ProductAccessSettings({ productId }: { productId: string }) {
+export function ProductAccessSettings(
+  // `user` is undefined only while the session loads. The tab that mounts this is
+  // already withheld until it resolves, so this is a type-level possibility
+  // rather than a state worth drawing differently.
+  { productId, user }: { productId: string; user: AuthenticatedUser | undefined },
+) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<Record<string, ProductPermission> | null>(null);
+  const [added, setAdded] = useState<readonly string[]>([]);
+  const [email, setEmail] = useState("");
   const [saved, setSaved] = useState(false);
 
   const query = useQuery({
@@ -663,22 +677,23 @@ export function ProductAccessSettings({ productId }: { productId: string }) {
     queryFn: () => api.listProductAccounts(productId),
   });
 
+  // An administrator was handed the whole roster and edits it in place. A
+  // creator was handed only who holds something, so it adds people by address
+  // and leaves its own row and the administrators' alone -- matching the rows
+  // the server will refuse to let it change.
+  const editsRoster = user?.role === "admin";
+
   const mutation = useMutation({
-    mutationFn: () => api.setProductAccounts(
-      productId,
-      Object.entries(draft ?? {}).map(([accountId, permission]) => ({
-        accountId,
-        canView: permission.canView,
-        canOperate: permission.canOperate,
-        canUseAi: permission.canUseAi,
-      })),
-    ),
+    mutationFn: (accounts: Array<{ accountId?: string; email?: string } & Omit<ProductPermission, "productId">>) =>
+      api.setProductAccounts(productId, accounts),
     onSuccess: async () => {
       setSaved(true);
       setDraft(null);
+      setAdded([]);
       await queryClient.invalidateQueries({ queryKey: ["product-accounts", productId] });
       // A permission change can add or remove a product from someone's list.
       await queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      await queryClient.invalidateQueries({ queryKey: ["products"] });
     },
   });
 
@@ -689,15 +704,49 @@ export function ProductAccessSettings({ productId }: { productId: string }) {
   const permissionFor = (accountId: string): ProductPermission =>
     draft?.[accountId] ?? entries.find((entry) => entry.account.id === accountId)!.permission;
 
+  /** A row this caller may edit. The server refuses the rest; this stops the offer. */
+  const editable = (entry: ProductAccessEntry): boolean =>
+    editsRoster || (entry.account.id !== user?.id && entry.account.role !== "admin");
+
   const toggle = (accountId: string, field: "canView" | "canOperate" | "canUseAi", checked: boolean) => {
     setSaved(false);
     const base = Object.fromEntries(entries.map((entry) => [entry.account.id, permissionFor(entry.account.id)]));
     setDraft({ ...base, [accountId]: { ...permissionFor(accountId), [field]: checked } });
   };
 
+  const submit = () => {
+    const rows = entries
+      // Send only what this caller may change. An administrator sends the grid it
+      // sees; a creator that also posted its own row and the administrators'
+      // would have the whole save refused over rows it was never offered.
+      .filter(editable)
+      .map((entry) => ({ accountId: entry.account.id, ...permissionFor(entry.account.id) }));
+    const newcomers = added.map((address) => ({ email: address, canView: true, canOperate: false, canUseAi: false }));
+    mutation.mutate([...rows, ...newcomers]);
+  };
+
+  const addByEmail = () => {
+    const address = email.trim();
+    // The server decides whether the address has an account; this only keeps the
+    // same one from being queued twice, which it would refuse as a duplicate.
+    if (!address || added.some((existing) => existing.toLowerCase() === address.toLowerCase())) return;
+    setSaved(false);
+    setAdded([...added, address]);
+    setEmail("");
+  };
+
+  const remove = (accountId: string) => {
+    setSaved(false);
+    const base = Object.fromEntries(entries.map((entry) => [entry.account.id, permissionFor(entry.account.id)]));
+    // Clearing all three is how the one write path removes the row.
+    setDraft({ ...base, [accountId]: { productId, canView: false, canOperate: false, canUseAi: false } });
+  };
+
+  const dirty = draft !== null || added.length > 0;
+
   return (
     <div className="account-permissions">
-      <p className="account-note">{t("productAccessHelp")}</p>
+      <p className="account-note">{editsRoster ? t("productAccessHelp") : t("productAccessOwnerHelp")}</p>
       <table>
         <thead>
           <tr>
@@ -705,11 +754,14 @@ export function ProductAccessSettings({ productId }: { productId: string }) {
             <th>{t("permissionView")}</th>
             <th>{t("permissionOperate")}</th>
             <th>{t("permissionUseAi")}</th>
+            {!editsRoster && <th />}
           </tr>
         </thead>
         <tbody>
           {entries.map((entry) => {
             const permission = permissionFor(entry.account.id);
+            const mayEdit = editable(entry);
+            const gone = permission.canView === false && permission.canOperate === false && permission.canUseAi === false;
             return (
               <tr key={entry.account.id}>
                 <td>
@@ -717,6 +769,12 @@ export function ProductAccessSettings({ productId }: { productId: string }) {
                   {/* An administrator reaches this product whatever the row
                       says, so a list that did not mark them would mislead. */}
                   {entry.reachesByRole && <em className="account-role-note"> · {t("reachesByRole")}</em>}
+                  {/* Why the creator's own row is read-only: clearing it would
+                      drop the product off their own list and take the settings
+                      page with it. */}
+                  {!editsRoster && entry.account.id === user?.id && (
+                    <em className="account-role-note"> · {t("accessYoursToKeep")}</em>
+                  )}
                 </td>
                 {(["canView", "canOperate", "canUseAi"] as const).map((field) => (
                   <td key={field}>
@@ -725,21 +783,63 @@ export function ProductAccessSettings({ productId }: { productId: string }) {
                       checked={field === "canView"
                         ? permission.canView || permission.canOperate || permission.canUseAi
                         : permission[field]}
-                      disabled={field === "canView" && (permission.canOperate || permission.canUseAi)}
+                      disabled={!mayEdit || (field === "canView" && (permission.canOperate || permission.canUseAi))}
                       onChange={(event) => toggle(entry.account.id, field, event.target.checked)}
                       aria-label={`${entry.account.email} · ${t(field === "canView" ? "permissionView" : field === "canOperate" ? "permissionOperate" : "permissionUseAi")}`}
                     />
                   </td>
                 ))}
+                {!editsRoster && (
+                  <td>
+                    {mayEdit && !gone && (
+                      <button className="text-button" onClick={() => remove(entry.account.id)}>
+                        {t("removeAccess")}
+                      </button>
+                    )}
+                    {mayEdit && gone && <span className="account-note">{t("accessRemovedOnSave")}</span>}
+                  </td>
+                )}
               </tr>
             );
           })}
+          {added.map((address) => (
+            <tr key={`pending-${address}`}>
+              <td>{address}<em className="account-role-note"> · {t("accessPendingSave")}</em></td>
+              <td colSpan={4}>
+                <button className="text-button" onClick={() => setAdded(added.filter((existing) => existing !== address))}>
+                  {t("removeAccess")}
+                </button>
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
+      {!editsRoster && (
+        <form
+          className="account-email-row"
+          onSubmit={(event) => {
+            event.preventDefault();
+            addByEmail();
+          }}
+        >
+          {/* Typed rather than picked: a creator may add someone without being
+              able to read who else has an account here. */}
+          <input
+            type="email"
+            value={email}
+            placeholder={t("addByEmailPlaceholder")}
+            onChange={(event) => setEmail(event.target.value)}
+            aria-label={t("addByEmail")}
+          />
+          <button className="secondary-button" type="submit" disabled={!email.trim()}>
+            <Plus size={15} /> {t("addByEmail")}
+          </button>
+        </form>
+      )}
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
       <div className="account-permissions-footer">
         {saved && <span className="account-note">{t("productAccessSaved")}</span>}
-        <button className="secondary-button" disabled={mutation.isPending || !draft} onClick={() => mutation.mutate()}>
+        <button className="secondary-button" disabled={mutation.isPending || !dirty} onClick={submit}>
           {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
         </button>
       </div>
