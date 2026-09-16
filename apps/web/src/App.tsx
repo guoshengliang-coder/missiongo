@@ -107,6 +107,7 @@ import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
 import { AccountSettings, ProductAccessSettings } from "./account-settings";
+import { mayAdministerProduct } from "./product-permissions";
 import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog } from "@missiongo/domain";
 import { dispatchedEvent, groupTimeline } from "./timeline";
@@ -3651,13 +3652,15 @@ function ProductSettings({
   const { t } = useI18n();
   const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components" | "tokens" | "access">("product");
   const [name, setName] = useState(product.name);
-  // Retiring a product retires it for everyone who shares it, so it stays with
-  // whoever created it, or an administrator. The server refuses either way; this
-  // only keeps the button from offering something that will come back a 403.
-  // Unknown user means the session is still loading -- assume allowed rather
-  // than flashing the control disabled, since the server has the final say.
-  const mayArchive = !user || user.role === "admin" || !product.createdByAccountId
-    || product.createdByAccountId === user.id;
+  // Retiring a product retires it for everyone who shares it, and deciding who
+  // else reaches it is the same call, so both come from one judgement that
+  // matches the server's. The server refuses either way; this only keeps a
+  // control from offering something that will come back 403.
+  const mayAdminister = user !== undefined && mayAdministerProduct(user, product);
+  // Unknown user means the session is still loading. A button is better drawn
+  // hopefully and refused than flickering disabled; a tab is better withheld
+  // than shown and then failing to load, so the two differ here on purpose.
+  const mayArchive = !user || mayAdminister || !product.createdByAccountId;
   const [newComponentName, setNewComponentName] = useState("");
   const [newComponentKind, setNewComponentKind] = useState<ComponentKind>("android");
   const [addingComponent, setAddingComponent] = useState(false);
@@ -3729,10 +3732,10 @@ function ProductSettings({
         >
           {t("sdkTokens")}
         </button>
-        {/* Who else can reach this product is an administrator's question; a
-            member looking at a product shared with them has no say in it, and
-            the endpoint answers them 404 anyway. */}
-        {user?.role === "admin" && (
+        {/* Who else reaches this product is the creator's call or an
+            administrator's (AND-58). A member looking at a product shared with
+            them has no say in it, and the endpoint answers them 403. */}
+        {mayAdminister && (
           <button
             type="button"
             role="tab"
@@ -3747,7 +3750,7 @@ function ProductSettings({
       {activeSettingsTab === "access" ? (
         <section className="product-settings-section" role="tabpanel">
           <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("productAccess")}</h3></div></header>
-          <ProductAccessSettings productId={product.id} />
+          <ProductAccessSettings productId={product.id} user={user} />
         </section>
       ) : activeSettingsTab === "tokens" ? (
         <SdkTokenSettings product={product} />

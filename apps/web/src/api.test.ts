@@ -132,3 +132,52 @@ describe("machine nickname API", () => {
     });
   });
 });
+
+describe("setProductAccounts", () => {
+  const accessResponse = () => new Response(JSON.stringify({ accounts: [] }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+
+  it("sends entries named by id", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(accessResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.setProductAccounts("product 1", [
+      { accountId: "account-1", canView: true, canOperate: false, canUseAi: false },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/products/product%201/accounts", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({
+        accounts: [{ accountId: "account-1", canView: true, canOperate: false, canUseAi: false }],
+      }),
+    }));
+  });
+
+  it("sends an entry named by email, which is how a creator adds someone", async () => {
+    // A product's creator cannot list who has an account here, so the address it
+    // typed has to reach the server as an address for the server to resolve.
+    const fetchMock = vi.fn().mockResolvedValueOnce(accessResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.setProductAccounts("product-1", [
+      { email: "member@example.com", canView: true, canOperate: false, canUseAi: false },
+    ]);
+
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({
+      accounts: [{ email: "member@example.com", canView: true, canOperate: false, canUseAi: false }],
+    }));
+  });
+
+  it("surfaces a refused grant with the server's message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      code: "own_access_unchangeable",
+      title: "You cannot change your own access to a product you created. Ask an administrator.",
+    }), { status: 403, headers: { "content-type": "application/problem+json" } })));
+
+    await expect(api.setProductAccounts("product-1", [
+      { accountId: "account-1", canView: false, canOperate: false, canUseAi: false },
+    ])).rejects.toMatchObject({ status: 403, code: "own_access_unchangeable" });
+  });
+});
