@@ -317,6 +317,17 @@ describe("Managing accounts", () => {
     expect(response.json()).toMatchObject({ code: "account_email_conflict" });
   });
 
+  it("refuses to open an account on a password shorter than the minimum", async () => {
+    const { app, adminCookie } = await twoAccountWorkspace();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts",
+      headers: { cookie: adminCookie },
+      payload: { email: "new@example.com", password: "short", role: "member" },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
   it("refuses to remove or demote the last administrator, which would lock everyone out of management", async () => {
     const { app, adminCookie } = await twoAccountWorkspace();
     const admin = app.missionGoAccounts.listAccounts().find((account) => account.role === "admin")!;

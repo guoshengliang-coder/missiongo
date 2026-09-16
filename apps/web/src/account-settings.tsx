@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, LoaderCircle, Plus, Trash2, Unplug, UserRound } from "lucide-react";
 
+import { MIN_PASSWORD_LENGTH } from "@missiongo/domain";
+
 import {
   api,
   ApiError,
@@ -13,8 +15,6 @@ import {
 } from "./api";
 import { useI18n, type MessageKey } from "./i18n";
 import type { Product } from "./types";
-
-export const MIN_PASSWORD_LENGTH = 12;
 
 function messageFor(error: unknown, t: (key: MessageKey) => string, fallback: string): string {
   if (error instanceof ApiError) {
@@ -94,7 +94,7 @@ function PasswordForm() {
           required
         />
       </label>
-      {tooShort && <p className="account-note">{t("passwordTooShort")}</p>}
+      {tooShort && <p className="account-note">{t("passwordTooShort", { count: MIN_PASSWORD_LENGTH })}</p>}
       {mismatch && <p className="account-note">{t("passwordsDoNotMatch")}</p>}
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
       {done && <InlineNote message={t("passwordChanged")} />}
@@ -423,6 +423,8 @@ function NewAccountForm() {
     },
   });
 
+  const tooShort = password.length > 0 && password.length < MIN_PASSWORD_LENGTH;
+
   return (
     <form
       className="account-add-form"
@@ -452,7 +454,7 @@ function NewAccountForm() {
           minLength={MIN_PASSWORD_LENGTH}
           required
         />
-        <small>{t("newAccountPasswordHelp")}</small>
+        <small>{t("newAccountPasswordHelp", { count: MIN_PASSWORD_LENGTH })}</small>
       </label>
       <label>
         {t("accountRole")}
@@ -461,6 +463,7 @@ function NewAccountForm() {
           <option value="admin">{t("administratorRole")}</option>
         </select>
       </label>
+      {tooShort && <p className="account-note">{t("passwordTooShort", { count: MIN_PASSWORD_LENGTH })}</p>}
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
       <button className="primary-button" disabled={mutation.isPending || !email.trim() || password.length < MIN_PASSWORD_LENGTH}>
         {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("addAccount")}
