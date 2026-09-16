@@ -516,6 +516,19 @@ export class MissionGoDatabase {
           .run(202609151500, new Date().toISOString());
       });
     }
+    // A person's byline is distinct from the email used to sign in. Existing
+    // accounts remain unsigned until an administrator gives them a nickname.
+    const accountNicknameMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609160922")
+      .get() as unknown as { version: number } | undefined;
+    if (!accountNicknameMigration) {
+      this.transaction(() => {
+        const columns = this.connection.prepare("PRAGMA table_info(accounts)").all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "nickname")) this.connection.exec("ALTER TABLE accounts ADD COLUMN nickname TEXT;");
+        this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609160922, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

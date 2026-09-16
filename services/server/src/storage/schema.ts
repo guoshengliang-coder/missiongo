@@ -34,6 +34,7 @@ export const INITIAL_SCHEMA = `
   CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    nickname TEXT,
     password_scrypt TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
     credentials_changed_at TEXT NOT NULL,

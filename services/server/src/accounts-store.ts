@@ -38,6 +38,7 @@ export interface ProductAccessEntry {
 export interface AccountSnapshot {
   readonly id: string;
   readonly email: string;
+  readonly nickname?: string;
   readonly role: AccountRole;
   /** Set when the account is suspended. Its sessions and AI tokens stop working. */
   readonly disabledAt?: string;
@@ -54,6 +55,7 @@ export interface AccountSnapshot {
 interface AccountRow {
   id: string;
   email: string;
+  nickname: string | null;
   password_scrypt: string;
   role: AccountRole;
   credentials_changed_at: string;
@@ -92,6 +94,17 @@ interface PermissionRow {
 // RFC permits; a real address proves itself by receiving mail, and nothing here
 // sends any.
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
+export const MAX_ACCOUNT_NICKNAME_LENGTH = 80;
+
+export function normalizeAccountNickname(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const nickname = value.trim();
+  if (!nickname) return null;
+  if (nickname.length > MAX_ACCOUNT_NICKNAME_LENGTH || /[\r\n]/u.test(nickname)) {
+    throw invalidInput(`An account nickname must be ${MAX_ACCOUNT_NICKNAME_LENGTH} characters or fewer and on one line.`);
+  }
+  return nickname;
+}
 
 export function normalizeEmail(value: string): string {
   const email = value.trim();
@@ -180,7 +193,7 @@ export class AccountStore {
     return mapAccount(row);
   }
 
-  createAccount(input: { email: string; password: string; role: AccountRole }): AccountSnapshot {
+  createAccount(input: { email: string; nickname?: string | null; password: string; role: AccountRole }): AccountSnapshot {
     const email = normalizeEmail(input.email);
     const password = assertPassword(input.password);
     if (input.role !== "admin" && input.role !== "member") throw invalidInput("Account role must be admin or member.");
@@ -189,10 +202,10 @@ export class AccountStore {
     try {
       this.database.connection
         .prepare(
-          `INSERT INTO accounts (id, email, password_scrypt, role, credentials_changed_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO accounts (id, email, nickname, password_scrypt, role, credentials_changed_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, email, hashPassword(password), input.role, now, now, now);
+        .run(id, email, normalizeAccountNickname(input.nickname), hashPassword(password), input.role, now, now, now);
     } catch (error) {
       if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
         throw conflict("account_email_conflict", "That email address already has an account.");
@@ -211,7 +224,7 @@ export class AccountStore {
    */
   updateAccount(
     accountId: string,
-    input: { email?: string; role?: AccountRole; disabled?: boolean; password?: string },
+    input: { email?: string; nickname?: string | null; role?: AccountRole; disabled?: boolean; password?: string },
   ): AccountSnapshot {
     const current = this.getAccount(accountId);
     if (input.role !== undefined && input.role !== "admin" && input.role !== "member") {
@@ -219,6 +232,10 @@ export class AccountStore {
     }
     const now = new Date().toISOString();
     if (input.email !== undefined) this.writeEmail(accountId, normalizeEmail(input.email), now);
+    if (input.nickname !== undefined) {
+      this.database.connection.prepare("UPDATE accounts SET nickname = ?, updated_at = ? WHERE id = ?")
+        .run(normalizeAccountNickname(input.nickname), now, accountId);
+    }
     const role = input.role ?? current.role;
     const disabledAt = input.disabled === undefined
       ? current.disabledAt ?? null
@@ -635,6 +652,7 @@ function mapAccount(row: AccountRow): AccountSnapshot {
   return {
     id: row.id,
     email: row.email,
+    ...(row.nickname ? { nickname: row.nickname } : {}),
     role: row.role,
     ...(row.disabled_at ? { disabledAt: row.disabled_at } : {}),
     credentialsChangedAt: row.credentials_changed_at,

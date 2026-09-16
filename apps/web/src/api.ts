@@ -85,6 +85,7 @@ export interface ProductAccessEntry {
 export interface Account {
   readonly id: string;
   readonly email: string;
+  readonly nickname?: string;
   readonly role: AccountRole;
   readonly disabledAt?: string;
   readonly createdAt: string;
@@ -199,9 +200,9 @@ export const api = {
   revokeAiAuthorization: (authorizationId: string) =>
     request<void>(`/api/v1/ai-authorizations/${encodeURIComponent(authorizationId)}`, { method: "DELETE" }),
   listAccounts: () => request<{ accounts: Account[] }>("/api/v1/accounts"),
-  createAccount: (input: { email: string; password: string; role: AccountRole }) =>
+  createAccount: (input: { email: string; nickname?: string; password: string; role: AccountRole }) =>
     request<Account>("/api/v1/accounts", { method: "POST", body: JSON.stringify(input) }),
-  updateAccount: (accountId: string, input: { email?: string; role?: AccountRole; disabled?: boolean; password?: string }) =>
+  updateAccount: (accountId: string, input: { email?: string; nickname?: string | null; role?: AccountRole; disabled?: boolean; password?: string }) =>
     request<Account>(`/api/v1/accounts/${encodeURIComponent(accountId)}`, {
       method: "PATCH",
       body: JSON.stringify(input),

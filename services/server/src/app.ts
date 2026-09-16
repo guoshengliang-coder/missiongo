@@ -137,6 +137,14 @@ function nicknameField(body: Record<string, unknown>): string | null {
   return value;
 }
 
+/** Account nicknames are separate from machine nicknames and may be cleared. */
+function accountNicknameField(body: Record<string, unknown>): string | null {
+  const value = body.nickname;
+  if (value === null) return null;
+  if (typeof value !== "string") throw invalidInput("nickname must be a string or null.");
+  return value;
+}
+
 /** For requests whose body is optional, unlike the ones objectBody guards. */
 function objectBodyOrEmpty(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -1083,6 +1091,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const body = objectBody(request.body);
     const account = accountStore.createAccount({
       email: normalizeEmail(stringField(body, "email")!),
+      ...(body.nickname !== undefined ? { nickname: accountNicknameField(body) } : {}),
       password: stringField(body, "password")!,
       role: enumField(body, "role", ["admin", "member"] as const) ?? "member",
     });
@@ -1095,6 +1104,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const body = objectBody(request.body);
     const account = accountStore.updateAccount(accountId, {
       ...(body.email !== undefined ? { email: stringField(body, "email")! } : {}),
+      ...(body.nickname !== undefined ? { nickname: accountNicknameField(body) } : {}),
       ...(body.role !== undefined ? { role: enumField(body, "role", ["admin", "member"] as const)! } : {}),
       ...(body.disabled !== undefined ? { disabled: booleanField(body, "disabled") } : {}),
       ...(body.password !== undefined ? { password: stringField(body, "password")! } : {}),
@@ -1891,12 +1901,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return name ? { ...entry, clientName: name } : entry;
   };
 
+  const withActorNickname = <T extends { readonly accountId?: string }>(entry: T): T & { actorNickname?: string } => {
+    const nickname = entry.accountId ? accountStore.findActive(entry.accountId)?.nickname : undefined;
+    return nickname ? { ...entry, actorNickname: nickname } : entry;
+  };
+
   app.get("/api/v1/items/:itemKey/timeline", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
     // The web folds withdrawn comments rather than hiding them, so a reader can
     // see that something was said and taken back. MCP gets the pruned view.
     const key = requireItemPermission(request, itemKey);
-    return { events: store.getTimeline(key, { includeWithdrawn: true }).map(withClientName) };
+    return { events: store.getTimeline(key, { includeWithdrawn: true }).map(withActorNickname).map(withClientName) };
   });
 
   app.get("/api/v1/items/:itemKey/comments", async (request) => {

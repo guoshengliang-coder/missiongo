@@ -325,6 +325,7 @@ function AccountRow({ account, products, isSelf }: { account: Account; products:
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState(account.email);
+  const [nickname, setNickname] = useState(account.nickname ?? "");
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["accounts"] });
   const suspend = useMutation({
@@ -333,7 +334,7 @@ function AccountRow({ account, products, isSelf }: { account: Account; products:
   });
   const remove = useMutation({ mutationFn: () => api.deleteAccount(account.id), onSuccess: invalidate });
   const rename = useMutation({
-    mutationFn: () => api.updateAccount(account.id, { email: email.trim() }),
+    mutationFn: () => api.updateAccount(account.id, { email: email.trim(), nickname: nickname.trim() || null }),
     onSuccess: invalidate,
   });
 
@@ -343,7 +344,7 @@ function AccountRow({ account, products, isSelf }: { account: Account; products:
     <article className={account.disabledAt ? "account-row suspended" : "account-row"}>
       <header>
         <button type="button" className="text-button" onClick={() => setOpen(!open)}>
-          <strong>{account.email}</strong>
+          <strong>{account.nickname ?? account.email}</strong>
         </button>
         <em>{t(account.role === "admin" ? "administratorRole" : "memberRole")}</em>
         {account.disabledAt && <span className="status-pill status-cancelled">{t("suspendedAccount")}</span>}
@@ -377,6 +378,10 @@ function AccountRow({ account, products, isSelf }: { account: Account; products:
               one: until this existed, nothing could change it. */}
           <div className="account-email-row">
             <label>
+              {t("accountNickname")}
+              <input value={nickname} onChange={(event) => setNickname(event.target.value)} autoComplete="off" maxLength={80} />
+            </label>
+            <label>
               {t("newAccountEmail")}
               <input
                 type="email"
@@ -389,7 +394,7 @@ function AccountRow({ account, products, isSelf }: { account: Account; products:
             <button
               type="button"
               className="secondary-button"
-              disabled={rename.isPending || !email.trim() || email.trim() === account.email}
+              disabled={rename.isPending || !email.trim() || (email.trim() === account.email && (nickname.trim() || undefined) === account.nickname)}
               onClick={() => rename.mutate()}
             >
               {rename.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
@@ -410,13 +415,15 @@ function NewAccountForm() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [email, setEmail] = useState("");
+  const [nickname, setNickname] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<AccountRole>("member");
 
   const mutation = useMutation({
-    mutationFn: () => api.createAccount({ email: email.trim(), password, role }),
+    mutationFn: () => api.createAccount({ email: email.trim(), nickname: nickname.trim() || undefined, password, role }),
     onSuccess: async () => {
       setEmail("");
+      setNickname("");
       setPassword("");
       setRole("member");
       await queryClient.invalidateQueries({ queryKey: ["accounts"] });
@@ -441,6 +448,10 @@ function NewAccountForm() {
           autoComplete="off"
           required
         />
+      </label>
+      <label>
+        {t("accountNickname")}
+        <input value={nickname} onChange={(event) => setNickname(event.target.value)} autoComplete="off" maxLength={80} />
       </label>
       <label>
         {t("newAccountPassword")}

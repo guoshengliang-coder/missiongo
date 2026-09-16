@@ -126,6 +126,8 @@ export interface WorkItemEvent {
   readonly clientId?: string;
   /** The client's registered name, decoded server-side from clientId. Not self-reported. */
   readonly clientName?: string;
+  /** The current nickname of the human account that wrote this entry. */
+  readonly actorNickname?: string;
   readonly executionId?: string;
   readonly createdAt: string;
 }

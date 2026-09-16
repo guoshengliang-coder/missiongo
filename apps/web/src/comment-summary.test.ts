@@ -26,6 +26,11 @@ describe("who wrote a comment", () => {
     expect(commentAuthor({ actorKind: "human", agentName: "spoofed" }, "人工")).toBe("人工");
     expect(commentAuthor({ actorKind: "system" }, "系统")).toBe("系统");
   });
+
+  it("shows an attributed human account nickname", () => {
+    expect(commentAuthor({ actorKind: "human", actorNickname: "梁国盛" }, "人工")).toBe("梁国盛");
+    expect(commentAuthor({ actorKind: "human" }, "人工")).toBe("人工");
+  });
 });
 
 describe("falling back to a derived summary", () => {

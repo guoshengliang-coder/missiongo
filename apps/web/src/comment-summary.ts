@@ -14,10 +14,11 @@ export function commentAuthor(
     readonly actorKind: ActorKind;
     readonly clientName?: string | undefined;
     readonly agentName?: string | undefined;
+    readonly actorNickname?: string | undefined;
   },
   actorLabel: string,
 ): string {
-  if (entry.actorKind !== "agent") return actorLabel;
+  if (entry.actorKind !== "agent") return entry.actorNickname?.trim() || actorLabel;
   const agentName = entry.agentName?.trim();
   const clientName = entry.clientName?.trim();
   if (agentName && clientName) {
