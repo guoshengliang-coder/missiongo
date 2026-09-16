@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluateWorkItemTransition, TRANSITION_REASONS } from "./work-item-status.js";
+import {
+  evaluateWorkItemTransition,
+  TRANSITION_REASONS,
+  transitionRequiresNote,
+} from "./work-item-status.js";
 import { WORK_ITEM_STATUSES } from "./work-item.js";
 
 describe("work item state machine", () => {
@@ -56,6 +60,7 @@ describe("work item state machine", () => {
         to: "ready",
         actor: "human",
         reason: "verification_failed",
+        note: "The crash still happens on the second launch.",
       }),
     ).toMatchObject({ allowed: true });
   });
@@ -126,5 +131,75 @@ describe("manual override", () => {
     expect(
       evaluateWorkItemTransition({ from: "ready", to: "done", actor: "human", reason: "verification_passed" }),
     ).toMatchObject({ allowed: false, code: "invalid_transition" });
+  });
+});
+
+describe("transition notes", () => {
+  const RETREATS = [
+    ["in_progress", "released"],
+    ["pending_verification", "verification_failed"],
+    ["on_hold", "reopened"],
+    ["done", "reopened"],
+  ] as const;
+
+  it("asks for a note on every way back to ready from work already done", () => {
+    for (const [from, reason] of RETREATS) {
+      expect(transitionRequiresNote(from, "ready")).toBe(true);
+      expect(evaluateWorkItemTransition({ from, to: "ready", actor: "human", reason }))
+        .toMatchObject({ allowed: false, code: "note_required" });
+      expect(evaluateWorkItemTransition({ from, to: "ready", actor: "human", reason, note: "Still broken." }))
+        .toMatchObject({ allowed: true, code: "allowed" });
+    }
+  });
+
+  it("does not count whitespace as a reason", () => {
+    expect(evaluateWorkItemTransition({
+      from: "pending_verification",
+      to: "ready",
+      actor: "human",
+      reason: "verification_failed",
+      note: "   \n  ",
+    })).toMatchObject({ allowed: false, code: "note_required" });
+  });
+
+  it("leaves triage alone: a draft entering the queue is a first pass, not a retreat", () => {
+    expect(transitionRequiresNote("inbox", "ready")).toBe(false);
+    expect(evaluateWorkItemTransition({ from: "inbox", to: "ready", actor: "human", reason: "triaged" }))
+      .toMatchObject({ allowed: true });
+  });
+
+  it("asks only on the way back to ready", () => {
+    for (const from of WORK_ITEM_STATUSES) {
+      for (const to of WORK_ITEM_STATUSES) {
+        if (to !== "ready") expect(transitionRequiresNote(from, to)).toBe(false);
+      }
+    }
+    // cancelled -> ready is not a retreat from work; it is a restore, and the
+    // pipeline does not even offer it.
+    expect(transitionRequiresNote("cancelled", "ready")).toBe(false);
+    expect(transitionRequiresNote("ready", "ready")).toBe(false);
+  });
+
+  it("closes the manual_override shortcut, which would otherwise be the quiet way back", () => {
+    expect(evaluateWorkItemTransition({
+      from: "pending_verification",
+      to: "ready",
+      actor: "human",
+      reason: "manual_override",
+    })).toMatchObject({ allowed: false, code: "note_required" });
+    expect(evaluateWorkItemTransition({
+      from: "pending_verification",
+      to: "ready",
+      actor: "human",
+      reason: "manual_override",
+      note: "Filed under the wrong status to begin with.",
+    })).toMatchObject({ allowed: true });
+  });
+
+  it("still says who may walk an edge before it says a note is missing", () => {
+    // An agent cannot release work at all. Reporting a missing note would send it
+    // off to write one for an edge it can never take.
+    expect(evaluateWorkItemTransition({ from: "in_progress", to: "ready", actor: "agent", reason: "released" }))
+      .toMatchObject({ allowed: false, code: "actor_not_allowed" });
   });
 });

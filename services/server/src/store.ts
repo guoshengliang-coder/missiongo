@@ -3,13 +3,15 @@ import type { SQLInputValue } from "node:sqlite";
 
 import {
   ATTACHMENT_KINDS,
-  assertWorkItemTransition,
   createWorkItemKey,
+  evaluateWorkItemTransition,
+  TRANSITION_NOTE_MAX_LENGTH,
   WORK_ITEM_OCCURRENCE_FREQUENCIES,
   WORK_ITEM_PRIORITIES,
   WORK_ITEM_STATUSES,
   WORK_ITEM_TYPES,
   type ActorKind,
+  type TransitionReason,
   type AttachmentKind,
   type WorkItemEnvironment,
   type WorkItemPriority,
@@ -1047,25 +1049,14 @@ export class MissionGoStore {
       const current = this.getWorkItemRow(input.itemKey);
       if (!current) throw notFound("Work item");
       if (!isOneOf(input.to, WORK_ITEM_STATUSES)) throw invalidInput("Unsupported work-item status.");
-      try {
-        assertWorkItemTransition({ from: current.status, to: input.to, actor: input.actor, reason: input.reason });
-      } catch (error) {
-        throw conflict("invalid_state_transition", error instanceof Error ? error.message : "Invalid state transition.");
+      // The cap lives here rather than in applyTransition because what arrives as
+      // a `note` is not always a typed reason: handing merged work over passes the
+      // agent's summary, which is allowed four thousand characters. Capping the
+      // shared path would shrink that one by half without meaning to.
+      if ((input.note?.trim().length ?? 0) > TRANSITION_NOTE_MAX_LENGTH) {
+        throw invalidInput(`A transition note must be ${TRANSITION_NOTE_MAX_LENGTH} characters or fewer.`);
       }
-
-      this.database.connection
-        .prepare("UPDATE work_items SET status = ?, updated_at = ? WHERE id = ?")
-        .run(input.to, now, current.id);
-      this.insertEvent(
-        current.id,
-        "status_changed",
-        input.actor,
-        current.status,
-        input.to,
-        input.note ? { reason: input.reason, note: input.note } : { reason: input.reason },
-        now,
-        input.attribution ?? {},
-      );
+      this.applyTransition(current, input.to, input.actor, input.reason, input.note, now, input.attribution ?? {});
     });
     return this.getWorkItem(input.itemKey);
   }
@@ -1477,20 +1468,40 @@ export class MissionGoStore {
     return key;
   }
 
+  /**
+   * The one place a work item changes status.
+   *
+   * Every caller -- the REST route, an agent claiming work, an agent handing it
+   * over -- comes through here, so the domain's verdict is consulted once and
+   * the event is written the same way each time. It used to be written twice,
+   * and the copies had already started to differ: one of them stored a note made
+   * entirely of spaces.
+   */
   private applyTransition(
     current: WorkItemRow,
     to: WorkItemStatus,
     actor: ActorKind,
-    reason: Parameters<typeof assertWorkItemTransition>[0]["reason"],
+    reason: TransitionReason,
     note: string | undefined,
     now: string,
     attribution: EventAttribution = {},
     payloadExtra: Readonly<Record<string, unknown>> = {},
   ): void {
-    try {
-      assertWorkItemTransition({ from: current.status, to, actor, reason });
-    } catch (error) {
-      throw conflict("invalid_state_transition", error instanceof Error ? error.message : "Invalid state transition.");
+    // Normalised before the domain sees it, so "is there a reason" and "what gets
+    // stored" can never disagree. Newlines survive: a person explaining what
+    // failed writes a list as often as a sentence.
+    const text = note?.trim() || undefined;
+    const decision = evaluateWorkItemTransition({
+      from: current.status,
+      to,
+      actor,
+      reason,
+      ...(text ? { note: text } : {}),
+    });
+    if (!decision.allowed) {
+      throw decision.code === "note_required"
+        ? invalidInput(decision.message, "transition_note_required")
+        : conflict("invalid_state_transition", decision.message);
     }
     this.database.connection.prepare("UPDATE work_items SET status = ?, updated_at = ? WHERE id = ?").run(to, now, current.id);
     this.insertEvent(
@@ -1499,7 +1510,7 @@ export class MissionGoStore {
       actor,
       current.status,
       to,
-      { reason, ...(note ? { note } : {}), ...payloadExtra },
+      { reason, ...(text ? { note: text } : {}), ...payloadExtra },
       now,
       attribution,
     );

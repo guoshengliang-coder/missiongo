@@ -106,8 +106,9 @@ import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
 import { AccountSettings, ProductAccessSettings } from "./account-settings";
 import { NodeSettings } from "./node-settings";
-import { parseFeedbackLog } from "@missiongo/domain";
-import { dispatchedEvent, groupTimeline } from "./timeline";
+import { parseFeedbackLog, transitionRequiresNote } from "@missiongo/domain";
+import { statusChangeNote, dispatchedEvent, groupTimeline } from "./timeline";
+import { TransitionNoteDialog } from "./transition-note-dialog";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import {
@@ -1753,9 +1754,12 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
   const destructiveActions = actions.slice(1).filter((action) => action.tone === "danger");
   const manualTargets = manualMoves(item.status);
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
+  const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
   const mutation = useMutation({
-    mutationFn: (action: TransitionAction) => api.transitionItem(item.key, action),
+    mutationFn: ({ action, note }: { action: TransitionAction; note?: string }) =>
+      api.transitionItem(item.key, action, note),
     onSuccess: async (updated) => {
+      setNoteAction(null);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["items"] }),
         queryClient.invalidateQueries({ queryKey: ["item", item.key] }),
@@ -1765,6 +1769,13 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
     },
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
   });
+
+  // Whether this move needs a reason is the domain's call, not a second table
+  // kept in the browser.
+  const startTransition = (action: TransitionAction) => {
+    if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
+    else mutation.mutate({ action });
+  };
 
   useEffect(() => {
     const closeMoreActions = (event: MouseEvent) => {
@@ -1782,6 +1793,7 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
   }, []);
 
   return (
+    <>
     <details className="detail-more-menu row-more-menu" ref={moreActionsRef}>
       <summary className="secondary-button" aria-label={t("moreActionsFor", { key: item.key })} title={t("moreActions")}>
         {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <MoreHorizontal size={18} />}
@@ -1794,7 +1806,7 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
             disabled={mutation.isPending}
             onClick={() => {
               moreActionsRef.current?.removeAttribute("open");
-              mutation.mutate(primaryAction);
+              startTransition(primaryAction);
             }}
           >
             {quickActionLabel(item.status, t)}
@@ -1807,7 +1819,7 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
             disabled={mutation.isPending}
             onClick={() => {
               moreActionsRef.current?.removeAttribute("open");
-              mutation.mutate(action);
+              startTransition(action);
             }}
           >
             {transitionLabel(action.label)}
@@ -1823,7 +1835,7 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
                 disabled={mutation.isPending}
                 onClick={() => {
                   moreActionsRef.current?.removeAttribute("open");
-                  mutation.mutate(action);
+                  startTransition(action);
                 }}
               >
                 {statusLabel(action.to)}
@@ -1849,7 +1861,7 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
             disabled={mutation.isPending}
             onClick={() => {
               moreActionsRef.current?.removeAttribute("open");
-              mutation.mutate(action);
+              startTransition(action);
             }}
           >
             {transitionLabel(action.label)}
@@ -1857,6 +1869,24 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
         ))}
       </div>
     </details>
+    {/* Outside the menu on purpose: a closed <details> hides everything but its
+        <summary>, and a <dialog> under a hidden ancestor never paints. */}
+    {noteAction && (
+      <Modal
+        title={t("transitionNoteTitle")}
+        subtitle={t("transitionNoteSubtitle", { key: item.key, status: statusLabel(item.status) })}
+        onClose={() => { setNoteAction(null); mutation.reset(); }}
+      >
+        <TransitionNoteDialog
+          action={noteAction}
+          pending={mutation.isPending}
+          error={mutation.isError ? errorMessage(mutation.error, t("somethingWentWrong")) : null}
+          onSubmit={(note) => mutation.mutate({ action: noteAction, note })}
+          onCancel={() => { setNoteAction(null); mutation.reset(); }}
+        />
+      </Modal>
+    )}
+    </>
   );
 }
 function mediaNumberLabel(kind: "image" | "video", displayNumber: number, t: ReturnType<typeof useI18n>["t"]): string {
@@ -1936,9 +1966,12 @@ function DetailPane({
 
   const [commentDraft, setCommentDraft] = useState("");
 
+  const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
   const transitionMutation = useMutation({
-    mutationFn: (action: TransitionAction) => api.transitionItem(itemKey!, action),
+    mutationFn: ({ action, note }: { action: TransitionAction; note?: string }) =>
+      api.transitionItem(itemKey!, action, note),
     onSuccess: async (updated) => {
+      setNoteAction(null);
       await refreshItem();
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
@@ -1980,6 +2013,11 @@ function DetailPane({
   }
 
   const PrimaryIcon = TYPE_ICONS[item.type];
+  // Same rule as the list row: the domain decides whether this move owes a reason.
+  const startTransition = (action: TransitionAction) => {
+    if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
+    else transitionMutation.mutate({ action });
+  };
   const actions = TRANSITIONS[item.status];
   const primaryAction = actions[0];
   const secondaryActions = actions.slice(1);
@@ -2003,7 +2041,7 @@ function DetailPane({
             <button
               className={`primary-button toolbar-primary-action ${primaryAction.tone === "positive" ? "positive" : ""}`}
               disabled={transitionMutation.isPending}
-              onClick={() => transitionMutation.mutate(primaryAction)}
+              onClick={() => startTransition(primaryAction)}
               title={transitionLabel(primaryAction.label)}
             >
               {transitionMutation.isPending && <LoaderCircle className="spin" size={15} />}
@@ -2023,7 +2061,7 @@ function DetailPane({
                   disabled={transitionMutation.isPending}
                   onClick={() => {
                     moreActionsRef.current?.removeAttribute("open");
-                    transitionMutation.mutate(action);
+                    startTransition(action);
                   }}
                 >
                   {transitionLabel(action.label)}
@@ -2039,7 +2077,7 @@ function DetailPane({
                       disabled={transitionMutation.isPending}
                       onClick={() => {
                         moreActionsRef.current?.removeAttribute("open");
-                        transitionMutation.mutate(action);
+                        startTransition(action);
                       }}
                     >
                       {statusLabel(action.to)}
@@ -2055,7 +2093,7 @@ function DetailPane({
                   disabled={transitionMutation.isPending}
                   onClick={() => {
                     moreActionsRef.current?.removeAttribute("open");
-                    transitionMutation.mutate(action);
+                    startTransition(action);
                   }}
                 >
                   {transitionLabel(action.label)}
@@ -2174,6 +2212,10 @@ function DetailPane({
                           </a>
                         </p>
                       )}
+                      {/* Why it moved. Going back to Ready has to say so, which is
+                          the case this is here for; a handover carries the agent's
+                          summary in the same field and is worth reading too. */}
+                      {event.eventType === "status_changed" && <StatusNoteLine payload={event.payload} />}
                       {/* Which machine took it, with what. The batch is named too:
                           one session handles all of it, so the other keys explain
                           work that will appear on this item's branch. */}
@@ -2213,6 +2255,21 @@ function DetailPane({
                   : t("itemUpdated", { key: item.key }),
               );
             }}
+          />
+        </Modal>
+      )}
+      {noteAction && (
+        <Modal
+          title={t("transitionNoteTitle")}
+          subtitle={t("transitionNoteSubtitle", { key: item.key, status: statusLabel(item.status) })}
+          onClose={() => { setNoteAction(null); transitionMutation.reset(); }}
+        >
+          <TransitionNoteDialog
+            action={noteAction}
+            pending={transitionMutation.isPending}
+            error={transitionMutation.isError ? errorMessage(transitionMutation.error, t("somethingWentWrong")) : null}
+            onSubmit={(note) => transitionMutation.mutate({ action: noteAction, note })}
+            onCancel={() => { setNoteAction(null); transitionMutation.reset(); }}
           />
         </Modal>
       )}
@@ -2273,6 +2330,12 @@ function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: strin
       {dispatch.error && <InlineError message={dispatch.error} />}
     </article>
   );
+}
+
+function StatusNoteLine({ payload }: { payload: Readonly<Record<string, unknown>> }) {
+  const note = statusChangeNote(payload);
+  if (!note) return null;
+  return <p className="timeline-note">{note}</p>;
 }
 
 /** The `dispatched` timeline line, when the payload can say where it went. */

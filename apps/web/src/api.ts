@@ -332,10 +332,16 @@ export const api = {
       method: "DELETE",
     });
   },
-  transitionItem: (itemKey: string, action: TransitionAction) =>
+  // `note` is why the item is moving. The domain demands one on the ways back to
+  // ready; everywhere else it is simply left out.
+  transitionItem: (itemKey: string, action: TransitionAction, note?: string) =>
     request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transitions`, {
       method: "POST",
-      body: JSON.stringify({ to: action.to, reason: action.reason }),
+      body: JSON.stringify({
+        to: action.to,
+        reason: action.reason,
+        ...(note?.trim() ? { note: note.trim() } : {}),
+      }),
     }),
   getTimeline: (itemKey: string) =>
     request<{ events: WorkItemEvent[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/timeline`),

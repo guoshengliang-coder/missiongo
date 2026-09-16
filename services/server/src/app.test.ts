@@ -1353,6 +1353,73 @@ describe("MissionGo REST API", () => {
     expect(events.at(-1)).toMatchObject({ toStatus: "ready" });
   });
 
+  it("will not send work back to ready without saying why", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "MissionGo", keyPrefix: "MG" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "bug",
+        priority: "high",
+        title: "Crashes on launch",
+        description: "Every time",
+        environment: { platform: "other" },
+      },
+    });
+    const move = (to: string, reason: string, note?: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/items/MG-1/transitions",
+        payload: { to, reason, ...(note === undefined ? {} : { note }) },
+      });
+    const timeline = async () =>
+      (await app.inject({ method: "GET", url: "/api/v1/items/MG-1/timeline" }))
+        .json<{ events: Array<{ eventType: string; toStatus?: string; payload: Record<string, unknown> }> }>().events;
+
+    // Triage is the first pass into the queue, not a retreat from work, so it
+    // still needs no explanation.
+    expect((await move("ready", "triaged")).statusCode).toBe(200);
+    expect((await move("in_progress", "claim")).statusCode).toBe(200);
+
+    const bare = await move("ready", "released");
+    expect(bare.statusCode).toBe(400);
+    expect(bare.json()).toMatchObject({ code: "transition_note_required" });
+    expect((await move("ready", "released", "   \n ")).statusCode).toBe(400);
+    // Refused before anything was written: the item never left in_progress and
+    // the timeline gained nothing.
+    expect((await app.inject({ method: "GET", url: "/api/v1/items/MG-1" })).json()).toMatchObject({
+      status: "in_progress",
+    });
+    expect((await timeline()).filter((event) => event.toStatus === "ready")).toHaveLength(1);
+
+    // The quiet way round the requirement: a direct jump, which is a person's
+    // shortcut for "this already happened elsewhere".
+    expect((await move("ready", "manual_override")).statusCode).toBe(400);
+
+    expect((await move("ready", "released", "  Wrong branch got merged.  ")).statusCode).toBe(200);
+    const released = (await timeline()).at(-1)!;
+    expect(released).toMatchObject({ eventType: "status_changed", toStatus: "ready" });
+    // Stored trimmed, so the timeline never shows a reason padded with spaces.
+    expect(released.payload).toMatchObject({ reason: "released", note: "Wrong branch got merged." });
+
+    expect((await move("in_progress", "claim")).statusCode).toBe(200);
+    expect((await move("pending_verification", "resolution_submitted")).statusCode).toBe(200);
+    expect((await move("ready", "verification_failed")).json()).toMatchObject({
+      code: "transition_note_required",
+    });
+    expect((await move("ready", "verification_failed", "Still crashes on the second launch.")).statusCode).toBe(200);
+
+    const tooLong = await move("in_progress", "claim");
+    expect(tooLong.statusCode).toBe(200);
+    const overLimit = await move("ready", "released", "x".repeat(2_001));
+    expect(overLimit.statusCode).toBe(400);
+    expect(overLimit.json()).toMatchObject({ code: "validation_failed" });
+  });
+
   it("persists work items across server restarts", async () => {
     const { app, databasePath } = await testApp();
     const product = (

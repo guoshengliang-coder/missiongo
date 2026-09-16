@@ -10,8 +10,11 @@ export class MissionGoError extends Error {
   }
 }
 
-export function invalidInput(message: string): MissionGoError {
-  return new MissionGoError("validation_failed", message, 400);
+// The code is overridable because a few 400s are worth telling apart in the
+// console -- a missing transition note has its own wording, and the page can
+// only find it by code. Everything else keeps the generic one.
+export function invalidInput(message: string, code = "validation_failed"): MissionGoError {
+  return new MissionGoError(code, message, 400);
 }
 
 export function notFound(resource: string): MissionGoError {
