@@ -12,4 +12,3 @@ export function openAccountEditor(current: AccountEditor | null, requested: Acco
 export function closeAccountEditor(current: AccountEditor | null, requested: AccountEditor): AccountEditor | null {
   return current === requested ? null : current;
 }
-

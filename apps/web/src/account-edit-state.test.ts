@@ -20,4 +20,3 @@ describe("account edit intent", () => {
     expect(closeAccountEditor("account:abc", "account:def")).toBe("account:abc");
   });
 });
-
