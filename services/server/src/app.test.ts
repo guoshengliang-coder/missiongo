@@ -958,7 +958,9 @@ describe("MissionGo REST API", () => {
     });
     expect(login.statusCode).toBe(200);
     expect(login.json()).toEqual({
-      user: { id: "account-test-1", username: "mission-owner", role: "admin" },
+      // No nickname set, so the name falls back to the address up to the @ --
+      // and this fixture's "address" has none, so it is the whole thing.
+      user: { id: "account-test-1", username: "mission-owner", displayName: "mission-owner", role: "admin" },
     });
     expect(login.headers["set-cookie"]).toContain("missiongo_session=");
     expect(login.headers["set-cookie"]).toContain("HttpOnly");
@@ -969,7 +971,7 @@ describe("MissionGo REST API", () => {
     const session = await app.inject({ method: "GET", url: "/api/v1/auth/session", headers: { cookie } });
     expect(session.statusCode).toBe(200);
     expect(session.json()).toEqual({
-      user: { id: "account-test-1", username: "mission-owner", role: "admin" },
+      user: { id: "account-test-1", username: "mission-owner", displayName: "mission-owner", role: "admin" },
     });
     const authorized = await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie } });
     expect(authorized.statusCode).toBe(200);

@@ -31,9 +31,15 @@ export const INITIAL_SCHEMA = `
   -- was minted; a token whose copy no longer matches is refused. Moving this
   -- column therefore invalidates every credential the account holds -- which is
   -- also the cost: a single session cannot be revoked on its own.
+  -- nickname is a display name, not an identifier: no UNIQUE, because the email
+  -- is what signs in and two people called the same thing take nothing from each
+  -- other. It could not be unique anyway -- an unset nickname falls back to the
+  -- part of the address before the @, and two domains produce the same one
+  -- without a row existing to collide with.
   CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    nickname TEXT,
     password_scrypt TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
     credentials_changed_at TEXT NOT NULL,

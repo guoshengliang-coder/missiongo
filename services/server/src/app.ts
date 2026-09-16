@@ -29,6 +29,7 @@ import sharp from "sharp";
 
 import {
   AccountStore,
+  accountDisplayName,
   normalizeEmail,
   type AccountSnapshot,
   type ProductCapability,
@@ -135,6 +136,19 @@ function nicknameField(body: Record<string, unknown>): string | null {
   if (value === null) return null;
   if (typeof value !== "string") throw invalidInput("nickname must be a string or null.");
   return value;
+}
+
+/**
+ * A field that may be absent, explicitly null, or a string.
+ *
+ * stringField cannot say which: for a nickname, "not in this request" and "clear
+ * it" are different instructions and only one of them writes to the row.
+ */
+function nullableStringField(body: Record<string, unknown>, field: string): string | null | undefined {
+  if (body[field] === undefined) return undefined;
+  if (body[field] === null) return null;
+  if (typeof body[field] !== "string") throw invalidInput(`${field} must be a string or null.`);
+  return body[field] as string;
 }
 
 /** For requests whose body is optional, unlike the ones objectBody guards. */
@@ -437,6 +451,30 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   };
 
   /**
+   * An account as the console reads it.
+   *
+   * Kept apart from AdminSessionUser above, which is a signing payload: whatever
+   * goes in there is frozen into a cookie and into AI tokens that live for a
+   * month. A display name changes whenever its owner feels like it, so it is
+   * resolved per response instead, and `username` stays the address people sign
+   * in with -- the login form posts it back under that name.
+   */
+  const authenticatedUser = (account: AccountSnapshot) => ({
+    id: account.id,
+    username: account.email,
+    displayName: accountDisplayName(account),
+    // The raw value, so the settings field can start empty rather than
+    // pre-filled with the fallback, which a single Save would then make real.
+    ...(account.nickname ? { nickname: account.nickname } : {}),
+    role: account.role,
+  });
+
+  const sessionUserResponse = (request: FastifyRequest) => {
+    const account = sessionAccount(request);
+    return account ? authenticatedUser(account) : undefined;
+  };
+
+  /**
    * Whether this request is exempt from per-product authorization.
    *
    * Two cases, both of which already bypass the sign-in hook below. A deployment
@@ -473,6 +511,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return {
       ...claims,
       username: account.email,
+      displayName: accountDisplayName(account),
       role: account.role,
       productIds: accountStore.reachableProductIds(account, "ai"),
     };
@@ -720,10 +759,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/auth/session", async (request, reply) => {
     if (!options.adminAccount && !options.adminToken) {
       return reply.header("cache-control", "no-store").send({
-        user: { id: "local-admin", username: "local-admin", role: "admin" },
+        user: { id: "local-admin", username: "local-admin", displayName: "local-admin", role: "admin" },
       });
     }
-    const user = sessionUser(request);
+    const user = sessionUserResponse(request);
     if (!user) {
       return reply.header("cache-control", "no-store").status(401).send({
         type: "urn:missiongo:problem:authentication_required",
@@ -754,8 +793,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     reply.header("cache-control", "no-store");
 
     const user = !options.adminAccount && !options.adminToken
-      ? { id: "local-admin", username: "local-admin", role: "admin" as const }
-      : sessionUser(request);
+      ? { id: "local-admin", username: "local-admin", displayName: "local-admin", role: "admin" as const }
+      : sessionUserResponse(request);
     if (!user) {
       return reply.status(401).send({
         type: "urn:missiongo:problem:authentication_required",
@@ -822,12 +861,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
 
     loginFailures.delete(request.ip);
-    const user: AdminSessionUser = { id: account.id, username: account.email, role: account.role };
-    const token = createAdminSession(options.adminAccount, user, accountStore.credentialsStamp(account), now);
+    // Two objects on purpose: the first is signed into the cookie and must hold
+    // nothing that can change without a new sign-in.
+    const claims: AdminSessionUser = { id: account.id, username: account.email, role: account.role };
+    const token = createAdminSession(options.adminAccount, claims, accountStore.credentialsStamp(account), now);
     return reply
       .header("cache-control", "no-store")
       .header("set-cookie", adminSessionCookie(options.adminAccount, token))
-      .send({ user });
+      .send({ user: authenticatedUser(account) });
   });
 
   /**
@@ -856,17 +897,42 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // reads the account back on every request, so nothing here invalidates it --
     // but the console shows the name from the session, so hand back a cookie
     // that already says the new one.
-    const user: AdminSessionUser = { id: account.id, username: account.email, role: account.role };
+    const claims: AdminSessionUser = { id: account.id, username: account.email, role: account.role };
     return reply
       .header("cache-control", "no-store")
       .header(
         "set-cookie",
         adminSessionCookie(
           options.adminAccount,
-          createAdminSession(options.adminAccount, user, accountStore.credentialsStamp(account)),
+          createAdminSession(options.adminAccount, claims, accountStore.credentialsStamp(account)),
         ),
       )
-      .send({ user });
+      .send({ user: authenticatedUser(account) });
+  });
+
+  /**
+   * Change your own display name.
+   *
+   * No current password, unlike the address above: a nickname is what your
+   * comments are signed with, not what signs you in, so taking one over gains
+   * nothing. No fresh cookie either -- the name is resolved per response and was
+   * never in the signed payload, so nothing the browser holds went stale.
+   */
+  app.post("/api/v1/auth/nickname", async (request, reply) => {
+    if (!options.adminAccount) {
+      return reply.status(503).send({
+        type: "urn:missiongo:problem:authentication_unavailable",
+        title: "Administrator account login is not configured.",
+        status: 503,
+        code: "authentication_unavailable",
+      });
+    }
+    const current = requireAccount(request);
+    const account = accountStore.changeOwnNickname(
+      current.id,
+      nullableStringField(objectBodyOrEmpty(request.body), "nickname") ?? null,
+    );
+    return reply.header("cache-control", "no-store").send({ user: authenticatedUser(account) });
   });
 
   /**
@@ -894,17 +960,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       stringField(body, "currentPassword")!,
       stringField(body, "newPassword")!,
     );
-    const user: AdminSessionUser = { id: account.id, username: account.email, role: account.role };
+    const claims: AdminSessionUser = { id: account.id, username: account.email, role: account.role };
     return reply
       .header("cache-control", "no-store")
       .header(
         "set-cookie",
         adminSessionCookie(
           options.adminAccount,
-          createAdminSession(options.adminAccount, user, accountStore.credentialsStamp(account)),
+          createAdminSession(options.adminAccount, claims, accountStore.credentialsStamp(account)),
         ),
       )
-      .send({ user });
+      .send({ user: authenticatedUser(account) });
   });
 
   app.post("/api/v1/auth/logout", async (_request, reply) => {
@@ -953,6 +1019,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             extra: {
               accountId: principal.id,
               username: principal.username,
+              displayName: principal.displayName,
               role: principal.role,
               productIds: principal.productIds,
             },
@@ -1095,6 +1162,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const body = objectBody(request.body);
     const account = accountStore.updateAccount(accountId, {
       ...(body.email !== undefined ? { email: stringField(body, "email")! } : {}),
+      ...(body.nickname !== undefined ? { nickname: nullableStringField(body, "nickname")! } : {}),
       ...(body.role !== undefined ? { role: enumField(body, "role", ["admin", "member"] as const)! } : {}),
       ...(body.disabled !== undefined ? { disabled: booleanField(body, "disabled") } : {}),
       ...(body.password !== undefined ? { password: stringField(body, "password")! } : {}),
@@ -1891,18 +1959,44 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return name ? { ...entry, clientName: name } : entry;
   };
 
+  /**
+   * The same for the person behind an entry.
+   *
+   * Events have carried an account id since accounts became plural, and nothing
+   * had ever turned it into a name -- so everything a person wrote was signed
+   * "human" and a timeline could not say who did what. Resolved on read rather
+   * than stored, so a nickname changed today renames what its owner wrote last
+   * month.
+   *
+   * Takes the whole list rather than one entry, unlike withClientName: the ids
+   * are looked up in a single query, where one call per row would be a statement
+   * per timeline event.
+   */
+  const withAuthorNames = <T extends { readonly accountId?: string; readonly clientId?: string }>(
+    entries: readonly T[],
+  ): Array<T & { clientName?: string; accountName?: string }> => {
+    const names = accountStore.displayNames(
+      entries.map((entry) => entry.accountId).filter((id): id is string => !!id),
+    );
+    return entries.map((entry) => {
+      const decorated = withClientName(entry);
+      const name = entry.accountId ? names.get(entry.accountId) : undefined;
+      return name ? { ...decorated, accountName: name } : decorated;
+    });
+  };
+
   app.get("/api/v1/items/:itemKey/timeline", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
     // The web folds withdrawn comments rather than hiding them, so a reader can
     // see that something was said and taken back. MCP gets the pruned view.
     const key = requireItemPermission(request, itemKey);
-    return { events: store.getTimeline(key, { includeWithdrawn: true }).map(withClientName) };
+    return { events: withAuthorNames(store.getTimeline(key, { includeWithdrawn: true })) };
   });
 
   app.get("/api/v1/items/:itemKey/comments", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
     const key = requireItemPermission(request, itemKey);
-    return { comments: store.listComments(key, { includeWithdrawn: true }).map(withClientName) };
+    return { comments: withAuthorNames(store.listComments(key, { includeWithdrawn: true })) };
   });
 
   app.post("/api/v1/items/:itemKey/comments", async (request, reply) => {
@@ -1925,7 +2019,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(stringField(body, "summary", false) !== undefined ? { summary: body.summary as string } : {}),
       ...(sessionUser(request) ? { attribution: { accountId: sessionUser(request)!.id } } : {}),
     });
-    return reply.status(201).send(comment);
+    return reply.status(201).send(withAuthorNames([comment])[0]);
   });
 
   app.post("/api/v1/items/:itemKey/comments/:commentId/withdraw", async (request) => {

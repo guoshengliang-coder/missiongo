@@ -803,6 +803,119 @@ describe("Changing a sign-in address", () => {
   });
 });
 
+describe("Nicknames", () => {
+  const setNickname = (app: FastifyInstance, cookie: string, nickname: string | null) =>
+    app.inject({ method: "POST", url: "/api/v1/auth/nickname", headers: { cookie }, payload: { nickname } });
+  const session = (app: FastifyInstance, cookie: string) =>
+    app.inject({ method: "GET", url: "/api/v1/auth/session", headers: { cookie } });
+
+  it("lets an account name itself, with no password asked for", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    const response = await setNickname(app, memberCookie, "  阿亮  ");
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ user: { username: "member@example.com", displayName: "阿亮", nickname: "阿亮" } });
+    expect((await session(app, memberCookie)).json()).toMatchObject({ user: { displayName: "阿亮" } });
+  });
+
+  it("keeps every other session signed in: a name is not a credential", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    const otherBrowser = await signIn(app, "member@example.com", MEMBER_PASSWORD);
+    await setNickname(app, memberCookie, "阿亮");
+    expect((await session(app, otherBrowser)).statusCode).toBe(200);
+  });
+
+  it("falls back to the address when there is no nickname, and clearing puts it back", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    expect((await session(app, memberCookie)).json()).toMatchObject({ user: { displayName: "member" } });
+
+    await setNickname(app, memberCookie, "阿亮");
+    for (const cleared of [null, "", "   "]) {
+      const response = await setNickname(app, memberCookie, cleared);
+      expect(response.statusCode).toBe(200);
+      // The raw value is gone rather than stored empty, so the settings field
+      // shows a placeholder instead of a name the owner never chose.
+      expect(response.json().user).not.toHaveProperty("nickname");
+      expect(response.json()).toMatchObject({ user: { displayName: "member" } });
+      await setNickname(app, memberCookie, "阿亮");
+    }
+  });
+
+  it("refuses a name that would not fit on one line", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    expect((await setNickname(app, memberCookie, "x".repeat(41))).statusCode).toBe(400);
+    expect((await setNickname(app, memberCookie, "two\u0000words")).statusCode).toBe(400);
+    expect((await setNickname(app, memberCookie, 42 as unknown as string)).statusCode).toBe(400);
+    // Folded rather than refused: a byline sits next to a timestamp.
+    expect((await setNickname(app, memberCookie, "阿  亮")).json()).toMatchObject({ user: { displayName: "阿 亮" } });
+  });
+
+  it("lets two accounts answer to the same name", async () => {
+    // The address is the identity. Taking somebody's nickname takes nothing.
+    const { app, adminCookie, memberCookie } = await twoAccountWorkspace();
+    expect((await setNickname(app, memberCookie, "小郭")).statusCode).toBe(200);
+    expect((await setNickname(app, adminCookie, "小郭")).statusCode).toBe(200);
+  });
+
+  it("lets an administrator correct someone else's, without signing them out", async () => {
+    const { app, adminCookie, memberCookie, member } = await twoAccountWorkspace();
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/accounts/${member.id}`,
+      headers: { cookie: adminCookie },
+      payload: { nickname: "阿亮" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ nickname: "阿亮" });
+    expect((await session(app, memberCookie)).statusCode).toBe(200);
+    expect((await session(app, memberCookie)).json()).toMatchObject({ user: { displayName: "阿亮" } });
+  });
+
+  it("signs the timeline and comments with the name, and falls back where there is no account", async () => {
+    const { app, adminCookie, memberCookie, shared } = await twoAccountWorkspace();
+    await setNickname(app, memberCookie, "阿亮");
+    const key = await createItem(app, adminCookie, shared.id, "Sync stalls");
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${key}/comments`,
+      headers: { cookie: memberCookie },
+      payload: { text: "Reproduced on the second launch." },
+    });
+
+    const comments = (await app.inject({ method: "GET", url: `/api/v1/items/${key}/comments`, headers: { cookie: memberCookie } }))
+      .json<{ comments: Array<{ accountName?: string }> }>().comments;
+    expect(comments.at(-1)).toMatchObject({ accountName: "阿亮" });
+
+    const events = (await app.inject({ method: "GET", url: `/api/v1/items/${key}/timeline`, headers: { cookie: adminCookie } }))
+      .json<{ events: Array<{ eventType: string; accountName?: string }> }>().events;
+    // Creating an item has never recorded an account, so there is nobody to name
+    // and the console still calls it "human".
+    expect(events.find((event) => event.eventType === "item_created")).not.toHaveProperty("accountName");
+    expect(events.find((event) => event.eventType === "comment_added")).toMatchObject({ accountName: "阿亮" });
+  });
+
+  it("still names a suspended account, because the question is who wrote it", async () => {
+    const { app, adminCookie, memberCookie, member, shared } = await twoAccountWorkspace();
+    await setNickname(app, memberCookie, "阿亮");
+    const key = await createItem(app, adminCookie, shared.id, "Sync stalls");
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${key}/comments`,
+      headers: { cookie: memberCookie },
+      payload: { text: "Reproduced on the second launch." },
+    });
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/accounts/${member.id}`,
+      headers: { cookie: adminCookie },
+      payload: { disabled: true },
+    });
+
+    const events = (await app.inject({ method: "GET", url: `/api/v1/items/${key}/timeline`, headers: { cookie: adminCookie } }))
+      .json<{ events: Array<{ eventType: string; accountName?: string }> }>().events;
+    expect(events.find((event) => event.eventType === "comment_added")).toMatchObject({ accountName: "阿亮" });
+  });
+});
+
 describe("Listing and revoking AI authorizations", () => {
   /** Mint a token and record it, the way the OAuth exchange does. */
   function authorize(app: FastifyInstance, accountId: string, clientId = "mgc_test_client") {
