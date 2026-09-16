@@ -950,10 +950,44 @@ describe("Nicknames", () => {
     expect((await session(app, memberCookie)).json()).toMatchObject({ user: { displayName: "阿亮" } });
   });
 
-  it("signs the timeline and comments with the name, and falls back where there is no account", async () => {
-    const { app, adminCookie, memberCookie, shared } = await twoAccountWorkspace();
+  it("signs every browser-written item and attachment event with the nickname", async () => {
+    const { app, adminCookie, memberCookie, member, shared } = await twoAccountWorkspace();
     await setNickname(app, memberCookie, "阿亮");
-    const key = await createItem(app, adminCookie, shared.id, "Sync stalls");
+    const key = await createItem(app, memberCookie, shared.id, "Sync stalls");
+    const edit = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/items/${key}`,
+      headers: { cookie: memberCookie },
+      payload: { title: "Sync stalls again" },
+    });
+    expect(edit.statusCode).toBe(200);
+    const attachmentHeaders = {
+      cookie: memberCookie,
+      "content-type": "application/octet-stream",
+      "x-missiongo-filename": "note.txt",
+      "x-missiongo-content-type": "text/plain",
+    };
+    const added = await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${key}/attachments`,
+      headers: attachmentHeaders,
+      payload: Buffer.from("first"),
+    });
+    expect(added.statusCode).toBe(201);
+    const attachmentId = added.json<{ id: string }>().id;
+    const replaced = await app.inject({
+      method: "PUT",
+      url: `/api/v1/items/${key}/attachments/${attachmentId}/content`,
+      headers: attachmentHeaders,
+      payload: Buffer.from("second"),
+    });
+    expect(replaced.statusCode).toBe(200);
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/items/${key}/attachments/${attachmentId}`,
+      headers: { cookie: memberCookie },
+    });
+    expect(removed.statusCode).toBe(204);
     await app.inject({
       method: "POST",
       url: `/api/v1/items/${key}/comments`,
@@ -966,11 +1000,12 @@ describe("Nicknames", () => {
     expect(comments.at(-1)).toMatchObject({ accountName: "阿亮" });
 
     const events = (await app.inject({ method: "GET", url: `/api/v1/items/${key}/timeline`, headers: { cookie: adminCookie } }))
-      .json<{ events: Array<{ eventType: string; accountName?: string }> }>().events;
-    // Creating an item has never recorded an account, so there is nobody to name
-    // and the console still calls it "human".
-    expect(events.find((event) => event.eventType === "item_created")).not.toHaveProperty("accountName");
-    expect(events.find((event) => event.eventType === "comment_added")).toMatchObject({ accountName: "阿亮" });
+      .json<{ events: Array<{ eventType: string; actorKind: string; accountId?: string; accountName?: string }> }>().events;
+    for (const eventType of ["item_created", "item_updated", "attachment_added", "attachment_replaced", "attachment_removed", "comment_added"]) {
+      expect(events.find((event) => event.eventType === eventType)).toMatchObject({
+        actorKind: "human", accountId: member.id, accountName: "阿亮",
+      });
+    }
   });
 
   it("still names a suspended account, because the question is who wrote it", async () => {
@@ -1625,4 +1660,3 @@ describe("Delegating product access to its creator (AND-58)", () => {
     })).statusCode).toBe(200);
   });
 });
-

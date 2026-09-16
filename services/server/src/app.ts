@@ -2073,6 +2073,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       description: stringField(body, "description")!,
       ...(body.report !== undefined ? { report: workItemReportBody(body.report)! } : {}),
       ...(environment ? { environment } : {}),
+      ...(sessionUser(request) ? { attribution: { accountId: sessionUser(request)!.id } } : {}),
     });
     return reply.status(201).send(item);
   });
@@ -2098,6 +2099,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(body.affectedComponentIds !== undefined
         ? { affectedComponentIds: stringArrayField(body, "affectedComponentIds")! }
         : {}),
+      ...(sessionUser(request) ? { attribution: { accountId: sessionUser(request)!.id } } : {}),
     });
   });
 
@@ -2203,7 +2205,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!Buffer.isBuffer(request.body)) throw invalidInput("Attachment body must be binary data.");
     const filename = headerText(request.headers["x-missiongo-filename"], "X-MissionGo-Filename");
     const contentType = headerText(request.headers["x-missiongo-content-type"], "X-MissionGo-Content-Type");
-    const attachment = await attachmentStorage.save(store, key, filename, contentType, request.body);
+    const attachment = await attachmentStorage.save(
+      store, key, filename, contentType, request.body, undefined,
+      sessionUser(request) ? { accountId: sessionUser(request)!.id } : undefined,
+    );
     return reply.status(201).send(publicAttachment(attachment));
   });
 
@@ -2289,13 +2294,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!Buffer.isBuffer(request.body)) throw invalidInput("Attachment body must be binary data.");
     const filename = headerText(request.headers["x-missiongo-filename"], "X-MissionGo-Filename");
     const contentType = headerText(request.headers["x-missiongo-content-type"], "X-MissionGo-Content-Type");
-    const attachment = await attachmentStorage.replace(store, key, attachmentId, filename, contentType, request.body);
+    const attachment = await attachmentStorage.replace(
+      store, key, attachmentId, filename, contentType, request.body,
+      sessionUser(request) ? { accountId: sessionUser(request)!.id } : undefined,
+    );
     return publicAttachment(attachment);
   });
 
   app.delete("/api/v1/items/:itemKey/attachments/:attachmentId", async (request, reply) => {
     const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
-    await attachmentStorage.remove(store, requireItemPermission(request, itemKey, "operate"), attachmentId);
+    await attachmentStorage.remove(
+      store, requireItemPermission(request, itemKey, "operate"), attachmentId,
+      sessionUser(request) ? { accountId: sessionUser(request)!.id } : undefined,
+    );
     return reply.status(204).send();
   });
 

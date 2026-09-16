@@ -698,7 +698,7 @@ export class MissionGoStore {
     const id = randomUUID();
     const itemKey = this.database.transaction(() => this.insertWorkItem(input, title, description, id, now, {
       type: input.type,
-    }));
+    }, { actor: "human", ...(input.attribution ? { attribution: input.attribution } : {}) }));
 
     return this.getWorkItem(itemKey);
   }
@@ -936,7 +936,7 @@ export class MissionGoStore {
         for (const componentId of affectedComponentIds) insert.run(current.id, componentId);
         this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, current.id);
       }
-      this.insertEvent(current.id, "item_updated", "human", null, null, {}, now);
+      this.insertEvent(current.id, "item_updated", "human", null, null, {}, now, input.attribution);
     });
 
     return this.getWorkItem(itemKey);
@@ -1006,7 +1006,7 @@ export class MissionGoStore {
         filename: input.filename,
         contentType: input.contentType,
         sizeBytes: input.sizeBytes,
-      }, now);
+      }, now, input.attribution);
     });
     return this.getAttachmentRecord(input.itemKey, id);
   }
@@ -1049,7 +1049,7 @@ export class MissionGoStore {
         contentType: input.contentType,
         sizeBytes: input.sizeBytes,
         previousSizeBytes: existing.sizeBytes,
-      }, now);
+      }, now, input.attribution);
     });
 
     // The feedback_attachment_uploads row keeps the digest the SDK uploaded and
@@ -1099,7 +1099,7 @@ export class MissionGoStore {
     return this.mapAttachment(row);
   }
 
-  deleteAttachmentMetadata(itemKey: string, attachmentId: string): AttachmentRecord {
+  deleteAttachmentMetadata(itemKey: string, attachmentId: string, attribution?: EventAttribution): AttachmentRecord {
     const attachment = this.getAttachmentRecord(itemKey, attachmentId);
     const item = this.getWorkItemRow(itemKey)!;
     const now = new Date().toISOString();
@@ -1110,7 +1110,7 @@ export class MissionGoStore {
         attachmentId,
         kind: attachment.kind,
         filename: attachment.filename,
-      }, now);
+      }, now, attribution);
     });
     return attachment;
   }

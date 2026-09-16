@@ -6,7 +6,7 @@ import type { AttachmentKind } from "@missiongo/domain";
 
 import { invalidInput } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
-import type { AttachmentRecord } from "./types.js";
+import type { AttachmentRecord, EventAttribution } from "./types.js";
 
 interface AttachmentRule {
   readonly kind: AttachmentKind;
@@ -99,6 +99,7 @@ export class AttachmentStorage {
     suppliedContentType: string,
     bytes: Buffer,
     feedbackUpload?: { readonly draftId: string; readonly clientAttachmentId: string },
+    attribution?: EventAttribution,
   ): Promise<AttachmentRecord> {
     store.getWorkItem(itemKey);
     const { filename, extension, rule, contentType } = validateUpload(encodedFilename, suppliedContentType, bytes);
@@ -130,6 +131,7 @@ export class AttachmentStorage {
         storageFilename,
         contentType,
         sizeBytes: bytes.length,
+        ...(attribution ? { attribution } : {}),
         ...(feedbackUpload ? {
           feedbackDraftId: feedbackUpload.draftId,
           clientAttachmentId: feedbackUpload.clientAttachmentId,
@@ -156,6 +158,7 @@ export class AttachmentStorage {
     encodedFilename: string,
     suppliedContentType: string,
     bytes: Buffer,
+    attribution?: EventAttribution,
   ): Promise<AttachmentRecord> {
     const { filename, extension, rule, contentType } = validateUpload(encodedFilename, suppliedContentType, bytes);
 
@@ -174,6 +177,7 @@ export class AttachmentStorage {
         storageFilename,
         contentType,
         sizeBytes: bytes.length,
+        ...(attribution ? { attribution } : {}),
       });
     } catch (error) {
       await unlink(path).catch(() => undefined);
@@ -186,13 +190,13 @@ export class AttachmentStorage {
     return replaced.attachment;
   }
 
-  async remove(store: MissionGoStore, itemKey: string, attachmentId: string): Promise<AttachmentRecord> {
+  async remove(store: MissionGoStore, itemKey: string, attachmentId: string, attribution?: EventAttribution): Promise<AttachmentRecord> {
     const attachment = store.getAttachmentRecord(itemKey, attachmentId);
     const path = this.resolveStoredFile(attachment.storageFilename);
     await unlink(path).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
-    return store.deleteAttachmentMetadata(itemKey, attachmentId);
+    return store.deleteAttachmentMetadata(itemKey, attachmentId, attribution);
   }
 
   resolveStoredFile(storageFilename: string): string {
