@@ -57,6 +57,7 @@ export interface ComponentSnapshot {
 
 export interface CreateWorkItemInput {
   readonly productId: string;
+  readonly attribution?: EventAttribution;
   readonly status?: "inbox" | "ready";
   readonly sourceComponentId?: string;
   readonly affectedComponentIds?: readonly string[];
@@ -118,6 +119,7 @@ export interface WorkItemListSummary {
 }
 
 export interface UpdateWorkItemInput {
+  readonly attribution?: EventAttribution;
   readonly title?: string;
   readonly description?: string;
   readonly report?: WorkItemReport;
@@ -130,6 +132,7 @@ export interface UpdateWorkItemInput {
 
 export interface CreateAttachmentMetadataInput {
   readonly itemKey: string;
+  readonly attribution?: EventAttribution;
   readonly kind: AttachmentKind;
   readonly filename: string;
   readonly storageFilename: string;
@@ -142,6 +145,7 @@ export interface CreateAttachmentMetadataInput {
 
 export interface ReplaceAttachmentContentInput {
   readonly itemKey: string;
+  readonly attribution?: EventAttribution;
   readonly attachmentId: string;
   readonly kind: AttachmentKind;
   readonly filename: string;
