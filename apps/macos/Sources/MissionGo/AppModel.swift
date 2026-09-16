@@ -104,12 +104,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var dispatchesError: String?
     @Published private(set) var claude: ClaudeCodeStatus = .checking
     @Published private(set) var codex: CodexStatus = .checking
-    /// One line for the menu: the synced version, or why it failed.
-    @Published private(set) var skillSyncSummary: String?
-    @Published private(set) var skillSyncFailed = false
+    /// The Skill row: nil until the first sync starts.
+    @Published private(set) var skillSync: SkillSyncStatus?
     @Published private(set) var launchAtLogin = LaunchAtLogin()
     /// The client's own version, and whether a newer one is published.
     @Published private(set) var updateState: UpdateState = .unavailable
+    /// This build's version, for the menu to name; nil when run without a bundle.
+    let appVersion: String? = AppUpdater.currentVersion()
 
     // MARK: Private state
 
@@ -247,8 +248,7 @@ final class AppModel: ObservableObject {
         dispatchesError = nil
         claude = .checking
         codex = .checking
-        skillSyncSummary = nil
-        skillSyncFailed = false
+        skillSync = nil
         // The version is a property of this build, not of the session, so it
         // stays; anything in flight does not.
         updateState = AppUpdater.currentVersion().map { .current($0) } ?? .unavailable
@@ -495,6 +495,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Syncs the Skill now, from the menu's retry button (AND-47). Restarts the
+    /// timer rather than syncing beside it, so the next automatic sync is an
+    /// hour from this one instead of landing on top of it.
+    func retrySkillSync() {
+        guard let credential, skillSync != .syncing else { return }
+        startSkillTimer(credential)
+    }
+
     /// Fetches the Skill from the server this Mac is logged in to and updates
     /// the agents' copies. A failure is shown, never fatal: a session still
     /// starts with whatever copy is installed.
@@ -503,23 +511,17 @@ final class AppModel: ObservableObject {
         let targets = SkillSync.targets(
             home: Paths.homeDirectory(), codexHome: CodexLocation(environment: environment).codexHome
         )
+        skillSync = .syncing
         do {
             let outcome = try await SkillSync.run(serverUrl: credential.serverUrl, targets: targets)
             guard self.credential == credential else { return }
             if !outcome.updated.isEmpty {
                 NSLog("%@", "missiongo Skill 已更新到 \(outcome.version)：\(outcome.updated.joined(separator: "，"))")
             }
-            if outcome.failures.isEmpty {
-                skillSyncSummary = outcome.version
-                skillSyncFailed = false
-            } else {
-                skillSyncSummary = "写入失败：\(outcome.failures.joined(separator: "；"))"
-                skillSyncFailed = true
-            }
+            skillSync = .outcome(outcome)
         } catch {
             guard self.credential == credential else { return }
-            skillSyncSummary = error.localizedDescription
-            skillSyncFailed = true
+            skillSync = .failed(reason: error.localizedDescription)
         }
     }
 

@@ -301,10 +301,14 @@ paths:
       operationId: listProductAccounts
       summary: Who can reach this product.
       description: >-
-        The account-and-product relation read from the product's side.
-        Administrators only. Every account is listed, including administrators,
-        who are marked as reaching the product by role whatever their row says --
-        a list that omitted them would misstate who can open it.
+        The account-and-product relation read from the product's side. An
+        administrator or the product's creator. A member who holds nothing on the
+        product gets 404; one who can see it but did not create it gets 403, so
+        the 403 never confirms a product they were not allowed to know about.
+        An administrator sees every account. A creator sees the accounts that
+        hold something on this product, plus the administrators -- the roster
+        itself stays an administrator's to know, and administrators are listed
+        because they do reach the product whatever their row says.
       security:
         - adminSessionCookie: []
       responses:
@@ -324,11 +328,25 @@ paths:
       operationId: setProductAccounts
       summary: Set who can reach this product.
       description: >-
-        Only this product's rows are touched, unlike the account-side editor
+        An administrator or the product's creator, refused the same way as the
+        GET. Only this product's rows are touched, unlike the account-side editor
         which replaces an account's whole set: from here you cannot see what else
         an account holds, so replacing everything would revoke permissions that
         were never on screen. Clearing all three switches for an account removes
-        its row.
+        its row; operate and AI each imply view when stored.
+
+
+        Each entry names its account by `accountId` or by `email`. The address is
+        how a creator adds someone without being able to list who has an account
+        here, and it is resolved case-insensitively. At most 200 entries, and no
+        account may appear twice.
+
+
+        A creator may not change its own row, or any administrator's: clearing
+        its own would drop the product off its own list, and a row on an
+        administrator would move that administrator's AI reach, which is bounded
+        by exactly these rows. An entry asking for what is already stored is
+        accepted either way, because the editor posts every row it drew.
       security:
         - adminSessionCookie: []
       requestBody:
@@ -341,17 +359,28 @@ paths:
               properties:
                 accounts:
                   type: array
+                  maxItems: 200
                   items:
                     type: object
-                    required: [accountId]
+                    description: Give exactly one of accountId or email.
                     properties:
                       accountId: { type: string }
+                      email:
+                        type: string
+                        format: email
+                        description: >-
+                          Resolved to an account, case-insensitively. An address
+                          with no account, or one whose account is suspended,
+                          is refused with account_not_grantable -- one answer for
+                          both, so the reply says only whether it can be added.
                       canView: { type: boolean }
                       canOperate: { type: boolean }
                       canUseAi: { type: boolean }
       responses:
         "200":
-          description: The stored access list.
+          description: >-
+            The stored access list, narrowed for the caller exactly as the GET
+            narrows it.
           content:
             application/json:
               schema:
@@ -362,6 +391,11 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/ProductAccessEntry" }
         "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403":
+          description: >-
+            product_not_owned when the caller can see the product but did not
+            create it; own_access_unchangeable or admin_access_unchangeable when a
+            creator tried to change its own row or an administrator's.
         "404": { $ref: "#/components/responses/NotFound" }
   /api/v1/accounts:
     get:
@@ -1097,6 +1131,33 @@ paths:
           description: Requested attachment byte range.
         "416":
           description: Requested byte range is invalid or outside the attachment.
+  /api/v1/items/{itemKey}/attachments/{attachmentId}/thumbnail:
+    parameters:
+      - $ref: "#/components/parameters/WorkItemKey"
+      - in: path
+        name: attachmentId
+        required: true
+        schema: { type: string }
+    get:
+      operationId: downloadItemAttachmentThumbnail
+      description: >-
+        A JPEG rendition of an image attachment that fits inside a width x width box, never
+        enlarged. Pass the attachment's current revision as rev: only then is the response
+        cacheable as immutable, because annotating replaces the bytes under the same id.
+      parameters:
+        - in: query
+          name: width
+          description: Edge of the bounding box in pixels, clamped to 32-1024. Defaults to 192.
+          schema: { type: integer }
+        - in: query
+          name: rev
+          description: The attachment's revision field.
+          schema: { type: string }
+      responses:
+        "200":
+          description: JPEG thumbnail.
+        "400":
+          description: The attachment is not an image.
 components:
   securitySchemes:
     adminSessionCookie:
@@ -1239,11 +1300,25 @@ components:
       type: object
       required: [account, permission, reachesByRole]
       properties:
-        account: { $ref: "#/components/schemas/Account" }
+        account: { $ref: "#/components/schemas/AccountSummary" }
         permission: { $ref: "#/components/schemas/ProductPermission" }
         reachesByRole:
           type: boolean
           description: True for an administrator, who reaches the product whatever the row says.
+    AccountSummary:
+      type: object
+      required: [id, email, role]
+      description: >-
+        Just enough of an account to name it. Deliberately narrower than Account:
+        a product's creator can read the product-side list, so it must not carry
+        credentialsChangedAt, which says when some other account last changed its
+        password or was suspended. This is also what the route has always sent --
+        it used to be documented as Account, which claimed a permissions field
+        that was never there.
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/AccountRole" }
     Account:
       type: object
       required: [id, email, role, createdAt, updatedAt, permissions]
@@ -1530,16 +1605,19 @@ components:
           items: { type: string }
     WorkItemAttachment:
       type: object
-      required: [id, itemKey, kind, displayNumber, filename, contentType, sizeBytes, createdAt]
+      required: [id, itemKey, kind, displayNumber, filename, contentType, sizeBytes, createdAt, revision]
       properties:
         id: { type: string }
         itemKey: { type: string }
-        kind: { enum: [image, video, log] }
+        kind: { enum: [image, video, log, document] }
         displayNumber: { type: integer, minimum: 1 }
         filename: { type: string }
         contentType: { type: string }
         sizeBytes: { type: integer, minimum: 1 }
         createdAt: { type: string, format: date-time }
+        revision:
+          type: string
+          description: Changes whenever the stored bytes are replaced, for example after annotating.
     TransitionWorkItemRequest:
       type: object
       required: [to, reason]

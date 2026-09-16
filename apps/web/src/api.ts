@@ -1,3 +1,4 @@
+import { attachmentThumbnailPath } from "./attachment-thumbnail";
 import type {
   ActiveDispatch,
   Component,
@@ -78,9 +79,23 @@ export interface AiAuthorization {
   readonly lastUsedAt?: string;
 }
 
+/**
+ * Just enough of an account to name it in the product-side editor.
+ *
+ * This is what the route actually sends, and it used to be typed as `Account`,
+ * which claimed a `permissions` field that was never there. It stays this narrow
+ * on purpose: a product's creator can read this list now, so it must not carry
+ * when some other account last changed its password.
+ */
+export interface AccountSummary {
+  readonly id: string;
+  readonly email: string;
+  readonly role: AccountRole;
+}
+
 /** One account's standing on one product, as the product-side editor shows it. */
 export interface ProductAccessEntry {
-  readonly account: Account;
+  readonly account: AccountSummary;
   readonly permission: ProductPermission;
   /** True for an administrator, who reaches the product whatever the row says. */
   readonly reachesByRole: boolean;
@@ -223,7 +238,12 @@ export const api = {
     request<{ accounts: ProductAccessEntry[] }>(`/api/v1/products/${encodeURIComponent(productId)}/accounts`),
   setProductAccounts: (
     productId: string,
-    accounts: Array<{ accountId: string; canView: boolean; canOperate: boolean; canUseAi: boolean }>,
+    // An entry names its account by id, or by the address someone typed -- which
+    // is how a product's creator adds a person without being able to list who
+    // has an account here.
+    accounts: Array<
+      { accountId?: string; email?: string; canView: boolean; canOperate: boolean; canUseAi: boolean }
+    >,
   ) =>
     request<{ accounts: ProductAccessEntry[] }>(`/api/v1/products/${encodeURIComponent(productId)}/accounts`, {
       method: "PUT",
@@ -310,14 +330,12 @@ export const api = {
     );
     return response.blob();
   },
-  // List tiles are ~84px; the originals behind them run to megabytes. The
-  // server renders the small version so scrolling a list does not pull down
-  // full-resolution screenshots nobody is looking at yet.
-  downloadAttachmentThumbnail: async (itemKey: string, attachmentId: string, width: number) => {
-    const response = await attachmentRequest(
-      `/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}/thumbnail?width=${width}`,
-      {},
-    );
+  // List tiles and detail previews are a few hundred pixels at most; the
+  // originals behind them run to megabytes. The server renders the small
+  // version so neither a list nor a detail view pulls down full-resolution
+  // screenshots nobody has opened yet.
+  downloadAttachmentThumbnail: async (itemKey: string, attachmentId: string, width: number, revision: string) => {
+    const response = await attachmentRequest(attachmentThumbnailPath(itemKey, attachmentId, width, revision), {});
     return response.blob();
   },
   // Annotating an image sends the result back over the same attachment, so the

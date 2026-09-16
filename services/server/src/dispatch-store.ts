@@ -143,6 +143,9 @@ function text(value: string | undefined, field: string, maxLength: number): stri
  * a second account exists, it would be a migration of live data instead of a
  * WHERE clause.
  */
+/** Which products a caller may see mappings for: all of them, or these ids. */
+type ProductScope = "*" | readonly string[];
+
 export class DispatchStore {
   private readonly database: MissionGoDatabase;
 
@@ -263,7 +266,7 @@ export class DispatchStore {
     products: readonly { id: string; keyPrefix: string; name: string }[];
   } {
     const row = this.nodeRow(nodeId);
-    const node = this.mapNode(row);
+    const node = this.mapNode(row, products.map((product) => product.id));
     return {
       node: {
         id: node.id,
@@ -280,8 +283,12 @@ export class DispatchStore {
   }
 
   /** The client's own mapping edit; the same rules as the console's. */
-  replaceOwnRepos(nodeId: string, repos: readonly { productId: string; repoPath: string }[]): readonly NodeRepoMapping[] {
-    return this.replaceRepos(this.nodeRow(nodeId).account_id, nodeId, repos);
+  replaceOwnRepos(
+    nodeId: string,
+    repos: readonly { productId: string; repoPath: string }[],
+    visibleProductIds: ProductScope = "*",
+  ): readonly NodeRepoMapping[] {
+    return this.replaceRepos(this.nodeRow(nodeId).account_id, nodeId, repos, visibleProductIds);
   }
 
   listDispatchesForNode(nodeId: string, limit = 20): readonly DispatchSnapshot[] {
@@ -322,6 +329,7 @@ export class DispatchStore {
     nodeId: string,
     agents: readonly NodeAgentReport[],
     repoCandidates: readonly RepoCandidate[] = [],
+    visibleProductIds: ProductScope = "*",
   ): readonly NodeRepoMapping[] {
     for (const agent of agents) {
       if (!AGENT_KINDS.includes(agent.kind)) throw invalidInput(`Unsupported agent kind: ${String(agent.kind)}.`);
@@ -341,10 +349,10 @@ export class DispatchStore {
     this.database.connection
       .prepare("UPDATE nodes SET agents_json = ?, repo_candidates_json = ?, last_seen_at = ?, updated_at = ? WHERE id = ?")
       .run(JSON.stringify(agents), JSON.stringify(candidates), now, now, nodeId);
-    return this.listRepos(nodeId);
+    return this.listRepos(nodeId, visibleProductIds);
   }
 
-  listNodes(accountId: string): readonly NodeSnapshot[] {
+  listNodes(accountId: string, visibleProductIds: ProductScope = "*"): readonly NodeSnapshot[] {
     const rows = this.database.connection
       .prepare(
         `SELECT id, account_id, name, nickname, hostname, agents_json, repo_candidates_json,
@@ -352,7 +360,7 @@ export class DispatchStore {
          FROM nodes WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`,
       )
       .all(accountId) as unknown as NodeRow[];
-    return rows.map((row) => this.mapNode(row));
+    return rows.map((row) => this.mapNode(row, visibleProductIds));
   }
 
   getNode(accountId: string, nodeId: string): NodeSnapshot {
@@ -401,11 +409,29 @@ export class DispatchStore {
     });
   }
 
-  replaceRepos(accountId: string, nodeId: string, repos: readonly { productId: string; repoPath: string }[]): readonly NodeRepoMapping[] {
+  /**
+   * Replace a machine's mapping for the products the caller can see.
+   *
+   * Only those: a mapping for a product the account has since lost access to
+   * is neither shown to it nor sent back by it, so replacing the whole table
+   * would silently drop that row -- and requiring it in the request, as before,
+   * made every later save fail with "product not found" instead.
+   */
+  replaceRepos(
+    accountId: string,
+    nodeId: string,
+    repos: readonly { productId: string; repoPath: string }[],
+    visibleProductIds: ProductScope = "*",
+  ): readonly NodeRepoMapping[] {
     this.getNode(accountId, nodeId);
     const now = new Date().toISOString();
     this.database.transaction(() => {
-      this.database.connection.prepare("DELETE FROM node_product_repos WHERE node_id = ?").run(nodeId);
+      if (visibleProductIds === "*") {
+        this.database.connection.prepare("DELETE FROM node_product_repos WHERE node_id = ?").run(nodeId);
+      } else {
+        const remove = this.database.connection.prepare("DELETE FROM node_product_repos WHERE node_id = ? AND product_id = ?");
+        for (const productId of visibleProductIds) remove.run(nodeId, productId);
+      }
       const insert = this.database.connection.prepare(
         `INSERT INTO node_product_repos (id, node_id, product_id, repo_path, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
@@ -422,10 +448,11 @@ export class DispatchStore {
         insert.run(randomUUID(), nodeId, repo.productId, repoPath, now, now);
       }
     });
-    return this.listRepos(nodeId);
+    return this.listRepos(nodeId, visibleProductIds);
   }
 
-  listRepos(nodeId: string): readonly NodeRepoMapping[] {
+  /** Every mapping by default; the console and the client pass what their account can see. */
+  listRepos(nodeId: string, visibleProductIds: ProductScope = "*"): readonly NodeRepoMapping[] {
     const rows = this.database.connection
       .prepare(
         `SELECT r.product_id, r.repo_path, p.key_prefix
@@ -433,7 +460,9 @@ export class DispatchStore {
          WHERE r.node_id = ? ORDER BY p.key_prefix`,
       )
       .all(nodeId) as unknown as Array<{ product_id: string; repo_path: string; key_prefix: string }>;
-    return rows.map((row) => ({ productId: row.product_id, productKey: row.key_prefix, repoPath: row.repo_path }));
+    return rows
+      .filter((row) => visibleProductIds === "*" || visibleProductIds.includes(row.product_id))
+      .map((row) => ({ productId: row.product_id, productKey: row.key_prefix, repoPath: row.repo_path }));
   }
 
   /**
@@ -712,7 +741,7 @@ export class DispatchStore {
     return rows.map((row) => row.item_key);
   }
 
-  private mapNode(row: NodeRow): NodeSnapshot {
+  private mapNode(row: NodeRow, visibleProductIds: ProductScope = "*"): NodeSnapshot {
     return {
       id: row.id,
       name: row.nickname ?? row.name,
@@ -720,7 +749,7 @@ export class DispatchStore {
       ...(row.nickname ? { nickname: row.nickname } : {}),
       ...(row.hostname ? { hostname: row.hostname } : {}),
       agents: JSON.parse(row.agents_json) as NodeAgentReport[],
-      repos: this.listRepos(row.id),
+      repos: this.listRepos(row.id, visibleProductIds),
       repoCandidates: row.repo_candidates_json
         ? JSON.parse(row.repo_candidates_json) as RepoCandidate[]
         : [],

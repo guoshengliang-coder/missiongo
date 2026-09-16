@@ -15,9 +15,12 @@ export const INITIAL_SCHEMA = `
     updated_at TEXT NOT NULL,
     archived_at TEXT,
     icon_png TEXT,
-    -- Who may archive it. Deliberately not a foreign key: deleting an account
-    -- must not take its products with it, and ON DELETE SET NULL would silently
-    -- hand every one of them to nobody.
+    -- Who administers it: archiving it, and deciding who else reaches it
+    -- (AND-58). Deliberately not a foreign key: deleting an account must not
+    -- take its products with it, and ON DELETE SET NULL would silently hand
+    -- every one of them to nobody. A deleted creator therefore leaves the id
+    -- pointing at nobody, which matches no live account and leaves the product
+    -- to administrators -- the safe way for that case to fail.
     created_by_account_id TEXT
   ) STRICT;
 
@@ -114,6 +117,7 @@ export const INITIAL_SCHEMA = `
     environment_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    derived_from_item_id TEXT REFERENCES work_items(id) ON DELETE SET NULL,
     UNIQUE (product_id, sequence)
   ) STRICT;
 
@@ -358,6 +362,8 @@ export const INITIAL_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_account_products_product ON account_products(product_id);
   CREATE INDEX IF NOT EXISTS idx_ai_authorizations_account
     ON ai_authorizations(account_id, issued_at DESC);
+  -- idx_work_items_derived_from is not here either, for the same reason: the
+  -- column arrives with its migration on a database older than AND-50.
   -- idx_products_created_by is not here. This whole script runs before the
   -- migrations, and on a database created before AND-33 the products table has
   -- no created_by_account_id yet, so indexing it here fails the start. The

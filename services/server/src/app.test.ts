@@ -188,7 +188,117 @@ describe("Commenting over MCP", () => {
 
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
-      capabilities: { writeTools: ["append_comment", "claim_item", "submit_for_verification"], canComment: true },
+      capabilities: {
+        writeTools: ["append_comment", "claim_item", "submit_for_verification", "create_item"],
+        canComment: true,
+        canCreateItems: true,
+      },
+    });
+  });
+
+  describe("creating a derived item", () => {
+    const followUp = {
+      sourceItemKey: "hg-1",
+      title: "Cold start leaks the session",
+      description: "Found while fixing HG-1.",
+      type: "bug",
+      priority: "normal",
+      status: "ready",
+      platform: "android",
+      agentName: "Claude Code · studio-mac",
+    };
+
+    it("creates the item under its own key, linked both ways and attributed to the agent", async () => {
+      const { app, call, writeToken } = await commentingApp();
+      const created = await call(writeToken, 1, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, idempotencyKey: "follow-up-1" },
+      });
+      expect(created.error).toBeUndefined();
+      expect(created.result?.structuredContent).toMatchObject({
+        statusChanged: false,
+        item: { key: "HG-2", status: "ready", environment: { platform: "android" }, derivedFrom: { key: "HG-1", title: "Crash" } },
+      });
+
+      const source = (await app.inject({
+        method: "GET",
+        url: "/api/v1/items/HG-1",
+        headers: { authorization: "Bearer management-test-token" },
+      })).json<{ derivedItems?: unknown }>();
+      expect(source.derivedItems).toEqual([{ key: "HG-2", title: "Cold start leaks the session", status: "ready" }]);
+
+      const timeline = (key: string) => app.inject({
+        method: "GET",
+        url: `/api/v1/items/${key}/timeline`,
+        headers: { authorization: "Bearer management-test-token" },
+      }).then((response) => response.json<{ events: Array<{ eventType: string; actorKind: string; payload: Record<string, unknown> }> }>().events);
+      expect((await timeline("HG-2")).find((event) => event.eventType === "item_created")).toMatchObject({
+        actorKind: "agent",
+        payload: { derivedFrom: "HG-1", agentName: "Claude Code · studio-mac" },
+      });
+      expect((await timeline("HG-1")).find((event) => event.eventType === "derived_item_created")).toMatchObject({
+        actorKind: "agent",
+        payload: { itemKey: "HG-2" },
+      });
+
+      // A retry after a lost response must not file the follow-up twice.
+      const retried = await call(writeToken, 2, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, idempotencyKey: "follow-up-1" },
+      });
+      expect(retried.result?.structuredContent).toMatchObject({ item: { key: "HG-2" } });
+      const listed = (await app.inject({
+        method: "GET",
+        url: "/api/v1/items/HG-1",
+        headers: { authorization: "Bearer management-test-token" },
+      })).json<{ derivedItems?: unknown[] }>();
+      expect(listed.derivedItems).toHaveLength(1);
+    });
+
+    it("refuses a token that was only granted reading", async () => {
+      const { call, readToken } = await commentingApp();
+      const refused = await call(readToken, 1, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, idempotencyKey: "follow-up-1" },
+      });
+      expect(JSON.stringify(refused)).toMatch(/does not include write access/);
+    });
+
+    it("refuses a ready item without a platform, and a source that does not exist", async () => {
+      const { call, writeToken } = await commentingApp();
+      const { platform: _, ...withoutPlatform } = followUp;
+      expect(JSON.stringify(await call(writeToken, 1, "tools/call", {
+        name: "create_item",
+        arguments: { ...withoutPlatform, idempotencyKey: "follow-up-1" },
+      }))).toMatch(/needs a platform/);
+      expect(JSON.stringify(await call(writeToken, 2, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, sourceItemKey: "HG-99", idempotencyKey: "follow-up-2" },
+      }))).toMatch(/not found/i);
+
+      // A draft needs no platform: the person triaging it fills that in.
+      const draft = await call(writeToken, 3, "tools/call", {
+        name: "create_item",
+        arguments: { ...withoutPlatform, status: "inbox", idempotencyKey: "follow-up-3" },
+      });
+      expect(draft.result?.structuredContent).toMatchObject({ item: { status: "inbox", derivedFrom: { key: "HG-1" } } });
+    });
+
+    it("caps how many items one source item can spawn in an hour", async () => {
+      const { call, writeToken } = await commentingApp();
+      for (let index = 0; index < 10; index += 1) {
+        const created = await call(writeToken, index + 1, "tools/call", {
+          name: "create_item",
+          arguments: { ...followUp, title: `Follow-up ${index}`, idempotencyKey: `follow-up-${index}` },
+        });
+        expect(created.error).toBeUndefined();
+        expect(JSON.stringify(created)).not.toMatch(/isError":true/);
+      }
+      const eleventh = await call(writeToken, 99, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, title: "One too many", idempotencyKey: "follow-up-10" },
+      });
+      expect(JSON.stringify(eleventh)).toMatch(/last hour/);
     });
   });
 
@@ -704,7 +814,7 @@ describe("MissionGo REST API", () => {
       payload,
     });
 
-    const image = (await upload("screenshot.png", "image/png", original)).json<{ id: string }>();
+    const image = (await upload("screenshot.png", "image/png", original)).json<{ id: string; revision: string }>();
     const log = (await upload("run.log", "text/plain", "boot\nready\n")).json<{ id: string }>();
 
     const thumbnail = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail` });
@@ -722,8 +832,23 @@ describe("MissionGo REST API", () => {
     expect((await sharp(wider.rawPayload).metadata()).height).toBe(384);
 
     // An absurd request is clamped rather than allowed to render a huge image.
+    // 1024 is enough for a detail-view preview card at 2x.
     const clamped = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail?width=99999` });
-    expect((await sharp(clamped.rawPayload).metadata()).height).toBe(512);
+    expect((await sharp(clamped.rawPayload).metadata()).height).toBe(1024);
+
+    // Only a URL that names the current revision is cached for good; without
+    // it the browser has to revalidate, or an edit would stay invisible.
+    expect(thumbnail.headers["cache-control"]).toBe("private, no-cache");
+    const pinned = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail?width=192&rev=${image.revision}`,
+    });
+    expect(pinned.headers["cache-control"]).toBe("private, max-age=2592000, immutable");
+    const outdated = await app.inject({
+      method: "GET",
+      url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail?width=192&rev=000000000000`,
+    });
+    expect(outdated.headers["cache-control"]).toBe("private, no-cache");
 
     const notAnImage = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${log.id}/thumbnail` });
     expect(notAnImage.statusCode).toBe(400);
@@ -758,7 +883,9 @@ describe("MissionGo REST API", () => {
       payload,
     });
 
-    const first = (await upload("image", "before.png", "image/png", "original-bytes")).json<{ id: string; displayNumber: number }>();
+    const first = (await upload("image", "before.png", "image/png", "original-bytes"))
+      .json<{ id: string; displayNumber: number; revision: string }>();
+    expect(first.revision).toMatch(/^[0-9a-f]{12}$/);
     const second = (await upload("image", "other.png", "image/png", "second-bytes")).json<{ displayNumber: number }>();
     expect(first.displayNumber).toBe(1);
     expect(second.displayNumber).toBe(2);
@@ -786,6 +913,12 @@ describe("MissionGo REST API", () => {
       filename: "before.jpg",
       contentType: "image/jpeg",
     });
+    // Same id, new bytes: the revision is what tells a cached thumbnail apart.
+    expect(replaced.json<{ revision: string }>().revision).not.toBe(first.revision);
+    const detail = (await app.inject({ method: "GET", url: "/api/v1/items/AND-1" }))
+      .json<{ attachments: readonly { id: string; revision: string }[] }>();
+    expect(detail.attachments.find((attachment) => attachment.id === first.id)?.revision)
+      .toBe(replaced.json<{ revision: string }>().revision);
 
     const content = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${first.id}/content` });
     expect(content.body).toBe("annotated-bytes");

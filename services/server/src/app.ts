@@ -86,7 +86,8 @@ const PRODUCT_ICON_EDGE = 96;
 
 /** Two rows of 84px tiles at 2x, which covers every list layout we render. */
 const DEFAULT_THUMBNAIL_EDGE = 192;
-const MAX_THUMBNAIL_EDGE = 512;
+/** The detail view's preview cards run to a few hundred CSS pixels, drawn at 2x. */
+const MAX_THUMBNAIL_EDGE = 1024;
 
 const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "server", "shared", "other"] as const;
 
@@ -125,6 +126,14 @@ function booleanField(body: Record<string, unknown>, field: string): boolean {
  * dropped connection the daemon has to interpret.
  */
 const MAX_CLAIM_WAIT_MS = 25_000;
+/**
+ * How many rows one product-access save may carry.
+ *
+ * The editor sends one per account on screen, so this is only ever hit by a
+ * hand-made request; without it a member creator could ask for tens of thousands
+ * of account lookups inside a single transaction.
+ */
+const MAX_PRODUCT_ACCESS_ENTRIES = 200;
 
 /**
  * A machine's nickname from a request body: a string sets it, empty or null
@@ -343,9 +352,10 @@ function oauthLoginPage(
   const writes = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools !== "none";
   const writeGrant = "<strong>发表评论、把待处理的任务领为处理中、并在 PR 合并后推到待验证</strong>。"
     + "只有这两个状态变更——验收、退回、搁置，以及做不了怎么办，都由你决定。"
-    + "它不能修改你写的内容，不能创建或删除条目，不能撤回评论。";
-  const nodeGrant = "<strong>把这台 Mac 登记为执行机器</strong>：接收你在控制台派出的任务，并在本机启动会话处理。"
-    + "随时可以在控制台「执行机器」里撤销。";
+    + "<strong>在你于会话里确认内容后，从正在处理的条目拆出衍生条目</strong>。"
+    + "它不能修改你写的内容，不能删除条目，不能撤回评论。";
+  const nodeGrant = "<strong>把这台 Mac 登记为你的设备</strong>：接收你在控制台派出的任务，并在本机启动 agent 会话处理。"
+    + "随时可以在控制台「Agent 管理」里撤销。";
   const scopeNote = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools === "none"
     ? "本次只会签发读取授权：这个部署当前没有开放 AI 写入。"
     : writes
@@ -1078,22 +1088,31 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   };
 
   /**
-   * Retiring a product is the creator's call, or an administrator's.
+   * Retiring a product, and deciding who else reaches it, are the creator's
+   * call or an administrator's.
    *
    * Item 3.2: a member archives what they created, not what was shared with
    * them. A product with no recorded creator predates this and belongs to the
    * administrator who ran the deployment, which is what the seed backfill
    * records -- so an unowned product here means a member, and a member does not
-   * get to retire it.
+   * get to retire it. A creator who was since deleted leaves the id dangling
+   * rather than NULL, and nothing backfills that one: it matches no live
+   * account, so only an administrator can act on it, which is the safe way for
+   * that case to fail.
+   *
+   * `action` only names the thing being refused. Callers put a product the
+   * account cannot see behind `requireProductPermission` first, so 403 here
+   * always means "you can see it, it just is not yours" -- never a hint that a
+   * product you were not allowed to know about exists.
    */
-  const requireProductOwnership = (request: FastifyRequest, productId: string): void => {
+  const requireProductOwnership = (request: FastifyRequest, productId: string, action: string): void => {
     if (bearerAuthorized(request)) return;
     const account = requireAccount(request);
     if (account.role === "admin") return;
     if (store.getProduct(productId).createdByAccountId !== account.id) {
       throw new MissionGoError(
         "product_not_owned",
-        "Only the account that created this product, or an administrator, can archive it.",
+        `Only the account that created this product, or an administrator, can ${action}.`,
         403,
       );
     }
@@ -1213,39 +1232,164 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    * this answers "who may reach this product", which is the question you have
    * while looking at a product's settings.
    *
-   * Administrators only, like the rest of account management -- deciding who
-   * else may reach a product is not something a member does to a product that
-   * was shared with them.
+   * An administrator or the product's creator (AND-58). A member who had a
+   * product shared with them still has no say in who else reaches it: the two
+   * guards below answer them 404 for a product they cannot see at all, and 403
+   * for one they can see but did not create.
+   *
+   * Authorizing needs `view`, not `operate`. Operate is for changing the
+   * product's contents; deciding who reaches it belongs to whoever owns it, and
+   * asking for operate as well would let an administrator who untickes the
+   * creator's operate box take the product away from them by accident.
    */
-  app.get("/api/v1/products/:productId/accounts", async (request) => {
-    requireAdmin(request);
-    const { productId } = request.params as { productId: string };
+  /**
+   * The account an entry names by email.
+   *
+   * A product's creator can add someone without being able to list who has an
+   * account here, so the address is typed rather than picked, and the server
+   * looks it up. It does not create the account: there is no public
+   * registration, and an administrator setting a first password is still how
+   * someone gets one.
+   *
+   * One error covers "no such address" and "suspended", so the reply says only
+   * whether this address can be added. It still tells a member whether a guessed
+   * address exists, which is the price of adding people by address at all;
+   * docs/security-boundaries.md records it next to the roster decision it
+   * follows from.
+   */
+  const resolveGrantee = (email: string | undefined): string => {
+    if (!email) throw invalidInput("Each entry needs an accountId or an email.");
+    const grantee = accountStore.findGrantableByEmail(normalizeEmail(email));
+    if (!grantee) {
+      throw new MissionGoError(
+        "account_not_grantable",
+        "No account here can be given access with that email address.",
+        400,
+      );
+    }
+    return grantee.id;
+  };
+
+  const productAccessGuard = (request: FastifyRequest, productId: string): AccountSnapshot | undefined => {
+    // Order matters. `view` refuses a product the caller cannot see with a 404,
+    // so ownership never gets the chance to confirm, with its 403, that a
+    // product they were not allowed to know about exists.
+    requireProductPermission(request, productId, "view");
+    requireProductOwnership(request, productId, "manage who reaches it");
     store.getProduct(productId);
-    return { accounts: accountStore.listProductAccess(productId) };
+    // A deployment token carries no account, and an unauthenticated deployment
+    // has none to carry. Both are already past every product check; there is
+    // nobody to hide the roster from and nobody for the guards below to protect.
+    return bearerAuthorized(request) ? undefined : requireAccount(request);
+  };
+
+  /**
+   * One exit for both routes.
+   *
+   * The PUT returns the list too, so reading and writing have to narrow it the
+   * same way: otherwise a member creator who cannot list the roster through GET
+   * would get it back in the response to a save.
+   */
+  const productAccessFor = (productId: string, account: AccountSnapshot | undefined) =>
+    accountStore.listProductAccess(productId, { rosterHidden: account !== undefined && account.role !== "admin" });
+
+  app.get("/api/v1/products/:productId/accounts", async (request) => {
+    const { productId } = request.params as { productId: string };
+    const account = productAccessGuard(request, productId);
+    return { accounts: productAccessFor(productId, account) };
   });
 
   app.put("/api/v1/products/:productId/accounts", async (request) => {
-    requireAdmin(request);
     const { productId } = request.params as { productId: string };
-    store.getProduct(productId);
+    const account = productAccessGuard(request, productId);
     const body = objectBody(request.body);
     const entries = Array.isArray(body.accounts) ? body.accounts : undefined;
     if (!entries) throw invalidInput("accounts must be an array.");
-    accountStore.replaceProductAccess(
-      productId,
-      entries.map((entry) => {
-        const record = objectBody(entry);
-        return {
-          accountId: stringField(record, "accountId")!,
-          permission: {
-            canView: record.canView === true,
-            canOperate: record.canOperate === true,
-            canUseAi: record.canUseAi === true,
-          },
-        };
-      }),
-    );
-    return { accounts: accountStore.listProductAccess(productId) };
+    // A member editor sends one row per person on screen, so the request is
+    // bounded by the roster. The cap is here because nothing else bounds it, and
+    // every entry costs an account lookup inside one transaction.
+    if (entries.length > MAX_PRODUCT_ACCESS_ENTRIES) {
+      throw invalidInput(`accounts must hold at most ${MAX_PRODUCT_ACCESS_ENTRIES} entries.`);
+    }
+
+    // Resolve first, then judge, then write. The guards below are about which
+    // account an entry points at, and an entry can name it by email, so judging
+    // the request as it arrived would let `{ email }` walk straight past a check
+    // that only knew how to read `accountId`.
+    type ResolvedEntry = {
+      accountId: string;
+      /** True when the entry named the account by address rather than by id. */
+      byEmail: boolean;
+      permission: { canView: boolean; canOperate: boolean; canUseAi: boolean };
+    };
+    const resolved = new Map<string, ResolvedEntry>();
+    for (const entry of entries) {
+      const record = objectBody(entry);
+      const byEmail = record.accountId === undefined;
+      const accountId = byEmail ? resolveGrantee(stringField(record, "email")) : stringField(record, "accountId")!;
+      // Two entries for one account would otherwise be applied in order, and a
+      // guard that passed on the first could be undone by the second.
+      if (resolved.has(accountId)) throw invalidInput("accounts must not name the same account twice.");
+      const canOperate = record.canOperate === true;
+      const canUseAi = record.canUseAi === true;
+      resolved.set(accountId, {
+        accountId,
+        byEmail,
+        // Normalize here as well as in the store, so a guard comparing this
+        // against what is stored compares like with like.
+        permission: { canView: record.canView === true || canOperate || canUseAi, canOperate, canUseAi },
+      });
+    }
+
+    if (account && account.role !== "admin") {
+      // The narrowed list, not the full one: it is exactly what this caller was
+      // shown, so "was this row on their screen" and "what does it hold now" are
+      // the same lookup. The full list has an entry for every account, holding
+      // nothing, which would make every id look like one they had been given.
+      const current = new Map(
+        accountStore.listProductAccess(productId, { rosterHidden: true }).map((entry) => [entry.account.id, entry]),
+      );
+      for (const entry of resolved.values()) {
+        const held = current.get(entry.accountId);
+        // The editor submits every row it drew, including the ones it drew
+        // read-only, so an entry that asks for exactly what is already stored is
+        // not an attempt to cross these lines -- refusing it would make every
+        // save from that editor fail.
+        if (held
+          && held.permission.canView === entry.permission.canView
+          && held.permission.canOperate === entry.permission.canOperate
+          && held.permission.canUseAi === entry.permission.canUseAi) continue;
+        // A member's editor only ever sends back ids it was shown, plus whoever
+        // it just looked up by address. An id that is neither is an id this
+        // caller had no way to learn, so it gets the same answer as an address
+        // nobody holds -- otherwise guessing ids would reach accounts that
+        // deciding not to list the roster was meant to keep out of reach.
+        if (!held && !entry.byEmail) {
+          throw new MissionGoError(
+            "account_not_grantable",
+            "No account here can be given access with that email address.",
+            400,
+          );
+        }
+        if (entry.accountId === account.id) {
+          throw new MissionGoError(
+            "own_access_unchangeable",
+            "You cannot change your own access to a product you created. Ask an administrator.",
+            403,
+          );
+        }
+        if (held?.account.role === "admin") {
+          throw new MissionGoError(
+            "admin_access_unchangeable",
+            "An administrator reaches this product by role. Only an administrator can change their row.",
+            403,
+          );
+        }
+      }
+    }
+
+    accountStore.replaceProductAccess(productId, [...resolved.values()]);
+    return { accounts: productAccessFor(productId, account) };
   });
 
   /**
@@ -1280,7 +1424,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // own credential.
   const requireAccountId = (request: FastifyRequest): string => requireAccount(request).id;
 
-  app.get("/api/v1/nodes", async (request) => ({ nodes: dispatchStore.listNodes(requireAccountId(request)) }));
+  // Mappings are shown and replaced only for products the signed-in account can
+  // still see; one it has lost stays on the machine untouched rather than
+  // turning every later save into a 404.
+  const consoleProductScope = (request: FastifyRequest): "*" | readonly string[] =>
+    accountStore.reachableProductIds(requireAccount(request), "view");
+
+  app.get("/api/v1/nodes", async (request) => ({
+    nodes: dispatchStore.listNodes(requireAccountId(request), consoleProductScope(request)),
+  }));
 
   app.patch("/api/v1/nodes/:nodeId", async (request) => {
     const { nodeId } = request.params as { nodeId: string };
@@ -1311,6 +1463,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           requireProductPermission(request, productId);
           return { productId, repoPath: stringField(repo, "repoPath")! };
         }),
+        consoleProductScope(request),
       ),
     };
   });
@@ -1382,7 +1535,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   const requireNode = (request: FastifyRequest): { nodeId: string; accountId: string } => {
     const node = dispatchStore.authenticateNode(suppliedBearerToken(request));
-    if (!node) throw new MissionGoError("authentication_required", "A valid node bearer token is required.", 401);
+    // A machine acts for the account that registered it, so it stops when that
+    // account does: disabling or deleting an account has to cut off its Macs
+    // too, or they keep pulling queued work and product names.
+    if (!node || (!unauthenticatedDeployment && !accountStore.findActive(node.accountId))) {
+      throw new MissionGoError("authentication_required", "A valid node bearer token is required.", 401);
+    }
     return node;
   };
 
@@ -1395,9 +1553,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    * menu from this, so an unfiltered list would name other people's products on
    * someone's Mac.
    */
+  const nodeProductScope = (accountId: string): "*" | readonly string[] => {
+    if (unauthenticatedDeployment) return "*";
+    // No active account means nothing to reach. This used to fall back to "*",
+    // which handed a disabled account's Mac every product on the deployment.
+    const account = accountStore.findActive(accountId);
+    return account ? accountStore.reachableProductIds(account, "view") : [];
+  };
   const nodeProducts = (accountId: string) => {
-    const account = unauthenticatedDeployment ? undefined : accountStore.findActive(accountId);
-    const reachable = account ? accountStore.reachableProductIds(account, "view") : "*" as const;
+    const reachable = nodeProductScope(accountId);
     return store.listProducts()
       .filter((product) => reachable === "*" || reachable.includes(product.id))
       .map((product) => ({ id: product.id, keyPrefix: product.keyPrefix, name: product.name }));
@@ -1433,6 +1597,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           requireNodeAccountPermission(node.accountId, productId);
           return { productId, repoPath: stringField(repo, "repoPath")! };
         }),
+        nodeProductScope(node.accountId),
       ),
     };
   });
@@ -1469,6 +1634,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             ...(stringField(candidate, "lastUsedAt", false) ? { lastUsedAt: candidate.lastUsedAt as string } : {}),
           };
         }),
+        nodeProductScope(node.accountId),
       ),
     };
   });
@@ -1807,7 +1973,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { productId } = request.params as { productId: string };
     const body = objectBody(request.body);
     requireProductPermission(request, productId, "operate");
-    if (body.archived !== undefined) requireProductOwnership(request, productId);
+    if (body.archived !== undefined) requireProductOwnership(request, productId, "archive it");
     return store.updateProduct(productId, {
       ...(body.name !== undefined ? { name: stringField(body, "name")! } : {}),
       ...(body.archived !== undefined ? { archived: booleanField(body, "archived") } : {}),
@@ -2076,17 +2242,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.send(createReadStream(path, range));
   });
 
-  // The list shows thumbnails, and serving the original for each one meant
-  // pushing megabytes to draw a 72px tile. Rendered on demand rather than at
-  // upload time so it also covers everything already stored, and cached hard:
-  // the bytes are derived from an attachment that can only be replaced through
-  // an endpoint that changes the id-scoped content, and the query string
-  // carries the size, so a stale hit is not reachable.
+  // The list and the detail view show thumbnails, and serving the original for
+  // each one meant pushing megabytes to draw a small preview. Rendered on demand
+  // rather than at upload time so it also covers everything already stored.
+  //
+  // Annotating replaces the bytes under the same attachment id, so the id alone
+  // does not pin the content. Clients put the attachment's `revision` in the
+  // query string; a replacement changes it, the URL changes with it, and that is
+  // what lets the response be cached as immutable. A request without one still
+  // works but only gets a short cache.
   app.get("/api/v1/items/:itemKey/attachments/:attachmentId/thumbnail", async (request, reply) => {
     const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
     const attachment = store.getAttachmentRecord(requireItemPermission(request, itemKey), attachmentId);
     if (attachment.kind !== "image") throw invalidInput("Only image attachments have thumbnails.");
-    const requested = Number((request.query as { width?: string }).width);
+    const query = request.query as { width?: string; rev?: string };
+    const requested = Number(query.width);
     const width = Number.isFinite(requested)
       ? Math.min(Math.max(Math.round(requested), 32), MAX_THUMBNAIL_EDGE)
       : DEFAULT_THUMBNAIL_EDGE;
@@ -2098,10 +2268,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .resize({ width, height: width, fit: "inside", withoutEnlargement: true })
       .jpeg({ quality: 78, mozjpeg: true })
       .toBuffer();
+    // Only a URL naming the current revision may be cached for good; an old
+    // revision would otherwise pin the pre-edit bytes under a URL that looks
+    // current to whoever still holds it.
+    const pinned = query.rev !== undefined && query.rev === attachment.revision;
     return reply
       .type("image/jpeg")
       .header("content-length", thumbnail.length)
-      .header("cache-control", "private, max-age=86400")
+      .header("cache-control", pinned ? "private, max-age=2592000, immutable" : "private, no-cache")
       .header("x-content-type-options", "nosniff")
       .send(thumbnail);
   });

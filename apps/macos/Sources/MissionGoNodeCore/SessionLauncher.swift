@@ -36,8 +36,10 @@ public struct DispatchJob: Equatable, Sendable {
 
 public struct LaunchResult: Equatable, Sendable {
     public let sessionName: String
-    /// Absent when the session started but never printed its URL within the
-    /// launch window; the log is then the only way to find the session.
+    /// Absent only when the adapter has another positive acknowledgement that
+    /// the session exists but cannot turn its identifier into a link. Claude
+    /// Code has no such acknowledgement, so its launcher does not return until
+    /// it has scraped the remote-control URL.
     public let sessionUrl: String?
     /// Absent for an agent whose session is not a child process of this app
     /// (Codex runs its threads inside the ChatGPT app).
@@ -320,8 +322,14 @@ public struct SessionLauncher: AgentAdapter {
             if Task.isCancelled { break }
             try? await Task.sleep(nanoseconds: SessionLauncher.sessionUrlPollInterval)
         }
-        // Started, but no URL in time. Still launched: the session exists and can
-        // be found in claude.ai/code by name.
-        return LaunchResult(sessionName: sessionName, sessionUrl: nil, logPath: logPath)
+        // A live `script` process only proves that the terminal wrapper has not
+        // exited. Claude may still be stuck before remote control comes up, and
+        // without the URL there is no API acknowledgement that a session was
+        // created. Reporting this as launched made the console promise a session
+        // that did not exist in claude.ai/code.
+        let seconds = max(0, Int(sessionUrlTimeout.rounded(.up)))
+        throw LaunchError(
+            "等待 Claude Code 生成远程会话地址超时（\(seconds) 秒），无法确认会话已创建。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))"
+        )
     }
 }
