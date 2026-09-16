@@ -15,9 +15,12 @@ export const INITIAL_SCHEMA = `
     updated_at TEXT NOT NULL,
     archived_at TEXT,
     icon_png TEXT,
-    -- Who may archive it. Deliberately not a foreign key: deleting an account
-    -- must not take its products with it, and ON DELETE SET NULL would silently
-    -- hand every one of them to nobody.
+    -- Who administers it: archiving it, and deciding who else reaches it
+    -- (AND-58). Deliberately not a foreign key: deleting an account must not
+    -- take its products with it, and ON DELETE SET NULL would silently hand
+    -- every one of them to nobody. A deleted creator therefore leaves the id
+    -- pointing at nobody, which matches no live account and leaves the product
+    -- to administrators -- the safe way for that case to fail.
     created_by_account_id TEXT
   ) STRICT;
 
