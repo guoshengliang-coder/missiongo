@@ -645,6 +645,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .context-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 11px; }
 .context-grid span { padding: 10px 12px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-sm); font-weight: 650; }
 .context-grid small { display: block; margin-bottom: 4px; color: var(--muted); font-size: var(--text-xs); font-weight: 750; text-transform: uppercase; }
+.environment-more > summary { justify-content: center; }
+.environment-more > .context-grid { margin-top: 8px; }
+.context-grid span { overflow-wrap: anywhere; }
 .context-grid code { overflow-wrap: anywhere; font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-sm); }
 .section-empty { margin: 10px 0 0; color: var(--muted-soft); font-size: var(--text-xs); font-style: italic; }
 .environment-fields { margin: 0; padding: 14px; background: var(--surface-inset); border: 1px solid var(--line); border-radius: var(--radius-lg); }

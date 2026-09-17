@@ -102,7 +102,7 @@ import {
   selectionScope,
   toggleItemSelection,
 } from "./dispatch-eligibility";
-import { environmentSummary, platformName } from "./environment-summary";
+import { environmentFields, environmentSummary, platformName, type EnvironmentField } from "./environment-summary";
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
@@ -2054,6 +2054,7 @@ function DetailPane({
   const manualTargets = manualMoves(item.status);
   const sourceComponent = componentsQuery.data?.find((component) => component.id === item.sourceComponentId);
   const affectedComponents = (componentsQuery.data ?? []).filter((component) => item.affectedComponentIds.includes(component.id));
+  const environment = environmentFields(item.environment, t);
   const createdEvent = timelineQuery.data?.events.find((event) => event.eventType === "item_created");
   const sdkDiagnostics = diagnosticsFromEvent(createdEvent);
   const logAttachments = item.attachments.filter((attachment) => attachment.kind === "log");
@@ -2149,7 +2150,6 @@ function DetailPane({
               itemKey={item.key}
               attachments={mediaAttachments}
               title={t("mediaAttachments")}
-              help={t("mediaAttachmentsHelp")}
               emptyMessage={t("noMediaAttachments")}
             />
             {documentAttachments.length > 0 && (
@@ -2157,7 +2157,6 @@ function DetailPane({
                 itemKey={item.key}
                 attachments={documentAttachments}
                 title={t("documentAttachments")}
-                help={t("documentAttachmentsHelp")}
               />
             )}
             <DiagnosticDetails
@@ -2177,15 +2176,20 @@ function DetailPane({
                     </span>
                   )}
                   {affectedComponents.length > 0 && <span><small>{t("affectedComponents")}</small>{affectedComponents.map((component) => component.name).join("、")}</span>}
-                  {item.environment && <span><small>{t("platform")}</small>{t(item.environment.platform)}</span>}
-                  {item.environment?.appVersion && <span><small>{t("version")}</small>{item.environment.appVersion}</span>}
-                  {item.environment?.buildNumber && <span><small>{t("buildNumber")}</small>{item.environment.buildNumber}</span>}
-                  {item.environment?.osVersion && <span><small>{t("operatingSystem")}</small>{item.environment.osVersion}</span>}
-                  {item.environment?.deviceModel && <span><small>{t("device")}</small>{item.environment.deviceModel}</span>}
-                  {item.environment?.sourceRevision && <span><small>{t("sourceRevision")}</small><code>{item.environment.sourceRevision}</code></span>}
-                  {Object.entries(item.environment?.metadata ?? {}).map(([key, value]) => <span key={key}><small>{key}</small>{value}</span>)}
+                  {environment.primary.map((field) => <EnvironmentCell key={field.key} field={field} />)}
                 </div>
               ) : <p className="section-empty">{t("noEnvironment")}</p>}
+              {environment.more.length > 0 && (
+                <details className="comment-collapsible environment-more">
+                  <summary>
+                    <small className="when-closed">{t("environmentMore", { count: environment.more.length })}</small>
+                    <small className="when-open">{t("environmentLess")}</small>
+                  </summary>
+                  <div className="context-grid">
+                    {environment.more.map((field) => <EnvironmentCell key={field.key} field={field} />)}
+                  </div>
+                </details>
+              )}
             </section>
             <DispatchHistory itemKey={item.key} />
             <section className="timeline-block">
@@ -2617,7 +2621,7 @@ function DiagnosticDetails({
   return (
     <section className="attachment-block diagnostic-detail-block">
       <header>
-        <div><h3>{t("diagnostics")}</h3><p>{t("diagnosticDetailHelp")}</p></div>
+        <div><h3>{t("diagnostics")}</h3></div>
       </header>
       {!hasDiagnostics ? <p className="section-empty">{t("noDiagnostics")}</p> : (
         <div className="diagnostic-detail-content">
@@ -3361,24 +3365,30 @@ function SelectedFilePreviews({
   );
 }
 
+function EnvironmentCell({ field }: { field: EnvironmentField }) {
+  const { t } = useI18n();
+  const label = typeof field.label === "string" ? t(field.label) : field.label.raw;
+  return <span><small>{label}</small>{field.code ? <code>{field.value}</code> : field.value}</span>;
+}
+
 function AttachmentSection({
   itemKey,
   attachments,
   title,
-  help,
   emptyMessage,
 }: {
   itemKey: string;
   attachments: readonly WorkItemAttachment[];
   title?: string;
-  help?: string;
   emptyMessage?: string;
 }) {
   const { t } = useI18n();
   return (
     <section className="attachment-block">
       <header>
-        <div><h3>{title ?? t("attachments")}</h3><p>{help ?? t("attachmentHelp")}</p></div>
+        {/* No helper line: this is the detail view, where the files are already
+            here. What can be attached is the form's to explain (AND-65). */}
+        <div><h3>{title ?? t("attachments")}</h3></div>
       </header>
       {attachments.length === 0 ? <p className="section-empty">{emptyMessage ?? t("noAttachments")}</p> : (
         <div className="attachment-grid">
