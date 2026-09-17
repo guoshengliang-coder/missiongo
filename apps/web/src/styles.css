@@ -838,6 +838,34 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .component-add-row { align-items: end; }
 .component-add-row .primary-button { height: 42px; white-space: nowrap; }
 .capture-form, .product-form, .login-form { display: flex; flex-direction: column; gap: 15px; }
+.capture-form { position: relative; }
+/* AND-69: shown while files are dragged over the form. pointer-events stays off
+   so the overlay never becomes the drag target and the enter/leave count holds. */
+.file-drop-overlay {
+  position: absolute;
+  inset: -6px;
+  z-index: 20;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent-bg) 88%, transparent);
+  border: 2px dashed var(--mint-dark);
+  border-radius: var(--radius-md);
+}
+.file-drop-overlay.full { background: color-mix(in srgb, var(--danger-bg) 88%, transparent); border-color: var(--danger); }
+/* The form can be taller than the dialog, so keep the message in view while scrolling. */
+.file-drop-overlay-message {
+  position: sticky;
+  top: 30%;
+  margin-top: min(160px, 30%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  text-align: center;
+  color: var(--accent-text-strong);
+}
+.file-drop-overlay.full .file-drop-overlay-message { color: var(--danger); }
+.file-drop-overlay-message small { color: var(--muted); }
 .capture-type-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; }
 .capture-type {
   min-width: 0;
