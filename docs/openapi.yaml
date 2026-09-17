@@ -1451,6 +1451,34 @@ components:
         attachments:
           type: array
           items: { $ref: "#/components/schemas/WorkItemAttachment" }
+        createdBy:
+          description: >-
+            Who created the item, read off its item_created event (AND-67).
+            Absent when the creation was never attributed. A person is named by
+            their nickname; a report sent through a feedback SDK token by the
+            token's name; an AI's follow-up by the OAuth client (clientName) and
+            the agent's self-reported agentName -- never by the account that
+            authorized it.
+          oneOf:
+            - type: object
+              required: [kind, accountId]
+              properties:
+                kind: { const: human }
+                accountId: { type: string }
+                name: { type: string }
+            - type: object
+              required: [kind]
+              properties:
+                kind: { const: sdk }
+                name: { type: string }
+            - type: object
+              required: [kind]
+              properties:
+                kind: { const: agent }
+                accountId: { type: string }
+                clientId: { type: string }
+                clientName: { type: string }
+                agentName: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     CreateWorkItemRequest:
