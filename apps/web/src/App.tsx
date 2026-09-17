@@ -113,6 +113,7 @@ import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog, transitionRequiresNote } from "@missiongo/domain";
 import { statusChangeNote, dispatchedEvent, groupTimeline } from "./timeline";
 import { TransitionNoteDialog, transitionNoteCopy } from "./transition-note-dialog";
+import { StartWorkDialog } from "./start-work-dialog";
 import { cachedListSummary } from "./list-summary";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
@@ -460,6 +461,7 @@ export function App() {
    */
   const [dispatchBatch, setDispatchBatch] = useState<readonly WorkItem[] | null>(null);
   const [verifyBatch, setVerifyBatch] = useState<readonly WorkItem[] | null>(null);
+  const [startWorkItem, setStartWorkItem] = useState<WorkItem | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
@@ -1186,6 +1188,7 @@ export function App() {
                   onOpen={() => openItemPage(item.key)}
                   onEdit={() => openItemPage(item.key, true)}
                   onNotice={setNotice}
+                  onStartWork={setStartWorkItem}
                 />
               ))}
               {(items.length > 0 || itemsQuery.hasNextPage) && (
@@ -1209,7 +1212,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} />
+            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} />
           </div>
         )}
       </main>
@@ -1230,6 +1233,34 @@ export function App() {
                   : t(item.status === "ready" ? "submittedForProcessing" : "capturedInInbox", { key: item.key }),
               );
               void queryClient.invalidateQueries({ queryKey: ["items", selectedProduct.id] });
+            }}
+          />
+        </Modal>
+      )}
+      {startWorkItem && (
+        <Modal
+          title={t("startWorkTitle")}
+          subtitle={t("startWorkSubtitle", { key: startWorkItem.key })}
+          onClose={() => setStartWorkItem(null)}
+        >
+          <StartWorkDialog
+            item={startWorkItem}
+            product={products.find((product) => product.id === startWorkItem.productId)}
+            onClose={() => setStartWorkItem(null)}
+            onClaimed={(updated) => {
+              setStartWorkItem(null);
+              setNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
+              void queryClient.invalidateQueries({ queryKey: ["items"] });
+              void queryClient.invalidateQueries({ queryKey: ["item", updated.key] });
+              void queryClient.invalidateQueries({ queryKey: ["timeline", updated.key] });
+            }}
+            onDispatch={() => {
+              setDispatchBatch([startWorkItem]);
+              setStartWorkItem(null);
+            }}
+            onOpenAgents={() => {
+              setStartWorkItem(null);
+              setAgentsOpen(true);
             }}
           />
         </Modal>
@@ -1379,6 +1410,7 @@ function ItemRow({
   onOpen,
   onEdit,
   onNotice,
+  onStartWork,
 }: {
   item: WorkItem;
   sourceComponent: Component | undefined;
@@ -1393,6 +1425,7 @@ function ItemRow({
   onOpen: () => void;
   onEdit: () => void;
   onNotice: (message: string) => void;
+  onStartWork: (item: WorkItem) => void;
 }) {
   const { actorLabel, formatTime, locale, priorityLabel, statusLabel, t, typeLabel } = useI18n();
   const TypeIcon = TYPE_ICONS[item.type];
@@ -1495,7 +1528,7 @@ function ItemRow({
         <span>{formatTime(item.updatedAt)}</span>
       </span>
       <span className="item-row-actions">
-        <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} />
+        <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} onStartWork={onStartWork} />
       </span>
     </article>
   );
@@ -1829,7 +1862,12 @@ function ItemMediaThumbnail({
   );
 }
 
-function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: () => void; onNotice: (message: string) => void }) {
+function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
+  item: WorkItem;
+  onEdit: () => void;
+  onNotice: (message: string) => void;
+  onStartWork: (item: WorkItem) => void;
+}) {
   const queryClient = useQueryClient();
   const { statusLabel, t, transitionLabel } = useI18n();
   const actions = TRANSITIONS[item.status];
@@ -1858,7 +1896,9 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
   // Whether this move needs a reason is the domain's call, not a second table
   // kept in the browser.
   const startTransition = (action: TransitionAction) => {
-    if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
+    // Picking up waiting work asks how first: by hand, or through an AI (AND-68).
+    if (isStartWork(item.status, action)) onStartWork(item);
+    else if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else mutation.mutate({ action });
   };
 
@@ -1978,6 +2018,11 @@ function mediaNumberLabel(kind: "image" | "video", displayNumber: number, t: Ret
   return t(kind === "image" ? "imageNumber" : "videoNumber", { number: displayNumber });
 }
 
+/** The pickup of waiting work, which asks how before it happens (AND-68). */
+function isStartWork(status: WorkItemStatus, action: TransitionAction): boolean {
+  return status === "ready" && action.to === "in_progress" && action.reason === "claim";
+}
+
 function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>["t"]): string {
   const keys = {
     inbox: "quickReady",
@@ -1998,6 +2043,7 @@ function DetailPane({
   onItemLoaded,
   onNotice,
   onOpenItem,
+  onStartWork,
 }: {
   itemKey: string | null;
   openInEdit: boolean;
@@ -2005,6 +2051,7 @@ function DetailPane({
   onItemLoaded: (item: WorkItem) => void;
   onNotice: (message: string) => void;
   onOpenItem: (itemKey: string) => void;
+  onStartWork: (item: WorkItem) => void;
 }) {
   const queryClient = useQueryClient();
   const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
@@ -2102,7 +2149,8 @@ function DetailPane({
   const PrimaryIcon = TYPE_ICONS[item.type];
   // Same rule as the list row: the domain decides whether this move owes a reason.
   const startTransition = (action: TransitionAction) => {
-    if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
+    if (isStartWork(item.status, action)) onStartWork(item);
+    else if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else transitionMutation.mutate({ action });
   };
   const actions = TRANSITIONS[item.status];

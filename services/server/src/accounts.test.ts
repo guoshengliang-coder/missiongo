@@ -1771,3 +1771,44 @@ describe("Closing verification in bulk (AND-66)", () => {
     expect(anonymous.statusCode).toBe(401);
   });
 });
+
+describe("Handing work to an AI needs the product's AI permission (AND-68)", () => {
+  it("says what the account may do with each product it can see", async () => {
+    const { app, adminCookie, memberCookie, shared } = await twoAccountWorkspace();
+    const memberProducts = (await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: memberCookie } }))
+      .json<Array<{ id: string; access: { canOperate: boolean; canUseAi: boolean } }>>();
+    expect(memberProducts).toEqual([expect.objectContaining({ id: shared.id, access: { canOperate: true, canUseAi: false } })]);
+
+    const adminProducts = (await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: adminCookie } }))
+      .json<Array<{ access: { canOperate: boolean; canUseAi: boolean } }>>();
+    expect(adminProducts.every((product) => product.access.canOperate && product.access.canUseAi)).toBe(true);
+
+    const bootstrap = (await app.inject({ method: "GET", url: "/api/v1/bootstrap", headers: { cookie: memberCookie } }))
+      .json<{ products: Array<{ access: unknown }> }>();
+    expect(bootstrap.products[0]?.access).toEqual({ canOperate: true, canUseAi: false });
+  });
+
+  it("refuses a dispatch from an account that may operate but not use AI", async () => {
+    const { app, adminCookie, memberCookie, member, shared } = await twoAccountWorkspace();
+    const key = await createItem(app, memberCookie, shared.id, "Needs an agent");
+    const dispatch = () => app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie: memberCookie },
+      payload: { nodeId: "no-such-node", agentKind: "claude_code", mode: "plan", itemKeys: [key] },
+    });
+
+    const refused = await dispatch();
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toMatchObject({ code: "ai_not_permitted" });
+
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/accounts/${member.id}/products`,
+      headers: { cookie: adminCookie },
+      payload: { permissions: [{ productId: shared.id, canView: true, canOperate: true, canUseAi: true }] },
+    });
+    // Past the permission now; what stops it is the made-up machine.
+    expect((await dispatch()).json()).not.toMatchObject({ code: "ai_not_permitted" });
+  });
+});

@@ -825,7 +825,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const reachable = bearerAuthorized(request)
       ? "*" as const
       : accountStore.reachableProductIds(requireAccount(request), "view");
-    const products = reachable === "*" ? allProducts : allProducts.filter((entry) => reachable.includes(entry.id));
+    const products = withAccess(request, reachable === "*" ? allProducts : allProducts.filter((entry) => reachable.includes(entry.id)));
     // The client's remembered product only counts if it still exists and is still
     // visible; otherwise the first one wins. Resolving it here is what lets the
     // items query run in this same request instead of a round trip later, and it
@@ -1069,6 +1069,29 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    * X" confirms that product X exists, which is the thing they were not allowed
    * to learn. docs/mcp-contract.md already fixes this for the MCP surface.
    */
+  /**
+   * What the signed-in account may do with each product it can see (AND-68).
+   *
+   * The console decides what to offer from this -- "start work" asks whether to
+   * hand the item to an AI, and has to say so honestly when this account may
+   * not -- while the routes still decide what is allowed. The operator token has
+   * no account and is refused nothing, so it reads as everything allowed.
+   */
+  const withAccess = <T extends { readonly id: string }>(
+    request: FastifyRequest,
+    products: readonly T[],
+  ): Array<T & { access: { canOperate: boolean; canUseAi: boolean } }> => {
+    if (bearerAuthorized(request)) return products.map((product) => ({ ...product, access: { canOperate: true, canUseAi: true } }));
+    const account = requireAccount(request);
+    return products.map((product) => ({
+      ...product,
+      access: {
+        canOperate: accountStore.allows(account, product.id, "operate"),
+        canUseAi: accountStore.allows(account, product.id, "ai"),
+      },
+    }));
+  };
+
   const requireProductPermission = (
     request: FastifyRequest,
     productId: string,
@@ -1143,9 +1166,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/products", async (request) => {
     const products = store.listProducts({ includeArchived: includeArchived(request.query) });
-    if (bearerAuthorized(request)) return products;
+    if (bearerAuthorized(request)) return withAccess(request, products);
     const reachable = accountStore.reachableProductIds(requireAccount(request), "view");
-    return reachable === "*" ? products : products.filter((product) => reachable.includes(product.id));
+    return withAccess(request, reachable === "*" ? products : products.filter((product) => reachable.includes(product.id)));
   });
 
   /**
@@ -1487,6 +1510,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // to be one this account may operate on. Checked before anything is created,
     // so a batch with one unreachable item dispatches nothing.
     const authorizedKeys = itemKeys.map((key) => requireItemPermission(request, key, "operate"));
+    // Handing work to an AI is what the product's "AI" permission is for
+    // (AND-68). Checked after operate, so an item this account cannot reach at
+    // all still reads as not found rather than confirming it exists.
+    if (!bearerAuthorized(request)) {
+      const account = requireAccount(request);
+      for (const key of authorizedKeys) {
+        if (!accountStore.allows(account, store.getWorkItem(key).productId, "ai")) {
+          throw new MissionGoError("ai_not_permitted", `This account may not hand ${key} to an AI agent.`, 403);
+        }
+      }
+    }
     const dispatch = dispatchStore.createDispatch({
       accountId,
       nodeId: stringField(body, "nodeId")!,

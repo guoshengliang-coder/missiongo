@@ -1451,3 +1451,15 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .bulk-verify-list li { padding: 8px 11px; overflow: hidden; border-bottom: 1px solid var(--line-soft); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
 .bulk-verify-list li:last-child { border-bottom: 0; }
 .bulk-verify-list code { margin-right: 6px; color: var(--muted); font-size: var(--text-xs); }
+
+/* AND-68: the two ways to start work, and why the AI one is not available. */
+.start-work { display: grid; gap: 10px; }
+.start-work-choice { display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 14px 15px; color: var(--ink); text-align: left; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); cursor: pointer; }
+.start-work-choice:hover:not(:disabled) { border-color: var(--mint-dark); box-shadow: inset 0 0 0 1px var(--mint-dark); }
+.start-work-choice:disabled { cursor: not-allowed; opacity: .55; }
+.start-work-choice > svg { flex: 0 0 auto; margin-top: 2px; color: var(--mint-dark); }
+.start-work-choice strong { display: block; font-size: var(--text-md); }
+.start-work-choice small { display: block; margin-top: 3px; color: var(--muted); font-size: var(--text-sm); }
+.start-work-unavailable { padding: 11px 13px; color: var(--ink-2); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-sm); }
+.start-work-unavailable p { margin: 4px 0 0; color: var(--muted); }
+.start-work-unavailable .text-button { margin-top: 6px; }

@@ -1424,6 +1424,17 @@ components:
             Whether an icon has been uploaded. The image itself is not inlined
             here; fetch it from GET /api/v1/products/{productId}/icon, which the
             browser can cache. False means the generated badge is used.
+        access:
+          type: object
+          required: [canOperate, canUseAi]
+          description: >-
+            What the signed-in account may do with this product (AND-68), on the
+            product list and bootstrap. The console decides what to offer from
+            it; the routes still decide what is allowed. canUseAi also gates
+            dispatching this product's items to an AI agent.
+          properties:
+            canOperate: { type: boolean }
+            canUseAi: { type: boolean }
     CreateProductRequest:
       type: object
       required: [name, keyPrefix]
