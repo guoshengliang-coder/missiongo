@@ -57,6 +57,7 @@ import {
   type EnvironmentDraft,
 } from "./capture-draft";
 import { clearDraftFiles, loadDraftFiles, saveDraftFiles } from "./draft-files";
+import { useFileDropZone } from "./file-drop";
 import {
   MAX_DIAGNOSTIC_LOG_BYTES,
   collectWebContext,
@@ -2810,6 +2811,8 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
     setFiles(result.files);
     setFileError(result.error ?? null);
   };
+  const remainingDropSlots = Math.max(0, 10 - item.attachments.length - (draft.diagnosticLog.trim() ? 1 : 0) - files.length);
+  const { isDraggingFiles, dropHandlers } = useFileDropZone(addIncomingFiles, { canAccept: remainingDropSlots > 0 });
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -2857,12 +2860,9 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
           addIncomingFiles(pastedFiles);
         }
       }}
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => {
-        event.preventDefault();
-        addIncomingFiles(Array.from(event.dataTransfer.files));
-      }}
+      {...dropHandlers}
     >
+      {isDraggingFiles && <FileDropOverlay remaining={remainingDropSlots} />}
       <WorkItemFields
         productId={item.productId}
         draft={draft}
@@ -3184,6 +3184,8 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
     setFiles(result.files);
     setFileError(result.error ?? null);
   };
+  const remainingDropSlots = Math.max(0, 10 - (draft.diagnosticLog.trim() ? 1 : 0) - files.length);
+  const { isDraggingFiles, dropHandlers } = useFileDropZone(addIncomingFiles, { canAccept: remainingDropSlots > 0 });
 
   const mutation = useMutation({
     mutationFn: async (status: "inbox" | "ready") => {
@@ -3242,12 +3244,9 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
           addIncomingFiles(pastedFiles);
         }
       }}
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => {
-        event.preventDefault();
-        addIncomingFiles(Array.from(event.dataTransfer.files));
-      }}
+      {...dropHandlers}
     >
+      {isDraggingFiles && <FileDropOverlay remaining={remainingDropSlots} />}
       <WorkItemFields
         productId={product.id}
         draft={draft}
@@ -3298,6 +3297,21 @@ function EnvironmentFields({ value, onChange }: { value: EnvironmentDraft; onCha
         <label>{t("sourceRevision")}<input value={value.sourceRevision} onChange={(event) => update("sourceRevision", event.target.value)} placeholder={t("notAvailableYet")} maxLength={500} /></label>
       </div>
     </fieldset>
+  );
+}
+
+// Covers the whole form while files are dragged over it. Where a file lands
+// does not matter: WorkItemFields sorts each one into its section by extension.
+function FileDropOverlay({ remaining }: { remaining: number }) {
+  const { t } = useI18n();
+  return (
+    <div className={`file-drop-overlay ${remaining < 1 ? "full" : ""}`} aria-hidden>
+      <div className="file-drop-overlay-message">
+        <Paperclip size={22} />
+        <strong>{remaining > 0 ? t("dropFilesToAttach") : t("dropFilesLimitReached", { count: 10 })}</strong>
+        {remaining > 0 && <small>{t("dropFilesToAttachHelp")}</small>}
+      </div>
+    </div>
   );
 }
 
