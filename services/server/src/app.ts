@@ -11,6 +11,7 @@ import {
   WORK_ITEM_STATUSES,
   WORK_ITEM_TYPES,
   type AgentKind,
+  type WorkItemCreator,
   type WorkItemEnvironment,
   type WorkItemReport,
 } from "@missiongo/domain";
@@ -2037,7 +2038,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ? sequenceFromItemKey(items.at(-1)?.key)
       : undefined;
     return {
-      items,
+      items: withCreatorNames(items),
       summary: store.getWorkItemListSummary({
         productId,
         ...(typeof query.type === "string" ? { type: query.type as never } : {}),
@@ -2080,7 +2081,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/items/:itemKey", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
-    return store.getWorkItem(requireItemPermission(request, itemKey));
+    return withCreatorNames([store.getWorkItem(requireItemPermission(request, itemKey))])[0];
   });
 
   app.patch("/api/v1/items/:itemKey", async (request) => {
@@ -2152,6 +2153,29 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return name ? { ...decorated, accountName: name } : decorated;
     });
   };
+
+  /**
+   * The same names on an item's creator (AND-67): a person's nickname, or the
+   * AI client's registered name. Resolved on read like the timeline's, so the
+   * list follows a renamed account. An SDK creator is already named by its token.
+   */
+  function withCreatorNames<T extends { readonly createdBy?: WorkItemCreator }>(items: readonly T[]): T[] {
+    const names = accountStore.displayNames(
+      items.flatMap((item) => (item.createdBy?.kind === "human" ? [item.createdBy.accountId] : [])),
+    );
+    return items.map((item) => {
+      const creator = item.createdBy;
+      if (creator?.kind === "human") {
+        const name = names.get(creator.accountId);
+        return name ? { ...item, createdBy: { ...creator, name } } : item;
+      }
+      if (creator?.kind === "agent" && creator.clientId) {
+        const { clientName } = withClientName({ clientId: creator.clientId });
+        return clientName ? { ...item, createdBy: { ...creator, clientName } } : item;
+      }
+      return item;
+    });
+  }
 
   app.get("/api/v1/items/:itemKey/timeline", async (request) => {
     const { itemKey } = request.params as { itemKey: string };

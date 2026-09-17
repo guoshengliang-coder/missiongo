@@ -55,6 +55,45 @@ describe("work-item event attribution", () => {
     expect(entry?.clientId).toBe("client-9");
   });
 
+  it("names who created an item from its creation event (AND-67)", async () => {
+    const { store, item } = await seed();
+    // Created without attribution, as the operator token does: no creator to name.
+    expect(item.createdBy).toBeUndefined();
+
+    const byPerson = store.createWorkItem({
+      productId: item.productId,
+      type: "task",
+      priority: "normal",
+      title: "Filed in the console",
+      description: "x",
+      environment: { platform: "web" },
+      attribution: { accountId: "account-1" },
+    });
+    expect(byPerson.createdBy).toEqual({ kind: "human", accountId: "account-1" });
+    expect(store.getWorkItem(byPerson.key).createdBy).toEqual({ kind: "human", accountId: "account-1" });
+
+    const byAgent = store.createDerivedWorkItem({
+      sourceItemKey: item.key,
+      status: "inbox",
+      type: "task",
+      priority: "normal",
+      title: "Follow-up",
+      description: "x",
+      agentName: "Claude Code · studio-mac",
+      attribution: { accountId: "account-1", clientId: "client-9" },
+      idempotencyKey: "derived-1",
+    });
+    // Not signed as the person who connected the client.
+    expect(byAgent.createdBy).toEqual({
+      kind: "agent",
+      accountId: "account-1",
+      clientId: "client-9",
+      agentName: "Claude Code · studio-mac",
+    });
+    expect(store.listWorkItems({ productId: item.productId }).find((listed) => listed.key === byAgent.key)?.createdBy)
+      .toMatchObject({ kind: "agent" });
+  });
+
   it("leaves the attribution off events that carry none", async () => {
     const { store, item } = await seed();
     // Human events are unattributed on purpose: one administrator owns this

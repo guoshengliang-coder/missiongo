@@ -2208,6 +2208,8 @@ describe("MissionGo REST API", () => {
       headers: adminHeaders,
     });
     expect(defaultDraftItem.json()).toMatchObject({ key: finalizedKey, status: "inbox" });
+    // No account sent it: the byline is the SDK token it came through (AND-67).
+    expect(defaultDraftItem.json<{ createdBy?: unknown }>().createdBy).toEqual({ kind: "sdk", name: "Search debug" });
 
     // The diagnostics become a log file rather than part of the creation event.
     // Inlined, they rode along with every read of the item and had no paging;

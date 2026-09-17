@@ -1006,6 +1006,17 @@ describe("Nicknames", () => {
         actorKind: "human", accountId: member.id, accountName: "阿亮",
       });
     }
+
+    // The list and the detail name the creator the same way (AND-67).
+    const detail = (await app.inject({ method: "GET", url: `/api/v1/items/${key}`, headers: { cookie: adminCookie } }))
+      .json<{ createdBy?: unknown }>();
+    expect(detail.createdBy).toEqual({ kind: "human", accountId: member.id, name: "阿亮" });
+    const listed = (await app.inject({
+      method: "GET",
+      url: `/api/v1/items?productId=${shared.id}`,
+      headers: { cookie: adminCookie },
+    })).json<{ items: Array<{ key: string; createdBy?: unknown }> }>().items;
+    expect(listed.find((item) => item.key === key)?.createdBy).toEqual({ kind: "human", accountId: member.id, name: "阿亮" });
   });
 
   it("still names a suspended account, because the question is who wrote it", async () => {

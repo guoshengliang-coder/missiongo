@@ -116,6 +116,7 @@ import { cachedListSummary } from "./list-summary";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import {
+  creatorLabel,
   COMMENT_COLLAPSE_THRESHOLD,
   commentAuthor,
   commentPlainText,
@@ -1141,7 +1142,7 @@ export function App() {
               {showAttachmentColumn && <span>{t("attachments")}</span>}
               <span>{t("capturedContext")}</span>
               <span>{t("status")}</span>
-              <span>{t("updated")}</span>
+              <span>{t("creatorAndUpdated")}</span>
               <span />
             </div>
             <div className="item-list">
@@ -1343,7 +1344,7 @@ function ItemRow({
   onEdit: () => void;
   onNotice: (message: string) => void;
 }) {
-  const { formatTime, locale, priorityLabel, statusLabel, t, typeLabel } = useI18n();
+  const { actorLabel, formatTime, locale, priorityLabel, statusLabel, t, typeLabel } = useI18n();
   const TypeIcon = TYPE_ICONS[item.type];
   const environment = item.environment;
   const overview = item.report?.overview ?? item.description;
@@ -1356,6 +1357,7 @@ function ItemRow({
   const logCount = item.diagnosticSummary?.logCount ?? 0;
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
   const contextDetails = environmentSummary(environment, Boolean(sourceComponent), t);
+  const creator = creatorLabel(item.createdBy, { human: actorLabel("human"), sdk: t("creatorSdk"), agent: actorLabel("agent") });
   const dispatchable = isDispatchable(item.status);
   // Only on a ready row: the list can refetch before the dispatch list does, and
   // an item a session has just claimed must not still read as waiting on a Mac.
@@ -1431,12 +1433,17 @@ function ItemRow({
             details" was taking enough of it to truncate "Android" to "Andr...".
             A line that only reports an absence is not worth that. See AND-32. */}
         {contextDetails && <small>{contextDetails}</small>}
+        {/* Only drawn in the compact layouts, which hide the creator column. */}
+        {creator && <small className="item-context-creator">{creator}</small>}
       </span>
       <span className="item-state">
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <small><i className={`priority-dot priority-${item.priority}`} /> {priorityLabel(item.priority)}</small>
       </span>
-      <span className="item-updated">{formatTime(item.updatedAt)}</span>
+      <span className="item-updated">
+        {creator && <span className="item-creator" title={creator}>{creator}</span>}
+        <span>{formatTime(item.updatedAt)}</span>
+      </span>
       <span className="item-row-actions">
         <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} />
       </span>
@@ -2055,6 +2062,7 @@ function DetailPane({
   const sourceComponent = componentsQuery.data?.find((component) => component.id === item.sourceComponentId);
   const affectedComponents = (componentsQuery.data ?? []).filter((component) => item.affectedComponentIds.includes(component.id));
   const environment = environmentFields(item.environment, t);
+  const detailCreator = creatorLabel(item.createdBy, { human: actorLabel("human"), sdk: t("creatorSdk"), agent: actorLabel("agent") });
   const createdEvent = timelineQuery.data?.events.find((event) => event.eventType === "item_created");
   const sdkDiagnostics = diagnosticsFromEvent(createdEvent);
   const logAttachments = item.attachments.filter((attachment) => attachment.kind === "log");
@@ -2138,7 +2146,13 @@ function DetailPane({
         <>
             <div className="detail-title-block">
               <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
-              <div><p className="eyebrow">{typeLabel(item.type)} · {priorityLabel(item.priority)}</p><h2>{item.title}</h2></div>
+              <div>
+                <p className="eyebrow">
+                  {typeLabel(item.type)} · {priorityLabel(item.priority)}
+                  {detailCreator && <> · {t("createdBy", { name: detailCreator })}</>}
+                </p>
+                <h2>{item.title}</h2>
+              </div>
             </div>
             <ItemRelations item={item} onOpenItem={onOpenItem} />
             {/* Read the item, then the evidence a person went and looked at --

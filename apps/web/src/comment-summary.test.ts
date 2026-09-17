@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { commentAuthor, commentPlainText, deriveSummary } from "./comment-summary";
+import { commentAuthor, commentPlainText, creatorLabel, deriveSummary } from "./comment-summary";
 
 describe("who wrote a comment", () => {
   it("names the machine and the program", () => {
@@ -96,5 +96,30 @@ describe("commentAuthor, with accounts", () => {
   it("never signs an AI's output with the account that authorized it", () => {
     expect(commentAuthor({ actorKind: "agent", clientName: "Codex", accountName: "阿亮" }, "AI")).toBe("Codex");
     expect(commentAuthor({ actorKind: "agent", accountName: "阿亮" }, "AI")).toBe("AI");
+  });
+});
+
+describe("who created an item (AND-67)", () => {
+  const labels = { human: "人工", sdk: "SDK", agent: "AI" };
+
+  it("names a person by nickname, and falls back when the account is gone", () => {
+    expect(creatorLabel({ kind: "human", accountId: "a1", name: "阿亮" }, labels)).toBe("阿亮");
+    expect(creatorLabel({ kind: "human", accountId: "a1" }, labels)).toBe("人工");
+  });
+
+  it("names an app report by the SDK token it came through", () => {
+    expect(creatorLabel({ kind: "sdk", name: "Search debug" }, labels)).toBe("SDK · Search debug");
+    expect(creatorLabel({ kind: "sdk" }, labels)).toBe("SDK");
+  });
+
+  it("names an AI's item by its client, never by the account behind it", () => {
+    expect(creatorLabel({ kind: "agent", accountId: "a1", clientName: "Claude Code", agentName: "Claude Code · M4" }, labels))
+      .toBe("AI · Claude Code");
+    expect(creatorLabel({ kind: "agent", agentName: "Codex · nuc" }, labels)).toBe("AI · Codex · nuc");
+    expect(creatorLabel({ kind: "agent", accountId: "a1" }, labels)).toBe("AI");
+  });
+
+  it("says nothing when nobody was recorded", () => {
+    expect(creatorLabel(undefined, labels)).toBeUndefined();
   });
 });
