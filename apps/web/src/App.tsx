@@ -43,7 +43,7 @@ import {
   X,
 } from "lucide-react";
 
-import { api, ApiError, productIconUrl, type AuthSession, type AuthenticatedUser } from "./api";
+import { api, ApiError, productIconUrl, type AuthSession, type AuthenticatedUser, type BulkTransitionResult } from "./api";
 import { BootSkeleton } from "./BootSkeleton";
 import { clearPersistedQueryCache } from "./query-persistence";
 // Type-only: erased at compile time, so it does not pull the chunk into the boot.
@@ -98,6 +98,7 @@ import {
   agentLabelKey,
   dispatchModeLabelKey,
   dispatchStatusLabelKey,
+  canJoinSelection,
   isDispatchable,
   selectionScope,
   toggleItemSelection,
@@ -458,6 +459,7 @@ export function App() {
    * items went out.
    */
   const [dispatchBatch, setDispatchBatch] = useState<readonly WorkItem[] | null>(null);
+  const [verifyBatch, setVerifyBatch] = useState<readonly WorkItem[] | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
@@ -800,6 +802,8 @@ export function App() {
   const visibleItems = items;
   const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(isMediaAttachment));
   const selectedItems = visibleItems.filter((item) => selectedItemKeys.has(item.key));
+  // A selection is one status: the one both batch actions are keyed on (AND-66).
+  const selectionStatus = selectedItems[0]?.status;
 
   /**
    * A selection belongs to the rows it was made on. Once the filters move those
@@ -1120,19 +1124,31 @@ export function App() {
 
           {selectedItemKeys.size > 0 && (
             <div className="bulk-bar" role="status">
-              <Rocket size={15} aria-hidden="true" />
+              {selectionStatus === "pending_verification"
+                ? <ClipboardCheck size={15} aria-hidden="true" />
+                : <Rocket size={15} aria-hidden="true" />}
               <span className="bulk-bar-count">{t("selectedForDispatch", { count: selectedItemKeys.size })}</span>
               <button type="button" className="text-button bulk-bar-clear" onClick={() => setSelectedItemKeys(new Set())}>
                 {t("clearSelection")}
               </button>
-              <button
-                type="button"
-                className="primary-button"
-                disabled={selectedItems.length === 0}
-                onClick={() => setDispatchBatch(selectedItems)}
-              >
-                <Rocket size={16} /> {t("dispatchSelected")}
-              </button>
+              {selectionStatus === "pending_verification" ? (
+                <button
+                  type="button"
+                  className="primary-button positive"
+                  onClick={() => setVerifyBatch(selectedItems.filter((item) => item.status === "pending_verification"))}
+                >
+                  <CheckCircle2 size={16} /> {t("verifySelected", { count: selectedItems.length })}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={selectedItems.length === 0}
+                  onClick={() => setDispatchBatch(selectedItems)}
+                >
+                  <Rocket size={16} /> {t("dispatchSelected")}
+                </button>
+              )}
             </div>
           )}
 
@@ -1162,8 +1178,9 @@ export function App() {
                   item={item}
                   selected={item.key === selectedItemKey}
                   checked={selectedItemKeys.has(item.key)}
+                  selectable={selectedItemKeys.has(item.key) || canJoinSelection(item.status, selectionStatus)}
                   activeDispatch={activeDispatches.get(item.key)}
-                  onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item))}
+                  onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item, selectionStatus))}
                   sourceComponent={item.sourceComponentId ? componentsById.get(item.sourceComponentId) : undefined}
                   showAttachmentColumn={showAttachmentColumn}
                   onOpen={() => openItemPage(item.key)}
@@ -1213,6 +1230,36 @@ export function App() {
                   : t(item.status === "ready" ? "submittedForProcessing" : "capturedInInbox", { key: item.key }),
               );
               void queryClient.invalidateQueries({ queryKey: ["items", selectedProduct.id] });
+            }}
+          />
+        </Modal>
+      )}
+      {verifyBatch && (
+        <Modal
+          title={t("verifySelectedTitle")}
+          subtitle={t("verifySelectedSubtitle", { count: verifyBatch.length })}
+          onClose={() => setVerifyBatch(null)}
+        >
+          <BulkVerifyDialog
+            items={verifyBatch}
+            onClose={() => setVerifyBatch(null)}
+            onDone={(results) => {
+              setVerifyBatch(null);
+              const failed = results.filter((result) => !result.ok);
+              // Keep what did not close ticked, so it can be looked at or retried.
+              setSelectedItemKeys(new Set(failed.map((result) => result.itemKey)));
+              setNotice(failed.length === 0
+                ? t("verifiedAll", { count: results.length })
+                : t("verifiedSome", {
+                  ok: results.length - failed.length,
+                  failed: failed.length,
+                  keys: failed.map((result) => result.itemKey).join("、"),
+                }));
+              void queryClient.invalidateQueries({ queryKey: ["items"] });
+              for (const result of results) {
+                void queryClient.invalidateQueries({ queryKey: ["item", result.itemKey] });
+                void queryClient.invalidateQueries({ queryKey: ["timeline", result.itemKey] });
+              }
             }}
           />
         </Modal>
@@ -1326,6 +1373,7 @@ function ItemRow({
   showAttachmentColumn,
   selected,
   checked,
+  selectable,
   activeDispatch,
   onToggleChecked,
   onOpen,
@@ -1337,6 +1385,8 @@ function ItemRow({
   showAttachmentColumn: boolean;
   selected: boolean;
   checked: boolean;
+  /** Whether the checkbox can be used: the row can join, or leave, the current selection. */
+  selectable: boolean;
   /** The dispatch of this item nobody has claimed yet, if there is one. */
   activeDispatch: ActiveDispatch | undefined;
   onToggleChecked: () => void;
@@ -1381,9 +1431,9 @@ function ItemRow({
           type="checkbox"
           className="item-select"
           checked={checked}
-          disabled={!dispatchable}
+          disabled={!selectable}
           aria-label={t("selectForDispatch", { key: item.key })}
-          title={dispatchable ? undefined : t("onlyReadyDispatchable")}
+          title={selectable ? undefined : t("onlyReadyDispatchable")}
           onChange={onToggleChecked}
         />
         <button className="item-row-main" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
@@ -4163,6 +4213,46 @@ function RefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefre
     >
       <RefreshCw className={refreshing ? "spin" : undefined} size={16} />
     </button>
+  );
+}
+
+/**
+ * Confirming a bulk verification close (AND-66). Closing is the last word on an
+ * item, so the list of what is about to close is shown before it happens.
+ */
+function BulkVerifyDialog({ items, onClose, onDone }: {
+  readonly items: readonly WorkItem[];
+  readonly onClose: () => void;
+  readonly onDone: (results: readonly BulkTransitionResult[]) => void;
+}) {
+  const { t } = useI18n();
+  const mutation = useMutation({
+    mutationFn: () => api.closeVerifications(items.map((item) => item.key)),
+    onSuccess: (response) => onDone(response.results),
+  });
+  return (
+    <div className="bulk-verify">
+      <p className="dispatch-note">{t("verifySelectedHelp")}</p>
+      <ul className="bulk-verify-list">
+        {items.map((item) => <li key={item.key}><code>{item.key}</code> {item.title}</li>)}
+      </ul>
+      {mutation.isError && (
+        <div className="inline-error"><CirclePause size={16} /><span>{errorMessage(mutation.error, t("somethingWentWrong"))}</span></div>
+      )}
+      <div className="form-footer">
+        <button type="button" className="secondary-button" onClick={onClose}>{t("cancel")}</button>
+        <button
+          type="button"
+          className="primary-button positive"
+          data-initial-focus
+          disabled={mutation.isPending || items.length === 0}
+          onClick={() => mutation.mutate()}
+        >
+          {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <CheckCircle2 size={16} />}
+          {t("verifySelected", { count: items.length })}
+        </button>
+      </div>
+    </div>
   );
 }
 

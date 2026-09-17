@@ -179,6 +179,9 @@ function stringField(body: Record<string, unknown>, field: string, required = tr
   return value;
 }
 
+/** How many items one bulk transition may move (AND-66). */
+const BULK_TRANSITION_LIMIT = 50;
+
 function stringArrayField(body: Record<string, unknown>, field: string): readonly string[] | undefined {
   const value = body[field];
   if (value === undefined) return undefined;
@@ -2117,6 +2120,52 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       // is the difference between a timeline and a rumour.
       ...(sessionUser(request) ? { attribution: { accountId: sessionUser(request)!.id } } : {}),
     });
+  });
+
+  /**
+   * Closing verification on several items at once (AND-66).
+   *
+   * Only the one edge, pending_verification -> done, because it is the one a
+   * person repeats in bulk after checking a release: every other move is either
+   * a judgement about one item or needs a note of its own. It stays a signed-in
+   * person's action -- "only a person closes verification" holds here exactly as
+   * it does on the single route, and MCP has no door to it.
+   *
+   * Each item stands alone. One that moved on in the meantime, or that this
+   * account cannot operate, is reported and skipped; the others still close,
+   * because refusing a whole release's worth of checks over one stale row would
+   * only send the person back to do them one by one.
+   */
+  app.post("/api/v1/items/transitions", async (request) => {
+    const body = objectBody(request.body);
+    const accountId = requireAccountId(request);
+    const itemKeys = stringArrayField(body, "itemKeys");
+    if (!itemKeys || itemKeys.length === 0) throw invalidInput("itemKeys must be a non-empty array of work item keys.");
+    if (itemKeys.length > BULK_TRANSITION_LIMIT) {
+      throw invalidInput(`At most ${BULK_TRANSITION_LIMIT} items can be moved at once.`);
+    }
+    const to = enumField(body, "to", WORK_ITEM_STATUSES)!;
+    const reason = enumField(body, "reason", TRANSITION_REASONS)!;
+    if (to !== "done" || reason !== "verification_passed") {
+      throw invalidInput("Only closing verification (to done, verification_passed) can be done in bulk.");
+    }
+    const uniqueKeys = [...new Set(itemKeys.map((key) => key.toUpperCase()))];
+    const results = uniqueKeys.map((itemKey) => {
+      try {
+        store.transitionWorkItem({
+          itemKey: requireItemPermission(request, itemKey, "operate"),
+          to,
+          actor: "human",
+          reason,
+          attribution: { accountId },
+        });
+        return { itemKey, ok: true as const };
+      } catch (error) {
+        if (!(error instanceof MissionGoError)) throw error;
+        return { itemKey, ok: false as const, code: error.code, message: error.message };
+      }
+    });
+    return { results };
   });
 
   // A comment records the signed OAuth client id it was written through, and

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentLabelKey,
+  canJoinSelection,
+  isSelectable,
   dispatchModeHelpKey,
   dispatchModeLabelKey,
   dispatchProblemKey,
@@ -44,8 +46,27 @@ describe("picking items to dispatch", () => {
   });
 
   it("refuses an item that is not ready even when the row is activated another way", () => {
-    const selected = toggleItemSelection(new Set(["AND-37"]), item("AND-40", "in_progress"));
+    const selected = toggleItemSelection(new Set(["AND-37"]), item("AND-40", "in_progress"), "ready");
     expect([...selected]).toEqual(["AND-37"]);
+  });
+
+  it("also takes items waiting for verification, for closing them in bulk (AND-66)", () => {
+    expect(isSelectable("pending_verification")).toBe(true);
+    for (const status of ["inbox", "in_progress", "on_hold", "done", "cancelled"] as const) {
+      expect(isSelectable(status)).toBe(false);
+    }
+    const picked = toggleItemSelection(new Set(), item("AND-50", "pending_verification"));
+    expect([...toggleItemSelection(picked, item("AND-51", "pending_verification"), "pending_verification")])
+      .toEqual(["AND-50", "AND-51"]);
+  });
+
+  it("keeps one status per selection, since each batch action takes one", () => {
+    const ready = toggleItemSelection(new Set(), item("AND-37", "ready"));
+    expect([...toggleItemSelection(ready, item("AND-50", "pending_verification"), "ready")]).toEqual(["AND-37"]);
+    expect(canJoinSelection("pending_verification", "ready")).toBe(false);
+    expect(canJoinSelection("pending_verification", undefined)).toBe(true);
+    // Unticking always works, whatever the row's status is now.
+    expect([...toggleItemSelection(ready, item("AND-37", "in_progress"), "ready")]).toEqual([]);
   });
 
   it("leaves the set it was given alone", () => {

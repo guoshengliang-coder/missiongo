@@ -1697,3 +1697,77 @@ describe("Delegating product access to its creator (AND-58)", () => {
     })).statusCode).toBe(200);
   });
 });
+
+describe("Closing verification in bulk (AND-66)", () => {
+  async function toVerification(app: FastifyInstance, cookie: string, key: string) {
+    for (const [to, reason] of [["ready", "triaged"], ["in_progress", "claim"], ["pending_verification", "resolution_submitted"]]) {
+      const moved = await app.inject({ method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to, reason } });
+      if (moved.statusCode !== 200) throw new Error(`move failed: ${moved.body}`);
+    }
+  }
+
+  it("closes each item it can, and reports the rest one by one", async () => {
+    const { app, adminCookie, memberCookie, shared, hidden } = await twoAccountWorkspace();
+    const first = await createItem(app, memberCookie, shared.id, "Fixed A");
+    const second = await createItem(app, memberCookie, shared.id, "Fixed B");
+    const notYet = await createItem(app, memberCookie, shared.id, "Still in drafts");
+    const elsewhere = await createItem(app, adminCookie, hidden.id, "Not the member's");
+    await toVerification(app, memberCookie, first);
+    await toVerification(app, memberCookie, second);
+    await toVerification(app, adminCookie, elsewhere);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/transitions",
+      headers: { cookie: memberCookie },
+      payload: { itemKeys: [first, second, notYet, elsewhere], to: "done", reason: "verification_passed" },
+    });
+    expect(response.statusCode).toBe(200);
+    const { results } = response.json<{ results: Array<{ itemKey: string; ok: boolean; code?: string }> }>();
+    expect(results).toEqual([
+      { itemKey: first, ok: true },
+      { itemKey: second, ok: true },
+      expect.objectContaining({ itemKey: notYet, ok: false, code: "invalid_state_transition" }),
+      // Unreachable reads as not found, the same as on the single route.
+      expect.objectContaining({ itemKey: elsewhere, ok: false, code: "not_found" }),
+    ]);
+
+    const status = async (key: string) =>
+      (await app.inject({ method: "GET", url: `/api/v1/items/${key}`, headers: { cookie: adminCookie } })).json<{ status: string }>().status;
+    expect(await status(first)).toBe("done");
+    expect(await status(second)).toBe("done");
+    expect(await status(notYet)).toBe("inbox");
+    expect(await status(elsewhere)).toBe("pending_verification");
+
+    // Signed with the account that closed it, like a single close.
+    const events = (await app.inject({ method: "GET", url: `/api/v1/items/${first}/timeline`, headers: { cookie: adminCookie } }))
+      .json<{ events: Array<{ toStatus?: string; accountName?: string }> }>().events;
+    expect(events.at(-1)).toMatchObject({ toStatus: "done" });
+    expect(events.at(-1)?.accountName).toBeDefined();
+  });
+
+  it("does only the verification close, and only for a signed-in person", async () => {
+    const { app, memberCookie, shared } = await twoAccountWorkspace();
+    const key = await createItem(app, memberCookie, shared.id, "Anything");
+    const other = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/transitions",
+      headers: { cookie: memberCookie },
+      payload: { itemKeys: [key], to: "cancelled", reason: "cancelled" },
+    });
+    expect(other.statusCode).toBe(400);
+    const tooMany = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/transitions",
+      headers: { cookie: memberCookie },
+      payload: { itemKeys: Array.from({ length: 51 }, (_, index) => `SHR-${index + 1}`), to: "done", reason: "verification_passed" },
+    });
+    expect(tooMany.statusCode).toBe(400);
+    const anonymous = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/transitions",
+      payload: { itemKeys: [key], to: "done", reason: "verification_passed" },
+    });
+    expect(anonymous.statusCode).toBe(401);
+  });
+});
