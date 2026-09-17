@@ -88,6 +88,7 @@ import {
   type WorkItemType,
 } from "./types";
 import { androidFeedbackBridge, androidMediaDeletion, reportAndroidBackDepth } from "./android-bridge";
+import { validateAttachment } from "./attachment-validation";
 import {
   ACTIVE_DISPATCHES_QUERY_KEY,
   ACTIVE_DISPATCHES_REFETCH_MS,
@@ -221,21 +222,6 @@ const REPORT_COPY = {
   readonly placeholder: "ideaOverviewPlaceholder" | "requirementOverviewPlaceholder" | "bugOverviewPlaceholder" | "taskOverviewPlaceholder" | "noteOverviewPlaceholder";
 }>;
 
-const FILE_LIMITS_MIB: Readonly<Record<string, number>> = {
-  png: 20,
-  jpg: 20,
-  jpeg: 20,
-  webp: 20,
-  gif: 20,
-  heic: 20,
-  mp4: 100,
-  mov: 100,
-  webm: 100,
-  log: 10,
-  txt: 10,
-  json: 10,
-};
-
 // Only a .log is machine output. Everything else readable is material a
 // person wrote or exported, and belongs beside the report rather than in
 // the diagnostics panel.
@@ -366,14 +352,13 @@ function validateIncomingFiles(
   const accepted: File[] = [];
   let error: string | undefined;
   for (const file of incoming) {
-    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-    const limit = FILE_LIMITS_MIB[extension];
-    if (!limit) {
+    const validation = validateAttachment(file);
+    if (!validation.valid && validation.reason === "unsupported") {
       error ??= t("unsupportedFile", { filename: file.name });
       continue;
     }
-    if (file.size > limit * 1024 * 1024) {
-      error ??= t("fileTooLarge", { filename: file.name, size: limit });
+    if (!validation.valid && validation.reason === "too-large") {
+      error ??= t("fileTooLarge", { filename: file.name, size: validation.limitMiB });
       continue;
     }
     const identity = `${file.name}:${file.size}:${file.lastModified}`;
@@ -3322,7 +3307,7 @@ function FilePicker({
   disabled = false,
   showSelectedFiles = true,
   showCamera = true,
-  accept = "image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.txt,.json",
+  accept = "image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.md,.txt,.csv,.json,.pdf",
   allowedExtensions,
   buttonLabel,
 }: {
@@ -3349,14 +3334,13 @@ function FilePicker({
     const accepted: File[] = [];
     let nextError: string | null = null;
     for (const file of incoming) {
-      const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-      const limit = FILE_LIMITS_MIB[extension];
-      if (!limit || (allowedExtensions && !allowedExtensions.includes(extension))) {
+      const validation = validateAttachment(file, allowedExtensions);
+      if (!validation.valid && validation.reason === "unsupported") {
         nextError ??= t("unsupportedFile", { filename: file.name });
         continue;
       }
-      if (file.size > limit * 1024 * 1024) {
-        nextError ??= t("fileTooLarge", { filename: file.name, size: limit });
+      if (!validation.valid && validation.reason === "too-large") {
+        nextError ??= t("fileTooLarge", { filename: file.name, size: validation.limitMiB });
         continue;
       }
       accepted.push(file);

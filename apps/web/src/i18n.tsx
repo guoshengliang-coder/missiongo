@@ -314,7 +314,7 @@ const EN_MESSAGES = {
   dropFilesToAttach: "Drop to attach",
   dropFilesToAttachHelp: "Screenshots and videos, documents and logs are sorted by type.",
   dropFilesLimitReached: "This item already has {count} attachments.",
-  unsupportedFile: "{filename} is not a supported image, video, or log file.",
+  unsupportedFile: "{filename} is not a supported image, video, document, or log file.",
   fileTooLarge: "{filename} exceeds the {size} MiB limit.",
   nextAction: "Next action",
   moveForward: "Move this work forward",
