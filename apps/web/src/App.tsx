@@ -112,6 +112,7 @@ import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog, transitionRequiresNote } from "@missiongo/domain";
 import { statusChangeNote, dispatchedEvent, groupTimeline } from "./timeline";
 import { TransitionNoteDialog, transitionNoteCopy } from "./transition-note-dialog";
+import { cachedListSummary } from "./list-summary";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import {
@@ -758,7 +759,21 @@ export function App() {
     enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId),
   });
   const items = itemsQuery.data?.pages.flatMap((page) => page.items) ?? [];
-  const itemSummary = itemsQuery.data?.pages[0]?.summary;
+  // While a newly picked status loads, keep the counts the other tabs already
+  // fetched: the summary ignores the status filter, so they are the same numbers
+  // (AND-62). Without this every badge dropped to 0 for the length of a request.
+  const itemSummary = itemsQuery.data?.pages[0]?.summary ?? (itemsQuery.isPending
+    ? cachedListSummary(
+      queryClient.getQueryCache().findAll({ queryKey: ["items", selectedProductId] }).map((query) => ({
+        queryKey: query.queryKey,
+        data: query.state.data,
+        dataUpdatedAt: query.state.dataUpdatedAt,
+      })),
+      { productId: selectedProductId, type: typeFilter, search: deferredSearch },
+    )
+    : undefined);
+  // Nothing to count yet: show a dash, not a 0 that is only the empty page talking.
+  const countsPending = !itemSummary && itemsQuery.isPending;
   const componentsQuery = useQuery({
     queryKey: ["components", selectedProductId, "with-archived"],
     queryFn: () => api.listComponents(selectedProductId, { includeArchived: true }),
@@ -814,6 +829,9 @@ export function App() {
     ? itemSummary.total - itemSummary.byStatus.done - itemSummary.byStatus.cancelled
     : items.filter((item) => !["done", "cancelled"].includes(item.status)).length;
   const verifyCount = itemSummary?.byStatus.pending_verification ?? items.filter((item) => item.status === "pending_verification").length;
+  const statusCount = (status: WorkItemStatus) =>
+    itemSummary?.byStatus[status] ?? items.filter((item) => item.status === status).length;
+  const shownCount = (count: number): number | string => (countsPending ? "–" : count);
   useEffect(() => {
     if (!selectedProduct) return undefined;
     return registerMissionGoWebMcp(document.modelContext, {
@@ -975,7 +993,7 @@ export function App() {
         </div>
         <nav aria-label={t("workspace")}>
           <p className="sidebar-label">{t("workspace")}</p>
-          <StatusNavItem label={t("allItems")} count={listedCount} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
+          <StatusNavItem label={t("allItems")} count={shownCount(listedCount)} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
             <ListTodo size={17} />
           </StatusNavItem>
           {ITEM_STATUSES.map((status) => {
@@ -984,7 +1002,7 @@ export function App() {
               <StatusNavItem
                 key={status}
                 label={statusLabel(status)}
-                count={itemSummary?.byStatus[status] ?? items.filter((item) => item.status === status).length}
+                count={shownCount(statusCount(status))}
                 active={statusFilter === status}
                 onClick={() => selectStatus(status)}
               >
@@ -1043,7 +1061,7 @@ export function App() {
             <button className={statusFilter === "all" ? "active" : ""} aria-pressed={statusFilter === "all"} onClick={() => selectStatus("all")}>
               <ListTodo size={16} />
               <span>{t("allItems")}</span>
-              <small>{listedCount}</small>
+              <small>{shownCount(listedCount)}</small>
             </button>
             {ITEM_STATUSES.map((status) => {
               const Icon = STATUS_ICONS[status];
@@ -1051,7 +1069,7 @@ export function App() {
                 <button key={status} className={statusFilter === status ? "active" : ""} aria-pressed={statusFilter === status} onClick={() => selectStatus(status)}>
                   <Icon size={16} />
                   <span>{statusLabel(status)}</span>
-                  <small>{itemSummary?.byStatus[status] ?? items.filter((item) => item.status === status).length}</small>
+                  <small>{shownCount(statusCount(status))}</small>
                 </button>
               );
             })}
@@ -1063,8 +1081,8 @@ export function App() {
             </div>
             <div className="workspace-head-side">
               <div className="workspace-stats" aria-label={t("workspaceSummary")}>
-                <span><strong>{openCount}</strong> {t("open")}</span>
-                <span><strong>{verifyCount}</strong> {t("toVerify")}</span>
+                <span><strong>{shownCount(openCount)}</strong> {t("open")}</span>
+                <span><strong>{shownCount(verifyCount)}</strong> {t("toVerify")}</span>
               </div>
               {/* Nothing pushes changes to the console: items the SDK or an AI
                   creates elsewhere only show up on a refetch, so give people
@@ -1297,7 +1315,7 @@ function Brand({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function StatusNavItem({ children, label, count, active, onClick }: { children: ReactNode; label: string; count: number; active: boolean; onClick: () => void }) {
+function StatusNavItem({ children, label, count, active, onClick }: { children: ReactNode; label: string; count: number | string; active: boolean; onClick: () => void }) {
   return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{children}<span>{label}</span><small>{count}</small></button>;
 }
 
