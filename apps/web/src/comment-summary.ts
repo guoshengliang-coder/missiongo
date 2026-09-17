@@ -1,4 +1,4 @@
-import type { ActorKind } from "./types";
+import type { ActorKind, WorkItemCreator } from "./types";
 
 /**
  * How a comment is signed.
@@ -84,4 +84,27 @@ export function commentPlainText(bodyKind: unknown, body: Readonly<Record<string
   return [str("finding"), str("understanding"), str("proposal"), ...list("evidence"), ...list("openQuestions")]
     .filter(Boolean)
     .join(" ");
+}
+
+/**
+ * How an item's creator is named in the list and the detail header (AND-67).
+ *
+ * The same rule as a comment's byline: a person by their nickname, an AI by the
+ * client that holds the token -- never by the person who connected it. A report
+ * sent from an app has no account at all; the SDK token it came through is the
+ * closest thing to a sender. Undefined when nobody was recorded, so the caller
+ * can leave the space empty rather than print a guess.
+ */
+export function creatorLabel(
+  creator: WorkItemCreator | undefined,
+  labels: { readonly human: string; readonly sdk: string; readonly agent: string },
+): string | undefined {
+  if (!creator) return undefined;
+  if (creator.kind === "human") return creator.name?.trim() || labels.human;
+  if (creator.kind === "sdk") {
+    const name = creator.name?.trim();
+    return name ? `${labels.sdk} · ${name}` : labels.sdk;
+  }
+  const client = creator.clientName?.trim() || creator.agentName?.trim();
+  return client ? `${labels.agent} · ${client}` : labels.agent;
 }

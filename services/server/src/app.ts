@@ -11,6 +11,7 @@ import {
   WORK_ITEM_STATUSES,
   WORK_ITEM_TYPES,
   type AgentKind,
+  type WorkItemCreator,
   type WorkItemEnvironment,
   type WorkItemReport,
 } from "@missiongo/domain";
@@ -177,6 +178,9 @@ function stringField(body: Record<string, unknown>, field: string, required = tr
   if (typeof value !== "string") throw invalidInput(`${field} must be a string.`);
   return value;
 }
+
+/** How many items one bulk transition may move (AND-66). */
+const BULK_TRANSITION_LIMIT = 50;
 
 function stringArrayField(body: Record<string, unknown>, field: string): readonly string[] | undefined {
   const value = body[field];
@@ -821,7 +825,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const reachable = bearerAuthorized(request)
       ? "*" as const
       : accountStore.reachableProductIds(requireAccount(request), "view");
-    const products = reachable === "*" ? allProducts : allProducts.filter((entry) => reachable.includes(entry.id));
+    const products = withAccess(request, reachable === "*" ? allProducts : allProducts.filter((entry) => reachable.includes(entry.id)));
     // The client's remembered product only counts if it still exists and is still
     // visible; otherwise the first one wins. Resolving it here is what lets the
     // items query run in this same request instead of a round trip later, and it
@@ -1065,6 +1069,29 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    * X" confirms that product X exists, which is the thing they were not allowed
    * to learn. docs/mcp-contract.md already fixes this for the MCP surface.
    */
+  /**
+   * What the signed-in account may do with each product it can see (AND-68).
+   *
+   * The console decides what to offer from this -- "start work" asks whether to
+   * hand the item to an AI, and has to say so honestly when this account may
+   * not -- while the routes still decide what is allowed. The operator token has
+   * no account and is refused nothing, so it reads as everything allowed.
+   */
+  const withAccess = <T extends { readonly id: string }>(
+    request: FastifyRequest,
+    products: readonly T[],
+  ): Array<T & { access: { canOperate: boolean; canUseAi: boolean } }> => {
+    if (bearerAuthorized(request)) return products.map((product) => ({ ...product, access: { canOperate: true, canUseAi: true } }));
+    const account = requireAccount(request);
+    return products.map((product) => ({
+      ...product,
+      access: {
+        canOperate: accountStore.allows(account, product.id, "operate"),
+        canUseAi: accountStore.allows(account, product.id, "ai"),
+      },
+    }));
+  };
+
   const requireProductPermission = (
     request: FastifyRequest,
     productId: string,
@@ -1139,9 +1166,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/products", async (request) => {
     const products = store.listProducts({ includeArchived: includeArchived(request.query) });
-    if (bearerAuthorized(request)) return products;
+    if (bearerAuthorized(request)) return withAccess(request, products);
     const reachable = accountStore.reachableProductIds(requireAccount(request), "view");
-    return reachable === "*" ? products : products.filter((product) => reachable.includes(product.id));
+    return withAccess(request, reachable === "*" ? products : products.filter((product) => reachable.includes(product.id)));
   });
 
   /**
@@ -1483,6 +1510,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // to be one this account may operate on. Checked before anything is created,
     // so a batch with one unreachable item dispatches nothing.
     const authorizedKeys = itemKeys.map((key) => requireItemPermission(request, key, "operate"));
+    // Handing work to an AI is what the product's "AI" permission is for
+    // (AND-68). Checked after operate, so an item this account cannot reach at
+    // all still reads as not found rather than confirming it exists.
+    if (!bearerAuthorized(request)) {
+      const account = requireAccount(request);
+      for (const key of authorizedKeys) {
+        if (!accountStore.allows(account, store.getWorkItem(key).productId, "ai")) {
+          throw new MissionGoError("ai_not_permitted", `This account may not hand ${key} to an AI agent.`, 403);
+        }
+      }
+    }
     const dispatch = dispatchStore.createDispatch({
       accountId,
       nodeId: stringField(body, "nodeId")!,
@@ -2037,7 +2075,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ? sequenceFromItemKey(items.at(-1)?.key)
       : undefined;
     return {
-      items,
+      items: withCreatorNames(items),
       summary: store.getWorkItemListSummary({
         productId,
         ...(typeof query.type === "string" ? { type: query.type as never } : {}),
@@ -2080,7 +2118,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/items/:itemKey", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
-    return store.getWorkItem(requireItemPermission(request, itemKey));
+    return withCreatorNames([store.getWorkItem(requireItemPermission(request, itemKey))])[0];
   });
 
   app.patch("/api/v1/items/:itemKey", async (request) => {
@@ -2118,6 +2156,52 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   });
 
+  /**
+   * Closing verification on several items at once (AND-66).
+   *
+   * Only the one edge, pending_verification -> done, because it is the one a
+   * person repeats in bulk after checking a release: every other move is either
+   * a judgement about one item or needs a note of its own. It stays a signed-in
+   * person's action -- "only a person closes verification" holds here exactly as
+   * it does on the single route, and MCP has no door to it.
+   *
+   * Each item stands alone. One that moved on in the meantime, or that this
+   * account cannot operate, is reported and skipped; the others still close,
+   * because refusing a whole release's worth of checks over one stale row would
+   * only send the person back to do them one by one.
+   */
+  app.post("/api/v1/items/transitions", async (request) => {
+    const body = objectBody(request.body);
+    const accountId = requireAccountId(request);
+    const itemKeys = stringArrayField(body, "itemKeys");
+    if (!itemKeys || itemKeys.length === 0) throw invalidInput("itemKeys must be a non-empty array of work item keys.");
+    if (itemKeys.length > BULK_TRANSITION_LIMIT) {
+      throw invalidInput(`At most ${BULK_TRANSITION_LIMIT} items can be moved at once.`);
+    }
+    const to = enumField(body, "to", WORK_ITEM_STATUSES)!;
+    const reason = enumField(body, "reason", TRANSITION_REASONS)!;
+    if (to !== "done" || reason !== "verification_passed") {
+      throw invalidInput("Only closing verification (to done, verification_passed) can be done in bulk.");
+    }
+    const uniqueKeys = [...new Set(itemKeys.map((key) => key.toUpperCase()))];
+    const results = uniqueKeys.map((itemKey) => {
+      try {
+        store.transitionWorkItem({
+          itemKey: requireItemPermission(request, itemKey, "operate"),
+          to,
+          actor: "human",
+          reason,
+          attribution: { accountId },
+        });
+        return { itemKey, ok: true as const };
+      } catch (error) {
+        if (!(error instanceof MissionGoError)) throw error;
+        return { itemKey, ok: false as const, code: error.code, message: error.message };
+      }
+    });
+    return { results };
+  });
+
   // A comment records the signed OAuth client id it was written through, and
   // that id carries the client's registered name. Decoding it here turns a
   // byline that only said "AI" into the program that actually wrote it, for
@@ -2152,6 +2236,29 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return name ? { ...decorated, accountName: name } : decorated;
     });
   };
+
+  /**
+   * The same names on an item's creator (AND-67): a person's nickname, or the
+   * AI client's registered name. Resolved on read like the timeline's, so the
+   * list follows a renamed account. An SDK creator is already named by its token.
+   */
+  function withCreatorNames<T extends { readonly createdBy?: WorkItemCreator }>(items: readonly T[]): T[] {
+    const names = accountStore.displayNames(
+      items.flatMap((item) => (item.createdBy?.kind === "human" ? [item.createdBy.accountId] : [])),
+    );
+    return items.map((item) => {
+      const creator = item.createdBy;
+      if (creator?.kind === "human") {
+        const name = names.get(creator.accountId);
+        return name ? { ...item, createdBy: { ...creator, name } } : item;
+      }
+      if (creator?.kind === "agent" && creator.clientId) {
+        const { clientName } = withClientName({ clientId: creator.clientId });
+        return clientName ? { ...item, createdBy: { ...creator, clientName } } : item;
+      }
+      return item;
+    });
+  }
 
   app.get("/api/v1/items/:itemKey/timeline", async (request) => {
     const { itemKey } = request.params as { itemKey: string };

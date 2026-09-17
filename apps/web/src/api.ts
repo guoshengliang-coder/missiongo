@@ -99,6 +99,8 @@ export interface ProductAccessEntry {
   readonly permission: ProductPermission;
   /** True for an administrator, who reaches the product whatever the row says. */
   readonly reachesByRole: boolean;
+  /** What the account can actually do with this product; for an administrator, more than its row (AND-63). */
+  readonly effective: Omit<ProductPermission, "productId">;
 }
 
 export interface Account {
@@ -111,6 +113,10 @@ export interface Account {
   readonly updatedAt: string;
   readonly permissions: ProductPermission[];
 }
+
+export type BulkTransitionResult =
+  | { readonly itemKey: string; readonly ok: true }
+  | { readonly itemKey: string; readonly ok: false; readonly code: string; readonly message: string };
 
 export class ApiError extends Error {
   readonly status: number;
@@ -363,6 +369,12 @@ export const api = {
   },
   // `note` is why the item is moving. The domain demands one on the ways back to
   // ready; everywhere else it is simply left out.
+  /** Close verification on several items; each reports on its own (AND-66). */
+  closeVerifications: (itemKeys: readonly string[]) =>
+    request<{ results: BulkTransitionResult[] }>("/api/v1/items/transitions", {
+      method: "POST",
+      body: JSON.stringify({ itemKeys, to: "done", reason: "verification_passed" }),
+    }),
   transitionItem: (itemKey: string, action: TransitionAction, note?: string) =>
     request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transitions`, {
       method: "POST",

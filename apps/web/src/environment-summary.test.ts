@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { browserName } from "./environment-summary";
+import { browserName, environmentFields } from "./environment-summary";
 
 // A web capture stores nothing in appVersion, deviceModel or osVersion, so the
 // list row used to read "no version or device details" beside a detail page
@@ -27,5 +27,45 @@ describe("browserName", () => {
   it("gives up rather than guessing on something it does not recognise", () => {
     expect(browserName("MissionGoAndroid/0.1.7")).toBeUndefined();
     expect(browserName("")).toBeUndefined();
+  });
+});
+
+describe("environmentFields", () => {
+  const t = ((key: string) => `t:${key}`) as Parameters<typeof environmentFields>[1];
+
+  it("puts the glance up front and folds the rest of a web capture away", () => {
+    const { primary, more } = environmentFields({
+      platform: "web",
+      metadata: {
+        browserUserAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        viewport: "1738x878",
+        timeZone: "Asia/Shanghai",
+        pageUrl: "https://example.test/",
+      },
+    }, t);
+    expect(primary.map((field) => [field.key, field.value])).toEqual([
+      ["platform", "t:web"],
+      ["browser", "Chrome 152"],
+      ["viewport", "1738x878"],
+    ]);
+    // The raw user agent is still reachable; the viewport is not repeated.
+    expect(more.map((field) => field.key)).toEqual(["metadata:browserUserAgent", "metadata:timeZone", "metadata:pageUrl"]);
+  });
+
+  it("shows an app build's version, build, system and device, and nothing that was not captured", () => {
+    const { primary, more } = environmentFields({
+      platform: "android",
+      appVersion: "0.1.12",
+      buildNumber: "112",
+      osVersion: "Android 16",
+      deviceModel: "MBH-AN10",
+      sourceRevision: "9ab5660",
+    }, t);
+    expect(primary.map((field) => field.key)).toEqual(["platform", "appVersion", "buildNumber", "osVersion", "deviceModel"]);
+    expect(more).toEqual([{ key: "sourceRevision", label: "sourceRevision", value: "9ab5660", code: true }]);
+  });
+
+  it("has nothing to show without a capture", () => {
+    expect(environmentFields(undefined, t)).toEqual({ primary: [], more: [] });
   });
 });

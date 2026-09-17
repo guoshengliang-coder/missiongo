@@ -15,6 +15,7 @@ import {
   type AttachmentKind,
   type WorkItemEnvironment,
   type WorkItemPriority,
+  type WorkItemCreator,
   type WorkItemReference,
   type WorkItemReport,
   type WorkItemSnapshot,
@@ -1982,6 +1983,54 @@ export class MissionGoStore {
     };
   }
 
+  /**
+   * Who created an item, from its `item_created` event (AND-67). Nothing new is
+   * stored: the event has carried the actor, account and client all along, and
+   * an SDK report names its draft, whose token has a name.
+   */
+  private creatorOf(itemId: string): { createdBy?: WorkItemCreator } {
+    const event = this.database.connection
+      .prepare(
+        `SELECT actor_kind, account_id, client_id, payload_json FROM work_item_events
+         WHERE item_id = ? AND event_type = 'item_created'
+         ORDER BY timeline_seq, created_at LIMIT 1`,
+      )
+      .get(itemId) as unknown as
+      | { actor_kind: string; account_id: string | null; client_id: string | null; payload_json: string }
+      | undefined;
+    if (!event) return {};
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(event.payload_json) as Record<string, unknown>;
+    } catch {
+      // A payload that does not parse still has an actor worth naming.
+    }
+    if (event.actor_kind === "agent") {
+      return {
+        createdBy: {
+          kind: "agent",
+          ...(event.account_id ? { accountId: event.account_id } : {}),
+          ...(event.client_id ? { clientId: event.client_id } : {}),
+          ...(typeof payload.agentName === "string" && payload.agentName ? { agentName: payload.agentName } : {}),
+        },
+      };
+    }
+    if (payload.source === "android_sdk") {
+      const token = typeof payload.feedbackDraftId === "string"
+        ? this.database.connection
+          .prepare(
+            `SELECT t.name FROM feedback_drafts d JOIN access_tokens t ON t.id = d.access_token_id WHERE d.id = ?`,
+          )
+          .get(payload.feedbackDraftId) as unknown as { name: string } | undefined
+        : undefined;
+      return { createdBy: { kind: "sdk", ...(token?.name ? { name: token.name } : {}) } };
+    }
+    if (event.actor_kind === "human" && event.account_id) {
+      return { createdBy: { kind: "human", accountId: event.account_id } };
+    }
+    return {};
+  }
+
   private mapWorkItem(row: WorkItemRow): WorkItemSnapshot {
     const environment = parseEnvironment(row.environment_json);
     const report = parseReport(row.report_json);
@@ -2003,6 +2052,7 @@ export class MissionGoStore {
       ...(environment ? { environment } : {}),
       attachments: attachments.map(({ storageFilename: _, ...attachment }) => attachment),
       ...this.derivationOf(row),
+      ...this.creatorOf(row.id),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

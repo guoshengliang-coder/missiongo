@@ -1006,6 +1006,17 @@ describe("Nicknames", () => {
         actorKind: "human", accountId: member.id, accountName: "阿亮",
       });
     }
+
+    // The list and the detail name the creator the same way (AND-67).
+    const detail = (await app.inject({ method: "GET", url: `/api/v1/items/${key}`, headers: { cookie: adminCookie } }))
+      .json<{ createdBy?: unknown }>();
+    expect(detail.createdBy).toEqual({ kind: "human", accountId: member.id, name: "阿亮" });
+    const listed = (await app.inject({
+      method: "GET",
+      url: `/api/v1/items?productId=${shared.id}`,
+      headers: { cookie: adminCookie },
+    })).json<{ items: Array<{ key: string; createdBy?: unknown }> }>().items;
+    expect(listed.find((item) => item.key === key)?.createdBy).toEqual({ kind: "human", accountId: member.id, name: "阿亮" });
   });
 
   it("still names a suspended account, because the question is who wrote it", async () => {
@@ -1167,11 +1178,37 @@ describe("Setting permissions from the product's side (item 2.2)", () => {
     expect(listed.find((entry) => entry.account.role === "admin")).toMatchObject({
       reachesByRole: true,
       permission: { canView: false },
+      // What it can actually do, which is what the editor draws (AND-63).
+      effective: { canView: true, canOperate: true, canUseAi: true },
     });
     expect(listed.find((entry) => entry.account.id === member.id)).toMatchObject({
       reachesByRole: false,
       permission: { canView: true, canOperate: true, canUseAi: false },
+      effective: { canView: true, canOperate: true, canUseAi: false },
     });
+  });
+
+  it("reports an administrator's narrowed AI reach as off on the products it no longer covers (AND-63)", async () => {
+    const { app, adminCookie, shared, hidden } = await twoAccountWorkspace();
+    const admin = (await app.inject({ method: "GET", url: "/api/v1/accounts", headers: { cookie: adminCookie } }))
+      .json<{ accounts: Array<{ id: string; role: string }> }>().accounts.find((account) => account.role === "admin")!;
+    // Narrow the administrator's AI clients to the shared product only.
+    expect((await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${shared.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: admin.id, canView: true, canOperate: false, canUseAi: true }] },
+    })).statusCode).toBe(200);
+
+    const entryOn = async (productId: string) => (await app.inject({
+      method: "GET",
+      url: `/api/v1/products/${productId}/accounts`,
+      headers: { cookie: adminCookie },
+    })).json<{ accounts: Array<{ account: { role: string }; effective: Record<string, boolean> }> }>()
+      .accounts.find((entry) => entry.account.role === "admin")!;
+
+    expect((await entryOn(shared.id)).effective).toEqual({ canView: true, canOperate: true, canUseAi: true });
+    expect((await entryOn(hidden.id)).effective).toEqual({ canView: true, canOperate: true, canUseAi: false });
   });
 
   it("grants and revokes from this side, and the account side agrees", async () => {
@@ -1658,5 +1695,120 @@ describe("Delegating product access to its creator (AND-58)", () => {
       headers,
       payload: { accounts: [] },
     })).statusCode).toBe(200);
+  });
+});
+
+describe("Closing verification in bulk (AND-66)", () => {
+  async function toVerification(app: FastifyInstance, cookie: string, key: string) {
+    for (const [to, reason] of [["ready", "triaged"], ["in_progress", "claim"], ["pending_verification", "resolution_submitted"]]) {
+      const moved = await app.inject({ method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to, reason } });
+      if (moved.statusCode !== 200) throw new Error(`move failed: ${moved.body}`);
+    }
+  }
+
+  it("closes each item it can, and reports the rest one by one", async () => {
+    const { app, adminCookie, memberCookie, shared, hidden } = await twoAccountWorkspace();
+    const first = await createItem(app, memberCookie, shared.id, "Fixed A");
+    const second = await createItem(app, memberCookie, shared.id, "Fixed B");
+    const notYet = await createItem(app, memberCookie, shared.id, "Still in drafts");
+    const elsewhere = await createItem(app, adminCookie, hidden.id, "Not the member's");
+    await toVerification(app, memberCookie, first);
+    await toVerification(app, memberCookie, second);
+    await toVerification(app, adminCookie, elsewhere);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/transitions",
+      headers: { cookie: memberCookie },
+      payload: { itemKeys: [first, second, notYet, elsewhere], to: "done", reason: "verification_passed" },
+    });
+    expect(response.statusCode).toBe(200);
+    const { results } = response.json<{ results: Array<{ itemKey: string; ok: boolean; code?: string }> }>();
+    expect(results).toEqual([
+      { itemKey: first, ok: true },
+      { itemKey: second, ok: true },
+      expect.objectContaining({ itemKey: notYet, ok: false, code: "invalid_state_transition" }),
+      // Unreachable reads as not found, the same as on the single route.
+      expect.objectContaining({ itemKey: elsewhere, ok: false, code: "not_found" }),
+    ]);
+
+    const status = async (key: string) =>
+      (await app.inject({ method: "GET", url: `/api/v1/items/${key}`, headers: { cookie: adminCookie } })).json<{ status: string }>().status;
+    expect(await status(first)).toBe("done");
+    expect(await status(second)).toBe("done");
+    expect(await status(notYet)).toBe("inbox");
+    expect(await status(elsewhere)).toBe("pending_verification");
+
+    // Signed with the account that closed it, like a single close.
+    const events = (await app.inject({ method: "GET", url: `/api/v1/items/${first}/timeline`, headers: { cookie: adminCookie } }))
+      .json<{ events: Array<{ toStatus?: string; accountName?: string }> }>().events;
+    expect(events.at(-1)).toMatchObject({ toStatus: "done" });
+    expect(events.at(-1)?.accountName).toBeDefined();
+  });
+
+  it("does only the verification close, and only for a signed-in person", async () => {
+    const { app, memberCookie, shared } = await twoAccountWorkspace();
+    const key = await createItem(app, memberCookie, shared.id, "Anything");
+    const other = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/transitions",
+      headers: { cookie: memberCookie },
+      payload: { itemKeys: [key], to: "cancelled", reason: "cancelled" },
+    });
+    expect(other.statusCode).toBe(400);
+    const tooMany = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/transitions",
+      headers: { cookie: memberCookie },
+      payload: { itemKeys: Array.from({ length: 51 }, (_, index) => `SHR-${index + 1}`), to: "done", reason: "verification_passed" },
+    });
+    expect(tooMany.statusCode).toBe(400);
+    const anonymous = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/transitions",
+      payload: { itemKeys: [key], to: "done", reason: "verification_passed" },
+    });
+    expect(anonymous.statusCode).toBe(401);
+  });
+});
+
+describe("Handing work to an AI needs the product's AI permission (AND-68)", () => {
+  it("says what the account may do with each product it can see", async () => {
+    const { app, adminCookie, memberCookie, shared } = await twoAccountWorkspace();
+    const memberProducts = (await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: memberCookie } }))
+      .json<Array<{ id: string; access: { canOperate: boolean; canUseAi: boolean } }>>();
+    expect(memberProducts).toEqual([expect.objectContaining({ id: shared.id, access: { canOperate: true, canUseAi: false } })]);
+
+    const adminProducts = (await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: adminCookie } }))
+      .json<Array<{ access: { canOperate: boolean; canUseAi: boolean } }>>();
+    expect(adminProducts.every((product) => product.access.canOperate && product.access.canUseAi)).toBe(true);
+
+    const bootstrap = (await app.inject({ method: "GET", url: "/api/v1/bootstrap", headers: { cookie: memberCookie } }))
+      .json<{ products: Array<{ access: unknown }> }>();
+    expect(bootstrap.products[0]?.access).toEqual({ canOperate: true, canUseAi: false });
+  });
+
+  it("refuses a dispatch from an account that may operate but not use AI", async () => {
+    const { app, adminCookie, memberCookie, member, shared } = await twoAccountWorkspace();
+    const key = await createItem(app, memberCookie, shared.id, "Needs an agent");
+    const dispatch = () => app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie: memberCookie },
+      payload: { nodeId: "no-such-node", agentKind: "claude_code", mode: "plan", itemKeys: [key] },
+    });
+
+    const refused = await dispatch();
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toMatchObject({ code: "ai_not_permitted" });
+
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/accounts/${member.id}/products`,
+      headers: { cookie: adminCookie },
+      payload: { permissions: [{ productId: shared.id, canView: true, canOperate: true, canUseAi: true }] },
+    });
+    // Past the permission now; what stops it is the made-up machine.
+    expect((await dispatch()).json()).not.toMatchObject({ code: "ai_not_permitted" });
   });
 });

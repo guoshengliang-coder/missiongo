@@ -1,4 +1,4 @@
-import type { useI18n } from "./i18n";
+import type { MessageKey, useI18n } from "./i18n";
 import type { WorkItemEnvironment } from "./types";
 
 export function platformName(platform: WorkItemEnvironment["platform"], t: ReturnType<typeof useI18n>["t"]): string {
@@ -44,4 +44,55 @@ export function environmentSummary(
     metadata.viewport,
   ];
   return parts.filter(Boolean).join(" · ");
+}
+
+/** One cell of the captured-context grid: a translated label, or a raw metadata key. */
+export interface EnvironmentField {
+  readonly key: string;
+  readonly label: MessageKey | { readonly raw: string };
+  readonly value: string;
+  readonly code?: boolean;
+}
+
+/**
+ * The captured context split into what a reader wants at a glance and the rest
+ * (AND-65).
+ *
+ * A web capture alone carries twenty-odd metadata keys, and laying all of them
+ * out pushed the timeline a screen further down for fields almost nobody reads.
+ * The glance is the platform, the build, the system and the device -- and, for a
+ * browser report, the browser and the window size, which are the web's version
+ * and device. Everything else stays one click away rather than disappearing.
+ *
+ * Only captured values make a cell: a field that was never recorded does not
+ * take up space saying so. The raw user agent stays in `more`; the glance shows
+ * only the browser parsed out of it. The viewport is shown once, at the glance.
+ */
+export function environmentFields(
+  environment: WorkItemEnvironment | undefined,
+  t: ReturnType<typeof useI18n>["t"],
+): {
+  readonly primary: readonly EnvironmentField[];
+  readonly more: readonly EnvironmentField[];
+} {
+  if (!environment) return { primary: [], more: [] };
+  const metadata = environment.metadata ?? {};
+  const browser = metadata.browserUserAgent ? browserName(metadata.browserUserAgent) : undefined;
+  const primary: EnvironmentField[] = [{ key: "platform", label: "platform", value: platformName(environment.platform, t) }];
+  if (environment.appVersion) primary.push({ key: "appVersion", label: "version", value: environment.appVersion });
+  if (environment.buildNumber) primary.push({ key: "buildNumber", label: "buildNumber", value: environment.buildNumber });
+  if (environment.osVersion) primary.push({ key: "osVersion", label: "operatingSystem", value: environment.osVersion });
+  if (environment.deviceModel) primary.push({ key: "deviceModel", label: "device", value: environment.deviceModel });
+  if (browser) primary.push({ key: "browser", label: "browser", value: browser });
+  if (metadata.viewport) primary.push({ key: "viewport", label: "viewport", value: metadata.viewport });
+
+  const more: EnvironmentField[] = [];
+  if (environment.sourceRevision) {
+    more.push({ key: "sourceRevision", label: "sourceRevision", value: environment.sourceRevision, code: true });
+  }
+  for (const [key, value] of Object.entries(metadata)) {
+    if (key === "viewport") continue;
+    more.push({ key: `metadata:${key}`, label: { raw: key }, value });
+  }
+  return { primary, more };
 }

@@ -72,6 +72,12 @@ export interface Product {
    */
   readonly createdByAccountId?: string;
   /**
+   * What the signed-in account may do with this product (AND-68). Absent from a
+   * server that predates it; the routes decide either way, this only decides
+   * what the console offers.
+   */
+  readonly access?: { readonly canOperate: boolean; readonly canUseAi: boolean };
+  /**
    * Whether an icon has been uploaded. The bytes are fetched separately, from
    * `/api/v1/products/:id/icon`, so the product listing stays small enough not to
    * delay the first paint. False means the generated badge is used.
@@ -113,6 +119,8 @@ export interface WorkItem {
   readonly derivedFrom?: WorkItemReference;
   /** Items split off from this one. Absent when there are none. */
   readonly derivedItems?: readonly WorkItemReference[];
+  /** Who created it (AND-67). Absent when the creation was never attributed. */
+  readonly createdBy?: WorkItemCreator;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -124,6 +132,18 @@ export interface WorkItemReference {
 }
 
 export type ActorKind = "human" | "agent" | "system";
+
+/** Mirrors WorkItemCreator in packages/domain: a person, an SDK token, or an AI client. */
+export type WorkItemCreator =
+  | { readonly kind: "human"; readonly accountId: string; readonly name?: string }
+  | { readonly kind: "sdk"; readonly name?: string }
+  | {
+    readonly kind: "agent";
+    readonly accountId?: string;
+    readonly clientId?: string;
+    readonly clientName?: string;
+    readonly agentName?: string;
+  };
 
 export interface WorkItemEvent {
   readonly id: string;

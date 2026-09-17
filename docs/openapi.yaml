@@ -970,6 +970,60 @@ paths:
           $ref: "#/components/responses/ValidationFailed"
         "409":
           $ref: "#/components/responses/Conflict"
+  /api/v1/items/transitions:
+    post:
+      operationId: closeVerifications
+      summary: Close verification on several items at once (AND-66).
+      description: >-
+        A signed-in account only, and only the pending_verification to done edge
+        with reason verification_passed -- every other move is either a judgement
+        about one item or needs a note of its own, and closing verification stays
+        a person's call. Each item is authorized (operate) and moved on its own:
+        one that cannot close is reported in `results` and the rest still close.
+        At most 50 keys; duplicates are folded.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [itemKeys, to, reason]
+              properties:
+                itemKeys:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items: { type: string }
+                to: { const: done }
+                reason: { const: verification_passed }
+      responses:
+        "200":
+          description: One result per distinct key, in the order given.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required: [itemKey, ok]
+                      properties:
+                        itemKey: { type: string }
+                        ok: { type: boolean }
+                        code:
+                          type: string
+                          description: >-
+                            Present when ok is false: not_found for an item this
+                            account cannot reach, invalid_state_transition for one
+                            not awaiting verification.
+                        message: { type: string }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          description: No signed-in account.
   /api/v1/items/{itemKey}/timeline:
     parameters:
       - $ref: "#/components/parameters/WorkItemKey"
@@ -1298,13 +1352,25 @@ components:
             not cost a database write per call. Absent until first use.
     ProductAccessEntry:
       type: object
-      required: [account, permission, reachesByRole]
+      required: [account, permission, reachesByRole, effective]
       properties:
         account: { $ref: "#/components/schemas/AccountSummary" }
         permission: { $ref: "#/components/schemas/ProductPermission" }
         reachesByRole:
           type: boolean
           description: True for an administrator, who reaches the product whatever the row says.
+        effective:
+          type: object
+          required: [canView, canOperate, canUseAi]
+          description: >-
+            What the account can actually do with this product. `permission` is
+            the stored row; an administrator usually has none, yet always views and
+            operates, and uses AI unless its AI reach was narrowed to other
+            products. Editors draw this, and send rows.
+          properties:
+            canView: { type: boolean }
+            canOperate: { type: boolean }
+            canUseAi: { type: boolean }
     AccountSummary:
       type: object
       required: [id, email, role]
@@ -1358,6 +1424,17 @@ components:
             Whether an icon has been uploaded. The image itself is not inlined
             here; fetch it from GET /api/v1/products/{productId}/icon, which the
             browser can cache. False means the generated badge is used.
+        access:
+          type: object
+          required: [canOperate, canUseAi]
+          description: >-
+            What the signed-in account may do with this product (AND-68), on the
+            product list and bootstrap. The console decides what to offer from
+            it; the routes still decide what is allowed. canUseAi also gates
+            dispatching this product's items to an AI agent.
+          properties:
+            canOperate: { type: boolean }
+            canUseAi: { type: boolean }
     CreateProductRequest:
       type: object
       required: [name, keyPrefix]
@@ -1439,6 +1516,34 @@ components:
         attachments:
           type: array
           items: { $ref: "#/components/schemas/WorkItemAttachment" }
+        createdBy:
+          description: >-
+            Who created the item, read off its item_created event (AND-67).
+            Absent when the creation was never attributed. A person is named by
+            their nickname; a report sent through a feedback SDK token by the
+            token's name; an AI's follow-up by the OAuth client (clientName) and
+            the agent's self-reported agentName -- never by the account that
+            authorized it.
+          oneOf:
+            - type: object
+              required: [kind, accountId]
+              properties:
+                kind: { const: human }
+                accountId: { type: string }
+                name: { type: string }
+            - type: object
+              required: [kind]
+              properties:
+                kind: { const: sdk }
+                name: { type: string }
+            - type: object
+              required: [kind]
+              properties:
+                kind: { const: agent }
+                accountId: { type: string }
+                clientId: { type: string }
+                clientName: { type: string }
+                agentName: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     CreateWorkItemRequest:
@@ -1634,9 +1739,11 @@ components:
             pending_verification, on_hold or done -- coming back from those means
             work was already done and did not hold, and whoever picks the item up
             next has nowhere else to learn why. A blank one does not count, and
-            manual_override is not a way around it. Omitting it on those edges
-            returns 400 with code `transition_note_required`. Triage
-            (inbox to ready) needs none.
+            manual_override is not a way around it. Also required on every
+            move to `cancelled`, from any status (AND-64): the item leaves the
+            queue for good and the note is the only record of why. Omitting it
+            on those edges returns 400 with code `transition_note_required`.
+            Triage (inbox to ready) needs none.
     WorkItemEvent:
       type: object
       required: [id, itemKey, eventType, actorKind, payload, createdAt]

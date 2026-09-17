@@ -73,6 +73,31 @@ export interface WorkItemReference {
   readonly status: WorkItemStatus;
 }
 
+/**
+ * Who put an item on the board (AND-67), read off its `item_created` event.
+ *
+ * Three shapes because there are three doors, and they must not be confused:
+ * - `human`: a person in the console. `name` is their nickname, resolved on read.
+ * - `sdk`: a report sent from an app through a feedback SDK token. No account
+ *   is behind it; `name` is the token's name.
+ * - `agent`: an AI recording a follow-up (AND-50). The authorizing account is
+ *   kept, but the byline is the client and the agent -- an AI's item is not
+ *   signed as the person who connected it, the same rule comments follow.
+ *
+ * Absent on items whose creation was never attributed: ones written before
+ * events carried accounts, or through the operator token.
+ */
+export type WorkItemCreator =
+  | { readonly kind: "human"; readonly accountId: string; readonly name?: string }
+  | { readonly kind: "sdk"; readonly name?: string }
+  | {
+    readonly kind: "agent";
+    readonly accountId?: string;
+    readonly clientId?: string;
+    readonly clientName?: string;
+    readonly agentName?: string;
+  };
+
 export interface WorkItemSnapshot {
   readonly id: string;
   readonly key: string;
@@ -98,6 +123,8 @@ export interface WorkItemSnapshot {
   readonly derivedFrom?: WorkItemReference;
   /** Items split off from this one, oldest first. Absent when there are none. */
   readonly derivedItems?: readonly WorkItemReference[];
+  /** Who created it. Names are filled in by the HTTP layer; see WorkItemCreator. */
+  readonly createdBy?: WorkItemCreator;
   readonly createdAt: string;
   readonly updatedAt: string;
 }

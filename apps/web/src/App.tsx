@@ -43,7 +43,7 @@ import {
   X,
 } from "lucide-react";
 
-import { api, ApiError, productIconUrl, type AuthSession, type AuthenticatedUser } from "./api";
+import { api, ApiError, productIconUrl, type AuthSession, type AuthenticatedUser, type BulkTransitionResult } from "./api";
 import { BootSkeleton } from "./BootSkeleton";
 import { clearPersistedQueryCache } from "./query-persistence";
 // Type-only: erased at compile time, so it does not pull the chunk into the boot.
@@ -98,11 +98,12 @@ import {
   agentLabelKey,
   dispatchModeLabelKey,
   dispatchStatusLabelKey,
+  canJoinSelection,
   isDispatchable,
   selectionScope,
   toggleItemSelection,
 } from "./dispatch-eligibility";
-import { environmentSummary, platformName } from "./environment-summary";
+import { environmentFields, environmentSummary, platformName, type EnvironmentField } from "./environment-summary";
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
@@ -111,10 +112,13 @@ import { mayAdministerProduct } from "./product-permissions";
 import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog, transitionRequiresNote } from "@missiongo/domain";
 import { statusChangeNote, dispatchedEvent, groupTimeline } from "./timeline";
-import { TransitionNoteDialog } from "./transition-note-dialog";
+import { TransitionNoteDialog, transitionNoteCopy } from "./transition-note-dialog";
+import { StartWorkDialog } from "./start-work-dialog";
+import { cachedListSummary } from "./list-summary";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import {
+  creatorLabel,
   COMMENT_COLLAPSE_THRESHOLD,
   commentAuthor,
   commentPlainText,
@@ -456,6 +460,8 @@ export function App() {
    * items went out.
    */
   const [dispatchBatch, setDispatchBatch] = useState<readonly WorkItem[] | null>(null);
+  const [verifyBatch, setVerifyBatch] = useState<readonly WorkItem[] | null>(null);
+  const [startWorkItem, setStartWorkItem] = useState<WorkItem | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
@@ -758,7 +764,21 @@ export function App() {
     enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId),
   });
   const items = itemsQuery.data?.pages.flatMap((page) => page.items) ?? [];
-  const itemSummary = itemsQuery.data?.pages[0]?.summary;
+  // While a newly picked status loads, keep the counts the other tabs already
+  // fetched: the summary ignores the status filter, so they are the same numbers
+  // (AND-62). Without this every badge dropped to 0 for the length of a request.
+  const itemSummary = itemsQuery.data?.pages[0]?.summary ?? (itemsQuery.isPending
+    ? cachedListSummary(
+      queryClient.getQueryCache().findAll({ queryKey: ["items", selectedProductId] }).map((query) => ({
+        queryKey: query.queryKey,
+        data: query.state.data,
+        dataUpdatedAt: query.state.dataUpdatedAt,
+      })),
+      { productId: selectedProductId, type: typeFilter, search: deferredSearch },
+    )
+    : undefined);
+  // Nothing to count yet: show a dash, not a 0 that is only the empty page talking.
+  const countsPending = !itemSummary && itemsQuery.isPending;
   const componentsQuery = useQuery({
     queryKey: ["components", selectedProductId, "with-archived"],
     queryFn: () => api.listComponents(selectedProductId, { includeArchived: true }),
@@ -784,6 +804,8 @@ export function App() {
   const visibleItems = items;
   const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(isMediaAttachment));
   const selectedItems = visibleItems.filter((item) => selectedItemKeys.has(item.key));
+  // A selection is one status: the one both batch actions are keyed on (AND-66).
+  const selectionStatus = selectedItems[0]?.status;
 
   /**
    * A selection belongs to the rows it was made on. Once the filters move those
@@ -814,6 +836,9 @@ export function App() {
     ? itemSummary.total - itemSummary.byStatus.done - itemSummary.byStatus.cancelled
     : items.filter((item) => !["done", "cancelled"].includes(item.status)).length;
   const verifyCount = itemSummary?.byStatus.pending_verification ?? items.filter((item) => item.status === "pending_verification").length;
+  const statusCount = (status: WorkItemStatus) =>
+    itemSummary?.byStatus[status] ?? items.filter((item) => item.status === status).length;
+  const shownCount = (count: number): number | string => (countsPending ? "–" : count);
   useEffect(() => {
     if (!selectedProduct) return undefined;
     return registerMissionGoWebMcp(document.modelContext, {
@@ -975,7 +1000,7 @@ export function App() {
         </div>
         <nav aria-label={t("workspace")}>
           <p className="sidebar-label">{t("workspace")}</p>
-          <StatusNavItem label={t("allItems")} count={listedCount} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
+          <StatusNavItem label={t("allItems")} count={shownCount(listedCount)} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
             <ListTodo size={17} />
           </StatusNavItem>
           {ITEM_STATUSES.map((status) => {
@@ -984,7 +1009,7 @@ export function App() {
               <StatusNavItem
                 key={status}
                 label={statusLabel(status)}
-                count={itemSummary?.byStatus[status] ?? items.filter((item) => item.status === status).length}
+                count={shownCount(statusCount(status))}
                 active={statusFilter === status}
                 onClick={() => selectStatus(status)}
               >
@@ -1043,7 +1068,7 @@ export function App() {
             <button className={statusFilter === "all" ? "active" : ""} aria-pressed={statusFilter === "all"} onClick={() => selectStatus("all")}>
               <ListTodo size={16} />
               <span>{t("allItems")}</span>
-              <small>{listedCount}</small>
+              <small>{shownCount(listedCount)}</small>
             </button>
             {ITEM_STATUSES.map((status) => {
               const Icon = STATUS_ICONS[status];
@@ -1051,7 +1076,7 @@ export function App() {
                 <button key={status} className={statusFilter === status ? "active" : ""} aria-pressed={statusFilter === status} onClick={() => selectStatus(status)}>
                   <Icon size={16} />
                   <span>{statusLabel(status)}</span>
-                  <small>{itemSummary?.byStatus[status] ?? items.filter((item) => item.status === status).length}</small>
+                  <small>{shownCount(statusCount(status))}</small>
                 </button>
               );
             })}
@@ -1063,8 +1088,8 @@ export function App() {
             </div>
             <div className="workspace-head-side">
               <div className="workspace-stats" aria-label={t("workspaceSummary")}>
-                <span><strong>{openCount}</strong> {t("open")}</span>
-                <span><strong>{verifyCount}</strong> {t("toVerify")}</span>
+                <span><strong>{shownCount(openCount)}</strong> {t("open")}</span>
+                <span><strong>{shownCount(verifyCount)}</strong> {t("toVerify")}</span>
               </div>
               {/* Nothing pushes changes to the console: items the SDK or an AI
                   creates elsewhere only show up on a refetch, so give people
@@ -1101,19 +1126,31 @@ export function App() {
 
           {selectedItemKeys.size > 0 && (
             <div className="bulk-bar" role="status">
-              <Rocket size={15} aria-hidden="true" />
+              {selectionStatus === "pending_verification"
+                ? <ClipboardCheck size={15} aria-hidden="true" />
+                : <Rocket size={15} aria-hidden="true" />}
               <span className="bulk-bar-count">{t("selectedForDispatch", { count: selectedItemKeys.size })}</span>
               <button type="button" className="text-button bulk-bar-clear" onClick={() => setSelectedItemKeys(new Set())}>
                 {t("clearSelection")}
               </button>
-              <button
-                type="button"
-                className="primary-button"
-                disabled={selectedItems.length === 0}
-                onClick={() => setDispatchBatch(selectedItems)}
-              >
-                <Rocket size={16} /> {t("dispatchSelected")}
-              </button>
+              {selectionStatus === "pending_verification" ? (
+                <button
+                  type="button"
+                  className="primary-button positive"
+                  onClick={() => setVerifyBatch(selectedItems.filter((item) => item.status === "pending_verification"))}
+                >
+                  <CheckCircle2 size={16} /> {t("verifySelected", { count: selectedItems.length })}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={selectedItems.length === 0}
+                  onClick={() => setDispatchBatch(selectedItems)}
+                >
+                  <Rocket size={16} /> {t("dispatchSelected")}
+                </button>
+              )}
             </div>
           )}
 
@@ -1123,7 +1160,7 @@ export function App() {
               {showAttachmentColumn && <span>{t("attachments")}</span>}
               <span>{t("capturedContext")}</span>
               <span>{t("status")}</span>
-              <span>{t("updated")}</span>
+              <span>{t("creatorAndUpdated")}</span>
               <span />
             </div>
             <div className="item-list">
@@ -1143,13 +1180,15 @@ export function App() {
                   item={item}
                   selected={item.key === selectedItemKey}
                   checked={selectedItemKeys.has(item.key)}
+                  selectable={selectedItemKeys.has(item.key) || canJoinSelection(item.status, selectionStatus)}
                   activeDispatch={activeDispatches.get(item.key)}
-                  onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item))}
+                  onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item, selectionStatus))}
                   sourceComponent={item.sourceComponentId ? componentsById.get(item.sourceComponentId) : undefined}
                   showAttachmentColumn={showAttachmentColumn}
                   onOpen={() => openItemPage(item.key)}
                   onEdit={() => openItemPage(item.key, true)}
                   onNotice={setNotice}
+                  onStartWork={setStartWorkItem}
                 />
               ))}
               {(items.length > 0 || itemsQuery.hasNextPage) && (
@@ -1173,7 +1212,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} />
+            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} />
           </div>
         )}
       </main>
@@ -1194,6 +1233,64 @@ export function App() {
                   : t(item.status === "ready" ? "submittedForProcessing" : "capturedInInbox", { key: item.key }),
               );
               void queryClient.invalidateQueries({ queryKey: ["items", selectedProduct.id] });
+            }}
+          />
+        </Modal>
+      )}
+      {startWorkItem && (
+        <Modal
+          title={t("startWorkTitle")}
+          subtitle={t("startWorkSubtitle", { key: startWorkItem.key })}
+          onClose={() => setStartWorkItem(null)}
+        >
+          <StartWorkDialog
+            item={startWorkItem}
+            product={products.find((product) => product.id === startWorkItem.productId)}
+            onClose={() => setStartWorkItem(null)}
+            onClaimed={(updated) => {
+              setStartWorkItem(null);
+              setNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
+              void queryClient.invalidateQueries({ queryKey: ["items"] });
+              void queryClient.invalidateQueries({ queryKey: ["item", updated.key] });
+              void queryClient.invalidateQueries({ queryKey: ["timeline", updated.key] });
+            }}
+            onDispatch={() => {
+              setDispatchBatch([startWorkItem]);
+              setStartWorkItem(null);
+            }}
+            onOpenAgents={() => {
+              setStartWorkItem(null);
+              setAgentsOpen(true);
+            }}
+          />
+        </Modal>
+      )}
+      {verifyBatch && (
+        <Modal
+          title={t("verifySelectedTitle")}
+          subtitle={t("verifySelectedSubtitle", { count: verifyBatch.length })}
+          onClose={() => setVerifyBatch(null)}
+        >
+          <BulkVerifyDialog
+            items={verifyBatch}
+            onClose={() => setVerifyBatch(null)}
+            onDone={(results) => {
+              setVerifyBatch(null);
+              const failed = results.filter((result) => !result.ok);
+              // Keep what did not close ticked, so it can be looked at or retried.
+              setSelectedItemKeys(new Set(failed.map((result) => result.itemKey)));
+              setNotice(failed.length === 0
+                ? t("verifiedAll", { count: results.length })
+                : t("verifiedSome", {
+                  ok: results.length - failed.length,
+                  failed: failed.length,
+                  keys: failed.map((result) => result.itemKey).join("、"),
+                }));
+              void queryClient.invalidateQueries({ queryKey: ["items"] });
+              for (const result of results) {
+                void queryClient.invalidateQueries({ queryKey: ["item", result.itemKey] });
+                void queryClient.invalidateQueries({ queryKey: ["timeline", result.itemKey] });
+              }
             }}
           />
         </Modal>
@@ -1297,7 +1394,7 @@ function Brand({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function StatusNavItem({ children, label, count, active, onClick }: { children: ReactNode; label: string; count: number; active: boolean; onClick: () => void }) {
+function StatusNavItem({ children, label, count, active, onClick }: { children: ReactNode; label: string; count: number | string; active: boolean; onClick: () => void }) {
   return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{children}<span>{label}</span><small>{count}</small></button>;
 }
 
@@ -1307,25 +1404,30 @@ function ItemRow({
   showAttachmentColumn,
   selected,
   checked,
+  selectable,
   activeDispatch,
   onToggleChecked,
   onOpen,
   onEdit,
   onNotice,
+  onStartWork,
 }: {
   item: WorkItem;
   sourceComponent: Component | undefined;
   showAttachmentColumn: boolean;
   selected: boolean;
   checked: boolean;
+  /** Whether the checkbox can be used: the row can join, or leave, the current selection. */
+  selectable: boolean;
   /** The dispatch of this item nobody has claimed yet, if there is one. */
   activeDispatch: ActiveDispatch | undefined;
   onToggleChecked: () => void;
   onOpen: () => void;
   onEdit: () => void;
   onNotice: (message: string) => void;
+  onStartWork: (item: WorkItem) => void;
 }) {
-  const { formatTime, locale, priorityLabel, statusLabel, t, typeLabel } = useI18n();
+  const { actorLabel, formatTime, locale, priorityLabel, statusLabel, t, typeLabel } = useI18n();
   const TypeIcon = TYPE_ICONS[item.type];
   const environment = item.environment;
   const overview = item.report?.overview ?? item.description;
@@ -1338,6 +1440,7 @@ function ItemRow({
   const logCount = item.diagnosticSummary?.logCount ?? 0;
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
   const contextDetails = environmentSummary(environment, Boolean(sourceComponent), t);
+  const creator = creatorLabel(item.createdBy, { human: actorLabel("human"), sdk: t("creatorSdk"), agent: actorLabel("agent") });
   const dispatchable = isDispatchable(item.status);
   // Only on a ready row: the list can refetch before the dispatch list does, and
   // an item a session has just claimed must not still read as waiting on a Mac.
@@ -1361,9 +1464,9 @@ function ItemRow({
           type="checkbox"
           className="item-select"
           checked={checked}
-          disabled={!dispatchable}
+          disabled={!selectable}
           aria-label={t("selectForDispatch", { key: item.key })}
-          title={dispatchable ? undefined : t("onlyReadyDispatchable")}
+          title={selectable ? undefined : t("onlyReadyDispatchable")}
           onChange={onToggleChecked}
         />
         <button className="item-row-main" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
@@ -1413,14 +1516,19 @@ function ItemRow({
             details" was taking enough of it to truncate "Android" to "Andr...".
             A line that only reports an absence is not worth that. See AND-32. */}
         {contextDetails && <small>{contextDetails}</small>}
+        {/* Only drawn in the compact layouts, which hide the creator column. */}
+        {creator && <small className="item-context-creator">{creator}</small>}
       </span>
       <span className="item-state">
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <small><i className={`priority-dot priority-${item.priority}`} /> {priorityLabel(item.priority)}</small>
       </span>
-      <span className="item-updated">{formatTime(item.updatedAt)}</span>
+      <span className="item-updated">
+        {creator && <span className="item-creator" title={creator}>{creator}</span>}
+        <span>{formatTime(item.updatedAt)}</span>
+      </span>
       <span className="item-row-actions">
-        <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} />
+        <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} onStartWork={onStartWork} />
       </span>
     </article>
   );
@@ -1754,7 +1862,12 @@ function ItemMediaThumbnail({
   );
 }
 
-function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: () => void; onNotice: (message: string) => void }) {
+function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
+  item: WorkItem;
+  onEdit: () => void;
+  onNotice: (message: string) => void;
+  onStartWork: (item: WorkItem) => void;
+}) {
   const queryClient = useQueryClient();
   const { statusLabel, t, transitionLabel } = useI18n();
   const actions = TRANSITIONS[item.status];
@@ -1783,7 +1896,9 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
   // Whether this move needs a reason is the domain's call, not a second table
   // kept in the browser.
   const startTransition = (action: TransitionAction) => {
-    if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
+    // Picking up waiting work asks how first: by hand, or through an AI (AND-68).
+    if (isStartWork(item.status, action)) onStartWork(item);
+    else if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else mutation.mutate({ action });
   };
 
@@ -1883,7 +1998,7 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
         <summary>, and a <dialog> under a hidden ancestor never paints. */}
     {noteAction && (
       <Modal
-        title={t("transitionNoteTitle")}
+        title={t(transitionNoteCopy(noteAction.to).title)}
         subtitle={t("transitionNoteSubtitle", { key: item.key, status: statusLabel(item.status) })}
         onClose={() => { setNoteAction(null); mutation.reset(); }}
       >
@@ -1901,6 +2016,11 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
 }
 function mediaNumberLabel(kind: "image" | "video", displayNumber: number, t: ReturnType<typeof useI18n>["t"]): string {
   return t(kind === "image" ? "imageNumber" : "videoNumber", { number: displayNumber });
+}
+
+/** The pickup of waiting work, which asks how before it happens (AND-68). */
+function isStartWork(status: WorkItemStatus, action: TransitionAction): boolean {
+  return status === "ready" && action.to === "in_progress" && action.reason === "claim";
 }
 
 function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>["t"]): string {
@@ -1923,6 +2043,7 @@ function DetailPane({
   onItemLoaded,
   onNotice,
   onOpenItem,
+  onStartWork,
 }: {
   itemKey: string | null;
   openInEdit: boolean;
@@ -1930,6 +2051,7 @@ function DetailPane({
   onItemLoaded: (item: WorkItem) => void;
   onNotice: (message: string) => void;
   onOpenItem: (itemKey: string) => void;
+  onStartWork: (item: WorkItem) => void;
 }) {
   const queryClient = useQueryClient();
   const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
@@ -2027,7 +2149,8 @@ function DetailPane({
   const PrimaryIcon = TYPE_ICONS[item.type];
   // Same rule as the list row: the domain decides whether this move owes a reason.
   const startTransition = (action: TransitionAction) => {
-    if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
+    if (isStartWork(item.status, action)) onStartWork(item);
+    else if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else transitionMutation.mutate({ action });
   };
   const actions = TRANSITIONS[item.status];
@@ -2036,6 +2159,8 @@ function DetailPane({
   const manualTargets = manualMoves(item.status);
   const sourceComponent = componentsQuery.data?.find((component) => component.id === item.sourceComponentId);
   const affectedComponents = (componentsQuery.data ?? []).filter((component) => item.affectedComponentIds.includes(component.id));
+  const environment = environmentFields(item.environment, t);
+  const detailCreator = creatorLabel(item.createdBy, { human: actorLabel("human"), sdk: t("creatorSdk"), agent: actorLabel("agent") });
   const createdEvent = timelineQuery.data?.events.find((event) => event.eventType === "item_created");
   const sdkDiagnostics = diagnosticsFromEvent(createdEvent);
   const logAttachments = item.attachments.filter((attachment) => attachment.kind === "log");
@@ -2119,7 +2244,13 @@ function DetailPane({
         <>
             <div className="detail-title-block">
               <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
-              <div><p className="eyebrow">{typeLabel(item.type)} · {priorityLabel(item.priority)}</p><h2>{item.title}</h2></div>
+              <div>
+                <p className="eyebrow">
+                  {typeLabel(item.type)} · {priorityLabel(item.priority)}
+                  {detailCreator && <> · {t("createdBy", { name: detailCreator })}</>}
+                </p>
+                <h2>{item.title}</h2>
+              </div>
             </div>
             <ItemRelations item={item} onOpenItem={onOpenItem} />
             {/* Read the item, then the evidence a person went and looked at --
@@ -2131,7 +2262,6 @@ function DetailPane({
               itemKey={item.key}
               attachments={mediaAttachments}
               title={t("mediaAttachments")}
-              help={t("mediaAttachmentsHelp")}
               emptyMessage={t("noMediaAttachments")}
             />
             {documentAttachments.length > 0 && (
@@ -2139,7 +2269,6 @@ function DetailPane({
                 itemKey={item.key}
                 attachments={documentAttachments}
                 title={t("documentAttachments")}
-                help={t("documentAttachmentsHelp")}
               />
             )}
             <DiagnosticDetails
@@ -2159,15 +2288,20 @@ function DetailPane({
                     </span>
                   )}
                   {affectedComponents.length > 0 && <span><small>{t("affectedComponents")}</small>{affectedComponents.map((component) => component.name).join("、")}</span>}
-                  {item.environment && <span><small>{t("platform")}</small>{t(item.environment.platform)}</span>}
-                  {item.environment?.appVersion && <span><small>{t("version")}</small>{item.environment.appVersion}</span>}
-                  {item.environment?.buildNumber && <span><small>{t("buildNumber")}</small>{item.environment.buildNumber}</span>}
-                  {item.environment?.osVersion && <span><small>{t("operatingSystem")}</small>{item.environment.osVersion}</span>}
-                  {item.environment?.deviceModel && <span><small>{t("device")}</small>{item.environment.deviceModel}</span>}
-                  {item.environment?.sourceRevision && <span><small>{t("sourceRevision")}</small><code>{item.environment.sourceRevision}</code></span>}
-                  {Object.entries(item.environment?.metadata ?? {}).map(([key, value]) => <span key={key}><small>{key}</small>{value}</span>)}
+                  {environment.primary.map((field) => <EnvironmentCell key={field.key} field={field} />)}
                 </div>
               ) : <p className="section-empty">{t("noEnvironment")}</p>}
+              {environment.more.length > 0 && (
+                <details className="comment-collapsible environment-more">
+                  <summary>
+                    <small className="when-closed">{t("environmentMore", { count: environment.more.length })}</small>
+                    <small className="when-open">{t("environmentLess")}</small>
+                  </summary>
+                  <div className="context-grid">
+                    {environment.more.map((field) => <EnvironmentCell key={field.key} field={field} />)}
+                  </div>
+                </details>
+              )}
             </section>
             <DispatchHistory itemKey={item.key} />
             <section className="timeline-block">
@@ -2281,7 +2415,7 @@ function DetailPane({
       )}
       {noteAction && (
         <Modal
-          title={t("transitionNoteTitle")}
+          title={t(transitionNoteCopy(noteAction.to).title)}
           subtitle={t("transitionNoteSubtitle", { key: item.key, status: statusLabel(item.status) })}
           onClose={() => { setNoteAction(null); transitionMutation.reset(); }}
         >
@@ -2599,7 +2733,7 @@ function DiagnosticDetails({
   return (
     <section className="attachment-block diagnostic-detail-block">
       <header>
-        <div><h3>{t("diagnostics")}</h3><p>{t("diagnosticDetailHelp")}</p></div>
+        <div><h3>{t("diagnostics")}</h3></div>
       </header>
       {!hasDiagnostics ? <p className="section-empty">{t("noDiagnostics")}</p> : (
         <div className="diagnostic-detail-content">
@@ -3343,24 +3477,30 @@ function SelectedFilePreviews({
   );
 }
 
+function EnvironmentCell({ field }: { field: EnvironmentField }) {
+  const { t } = useI18n();
+  const label = typeof field.label === "string" ? t(field.label) : field.label.raw;
+  return <span><small>{label}</small>{field.code ? <code>{field.value}</code> : field.value}</span>;
+}
+
 function AttachmentSection({
   itemKey,
   attachments,
   title,
-  help,
   emptyMessage,
 }: {
   itemKey: string;
   attachments: readonly WorkItemAttachment[];
   title?: string;
-  help?: string;
   emptyMessage?: string;
 }) {
   const { t } = useI18n();
   return (
     <section className="attachment-block">
       <header>
-        <div><h3>{title ?? t("attachments")}</h3><p>{help ?? t("attachmentHelp")}</p></div>
+        {/* No helper line: this is the detail view, where the files are already
+            here. What can be attached is the form's to explain (AND-65). */}
+        <div><h3>{title ?? t("attachments")}</h3></div>
       </header>
       {attachments.length === 0 ? <p className="section-empty">{emptyMessage ?? t("noAttachments")}</p> : (
         <div className="attachment-grid">
@@ -4121,6 +4261,46 @@ function RefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefre
     >
       <RefreshCw className={refreshing ? "spin" : undefined} size={16} />
     </button>
+  );
+}
+
+/**
+ * Confirming a bulk verification close (AND-66). Closing is the last word on an
+ * item, so the list of what is about to close is shown before it happens.
+ */
+function BulkVerifyDialog({ items, onClose, onDone }: {
+  readonly items: readonly WorkItem[];
+  readonly onClose: () => void;
+  readonly onDone: (results: readonly BulkTransitionResult[]) => void;
+}) {
+  const { t } = useI18n();
+  const mutation = useMutation({
+    mutationFn: () => api.closeVerifications(items.map((item) => item.key)),
+    onSuccess: (response) => onDone(response.results),
+  });
+  return (
+    <div className="bulk-verify">
+      <p className="dispatch-note">{t("verifySelectedHelp")}</p>
+      <ul className="bulk-verify-list">
+        {items.map((item) => <li key={item.key}><code>{item.key}</code> {item.title}</li>)}
+      </ul>
+      {mutation.isError && (
+        <div className="inline-error"><CirclePause size={16} /><span>{errorMessage(mutation.error, t("somethingWentWrong"))}</span></div>
+      )}
+      <div className="form-footer">
+        <button type="button" className="secondary-button" onClick={onClose}>{t("cancel")}</button>
+        <button
+          type="button"
+          className="primary-button positive"
+          data-initial-focus
+          disabled={mutation.isPending || items.length === 0}
+          onClick={() => mutation.mutate()}
+        >
+          {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <CheckCircle2 size={16} />}
+          {t("verifySelected", { count: items.length })}
+        </button>
+      </div>
+    </div>
   );
 }
 

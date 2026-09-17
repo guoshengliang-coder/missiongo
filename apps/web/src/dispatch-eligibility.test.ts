@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentLabelKey,
+  aiAvailability,
+  canJoinSelection,
+  isSelectable,
   dispatchModeHelpKey,
   dispatchModeLabelKey,
   dispatchProblemKey,
@@ -44,8 +47,27 @@ describe("picking items to dispatch", () => {
   });
 
   it("refuses an item that is not ready even when the row is activated another way", () => {
-    const selected = toggleItemSelection(new Set(["AND-37"]), item("AND-40", "in_progress"));
+    const selected = toggleItemSelection(new Set(["AND-37"]), item("AND-40", "in_progress"), "ready");
     expect([...selected]).toEqual(["AND-37"]);
+  });
+
+  it("also takes items waiting for verification, for closing them in bulk (AND-66)", () => {
+    expect(isSelectable("pending_verification")).toBe(true);
+    for (const status of ["inbox", "in_progress", "on_hold", "done", "cancelled"] as const) {
+      expect(isSelectable(status)).toBe(false);
+    }
+    const picked = toggleItemSelection(new Set(), item("AND-50", "pending_verification"));
+    expect([...toggleItemSelection(picked, item("AND-51", "pending_verification"), "pending_verification")])
+      .toEqual(["AND-50", "AND-51"]);
+  });
+
+  it("keeps one status per selection, since each batch action takes one", () => {
+    const ready = toggleItemSelection(new Set(), item("AND-37", "ready"));
+    expect([...toggleItemSelection(ready, item("AND-50", "pending_verification"), "ready")]).toEqual(["AND-37"]);
+    expect(canJoinSelection("pending_verification", "ready")).toBe(false);
+    expect(canJoinSelection("pending_verification", undefined)).toBe(true);
+    // Unticking always works, whatever the row's status is now.
+    expect([...toggleItemSelection(ready, item("AND-37", "in_progress"), "ready")]).toEqual([]);
   });
 
   it("leaves the set it was given alone", () => {
@@ -194,5 +216,36 @@ describe("wording for values that come from the server", () => {
     expect(dispatchModeHelpKey("claude_code", "plan")).toBe("dispatchPlanHelp");
     expect(dispatchModeHelpKey("codex", "auto")).toBe("dispatchCodexAutoHelp");
     expect(dispatchModeHelpKey("claude_code", "default")).toBeNull();
+  });
+});
+
+describe("whether start work can offer an AI (AND-68)", () => {
+  const product = { id: "p1", access: { canOperate: true, canUseAi: true } };
+  const mapped = { repos: [{ productId: "p1", productKey: "AND", repoPath: "/repo" }] };
+
+  it("tells a missing permission apart from a missing setup", () => {
+    expect(aiAvailability({ id: "p1", access: { canOperate: true, canUseAi: false } }, [node(mapped)]))
+      .toEqual({ kind: "no_permission" });
+    expect(aiAvailability(product, [])).toEqual({ kind: "not_configured", reason: "no_nodes" });
+  });
+
+  it("names what is missing from the setup, in the order it has to be fixed", () => {
+    expect(aiAvailability(product, [node({ revokedAt: "2026-09-14T00:00:00Z", ...mapped })]))
+      .toEqual({ kind: "not_configured", reason: "no_nodes" });
+    expect(aiAvailability(product, [node()])).toEqual({ kind: "not_configured", reason: "repo_unmapped" });
+    expect(aiAvailability(product, [node({ online: false, ...mapped })])).toEqual({ kind: "not_configured", reason: "offline" });
+    expect(aiAvailability(product, [node({ agents: [{ kind: "hermes" }], ...mapped })]))
+      .toEqual({ kind: "not_configured", reason: "agent_unavailable" });
+  });
+
+  it("offers it once one machine can take the item", () => {
+    expect(aiAvailability(product, [node({ online: false, ...mapped }), node({ id: "node-2", ...mapped })]))
+      .toEqual({ kind: "available" });
+    // A server that does not report access yet: offer it, the route still decides.
+    expect(aiAvailability({ id: "p1" }, [node(mapped)])).toEqual({ kind: "available" });
+  });
+
+  it("waits for the machine list before saying anything about setup", () => {
+    expect(aiAvailability(product, undefined)).toEqual({ kind: "checking" });
   });
 });

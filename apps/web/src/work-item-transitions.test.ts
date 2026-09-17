@@ -37,29 +37,39 @@ describe("web transition table", () => {
     }
   });
 
-  it("asks for a reason on every menu entry that sends work back to ready", () => {
+  it("asks for a reason on every menu entry that sends work back to ready or cancels it", () => {
     // These are the four the console can reach. If one stopped asking, a person
     // could retreat silently and the next session would find no explanation.
     const asking = ITEM_STATUSES.flatMap((from) =>
       TRANSITIONS[from].filter((action) => transitionRequiresNote(from, action.to)).map((action) => [from, action.reason]),
     );
     expect(asking).toEqual([
+      ["inbox", "cancelled"],
+      ["ready", "cancelled"],
       ["in_progress", "released"],
+      ["in_progress", "cancelled"],
       ["on_hold", "reopened"],
+      ["on_hold", "cancelled"],
       ["pending_verification", "verification_failed"],
+      ["pending_verification", "cancelled"],
       ["done", "reopened"],
     ]);
   });
 
-  it("never offers a direct jump that would skip the reason", () => {
+  it("never offers a direct jump to ready that would skip the reason", () => {
     // "Move directly to" is built by subtracting what the pipeline already
     // offers, so Ready is absent from exactly the statuses that owe a reason.
-    // The domain refuses such a jump anyway; this keeps the menu honest.
+    // The one jump that does owe a note is Done -> Cancelled, which has no
+    // pipeline edge; the menu routes it through the same note dialog, and the
+    // domain refuses it without one anyway.
     for (const from of ITEM_STATUSES) {
       for (const action of manualMoves(from)) {
+        if (action.to === "cancelled") continue;
         expect(transitionRequiresNote(from, action.to), `${from} offers a silent jump to ${action.to}`).toBe(false);
       }
     }
+    expect(manualMoves("done").some((action) => action.to === "cancelled")).toBe(true);
+    expect(transitionRequiresNote("done", "cancelled")).toBe(true);
   });
 
   it("reaches cancelled from every status the domain allows it from", () => {
@@ -114,7 +124,13 @@ describe("manual moves", () => {
   it("only asks for moves the domain accepts from a person", () => {
     for (const from of ITEM_STATUSES) {
       for (const action of manualMoves(from)) {
-        const decision = evaluateWorkItemTransition({ from, to: action.to, actor: "human", reason: action.reason });
+        const decision = evaluateWorkItemTransition({
+          from,
+          to: action.to,
+          actor: "human",
+          reason: action.reason,
+          ...(transitionRequiresNote(from, action.to) ? { note: "why" } : {}),
+        });
         expect(decision.allowed, `${from} \u2192 ${action.to}: ${decision.message}`).toBe(true);
       }
     }
