@@ -1167,11 +1167,37 @@ describe("Setting permissions from the product's side (item 2.2)", () => {
     expect(listed.find((entry) => entry.account.role === "admin")).toMatchObject({
       reachesByRole: true,
       permission: { canView: false },
+      // What it can actually do, which is what the editor draws (AND-63).
+      effective: { canView: true, canOperate: true, canUseAi: true },
     });
     expect(listed.find((entry) => entry.account.id === member.id)).toMatchObject({
       reachesByRole: false,
       permission: { canView: true, canOperate: true, canUseAi: false },
+      effective: { canView: true, canOperate: true, canUseAi: false },
     });
+  });
+
+  it("reports an administrator's narrowed AI reach as off on the products it no longer covers (AND-63)", async () => {
+    const { app, adminCookie, shared, hidden } = await twoAccountWorkspace();
+    const admin = (await app.inject({ method: "GET", url: "/api/v1/accounts", headers: { cookie: adminCookie } }))
+      .json<{ accounts: Array<{ id: string; role: string }> }>().accounts.find((account) => account.role === "admin")!;
+    // Narrow the administrator's AI clients to the shared product only.
+    expect((await app.inject({
+      method: "PUT",
+      url: `/api/v1/products/${shared.id}/accounts`,
+      headers: { cookie: adminCookie },
+      payload: { accounts: [{ accountId: admin.id, canView: true, canOperate: false, canUseAi: true }] },
+    })).statusCode).toBe(200);
+
+    const entryOn = async (productId: string) => (await app.inject({
+      method: "GET",
+      url: `/api/v1/products/${productId}/accounts`,
+      headers: { cookie: adminCookie },
+    })).json<{ accounts: Array<{ account: { role: string }; effective: Record<string, boolean> }> }>()
+      .accounts.find((entry) => entry.account.role === "admin")!;
+
+    expect((await entryOn(shared.id)).effective).toEqual({ canView: true, canOperate: true, canUseAi: true });
+    expect((await entryOn(hidden.id)).effective).toEqual({ canView: true, canOperate: true, canUseAi: false });
   });
 
   it("grants and revokes from this side, and the account side agrees", async () => {

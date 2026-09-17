@@ -99,6 +99,8 @@ export interface ProductAccessEntry {
   readonly permission: ProductPermission;
   /** True for an administrator, who reaches the product whatever the row says. */
   readonly reachesByRole: boolean;
+  /** What the account can actually do with this product; for an administrator, more than its row (AND-63). */
+  readonly effective: Omit<ProductPermission, "productId">;
 }
 
 export interface Account {

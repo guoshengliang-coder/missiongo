@@ -57,6 +57,14 @@ export interface ProductAccessEntry {
   readonly permission: ProductPermission;
   /** True for an administrator, who reaches the product whatever the row says. */
   readonly reachesByRole: boolean;
+  /**
+   * What the account can actually do with this product, as `allows` decides it
+   * (AND-63). For a member it is the row. For an administrator view and operate
+   * are always on, and AI is on unless the administrator's AI reach has been
+   * narrowed to other products -- so an editor can draw what is true instead of
+   * a row that an administrator almost never has.
+   */
+  readonly effective: Omit<ProductPermission, "productId">;
 }
 
 export interface AccountSnapshot {
@@ -494,6 +502,11 @@ export class AccountStore {
       .map((account) => {
         const row = byAccount.get(account.id);
         return {
+          effective: {
+            canView: this.allows(account, productId, "view"),
+            canOperate: this.allows(account, productId, "operate"),
+            canUseAi: this.allows(account, productId, "ai"),
+          },
           account: { id: account.id, email: account.email, role: account.role },
           permission: {
             productId,

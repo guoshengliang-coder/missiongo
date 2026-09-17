@@ -1298,13 +1298,25 @@ components:
             not cost a database write per call. Absent until first use.
     ProductAccessEntry:
       type: object
-      required: [account, permission, reachesByRole]
+      required: [account, permission, reachesByRole, effective]
       properties:
         account: { $ref: "#/components/schemas/AccountSummary" }
         permission: { $ref: "#/components/schemas/ProductPermission" }
         reachesByRole:
           type: boolean
           description: True for an administrator, who reaches the product whatever the row says.
+        effective:
+          type: object
+          required: [canView, canOperate, canUseAi]
+          description: >-
+            What the account can actually do with this product. `permission` is
+            the stored row; an administrator usually has none, yet always views and
+            operates, and uses AI unless its AI reach was narrowed to other
+            products. Editors draw this, and send rows.
+          properties:
+            canView: { type: boolean }
+            canOperate: { type: boolean }
+            canUseAi: { type: boolean }
     AccountSummary:
       type: object
       required: [id, email, role]

@@ -22,6 +22,7 @@ import {
   parseNicknameDraft,
 } from "./account-nickname";
 import { useI18n, type MessageKey } from "./i18n";
+import { permissionCell } from "./product-permissions";
 import type { Product } from "./types";
 
 function messageFor(error: unknown, t: (key: MessageKey) => string, fallback: string): string {
@@ -349,8 +350,19 @@ function PermissionGrid({ account, products }: { account: Account; products: rea
     draft.find((entry) => entry.productId === productId)
     ?? { productId, canView: false, canOperate: false, canUseAi: false };
 
+  // An administrator with no AI rows reaches every product by role (AND-63).
+  const administrator = account.role === "admin"
+    ? { aiUnrestricted: !draft.some((entry) => entry.canUseAi) }
+    : undefined;
+
   const toggle = (productId: string, field: "canView" | "canOperate" | "canUseAi", checked: boolean) => {
     setSaved(false);
+    if (administrator?.aiUnrestricted && field === "canUseAi" && !checked) {
+      // Unticking one product while AI is unrestricted means "every product but
+      // this one", and the only way the rows can say that is to name the rest.
+      setDraft(products.map((product) => ({ ...permissionFor(product.id), canUseAi: product.id !== productId })));
+      return;
+    }
     const current = permissionFor(productId);
     const updated: ProductPermission = { ...current, [field]: checked };
     setDraft([...draft.filter((entry) => entry.productId !== productId), updated]);
@@ -376,22 +388,26 @@ function PermissionGrid({ account, products }: { account: Account; products: rea
             return (
               <tr key={product.id}>
                 <td>{product.name}</td>
-                {(["canView", "canOperate", "canUseAi"] as const).map((field) => (
-                  <td key={field}>
-                    <input
-                      type="checkbox"
-                      // Operate and AI each include viewing, so a ticked one
-                      // shows view as ticked rather than letting the grid say
-                      // something the server will not store.
-                      checked={field === "canView"
-                        ? permission.canView || permission.canOperate || permission.canUseAi
-                        : permission[field]}
-                      disabled={field === "canView" && (permission.canOperate || permission.canUseAi)}
-                      onChange={(event) => toggle(product.id, field, event.target.checked)}
-                      aria-label={`${product.name} · ${t(field === "canView" ? "permissionView" : field === "canOperate" ? "permissionOperate" : "permissionUseAi")}`}
-                    />
-                  </td>
-                ))}
+                {(["canView", "canOperate", "canUseAi"] as const).map((field) => {
+                  // Operate and AI each include viewing, so a ticked one shows
+                  // view as ticked rather than letting the grid say something
+                  // the server will not store. An administrator's view and
+                  // operate are the role's and stay locked; its AI stays
+                  // editable here, because this grid is where it is narrowed.
+                  const cell = permissionCell(field, permission, administrator);
+                  return (
+                    <td key={field}>
+                      <input
+                        type="checkbox"
+                        checked={cell.checked}
+                        disabled={(cell.byRole && field !== "canUseAi") || (!administrator && field === "canView" && (permission.canOperate || permission.canUseAi))}
+                        title={cell.byRole && field !== "canUseAi" ? t("adminAccessByRole") : undefined}
+                        onChange={(event) => toggle(product.id, field, event.target.checked)}
+                        aria-label={`${product.name} · ${t(field === "canView" ? "permissionView" : field === "canOperate" ? "permissionOperate" : "permissionUseAi")}`}
+                      />
+                    </td>
+                  );
+                })}
               </tr>
             );
           })}
@@ -877,6 +893,11 @@ export function ProductAccessSettings(
           {entries.map((entry) => {
             const permission = permissionFor(entry.account.id);
             const mayEdit = editable(entry);
+            // An administrator whose stored row does not grant AI and who still
+            // reaches it here has never been narrowed: AI is the role's, not a row's.
+            const administrator = entry.reachesByRole
+              ? { aiUnrestricted: entry.effective.canUseAi && !entry.permission.canUseAi }
+              : undefined;
             const gone = permission.canView === false && permission.canOperate === false && permission.canUseAi === false;
             return (
               <tr key={entry.account.id}>
@@ -892,19 +913,21 @@ export function ProductAccessSettings(
                     <em className="account-role-note"> · {t("accessYoursToKeep")}</em>
                   )}
                 </td>
-                {(["canView", "canOperate", "canUseAi"] as const).map((field) => (
-                  <td key={field}>
-                    <input
-                      type="checkbox"
-                      checked={field === "canView"
-                        ? permission.canView || permission.canOperate || permission.canUseAi
-                        : permission[field]}
-                      disabled={!mayEdit || (field === "canView" && (permission.canOperate || permission.canUseAi))}
-                      onChange={(event) => toggle(entry.account.id, field, event.target.checked)}
-                      aria-label={`${entry.account.email} · ${t(field === "canView" ? "permissionView" : field === "canOperate" ? "permissionOperate" : "permissionUseAi")}`}
-                    />
-                  </td>
-                ))}
+                {(["canView", "canOperate", "canUseAi"] as const).map((field) => {
+                  const cell = permissionCell(field, permission, administrator);
+                  return (
+                    <td key={field}>
+                      <input
+                        type="checkbox"
+                        checked={cell.checked}
+                        disabled={!mayEdit || cell.byRole || (!administrator && field === "canView" && (permission.canOperate || permission.canUseAi))}
+                        title={cell.byRole ? t(field === "canUseAi" ? "adminAiByRole" : "adminAccessByRole") : undefined}
+                        onChange={(event) => toggle(entry.account.id, field, event.target.checked)}
+                        aria-label={`${entry.account.email} · ${t(field === "canView" ? "permissionView" : field === "canOperate" ? "permissionOperate" : "permissionUseAi")}`}
+                      />
+                    </td>
+                  );
+                })}
                 {!editsRoster && (
                   <td>
                     {mayEdit && !gone && (
