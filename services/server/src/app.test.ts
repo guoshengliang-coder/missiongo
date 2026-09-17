@@ -1555,6 +1555,33 @@ describe("MissionGo REST API", () => {
     expect(overLimit.json()).toMatchObject({ code: "validation_failed" });
   });
 
+  it("requires a note to cancel a work item (AND-64)", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "MissionGo", keyPrefix: "MG" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: { productId: product.id, type: "task", priority: "normal", title: "Drop me", description: "x", environment: { platform: "web" } },
+    });
+    const cancel = (note?: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/items/MG-1/transitions",
+        payload: { to: "cancelled", reason: "cancelled", ...(note === undefined ? {} : { note }) },
+      });
+
+    expect((await cancel()).json()).toMatchObject({ code: "transition_note_required" });
+    expect((await cancel("  ")).statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: "/api/v1/items/MG-1" })).json()).toMatchObject({ status: "inbox" });
+
+    expect((await cancel("Filed twice.")).statusCode).toBe(200);
+    const events = (await app.inject({ method: "GET", url: "/api/v1/items/MG-1/timeline" }))
+      .json<{ events: Array<{ toStatus?: string; payload: Record<string, unknown> }> }>().events;
+    expect(events.at(-1)).toMatchObject({ toStatus: "cancelled", payload: { reason: "cancelled", note: "Filed twice." } });
+  });
+
   it("persists work items across server restarts", async () => {
     const { app, databasePath } = await testApp();
     const product = (
@@ -1946,7 +1973,7 @@ describe("MissionGo REST API", () => {
         payload: { productId: product.id, type: "task", priority: "normal", title, description: "x", environment: { platform: "web" } },
       });
     }
-    await app.inject({ method: "POST", url: "/api/v1/items/MG-2/transitions", payload: { to: "cancelled", reason: "cancelled" } });
+    await app.inject({ method: "POST", url: "/api/v1/items/MG-2/transitions", payload: { to: "cancelled", reason: "cancelled", note: "Filed twice." } });
 
     // The default list is live work only.
     const unfiltered = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}` });

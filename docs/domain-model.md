@@ -105,6 +105,9 @@ inbox
 `on_hold → ready` 和 `ready → inbox`，只有前者是退回。`inbox → ready` 是首次定稿，不在其中；
 `manual_override` 同样不能绕过，否则就留下一条什么都不解释的回头路。
 
+**移到 `cancelled` 同样必须说明原因**（AND-64），不论从哪个状态进入，包括 `done` 经 `manual_override`
+直接移过去。条目从此离开队列，之后翻到它的人只能从这条 `note` 知道它为什么被放弃。
+
 `packages/domain` 中的实现是状态规则的唯一权威来源。REST 和 MCP 处理层必须调用它，不能分别复制状态流转逻辑。
 
 ## AI 执行记录

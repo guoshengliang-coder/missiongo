@@ -1634,9 +1634,11 @@ components:
             pending_verification, on_hold or done -- coming back from those means
             work was already done and did not hold, and whoever picks the item up
             next has nowhere else to learn why. A blank one does not count, and
-            manual_override is not a way around it. Omitting it on those edges
-            returns 400 with code `transition_note_required`. Triage
-            (inbox to ready) needs none.
+            manual_override is not a way around it. Also required on every
+            move to `cancelled`, from any status (AND-64): the item leaves the
+            queue for good and the note is the only record of why. Omitting it
+            on those edges returns 400 with code `transition_note_required`.
+            Triage (inbox to ready) needs none.
     WorkItemEvent:
       type: object
       required: [id, itemKey, eventType, actorKind, payload, createdAt]

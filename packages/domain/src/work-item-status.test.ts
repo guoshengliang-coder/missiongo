@@ -168,10 +168,10 @@ describe("transition notes", () => {
       .toMatchObject({ allowed: true });
   });
 
-  it("asks only on the way back to ready", () => {
+  it("asks only on the way back to ready and on the way out to cancelled", () => {
     for (const from of WORK_ITEM_STATUSES) {
       for (const to of WORK_ITEM_STATUSES) {
-        if (to !== "ready") expect(transitionRequiresNote(from, to)).toBe(false);
+        if (to !== "ready" && to !== "cancelled") expect(transitionRequiresNote(from, to)).toBe(false);
       }
     }
     // cancelled -> ready is not a retreat from work; it is a restore, and the
@@ -194,6 +194,23 @@ describe("transition notes", () => {
       reason: "manual_override",
       note: "Filed under the wrong status to begin with.",
     })).toMatchObject({ allowed: true });
+  });
+
+  it("asks for a note on every way into cancelled (AND-64)", () => {
+    for (const from of ["inbox", "ready", "in_progress", "on_hold", "pending_verification"] as const) {
+      expect(transitionRequiresNote(from, "cancelled")).toBe(true);
+      expect(evaluateWorkItemTransition({ from, to: "cancelled", actor: "human", reason: "cancelled" }))
+        .toMatchObject({ allowed: false, code: "note_required" });
+      expect(evaluateWorkItemTransition({ from, to: "cancelled", actor: "human", reason: "cancelled", note: "   " }))
+        .toMatchObject({ allowed: false, code: "note_required" });
+      expect(evaluateWorkItemTransition({ from, to: "cancelled", actor: "human", reason: "cancelled", note: "Duplicate of another item." }))
+        .toMatchObject({ allowed: true });
+    }
+    // Done has no pipeline edge to cancelled, so the override is the only way
+    // there -- and it must not be the silent one.
+    expect(evaluateWorkItemTransition({ from: "done", to: "cancelled", actor: "human", reason: "manual_override" }))
+      .toMatchObject({ allowed: false, code: "note_required" });
+    expect(transitionRequiresNote("cancelled", "cancelled")).toBe(false);
   });
 
   it("still says who may walk an edge before it says a note is missing", () => {

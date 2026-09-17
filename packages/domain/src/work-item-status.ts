@@ -119,6 +119,11 @@ const NOTE_REQUIRED_FROM = new Set<WorkItemStatus>(["in_progress", "pending_veri
  * back to drafts, which explains nothing to anybody.
  */
 export function transitionRequiresNote(from: WorkItemStatus, to: WorkItemStatus): boolean {
+  // Cancelling is the other decision nobody can reconstruct later (AND-64): the
+  // item leaves the queue for good, and without a note the timeline only shows
+  // that somebody gave up on it, never why. Every way in counts, whatever the
+  // item was doing before.
+  if (to === "cancelled") return from !== "cancelled";
   return to === "ready" && NOTE_REQUIRED_FROM.has(from);
 }
 
@@ -144,7 +149,9 @@ function noteMissing(request: WorkItemTransitionRequest): boolean {
 const NOTE_REQUIRED = (request: WorkItemTransitionRequest): WorkItemTransitionDecision => ({
   allowed: false,
   code: "note_required",
-  message: `Moving a work item from ${request.from} back to ready requires a note saying why.`,
+  message: request.to === "cancelled"
+    ? `Cancelling a work item requires a note saying why.`
+    : `Moving a work item from ${request.from} back to ready requires a note saying why.`,
 });
 
 export function evaluateWorkItemTransition(request: WorkItemTransitionRequest): WorkItemTransitionDecision {

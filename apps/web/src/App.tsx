@@ -111,7 +111,7 @@ import { mayAdministerProduct } from "./product-permissions";
 import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog, transitionRequiresNote } from "@missiongo/domain";
 import { statusChangeNote, dispatchedEvent, groupTimeline } from "./timeline";
-import { TransitionNoteDialog } from "./transition-note-dialog";
+import { TransitionNoteDialog, transitionNoteCopy } from "./transition-note-dialog";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import {
@@ -1883,7 +1883,7 @@ function ItemRowActions({ item, onEdit, onNotice }: { item: WorkItem; onEdit: ()
         <summary>, and a <dialog> under a hidden ancestor never paints. */}
     {noteAction && (
       <Modal
-        title={t("transitionNoteTitle")}
+        title={t(transitionNoteCopy(noteAction.to).title)}
         subtitle={t("transitionNoteSubtitle", { key: item.key, status: statusLabel(item.status) })}
         onClose={() => { setNoteAction(null); mutation.reset(); }}
       >
@@ -2281,7 +2281,7 @@ function DetailPane({
       )}
       {noteAction && (
         <Modal
-          title={t("transitionNoteTitle")}
+          title={t(transitionNoteCopy(noteAction.to).title)}
           subtitle={t("transitionNoteSubtitle", { key: item.key, status: statusLabel(item.status) })}
           onClose={() => { setNoteAction(null); transitionMutation.reset(); }}
         >
