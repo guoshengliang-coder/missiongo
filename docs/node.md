@@ -17,9 +17,12 @@
 
 用 Codex 派单时（两个 agent 可以只装一个）：
 
-- **ChatGPT App 已安装、已登录并保持运行**。Codex 会话是通过 ChatGPT App 内置的 Codex 后台服务创建的。
-  客户端是靠连一次 `$CODEX_HOME/app-server-control/app-server-control.sock` 来判断这条通道通不通的——
-  App 没开就提示打开 App；App 开着而通道连不上，会另说一句并写明检查的路径。终端里 `codex login status` 应显示已登录。
+- **Codex 的 app-server 后台服务在运行**。MissionGo 是连
+  `$CODEX_HOME/app-server-control/app-server-control.sock` 创建会话的，这个 socket 由
+  `codex app-server daemon` 提供，用 `codex app-server daemon start` 启动，
+  `codex app-server daemon bootstrap` 让它开机常驻。**ChatGPT App 开着不算**：App 和它自己的 app-server 走
+  stdio，不会创建这个 socket。客户端每次都实际连一次来判断通不通，连不上时提示里带着启动命令。
+  另外终端里 `codex login status` 应显示已登录。
 - **Codex 配好了 missiongo MCP 并已登录**：
 
   ```bash
@@ -139,8 +142,7 @@ Codex 没有强制的计划模式，这完全依赖模型遵守提示词和 Skil
 | 派单失败，原因写着目录未信任 | 仓库没被 Claude Code 信任过 | 在该目录手动运行一次 `claude` 并确认信任 |
 | 显示离线 | 网络不通，或凭证被撤销 | 菜单里会写明原因；被撤销就重新登录 |
 | 会话起来了但没有链接 | 日志里还没出现会话地址，或 Remote Control 没连上 | 看 `~/Library/Logs/MissionGo/<派单 ID>.log` |
-| 菜单显示 ChatGPT App 未运行 | 找不到控制通道，且 App 进程也不在 | 打开 ChatGPT App 并保持运行 |
-| 菜单显示 Codex 控制通道不可达 | App 在运行，但它的 Codex 后台服务没有应答 | 提示里写明了检查的 socket 路径；确认 App 里的 Codex 已启动，必要时重启 App |
+| 菜单显示 Codex 后台服务未运行 | 控制通道没有应答，多半是 `codex app-server daemon` 没起来（它不随 ChatGPT App 启动，重启电脑后也不会自己回来） | 用菜单里复制出的 `codex app-server daemon start` 启动；要常驻就再跑一次 `codex app-server daemon bootstrap` |
 | Codex 派单失败，提示 missiongo MCP 未配置或未登录 | Codex 连不上 MissionGo | 运行菜单里复制出的命令 |
 | 菜单里 missiongo Skill 一行显示失败 | 下载不到，或写不进 skills 目录 | 看提示里的路径和原因 |
 

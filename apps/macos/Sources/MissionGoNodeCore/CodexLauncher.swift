@@ -14,7 +14,9 @@ public struct CodexLocation: Equatable, Sendable {
         self.codexHome = codexHome
     }
 
-    /// Created by the ChatGPT app's app-server while the app runs.
+    /// Created by `codex app-server daemon`, which is what MissionGo talks to.
+    /// The ChatGPT app does not create it: it runs its own app-server over
+    /// stdio, so an open app says nothing about this socket.
     public var controlSocketPath: String {
         return "\(codexHome)/app-server-control/app-server-control.sock"
     }
@@ -105,13 +107,15 @@ public enum CodexPreflight {
         return "codex mcp add missiongo --url \(url) && codex mcp login missiongo"
     }
 
+    /// What starts the app-server whose control socket a dispatch needs.
+    public static let daemonStartCommand = "codex app-server daemon start"
+
     public static func check(
         repoPath: String,
         environment: ShellEnvironment,
         location: CodexLocation,
         serverUrl: String?,
-        run: CommandRunner,
-        appRunning: () -> Bool = CodexApp.isRunning
+        run: CommandRunner
     ) async -> Preflight.Result {
         guard let binary = CodexLocation.binary(environment: environment),
               let version = await version(binary: binary, run: run)
@@ -127,11 +131,7 @@ public enum CodexPreflight {
             return .failed(reason: problem)
         }
         guard CodexLocation.controlChannelIsUp(location.controlSocketPath) else {
-            // Which of the two it is decides what the operator has to do, so it
-            // is worth one more question before reporting.
-            return .failed(reason: appRunning()
-                ? "ChatGPT App 在运行，但连不上它的 Codex 控制通道（\(location.controlSocketPath)）：确认 App 里的 Codex 已经启动，必要时重启 App 后再派单。"
-                : "找不到 Codex 的控制通道（\(location.controlSocketPath)）：打开 ChatGPT App 并保持运行后再派单。")
+            return .failed(reason: "连不上 Codex 的控制通道（\(location.controlSocketPath)）：它由 codex app-server daemon 提供，在本机运行 \(daemonStartCommand) 后再派单。")
         }
         switch await mcpState(binary: binary, run: run) {
         case .ready: break
@@ -165,23 +165,18 @@ public struct CodexLauncher: AgentAdapter {
     let control: CodexControl
     /// The MissionGo server this machine is logged in to, for the MCP hint.
     let serverUrl: String?
-    /// Only used to word a failure: see `CodexApp`.
-    let appRunning: @Sendable () -> Bool
-
     public init(
         environment: ShellEnvironment,
         serverUrl: String?,
         run: CommandRunner? = nil,
         location: CodexLocation? = nil,
-        control: CodexControl = CodexAppServerControl(),
-        appRunning: @escaping @Sendable () -> Bool = CodexApp.isRunning
+        control: CodexControl = CodexAppServerControl()
     ) {
         self.environment = environment
         self.serverUrl = serverUrl
         self.run = run ?? Commands.runner(environment: environment)
         self.location = location ?? CodexLocation(environment: environment)
         self.control = control
-        self.appRunning = appRunning
     }
 
     public func detect() async -> String? {
@@ -194,8 +189,7 @@ public struct CodexLauncher: AgentAdapter {
             throw LaunchError("不支持的 Codex 模式：\(JSONValues.quote(job.mode))")
         }
         if case let .failed(reason) = await CodexPreflight.check(
-            repoPath: job.repoPath, environment: environment, location: location, serverUrl: serverUrl, run: run,
-            appRunning: appRunning
+            repoPath: job.repoPath, environment: environment, location: location, serverUrl: serverUrl, run: run
         ) {
             throw LaunchError(reason)
         }
