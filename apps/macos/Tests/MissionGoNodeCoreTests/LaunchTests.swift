@@ -27,6 +27,22 @@ final class LaunchPromptTests: XCTestCase {
         )
     }
 
+    func testTellsASessionWhichItemsCameBackAndToStartFromMain() throws {
+        let prompt = try LaunchPrompt.build(
+            itemKeys: ["AND-37", "AND-38", "AND-40"], dispatchId: "abc", reworkItemKeys: ["AND-40", "AND-37"]
+        )
+        // Batch order, not the order the rework list arrived in.
+        XCTAssertTrue(prompt.contains("其中 AND-37、AND-40 是返工"), prompt)
+        XCTAssertTrue(prompt.contains("最近一次退回的说明"))
+        XCTAssertTrue(prompt.contains("从最新的 main 另开分支"))
+    }
+
+    func testIgnoresReworkKeysOutsideTheBatchAndSaysNothingWithoutRework() throws {
+        let plain = try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc")
+        XCTAssertEqual(try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc", reworkItemKeys: ["HG-9", "x; rm -rf"]), plain)
+        XCTAssertFalse(plain.contains("返工"))
+    }
+
     func testRejectsAnythingThatIsNotAWorkItemKey() {
         // The keys reach the process argv and the session name as well, so a value
         // that is not a key is refused instead of escaped.
@@ -170,6 +186,14 @@ final class LaunchCommandTests: XCTestCase {
     func testKeepsANicknameAsWrittenApartFromTheOuterWhitespace() {
         XCTAssertEqual(SessionLauncher.sessionName(nodeName: "  老王的 MacBook Pro \n", itemKeys: ["HG-8"]), "老王的 MacBook Pro-HG-8")
         XCTAssertEqual(SessionLauncher.sessionName(nodeName: "办公室 · 二号机", itemKeys: ["HG-8", "HG-9"]), "办公室 · 二号机-HG-8,9")
+    }
+
+    func testMarksALaterSessionOnTheSameItemsWithItsRound() {
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["HG-49"], round: 1), "Mac mini-HG-49")
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "Mac mini", itemKeys: ["HG-49"], round: 2), "Mac mini-HG-49 第2轮")
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "M4", itemKeys: ["HG-52", "HG-51"], round: 3), "M4-HG-52,51 第3轮")
+        // Nothing sensible to say about a round below one.
+        XCTAssertEqual(SessionLauncher.sessionName(nodeName: "M4", itemKeys: ["HG-52"], round: 0), "M4-HG-52")
     }
 
     func testFallsBackToMissionGoWhenTheNameIsBlank() {

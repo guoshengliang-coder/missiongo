@@ -24,13 +24,27 @@ public struct DispatchJob: Equatable, Sendable {
     public let mode: String
     /// The machine name the session is named after (see `SessionLauncher.sessionName`).
     public let nodeName: String
+    /// Which session on these items this is; past 1 it goes into the session name.
+    public let round: Int
+    /// Items sent back after their work was handed over (see `LaunchPrompt`).
+    public let reworkItemKeys: [String]
 
-    public init(dispatchId: String, itemKeys: [String], repoPath: String, mode: String, nodeName: String) {
+    public init(
+        dispatchId: String,
+        itemKeys: [String],
+        repoPath: String,
+        mode: String,
+        nodeName: String,
+        round: Int = 1,
+        reworkItemKeys: [String] = []
+    ) {
         self.dispatchId = dispatchId
         self.itemKeys = itemKeys
         self.repoPath = repoPath
         self.mode = mode
         self.nodeName = nodeName
+        self.round = round
+        self.reworkItemKeys = reworkItemKeys
     }
 }
 
@@ -159,10 +173,14 @@ public struct SessionLauncher: AgentAdapter {
     /// The machine comes first because that is what tells sessions apart in
     /// claude.ai/code once several Macs take dispatches: every one of them used
     /// to start with the same `MissionGo`.
-    public static func sessionName(nodeName: String, itemKeys: [String]) -> String {
+    ///
+    /// A second session on the same items, such as after a failed verification,
+    /// ends in ` 第2轮`; otherwise it would carry exactly the first one's name.
+    public static func sessionName(nodeName: String, itemKeys: [String], round: Int = 1) -> String {
         let trimmed = nodeName.trimmingCharacters(in: .whitespacesAndNewlines)
         let machine = trimmed.isEmpty ? fallbackNodeName : trimmed
-        return "\(machine)-\(itemKeyList(itemKeys))"
+        let suffix = round > 1 ? " 第\(round)轮" : ""
+        return "\(machine)-\(itemKeyList(itemKeys))\(suffix)"
     }
 
     /// The log of one dispatch, named after the dispatch id. The id arrives over
@@ -259,8 +277,10 @@ public struct SessionLauncher: AgentAdapter {
             throw LaunchError(reason)
         }
 
-        let prompt = try LaunchPrompt.build(itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode)
-        let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys)
+        let prompt = try LaunchPrompt.build(
+            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys
+        )
+        let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
         let command = try SessionLauncher.launchCommand(sessionName: sessionName, mode: job.mode, prompt: prompt)
 
         let logPath = SessionLauncher.logPath(for: job.dispatchId, in: logsDirectory)

@@ -48,7 +48,16 @@ public enum LaunchPrompt {
     /// In plan mode a paragraph is added asking for a plan, written back as a
     /// comment, and a stop until the person approves. For Codex that paragraph is
     /// the whole of plan mode; Claude Code is also started in its own plan mode.
-    public static func build(itemKeys: [String], dispatchId: String, mode: String? = nil) throws -> String {
+    ///
+    /// Items in `reworkItemKeys` get a paragraph saying they came back: read why
+    /// on the item and start again from main, since the earlier branch was merged
+    /// and removed. A rework key outside the batch is ignored, not trusted.
+    public static func build(
+        itemKeys: [String],
+        dispatchId: String,
+        mode: String? = nil,
+        reworkItemKeys: [String] = []
+    ) throws -> String {
         if itemKeys.isEmpty {
             throw ValidationError.emptyBatch
         }
@@ -67,6 +76,14 @@ public enum LaunchPrompt {
             "会话起在仓库主目录，动手改代码前先按仓库规则建独立 worktree，不要直接在主工作区修改。",
             "建 worktree 用 git worktree add 再 cd 进去；不要用 EnterWorktree 一类的工具——仓库规定的 worktree 位置在它默认放行的范围之外，它会弹出授权框，而派单会话旁边没有人能回答。",
         ]
+        let rework = itemKeys.filter { reworkItemKeys.contains($0) }
+        if !rework.isEmpty {
+            lines += [
+                "",
+                "其中 \(rework.joined(separator: "、")) 是返工：之前交付过，验证没有通过或完成后又被重新打开。先读条目时间线里最近一次退回的说明、评论和上一轮的 PR，弄清哪里没做好再动手。",
+                "上一轮的分支通常已经合并并删除，从最新的 main 另开分支，不复用上一轮的分支和 worktree。",
+            ]
+        }
         if mode == "plan" {
             lines += [
                 "",

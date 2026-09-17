@@ -59,6 +59,11 @@ public struct DispatchRequest: Codable, Equatable, Sendable {
     /// name when none is set. Optional because a server from before nicknames
     /// does not send it; the loop then falls back to the name stored at login.
     public let nodeName: String?
+    /// Which session on these items this is (1 for the first). Optional, like
+    /// `reworkItemKeys`, because a server from before rounds does not send it.
+    public let round: Int?
+    /// Items sent back after their work was handed over.
+    public let reworkItemKeys: [String]?
 
     public init(
         dispatchId: String,
@@ -66,7 +71,9 @@ public struct DispatchRequest: Codable, Equatable, Sendable {
         repoPath: String,
         agentKind: String,
         mode: String,
-        nodeName: String? = nil
+        nodeName: String? = nil,
+        round: Int? = nil,
+        reworkItemKeys: [String]? = nil
     ) {
         self.dispatchId = dispatchId
         self.itemKeys = itemKeys
@@ -74,6 +81,8 @@ public struct DispatchRequest: Codable, Equatable, Sendable {
         self.agentKind = agentKind
         self.mode = mode
         self.nodeName = nodeName
+        self.round = round
+        self.reworkItemKeys = reworkItemKeys
     }
 }
 

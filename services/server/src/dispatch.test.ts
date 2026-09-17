@@ -510,6 +510,64 @@ describe("Dispatching the same item twice", () => {
     const after = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
     expect(after.json()).toEqual({ active: [] });
   });
+
+  it("dispatches an item sent back by a failed verification without force", async () => {
+    // The first dispatch stays `launched` for good. Once its session claimed the
+    // item, that dispatch is spent, even though the item is ready again.
+    const { app, cookie, mission, mini } = await setup();
+    const first = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${mini.token}` } });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${first.id}/result`,
+      headers: { authorization: `Bearer ${mini.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}` },
+    });
+    for (const [to, reason] of [["in_progress", "claim"], ["pending_verification", "resolution_submitted"], ["ready", "verification_failed"]]) {
+      const moved = await app.inject({
+        method: "POST",
+        url: `/api/v1/items/${mission.itemKey}/transitions`,
+        headers: { cookie },
+        payload: { to, reason, note: "按钮在暗色模式下看不见" },
+      });
+      expect(moved.statusCode, moved.body).toBe(200);
+    }
+
+    const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
+    expect(active.json()).toEqual({ active: [] });
+    expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(201);
+
+    // The machine hears that this is a second session, and on reworked work.
+    const again = await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${mini.token}` } });
+    expect(again.json()).toMatchObject({ itemKeys: [mission.itemKey], round: 2, reworkItemKeys: [mission.itemKey] });
+  });
+
+  it("counts rounds per item, ignoring dispatches that never reached a machine", async () => {
+    const { app, cookie, mission, mini, laptop } = await setup();
+    const other = await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      headers: { cookie },
+      payload: {
+        productId: mission.productId, status: "ready", type: "task", priority: "normal",
+        title: "fresh", description: "never dispatched", environment: { platform: "web" },
+      },
+    });
+    const fresh = other.json<{ key: string }>().key;
+    const claim = (token: string) => app.inject({
+      method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${token}` },
+    });
+
+    // Queued on the Mac mini, then replaced before it was picked up: cancelled, no session.
+    await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey]);
+    await dispatchTo(app, cookie, laptop.nodeId, [mission.itemKey], true);
+    expect((await claim(laptop.token)).json()).toMatchObject({ round: 1, reworkItemKeys: [] });
+
+    // Delivered to the laptop and gone: the next one is the second session on it,
+    // and a batch takes the highest round among its items.
+    await dispatchTo(app, cookie, mini.nodeId, [fresh, mission.itemKey], true);
+    expect((await claim(mini.token)).json()).toMatchObject({ itemKeys: [fresh, mission.itemKey], round: 2, reworkItemKeys: [] });
+  });
 });
 
 describe("The client's own view of its Mac", () => {
