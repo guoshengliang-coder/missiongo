@@ -72,6 +72,19 @@ export interface DispatchJob {
   readonly repoPath: string;
   readonly agentKind: AgentKind;
   readonly mode: string;
+  /**
+   * Which session on these items this is: 1 for the first, 2 when one of them
+   * already had a session, and so on (the highest across the batch). The
+   * machine puts it in the session name so a second go does not share the
+   * first one's name.
+   */
+  readonly round: number;
+  /**
+   * Items sent back after their work was handed over: a failed verification, or
+   * reopened once done. Keys only, like `itemKeys`; what the session is told
+   * about them is decided on the machine.
+   */
+  readonly reworkItemKeys: readonly string[];
 }
 
 interface NodeRow {
@@ -671,8 +684,50 @@ export class DispatchStore {
         agentKind: row.agent_kind as AgentKind,
         mode: row.mode,
         nodeName: row.node_name,
+        round: this.dispatchRound(row.id),
+        reworkItemKeys: this.listReworkItemKeys(row.id),
       };
     });
+  }
+
+  /**
+   * One more than the most earlier dispatches any item of this batch had that
+   * reached a machine. A queued dispatch that was cancelled, or one that failed
+   * before a session started, left no session behind to be confused with, so
+   * only delivered and launched ones count.
+   */
+  private dispatchRound(dispatchId: string): number {
+    const row = this.database.connection
+      .prepare(
+        `SELECT MAX(earlier) AS earlier FROM (
+           SELECT COUNT(prior.id) AS earlier
+           FROM dispatch_items di
+           JOIN dispatches d ON d.id = di.dispatch_id
+           LEFT JOIN dispatch_items prior_item ON prior_item.item_id = di.item_id AND prior_item.dispatch_id <> d.id
+           LEFT JOIN dispatches prior ON prior.id = prior_item.dispatch_id
+             AND prior.created_at < d.created_at AND prior.status IN ('delivered', 'launched')
+           WHERE di.dispatch_id = ?
+           GROUP BY di.item_id
+         )`,
+      )
+      .get(dispatchId) as unknown as { earlier: number | null };
+    return (row.earlier ?? 0) + 1;
+  }
+
+  /** Items of this batch that were ever sent back from verification or from done, in batch order. */
+  private listReworkItemKeys(dispatchId: string): readonly string[] {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT w.item_key FROM dispatch_items di JOIN work_items w ON w.id = di.item_id
+         WHERE di.dispatch_id = ? AND EXISTS (
+           SELECT 1 FROM work_item_events e
+           WHERE e.item_id = di.item_id AND e.to_status = 'ready'
+             AND e.from_status IN ('pending_verification', 'done')
+         )
+         ORDER BY di.position`,
+      )
+      .all(dispatchId) as unknown as Array<{ item_key: string }>;
+    return rows.map((row) => row.item_key);
   }
 
   recordDispatchResult(input: {

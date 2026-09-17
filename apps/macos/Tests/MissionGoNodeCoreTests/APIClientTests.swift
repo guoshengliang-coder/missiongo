@@ -68,6 +68,18 @@ final class APIClientTests: XCTestCase {
         ))
         // A server from before nicknames sends no node name; that is not an error.
         XCTAssertNil(request?.nodeName)
+        // Nor, from before rounds, a round or rework keys.
+        XCTAssertNil(request?.round)
+        XCTAssertNil(request?.reworkItemKeys)
+    }
+
+    func testClaimNextDecodesTheRoundAndReworkKeys() async throws {
+        StubURLProtocol.install { _, _ in
+            .response(status: 200, body: #"{"dispatchId":"d9","itemKeys":["HG-49","HG-50"],"repoPath":"/Users/dev/p","agentKind":"codex","mode":"plan","nodeName":"M4","round":2,"reworkItemKeys":["HG-49"]}"#)
+        }
+        let request = try await client().claimNext()
+        XCTAssertEqual(request?.round, 2)
+        XCTAssertEqual(request?.reworkItemKeys, ["HG-49"])
     }
 
     func testClaimNextDecodesTheNodeNameWhenTheServerSendsIt() async throws {

@@ -134,6 +134,20 @@ final class NodeLoopTests: XCTestCase {
         let loop = NodeLoop(api: FakeAPI(claims: []), adapters: [adapter], fallbackNodeName: "Mac mini", log: { _ in })
         _ = await loop.launchDispatch(request)
         XCTAssertEqual(adapter.jobs.current.first?.nodeName, "Mac mini")
+        // An older server sends no round either: a first session, nothing reworked.
+        XCTAssertEqual(adapter.jobs.current.first?.round, 1)
+        XCTAssertEqual(adapter.jobs.current.first?.reworkItemKeys, [])
+    }
+
+    func testHandsTheRoundAndReworkKeysToTheAgent() async {
+        let adapter = FakeAdapter(outcome: .success(LaunchResult(sessionName: "x", sessionUrl: nil, logPath: "/l")))
+        let loop = NodeLoop(api: FakeAPI(claims: []), adapters: [adapter], fallbackNodeName: "Mac mini", log: { _ in })
+        _ = await loop.launchDispatch(DispatchRequest(
+            dispatchId: "d1", itemKeys: ["HG-49"], repoPath: "/p", agentKind: "claude_code", mode: "plan",
+            round: 2, reworkItemKeys: ["HG-49"]
+        ))
+        XCTAssertEqual(adapter.jobs.current.first?.round, 2)
+        XCTAssertEqual(adapter.jobs.current.first?.reworkItemKeys, ["HG-49"])
     }
 
     func testAnUnknownAgentIsReportedRatherThanDropped() async throws {

@@ -477,8 +477,31 @@ final class CodexLauncherTests: XCTestCase {
         return (location, repoPath, listener)
     }
 
-    private func job(mode: String = "plan", repoPath: String) -> DispatchJob {
-        return DispatchJob(dispatchId: "d-1", itemKeys: ["AND-42"], repoPath: repoPath, mode: mode, nodeName: "Mac mini")
+    private func job(mode: String = "plan", repoPath: String, round: Int = 1, rework: [String] = []) -> DispatchJob {
+        return DispatchJob(
+            dispatchId: "d-1", itemKeys: ["AND-42"], repoPath: repoPath, mode: mode, nodeName: "Mac mini",
+            round: round, reworkItemKeys: rework
+        )
+    }
+
+    func testNamesASecondThreadByRoundAndTellsItAboutTheRework() async throws {
+        let machine = try machine()
+        defer { machine.listener.map { _ = close($0) } }
+        let control = RecordingControl()
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: "https://missiongo.test",
+            run: fakeCodex(), location: machine.location, control: control
+        )
+        let result = try await launcher.launch(job(repoPath: machine.repoPath, round: 2, rework: ["AND-42"]))
+
+        XCTAssertEqual(result.sessionName, "Mac mini-AND-42 第2轮")
+        let sent = try XCTUnwrap(control.requests.current.first)
+        XCTAssertEqual(sent.name, "Mac mini-AND-42 第2轮")
+        XCTAssertEqual(
+            sent.prompt,
+            try LaunchPrompt.build(itemKeys: ["AND-42"], dispatchId: "d-1", mode: "plan", reworkItemKeys: ["AND-42"])
+        )
+        XCTAssertTrue(sent.prompt.contains("返工"))
     }
 
     func testStartsAThreadInTheRepositoryAndReportsItsLink() async throws {

@@ -344,7 +344,9 @@ public final class NodeLoop: @unchecked Sendable {
                 repoPath: request.repoPath, mode: request.mode,
                 // Read per dispatch rather than at login, so a nickname changed in
                 // the console or the menu names the very next session.
-                nodeName: request.nodeName ?? fallbackNodeName
+                nodeName: request.nodeName ?? fallbackNodeName,
+                round: request.round ?? 1,
+                reworkItemKeys: request.reworkItemKeys ?? []
             ))
             log("会话「\(launched.sessionName)」已启动" + (launched.logPath.map { "，日志 \($0)" } ?? ""))
             if let url = launched.sessionUrl {

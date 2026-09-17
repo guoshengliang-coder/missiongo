@@ -200,8 +200,10 @@ public struct CodexLauncher: AgentAdapter {
             throw LaunchError(reason)
         }
 
-        let prompt = try LaunchPrompt.build(itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode)
-        let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys)
+        let prompt = try LaunchPrompt.build(
+            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys
+        )
+        let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
         let threadId: String
         do {
             threadId = try await control.startThread(CodexThreadRequest(
