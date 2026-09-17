@@ -71,20 +71,49 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// How tall this window may open, as a share of the screen it opens on. The
+    /// content scrolls past that rather than growing.
+    private static let maximumScreenShare: CGFloat = 0.8
+
     private func makeWindow() -> NSWindow {
-        let content = NSHostingView(rootView: MenuContentView().environmentObject(AppModel.shared))
+        let content = NSHostingView(
+            rootView: ScrollView { MenuContentView().environmentObject(AppModel.shared) }
+        )
+        // The window keeps whatever size it is given, and the content scrolls
+        // inside it. Left to its default, the hosting view resizes the window to
+        // the content on every layout, the new size invalidates the layout again,
+        // and AppKit eventually aborts the app for exceeding its own limit on
+        // constraint passes in one display cycle — which is how this window
+        // crashed on macOS 26. Nothing here needs a window that resizes itself:
+        // the content is a menu, and a person can drag the edge.
+        if #available(macOS 13.3, *) {
+            content.sizingOptions = []
+        }
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: content.fittingSize),
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "MissionGo"
         window.contentView = content
+        window.contentMinSize = NSSize(width: MenuContentView.width, height: 220)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
+        window.setContentSize(openingSize(for: content, on: window.screen))
+        window.center()
         return window
+    }
+
+    /// As tall as the content wants, up to a share of the screen.
+    private func openingSize(for content: NSView, on screen: NSScreen?) -> NSSize {
+        let wanted = content.fittingSize
+        let available = (screen ?? NSScreen.main)?.visibleFrame.height ?? wanted.height
+        return NSSize(
+            width: MenuContentView.width,
+            height: min(wanted.height, available * MainWindowController.maximumScreenShare)
+        )
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -94,6 +123,10 @@ final class MainWindowController: NSObject, NSWindowDelegate {
 
 struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel
+
+    /// One width for the menu and for the window: the content is written to be
+    /// read at this width, and nothing here reflows usefully at another.
+    static let width: CGFloat = 380
 
     var body: some View {
         Group {
@@ -111,7 +144,7 @@ struct MenuContentView: View {
             }
         }
         .padding(14)
-        .frame(width: 380)
+        .frame(width: MenuContentView.width)
         .onAppear { model.menuDidOpen() }
         .onDisappear { model.menuDidClose() }
     }

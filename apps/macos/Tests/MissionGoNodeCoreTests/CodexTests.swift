@@ -385,29 +385,24 @@ final class CodexPreflightTests: XCTestCase {
         XCTAssertFalse(CodexLocation.controlChannelIsUp(path))
     }
 
-    func testTheMenuTellsAClosedAppApartFromAnUnreachableChannel() async throws {
+    func testTheMenuBlamesTheDaemonRatherThanTheApp() async throws {
+        // The socket belongs to `codex app-server daemon`; the ChatGPT app never
+        // creates one, so "the app is open" must not read as "ready", and the
+        // fix has to be the command that starts the daemon.
         let environment = try codexOnPath()
         let root = try shortTemporaryDirectory()
         let codexHome = "\(root)/codex"
         try FileManager.default.createDirectory(atPath: "\(codexHome)/app-server-control", withIntermediateDirectories: true)
         let location = CodexLocation(codexHome: codexHome)
 
-        let closed = await CodexStatus.check(
-            environment: environment, location: location, run: fakeCodex(), appRunning: { false }
-        )
-        XCTAssertEqual(closed, .appNotRunning(version: "0.154.0"))
-        XCTAssertEqual(closed.summary, "ChatGPT App 未运行")
-
-        let unreachable = await CodexStatus.check(
-            environment: environment, location: location, run: fakeCodex(), appRunning: { true }
-        )
-        XCTAssertEqual(unreachable, .controlUnreachable(version: "0.154.0", path: location.controlSocketPath))
-        XCTAssertEqual(unreachable.summary, "Codex 控制通道不可达")
+        let down = await CodexStatus.check(environment: environment, location: location, run: fakeCodex())
+        XCTAssertEqual(down, .daemonNotRunning(version: "0.154.0", path: location.controlSocketPath))
+        XCTAssertEqual(down.summary, "后台服务未运行")
         // The path is in the hint: without it there is nothing to go and look at.
-        XCTAssertEqual(unreachable.fixHint, "ChatGPT App 在运行，但连不上它的 Codex 控制通道：\(location.controlSocketPath)")
-        XCTAssertTrue(unreachable.needsAttention)
-        XCTAssertFalse(unreachable.isReady)
-        XCTAssertNil(unreachable.fixCommand(serverUrl: "https://missiongo.test"))
+        XCTAssertEqual(down.fixHint?.contains(location.controlSocketPath), true)
+        XCTAssertEqual(down.fixCommand(serverUrl: "https://missiongo.test"), "codex app-server daemon start")
+        XCTAssertTrue(down.needsAttention)
+        XCTAssertFalse(down.isReady)
     }
 
     func testTheMenuSaysReadyOnlyWhenSomethingAnswersOnTheSocket() async throws {
@@ -419,21 +414,10 @@ final class CodexPreflightTests: XCTestCase {
         let listener = try listeningSocket(at: location.controlSocketPath)
         defer { _ = close(listener) }
 
-        let ready = await CodexStatus.check(
-            environment: environment, location: location, run: fakeCodex(), appRunning: { true }
-        )
+        let ready = await CodexStatus.check(environment: environment, location: location, run: fakeCodex())
         XCTAssertEqual(ready, .ready(version: "0.154.0"))
         XCTAssertEqual(ready.summary, "0.154.0")
         XCTAssertFalse(ready.needsAttention)
-    }
-
-    func testMatchesTheAppUnderEitherIdentifier() {
-        // Codex and the ChatGPT app are one app now, and it has shipped under
-        // both identifiers.
-        XCTAssertTrue(CodexApp.matches(bundleIdentifier: "com.openai.codex", bundleName: nil))
-        XCTAssertTrue(CodexApp.matches(bundleIdentifier: "com.openai.chat", bundleName: nil))
-        XCTAssertTrue(CodexApp.matches(bundleIdentifier: "com.openai.something", bundleName: "ChatGPT.app"))
-        XCTAssertFalse(CodexApp.matches(bundleIdentifier: "com.apple.Safari", bundleName: "Safari.app"))
     }
 
     func testFindsCodexHomeFromTheEnvironment() {
@@ -543,23 +527,22 @@ final class CodexLauncherTests: XCTestCase {
 
     func testEachMissingPieceNamesItsFixAndStartsNothing() async throws {
         let environment = try codexOnPath()
-        let cases: [(String, CommandRunner, Bool, Bool, Bool, String)] = [
-            ("not logged in", fakeCodex(login: CommandResult(code: 1, stdout: "", stderr: "Not logged in\n")), true, true, false, "Codex 未登录"),
-            ("app closed", fakeCodex(), true, false, false, "打开 ChatGPT App"),
-            // Same missing channel, app plainly open: telling them to open it
-            // would send them to look at a window that is already there.
-            ("app open, channel down", fakeCodex(), true, false, true, "ChatGPT App 在运行，但连不上"),
-            ("no mcp", fakeCodex(mcp: ok("[]")), true, true, false, "codex mcp add missiongo --url https://missiongo.test/mcp"),
-            ("mcp logged out", fakeCodex(mcp: ok(#"[{"name":"missiongo","enabled":true,"auth_status":"not_logged_in"}]"#)), true, true, false, "codex mcp login missiongo"),
-            ("no skill", fakeCodex(), false, true, false, "missiongo Skill"),
+        let cases: [(String, CommandRunner, Bool, Bool, String)] = [
+            ("not logged in", fakeCodex(login: CommandResult(code: 1, stdout: "", stderr: "Not logged in\n")), true, true, "Codex 未登录"),
+            // Nothing listening: the daemon is what provides that socket, so the
+            // failure names the command that starts it.
+            ("channel down", fakeCodex(), true, false, "codex app-server daemon start"),
+            ("no mcp", fakeCodex(mcp: ok("[]")), true, true, "codex mcp add missiongo --url https://missiongo.test/mcp"),
+            ("mcp logged out", fakeCodex(mcp: ok(#"[{"name":"missiongo","enabled":true,"auth_status":"not_logged_in"}]"#)), true, true, "codex mcp login missiongo"),
+            ("no skill", fakeCodex(), false, true, "missiongo Skill"),
         ]
-        for (label, run, skill, socket, appRunning, expected) in cases {
+        for (label, run, skill, socket, expected) in cases {
             let machine = try machine(skill: skill, socket: socket)
             defer { machine.listener.map { _ = close($0) } }
             let control = RecordingControl()
             let launcher = CodexLauncher(
                 environment: environment, serverUrl: "https://missiongo.test",
-                run: run, location: machine.location, control: control, appRunning: { appRunning }
+                run: run, location: machine.location, control: control
             )
             do {
                 _ = try await launcher.launch(job(repoPath: machine.repoPath))
