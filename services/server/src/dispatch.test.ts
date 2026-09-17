@@ -510,6 +510,33 @@ describe("Dispatching the same item twice", () => {
     const after = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
     expect(after.json()).toEqual({ active: [] });
   });
+
+  it("dispatches an item sent back by a failed verification without force", async () => {
+    // The first dispatch stays `launched` for good. Once its session claimed the
+    // item, that dispatch is spent, even though the item is ready again.
+    const { app, cookie, mission, mini } = await setup();
+    const first = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${mini.token}` } });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${first.id}/result`,
+      headers: { authorization: `Bearer ${mini.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}` },
+    });
+    for (const [to, reason] of [["in_progress", "claim"], ["pending_verification", "resolution_submitted"], ["ready", "verification_failed"]]) {
+      const moved = await app.inject({
+        method: "POST",
+        url: `/api/v1/items/${mission.itemKey}/transitions`,
+        headers: { cookie },
+        payload: { to, reason, note: "按钮在暗色模式下看不见" },
+      });
+      expect(moved.statusCode, moved.body).toBe(200);
+    }
+
+    const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
+    expect(active.json()).toEqual({ active: [] });
+    expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(201);
+  });
 });
 
 describe("The client's own view of its Mac", () => {

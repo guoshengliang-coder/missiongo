@@ -574,6 +574,11 @@ export class DispatchStore {
    * working on them: waiting for the machine, handed over, or launched. Callers
    * only ask about items that are still ready, so a launched dispatch here is one
    * whose session has not claimed the item.
+   *
+   * A dispatch whose item has been worked on since does not count, even though
+   * the item is ready again: `launched` is where a dispatch stays for good, so an
+   * item sent back by a failed verification would otherwise read as dispatched
+   * and unclaimed forever, and could only go out again with force.
    */
   private activeDispatchesFor(itemIds: readonly string[]): Array<{
     dispatchId: string;
@@ -592,6 +597,11 @@ export class DispatchStore {
          JOIN nodes n ON n.id = d.node_id
          JOIN work_items w ON w.id = di.item_id
          WHERE di.item_id IN (${placeholders}) AND d.status IN ('queued', 'delivered', 'launched')
+           AND NOT EXISTS (
+             SELECT 1 FROM work_item_events e
+             WHERE e.item_id = di.item_id AND e.created_at >= d.created_at
+               AND e.to_status IN ('in_progress', 'pending_verification', 'done')
+           )
          ORDER BY d.created_at DESC`,
       )
       .all(...itemIds)
