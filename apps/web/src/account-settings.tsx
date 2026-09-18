@@ -688,6 +688,45 @@ export function AccountManagement({ user, products }: { user: AuthenticatedUser;
   );
 }
 
+function DeepSeekSettings() {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const [key, setKey] = useState("");
+  const [saved, setSaved] = useState(false);
+  const query = useQuery({ queryKey: ["ai-title-settings"], queryFn: api.getAiTitleSettings });
+  const mutation = useMutation({
+    mutationFn: (value: string | null) => api.setAiTitleKey(value),
+    onSuccess: async () => {
+      setKey("");
+      setSaved(true);
+      await queryClient.invalidateQueries({ queryKey: ["ai-title-settings"] });
+    },
+    onError: () => setSaved(false),
+  });
+  return (
+    <section className="account-ai-settings">
+      <h3>{t("deepseekSettings")}</h3>
+      <p className="account-note">{t("deepseekSettingsHelp")}</p>
+      <p className="account-note">{query.data?.configured ? t("deepseekConfigured") : t("deepseekNotConfigured")}</p>
+      <div className="account-email-row">
+        <label>
+          {t("deepseekSettings")}
+          <input type="password" value={key} onChange={(event) => { setKey(event.target.value); setSaved(false); }}
+            placeholder={t("deepseekKeyPlaceholder")} autoComplete="off" spellCheck={false} />
+        </label>
+        <button type="button" className="secondary-button" disabled={mutation.isPending || !key.trim()}
+          onClick={() => mutation.mutate(key)}>
+          {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
+        </button>
+      </div>
+      {query.data?.configured && <button type="button" className="text-button" disabled={mutation.isPending}
+        onClick={() => mutation.mutate(null)}>{t("deepseekClearKey")}</button>}
+      {saved && <p className="account-note">{t("permissionsSaved")}</p>}
+      {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
+    </section>
+  );
+}
+
 /** Who you are signed in as, your password, and -- for an administrator -- everyone else. */
 export function AccountSettings({
   user,
@@ -771,6 +810,7 @@ export function AccountSettings({
             <PasswordForm onCancel={() => setEditor(closeAccountEditor(editor, "password"))} />
           )}
           <ConnectedAiClients />
+          {user.role === "admin" && <DeepSeekSettings />}
           {logout.isError && <InlineNote danger message={messageFor(logout.error, t, t("somethingWentWrong"))} />}
           <button className="secondary-button wide" disabled={logout.isPending} onClick={() => logout.mutate()}>
             {logout.isPending ? <LoaderCircle className="spin" size={16} /> : null} {t("signOut")}

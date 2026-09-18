@@ -37,6 +37,7 @@ import {
   type ProductPermission,
 } from "./accounts-store.js";
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
+import { AiTitleService } from "./ai-title.js";
 import { DispatchStore } from "./dispatch-store.js";
 import { invalidInput, MissionGoError, notFound } from "./errors.js";
 import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
@@ -66,6 +67,8 @@ export interface BuildAppOptions {
   readonly writeTools?: McpWriteTier;
   /** Commit this build came from, reported by /health so a deployment can name itself. */
   readonly release?: string;
+  /** Replaced only by tests; production sends requests directly to DeepSeek. */
+  readonly aiProviderFetch?: typeof fetch;
 }
 
 type SdkRateLimitBucket = "draft_read" | "draft_write" | "finalize" | "web_session" | "attachment_upload";
@@ -397,6 +400,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const store = new MissionGoStore(options.databasePath ?? ":memory:");
   const dispatchStore = new DispatchStore(store.database);
   const accountStore = new AccountStore(store.database);
+  const aiTitle = new AiTitleService(
+    store.database,
+    options.adminAccount?.sessionSecret ?? options.adminToken ?? "local-development-only",
+    options.aiProviderFetch,
+  );
   if (options.adminAccount) {
     accountStore.seedBootstrapAdmin({
       id: options.adminAccount.id,
@@ -1163,6 +1171,35 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (bearerAuthorized(request)) return;
     if (requireAccount(request).role !== "admin") throw notFound("Account");
   };
+
+  app.get("/api/v1/ai/title-settings", async (request) => {
+    requireAdmin(request);
+    return { configured: aiTitle.configured() };
+  });
+
+  app.put("/api/v1/ai/title-settings", async (request) => {
+    requireAdmin(request);
+    const body = objectBody(request.body);
+    if (body.apiKey !== null && typeof body.apiKey !== "string") {
+      throw invalidInput("apiKey must be a string or null.");
+    }
+    aiTitle.setKey(body.apiKey);
+    return { configured: aiTitle.configured() };
+  });
+
+  const titleRequests = new Map<string, { count: number; until: number }>();
+  app.post("/api/v1/ai/title", async (request) => {
+    const body = objectBody(request.body);
+    const productId = stringField(body, "productId")!;
+    requireProductPermission(request, productId, "operate");
+    const accountId = bearerAuthorized(request) ? "operator" : requireAccount(request).id;
+    const now = Date.now();
+    const current = titleRequests.get(accountId);
+    const next = current && current.until > now ? { count: current.count + 1, until: current.until } : { count: 1, until: now + 60_000 };
+    titleRequests.set(accountId, next);
+    if (next.count > 10) throw new MissionGoError("ai_rate_limited", "Please wait before generating another title.", 429);
+    return { title: await aiTitle.generate(stringField(body, "content")!) };
+  });
 
   app.get("/api/v1/products", async (request) => {
     const products = store.listProducts({ includeArchived: includeArchived(request.query) });

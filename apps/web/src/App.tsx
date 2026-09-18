@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
+import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction, type TextareaHTMLAttributes } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -2888,7 +2888,7 @@ function WorkItemFields({
 }: {
   productId: string;
   draft: CaptureDraft;
-  onDraft: (draft: CaptureDraft) => void;
+  onDraft: ReactDispatch<SetStateAction<CaptureDraft>>;
   files: readonly File[];
   onFiles: (files: readonly File[]) => void;
   fileError: string | null;
@@ -2927,6 +2927,10 @@ function WorkItemFields({
   const updateDraft = <Key extends keyof CaptureDraft>(key: Key, value: CaptureDraft[Key]) => {
     onDraft({ ...draft, [key]: value });
   };
+  const titleMutation = useMutation({
+    mutationFn: () => api.generateTitle(productId, draft.description),
+    onSuccess: ({ title }) => onDraft((current) => ({ ...current, title })),
+  });
 
   useEffect(() => {
     if (!draft.sourceComponentId || !componentsQuery.data) return;
@@ -2989,7 +2993,16 @@ function WorkItemFields({
         </label>
         <label><FieldLabel>{t("priority")}</FieldLabel><select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
       </div>
-      <label><FieldLabel required>{t("whatNeedsAttention")}</FieldLabel><input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus data-initial-focus /></label>
+      <div className="ai-title-field">
+        <label><FieldLabel required>{t("whatNeedsAttention")}</FieldLabel><input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus data-initial-focus /></label>
+        <button type="button" className="secondary-button" disabled={titleMutation.isPending || !draft.description.trim()}
+          title={!draft.description.trim() ? t("aiTitleNeedsContent") : undefined}
+          onClick={() => titleMutation.mutate()}>
+          {titleMutation.isPending ? t("aiTitleGenerating") : t("aiTitleButton")}
+        </button>
+      </div>
+      <small className="ai-title-privacy">{t("aiTitlePrivacy")}</small>
+      {titleMutation.isError && <InlineError message={errorMessage(titleMutation.error, t("somethingWentWrong"))} />}
       <section className="attachment-picker-block capture-attachment-block">
         <div className="capture-attachment-heading">
           <div className="capture-attachment-copy"><strong><FieldLabel>{t("mediaAttachments")}</FieldLabel></strong><p>{t("mediaAttachmentsHelp")}</p></div>

@@ -202,6 +202,13 @@ export interface Bootstrap {
 }
 
 export const api = {
+  getAiTitleSettings: () => request<{ configured: boolean }>("/api/v1/ai/title-settings"),
+  setAiTitleKey: (apiKey: string | null) => request<{ configured: boolean }>("/api/v1/ai/title-settings", {
+    method: "PUT", body: JSON.stringify({ apiKey }),
+  }),
+  generateTitle: (productId: string, content: string) => request<{ title: string }>("/api/v1/ai/title", {
+    method: "POST", body: JSON.stringify({ productId, content }),
+  }),
   getBootstrap: (productId: string | null, options: ListItemsOptions = {}) => {
     const query = new URLSearchParams();
     if (productId) query.set("productId", productId);

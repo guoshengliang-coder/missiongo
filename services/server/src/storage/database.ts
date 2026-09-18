@@ -568,6 +568,17 @@ export class MissionGoDatabase {
           .run(202609160637, new Date().toISOString());
       });
     }
+    const aiProviderMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609180239")
+      .get() as unknown as { version: number } | undefined;
+    if (!aiProviderMigration) {
+      this.transaction(() => {
+        this.connection.exec(INITIAL_SCHEMA);
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609180239, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }
