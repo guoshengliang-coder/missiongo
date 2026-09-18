@@ -117,6 +117,33 @@ curl -s https://<host>/health
 A server started by hand reports `"release":"unknown"` rather than implying it
 is something it is not.
 
+#### Work-item release notices
+
+When an AI session deploys a release and should notify its work items, add
+`--notice-origin https://<public-host>` to `scripts/deploy.sh`. This performs
+read-only checks after the deployment: `/health` must report the deployed
+commit; the public Android APK and macOS ZIP must match their server-side
+SHA-256; the macOS update manifest and Android SDK POM must match the live
+files. The final JSON line is a release receipt with the previous and current
+source commits, versions, and verification flags for changed artifacts.
+
+The receipt is evidence, not a comment. The release session follows
+`skills/missiongo/SKILL.md` to select the one product it is releasing, page
+`list_release_candidates`, and save the tool result and receipt in temporary
+JSON files outside the checkout. It then runs:
+
+```sh
+node scripts/release-notices.mjs --receipt <receipt.json> --candidates <candidates.json>
+```
+
+That command checks each candidate's PR against GitHub, the deployed commit
+range, and changed artifact paths. It prints proposed comments and stable
+idempotency keys, but never writes to MissionGo. The OAuth-connected AI reads
+each matched item fully before calling `append_comment`. A failed public check,
+unknown source commit, unrelated PR, or first release with no baseline produces
+no automatic success notice. Comments leave items in `pending_verification`;
+only a person decides whether verification passed.
+
 #### Going back
 
 `scripts/rollback.sh` moves `current` to an earlier release and rebuilds from

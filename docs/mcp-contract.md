@@ -39,6 +39,9 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 - `list_products`：读取可见产品。
 - `list_components`：读取某个产品的一层组件。
 - `list_items`：按产品、状态或类型分页查找条目。
+- `list_release_candidates`：只在经授权的一个产品内分页返回「待验证」且最近一次交接记录了 PR URL 的
+  条目编号与 PR URL。它不返回正文，也不证明 PR 已合并或内容已发布；发布会话还必须核对 GitHub、
+  发布凭据并完整读取命中的条目，才能追加版本评论。普通条目读取不得借此扫描队列。
 - `get_item_context`：按 `HG-8` 这类编号读取条目、产品、来源组件、受影响组件、环境、附件清单、最近时间线以及完整性计数。
 - `get_item_timeline`：按页读取完整时间线。
 - `get_attachment`：分页读取日志、返回可供 AI 查看的一张图片预览，或返回视频元数据。

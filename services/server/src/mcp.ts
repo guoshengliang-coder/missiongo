@@ -244,6 +244,47 @@ export function createMissionGoMcpServer(
   );
 
   server.registerTool(
+    "list_release_candidates",
+    {
+      title: "List work items awaiting a release notice",
+      description:
+        "For one authorized product, list pending-verification items whose latest handover records a pull request. "
+        + "Returns only the item key and pull request URL; a release client must independently verify the merged PR, "
+        + "the published artifact, and the item before adding a comment.",
+      inputSchema: z.object({
+        productId: z.string().min(1),
+        limit: z.number().int().min(1).max(100).default(50),
+        beforeSequence: z.number().int().positive().optional(),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ productId, limit, beforeSequence }, ctx) => {
+      requireProductAccess(ctx, productId);
+      const items = store.listWorkItems({
+        productId,
+        status: "pending_verification",
+        limit,
+        ...(beforeSequence ? { beforeSequence } : {}),
+      });
+      const candidates = items.flatMap((item) => {
+        const handover = [...store.getTimeline(item.key)].reverse()
+          .find((event) => event.toStatus === "pending_verification" && event.eventType === "status_changed");
+        const pullRequestUrl = handover?.payload.pullRequestUrl;
+        return typeof pullRequestUrl === "string" && pullRequestUrl.startsWith("https://")
+          ? [{ itemKey: item.key, pullRequestUrl }]
+          : [];
+      });
+      const lastKey = items.at(-1)?.key;
+      const lastSequence = lastKey ? Number(lastKey.slice(lastKey.lastIndexOf("-") + 1)) : undefined;
+      return textResult({
+        productId,
+        candidates,
+        ...(items.length === limit && Number.isSafeInteger(lastSequence) ? { nextBeforeSequence: lastSequence } : {}),
+      });
+    },
+  );
+
+  server.registerTool(
     "get_item_context",
     {
       title: "Get complete work-item context",

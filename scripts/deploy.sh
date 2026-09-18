@@ -35,6 +35,7 @@ data_dir="/srv/missiongo/data"
 backups_dir="/srv/missiongo/backups"
 downloads_dir="/srv/missiongo/releases"
 public_url=""
+notice_origin=""
 verify_host=""
 keep=10
 skip_backup=0
@@ -84,6 +85,9 @@ Usage: scripts/deploy.sh --host <ssh host> --env-file <remote env file> [options
                           addressed by IP behind a CDN. Certificate validation
                           is skipped for those requests, since a certificate
                           issued for the hostname cannot match the IP.
+  --notice-origin <url>   After deployment, print a JSON release receipt using
+                          read-only public checks. An AI release session can use
+                          it to notify verified work items through MissionGo MCP.
 USAGE
   exit 1
 }
@@ -105,6 +109,7 @@ while [ $# -gt 0 ]; do
     --skip-ci-check) skip_ci_check=1; shift ;;
     --verify) public_url="${2-}"; verify=1; shift 2 ;;
     --verify-host) verify_host="${2-}"; shift 2 ;;
+    --notice-origin) notice_origin="${2-}"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
@@ -112,6 +117,7 @@ done
 
 [ -n "$host" ] && [ -n "$env_file" ] || usage
 case "$keep" in ""|*[!0-9]*) echo "--keep takes a non-negative integer." >&2; exit 1 ;; esac
+case "$notice_origin" in ""|https://*) ;; *) echo "--notice-origin requires an https URL." >&2; exit 1 ;; esac
 
 cd "$(dirname "$0")/.."
 [ -f deploy/docker-compose.yml ] || { echo "Run this from a MissionGo checkout." >&2; exit 1; }
@@ -198,6 +204,18 @@ sha256_of() {
 # the server or from untrusted input.
 # shellcheck disable=SC2029
 remote() { ssh "$host" "$@"; }
+
+# Capture the live state before changing the symlink or the public APK. A later
+# checkout cannot reconstruct it reliably from released.json, which may already
+# describe artifacts staged locally for this deployment.
+before_snapshot=""
+if [ -n "$notice_origin" ]; then
+  before_snapshot="$(node scripts/release-receipt.mjs snapshot \
+    --host "$host" --current-link "$current_link" --downloads-dir "$downloads_dir")" || {
+    echo "Warning: could not capture the previous release; no release notices can be derived." >&2
+    before_snapshot=""
+  }
+fi
 
 # Settle the APK before anything is pushed. It is all local, and a stale build
 # is better caught now than after a release directory exists on the server.
@@ -483,3 +501,11 @@ if [ "$verify" -eq 1 ]; then
 fi
 
 echo "==> Done"
+
+if [ -n "$notice_origin" ] && [ -n "$before_snapshot" ]; then
+  echo "==> Release notice receipt (JSON)"
+  node scripts/release-receipt.mjs compare \
+    --host "$host" --current-link "$current_link" --downloads-dir "$downloads_dir" \
+    --before-json "$before_snapshot" --origin "$notice_origin" || \
+    echo "Warning: release receipt unavailable; do not send published-version comments." >&2
+fi
