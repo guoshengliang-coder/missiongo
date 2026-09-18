@@ -39,7 +39,7 @@ import {
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
 import { AiTitleService } from "./ai-title.js";
 import { DispatchStore } from "./dispatch-store.js";
-import { invalidInput, MissionGoError, notFound } from "./errors.js";
+import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
 import {
   MISSIONGO_READ_SCOPE,
@@ -71,7 +71,7 @@ export interface BuildAppOptions {
   readonly aiProviderFetch?: typeof fetch;
 }
 
-type SdkRateLimitBucket = "draft_read" | "draft_write" | "finalize" | "web_session" | "attachment_upload";
+type SdkRateLimitBucket = "draft_read" | "draft_write" | "finalize" | "web_session" | "attachment_upload" | "ai_title";
 interface SdkRateLimitRule {
   readonly limit: number;
   readonly windowMilliseconds: number;
@@ -83,6 +83,7 @@ const DEFAULT_SDK_RATE_LIMITS: Readonly<Record<SdkRateLimitBucket, SdkRateLimitR
   finalize: { limit: 20, windowMilliseconds: 60 * 60_000 },
   web_session: { limit: 60, windowMilliseconds: 60 * 60_000 },
   attachment_upload: { limit: 60, windowMilliseconds: 60 * 60_000 },
+  ai_title: { limit: 60, windowMilliseconds: 60_000 },
 };
 
 /** Square edge of a stored product icon, in pixels. Small enough to live in the row. */
@@ -1864,6 +1865,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const principal = requireDraftPrincipal(request, draftId);
     enforceSdkRateLimit(reply, principal, "draft_read");
     return store.getFeedbackDraft(draftId, principal);
+  });
+
+  app.post("/api/v1/sdk/drafts/:draftId/ai-title", async (request, reply) => {
+    const { draftId } = request.params as { draftId: string };
+    const principal = requireDraftPrincipal(request, draftId);
+    const draft = store.getFeedbackDraft(draftId, principal);
+    if (draft.status !== "editing") {
+      throw conflict("draft_not_editable", "Only an active feedback draft can generate a title.");
+    }
+    enforceSdkRateLimit(reply, principal, "ai_title");
+    return { title: await aiTitle.generate(stringField(objectBody(request.body), "content")!) };
   });
 
   app.patch("/api/v1/sdk/drafts/:draftId", async (request, reply) => {

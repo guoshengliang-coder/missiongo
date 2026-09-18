@@ -108,6 +108,8 @@ export function SdkFeedbackPage() {
   const [priority, setPriority] = useState<WorkItemPriority>("normal");
   const [includeLogs, setIncludeLogs] = useState(true);
   const [error, setError] = useState("");
+  const [aiTitleError, setAiTitleError] = useState("");
+  const [generatingTitle, setGeneratingTitle] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [itemKey, setItemKey] = useState(completedItemKey);
   const [destination, setDestination] = useState<SubmissionTarget>(completedDestination);
@@ -165,8 +167,25 @@ export function SdkFeedbackPage() {
     (title !== draft.title || description !== draft.description || files.length > 0),
   );
 
+  const generateTitle = async () => {
+    if (!draft || !description.trim() || generatingTitle || submitting) return;
+    setGeneratingTitle(true);
+    setAiTitleError("");
+    try {
+      const result = await sdkRequest<{ title: string }>(`/api/v1/sdk/drafts/${encodeURIComponent(draft.id)}/ai-title`, {
+        method: "POST",
+        body: JSON.stringify({ content: description }),
+      });
+      setTitle(result.title);
+    } catch (failure) {
+      setAiTitleError(failure instanceof Error ? failure.message : "Could not generate a title.");
+    } finally {
+      setGeneratingTitle(false);
+    }
+  };
+
   const submit = async (target: SubmissionTarget) => {
-    if (!draft || !title.trim()) return;
+    if (!draft || !title.trim() || generatingTitle) return;
     setSubmitting(true);
     setDestination(target);
     setError("");
@@ -270,7 +289,16 @@ export function SdkFeedbackPage() {
               /></label>
               <label><span className="field-label">{t("priority")}</span><select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
             </div>
-            <label><span className="field-label">{t("whatNeedsAttention")}<span className="field-requirement required">{t("requiredField")}</span></span><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={500} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
+            <div className="ai-title-field sdk-ai-title-field">
+              <label><span className="field-label">{t("whatNeedsAttention")}<span className="field-requirement required">{t("requiredField")}</span></span><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={500} placeholder={t("clearSpecificTitle")} required autoFocus /></label>
+              <button type="button" className="secondary-button" disabled={submitting || generatingTitle || !description.trim()}
+                title={!description.trim() ? t("sdkAiTitleNeedsContent") : undefined}
+                onClick={() => void generateTitle()}>
+                {generatingTitle ? t("aiTitleGenerating") : t("aiTitleButton")}
+              </button>
+            </div>
+            <small className="ai-title-privacy">{t("sdkAiTitlePrivacy")}</small>
+            {aiTitleError && <div className="sdk-feedback-error" role="alert">{aiTitleError}</div>}
             <section className="attachment-picker-block capture-attachment-block">
               <div className="capture-attachment-heading">
                 <div className="capture-attachment-copy"><strong><span className="field-label">{t("mediaAttachments")}</span></strong><p>{t("sdkMediaHelp")}</p></div>
@@ -313,8 +341,8 @@ export function SdkFeedbackPage() {
             )}
             <p className="privacy-note">{t("sdkPrivacyNote")}</p>
             <div className="form-footer sdk-feedback-actions">
-              <button className="secondary-button" type="submit" disabled={submitting || !title.trim()}>{submitting && destination === "inbox" ? <LoaderCircle className="spin" size={17} /> : <FileText size={17} />}{t(submitting && destination === "inbox" ? "sdkSaving" : "sdkSaveDraft")}</button>
-              <button className="primary-button" type="button" disabled={submitting || !title.trim() || !description.trim()} onClick={() => void submit("ready")}>{submitting && destination === "ready" ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{t(submitting && destination === "ready" ? "sdkSubmitting" : "sdkSubmitReady")}</button>
+              <button className="secondary-button" type="submit" disabled={submitting || generatingTitle || !title.trim()}>{submitting && destination === "inbox" ? <LoaderCircle className="spin" size={17} /> : <FileText size={17} />}{t(submitting && destination === "inbox" ? "sdkSaving" : "sdkSaveDraft")}</button>
+              <button className="primary-button" type="button" disabled={submitting || generatingTitle || !title.trim() || !description.trim()} onClick={() => void submit("ready")}>{submitting && destination === "ready" ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{t(submitting && destination === "ready" ? "sdkSubmitting" : "sdkSubmitReady")}</button>
             </div>
           </form>
         )}
