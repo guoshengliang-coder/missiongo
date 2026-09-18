@@ -108,6 +108,8 @@ export interface WorkItemSnapshot {
   readonly type: WorkItemType;
   readonly priority: WorkItemPriority;
   readonly status: WorkItemStatus;
+  /** Most recent entry into Ready, only when it came directly from verification. */
+  readonly verificationReturn?: { readonly at: string; readonly note?: string };
   readonly title: string;
   readonly description: string;
   readonly report?: WorkItemReport;

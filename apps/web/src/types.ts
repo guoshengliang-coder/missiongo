@@ -109,6 +109,7 @@ export interface WorkItem {
   readonly type: WorkItemType;
   readonly priority: WorkItemPriority;
   readonly status: WorkItemStatus;
+  readonly verificationReturn?: { readonly at: string; readonly note?: string };
   readonly title: string;
   readonly description: string;
   readonly report?: WorkItemReport;

@@ -2052,6 +2052,7 @@ export class MissionGoStore {
     const environment = parseEnvironment(row.environment_json);
     const report = parseReport(row.report_json);
     const attachments = this.listAttachmentsByItemId(row.id);
+    const verificationReturn = this.verificationReturnOf(row);
     return {
       id: row.id,
       key: row.item_key,
@@ -2062,6 +2063,7 @@ export class MissionGoStore {
       type: row.type,
       priority: row.priority,
       status: row.status,
+      ...(verificationReturn ? { verificationReturn } : {}),
       title: row.title,
       description: row.description,
       ...(report ? { report } : {}),
@@ -2073,5 +2075,20 @@ export class MissionGoStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
+  }
+
+  private verificationReturnOf(row: WorkItemRow): WorkItemSnapshot["verificationReturn"] {
+    if (row.status !== "ready") return undefined;
+    // Look at the latest entry into Ready, not any older failed verification:
+    // a later release or reopening must not inherit the badge.
+    const entry = this.database.connection.prepare(
+      `SELECT from_status, payload_json, created_at FROM work_item_events
+       WHERE item_id = ? AND event_type = 'status_changed' AND to_status = 'ready'
+       ORDER BY timeline_seq DESC LIMIT 1`,
+    ).get(row.id) as { from_status: WorkItemStatus; payload_json: string; created_at: string } | undefined;
+    if (entry?.from_status !== "pending_verification") return undefined;
+    const payload = JSON.parse(entry.payload_json) as Record<string, unknown>;
+    const note = typeof payload.note === "string" ? payload.note.trim() : "";
+    return { at: entry.created_at, ...(note ? { note } : {}) };
   }
 }

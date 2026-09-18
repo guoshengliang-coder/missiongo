@@ -115,6 +115,7 @@ import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog, transitionRequiresNote } from "@missiongo/domain";
 import { statusChangeNote, dispatchedEvent, groupTimeline } from "./timeline";
 import { TransitionNoteDialog, transitionNoteCopy } from "./transition-note-dialog";
+import { VerificationReturnBadge, VerificationReturnCallout, VerificationReturnSummary } from "./verification-return";
 import { StartWorkDialog } from "./start-work-dialog";
 import { cachedListSummary } from "./list-summary";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
@@ -1482,6 +1483,7 @@ function ItemRow({
                 </small>
               )}
               {item.derivedFrom && <small className="item-derived-badge" title={item.derivedFrom.title}>{t("derivedFromBadge", { key: item.derivedFrom.key })}</small>}
+              {item.verificationReturn && <VerificationReturnBadge />}
               <span className="item-title">{item.title}</span>
               <span className="item-evidence-summary">
                 {item.type === "bug" && item.report?.reproductionSteps && <small className="evidence-strong">{t("hasReproduction")}</small>}
@@ -1490,7 +1492,9 @@ function ItemRow({
                 {(item.diagnosticSummary?.contextEntryCount ?? 0) > 0 && <small>{t("contextCount", { count: item.diagnosticSummary.contextEntryCount })}</small>}
               </span>
             </span>
-            <span className={`item-description ${overview ? "" : "muted"}`}>{overview || t("noDescription")}</span>
+            {item.verificationReturn
+              ? <VerificationReturnSummary info={item.verificationReturn} />
+              : <span className={`item-description ${overview ? "" : "muted"}`}>{overview || t("noDescription")}</span>}
           </span>
         </button>
       </span>
@@ -2239,6 +2243,7 @@ function DetailPane({
               </div>
             </div>
             <ItemRelations item={item} onOpenItem={onOpenItem} />
+            {item.verificationReturn && <VerificationReturnCallout info={item.verificationReturn} />}
             {/* Read the item, then the evidence a person went and looked at --
                 screenshots, documents, logs. The captured environment is the
                 machine's own footnote to all of it, so it sits underneath them
