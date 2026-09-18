@@ -839,6 +839,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .component-add-row .primary-button { height: 42px; white-space: nowrap; }
 .capture-form, .product-form, .login-form { display: flex; flex-direction: column; gap: 15px; }
 .capture-form { position: relative; }
+.ai-title-field { display: flex; align-items: flex-end; gap: 8px; }
+.ai-title-field label { flex: 1 1 auto; min-width: 0; }
+.ai-title-field .secondary-button { flex: none; white-space: nowrap; }
+.ai-title-privacy { display: block; color: var(--muted); font-size: var(--text-xs); }
+.account-ai-settings { margin: 18px 0; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); }
+.account-ai-settings h3 { margin: 0 0 6px; font-size: var(--text-sm); }
 /* AND-69: shown while files are dragged over the form. pointer-events stays off
    so the overlay never becomes the drag target and the enter/leave count holds. */
 .file-drop-overlay {

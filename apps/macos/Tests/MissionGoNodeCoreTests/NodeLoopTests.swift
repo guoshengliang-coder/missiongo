@@ -62,6 +62,23 @@ private struct FakeAdapter: AgentAdapter {
     }
 }
 
+private struct RecoveringAdapter: AgentAdapter {
+    let kind = "claude_code"
+    let detections = Locked(0)
+
+    func detect() async -> String? {
+        let count = detections.withLock { value -> Int in
+            value += 1
+            return value
+        }
+        return count == 1 ? nil : "2.1.276"
+    }
+
+    func launch(_ job: DispatchJob) async throws -> LaunchResult {
+        throw LaunchError("Not used by this test")
+    }
+}
+
 private func fastTiming() -> NodeLoop.Timing {
     var timing = NodeLoop.Timing()
     timing.heartbeatInterval = 0.05
@@ -106,6 +123,20 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertTrue(api.calls.current.contains("heartbeat:2.1.232:1"))
         // Agent detection is cached across beats.
         XCTAssertEqual(adapter.detections.current, 1)
+    }
+
+    func testMissingAgentIsDetectedAgainOnTheNextHeartbeat() async throws {
+        let api = FakeAPI(claims: [])
+        let adapter = RecoveringAdapter()
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac mini", timing: fastTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { api.calls.current.contains(where: { $0.hasPrefix("heartbeat:2.1.276:") }) }
+        task.cancel()
+        try await task.value
+
+        XCTAssertTrue(api.calls.current.contains(where: { $0.hasPrefix("heartbeat::") }))
+        XCTAssertTrue(api.calls.current.contains(where: { $0.hasPrefix("heartbeat:2.1.276:") }))
+        XCTAssertEqual(adapter.detections.current, 2)
     }
 
     func testAFailedLaunchIsReportedAsFailedWithTheReason() async throws {

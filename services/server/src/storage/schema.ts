@@ -6,6 +6,14 @@ export const INITIAL_SCHEMA = `
     applied_at TEXT NOT NULL
   ) STRICT;
 
+  -- One deployment-wide provider credential. The value is encrypted before it
+  -- reaches SQLite; the decryption key stays in the server configuration.
+  CREATE TABLE IF NOT EXISTS ai_provider_settings (
+    name TEXT PRIMARY KEY,
+    encrypted_key TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
   CREATE TABLE IF NOT EXISTS products (
     id TEXT PRIMARY KEY,
     key_prefix TEXT NOT NULL UNIQUE COLLATE NOCASE,

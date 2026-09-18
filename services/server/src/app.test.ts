@@ -2017,17 +2017,24 @@ describe("MissionGo REST API", () => {
       url: "/api/v1/items/MG-2/transitions",
       payload: { to: "ready", reason: "triaged" },
     });
+    // Editing an older item must not move it ahead of the item that just
+    // entered ready; list position follows status entry, not updated_at.
+    expect((await app.inject({
+      method: "PATCH",
+      url: "/api/v1/items/MG-3",
+      payload: { title: "Edited after triage" },
+    })).statusCode).toBe(200);
 
     const firstPage = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&limit=2` });
     expect(firstPage.statusCode).toBe(200);
     expect(firstPage.json()).toMatchObject({
-      items: [{ key: "MG-3" }, { key: "MG-2" }],
-      nextBeforeSequence: 2,
+      items: [{ key: "MG-2" }, { key: "MG-3" }],
+      nextBeforeSequence: 3,
       summary: { total: 3, productTotal: 3, byStatus: { inbox: 2, ready: 1 } },
     });
 
     // Paging is not a filter, so the counts describe the whole product.
-    const nextPage = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&limit=2&beforeSequence=2` });
+    const nextPage = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}&limit=2&beforeSequence=3` });
     expect(nextPage.json()).toMatchObject({ items: [{ key: "MG-1" }], summary: { total: 3, productTotal: 3 } });
     expect(nextPage.json()).not.toHaveProperty("nextBeforeSequence");
 

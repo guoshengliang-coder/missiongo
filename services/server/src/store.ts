@@ -825,9 +825,26 @@ export class MissionGoStore {
       throw invalidInput("beforeSequence must be a positive integer.");
     }
     const { clauses, values } = this.workItemFilter(input);
+    // The creation or status-change event that most recently entered the
+    // current status determines list position. Event rowids preserve insertion
+    // order even when two changes share the same millisecond timestamp.
+    // Comments and edits deliberately do not change that position.
+    const entryOrder = `COALESCE((
+      SELECT MAX(e.rowid) FROM work_item_events e
+      WHERE e.item_id = work_items.id AND e.event_type IN ('item_created', 'status_changed')
+        AND e.to_status = work_items.status
+    ), 0)`;
     if (input.beforeSequence !== undefined) {
-      clauses.push("sequence < ?");
-      values.push(input.beforeSequence);
+      // The existing cursor is a sequence, but the position it denotes is now
+      // (entry_order, sequence). Resolve it against the same product so older
+      // clients and MCP callers can keep using beforeSequence.
+      const pivot = this.database.connection.prepare(
+        `SELECT ${entryOrder} AS entry_order FROM work_items
+         WHERE product_id = ? AND sequence = ?`,
+      ).get(input.productId, input.beforeSequence) as { entry_order: number } | undefined;
+      if (!pivot) throw invalidInput("beforeSequence does not identify an item in this product.");
+      clauses.push(`(${entryOrder} < ? OR (${entryOrder} = ? AND sequence < ?))`);
+      values.push(pivot.entry_order, pivot.entry_order, input.beforeSequence);
     }
     values.push(limit);
 
@@ -835,7 +852,7 @@ export class MissionGoStore {
       .prepare(
         `SELECT * FROM work_items
          WHERE ${clauses.join(" AND ")}
-         ORDER BY sequence DESC
+         ORDER BY ${entryOrder} DESC, sequence DESC
          LIMIT ?`,
       )
       .all(...values) as unknown as WorkItemRow[];

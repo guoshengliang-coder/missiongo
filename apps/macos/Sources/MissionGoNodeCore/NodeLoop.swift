@@ -312,7 +312,10 @@ public final class NodeLoop: @unchecked Sendable {
                 detected.append(DetectedAgent(kind: adapter.kind, version: version))
             }
         }
-        agentCache.withLock { $0 = (detected, Date()) }
+        // A failed version probe must not hide an otherwise installed agent
+        // for the full five-minute cache window. Retry incomplete results on
+        // the next heartbeat; complete results still avoid repeated processes.
+        agentCache.withLock { $0 = detected.count == adapters.count ? (detected, Date()) : nil }
         return detected
     }
 
