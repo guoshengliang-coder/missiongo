@@ -479,6 +479,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .item-title { min-width: 0; overflow: hidden; color: var(--ink); font-size: var(--text-base); font-weight: 680; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
 .item-description { overflow: hidden; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .item-description.muted { color: var(--muted-soft); font-style: italic; }
+.verification-return-badge { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; color: var(--danger); background: var(--danger-bg-strong); border: 1px solid currentColor; border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: 800; white-space: nowrap; }
+.verification-return-badge svg { flex: 0 0 auto; }
+.verification-return-badge span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* Shrinks, and is cut off rather than pushed out. Pinned at flex:0 0 auto these
    badges kept their full width, the title beside them collapsed to nothing, and
    the overflow painted straight over the row's more-menu. The title is what
@@ -632,6 +635,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .detail-title-block { display: flex; gap: 13px; align-items: flex-start; margin-bottom: 27px; }
 .detail-title-block h2 { max-width: 680px; margin: 0; font-size: clamp(22px, 2.3vw, 30px); letter-spacing: -0.035em; line-height: 1.17; }
 .detail-title-block .eyebrow { margin-top: 2px; }
+.verification-return-callout { margin: 0 0 24px; padding: 15px 17px; color: var(--ink); background: var(--danger-bg); border: 1px solid var(--danger); border-left-width: 4px; border-radius: var(--radius-md); }
+.verification-return-callout strong { display: flex; align-items: center; gap: 7px; color: var(--danger); font-size: var(--text-sm); }
+.verification-return-callout small { display: block; margin-top: 5px; color: var(--ink-2); font-size: var(--text-xs); }
+.verification-return-callout p { margin: 11px 0; font-size: var(--text-sm); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .item-relations { display: grid; gap: 6px; margin: -15px 0 22px; }
 .item-relations > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .item-relations-label { color: var(--muted); font-size: var(--text-xs); font-weight: 700; }
