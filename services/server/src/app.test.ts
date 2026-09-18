@@ -94,7 +94,7 @@ describe("Commenting over MCP", () => {
     const credentialsAt = app.missionGoAccounts.credentialsStamp(app.missionGoAccounts.getAccount(adminAccount.id));
     const readToken = createAiAccessToken(adminAccount, aiUser, credentialsAt, "read-client", ["missiongo:read"]).token;
     const writeToken = createAiAccessToken(adminAccount, aiUser, credentialsAt, "write-client", ["missiongo:read", "missiongo:write"]).token;
-    return { app, call, readToken, writeToken };
+    return { app, call, readToken, writeToken, productId: product.id };
   }
 
   it("writes a comment for a client the user granted writing to", async () => {
@@ -167,6 +167,33 @@ describe("Commenting over MCP", () => {
     })).json<{ events: Array<{ toStatus?: string; payload: Record<string, unknown> }> }>().events;
     const moved = events.find((event) => event.toStatus === "pending_verification");
     expect(moved?.payload).toMatchObject({ pullRequestUrl: "https://github.com/owner/repo/pull/42" });
+  });
+
+  it("lists only pending-verification items with a recorded pull request as release candidates", async () => {
+    const { app, call, readToken, writeToken, productId } = await commentingApp();
+    const empty = await call(readToken, 1, "tools/call", {
+      name: "list_release_candidates", arguments: { productId },
+    });
+    expect(empty.result?.structuredContent).toMatchObject({ candidates: [] });
+
+    await app.inject({
+      method: "POST", url: "/api/v1/items/HG-1/transitions",
+      headers: { authorization: "Bearer management-test-token" },
+      payload: { to: "ready", reason: "triaged" },
+    });
+    await call(writeToken, 2, "tools/call", {
+      name: "claim_item", arguments: { itemKey: "HG-1", agentId: "codex", idempotencyKey: "release-claim-1" },
+    });
+    await call(writeToken, 3, "tools/call", {
+      name: "submit_for_verification",
+      arguments: { itemKey: "HG-1", pullRequestUrl: "https://github.com/owner/repo/pull/42", idempotencyKey: "release-verify-1" },
+    });
+    const candidates = await call(readToken, 4, "tools/call", {
+      name: "list_release_candidates", arguments: { productId },
+    });
+    expect(candidates.result?.structuredContent).toMatchObject({
+      candidates: [{ itemKey: "HG-1", pullRequestUrl: "https://github.com/owner/repo/pull/42" }],
+    });
   });
 
   it("refuses a handover without an https pull request", async () => {
@@ -584,6 +611,7 @@ describe("MissionGo REST API", () => {
       "list_products",
       "list_components",
       "list_items",
+      "list_release_candidates",
       "get_item_context",
       "get_item_timeline",
       "get_attachment",

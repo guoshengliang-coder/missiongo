@@ -17,6 +17,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "list_products", access: "read", purpose: "List products visible to the connected account." },
   { name: "list_components", access: "read", purpose: "List components for a product." },
   { name: "list_items", access: "read", purpose: "Find work items using narrow product and status filters." },
+  { name: "list_release_candidates", access: "read", purpose: "Find pending-verification items with pull requests in one authorized product for a verified release." },
   { name: "get_item_context", access: "read", purpose: "Load the complete structured context for one work item." },
   { name: "get_item_timeline", access: "read", purpose: "Read comments, events, and execution summaries." },
   { name: "get_attachment", access: "read", purpose: "Obtain controlled access to one work item attachment." },

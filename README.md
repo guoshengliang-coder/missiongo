@@ -127,6 +127,11 @@ npm run release:state -- --deployed https://<host>
 Web 应用没有自己的版本号，它的身份就是提交：`scripts/deploy.sh` 负责发布，
 `/health` 报告线上跑的是哪个提交，细节见[部署说明](deploy/README.md)。
 
+发布工作条目通知走独立的核对步骤：部署时加 `--notice-origin https://<public-host>`，
+脚本会在结束后输出部署前后的实际产物和公开校验结果。发布会话按
+[`skills/missiongo/SKILL.md`](skills/missiongo/SKILL.md) 的「发布后版本回写」流程，
+只为 PR 和版本范围都核实过的待验证条目追加评论；部署脚本本身不保存 MissionGo 凭据。
+
 ## 项目规范
 
 - [贡献指南](CONTRIBUTING.md)

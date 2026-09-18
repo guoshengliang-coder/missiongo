@@ -30,7 +30,8 @@
     "check:identity": "node ./scripts/check-product-identity.mjs",
     "check:migrations": "node ./scripts/check-migrations.mjs",
     "lint": "oxlint .",
-    "test": "npm run build:types && npm run test --workspaces --if-present",
+    "test": "npm run build:types && npm run test:scripts && npm run test --workspaces --if-present",
+    "test:scripts": "node --test scripts/*.test.mjs",
     "typecheck": "tsc -b --pretty false"
   },
   "devDependencies": {

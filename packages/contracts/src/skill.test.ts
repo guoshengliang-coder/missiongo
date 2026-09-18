@@ -24,7 +24,7 @@ const skill = readFileSync(skillPath, "utf8");
  *
  * To update: bump MISSIONGO_SKILL_VERSION, run this test, and paste the actual digest.
  */
-const SKILL_CONTENT_DIGEST = "e4d20888ed07779afba155ed2416e8cbed13177cbd53a831063d081d4b0b106e";
+const SKILL_CONTENT_DIGEST = "5950d00902d19502e610c4d2b8cbf98d539bd050d2cd66178160b548532de1bd";
 
 function skillBodyWithoutVersion(): string {
   return skill
@@ -60,13 +60,13 @@ describe("MissionGo Skill contract", () => {
   });
 
   it("still drives the tools its read workflow depends on", () => {
-    // The Skill deliberately never calls the list_* tools: it reads one item by the key
-    // the user supplied and does not scan queues. Only assert the four it does rely on,
-    // so a rename or removal of any of them fails here instead of at runtime.
+    // Ordinary item reads use the named key. Release reconciliation has a narrow,
+    // product-scoped candidate tool; neither path may lose its read dependencies.
     for (const name of ["get_current_account", "get_item_context", "get_item_timeline", "get_attachment"]) {
       expect(skill, `SKILL.md never mentions ${name}`).toContain(name);
       expect(MCP_TOOL_DEFINITIONS.map((tool) => tool.name)).toContain(name);
     }
+    expect(skill).toContain("list_release_candidates");
   });
 
   it("keeps the deployment origin out of the tracked source", () => {
