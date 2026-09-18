@@ -20,6 +20,7 @@
 .sdk-feedback-header h1 { margin: 0; font-size: 25px; letter-spacing: -.035em; }
 .sdk-feedback-header span { display: block; margin-top: 7px; color: var(--muted); font-size: 10px; line-height: 1.55; }
 .sdk-feedback-form { gap: 15px; }
+.sdk-ai-title-field { min-width: 0; }
 .sdk-feedback-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 
 .sdk-feedback-form input[readonly] { color: var(--muted); background: #eeece6; }
@@ -58,6 +59,7 @@
   .sdk-feedback-header h1 { font-size: 24px; }
   .sdk-feedback-form .classification-row { grid-template-columns: 1fr; }
   .sdk-feedback-form .capture-type-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .sdk-ai-title-field { align-items: stretch; flex-direction: column; }
   .sdk-feedback-form .capture-attachment-heading, .sdk-feedback-form .diagnostic-input-heading { align-items: stretch; flex-direction: column; }
   .sdk-feedback-picker { width: 100%; }
   .sdk-feedback-context div { grid-template-columns: 1fr; gap: 3px; }
