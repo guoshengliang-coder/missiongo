@@ -71,10 +71,6 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// How tall this window may open, as a share of the screen it opens on. The
-    /// content scrolls past that rather than growing.
-    private static let maximumScreenShare: CGFloat = 0.8
-
     private func makeWindow() -> NSWindow {
         let content = NSHostingView(
             rootView: ScrollView { MenuContentView().environmentObject(AppModel.shared) }
@@ -89,30 +85,32 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         if #available(macOS 13.3, *) {
             content.sizingOptions = []
         }
+        // Not `content.fittingSize`: with sizingOptions emptied above, the hosting
+        // view answers zero, and the window opened as a title bar with nothing
+        // under it. MainWindowSizing decides the height instead of measuring it.
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: content.fittingSize),
+            contentRect: NSRect(origin: .zero, size: openingSize(on: NSScreen.main)),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "MissionGo"
         window.contentView = content
-        window.contentMinSize = NSSize(width: MenuContentView.width, height: 220)
+        window.contentMinSize = NSSize(width: MenuContentView.width, height: MainWindowSizing.minimumHeight)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
-        window.setContentSize(openingSize(for: content, on: window.screen))
+        window.setContentSize(openingSize(on: window.screen))
         window.center()
         return window
     }
 
-    /// As tall as the content wants, up to a share of the screen.
-    private func openingSize(for content: NSView, on screen: NSScreen?) -> NSSize {
-        let wanted = content.fittingSize
-        let available = (screen ?? NSScreen.main)?.visibleFrame.height ?? wanted.height
+    /// The size a window opens at: the menu's one width, and a height that fits
+    /// the screen rather than one measured from a view that no longer measures.
+    private func openingSize(on screen: NSScreen?) -> NSSize {
         return NSSize(
             width: MenuContentView.width,
-            height: min(wanted.height, available * MainWindowController.maximumScreenShare)
+            height: MainWindowSizing.openingHeight(availableHeight: (screen ?? NSScreen.main)?.visibleFrame.height)
         )
     }
 
