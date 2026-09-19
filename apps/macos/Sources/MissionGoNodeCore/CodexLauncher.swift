@@ -194,8 +194,14 @@ public struct CodexLauncher: AgentAdapter {
             throw LaunchError(reason)
         }
 
+        let worktreePath = try CodexWorkspace.worktreePath(repoPath: job.repoPath, dispatchId: job.dispatchId)
+        guard let skill = try? String(contentsOfFile: location.skillPath, encoding: .utf8),
+              let skillVersion = SkillSync.version(ofSkill: skill) else {
+            throw LaunchError("无法读取 Codex 的 MissionGo Skill 版本，请等待 Skill 同步完成再派单。")
+        }
         let prompt = try LaunchPrompt.build(
-            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys
+            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys,
+            client: .codex, worktreePath: worktreePath
         )
         let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
         let threadId: String
@@ -205,7 +211,9 @@ public struct CodexLauncher: AgentAdapter {
                 cwd: job.repoPath,
                 settings: settings,
                 name: sessionName,
-                prompt: prompt
+                prompt: prompt,
+                workspaceRoots: [job.repoPath, worktreePath],
+                skillVersion: skillVersion
             ))
         } catch {
             throw LaunchError(error.localizedDescription)

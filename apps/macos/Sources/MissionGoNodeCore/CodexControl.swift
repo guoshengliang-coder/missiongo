@@ -25,13 +25,17 @@ public struct CodexThreadRequest: Equatable, Sendable {
     public let settings: CodexThreadSettings
     public let name: String
     public let prompt: String
+    public let workspaceRoots: [String]
+    public let skillVersion: String?
 
-    public init(socketPath: String, cwd: String, settings: CodexThreadSettings, name: String, prompt: String) {
+    public init(socketPath: String, cwd: String, settings: CodexThreadSettings, name: String, prompt: String, workspaceRoots: [String] = [], skillVersion: String? = nil) {
         self.socketPath = socketPath
         self.cwd = cwd
         self.settings = settings
         self.name = name
         self.prompt = prompt
+        self.workspaceRoots = workspaceRoots.isEmpty ? [cwd] : workspaceRoots
+        self.skillVersion = skillVersion
     }
 }
 
@@ -71,18 +75,64 @@ public enum CodexProtocol {
         ]
     }
 
-    public static func threadStartParams(cwd: String, settings: CodexThreadSettings) -> [String: Any] {
-        var params: [String: Any] = [
+    public static func threadStartParams(cwd: String, settings: CodexThreadSettings, workspaceRoots: [String] = []) -> [String: Any] {
+        return [
             "cwd": cwd,
             "sandbox": settings.sandbox,
             "approvalPolicy": settings.approvalPolicy,
+            "approvalsReviewer": settings.approvalsReviewer,
+            "runtimeWorkspaceRoots": workspaceRoots.isEmpty ? [cwd] : workspaceRoots,
         ]
-        // `user` is the default. Only sent when it differs, so a Codex that does
-        // not know the field yet still starts plan and default threads.
-        if settings.approvalsReviewer != "user" {
-            params["approvalsReviewer"] = settings.approvalsReviewer
+    }
+
+    /// Check the effective policy returned by the running server, not the CLI
+    /// version or the presence of a field in its schema. No turn starts on a
+    /// silent downgrade, unsupported field or managed-policy mismatch.
+    public static func validateStarted(_ result: [String: Any], request: CodexThreadRequest) throws {
+        func canonical(_ path: String) -> String {
+            URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
         }
-        return params
+        guard result["approvalsReviewer"] as? String == request.settings.approvalsReviewer,
+              result["approvalPolicy"] as? String == request.settings.approvalPolicy,
+              let cwd = result["cwd"] as? String, canonical(cwd) == canonical(request.cwd),
+              let sandbox = result["sandbox"] as? [String: Any],
+              sandbox["type"] as? String == "workspaceWrite",
+              let writableRoots = sandbox["writableRoots"] as? [String],
+              let runtimeRoots = result["runtimeWorkspaceRoots"] as? [String]
+        else {
+            throw CodexControlError.rpc(method: "thread/start", message: "Codex 未确认派单要求的审批方式或工作区沙箱；尚未启动任务。请升级 Codex 后台服务或检查组织权限策略。")
+        }
+        let effective = Set(([cwd] + writableRoots).map(canonical))
+        let runtime = Set(runtimeRoots.map(canonical))
+        guard request.workspaceRoots.allSatisfy({ effective.contains(canonical($0)) && runtime.contains(canonical($0)) }) else {
+            throw CodexControlError.rpc(method: "thread/start", message: "Codex 未将本次 worktree 加入精确可写工作区；尚未启动任务。请升级 Codex 后台服务或检查工作区权限。")
+        }
+    }
+
+    /// This read goes through the target thread's own MCP connection. A node
+    /// credential or the CLI's "logged in" flag cannot prove these capabilities.
+    public static func validateAccount(_ result: [String: Any], skillVersion: String?) throws {
+        var account = result["structuredContent"] as? [String: Any]
+        if account == nil, let content = result["content"] as? [[String: Any]] {
+            account = content.compactMap { entry -> [String: Any]? in
+                guard entry["type"] as? String == "text", let text = entry["text"] as? String else { return nil }
+                return JSONValues.parse(text) as? [String: Any]
+            }.first
+        }
+        guard !JSONValues.isTrue(result["isError"]),
+              let account,
+              let capabilities = account["capabilities"] as? [String: Any],
+              JSONValues.isTrue(capabilities["canComment"]),
+              let writeTools = capabilities["writeTools"] as? [String],
+              writeTools.contains("append_comment"), writeTools.contains("claim_item") else {
+            throw CodexControlError.rpc(method: "mcpServer/tool/call", message: "Codex 的 MissionGo MCP 未确认评论与领取权限；尚未启动任务。请在该节点运行 codex mcp login missiongo --scopes missiongo:read,missiongo:write 并完成授权，再派单。")
+        }
+        if let skillVersion {
+            let expected = (account["skill"] as? [String: Any])?["expectedVersion"] as? String
+            guard expected == skillVersion else {
+                throw CodexControlError.rpc(method: "mcpServer/tool/call", message: "Codex 的 MissionGo Skill 版本与服务端不一致或无法核实；尚未启动任务。请等待 Skill 同步完成再派单。")
+            }
+        }
     }
 
     public static func threadNameParams(threadId: String, name: String) -> [String: Any] {
@@ -138,11 +188,16 @@ public struct CodexAppServerControl: CodexControl {
 
         let started = try connection.call(
             "thread/start",
-            CodexProtocol.threadStartParams(cwd: request.cwd, settings: request.settings)
+            CodexProtocol.threadStartParams(cwd: request.cwd, settings: request.settings, workspaceRoots: request.workspaceRoots)
         )
         guard let threadId = CodexProtocol.threadId(fromThreadStart: started) else {
             throw CodexControlError.invalidResponse(method: "thread/start")
         }
+        try CodexProtocol.validateStarted(started, request: request)
+        let account = try connection.call("mcpServer/tool/call", [
+            "threadId": threadId, "server": "missiongo", "tool": "get_current_account", "arguments": [:],
+        ])
+        try CodexProtocol.validateAccount(account, skillVersion: request.skillVersion)
         // A thread that could not be named is still a working thread; failing the
         // dispatch here would leave it running with nobody told about it.
         _ = try? connection.call("thread/name/set", CodexProtocol.threadNameParams(threadId: threadId, name: request.name))
