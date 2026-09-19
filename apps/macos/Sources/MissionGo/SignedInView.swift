@@ -149,22 +149,13 @@ private struct AgentsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            AgentRow(
-                title: "Claude Code",
-                summary: model.claude.summary,
-                checking: model.claude == .checking,
-                warn: !model.claude.isReady && model.claude != .checking,
-                hint: model.claude.fixHint,
-                command: model.claude.fixCommand
-            )
-            AgentRow(
-                title: "Codex",
-                summary: model.codex.summary,
-                checking: model.codex == .checking,
-                warn: model.codex.needsAttention,
-                hint: model.codex.fixHint,
-                command: model.codex.fixCommand(serverUrl: model.credential?.serverUrl)
-            )
+            WrappingCaption(text: "按需启用客户端；未启用时不会检查登录、运行命令或写入 Skill。升级后的首次使用也需要启用。")
+            IntegrationRow(agent: .claudeCode)
+            IntegrationRow(agent: .codex)
+            Button(model.importingPath ? "正在导入命令路径…" : "自定义安装：导入终端 PATH…") { model.importShellPath() }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .disabled(model.importingPath || !model.checkingIntegrations.isEmpty)
             if let skill = model.skillSync {
                 SkillRow(status: skill)
             }
@@ -191,14 +182,10 @@ private struct SkillRow: View {
                 Text(status.summary)
                     .font(.caption)
                     .foregroundColor(status.failureReason == nil ? .secondary : .orange)
-                if status.failureReason != nil {
-                    Button("重试") { model.retrySkillSync() }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                }
             }
             if let reason = status.failureReason {
                 WrappingCaption(text: reason, color: .orange)
+                WrappingCaption(text: "已停止自动重试，请点击对应客户端的「重新检查」。")
             }
         }
     }
@@ -259,28 +246,37 @@ private struct UpdateRow: View {
     }
 }
 
-private struct AgentRow: View {
+private struct IntegrationRow: View {
     @EnvironmentObject private var model: AppModel
     @State private var copied = false
-    let title: String
-    let summary: String
-    let checking: Bool
-    let warn: Bool
-    let hint: String?
-    let command: String?
+    let agent: LocalAgent
+
+    private var command: String? {
+        agent == .claudeCode ? model.claude.fixCommand : model.codex.fixCommand(serverUrl: model.credential?.serverUrl)
+    }
 
     var body: some View {
+        let state = model.integrationStates[agent.rawValue]
+        let checking = model.checkingIntegrations.contains(agent)
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(title)
+                Text(agent.title)
                 Spacer()
                 if checking {
                     ProgressView().controlSize(.mini)
                 }
-                Text(summary)
-                    .foregroundColor(warn ? .orange : .secondary)
+                Text(checking ? "检查中…" : (state?.version ?? (state == nil ? "未启用" : "已暂停")))
+                    .foregroundColor(state?.issue == nil ? .secondary : .orange)
+                Button(state == nil ? "启用…" : "重新检查") { model.checkIntegration(agent) }
+                    .buttonStyle(.borderless)
+                    .disabled(!model.checkingIntegrations.isEmpty || model.importingPath)
+                    .help("检查登录并同步该客户端的 missiongo Skill；不会检查另一个客户端。")
+                if state != nil {
+                    Button("停用") { model.disableIntegration(agent) }
+                        .buttonStyle(.borderless)
+                }
             }
-            if let hint {
+            if !checking, let hint = state?.issue {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     WrappingCaption(text: hint)
                     if let command {

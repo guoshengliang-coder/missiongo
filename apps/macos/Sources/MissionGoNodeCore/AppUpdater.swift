@@ -208,14 +208,10 @@ public enum AppUpdater {
         let verification = await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", newBundle.path])
         guard verification.code == 0 else { throw UpdateError.badBundle("签名校验失败：\(verification.output)") }
 
-        // The app is signed ad hoc, not notarized, so a quarantine attribute on
-        // it is the difference between launching and "cannot be opened". A file
-        // written by URLSession should not carry one -- that attribute is set by
-        // whoever downloads, and this app does not ask for it -- but the cost of
-        // being wrong is replacing a working install with one that will not
-        // start, so strip it rather than reason about it. Nothing to remove is
-        // not a failure.
-        _ = await run("/usr/bin/xattr", ["-d", "-r", "com.apple.quarantine", newBundle.path])
+        // Do not strip quarantine to make an untrusted release launch. Official
+        // packages must pass Gatekeeper before replacing the working install.
+        let assessment = await run("/usr/sbin/spctl", ["--assess", "--type", "execute", newBundle.path])
+        guard assessment.code == 0 else { throw UpdateError.badBundle("系统安全校验未通过，旧版本已保留：\(assessment.output)") }
 
         do {
             _ = try FileManager.default.replaceItemAt(bundle, withItemAt: newBundle)

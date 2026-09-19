@@ -11,7 +11,7 @@ final class AppModel: ObservableObject {
     static let shared = AppModel()
 
     enum Phase: Equatable {
-        /// Reading the Keychain and the login shell's PATH at launch.
+        /// Reading this app's credential and resolving known CLI locations.
         case starting
         case signedOut
         case signingIn
@@ -68,12 +68,9 @@ final class AppModel: ObservableObject {
     private enum DefaultsKey {
         static let serverOverride = "serverURLOverride"
         static let revokedNotice = "lastSessionRevoked"
-        static let launchAtLoginApplied = "launchAtLoginAppliedAfterFirstLogin"
+        static let importedPath = "explicitlyImportedCLIPath"
     }
 
-    static let claudeRecheckInterval: TimeInterval = 5 * 60
-    /// The Skill changes with releases, not minutes; the first sync runs at login.
-    static let skillSyncInterval: TimeInterval = 60 * 60
     /// Releases are days apart, and the check costs a request against the
     /// deployment this Mac is already heartbeating to every 30 seconds. Once at
     /// login is what actually catches most of them.
@@ -93,7 +90,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var profileError: String?
     @Published private(set) var savingNickname = false
     @Published private(set) var nicknameError: String?
-    @Published private(set) var repos: [RepoMapping] = []
+    @Published private(set) var repos: [RepoMapping] = [] {
+        didSet {
+            candidates = RepoCandidates.mapped(repos)
+            candidateSnapshot.update(repos)
+        }
+    }
     @Published private(set) var repoNotices: [String: RepoNotice] = [:]
     @Published private(set) var savingProductIds: Set<String> = []
     @Published private(set) var candidates: [RepoCandidate] = []
@@ -106,6 +108,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var codex: CodexStatus = .checking
     /// The Skill row: nil until the first sync starts.
     @Published private(set) var skillSync: SkillSyncStatus?
+    @Published private(set) var integrationStates: [String: LocalIntegrations.State] = [:]
+    @Published private(set) var checkingIntegrations: Set<LocalAgent> = []
+    @Published private(set) var importingPath = false
     @Published private(set) var launchAtLogin = LaunchAtLogin()
     /// The client's own version, and whether a newer one is published.
     @Published private(set) var updateState: UpdateState = .unavailable
@@ -114,7 +119,9 @@ final class AppModel: ObservableObject {
 
     // MARK: Private state
 
-    private let store: CredentialStore = KeychainCredentialStore()
+    private let store = KeychainCredentialStore()
+    private let integrations = LocalIntegrations()
+    private let candidateSnapshot = MappedRepositorySnapshot()
     private let defaults = UserDefaults.standard
     private let bundleServerUrl = Bundle.main.object(forInfoDictionaryKey: "MissionGoServerURL") as? String
     private var environment: ShellEnvironment?
@@ -128,16 +135,14 @@ final class AppModel: ObservableObject {
     private var loopGeneration = 0
     private var lastLoopRepos: [RepoMapping]?
     private var lastSeenLaunchId: String?
-    private var claudeTimer: Task<Void, Never>?
-    private var skillTimer: Task<Void, Never>?
     private var updateTimer: Task<Void, Never>?
     private var menuTimer: Task<Void, Never>?
-    private var lastClaudeCheck: Date?
     private var lastOpenRefresh: Date?
 
     private init() {
         showsRevokedNotice = UserDefaults.standard.bool(forKey: DefaultsKey.revokedNotice)
         serverOverride = UserDefaults.standard.string(forKey: DefaultsKey.serverOverride)
+        refreshIntegrationStates()
     }
 
     // MARK: Derived
@@ -189,15 +194,20 @@ final class AppModel: ObservableObject {
         updateState = AppUpdater.currentVersion().map { .current($0) } ?? .unavailable
         refreshLaunchAtLogin()
         Task {
-            // The login shell can take seconds to answer; never on the main thread.
-            let environment = await Task.detached { ShellEnvironment.resolve() }.value
+            // Do not run the user's shell profile as a startup side effect.
+            let environment: ShellEnvironment
+            if let path = defaults.string(forKey: DefaultsKey.importedPath), !path.isEmpty {
+                environment = ShellEnvironment(path: path)
+            } else {
+                environment = ShellEnvironment.resolve()
+            }
             self.environment = environment
             let credential: NodeCredential?
             do {
-                credential = try store.loadCredential()
+                credential = try store.loadCredential(allowInteraction: false)
             } catch {
                 credential = nil
-                loginError = error.localizedDescription
+                loginError = "未自动读取登录凭据：\(error.localizedDescription)。请点击登录后按系统提示授权。"
             }
             if let credential {
                 enterSignedIn(credential)
@@ -211,20 +221,16 @@ final class AppModel: ObservableObject {
         phase = .signedIn(credential)
         loginError = nil
         startLoop(credential)
-        startClaudeTimer()
-        startSkillTimer(credential)
         startUpdateTimer(credential)
         refreshProfile()
         refreshDispatches()
-        refreshCandidates()
     }
 
     private func leaveSignedIn(revoked: Bool) {
         stopLoop()
-        claudeTimer?.cancel()
-        claudeTimer = nil
-        skillTimer?.cancel()
-        skillTimer = nil
+        for agent in checkingIntegrations { integrations.disable(agent) }
+        checkingIntegrations.removeAll()
+        refreshIntegrationStates()
         updateTimer?.cancel()
         updateTimer = nil
         do {
@@ -252,7 +258,6 @@ final class AppModel: ObservableObject {
         // The version is a property of this build, not of the session, so it
         // stays; anything in flight does not.
         updateState = AppUpdater.currentVersion().map { .current($0) } ?? .unavailable
-        lastClaudeCheck = nil
     }
 
     private func handleCredentialRevoked() {
@@ -283,13 +288,20 @@ final class AppModel: ObservableObject {
         loopState = NodeLoopState()
 
         // A loop runs once; every login gets a fresh one.
+        var timing = NodeLoop.Timing()
+        // The consented adapters only read cached metadata. Do not cache it
+        // again in the loop, otherwise disabling stays advertised for minutes.
+        timing.agentDetectTTL = 0
+        let snapshot = candidateSnapshot
         let loop = NodeLoop(
             api: APIClient(serverUrl: credential.serverUrl, token: credential.token),
             adapters: [
-                SessionLauncher(environment: environment),
-                CodexLauncher(environment: environment, serverUrl: credential.serverUrl),
+                ConsentedAgentAdapter(agent: .claudeCode, base: SessionLauncher(environment: environment), access: integrations),
+                ConsentedAgentAdapter(agent: .codex, base: CodexLauncher(environment: environment, serverUrl: credential.serverUrl), access: integrations),
             ],
-            fallbackNodeName: credential.name
+            fallbackNodeName: credential.name,
+            detectRepoCandidates: { snapshot.candidates },
+            timing: timing
         )
         loopStatesTask = Task { [weak self] in
             for await state in loop.states {
@@ -319,6 +331,7 @@ final class AppModel: ObservableObject {
     }
 
     private func apply(_ state: NodeLoopState) {
+        refreshIntegrationStates()
         loopState = state
         // The heartbeat carries the mapping, so a change made in the console
         // shows up here within one beat. Only a changed snapshot is applied, so
@@ -389,7 +402,6 @@ final class AppModel: ObservableObject {
                 showsRevokedNotice = false
                 defaults.set(false, forKey: DefaultsKey.revokedNotice)
                 enterSignedIn(credential)
-                enableLaunchAtLoginAfterFirstLogin()
             } catch is CancellationError {
                 if phase == .signingIn { phase = .signedOut }
             } catch {
@@ -431,10 +443,9 @@ final class AppModel: ObservableObject {
             return
         }
         lastOpenRefresh = now
-        refreshClaude()
+        refreshIntegrationStates()
         refreshProfile()
         refreshDispatches()
-        refreshCandidates()
         startMenuTimer()
     }
 
@@ -454,74 +465,105 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func startClaudeTimer() {
-        claudeTimer?.cancel()
-        claudeTimer = Task { [weak self] in
-            while !Task.isCancelled {
-                self?.refreshClaude(force: true)
-                try? await Task.sleep(nanoseconds: UInt64(AppModel.claudeRecheckInterval * 1_000_000_000))
-            }
-        }
-    }
-
     // MARK: Refreshing
 
-    func refreshClaude(force: Bool = false) {
-        guard let environment else { return }
-        let now = Date()
-        if !force, let last = lastClaudeCheck, now.timeIntervalSince(last) < AppModel.openRefreshThrottle { return }
-        lastClaudeCheck = now
+    private func refreshIntegrationStates() {
+        integrationStates = Dictionary(uniqueKeysWithValues: LocalAgent.allCases.compactMap { agent in
+            integrations.state(for: agent).map { (agent.rawValue, $0) }
+        })
+    }
+
+    /// Optional compatibility path for nvm/custom installations. Reading PATH
+    /// by launching a login shell runs its profile, so never do this implicitly.
+    func importShellPath() {
+        guard !importingPath, checkingIntegrations.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "从登录 Shell 导入命令路径？"
+        alert.informativeText = "这会运行一次 zsh 登录配置（例如 .zprofile）；其中的自定义命令可能触发系统权限请求。只保存得到的 PATH，以后启动不会再次执行配置。仅在使用自定义 CLI 安装位置时需要。"
+        alert.addButton(withTitle: "导入一次")
+        alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        importingPath = true
         Task {
-            let run = Commands.runner(environment: environment)
-            async let claudeStatus = ClaudeCodeStatus.check(run: run)
-            async let codexStatus = CodexStatus.check(
-                environment: environment, location: CodexLocation(environment: environment), run: run
-            )
-            let (claudeResult, codexResult) = await (claudeStatus, codexStatus)
-            if credential != nil {
-                claude = claudeResult
-                codex = codexResult
-            }
+            defer { importingPath = false }
+            let environment = await Task.detached { ShellEnvironment.resolve(loadLoginShell: true) }.value
+            self.environment = environment
+            defaults.set(environment.path, forKey: DefaultsKey.importedPath)
+            if let credential { startLoop(credential) }
         }
     }
 
-    private func startSkillTimer(_ credential: NodeCredential) {
-        skillTimer?.cancel()
-        skillTimer = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.syncSkill(credential)
-                try? await Task.sleep(nanoseconds: UInt64(AppModel.skillSyncInterval * 1_000_000_000))
-            }
+    func disableIntegration(_ agent: LocalAgent) {
+        integrations.disable(agent)
+        if checkingIntegrations.contains(agent) { skillSync = nil }
+        refreshIntegrationStates()
+    }
+
+    /// The only path that checks client login and writes Skill files. No timer,
+    /// menu-open callback or heartbeat calls it. Each client is independent.
+    func checkIntegration(_ agent: LocalAgent) {
+        guard let credential, let environment, checkingIntegrations.isEmpty, !importingPath else { return }
+        if integrations.state(for: agent) == nil {
+            let alert = NSAlert()
+            alert.messageText = "启用 \(agent.title) 集成？"
+            alert.informativeText = "将检查该客户端的安装和登录状态，并向它的 missiongo Skill 目录写入规则。收到派单后才访问映射的仓库。不会扫描历史项目，也不需要全盘访问、辅助功能或录屏权限。拒绝或失败后会暂停，只有点击重新检查才重试。"
+            alert.addButton(withTitle: "启用并检查")
+            alert.addButton(withTitle: "取消")
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
-    }
-
-    /// Syncs the Skill now, from the menu's retry button (AND-47). Restarts the
-    /// timer rather than syncing beside it, so the next automatic sync is an
-    /// hour from this one instead of landing on top of it.
-    func retrySkillSync() {
-        guard let credential, skillSync != .syncing else { return }
-        startSkillTimer(credential)
-    }
-
-    /// Fetches the Skill from the server this Mac is logged in to and updates
-    /// the agents' copies. A failure is shown, never fatal: a session still
-    /// starts with whatever copy is installed.
-    private func syncSkill(_ credential: NodeCredential) async {
-        guard let environment else { return }
-        let targets = SkillSync.targets(
-            home: Paths.homeDirectory(), codexHome: CodexLocation(environment: environment).codexHome
-        )
-        skillSync = .syncing
-        do {
-            let outcome = try await SkillSync.run(serverUrl: credential.serverUrl, targets: targets)
-            guard self.credential == credential else { return }
-            if !outcome.updated.isEmpty {
-                NSLog("%@", "missiongo Skill 已更新到 \(outcome.version)：\(outcome.updated.joined(separator: "，"))")
+        let access = integrations
+        let attempt = access.begin(agent)
+        checkingIntegrations.insert(agent)
+        refreshIntegrationStates()
+        Task {
+            defer {
+                checkingIntegrations.remove(agent)
+                refreshIntegrationStates()
             }
-            skillSync = .outcome(outcome)
-        } catch {
-            guard self.credential == credential else { return }
-            skillSync = .failed(reason: error.localizedDescription)
+            let runner = Commands.runner(environment: environment)
+            let run: CommandRunner = { file, args in
+                guard access.isCurrent(agent, attempt: attempt) else {
+                    return CommandResult(code: -1, stdout: "", stderr: "集成已停用")
+                }
+                return await runner(file, args)
+            }
+            let version: String
+            let issue: String?
+            switch agent {
+            case .claudeCode:
+                let status = await ClaudeCodeStatus.check(run: run)
+                guard access.isCurrent(agent, attempt: attempt) else { return }
+                claude = status
+                if case let .ready(value) = status { version = value; issue = nil }
+                else { version = ""; issue = status.summary + "。" + (status.fixHint ?? "") }
+            case .codex:
+                let status = await CodexStatus.check(environment: environment, location: CodexLocation(environment: environment), run: run)
+                guard access.isCurrent(agent, attempt: attempt) else { return }
+                codex = status
+                if case let .ready(value) = status { version = value; issue = nil }
+                else { version = ""; issue = status.summary + "。" + (status.fixHint ?? "") }
+            }
+            if let issue {
+                access.finish(agent, attempt: attempt, version: nil, issue: issue)
+                return
+            }
+            let target = SkillSync.target(for: agent, home: Paths.homeDirectory(), codexHome: CodexLocation(environment: environment).codexHome)
+            skillSync = .syncing
+            do {
+                let outcome = try await SkillSync.run(serverUrl: credential.serverUrl, targets: [target], shouldApply: {
+                    access.isCurrent(agent, attempt: attempt)
+                })
+                guard access.isCurrent(agent, attempt: attempt), self.credential == credential else { return }
+                skillSync = .outcome(outcome)
+                access.finish(agent, attempt: attempt, version: outcome.failures.isEmpty ? version : nil,
+                              issue: skillSync?.failureReason)
+            } catch {
+                guard access.isCurrent(agent, attempt: attempt), self.credential == credential else { return }
+                skillSync = .failed(reason: error.localizedDescription)
+                access.finish(agent, attempt: attempt, version: nil, issue: error.localizedDescription)
+            }
         }
     }
 
@@ -632,12 +674,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func refreshCandidates() {
-        Task {
-            candidates = await Task.detached { RepoCandidates.detect() }.value
-        }
-    }
-
     // MARK: Nickname
 
     /// Whether the server behind this login can store a nickname. One from
@@ -711,7 +747,9 @@ final class AppModel: ObservableObject {
     }
 
     func assign(_ path: String, to product: NodeProfile.Product) {
-        let verdict = RepoFolderCheck.evaluate(path: path, claudeJson: ClaudeJson.read())
+        // Picking a repository is not consent to inspect Claude's configuration.
+        // The native adapter checks trust when an actual Claude dispatch starts.
+        let verdict = RepoFolderCheck.evaluate(path: path, claudeJson: nil, checkClaudeTrust: false)
         switch verdict {
         case let .rejected(reason):
             repoNotices[product.id] = RepoNotice(kind: .error, text: reason)
@@ -779,15 +817,6 @@ final class AppModel: ObservableObject {
             launchAtLogin.error = "\(enabled ? "打开" : "关闭")开机自启失败：\(error.localizedDescription)"
         }
         refreshLaunchAtLogin()
-    }
-
-    /// Once, after the first successful login; turning it off later sticks.
-    private func enableLaunchAtLoginAfterFirstLogin() {
-        guard !defaults.bool(forKey: DefaultsKey.launchAtLoginApplied) else { return }
-        defaults.set(true, forKey: DefaultsKey.launchAtLoginApplied)
-        if SMAppService.mainApp.status != .enabled {
-            setLaunchAtLogin(true)
-        }
     }
 
     func openLoginItemsSettings() {

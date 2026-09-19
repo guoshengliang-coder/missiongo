@@ -9,10 +9,8 @@
 # the command-line tools. The one thing SwiftPM does not do is wrap an executable
 # in an app bundle, so this script does that part.
 #
-# The bundle is signed ad hoc, not with a Developer ID. Apple silicon refuses to
-# run an unsigned binary at all, so ad hoc is the floor; it is not notarized, so
-# macOS still asks the person to allow it once under System Settings → Privacy &
-# Security. The console's install steps say so.
+# CI/development builds may be signed ad hoc. The publisher sets
+# MISSIONGO_MACOS_RELEASE=1, requiring Developer ID signing and notarization.
 set -eu
 
 SCRIPT_DIRECTORY=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -102,12 +100,6 @@ else
   echo "Note: could not render ${ICON_SOURCE}; the app will use a generic icon." >&2
 fi
 
-echo "==> Signing ad hoc"
-codesign --force --deep --sign - --timestamp=none "$APP"
-codesign --verify --deep --strict "$APP"
-
-# ditto keeps the bundle's symlinks and extended attributes; a plain zip does not,
-# and a damaged bundle is reported to the person as "the app is damaged".
-ditto -c -k --keepParent "$APP" "$ZIP"
+sh "$SCRIPT_DIRECTORY/sign-macos-app.sh" "$APP" "$ZIP"
 echo "==> ${ZIP}"
 shasum -a 256 "$ZIP"

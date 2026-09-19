@@ -44,6 +44,11 @@ set +a
 : "${MISSIONGO_PUBLIC_ORIGIN:?Missing MISSIONGO_PUBLIC_ORIGIN in $PRODUCTION_ENV_FILE}"
 export MISSIONGO_PUBLIC_ORIGIN
 
+# Fail before testing/building/staging; never silently ship a development
+# signature which cannot retain a stable identity across updates.
+export MISSIONGO_MACOS_RELEASE=1
+sh "$SCRIPT_DIRECTORY/sign-macos-app.sh" --check-release-config
+
 if [ "$allow_republish" -eq 0 ]; then
   node "$REPOSITORY_ROOT/scripts/release-state.mjs" --check macosApp || {
     echo "Pass --allow-republish to publish anyway." >&2

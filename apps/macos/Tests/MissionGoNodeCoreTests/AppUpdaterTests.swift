@@ -226,7 +226,7 @@ final class AppUpdaterInstallTests: XCTestCase {
         XCTAssertThrowsError(try AppUpdater.locateBundle(in: root))
     }
 
-    /// The whole flow against a real ditto archive, with codesign and xattr
+    /// The whole flow against a real ditto archive, with codesign and spctl
     /// stubbed: those need a signed bundle, which a unit test cannot make.
     func testUnpacksAndReplacesTheRunningBundle() async throws {
         let root = try temporaryDirectory()
@@ -252,7 +252,7 @@ final class AppUpdaterInstallTests: XCTestCase {
         )
 
         XCTAssertEqual(result, installed)
-        XCTAssertEqual(calls.current, ["/usr/bin/codesign", "/usr/bin/xattr"])
+        XCTAssertEqual(calls.current, ["/usr/bin/codesign", "/usr/sbin/spctl"])
         let info = try PropertyListSerialization.propertyList(
             from: try Data(contentsOf: installed.appendingPathComponent("Contents/Info.plist")), format: nil
         ) as? [String: Any]
@@ -260,6 +260,14 @@ final class AppUpdaterInstallTests: XCTestCase {
     }
 
     func testStopsBeforeReplacingWhenSignatureVerificationFails() async throws {
+        try await assertRejectedUpdate(failingTool: "/usr/bin/codesign")
+    }
+
+    func testStopsBeforeReplacingWhenGatekeeperRejectsTheUpdate() async throws {
+        try await assertRejectedUpdate(failingTool: "/usr/sbin/spctl")
+    }
+
+    private func assertRejectedUpdate(failingTool: String) async throws {
         let root = try temporaryDirectory()
         let source = try makeBundle(in: root.appendingPathComponent("src", isDirectory: true), version: "0.4.0", identifier: "io.missiongo.macos")
         let archive = root.appendingPathComponent("MissionGo-macOS.zip")
@@ -274,7 +282,7 @@ final class AppUpdaterInstallTests: XCTestCase {
                 expectedIdentifier: "io.missiongo.macos",
                 run: { path, args in
                     if path == "/usr/bin/ditto" { return await AppUpdater.systemRunner(path, args) }
-                    return path == "/usr/bin/codesign" ? (1, "code object is not signed at all") : (0, "")
+                    return path == failingTool ? (1, "verification rejected") : (0, "")
                 }
             )
             XCTFail("expected a failure")

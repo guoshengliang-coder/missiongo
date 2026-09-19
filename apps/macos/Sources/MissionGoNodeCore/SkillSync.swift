@@ -1,13 +1,12 @@
 import Foundation
 
-/// Keeps the missiongo Skill current in every agent on this machine.
+/// Syncs missiongo Skill for the client the person explicitly selects.
 ///
 /// A dispatched session is told to "use the missiongo skill"; an agent without
 /// it, or with an old copy, works the items by rules the server has moved on
-/// from. So the published SKILL.md is fetched from the server this Mac is logged
-/// in to and written into `~/.claude/skills/missiongo` and
-/// `$CODEX_HOME/skills/missiongo` — only for agents whose home directory exists,
-/// and never over a newer copy or a symlink someone set up by hand.
+/// from. The foreground integration check fetches SKILL.md from this Mac's
+/// server and writes just the selected target, never over a newer copy or a
+/// symlink someone set up by hand. There is no periodic background sync.
 public enum SkillSync {
     public static let downloadPath = "/downloads/missiongo-skill/SKILL.md"
     static let maxBytes = 1_000_000
@@ -66,6 +65,13 @@ public enum SkillSync {
             .map { "\($0)/skills/missiongo/SKILL.md" }
     }
 
+    /// Called only after the person enables this specific integration. Do not
+    /// even stat the disabled client's home directory.
+    public static func target(for agent: LocalAgent, home: String, codexHome: String) -> String {
+        let directory = agent == .claudeCode ? "\(home)/.claude" : codexHome
+        return "\(directory)/skills/missiongo/SKILL.md"
+    }
+
     static func isSymlink(_ path: String) -> Bool {
         var info = stat()
         guard lstat(path, &info) == 0 else { return false }
@@ -82,7 +88,18 @@ public enum SkillSync {
         for target in targets {
             let directory = (target as NSString).deletingLastPathComponent
             if isSymlink(target) || isSymlink(directory) { continue }
-            if let data = FileManager.default.contents(atPath: target) {
+            let data: Data?
+            do {
+                data = try Data(contentsOf: URL(fileURLWithPath: target))
+            } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
+                data = nil
+            } catch {
+                // A refused read is not proof of a missing file. Do not follow
+                // it with a write attempt (or overwrite an unreadable Skill).
+                failures.append("\(target)：\(error.localizedDescription)")
+                continue
+            }
+            if let data {
                 let local = version(ofSkill: String(decoding: data, as: UTF8.self))
                 guard let local, isNewer(remote, than: local) else { continue }
             }
@@ -100,7 +117,8 @@ public enum SkillSync {
     public static func run(
         serverUrl: String,
         targets: [String],
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        shouldApply: @Sendable () -> Bool = { true }
     ) async throws -> Outcome {
         guard let url = URL(string: serverUrl + downloadPath) else { throw SyncError.download("地址无效") }
         var request = URLRequest(url: url, timeoutInterval: 20)
@@ -116,6 +134,7 @@ public enum SkillSync {
             throw SyncError.download("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
         }
         guard data.count <= maxBytes, let text = String(data: data, encoding: .utf8) else { throw SyncError.invalidSkill }
+        guard shouldApply() else { throw CancellationError() }
         return try apply(skill: text, targets: targets)
     }
 }

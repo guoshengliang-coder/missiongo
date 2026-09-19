@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 /// What this machine keeps between launches: where the server is, and the
@@ -59,7 +60,13 @@ public struct KeychainCredentialStore: CredentialStore {
     }
 
     public func loadCredential() throws -> NodeCredential? {
-        guard let data = try read(account: KeychainCredentialStore.credentialAccount) else { return nil }
+        return try loadCredential(allowInteraction: true)
+    }
+
+    /// Startup must not summon a keychain dialog behind other applications.
+    /// The sign-in button remains the explicit interactive recovery path.
+    public func loadCredential(allowInteraction: Bool) throws -> NodeCredential? {
+        guard let data = try read(account: KeychainCredentialStore.credentialAccount, allowInteraction: allowInteraction) else { return nil }
         do {
             return try JSONDecoder().decode(NodeCredential.self, from: data)
         } catch {
@@ -98,10 +105,24 @@ public struct KeychainCredentialStore: CredentialStore {
         ]
     }
 
-    private func read(account: String) throws -> Data? {
-        var query = baseQuery(account: account)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
+    static func readQuery(service: String, account: String, allowInteraction: Bool) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        if !allowInteraction {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
+        return query
+    }
+
+    private func read(account: String, allowInteraction: Bool = true) throws -> Data? {
+        let query = Self.readQuery(service: service, account: account, allowInteraction: allowInteraction)
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
