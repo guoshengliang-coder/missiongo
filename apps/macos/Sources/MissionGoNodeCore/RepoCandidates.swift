@@ -1,12 +1,19 @@
 import Foundation
 
-/// The checkouts this machine can already work in.
+/// Shared with the background heartbeat; updating it never accesses the disk.
+public final class MappedRepositorySnapshot: @unchecked Sendable {
+    private let value = Locked<[RepoCandidate]>([])
+    public init() {}
+    public var candidates: [RepoCandidate] { value.current }
+    public func update(_ repos: [RepoMapping]) { value.withLock { $0 = RepoCandidates.mapped(repos) } }
+}
+
+/// A repository offered as a mapping choice.
 ///
 /// Typing an absolute path is both tedious and the easiest place to get a
-/// dispatch wrong — a typo only shows up as a failed launch minutes later.
-/// Claude Code already keeps the list of directories it has been opened in, so
-/// the machine offers those instead and mapping becomes a choice rather than a
-/// text field.
+/// dispatch wrong. The application now offers only explicit node mappings,
+/// without probing their contents. The legacy history parser below is retained
+/// as a utility, but is not called by startup, menus or heartbeats.
 ///
 /// Only the path and the directory name leave the machine. Git remotes would
 /// match products more reliably, but they carry private hosts and owners into
@@ -104,8 +111,13 @@ public enum RepoCandidates {
             .map { $0.candidate }
     }
 
-    public static func detect(home: String = Paths.homeDirectory()) -> [RepoCandidate] {
-        return parse(claudeJson: ClaudeJson.read(home: home))
+    /// No filesystem access: mappings are explicit choices, not permission to
+    /// enumerate all the repositories another application has ever opened.
+    public static func mapped(_ repos: [RepoMapping]) -> [RepoCandidate] {
+        let paths = Set(repos.map(\.repoPath).filter { Paths.isAbsolute($0) && !isSessionWorktree($0) })
+        return paths.sorted().prefix(maxCandidates).map {
+            RepoCandidate(path: $0, name: Paths.basename($0))
+        }
     }
 
     /// `Date.parse(String(value ?? ""))`, for a time that was stored as a string.

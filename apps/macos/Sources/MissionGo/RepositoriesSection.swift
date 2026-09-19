@@ -97,10 +97,10 @@ private struct RepoRow: View {
             Button("选择文件夹…") { model.chooseFolder(for: product) }
                 .buttonStyle(.borderless)
         } else {
-            // Clicking opens the folder panel; the arrow offers the checkouts
-            // Claude Code already trusts.
+            // Only mappings explicitly chosen for this node, never another
+            // application's project history.
             Menu {
-                Section("Claude Code 用过的仓库") {
+                Section("本机已映射的仓库") {
                     ForEach(suggestions, id: \.path) { candidate in
                         Button(PathDisplay.abbreviate(candidate.path)) {
                             model.assign(candidate.path, to: product)

@@ -7,8 +7,8 @@ import Foundation
 /// — usually under `~/.local/bin` or a Homebrew prefix — is not found. This is
 /// the same trap the launchd service of the command-line node fell into: the
 /// machine comes up, reports no agents, and every dispatch fails with a missing
-/// binary nobody at the machine sees. So the login shell is asked for its PATH
-/// once, and every process this app starts uses the answer.
+/// binary nobody at the machine sees. Known installation paths are included by
+/// default; custom paths can be imported explicitly in the foreground and saved.
 public struct ShellEnvironment: Sendable, Equatable {
     public let path: String
     public let environment: [String: String]
@@ -37,11 +37,14 @@ public struct ShellEnvironment: Sendable, Equatable {
         ]
     }
 
-    /// Asks `/bin/zsh -l` for its PATH, with a timeout, and falls back to the
-    /// default entries. It blocks for up to a few seconds, so call it once at
-    /// startup, off the main thread.
-    public static func resolve(home: String = Paths.homeDirectory()) -> ShellEnvironment {
-        let shellPath = loginShellPath(timeout: loginShellTimeout)
+    /// Startup never evaluates shell configuration. An explicit import can ask
+    /// `/bin/zsh -l` for PATH with a timeout; run that off the main thread.
+    public static func resolve(home: String = Paths.homeDirectory(), loadLoginShell: Bool = false,
+                               loginShell: (() -> String?)? = nil) -> ShellEnvironment {
+        // Startup uses known CLI locations and the inherited PATH. A login
+        // profile can run arbitrary commands, including keychain/Apple Events
+        // requests, so evaluating it requires an explicit foreground action.
+        let shellPath = loadLoginShell ? (loginShell ?? { loginShellPath(timeout: loginShellTimeout) })() : ProcessInfo.processInfo.environment["PATH"]
         return ShellEnvironment(path: mergePath(shellPath, defaults: defaultPathEntries(home: home)))
     }
 

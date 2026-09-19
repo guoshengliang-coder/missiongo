@@ -252,7 +252,7 @@ public enum ClaudeCodeStatus: Equatable, Sendable {
     public var fixHint: String? {
         switch self {
         case .checking, .ready: return nil
-        case .notInstalled: return "确认终端里能直接运行 claude，然后重新打开 MissionGo"
+        case .notInstalled: return "确认已安装 claude；自定义安装位置可先导入终端 PATH，再点击重新检查"
         case .notLoggedIn: return "在终端运行 claude auth login"
         case .unreadable: return "在终端运行 claude auth status 查看"
         }
@@ -390,6 +390,7 @@ public enum RepoFolderCheck {
     public static func evaluate(
         path: String,
         claudeJson: String?,
+        checkClaudeTrust: Bool = true,
         home: String = Paths.homeDirectory(),
         isRepo: (String) -> Bool = RepoCandidates.isGitRepository
     ) -> RepoFolderVerdict {
@@ -402,6 +403,7 @@ public enum RepoFolderCheck {
         if !isRepo(path) {
             return .rejected(reason: "\(shown) 不是 git 仓库，没有保存：请选择仓库的根目录（包含 .git 的那一层）。")
         }
+        guard checkClaudeTrust else { return .accepted }
         guard let claudeJson, Preflight.isTrustedRepoPath(claudeJson: claudeJson, repoPath: path) else {
             return .acceptedUntrusted(warning: untrustedWarning)
         }

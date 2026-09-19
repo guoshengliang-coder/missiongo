@@ -144,7 +144,7 @@ public final class NodeLoop: @unchecked Sendable {
         api: NodeAPI,
         adapters: [AgentAdapter],
         fallbackNodeName: String,
-        detectRepoCandidates: @escaping @Sendable () -> [RepoCandidate] = { RepoCandidates.detect() },
+        detectRepoCandidates: @escaping @Sendable () -> [RepoCandidate] = { [] },
         timing: Timing = Timing(),
         log: @escaping @Sendable (String) -> Void = { NSLog("%@", $0) },
         onState: @escaping @Sendable (NodeLoopState) -> Void = { _ in }
@@ -205,9 +205,8 @@ public final class NodeLoop: @unchecked Sendable {
             await shielded {
                 do {
                     let agents = await self.detectAgents()
-                    // Re-read every beat rather than caching: a repository the
-                    // operator just opened for the first time should appear in the
-                    // mapping list without restarting the app.
+                    // The app supplies an in-memory list of mapped repositories.
+                    // Heartbeats must not probe historical project directories.
                     let candidates = self.detectRepoCandidates()
                     let beat = try await self.api.heartbeat(agents: agents, repoCandidates: candidates)
                     self.noteReposChanged(beat.repos)
