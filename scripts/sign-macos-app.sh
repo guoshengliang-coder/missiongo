@@ -1,10 +1,16 @@
 #!/bin/sh
-# Development bundles may use ad-hoc signing. Published bundles must have a
-# stable Developer ID and a stapled notarization ticket. Credentials stay in
+# Development bundles may use ad-hoc signing. Releases default to Developer ID
+# and notarization; an explicit --allow-ad-hoc publish is a documented exception.
+# Credentials stay in
 # the login keychain; only its profile name is supplied here.
 set -eu
 
 check_release_config() {
+  case "${MISSIONGO_MACOS_ALLOW_AD_HOC:-0}" in
+    1) echo "Warning: explicitly publishing without Developer ID/notarization; system permissions may be requested again after updates." >&2; return ;;
+    0) ;;
+    *) echo "MISSIONGO_MACOS_ALLOW_AD_HOC must be 0 or 1." >&2; exit 1 ;;
+  esac
   case "${MISSIONGO_MACOS_SIGNING_IDENTITY:-}" in
     "Developer ID Application: "?*) ;;
     *) echo "Release requires MISSIONGO_MACOS_SIGNING_IDENTITY (Developer ID Application certificate)." >&2; exit 1 ;;
@@ -24,8 +30,9 @@ case "$release" in 0|1) ;; *) echo "MISSIONGO_MACOS_RELEASE must be 0 or 1." >&2
 if [ "$release" = 1 ]; then check_release_config; fi
 
 identity="${MISSIONGO_MACOS_SIGNING_IDENTITY:--}"
+if [ "${MISSIONGO_MACOS_ALLOW_AD_HOC:-0}" = 1 ]; then identity=-; fi
 if [ "$identity" = - ]; then
-  echo "==> Development-only ad-hoc signature (not for publishing)"
+  echo "==> Ad-hoc signature (no Developer ID or notarization)"
   codesign --force --sign - --timestamp=none "$app"
 else
   echo "==> Signing with configured certificate"
@@ -34,7 +41,7 @@ fi
 codesign --verify --deep --strict "$app"
 ditto -c -k --keepParent "$app" "$archive"
 
-if [ "$release" = 1 ]; then
+if [ "$release" = 1 ] && [ "${MISSIONGO_MACOS_ALLOW_AD_HOC:-0}" != 1 ]; then
   receipt=$(mktemp)
   trap 'rm -f "$receipt"' EXIT HUP INT TERM
   xcrun notarytool submit "$archive" --keychain-profile "$MISSIONGO_MACOS_NOTARY_PROFILE" --wait --output-format json > "$receipt"

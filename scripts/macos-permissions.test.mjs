@@ -30,6 +30,7 @@ if [ '${tool}' = spctl ]; then exit "$TEST_SPCTL_EXIT"; fi
     MISSIONGO_MACOS_SIGNING_IDENTITY: "",
     MISSIONGO_MACOS_NOTARY_PROFILE: "",
     MISSIONGO_MACOS_RELEASE: "0",
+    MISSIONGO_MACOS_ALLOW_AD_HOC: "0",
     TEST_SIGN_LOG: log,
     TEST_NOTARY_STATUS: "Accepted",
     TEST_SPCTL_EXIT: "0",
@@ -64,6 +65,16 @@ test("development build remains available without release credentials", (t) => {
   assert.doesNotMatch(f.log(), /notarytool|stapler/);
 });
 
+test("explicit ad-hoc release does not require certificates or notarization", (t) => {
+  const f = fixture(t);
+  const result = f.run({ MISSIONGO_MACOS_RELEASE: "1", MISSIONGO_MACOS_ALLOW_AD_HOC: "1" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /explicitly publishing without Developer ID/);
+  assert.match(f.log(), /codesign \[--force\] \[--sign\] \[-\]/);
+  assert.match(f.log(), /codesign \[--verify\] \[--deep\] \[--strict\]/);
+  assert.doesNotMatch(f.log(), /notarytool|stapler|spctl/);
+});
+
 test("release signs, notarizes, staples, assesses and repackages in order", (t) => {
   const f = fixture(t);
   const result = f.run(release);
@@ -94,7 +105,9 @@ test("Gatekeeper rejection fails the release", (t) => {
 
 test("publisher cannot bypass release signing with allow-republish", () => {
   const source = readFileSync(join(root, "scripts/publish-macos.sh"), "utf8");
-  assert.match(source, /export MISSIONGO_MACOS_RELEASE=1\nsh .*sign-macos-app.sh.*--check-release-config/);
+  assert.match(source, /export MISSIONGO_MACOS_RELEASE=1/);
+  assert.match(source, /export MISSIONGO_MACOS_ALLOW_AD_HOC="\$allow_ad_hoc"/);
+  assert.match(source, /--allow-ad-hoc\) allow_ad_hoc=1/);
   assert.ok(source.indexOf("--check-release-config") < source.indexOf('if [ "$allow_republish"'));
 });
 

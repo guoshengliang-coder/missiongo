@@ -183,6 +183,7 @@ public enum AppUpdater {
         manifest: Manifest,
         replacing bundle: URL,
         expectedIdentifier: String?,
+        allowAdHocUpdates: Bool = Bundle.main.object(forInfoDictionaryKey: "MissionGoAllowsAdHocUpdates") as? Bool ?? false,
         run: ToolRunner = systemRunner
     ) async throws -> URL {
         let work = try workDirectory()
@@ -208,10 +209,20 @@ public enum AppUpdater {
         let verification = await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", newBundle.path])
         guard verification.code == 0 else { throw UpdateError.badBundle("签名校验失败：\(verification.output)") }
 
-        // Do not strip quarantine to make an untrusted release launch. Official
-        // packages must pass Gatekeeper before replacing the working install.
-        let assessment = await run("/usr/sbin/spctl", ["--assess", "--type", "execute", newBundle.path])
-        guard assessment.code == 0 else { throw UpdateError.badBundle("系统安全校验未通过，旧版本已保留：\(assessment.output)") }
+        // Only an explicitly built ad-hoc distribution can accept another
+        // verified ad-hoc bundle. The downloaded manifest cannot enable this
+        // policy, and Developer ID distributions cannot silently downgrade.
+        var verifiedAdHoc = false
+        if allowAdHocUpdates {
+            let signature = await run("/usr/bin/codesign", ["-d", "--verbose=2", newBundle.path])
+            verifiedAdHoc = signature.code == 0 && signature.output.split(separator: "\n").contains("Signature=adhoc")
+        }
+        if !verifiedAdHoc {
+            let assessment = await run("/usr/sbin/spctl", ["--assess", "--type", "execute", newBundle.path])
+            guard assessment.code == 0 else { throw UpdateError.badBundle("系统安全校验未通过，旧版本已保留：\(assessment.output)") }
+        }
+        // Preserve quarantine and macOS's launch checks in both modes. Never
+        // grant privacy permissions or change the machine's Gatekeeper policy.
 
         do {
             _ = try FileManager.default.replaceItemAt(bundle, withItemAt: newBundle)

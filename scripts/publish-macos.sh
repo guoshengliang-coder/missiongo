@@ -10,10 +10,12 @@
 set -eu
 
 allow_republish=0
+allow_ad_hoc=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --allow-republish) allow_republish=1; shift ;;
-    *) echo "Usage: $0 [--allow-republish]" >&2; exit 1 ;;
+    --allow-ad-hoc) allow_ad_hoc=1; shift ;;
+    *) echo "Usage: $0 [--allow-republish] [--allow-ad-hoc]" >&2; exit 1 ;;
   esac
 done
 
@@ -47,6 +49,7 @@ export MISSIONGO_PUBLIC_ORIGIN
 # Fail before testing/building/staging; never silently ship a development
 # signature which cannot retain a stable identity across updates.
 export MISSIONGO_MACOS_RELEASE=1
+export MISSIONGO_MACOS_ALLOW_AD_HOC="$allow_ad_hoc"
 sh "$SCRIPT_DIRECTORY/sign-macos-app.sh" --check-release-config
 
 if [ "$allow_republish" -eq 0 ]; then
@@ -94,6 +97,7 @@ version=$VERSION
 build_timestamp=$BUILD_TIMESTAMP
 source_commit=$SOURCE_COMMIT
 source_dirty=$SOURCE_DIRTY
+signing_mode=$([ "$allow_ad_hoc" -eq 1 ] && echo adhoc || echo developer-id)
 sha256=$SHA256
 METADATA
 

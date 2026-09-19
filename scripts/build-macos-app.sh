@@ -20,6 +20,8 @@ BUILD_DIRECTORY="$PACKAGE_DIRECTORY/build"
 APP="$BUILD_DIRECTORY/MissionGo.app"
 ZIP="$BUILD_DIRECTORY/MissionGo-macOS.zip"
 EXECUTABLE=MissionGo
+ALLOW_AD_HOC_UPDATES=false
+if [ "${MISSIONGO_MACOS_ALLOW_AD_HOC:-0}" = 1 ]; then ALLOW_AD_HOC_UPDATES=true; fi
 
 # Declared once, like the Android version name, so the bundle and released.json
 # cannot disagree about which version this is.
@@ -76,6 +78,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>MissionGoServerURL</key><string>${SERVER_URL}</string>
+  <key>MissionGoAllowsAdHocUpdates</key><${ALLOW_AD_HOC_UPDATES}/>
 </dict>
 </plist>
 PLIST
