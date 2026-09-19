@@ -17,8 +17,8 @@ export type ClaudeCodeMode = (typeof CLAUDE_CODE_MODES)[number];
 // Codex has no permission modes of its own to pass through; each of these is a
 // fixed combination the node applies when it starts the thread. All three keep
 // the workspace-write sandbox and on-request approvals:
-// - plan: the launch prompt tells the session to write a plan and wait. Codex
-//   has no enforced plan mode, so this rests on the prompt alone.
+// - plan: the session presents a plan and waits for human approval before any
+//   writes; technical sandbox approvals use auto-review independently.
 // - default: sandbox escapes are approved by a person in the Codex app.
 // - auto: sandbox escapes go to Codex's own auto-review instead of a person.
 // The approval policy `never` and the `danger-full-access` sandbox are

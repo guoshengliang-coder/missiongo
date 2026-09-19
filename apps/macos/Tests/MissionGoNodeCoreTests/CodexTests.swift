@@ -33,7 +33,7 @@ private func codexOnPath() throws -> ShellEnvironment {
 }
 
 /// A short temporary directory: a Unix socket path must fit in 104 bytes.
-private func shortTemporaryDirectory() throws -> String {
+func shortTemporaryDirectory() throws -> String {
     let path = "/tmp/mg-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
     return path
@@ -57,7 +57,7 @@ private func listeningSocket(at path: String) throws -> Int32 {
 
 /// Stands in for the app-server: one connection, the WebSocket handshake, then
 /// a scripted answer for each request it receives.
-private final class FakeAppServer: @unchecked Sendable {
+final class FakeAppServer: @unchecked Sendable {
     let path: String
     private let listener: Int32
     let received = Locked<[String]>([])
@@ -138,17 +138,31 @@ private final class FakeAppServer: @unchecked Sendable {
     }
 
     /// Answers every request the way the real app-server did in the spike.
-    static func happy(threadId: String = "01a09f35-d6fa-7eb2-9d90-1352cf2fb661") throws -> FakeAppServer {
+    static func happy(threadId: String = "01a09f35-d6fa-7eb2-9d90-1352cf2fb661", accountResult: [String: Any]? = nil) throws -> FakeAppServer {
         return try FakeAppServer { message in
             guard let id = message["id"], let method = message["method"] as? String else { return [] }
             switch method {
             case "thread/start":
+                let params = message["params"] as? [String: Any] ?? [:]
+                let cwd = params["cwd"] as? String ?? "/repo"
+                let roots = params["runtimeWorkspaceRoots"] as? [String] ?? [cwd]
                 return [
                     // Notifications and a server request arrive before the answer.
                     ["jsonrpc": "2.0", "method": "thread/started", "params": ["thread": ["id": threadId]]],
                     ["jsonrpc": "2.0", "id": 900, "method": "item/commandExecution/requestApproval", "params": [:]],
-                    ["jsonrpc": "2.0", "id": id, "result": ["thread": ["id": threadId]]],
+                    ["jsonrpc": "2.0", "id": id, "result": [
+                        "thread": ["id": threadId], "cwd": cwd,
+                        "approvalsReviewer": params["approvalsReviewer"] ?? "user",
+                        "approvalPolicy": "on-request", "runtimeWorkspaceRoots": roots,
+                        "sandbox": ["type": "workspaceWrite", "writableRoots": roots.filter { $0 != cwd }],
+                    ]],
                 ]
+            case "mcpServer/tool/call":
+                if let accountResult { return [["id": id, "result": accountResult]] }
+                return [["id": id, "result": ["structuredContent": [
+                    "capabilities": ["canComment": true, "writeTools": ["append_comment", "claim_item"]],
+                    "skill": ["expectedVersion": "5.8.0"],
+                ]]]]
             default:
                 return [["jsonrpc": "2.0", "id": id, "result": [:]]]
             }
@@ -164,7 +178,8 @@ final class CodexModesTests: XCTestCase {
             XCTAssertEqual(settings?.sandbox, "workspace-write", mode)
             XCTAssertEqual(settings?.approvalPolicy, "on-request", mode)
         }
-        XCTAssertEqual(CodexModes.threadSettings(for: "plan")?.approvalsReviewer, "user")
+        XCTAssertEqual(CodexModes.threadSettings(for: "plan")?.approvalsReviewer, "auto_review")
+        XCTAssertEqual(CodexModes.threadSettings(for: "default")?.approvalsReviewer, "user")
         XCTAssertEqual(CodexModes.threadSettings(for: "auto")?.approvalsReviewer, "auto_review")
     }
 
@@ -184,21 +199,15 @@ final class CodexModesTests: XCTestCase {
 }
 
 final class PlanPromptTests: XCTestCase {
-    func testPlanModeAsksForACommentAndAStopBeforeClaiming() throws {
-        XCTAssertEqual(
-            try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc", mode: "plan"),
-            [
-                "使用 missiongo skill 处理这些工作条目：HG-8。",
-                "",
-                "本会话由 MissionGo 派单 abc 发起，上面列出的编号等同于用户给出的范围。",
-                "整批条目走一个分支和一个 PR，之后按 Skill 的规则推进条目状态。",
-                "会话起在仓库主目录，动手改代码前先按仓库规则建独立 worktree，不要直接在主工作区修改。",
-                "建 worktree 用 git worktree add 再 cd 进去；不要用 EnterWorktree 一类的工具——仓库规定的 worktree 位置在它默认放行的范围之外，它会弹出授权框，而派单会话旁边没有人能回答。",
-                "",
-                "本次派单是计划模式：先完整读取条目，给出处理计划，把计划写成结构化评论回写到各条条目，然后在本会话里停下，等用户批准。",
-                "用户批准之前不领取条目、不建分支、不改代码。",
-            ].joined(separator: "\n")
-        )
+    func testBothClientsWaitBeforeAllWritesButOnlyClaudeExitsNativePlanMode() throws {
+        for client in [LaunchPrompt.Client.claudeCode, .codex] {
+            let prompt = try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc", mode: "plan", client: client)
+            XCTAssertTrue(prompt.contains("用户批准之前不回写评论、不领取条目、不建分支或 worktree、不改代码"))
+            XCTAssertTrue(prompt.contains("用户批准之后，先将已批准的计划以结构化评论"))
+            XCTAssertTrue(prompt.contains("待确认项一次问齐"))
+            XCTAssertEqual(prompt.contains("退出 plan 模式"), client == .claudeCode)
+            XCTAssertEqual(prompt.contains("自动审查仅处理技术权限请求"), client == .codex)
+        }
     }
 
     func testOtherModesGetNoPlanParagraph() throws {
@@ -214,11 +223,13 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(plan["cwd"] as? String, "/repo")
         XCTAssertEqual(plan["sandbox"] as? String, "workspace-write")
         XCTAssertEqual(plan["approvalPolicy"] as? String, "on-request")
-        // The default reviewer is not sent, so an app-server without the field still works.
-        XCTAssertNil(plan["approvalsReviewer"])
+        XCTAssertEqual(plan["approvalsReviewer"] as? String, "auto_review")
+        XCTAssertEqual(plan["runtimeWorkspaceRoots"] as? [String], ["/repo"])
 
         let auto = CodexProtocol.threadStartParams(cwd: "/repo", settings: CodexModes.threadSettings(for: "auto")!)
         XCTAssertEqual(auto["approvalsReviewer"] as? String, "auto_review")
+        let manual = CodexProtocol.threadStartParams(cwd: "/repo", settings: CodexModes.threadSettings(for: "default")!)
+        XCTAssertEqual(manual["approvalsReviewer"] as? String, "user")
     }
 
     func testTurnStartSendsThePromptAsOneTextInput() throws {
@@ -292,7 +303,8 @@ final class CodexAppServerControlTests: XCTestCase {
         server.waitUntilDone()
 
         XCTAssertEqual(threadId, "01a09f35-d6fa-7eb2-9d90-1352cf2fb661")
-        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/start", "thread/name/set", "turn/start"])
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/start", "mcpServer/tool/call", "thread/name/set", "turn/start"])
+        XCTAssertEqual(server.params(of: "mcpServer/tool/call")?["tool"] as? String, "get_current_account")
         XCTAssertEqual(server.params(of: "thread/start")?["cwd"] as? String, "/Users/dev/repo")
         XCTAssertEqual(server.params(of: "thread/name/set")?["name"] as? String, "Mac mini-AND-1")
         XCTAssertEqual(server.params(of: "thread/name/set")?["threadId"] as? String, threadId)
@@ -483,7 +495,10 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(sent.name, "Mac mini-AND-42 第2轮")
         XCTAssertEqual(
             sent.prompt,
-            try LaunchPrompt.build(itemKeys: ["AND-42"], dispatchId: "d-1", mode: "plan", reworkItemKeys: ["AND-42"])
+            try LaunchPrompt.build(
+                itemKeys: ["AND-42"], dispatchId: "d-1", mode: "plan", reworkItemKeys: ["AND-42"],
+                client: .codex, worktreePath: CodexWorkspace.worktreePath(repoPath: machine.repoPath, dispatchId: "d-1")
+            )
         )
         XCTAssertTrue(sent.prompt.contains("返工"))
     }
@@ -506,8 +521,12 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(sent.cwd, machine.repoPath)
         XCTAssertEqual(sent.name, "Mac mini-AND-42")
         XCTAssertEqual(sent.settings, CodexModes.threadSettings(for: "plan"))
-        // The same prompt Claude Code gets, plan paragraph included.
-        XCTAssertEqual(sent.prompt, try LaunchPrompt.build(itemKeys: ["AND-42"], dispatchId: "d-1", mode: "plan"))
+        let path = try CodexWorkspace.worktreePath(repoPath: machine.repoPath, dispatchId: "d-1")
+        XCTAssertEqual(sent.workspaceRoots, [machine.repoPath, path])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path), "Plan dispatch must not create the worktree")
+        XCTAssertEqual(sent.prompt, try LaunchPrompt.build(
+            itemKeys: ["AND-42"], dispatchId: "d-1", mode: "plan", client: .codex, worktreePath: path
+        ))
     }
 
     func testRefusesAModeOutsideTheListBeforeTouchingAnything() async throws {

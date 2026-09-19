@@ -10,21 +10,14 @@ final class LaunchPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("一个分支和一个 PR"))
     }
 
-    func testIsAFixedTemplateWithOnlyTheKeysAndTheIdFilledIn() throws {
-        // Pinned in full, identical to apps/node/src/prompt.test.ts: the server
-        // sends item keys, agent and mode and nothing else, so any wording that
-        // starts arriving from outside — or drifting from the TypeScript — shows up here.
-        XCTAssertEqual(
-            try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc"),
-            [
-                "使用 missiongo skill 处理这些工作条目：HG-8。",
-                "",
-                "本会话由 MissionGo 派单 abc 发起，上面列出的编号等同于用户给出的范围。",
-                "整批条目走一个分支和一个 PR，之后按 Skill 的规则推进条目状态。",
-                "会话起在仓库主目录，动手改代码前先按仓库规则建独立 worktree，不要直接在主工作区修改。",
-                "建 worktree 用 git worktree add 再 cd 进去；不要用 EnterWorktree 一类的工具——仓库规定的 worktree 位置在它默认放行的范围之外，它会弹出授权框，而派单会话旁边没有人能回答。",
-            ].joined(separator: "\n")
-        )
+    func testSharedPromptRequiresActualMcpWriteCapabilityWithoutCodexWorkspaceInstructions() throws {
+        let prompt = try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc")
+        XCTAssertTrue(prompt.contains("get_current_account"))
+        XCTAssertTrue(prompt.contains("canComment 为 true"))
+        XCTAssertTrue(prompt.contains("writeTools 包含 claim_item"))
+        XCTAssertTrue(prompt.contains("不得跳过领取直接改代码"))
+        XCTAssertFalse(prompt.contains("EnterWorktree"))
+        XCTAssertFalse(prompt.contains("已为以下独立 worktree 路径配置写权限"))
     }
 
     func testTellsASessionWhichItemsCameBackAndToStartFromMain() throws {
