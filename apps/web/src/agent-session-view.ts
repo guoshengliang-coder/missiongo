@@ -1,5 +1,6 @@
 import type { AgentSessionMessage, AgentSessionStatus } from "./types";
 
+export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;
 export const MESSAGE_BOTTOM_THRESHOLD_PX = 48;
 
 export interface ScrollMetrics {

@@ -18,6 +18,7 @@ import { api } from "./api";
 import {
   activityLabelKey,
   changedMessageIds,
+  DEFAULT_AGENT_SESSION_FILTER,
   isNearMessageBottom,
   messageLabelKey,
 } from "./agent-session-view";
@@ -84,7 +85,7 @@ export function AgentSessionConsole({
 }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
-  const [filter, setFilter] = useState<SessionFilter>("attention");
+  const [filter, setFilter] = useState<SessionFilter>(DEFAULT_AGENT_SESSION_FILTER);
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reply, setReply] = useState("");

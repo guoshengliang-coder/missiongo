@@ -3,11 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   activityLabelKey,
   changedMessageIds,
+  DEFAULT_AGENT_SESSION_FILTER,
   isNearMessageBottom,
   messageLabelKey,
 } from "./agent-session-view";
 
 describe("agent session message view", () => {
+  it("opens on all conversations by default", () => {
+    expect(DEFAULT_AGENT_SESSION_FILTER).toBe("all");
+  });
+
   it("keeps following within the bottom tolerance", () => {
     expect(isNearMessageBottom({ scrollHeight: 1_000, scrollTop: 452, clientHeight: 500 })).toBe(true);
     expect(isNearMessageBottom({ scrollHeight: 1_000, scrollTop: 451, clientHeight: 500 })).toBe(false);
