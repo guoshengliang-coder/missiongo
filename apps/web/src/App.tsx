@@ -130,6 +130,7 @@ import {
 } from "./comment-summary";
 import { isAnnotatableImage } from "./image-annotation";
 import { LIST_THUMBNAIL_EDGE, previewThumbnailEdge } from "./attachment-thumbnail";
+import { MarkdownText } from "./markdown-text";
 import {
   DEFAULT_STATUS,
   ITEM_HISTORY_MARKER,
@@ -2547,7 +2548,7 @@ function CommentBody({
   const rendered = payload.bodyKind === "structured"
     ? <AnalysisDetails payload={body} />
     : typeof body.text === "string" && body.text
-      ? <p className="comment-text">{body.text}</p>
+      ? <MarkdownText className="comment-text">{body.text}</MarkdownText>
       : null;
   if (!rendered) return null;
 
@@ -2612,9 +2613,9 @@ function AnalysisDetails({ payload }: { payload: Readonly<Record<string, unknown
   const evidence = list("evidence");
   const openQuestions = list("openQuestions");
   if (!understanding && !finding && !proposal && evidence.length === 0 && openQuestions.length === 0) return null;
-  const section = (label: string, body: string) => (body ? <div><span>{label}</span><p>{body}</p></div> : null);
+  const section = (label: string, body: string) => (body ? <div><span>{label}</span><MarkdownText>{body}</MarkdownText></div> : null);
   const bullets = (label: string, entries: readonly string[]) => (entries.length > 0
-    ? <div><span>{label}</span><ul>{entries.map((entry, index) => <li key={`${index}-${entry}`}>{entry}</li>)}</ul></div>
+    ? <div><span>{label}</span><ul>{entries.map((entry, index) => <li key={`${index}-${entry}`}><MarkdownText>{entry}</MarkdownText></li>)}</ul></div>
     : null);
   return (
     <div className="analysis-details">
@@ -2680,11 +2681,11 @@ function ReportDetails({ type, report, fallbackDescription }: { type: WorkItemTy
       <h3>{t(copy.title)}</h3>
       {!hasDetails ? <p className="section-empty">{t("noDescription")}</p> : (
         <div className="report-detail-grid">
-          {overview && <article className="wide"><small>{t(copy.overview)}</small><p>{overview}</p></article>}
-          {hasBugDetails && report?.reproductionSteps && <article><small>{t("reproductionSteps")}</small><p>{report.reproductionSteps}</p></article>}
-          {hasBugDetails && report?.expectedOutcome && <article><small>{t("expectedOutcome")}</small><p>{report.expectedOutcome}</p></article>}
-          {hasBugDetails && report?.impact && <article><small>{t("impact")}</small><p>{report.impact}</p></article>}
-          {hasBugDetails && report?.occurrenceFrequency && <article><small>{t("occurrenceFrequency")}</small><p>{frequencyLabels[report.occurrenceFrequency]}</p></article>}
+          {overview && <article className="wide"><small>{t(copy.overview)}</small><MarkdownText>{overview}</MarkdownText></article>}
+          {hasBugDetails && report?.reproductionSteps && <article><small>{t("reproductionSteps")}</small><MarkdownText>{report.reproductionSteps}</MarkdownText></article>}
+          {hasBugDetails && report?.expectedOutcome && <article><small>{t("expectedOutcome")}</small><MarkdownText>{report.expectedOutcome}</MarkdownText></article>}
+          {hasBugDetails && report?.impact && <article><small>{t("impact")}</small><MarkdownText>{report.impact}</MarkdownText></article>}
+          {hasBugDetails && report?.occurrenceFrequency && <article><small>{t("occurrenceFrequency")}</small><MarkdownText>{frequencyLabels[report.occurrenceFrequency]}</MarkdownText></article>}
         </div>
       )}
     </section>
