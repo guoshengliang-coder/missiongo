@@ -354,6 +354,29 @@ export interface AgentSession {
   readonly command?: AgentSessionCommand;
 }
 
+export interface AgentSessionSummary {
+  readonly id: string;
+  readonly dispatchId: string;
+  readonly agentKind: "codex";
+  readonly status: AgentSessionStatus;
+  readonly lastError?: string;
+  readonly updatedAt: string;
+  readonly nodeName: string;
+  readonly mode: string;
+  readonly dispatchStatus: DispatchStatus;
+  readonly sessionName?: string;
+  readonly sessionUrl?: string;
+  readonly createdAt: string;
+  readonly items: readonly {
+    readonly key: string;
+    readonly title: string;
+    readonly productId: string;
+  }[];
+  readonly latestMessage?: Pick<AgentSessionMessage, "role" | "text">;
+  readonly command?: AgentSessionCommand;
+  readonly canReply: boolean;
+}
+
 export interface CreateDispatchInput {
   readonly nodeId: string;
   readonly agentKind: AgentKind;

@@ -3,6 +3,7 @@ import type {
   ActiveDispatch,
   AgentSession,
   AgentSessionCommand,
+  AgentSessionSummary,
   Component,
   CreatedSdkToken,
   CreateDispatchInput,
@@ -436,6 +437,10 @@ export const api = {
     request<{ dispatches: Dispatch[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/dispatches`),
   getAgentSession: (sessionId: string) =>
     request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}`),
+  listAgentSessions: (productId?: string) =>
+    request<{ sessions: AgentSessionSummary[] }>(
+      `/api/v1/agent-sessions${productId ? `?productId=${encodeURIComponent(productId)}` : ""}`,
+    ),
   sendAgentSessionCommand: (sessionId: string, text: string) =>
     request<AgentSessionCommand>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands`, {
       method: "POST",

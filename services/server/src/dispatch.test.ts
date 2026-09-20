@@ -1061,6 +1061,23 @@ describe("Claiming a dispatch on the node", () => {
     });
     expect(snapshot.statusCode).toBe(204);
 
+    const sessionList = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    });
+    expect(sessionList.statusCode).toBe(200);
+    expect(sessionList.json()).toMatchObject({
+      sessions: [{
+        id: launched.agentSessionId,
+        status: "idle",
+        nodeName: "Mac mini",
+        items: [{ key: mission.itemKey, title: "AND work", productId: mission.productId }],
+        latestMessage: { role: "agent", text: "I found the cause." },
+        canReply: true,
+      }],
+    });
+
     const webSession = await app.inject({
       method: "GET",
       url: `/api/v1/agent-sessions/${launched.agentSessionId}`,

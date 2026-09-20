@@ -1605,6 +1605,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return authorizedAgentSession(request, sessionId);
   });
 
+  app.get("/api/v1/agent-sessions", async (request) => {
+    const account = requireAccount(request);
+    const { productId } = request.query as { productId?: string };
+    const selectedProductId = productId?.trim();
+    if (selectedProductId) requireProductPermission(request, selectedProductId, "view");
+    const sessions = agentSessionStore.listForAccount(account.id)
+      .filter((session) => session.items.length > 0
+        && session.items.every((item) => accountStore.allows(account, item.productId, "view")))
+      .filter((session) => !selectedProductId
+        || session.items.some((item) => item.productId === selectedProductId))
+      .map((session) => ({
+        ...session,
+        canReply: session.items.every((item) =>
+          accountStore.allows(account, item.productId, "operate")
+          && accountStore.allows(account, item.productId, "ai")),
+      }));
+    return { sessions };
+  });
+
   app.post("/api/v1/agent-sessions/:sessionId/commands", async (request, reply) => {
     const { sessionId } = request.params as { sessionId: string };
     authorizedAgentSession(request, sessionId, true);
