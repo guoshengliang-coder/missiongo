@@ -275,6 +275,7 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(CodexProtocol.threadReadParams(threadId: "t1")["includeTurns"] as? Bool, true)
         XCTAssertEqual(CodexProtocol.threadReadParams(threadId: "t1")["threadId"] as? String, "t1")
         XCTAssertEqual(CodexProtocol.threadResumeParams(threadId: "t1")["threadId"] as? String, "t1")
+        XCTAssertEqual(CodexProtocol.turnInterruptParams(threadId: "t1", turnId: "r1")["turnId"] as? String, "r1")
     }
 
     func testOnlyAPlainIdBecomesALink() {
@@ -366,6 +367,23 @@ final class CodexAppServerControlTests: XCTestCase {
         }
         server.waitUntilDone()
         XCTAssertFalse(server.methods.contains("turn/start"))
+    }
+
+    func testInterruptsTheExactActiveTurn() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            return [["jsonrpc": "2.0", "id": id, "result": [:]]]
+        }
+        try await CodexAppServerControl(timeout: 5).interruptTurn(
+            socketPath: server.path,
+            threadId: "thread-1",
+            turnId: "turn-9"
+        )
+        server.waitUntilDone()
+
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "turn/interrupt"])
+        XCTAssertEqual(server.params(of: "turn/interrupt")?["threadId"] as? String, "thread-1")
+        XCTAssertEqual(server.params(of: "turn/interrupt")?["turnId"] as? String, "turn-9")
     }
 
     func testSaysTheChatGPTAppIsNotRunningWhenNothingListens() async throws {
@@ -480,6 +498,7 @@ final class CodexPreflightTests: XCTestCase {
 private final class RecordingControl: CodexControl, @unchecked Sendable {
     let requests = Locked<[CodexThreadRequest]>([])
     let replies = Locked<[(String, String)]>([])
+    let interruptions = Locked<[(String, String)]>([])
     let threadId: String
     var snapshot = CodexThreadSnapshot(status: "idle", messages: [])
 
@@ -498,6 +517,10 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
 
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
         replies.withLock { $0.append((clientUserMessageId, text)) }
+    }
+
+    func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
+        interruptions.withLock { $0.append((threadId, turnId)) }
     }
 }
 
@@ -673,6 +696,28 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertTrue(control.replies.current.isEmpty)
         XCTAssertNil(report.commandStatus)
         XCTAssertEqual(report.status, "active")
+    }
+
+    func testAnActiveThreadExecutesAQueuedInterrupt() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "active", messages: [])
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1",
+            sessionRef: "thread-1",
+            status: "active",
+            command: AgentSessionCommand(
+                id: "command-stop", kind: "interrupt", text: "停止当前任务", turnId: "turn-9"
+            )
+        ))
+
+        XCTAssertEqual(control.interruptions.current.map { [$0.0, $0.1] }, [["thread-1", "turn-9"]])
+        XCTAssertEqual(report.status, "idle")
+        XCTAssertEqual(report.commandId, "command-stop")
+        XCTAssertEqual(report.commandStatus, "delivered")
     }
 
     func testDetectReportsTheVersionOnlyWhenCodexIsInstalled() async throws {

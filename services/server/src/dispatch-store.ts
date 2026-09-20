@@ -779,6 +779,25 @@ export class DispatchStore {
     return this.mapDispatch(row);
   }
 
+  /** Cancel work that has not left the server yet. Once a Mac has claimed it,
+   * the only truthful stop path is the agent-specific control channel. */
+  cancelQueuedDispatch(accountId: string, dispatchId: string): DispatchSnapshot {
+    const dispatch = this.getDispatch(accountId, dispatchId);
+    if (dispatch.status !== "queued") {
+      throw conflict("dispatch_already_delivered", "This dispatch has already left the server and cannot be recalled.");
+    }
+    const changed = this.database.connection
+      .prepare(
+        `UPDATE dispatches SET status = 'cancelled', completed_at = ?, error = ?
+         WHERE id = ? AND account_id = ? AND status = 'queued'`,
+      )
+      .run(new Date().toISOString(), "已由控制台取消", dispatchId, accountId);
+    if (changed.changes === 0) {
+      throw conflict("dispatch_already_delivered", "This dispatch left the server before it could be cancelled.");
+    }
+    return this.getDispatch(accountId, dispatchId);
+  }
+
   listDispatchesForItem(accountId: string, itemKey: string): readonly DispatchSnapshot[] {
     const rows = this.database.connection
       .prepare(

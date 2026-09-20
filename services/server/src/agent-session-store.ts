@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+
+import type { AgentKind } from "@missiongo/domain";
 
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
@@ -17,7 +19,9 @@ export interface AgentSessionMessageInput {
 
 export interface AgentSessionCommand {
   readonly id: string;
+  readonly kind: "message" | "interrupt";
   readonly text: string;
+  readonly turnId?: string;
   readonly status: "queued" | "delivered" | "failed";
   readonly error?: string;
   readonly createdAt: string;
@@ -37,8 +41,9 @@ export interface AgentSessionSnapshot {
 
 export interface AgentSessionListItem {
   readonly id: string;
+  readonly agentSessionId?: string;
   readonly dispatchId: string;
-  readonly agentKind: "codex";
+  readonly agentKind: AgentKind;
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly updatedAt: string;
@@ -55,6 +60,10 @@ export interface AgentSessionListItem {
   }[];
   readonly latestMessage?: Pick<AgentSessionMessageInput, "role" | "text">;
   readonly command?: AgentSessionCommand;
+  readonly waitingForReply: boolean;
+  readonly retryable: boolean;
+  readonly stoppable: boolean;
+  readonly activityKey: string;
 }
 
 export interface NodeAgentSession {
@@ -74,18 +83,29 @@ interface SessionRow {
   updated_at: string;
 }
 
-interface SessionListRow extends SessionRow {
+interface SessionListRow {
+  session_id: string | null;
+  dispatch_id: string;
+  agent_kind: AgentKind;
+  session_status: AgentSessionStatus | null;
+  session_last_error: string | null;
+  session_updated_at: string | null;
+  dispatch_error: string | null;
   node_name: string;
   mode: string;
   dispatch_status: string;
   session_name: string | null;
   session_url: string | null;
   created_at: string;
+  delivered_at: string | null;
+  completed_at: string | null;
 }
 
 interface CommandRow {
   id: string;
+  kind: "message" | "interrupt";
   text: string;
+  turn_id: string | null;
   status: "queued" | "delivered" | "failed";
   error: string | null;
   created_at: string;
@@ -171,7 +191,7 @@ export class AgentSessionStore {
   }
 
   /**
-   * The account's mirrored Codex conversations, newest activity first.
+   * The account's AI hand-offs, newest activity first.
    *
    * Product authorization is deliberately applied by the HTTP boundary: this
    * store knows which account created a dispatch, but not which of that
@@ -182,24 +202,26 @@ export class AgentSessionStore {
   listForAccount(accountId: string, limit = 100): readonly AgentSessionListItem[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT s.id, s.dispatch_id, s.agent_kind, s.agent_session_ref, s.status, s.last_error, s.updated_at,
+        `SELECT s.id AS session_id, d.id AS dispatch_id, d.agent_kind,
+                s.status AS session_status, s.last_error AS session_last_error, s.updated_at AS session_updated_at,
                 COALESCE(n.nickname, n.name) AS node_name, d.mode, d.status AS dispatch_status,
-                d.session_name, d.session_url, d.created_at
-         FROM agent_sessions s
-         JOIN dispatches d ON d.id = s.dispatch_id
+                d.session_name, d.session_url, d.error AS dispatch_error,
+                d.created_at, d.delivered_at, d.completed_at
+         FROM dispatches d
+         LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          JOIN nodes n ON n.id = d.node_id
          WHERE d.account_id = ?
-         ORDER BY s.updated_at DESC
+         ORDER BY COALESCE(s.updated_at, d.completed_at, d.delivered_at, d.created_at) DESC
          LIMIT ?`,
       )
       .all(accountId, limit) as unknown as SessionListRow[];
     const items = this.database.connection.prepare(
-      `SELECT w.item_key, w.title, w.product_id
+      `SELECT w.item_key, w.title, w.product_id, w.status
        FROM dispatch_items di JOIN work_items w ON w.id = di.item_id
        WHERE di.dispatch_id = ? ORDER BY di.position`,
     );
     const latestMessage = this.database.connection.prepare(
-      `SELECT role, text FROM agent_session_messages
+      `SELECT id, role, text, questions_json FROM agent_session_messages
        WHERE session_id = ? ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
     );
     return rows.map((row) => {
@@ -207,16 +229,38 @@ export class AgentSessionStore {
         item_key: string;
         title: string;
         product_id: string;
+        status: string;
       }>;
-      const message = latestMessage.get(row.id) as unknown as Pick<AgentSessionMessageInput, "role" | "text"> | undefined;
-      const command = this.latestCommand(row.id);
+      const message = row.session_id
+        ? latestMessage.get(row.session_id) as unknown as {
+          id: string; role: AgentMessageRole; text: string; questions_json: string | null;
+        } | undefined
+        : undefined;
+      const command = row.session_id ? this.latestCommand(row.session_id) : undefined;
+      const inferredStatus: AgentSessionStatus = row.dispatch_status === "failed"
+        ? "failed"
+        : row.dispatch_status === "cancelled"
+          ? "unavailable"
+          : row.dispatch_status === "launched"
+            && itemRows.every((item) => item.status !== "ready" && item.status !== "in_progress")
+            ? "idle"
+            : "active";
+      const status = row.session_status ?? inferredStatus;
+      const updatedAt = row.session_updated_at ?? row.completed_at ?? row.delivered_at ?? row.created_at;
+      const lastError = row.session_last_error ?? row.dispatch_error;
+      let waitingForReply = false;
+      if (message?.questions_json) {
+        try { waitingForReply = (JSON.parse(message.questions_json) as unknown[]).length > 0; }
+        catch { waitingForReply = false; }
+      }
       return {
-        id: row.id,
+        id: row.session_id ?? `dispatch:${row.dispatch_id}`,
+        ...(row.session_id ? { agentSessionId: row.session_id } : {}),
         dispatchId: row.dispatch_id,
         agentKind: row.agent_kind,
-        status: row.status,
-        ...(row.last_error ? { lastError: row.last_error } : {}),
-        updatedAt: row.updated_at,
+        status,
+        ...(lastError ? { lastError } : {}),
+        updatedAt,
         nodeName: row.node_name,
         mode: row.mode,
         dispatchStatus: row.dispatch_status,
@@ -224,8 +268,17 @@ export class AgentSessionStore {
         ...(row.session_url ? { sessionUrl: row.session_url } : {}),
         createdAt: row.created_at,
         items: itemRows.map((item) => ({ key: item.item_key, title: item.title, productId: item.product_id })),
-        ...(message ? { latestMessage: message } : {}),
+        ...(message ? { latestMessage: { role: message.role, text: message.text } } : {}),
         ...(command ? { command: this.mapCommand(command) } : {}),
+        waitingForReply,
+        retryable: ["failed", "cancelled"].includes(row.dispatch_status)
+          && itemRows.length > 0 && itemRows.every((item) => item.status === "ready"),
+        stoppable: row.dispatch_status === "queued"
+          || Boolean(row.session_id && row.agent_kind === "codex" && row.session_status === "active"),
+        activityKey: createHash("sha256").update(JSON.stringify([
+          row.dispatch_status, status, lastError ?? "", message?.id ?? "", message?.text ?? "",
+          message?.questions_json ?? "", command?.id ?? "", command?.status ?? "",
+        ])).digest("hex"),
       };
     });
   }
@@ -253,7 +306,50 @@ export class AgentSessionStore {
     this.database.connection
       .prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?")
       .run(now, sessionId);
-    return { id, text, status: "queued", createdAt: now };
+    return { id, kind: "message", text, status: "queued", createdAt: now };
+  }
+
+  enqueueInterrupt(accountId: string, sessionId: string): AgentSessionCommand {
+    const session = this.database.connection
+      .prepare(
+        `SELECT s.id, s.status FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
+         WHERE s.id = ? AND d.account_id = ?`,
+      )
+      .get(sessionId, accountId) as unknown as { id: string; status: AgentSessionStatus } | undefined;
+    if (!session) throw notFound("Agent session");
+    if (session.status !== "active") throw conflict("agent_not_running", "This Codex session is not currently running.");
+    const queued = this.queuedCommand(sessionId);
+    if (queued?.kind === "interrupt") {
+      throw conflict("agent_stop_pending", "This session already has a queued stop request.");
+    }
+    const turn = this.database.connection
+      .prepare(
+        `SELECT turn_id FROM agent_session_messages
+         WHERE session_id = ? AND turn_id IS NOT NULL
+         ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
+      )
+      .get(sessionId) as unknown as { turn_id: string } | undefined;
+    if (!turn?.turn_id) throw conflict("agent_turn_unavailable", "The active Codex turn is not visible yet.");
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      if (queued) {
+        this.database.connection
+          .prepare(
+            `UPDATE agent_session_commands SET status = 'failed', error = ?, delivered_at = ?
+             WHERE id = ? AND status = 'queued'`,
+          )
+          .run("已被终止任务请求取代", now, queued.id);
+      }
+      this.database.connection
+        .prepare(
+          `INSERT INTO agent_session_commands (id, session_id, account_id, kind, text, turn_id, status, created_at)
+           VALUES (?, ?, ?, 'interrupt', ?, ?, 'queued', ?)`,
+        )
+        .run(id, sessionId, accountId, "停止当前任务", turn.turn_id, now);
+      this.database.connection.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(now, sessionId);
+    });
+    return { id, kind: "interrupt", text: "停止当前任务", turnId: turn.turn_id, status: "queued", createdAt: now };
   }
 
   listForNode(nodeId: string): readonly NodeAgentSession[] {
@@ -343,8 +439,9 @@ export class AgentSessionStore {
   private queuedCommand(sessionId: string): CommandRow | undefined {
     return this.database.connection
       .prepare(
-        `SELECT id, text, status, error, created_at, delivered_at
-         FROM agent_session_commands WHERE session_id = ? AND status = 'queued' ORDER BY created_at DESC LIMIT 1`,
+        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at
+         FROM agent_session_commands WHERE session_id = ? AND status = 'queued'
+         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as CommandRow | undefined;
   }
@@ -352,8 +449,8 @@ export class AgentSessionStore {
   private latestCommand(sessionId: string): CommandRow | undefined {
     return this.database.connection
       .prepare(
-        `SELECT id, text, status, error, created_at, delivered_at
-         FROM agent_session_commands WHERE session_id = ? ORDER BY created_at DESC LIMIT 1`,
+        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at
+         FROM agent_session_commands WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as CommandRow | undefined;
   }
@@ -361,7 +458,9 @@ export class AgentSessionStore {
   private mapCommand(row: CommandRow): AgentSessionCommand {
     return {
       id: row.id,
+      kind: row.kind,
       text: row.text,
+      ...(row.turn_id ? { turnId: row.turn_id } : {}),
       status: row.status,
       ...(row.error ? { error: row.error } : {}),
       createdAt: row.created_at,

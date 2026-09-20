@@ -593,6 +593,31 @@ export class MissionGoDatabase {
           .run(202609201034, new Date().toISOString());
       });
     }
+    // Commands originally carried reply text only. A stop request is a distinct
+    // operation and pins the exact active turn it is allowed to interrupt.
+    // Both columns are additive so the previous release continues to read and
+    // write ordinary replies if application code is rolled back.
+    const agentSessionCommandKindMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609201550")
+      .get() as unknown as { version: number } | undefined;
+    if (!agentSessionCommandKindMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(agent_session_commands)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "kind")) {
+          this.connection.exec(
+            "ALTER TABLE agent_session_commands ADD COLUMN kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message', 'interrupt'));",
+          );
+        }
+        if (!columns.some((column) => column.name === "turn_id")) {
+          this.connection.exec("ALTER TABLE agent_session_commands ADD COLUMN turn_id TEXT;");
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609201550, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

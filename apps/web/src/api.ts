@@ -446,4 +446,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text }),
     }),
+  retryDispatch: (dispatchId: string) =>
+    request<Dispatch>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/retry`, { method: "POST" }),
+  stopDispatch: (dispatchId: string) =>
+    request<{ dispatch?: Dispatch; command?: AgentSessionCommand }>(
+      `/api/v1/dispatches/${encodeURIComponent(dispatchId)}/stop`,
+      { method: "POST" },
+    ),
 };

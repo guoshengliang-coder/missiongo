@@ -109,15 +109,20 @@ public struct DispatchReport: Codable, Equatable, Sendable {
 
 public struct AgentSessionCommand: Codable, Equatable, Sendable {
     public let id: String
+    /// Absent when talking to a server from before interrupt commands.
+    public let kind: String?
     public let text: String
+    public let turnId: String?
     public let status: String
     public let error: String?
     public let createdAt: String
     public let deliveredAt: String?
 
-    public init(id: String, text: String, status: String = "queued", error: String? = nil, createdAt: String = "", deliveredAt: String? = nil) {
+    public init(id: String, kind: String? = nil, text: String, turnId: String? = nil, status: String = "queued", error: String? = nil, createdAt: String = "", deliveredAt: String? = nil) {
         self.id = id
+        self.kind = kind
         self.text = text
+        self.turnId = turnId
         self.status = status
         self.error = error
         self.createdAt = createdAt

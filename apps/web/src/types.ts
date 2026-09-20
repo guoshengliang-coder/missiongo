@@ -336,7 +336,9 @@ export interface AgentSessionMessage {
 
 export interface AgentSessionCommand {
   readonly id: string;
+  readonly kind: "message" | "interrupt";
   readonly text: string;
+  readonly turnId?: string;
   readonly status: "queued" | "delivered" | "failed";
   readonly error?: string;
   readonly createdAt: string;
@@ -356,8 +358,9 @@ export interface AgentSession {
 
 export interface AgentSessionSummary {
   readonly id: string;
+  readonly agentSessionId?: string;
   readonly dispatchId: string;
-  readonly agentKind: "codex";
+  readonly agentKind: AgentKind;
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly updatedAt: string;
@@ -375,6 +378,10 @@ export interface AgentSessionSummary {
   readonly latestMessage?: Pick<AgentSessionMessage, "role" | "text">;
   readonly command?: AgentSessionCommand;
   readonly canReply: boolean;
+  readonly waitingForReply: boolean;
+  readonly canRetry: boolean;
+  readonly canStop: boolean;
+  readonly activityKey: string;
 }
 
 export interface CreateDispatchInput {

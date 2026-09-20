@@ -1587,6 +1587,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { dispatches: dispatchStore.listDispatchesForItem(requireAccountId(request), key) };
   });
 
+  const authorizedDispatch = (request: FastifyRequest, dispatchId: string, operate = false) => {
+    const account = requireAccount(request);
+    const dispatch = dispatchStore.getDispatch(account.id, dispatchId);
+    for (const itemKey of dispatch.itemKeys) {
+      const key = requireItemPermission(request, itemKey, operate ? "operate" : "view");
+      if (operate && !accountStore.allows(account, store.getWorkItem(key).productId, "ai")) {
+        throw new MissionGoError("ai_not_permitted", `This account may not control the AI dispatch for ${key}.`, 403);
+      }
+    }
+    return dispatch;
+  };
+
   const authorizedAgentSession = (request: FastifyRequest, sessionId: string, reply = false) => {
     const account = requireAccount(request);
     const session = agentSessionStore.getForAccount(account.id, sessionId);
@@ -1617,7 +1629,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         || session.items.some((item) => item.productId === selectedProductId))
       .map((session) => ({
         ...session,
-        canReply: session.items.every((item) =>
+        canReply: Boolean(session.agentSessionId) && session.items.every((item) =>
+          accountStore.allows(account, item.productId, "operate")
+          && accountStore.allows(account, item.productId, "ai")),
+        canRetry: session.retryable && session.items.every((item) =>
+          accountStore.allows(account, item.productId, "operate")
+          && accountStore.allows(account, item.productId, "ai")),
+        canStop: session.stoppable && session.items.every((item) =>
           accountStore.allows(account, item.productId, "operate")
           && accountStore.allows(account, item.productId, "ai")),
       }));
@@ -1633,6 +1651,48 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       stringField(objectBody(request.body), "text")!,
     );
     return reply.status(201).send(command);
+  });
+
+  app.post("/api/v1/dispatches/:dispatchId/retry", async (request, reply) => {
+    const { dispatchId } = request.params as { dispatchId: string };
+    const original = authorizedDispatch(request, dispatchId, true);
+    if (original.status !== "failed" && original.status !== "cancelled") {
+      throw conflict("dispatch_not_retryable", "Only failed or cancelled dispatches can be sent again.");
+    }
+    const dispatch = dispatchStore.createDispatch({
+      accountId: requireAccountId(request),
+      nodeId: original.nodeId,
+      agentKind: original.agentKind,
+      mode: original.mode,
+      itemKeys: original.itemKeys,
+    });
+    for (const itemId of dispatchStore.listDispatchItemIds(dispatch.id)) {
+      store.appendSystemEvent(itemId, "dispatched", {
+        dispatchId: dispatch.id,
+        nodeName: dispatch.nodeName,
+        agentKind: dispatch.agentKind,
+        mode: dispatch.mode,
+        itemKeys: dispatch.itemKeys,
+      });
+    }
+    return reply.status(201).send(dispatch);
+  });
+
+  app.post("/api/v1/dispatches/:dispatchId/stop", async (request, reply) => {
+    const { dispatchId } = request.params as { dispatchId: string };
+    const dispatch = authorizedDispatch(request, dispatchId, true);
+    if (dispatch.status === "queued") {
+      return { dispatch: dispatchStore.cancelQueuedDispatch(requireAccountId(request), dispatchId) };
+    }
+    if (dispatch.agentKind === "codex" && dispatch.agentSessionId) {
+      authorizedAgentSession(request, dispatch.agentSessionId, true);
+      const command = agentSessionStore.enqueueInterrupt(
+        requireAccountId(request),
+        dispatch.agentSessionId,
+      );
+      return reply.status(202).send({ command });
+    }
+    throw conflict("dispatch_not_stoppable", "This dispatch cannot be stopped from MissionGo.");
   });
 
   // The macOS client signs in through the same OAuth flow as an AI client, with
