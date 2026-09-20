@@ -133,10 +133,18 @@ import { isAnnotatableImage } from "./image-annotation";
 import { LIST_THUMBNAIL_EDGE, previewThumbnailEdge } from "./attachment-thumbnail";
 import { MarkdownText } from "./markdown-text";
 import {
+  AGENT_CONSOLE_HISTORY_MARKER,
+  AGENT_CONSOLE_LAYOUT_KEY,
+  AGENT_CONVERSATION_HISTORY_MARKER,
   DEFAULT_STATUS,
   ITEM_HISTORY_MARKER,
   OVERLAY_HISTORY_MARKER,
   SIDEBAR_HISTORY_MARKER,
+  agentConsoleExitUrl,
+  agentConsoleIsOpen,
+  agentConsoleLayoutFromState,
+  agentConsoleUrl,
+  agentSessionIdFromUrl,
   backDepthFromState,
   filtersFromUrl,
   filtersToUrl,
@@ -438,7 +446,11 @@ export function App() {
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
-  const [agentConsoleOpen, setAgentConsoleOpen] = useState(false);
+  const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
+  const [agentSessionId, setAgentSessionId] = useState<string | null>(agentSessionIdFromUrl);
+  const [agentConversationOpen, setAgentConversationOpen] = useState(
+    () => Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]),
+  );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
@@ -458,6 +470,8 @@ export function App() {
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
   const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
+  const agentConsoleSinglePane = useMediaQuery("(max-width: 520px)");
+  const agentConsoleLayout = agentConsoleSinglePane ? "single" : "wide";
 
   const applyListPaneWidth = useCallback((width: number) => {
     // Measured rather than assumed: the sidebar is a fixed track, but the
@@ -485,6 +499,88 @@ export function App() {
    */
   const syncBackDepth = () => reportAndroidBackDepth(backDepthFromState(history.state));
 
+  const openAgentConsole = () => {
+    const current = typeof history.state === "object" && history.state
+      ? history.state as Record<string, unknown>
+      : {};
+    const {
+      [AGENT_CONSOLE_HISTORY_MARKER]: _console,
+      [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
+      [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      ...state
+    } = current;
+    history.pushState(
+      {
+        ...state,
+        [AGENT_CONSOLE_HISTORY_MARKER]: true,
+        [AGENT_CONSOLE_LAYOUT_KEY]: agentConsoleLayout,
+      },
+      "",
+      agentConsoleUrl(null),
+    );
+    syncBackDepth();
+    setAgentSessionId(null);
+    setAgentConversationOpen(false);
+    setAgentConsoleOpen(true);
+    setMobileSearchOpen(false);
+  };
+
+  const closeAgentConsole = () => {
+    if (history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]) {
+      // The mobile detail sits above the console list, so the top-bar action
+      // skips both. The system back button still unwinds them one at a time.
+      history.go(-2);
+      return;
+    }
+    if (history.state?.[AGENT_CONSOLE_HISTORY_MARKER]) {
+      history.back();
+      return;
+    }
+    const current = typeof history.state === "object" && history.state
+      ? history.state as Record<string, unknown>
+      : {};
+    const {
+      [AGENT_CONSOLE_HISTORY_MARKER]: _console,
+      [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
+      [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      ...state
+    } = current;
+    history.replaceState(state, "", agentConsoleExitUrl());
+    syncBackDepth();
+    setAgentConsoleOpen(false);
+    setAgentSessionId(null);
+    setAgentConversationOpen(false);
+  };
+
+  const selectAgentSession = (sessionId: string | null, showConversation: boolean) => {
+    const current = typeof history.state === "object" && history.state
+      ? history.state as Record<string, unknown>
+      : {};
+    const conversation = Boolean(sessionId && showConversation && agentConsoleSinglePane);
+    const nextState = {
+      ...current,
+      [AGENT_CONSOLE_HISTORY_MARKER]: true,
+      [AGENT_CONSOLE_LAYOUT_KEY]: agentConsoleLayout,
+      [AGENT_CONVERSATION_HISTORY_MARKER]: conversation || undefined,
+    };
+    if (conversation && !history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]) {
+      history.pushState(nextState, "", agentConsoleUrl(sessionId));
+    } else {
+      history.replaceState(nextState, "", agentConsoleUrl(sessionId));
+    }
+    syncBackDepth();
+    setAgentSessionId(sessionId);
+    setAgentConversationOpen(conversation);
+  };
+
+  const closeAgentConversation = () => {
+    if (history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]) {
+      history.back();
+      return;
+    }
+    setAgentConversationOpen(false);
+  };
+
   const openItemPage = useCallback((itemKey: string, edit = false) => {
     if (selectedItemKey === itemKey) return;
     if (itemHistoryOp(selectedItemKey) === "push") {
@@ -508,6 +604,23 @@ export function App() {
       window.scrollTo({ top: 0 });
     });
   }, [selectedItemKey]);
+
+  const openItemFromAgentConsole = (itemKey: string) => {
+    const current = typeof history.state === "object" && history.state
+      ? history.state as Record<string, unknown>
+      : {};
+    const {
+      [AGENT_CONSOLE_HISTORY_MARKER]: _console,
+      [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
+      [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      ...state
+    } = current;
+    history.replaceState(state, "", agentConsoleExitUrl());
+    setAgentConsoleOpen(false);
+    setAgentSessionId(null);
+    setAgentConversationOpen(false);
+    openItemPage(itemKey);
+  };
 
   const closeItemPage = () => {
     setDetailOpenInEdit(false);
@@ -587,6 +700,9 @@ export function App() {
       syncBackDepth();
       if (!history.state?.[OVERLAY_HISTORY_MARKER]) setCaptureOpen(false);
       if (!history.state?.[SIDEBAR_HISTORY_MARKER]) setSidebarOpen(false);
+      setAgentConsoleOpen(agentConsoleIsOpen());
+      setAgentSessionId(agentSessionIdFromUrl());
+      setAgentConversationOpen(Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]));
       const itemKey = itemKeyFromUrl();
       setDetailOpenInEdit(false);
       setSelectedItemKey(itemKey);
@@ -604,8 +720,38 @@ export function App() {
     // screen and none in the history. Give it the list entry it is missing.
     // Read once: the replaceState below drops the parameter, so asking the URL
     // again afterwards would hand back null and write "item=null".
+    const deepLinkedConsole = agentConsoleIsOpen();
+    if (deepLinkedConsole && !history.state?.[AGENT_CONSOLE_HISTORY_MARKER]) {
+      const sessionId = agentSessionIdFromUrl();
+      const current = typeof history.state === "object" && history.state
+        ? history.state as Record<string, unknown>
+        : {};
+      const {
+        [AGENT_CONSOLE_HISTORY_MARKER]: _console,
+        [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
+        [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+        ...state
+      } = current;
+      history.replaceState(state, "", agentConsoleExitUrl());
+      const consoleState = {
+        ...state,
+        [AGENT_CONSOLE_HISTORY_MARKER]: true,
+        [AGENT_CONSOLE_LAYOUT_KEY]: agentConsoleLayout,
+      };
+      history.pushState(consoleState, "", agentConsoleUrl(sessionId));
+      if (agentConsoleSinglePane && sessionId) {
+        history.pushState(
+          { ...consoleState, [AGENT_CONVERSATION_HISTORY_MARKER]: true },
+          "",
+          agentConsoleUrl(sessionId),
+        );
+      }
+      setAgentConsoleOpen(true);
+      setAgentSessionId(sessionId);
+      setAgentConversationOpen(Boolean(agentConsoleSinglePane && sessionId));
+    }
     const deepLinkedItem = itemKeyFromUrl();
-    if (deepLinkedItem && !history.state?.[ITEM_HISTORY_MARKER]) {
+    if (!deepLinkedConsole && deepLinkedItem && !history.state?.[ITEM_HISTORY_MARKER]) {
       const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
       history.replaceState(state, "", itemListUrl());
       history.pushState({ ...state, [ITEM_HISTORY_MARKER]: true }, "", itemDetailUrl(deepLinkedItem));
@@ -615,7 +761,57 @@ export function App() {
     reportAndroidBackDepth(backDepthFromState(history.state));
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [restoreListScroll]);
+  }, [agentConsoleLayout, agentConsoleSinglePane, restoreListScroll]);
+
+  useEffect(() => {
+    if (!agentConsoleOpen) return;
+    const recordedLayout = agentConsoleLayoutFromState(history.state);
+    if (recordedLayout === agentConsoleLayout) return;
+    const current = typeof history.state === "object" && history.state
+      ? history.state as Record<string, unknown>
+      : {};
+
+    if (agentConsoleSinglePane && agentSessionId) {
+      // A wide console has its selected conversation in the same entry. When a
+      // rotation makes it one-pane, turn that entry into the list underneath
+      // and add the detail above it so back has somewhere correct to go.
+      const listState = {
+        ...current,
+        [AGENT_CONSOLE_HISTORY_MARKER]: true,
+        [AGENT_CONVERSATION_HISTORY_MARKER]: undefined,
+        [AGENT_CONSOLE_LAYOUT_KEY]: "single",
+      };
+      history.replaceState(listState, "", agentConsoleUrl(agentSessionId));
+      history.pushState(
+        { ...listState, [AGENT_CONVERSATION_HISTORY_MARKER]: true },
+        "",
+        agentConsoleUrl(agentSessionId),
+      );
+      setAgentConversationOpen(true);
+      syncBackDepth();
+      return;
+    }
+
+    if (!agentConsoleSinglePane && history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]) {
+      // The list becomes visible beside the conversation, so collapse the
+      // mobile-only detail entry. Its underlying entry carries the same session.
+      history.back();
+      return;
+    }
+
+    history.replaceState(
+      {
+        ...current,
+        [AGENT_CONSOLE_HISTORY_MARKER]: true,
+        [AGENT_CONVERSATION_HISTORY_MARKER]: undefined,
+        [AGENT_CONSOLE_LAYOUT_KEY]: agentConsoleLayout,
+      },
+      "",
+      agentConsoleUrl(agentSessionId),
+    );
+    setAgentConversationOpen(false);
+    syncBackDepth();
+  }, [agentConsoleLayout, agentConsoleOpen, agentConsoleSinglePane, agentConversationOpen, agentSessionId]);
 
   /**
    * The whole first screen in one request. It used to be three, chained --
@@ -695,8 +891,22 @@ export function App() {
   const hasAnyAiPermission = products.some(productAllowsAi);
 
   useEffect(() => {
-    if (!hasAnyAiPermission) setAgentConsoleOpen(false);
-  }, [hasAnyAiPermission]);
+    if (products.length === 0 || hasAnyAiPermission || !agentConsoleOpen) return;
+    const current = typeof history.state === "object" && history.state
+      ? history.state as Record<string, unknown>
+      : {};
+    const {
+      [AGENT_CONSOLE_HISTORY_MARKER]: _console,
+      [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
+      [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      ...state
+    } = current;
+    history.replaceState(state, "", agentConsoleExitUrl());
+    syncBackDepth();
+    setAgentConsoleOpen(false);
+    setAgentSessionId(null);
+    setAgentConversationOpen(false);
+  }, [agentConsoleOpen, hasAnyAiPermission, products.length]);
 
   useEffect(() => {
     if (products.length === 0) return;
@@ -983,8 +1193,8 @@ export function App() {
             className={`ai-console-toggle ${agentConsoleOpen ? "active" : ""}`}
             aria-pressed={agentConsoleOpen}
             onClick={() => {
-              setAgentConsoleOpen((open) => !open);
-              setMobileSearchOpen(false);
+              if (agentConsoleOpen) closeAgentConsole();
+              else openAgentConsole();
             }}
           >
             {agentConsoleOpen ? <ArrowLeft size={16} /> : <Sparkles size={16} />}
@@ -1246,10 +1456,11 @@ export function App() {
       {agentConsoleOpen && selectedProductId && (
         <AgentSessionConsole
           productId={selectedProductId}
-          onOpenItem={(itemKey) => {
-            setAgentConsoleOpen(false);
-            openItemPage(itemKey);
-          }}
+          selectedSessionId={agentSessionId}
+          conversationOpen={agentConversationOpen}
+          onSelectSession={selectAgentSession}
+          onBackToSessions={closeAgentConversation}
+          onOpenItem={openItemFromAgentConsole}
         />
       )}
 
