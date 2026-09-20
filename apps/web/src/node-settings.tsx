@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronRight, CirclePause, Download, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { Check, ChevronRight, CirclePause, Download, LoaderCircle, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 import { api, ApiError } from "./api";
 import { agentLabelKey } from "./dispatch-eligibility";
@@ -107,7 +107,19 @@ export function NodeSettings({ products }: { products: readonly Product[] }) {
     <section className="product-settings-section">
       <header>
         <div><h3>{t("nodeDevices")}</h3></div>
-        <div className="component-header-actions"><span>{nodes.filter((node) => node.online).length}</span></div>
+        <div className="component-header-actions">
+          <span>{nodes.filter((node) => node.online).length}</span>
+          <button
+            type="button"
+            className="secondary-button refresh-button"
+            disabled={nodesQuery.isFetching}
+            onClick={() => void nodesQuery.refetch()}
+            aria-label={t("refresh")}
+            title={t("refresh")}
+          >
+            <RefreshCw className={nodesQuery.isFetching ? "spin" : undefined} size={16} />
+          </button>
+        </div>
       </header>
       <p className="component-management-help">{t("nodeSettingsScopeNote")}</p>
 
