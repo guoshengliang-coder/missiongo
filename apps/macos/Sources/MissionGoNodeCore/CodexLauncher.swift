@@ -218,6 +218,36 @@ public struct CodexLauncher: AgentAdapter {
         } catch {
             throw LaunchError(error.localizedDescription)
         }
-        return LaunchResult(sessionName: sessionName, sessionUrl: CodexProtocol.threadLink(threadId), logPath: nil)
+        return LaunchResult(
+            sessionName: sessionName,
+            sessionUrl: CodexProtocol.threadLink(threadId),
+            sessionRef: threadId,
+            logPath: nil
+        )
+    }
+
+    public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        var snapshot = try await control.readThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        guard let command = session.command else {
+            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages)
+        }
+        // Codex rejects a second turn while one is active. Keeping the command
+        // queued is intentional: the next poll sends it as soon as the thread is idle.
+        guard snapshot.status == "idle" else {
+            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages)
+        }
+        try await control.sendMessage(
+            socketPath: location.controlSocketPath,
+            threadId: session.sessionRef,
+            text: command.text,
+            clientUserMessageId: command.id
+        )
+        snapshot = CodexThreadSnapshot(status: "active", messages: snapshot.messages)
+        return AgentSessionReport(
+            status: snapshot.status,
+            messages: snapshot.messages,
+            commandId: command.id,
+            commandStatus: "delivered"
+        )
     }
 }

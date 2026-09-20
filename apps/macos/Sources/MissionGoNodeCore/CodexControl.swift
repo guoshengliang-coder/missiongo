@@ -17,6 +17,28 @@ public protocol CodexControl: Sendable {
     /// Creates one named thread, sends its first turn and disconnects.
     /// Returns the thread id.
     func startThread(_ request: CodexThreadRequest) async throws -> String
+    func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
+    func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws
+}
+
+public extension CodexControl {
+    func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        throw CodexControlError.rpc(method: "thread/read", message: "这个 Codex 控制器不支持读取会话。")
+    }
+
+    func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
+        throw CodexControlError.rpc(method: "turn/start", message: "这个 Codex 控制器不支持回复会话。")
+    }
+}
+
+public struct CodexThreadSnapshot: Equatable, Sendable {
+    public let status: String
+    public let messages: [AgentSessionMessage]
+
+    public init(status: String, messages: [AgentSessionMessage]) {
+        self.status = status
+        self.messages = messages
+    }
 }
 
 public struct CodexThreadRequest: Equatable, Sendable {
@@ -139,8 +161,85 @@ public enum CodexProtocol {
         return ["threadId": threadId, "name": name]
     }
 
-    public static func turnStartParams(threadId: String, prompt: String) -> [String: Any] {
-        return ["threadId": threadId, "input": [["type": "text", "text": prompt]]]
+    public static func turnStartParams(threadId: String, prompt: String, clientUserMessageId: String? = nil) -> [String: Any] {
+        var params: [String: Any] = ["threadId": threadId, "input": [["type": "text", "text": prompt]]]
+        if let clientUserMessageId { params["clientUserMessageId"] = clientUserMessageId }
+        return params
+    }
+
+    public static func threadReadParams(threadId: String) -> [String: Any] {
+        return ["threadId": threadId, "includeTurns": true]
+    }
+
+    public static func threadResumeParams(threadId: String) -> [String: Any] {
+        return ["threadId": threadId]
+    }
+
+    public static func threadSnapshot(fromRead result: [String: Any]) throws -> CodexThreadSnapshot {
+        guard let thread = result["thread"] as? [String: Any] else {
+            throw CodexControlError.invalidResponse(method: "thread/read")
+        }
+        let type = (thread["status"] as? [String: Any])?["type"] as? String
+        let status: String
+        switch type {
+        case "active": status = "active"
+        case "idle": status = "idle"
+        case "systemError": status = "failed"
+        case "notLoaded": status = "unavailable"
+        default: status = "unavailable"
+        }
+
+        var messages: [AgentSessionMessage] = []
+        let turns = thread["turns"] as? [[String: Any]] ?? []
+        for turn in turns {
+            let turnId = turn["id"] as? String
+            for item in turn["items"] as? [[String: Any]] ?? [] {
+                guard let sourceId = item["id"] as? String,
+                      let itemType = item["type"] as? String else { continue }
+                switch itemType {
+                case "userMessage":
+                    let parts = (item["content"] as? [[String: Any]] ?? []).compactMap { content -> String? in
+                        guard content["type"] as? String == "text" else { return nil }
+                        return content["text"] as? String
+                    }
+                    let text = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty {
+                        messages.append(AgentSessionMessage(
+                            sourceId: sourceId, turnId: turnId, role: "user", text: text
+                        ))
+                    }
+                case "agentMessage":
+                    let questions = (item["questions"] as? [[String: Any]])?.compactMap { question -> AgentSessionQuestion? in
+                        guard let title = question["title"] as? String, !title.isEmpty else { return nil }
+                        return AgentSessionQuestion(title: title, options: question["options"] as? [String])
+                    }
+                    var text = (item["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if text.isEmpty, let questions, !questions.isEmpty {
+                        text = questions.map(\.title).joined(separator: "\n")
+                    }
+                    if !text.isEmpty {
+                        messages.append(AgentSessionMessage(
+                            sourceId: sourceId,
+                            turnId: turnId,
+                            role: "agent",
+                            phase: item["phase"] as? String,
+                            text: text,
+                            questions: questions
+                        ))
+                    }
+                case "plan":
+                    let text = (item["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty {
+                        messages.append(AgentSessionMessage(
+                            sourceId: sourceId, turnId: turnId, role: "plan", text: text
+                        ))
+                    }
+                default:
+                    continue
+                }
+            }
+        }
+        return CodexThreadSnapshot(status: status, messages: messages)
     }
 
     /// `result.thread.id` of a `thread/start` answer.
@@ -175,6 +274,45 @@ public struct CodexAppServerControl: CodexControl {
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result { try CodexAppServerControl.startThreadSync(request, timeout: timeout) })
+            }
+        }
+    }
+
+    public func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        let timeout = self.timeout
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result {
+                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                    defer { connection.close() }
+                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    try connection.notify("initialized")
+                    let result = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId))
+                    return try CodexProtocol.threadSnapshot(fromRead: result)
+                })
+            }
+        }
+    }
+
+    public func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
+        let timeout = self.timeout
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result {
+                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                    defer { connection.close() }
+                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    try connection.notify("initialized")
+                    _ = try connection.call("thread/resume", CodexProtocol.threadResumeParams(threadId: threadId))
+                    _ = try connection.call(
+                        "turn/start",
+                        CodexProtocol.turnStartParams(
+                            threadId: threadId,
+                            prompt: text,
+                            clientUserMessageId: clientUserMessageId
+                        )
+                    )
+                })
             }
         }
     }

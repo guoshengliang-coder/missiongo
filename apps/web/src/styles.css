@@ -1411,6 +1411,24 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .dispatch-row-head strong { font-size: var(--text-md); font-weight: 680; }
 .dispatch-row-head small, .dispatch-row-detail { color: var(--muted); font-size: var(--text-xs); }
 .dispatch-row-head small { margin-left: auto; }
+.agent-session-panel { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 4px; }
+.agent-session-toggle { padding: 0; }
+.agent-session-body { width: 100%; display: flex; flex-direction: column; gap: 10px; padding: 12px; background: var(--surface-inset); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.agent-session-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.agent-session-head strong { font-size: var(--text-sm); }
+.agent-session-muted { margin: 0; color: var(--muted); font-size: var(--text-xs); }
+.agent-session-messages { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow: auto; }
+.agent-session-message { padding: 9px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.agent-session-message-user { margin-left: 28px; background: var(--mint-soft); border-color: var(--mint-line); }
+.agent-session-message small { color: var(--muted); font-weight: 700; }
+.agent-session-message p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-sm); line-height: 1.55; }
+.agent-session-question { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; font-size: var(--text-xs); }
+.agent-session-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent-session-options button { padding: 5px 8px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-dark); border-radius: var(--radius-sm); cursor: pointer; }
+.agent-session-command { margin: 0; color: var(--muted); font-size: var(--text-xs); }
+.agent-session-command-failed { color: var(--red); }
+.agent-session-reply { width: 100%; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.agent-session-reply textarea { width: 100%; min-height: 76px; }
 .dispatch-status-queued { color: var(--status-inbox-fg); background: var(--status-inbox-bg); }
 .dispatch-status-delivered { color: var(--status-progress-fg); background: var(--status-progress-bg); }
 .dispatch-status-launched { color: var(--status-ready-fg); background: var(--status-ready-bg); }

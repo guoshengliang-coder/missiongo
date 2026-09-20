@@ -101,4 +101,11 @@ public struct ConsentedAgentAdapter: AgentAdapter {
             throw error
         }
     }
+
+    public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        guard access.state(for: agent) != nil else {
+            throw LaunchError("\(agent.title) 集成已停用；不会读取或回复现有会话。")
+        }
+        return try await base.synchronize(session)
+    }
 }

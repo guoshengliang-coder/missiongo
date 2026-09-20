@@ -95,13 +95,93 @@ public struct DispatchReport: Codable, Equatable, Sendable {
     public let status: Status
     public let sessionName: String?
     public let sessionUrl: String?
+    public let sessionRef: String?
     public let error: String?
 
-    public init(status: Status, sessionName: String? = nil, sessionUrl: String? = nil, error: String? = nil) {
+    public init(status: Status, sessionName: String? = nil, sessionUrl: String? = nil, sessionRef: String? = nil, error: String? = nil) {
         self.status = status
         self.sessionName = sessionName
         self.sessionUrl = sessionUrl
+        self.sessionRef = sessionRef
         self.error = error
+    }
+}
+
+public struct AgentSessionCommand: Codable, Equatable, Sendable {
+    public let id: String
+    public let text: String
+    public let status: String
+    public let error: String?
+    public let createdAt: String
+    public let deliveredAt: String?
+
+    public init(id: String, text: String, status: String = "queued", error: String? = nil, createdAt: String = "", deliveredAt: String? = nil) {
+        self.id = id
+        self.text = text
+        self.status = status
+        self.error = error
+        self.createdAt = createdAt
+        self.deliveredAt = deliveredAt
+    }
+}
+
+public struct NodeAgentSession: Codable, Equatable, Sendable {
+    public let id: String
+    public let sessionRef: String
+    public let status: String
+    public let command: AgentSessionCommand?
+
+    public init(id: String, sessionRef: String, status: String, command: AgentSessionCommand? = nil) {
+        self.id = id
+        self.sessionRef = sessionRef
+        self.status = status
+        self.command = command
+    }
+}
+
+public struct AgentSessionQuestion: Codable, Equatable, Sendable {
+    public let title: String
+    public let options: [String]?
+
+    public init(title: String, options: [String]? = nil) {
+        self.title = title
+        self.options = options
+    }
+}
+
+public struct AgentSessionMessage: Codable, Equatable, Sendable {
+    public let sourceId: String
+    public let turnId: String?
+    public let role: String
+    public let phase: String?
+    public let text: String
+    public let questions: [AgentSessionQuestion]?
+
+    public init(sourceId: String, turnId: String? = nil, role: String, phase: String? = nil, text: String, questions: [AgentSessionQuestion]? = nil) {
+        self.sourceId = sourceId
+        self.turnId = turnId
+        self.role = role
+        self.phase = phase
+        self.text = text
+        self.questions = questions
+    }
+}
+
+public struct AgentSessionReport: Codable, Equatable, Sendable {
+    public let status: String
+    public let messages: [AgentSessionMessage]
+    public let error: String?
+    public let commandId: String?
+    public let commandStatus: String?
+    public let commandError: String?
+
+    public init(status: String, messages: [AgentSessionMessage], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil) {
+        self.status = status
+        self.messages = messages
+        self.error = error
+        self.commandId = commandId
+        self.commandStatus = commandStatus
+        self.commandError = commandError
     }
 }
 
@@ -448,6 +528,26 @@ public struct APIClient: Sendable {
         // The server answers 204 here; a 200-only check would make every launch
         // look like a failed hand-off and put the loop into a retry spiral.
         try requireSuccess(response, operation: "回报结果")
+    }
+
+    public func listAgentSessions() async throws -> [NodeAgentSession] {
+        struct Reply: Decodable { let sessions: [NodeAgentSession] }
+        let response = try await send(
+            "GET", "/api/v1/node/agent-sessions", body: Optional<String>.none, bearer: try nodeToken()
+        )
+        // During a rolling update the Mac can reach a server from before
+        // mirrored sessions. Dispatching must keep working until that server is
+        // upgraded; a missing optional endpoint simply means there is nothing to sync.
+        if response.status == 404 { return [] }
+        try requireSuccess(response, operation: "读取 Agent 会话")
+        let reply: Reply = try decode(response, operation: "读取 Agent 会话")
+        return reply.sessions
+    }
+
+    public func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {
+        let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/snapshot"
+        let response = try await send("POST", path, body: report, bearer: try nodeToken())
+        try requireSuccess(response, operation: "同步 Agent 会话")
     }
 
     public func me() async throws -> NodeProfile {

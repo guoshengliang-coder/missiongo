@@ -152,6 +152,7 @@ import {
 } from "./pane-layout";
 import { productBadgeColor } from "./product-color";
 import { SessionLink } from "./session-link";
+import { AgentSessionPanel } from "./agent-session-panel";
 import { registerMissionGoWebMcp } from "./webmcp";
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
@@ -2474,6 +2475,7 @@ function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: strin
       </small>
       {batch.length > 0 && <small className="dispatch-row-detail">{t("dispatchBatch", { keys: batch.join("、") })}</small>}
       {dispatch.sessionUrl && <SessionLink url={dispatch.sessionUrl} />}
+      {dispatch.agentSessionId && <AgentSessionPanel sessionId={dispatch.agentSessionId} />}
       {dispatch.error && <InlineError message={dispatch.error} />}
     </article>
   );

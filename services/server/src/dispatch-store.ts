@@ -58,6 +58,7 @@ export interface DispatchSnapshot {
   readonly itemKeys: readonly string[];
   readonly sessionName?: string;
   readonly sessionUrl?: string;
+  readonly agentSessionId?: string;
   readonly error?: string;
   readonly createdAt: string;
   readonly deliveredAt?: string;
@@ -109,6 +110,7 @@ interface DispatchRow {
   status: string;
   session_name: string | null;
   session_url: string | null;
+  agent_session_id: string | null;
   error: string | null;
   created_at: string;
   delivered_at: string | null;
@@ -308,8 +310,10 @@ export class DispatchStore {
     const rows = this.database.connection
       .prepare(
         `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
-                d.session_name, d.session_url, d.error, d.created_at, d.delivered_at, d.completed_at
+                d.session_name, d.session_url, s.id AS agent_session_id,
+                d.error, d.created_at, d.delivered_at, d.completed_at
          FROM dispatches d JOIN nodes n ON n.id = d.node_id
+         LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          WHERE d.node_id = ?
          ORDER BY d.created_at DESC
          LIMIT ?`,
@@ -764,8 +768,10 @@ export class DispatchStore {
     const row = this.database.connection
       .prepare(
         `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
-                d.session_name, d.session_url, d.error, d.created_at, d.delivered_at, d.completed_at
+                d.session_name, d.session_url, s.id AS agent_session_id,
+                d.error, d.created_at, d.delivered_at, d.completed_at
          FROM dispatches d JOIN nodes n ON n.id = d.node_id
+         LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          WHERE d.id = ? AND d.account_id = ?`,
       )
       .get(dispatchId, accountId) as unknown as DispatchRow | undefined;
@@ -777,9 +783,11 @@ export class DispatchStore {
     const rows = this.database.connection
       .prepare(
         `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
-                d.session_name, d.session_url, d.error, d.created_at, d.delivered_at, d.completed_at
+                d.session_name, d.session_url, s.id AS agent_session_id,
+                d.error, d.created_at, d.delivered_at, d.completed_at
          FROM dispatches d
          JOIN nodes n ON n.id = d.node_id
+         LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          JOIN dispatch_items di ON di.dispatch_id = d.id
          JOIN work_items w ON w.id = di.item_id
          WHERE w.item_key = ? AND d.account_id = ?
@@ -836,6 +844,7 @@ export class DispatchStore {
       itemKeys: this.listDispatchItemKeys(row.id),
       ...(row.session_name ? { sessionName: row.session_name } : {}),
       ...(row.session_url ? { sessionUrl: row.session_url } : {}),
+      ...(row.agent_session_id ? { agentSessionId: row.agent_session_id } : {}),
       ...(row.error ? { error: row.error } : {}),
       createdAt: row.created_at,
       ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}),

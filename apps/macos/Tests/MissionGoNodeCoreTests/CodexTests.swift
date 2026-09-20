@@ -239,6 +239,42 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(input?.count, 1)
         XCTAssertEqual(input?.first?["type"] as? String, "text")
         XCTAssertEqual(input?.first?["text"] as? String, "do it")
+        XCTAssertNil(params["clientUserMessageId"])
+        XCTAssertEqual(
+            CodexProtocol.turnStartParams(threadId: "t1", prompt: "do it", clientUserMessageId: "command-1")["clientUserMessageId"] as? String,
+            "command-1"
+        )
+    }
+
+    func testReadsOnlyUserVisibleThreadItems() throws {
+        let snapshot = try CodexProtocol.threadSnapshot(fromRead: [
+            "thread": [
+                "status": ["type": "idle"],
+                "turns": [[
+                    "id": "turn-1",
+                    "items": [
+                        ["id": "u1", "type": "userMessage", "content": [["type": "text", "text": "Please continue"]]],
+                        ["id": "r1", "type": "reasoning", "summary": ["private reasoning"]],
+                        ["id": "p1", "type": "plan", "text": "1. Inspect\n2. Fix"],
+                        [
+                            "id": "a1", "type": "agentMessage", "text": "Choose a scope", "phase": "commentary",
+                            "questions": [["title": "Scope", "options": ["small", "complete"]]],
+                        ],
+                    ],
+                ]],
+            ],
+        ])
+
+        XCTAssertEqual(snapshot.status, "idle")
+        XCTAssertEqual(snapshot.messages.map(\.sourceId), ["u1", "p1", "a1"])
+        XCTAssertEqual(snapshot.messages.map(\.role), ["user", "plan", "agent"])
+        XCTAssertEqual(snapshot.messages.last?.questions, [AgentSessionQuestion(title: "Scope", options: ["small", "complete"])])
+    }
+
+    func testReadAndResumeParametersKeepTheNativeThreadId() {
+        XCTAssertEqual(CodexProtocol.threadReadParams(threadId: "t1")["includeTurns"] as? Bool, true)
+        XCTAssertEqual(CodexProtocol.threadReadParams(threadId: "t1")["threadId"] as? String, "t1")
+        XCTAssertEqual(CodexProtocol.threadResumeParams(threadId: "t1")["threadId"] as? String, "t1")
     }
 
     func testOnlyAPlainIdBecomesALink() {
@@ -443,7 +479,9 @@ final class CodexPreflightTests: XCTestCase {
 
 private final class RecordingControl: CodexControl, @unchecked Sendable {
     let requests = Locked<[CodexThreadRequest]>([])
+    let replies = Locked<[(String, String)]>([])
     let threadId: String
+    var snapshot = CodexThreadSnapshot(status: "idle", messages: [])
 
     init(threadId: String = "01a09f35-d6fa-7eb2-9d90-1352cf2fb661") {
         self.threadId = threadId
@@ -452,6 +490,14 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     func startThread(_ request: CodexThreadRequest) async throws -> String {
         requests.withLock { $0.append(request) }
         return threadId
+    }
+
+    func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        return snapshot
+    }
+
+    func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
+        replies.withLock { $0.append((clientUserMessageId, text)) }
     }
 }
 
@@ -515,6 +561,7 @@ final class CodexLauncherTests: XCTestCase {
 
         XCTAssertEqual(result.sessionName, "Mac mini-AND-42")
         XCTAssertEqual(result.sessionUrl, "codex://threads/01a09f35-d6fa-7eb2-9d90-1352cf2fb661")
+        XCTAssertEqual(result.sessionRef, "01a09f35-d6fa-7eb2-9d90-1352cf2fb661")
         XCTAssertNil(result.logPath)
         let sent = try XCTUnwrap(control.requests.current.first)
         XCTAssertEqual(sent.socketPath, machine.location.controlSocketPath)
@@ -583,6 +630,49 @@ final class CodexLauncherTests: XCTestCase {
         let result = try await launcher.launch(job(repoPath: machine.repoPath))
         XCTAssertNil(result.sessionUrl)
         XCTAssertEqual(result.sessionName, "Mac mini-AND-42")
+    }
+
+    func testAnIdleThreadReceivesTheQueuedWebReply() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(
+            status: "idle",
+            messages: [AgentSessionMessage(sourceId: "a1", role: "agent", text: "Ready")]
+        )
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1",
+            sessionRef: "thread-1",
+            status: "idle",
+            command: AgentSessionCommand(id: "command-1", text: "Continue")
+        ))
+
+        XCTAssertEqual(control.replies.current.map { [$0.0, $0.1] }, [["command-1", "Continue"]])
+        XCTAssertEqual(report.status, "active")
+        XCTAssertEqual(report.commandId, "command-1")
+        XCTAssertEqual(report.commandStatus, "delivered")
+        XCTAssertEqual(report.messages.map(\.sourceId), ["a1"])
+    }
+
+    func testAnActiveThreadKeepsTheWebReplyQueued() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "active", messages: [])
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1",
+            sessionRef: "thread-1",
+            status: "active",
+            command: AgentSessionCommand(id: "command-1", text: "Continue")
+        ))
+
+        XCTAssertTrue(control.replies.current.isEmpty)
+        XCTAssertNil(report.commandStatus)
+        XCTAssertEqual(report.status, "active")
     }
 
     func testDetectReportsTheVersionOnlyWhenCodexIsInstalled() async throws {
