@@ -465,8 +465,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .agent-console-list-head h1 { margin: 0; font-size: var(--text-lg); letter-spacing: -.02em; }
 .agent-console-list-head small { display: block; margin-top: 3px; color: var(--muted); font-size: var(--text-xs); }
 .agent-console-mobile-filters { display: none; }
-.agent-console-search { min-height: 38px; display: flex; align-items: center; gap: 7px; margin: 10px 12px; padding: 0 9px; color: var(--muted); background: var(--surface-field); border: 1px solid var(--line); border-radius: var(--radius-md); }
-.agent-console-search input { min-width: 0; flex: 1; color: var(--ink); background: transparent; border: 0; outline: 0; font-size: var(--text-sm); }
+.agent-console-search { min-height: 38px; display: flex; flex-direction: row; align-items: center; gap: 7px; margin: 10px 12px; padding: 0 9px; color: var(--muted); background: var(--surface-field); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.agent-console-search svg { flex: 0 0 auto; }
+.agent-console-search input { min-width: 0; height: 36px; flex: 1; padding: 0; color: var(--ink); background: transparent; border: 0; outline: 0; font-size: var(--text-sm); }
 .agent-console-session-list { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid var(--line-soft); }
 .agent-console-session {
   width: 100%;
@@ -484,10 +485,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .agent-console-session:hover { background: var(--row-hover); }
 .agent-console-session.active { background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--mint-dark); }
-.agent-console-status-dot { width: 7px; height: 7px; margin-top: 5px; background: var(--status-inbox-fg); border-radius: 50%; }
-.agent-console-status-active { background: var(--status-progress-fg); }
-.agent-console-status-idle { background: var(--amber); }
-.agent-console-status-failed { background: var(--red); }
+.agent-console-status-icon { width: 16px; height: 16px; display: grid; place-items: center; color: var(--status-inbox-fg); }
+.agent-console-status-active { color: var(--status-progress-fg); }
+.agent-console-status-idle { color: var(--amber); }
+.agent-console-status-failed { color: var(--red); }
 .agent-console-session-copy { min-width: 0; display: block; }
 .agent-console-session-copy strong,
 .agent-console-session-copy small,
@@ -497,14 +498,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .agent-console-session-copy > span { margin-top: 8px; color: var(--ink-2); font-size: var(--text-sm); }
 .agent-console-session time { color: var(--muted-soft); font-size: var(--text-xs); white-space: nowrap; }
 
-.agent-console-conversation { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
+.agent-console-conversation { min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
 .agent-console-conversation-head { min-height: 64px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 9px 18px; background: var(--surface-strong); border-bottom: 1px solid var(--line); }
+.agent-console-conversation-back { display: none; }
 .agent-console-avatar { width: 32px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; color: var(--status-ready-fg); background: var(--status-ready-bg); border-radius: var(--radius-md); }
 .agent-console-conversation-head > div { min-width: 0; flex: 1; }
 .agent-console-conversation-head h2 { margin: 0; overflow: hidden; font-size: var(--text-lg); letter-spacing: -.02em; text-overflow: ellipsis; white-space: nowrap; }
 .agent-console-conversation-head p { margin: 4px 0 0; color: var(--muted); font-size: var(--text-xs); }
 .agent-console-conversation-head .dispatch-session-link { margin: 0; white-space: nowrap; }
-.agent-console-messages { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 11px; padding: 18px 22px; overflow-y: auto; overscroll-behavior: contain; }
+.agent-console-message-stage { min-height: 0; flex: 1; position: relative; }
+.agent-console-messages { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 11px; padding: 18px 22px; overflow-y: auto; overscroll-behavior: contain; }
 .agent-console-dispatch { display: flex; align-items: center; gap: 9px; padding: 9px 11px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); }
 .agent-console-dispatch > div { display: flex; flex-wrap: wrap; gap: 5px; }
 .agent-console-dispatch button { padding: 3px 6px; color: var(--status-ready-fg); background: var(--status-ready-bg); border: 0; border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 750; cursor: pointer; }
@@ -513,8 +516,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .agent-console-message-user { align-self: flex-end; background: var(--accent-bg); border-color: var(--accent-line); border-top-right-radius: var(--radius-xs); }
 .agent-console-message > small { color: var(--muted); font-size: var(--text-xs); font-weight: 750; }
 .agent-console-message .markdown-text { margin-top: 5px; font-size: var(--text-sm); line-height: 1.6; }
+.agent-console-message-user .markdown-text { margin-top: 0; }
 .agent-console-message .markdown-text > :first-child { margin-top: 0; }
 .agent-console-message .markdown-text > :last-child { margin-bottom: 0; }
+.agent-console-activity { align-self: center; display: inline-flex; align-items: center; gap: 7px; margin: 5px 0; padding: 7px 10px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: 999px; font-size: var(--text-xs); }
+.agent-console-activity-active { color: var(--status-progress-fg); background: var(--status-progress-bg); border-color: var(--accent-line); }
+.agent-console-activity-failed { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-line); }
+.agent-console-new-messages { position: absolute; right: 50%; bottom: 12px; z-index: 2; display: inline-flex; align-items: center; gap: 6px; padding: 8px 11px; transform: translateX(50%); color: var(--primary-fg); background: var(--primary-bg); border: 0; border-radius: 999px; box-shadow: var(--shadow); font-size: var(--text-xs); font-weight: 750; cursor: pointer; }
 .agent-console-reply { flex: 0 0 auto; padding: 10px 18px 14px; background: var(--surface-strong); border-top: 1px solid var(--line); }
 .agent-console-reply form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 9px; }
 .agent-console-reply textarea { width: 100%; min-height: 64px; padding: 9px 11px; resize: vertical; color: var(--ink); background: var(--surface-field); border: 1px solid var(--line-dark); border-radius: var(--radius-md); }
@@ -1328,13 +1336,16 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 }
 
 @media (max-width: 520px) {
-  .app-shell.agent-console-open { height: auto; min-height: 100vh; min-height: 100dvh; overflow: visible; }
+  .app-shell.agent-console-open { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
   .app-shell.agent-console-open .product-switcher-wrap { display: none; }
   .app-shell.agent-console-open .topbar .brand { display: flex; }
-  .agent-console-page { height: auto; min-height: calc(100vh - 64px - var(--safe-top)); display: block; overflow: visible; }
-  .agent-console-list { min-height: 330px; max-height: 430px; border-right: 0; border-bottom: 1px solid var(--line); }
-  .agent-console-conversation { min-height: 620px; overflow: visible; }
-  .agent-console-messages { min-height: 340px; overflow: visible; }
+  .agent-console-page { height: calc(100vh - 64px - var(--safe-top)); height: calc(100dvh - 64px - var(--safe-top)); min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
+  .agent-console-list, .agent-console-conversation { min-height: 0; grid-column: 1; grid-row: 1; }
+  .agent-console-list { max-height: none; border-right: 0; border-bottom: 0; }
+  .agent-console-page.mobile-list-open .agent-console-conversation,
+  .agent-console-page.mobile-conversation-open .agent-console-list { display: none; }
+  .agent-console-conversation-back { display: inline-flex; flex: 0 0 auto; }
+  .agent-console-messages { min-height: 0; overflow-y: auto; }
   .agent-console-conversation-head .status-pill { display: inline-flex; }
   .agent-console-reply form { grid-template-columns: 1fr; }
   .agent-console-reply .primary-button { justify-self: end; }

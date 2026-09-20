@@ -1,26 +1,45 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BellRing, Bot, CircleAlert, LoaderCircle, MessageSquare, RefreshCw, Search } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowLeft,
+  BellRing,
+  Bot,
+  CircleAlert,
+  CircleCheck,
+  CircleDot,
+  LoaderCircle,
+  MessageSquare,
+  RefreshCw,
+  Search,
+} from "lucide-react";
 
 import { api } from "./api";
+import {
+  activityLabelKey,
+  changedMessageIds,
+  isNearMessageBottom,
+  messageLabelKey,
+} from "./agent-session-view";
 import { useI18n } from "./i18n";
 import { MarkdownText } from "./markdown-text";
 import { SessionLink } from "./session-link";
-import type { AgentSessionMessage, AgentSessionStatus, AgentSessionSummary } from "./types";
+import type { AgentSessionStatus, AgentSessionSummary } from "./types";
 
 type SessionFilter = "attention" | "active" | "all" | "failed";
-
-function messageLabel(role: AgentSessionMessage["role"], t: ReturnType<typeof useI18n>["t"]): string {
-  if (role === "user") return t("agentSessionYou");
-  if (role === "plan") return t("agentSessionPlan");
-  return t("agentSessionCodex");
-}
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "active") return t("agentSessionActive");
   if (status === "idle") return t("agentSessionIdle");
   if (status === "failed") return t("agentSessionFailed");
   return t("agentSessionUnavailable");
+}
+
+function SessionStatusIcon({ status }: { status: AgentSessionStatus }) {
+  if (status === "active") return <LoaderCircle className="spin" size={14} />;
+  if (status === "idle") return <CircleCheck size={14} />;
+  if (status === "failed") return <CircleAlert size={14} />;
+  return <CircleDot size={14} />;
 }
 
 function errorText(error: unknown): string {
@@ -69,6 +88,13 @@ export function AgentSessionConsole({
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reply, setReply] = useState("");
+  const [mobileConversationOpen, setMobileConversationOpen] = useState(false);
+  const [followLatest, setFollowLatest] = useState(true);
+  const [newMessageCount, setNewMessageCount] = useState(0);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const observedSessionRef = useRef<string | null>(null);
+  const previousMessagesRef = useRef<readonly { id: string; text: string }[]>([]);
+  const unseenMessageIdsRef = useRef(new Set<string>());
 
   const sessionsQuery = useQuery({
     queryKey: ["agent-sessions", productId],
@@ -90,6 +116,7 @@ export function AgentSessionConsole({
   useEffect(() => {
     if (selectedId && visibleSessions.some((session) => session.id === selectedId)) return;
     setSelectedId(visibleSessions[0]?.id ?? null);
+    setMobileConversationOpen(false);
   }, [selectedId, visibleSessions]);
 
   const selected = sessions.find((session) => session.id === selectedId);
@@ -110,6 +137,40 @@ export function AgentSessionConsole({
     },
   });
   const pending = sessionQuery.data?.command?.status === "queued";
+  const sessionStatus = sessionQuery.data?.status ?? selected?.status ?? "unavailable";
+  const messages = sessionQuery.data?.messages ?? [];
+
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
+    const messages = messagesRef.current;
+    if (messages) messages.scrollTo({ top: messages.scrollHeight, behavior });
+    unseenMessageIdsRef.current.clear();
+    setFollowLatest(true);
+    setNewMessageCount(0);
+  }, []);
+
+  useLayoutEffect(() => {
+    const changedSession = observedSessionRef.current !== selectedId;
+    const previousMessages = previousMessagesRef.current;
+    observedSessionRef.current = selectedId;
+    previousMessagesRef.current = messages;
+
+    if (changedSession) {
+      unseenMessageIdsRef.current.clear();
+      setFollowLatest(true);
+      setNewMessageCount(0);
+      scrollToLatest();
+      return;
+    }
+
+    const changedIds = changedMessageIds(previousMessages, messages);
+    if (changedIds.length === 0) return;
+    if (followLatest) scrollToLatest();
+    else {
+      changedIds.forEach((id) => unseenMessageIdsRef.current.add(id));
+      setNewMessageCount(unseenMessageIdsRef.current.size);
+    }
+  }, [followLatest, messages, scrollToLatest, selectedId]);
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = reply.trim();
@@ -119,6 +180,7 @@ export function AgentSessionConsole({
     setFilter(next);
     const first = sessions.find((session) => sessionMatches(session, next, search));
     setSelectedId(first?.id ?? null);
+    setMobileConversationOpen(false);
   };
 
   const filters: Array<{ key: SessionFilter; icon: typeof BellRing; count: number; label: string }> = [
@@ -129,7 +191,7 @@ export function AgentSessionConsole({
   ];
 
   return (
-    <main className="agent-console-page">
+    <main className={`agent-console-page ${mobileConversationOpen ? "mobile-conversation-open" : "mobile-list-open"}`}>
       <aside className="agent-console-filters" aria-label={t("agentConsoleFilters")}>
         <p className="sidebar-label">{t("agentConsoleTitle")}</p>
         {filters.map(({ key, icon: Icon, count, label }) => (
@@ -180,9 +242,14 @@ export function AgentSessionConsole({
               key={session.id}
               type="button"
               className={`agent-console-session ${session.id === selectedId ? "active" : ""}`}
-              onClick={() => setSelectedId(session.id)}
+              onClick={() => {
+                setSelectedId(session.id);
+                setMobileConversationOpen(true);
+              }}
             >
-              <span className={`agent-console-status-dot agent-console-status-${session.status}`} />
+              <span className={`agent-console-status-icon agent-console-status-${session.status}`}>
+                <SessionStatusIcon status={session.status} />
+              </span>
               <span className="agent-console-session-copy">
                 <strong>{sessionTitle(session)}</strong>
                 <small>{session.nodeName} · {t("agentSessionCodex")} · {statusLabel(session.status, t)}</small>
@@ -199,39 +266,73 @@ export function AgentSessionConsole({
         {selected && (
           <>
             <header className="agent-console-conversation-head">
+              <button
+                type="button"
+                className="icon-button agent-console-conversation-back"
+                aria-label={t("agentConsoleBackToSessions")}
+                onClick={() => setMobileConversationOpen(false)}
+              ><ArrowLeft size={19} /></button>
               <span className="agent-console-avatar"><Bot size={17} /></span>
               <div>
                 <h2>{sessionTitle(selected)}</h2>
                 <p>{selected.nodeName} · {t("agentSessionCodex")} · {selected.mode}</p>
               </div>
-              <span className={`status-pill agent-session-status-${selected.status}`}>{statusLabel(selected.status, t)}</span>
+              <span className={`status-pill agent-session-status-${sessionStatus}`}>{statusLabel(sessionStatus, t)}</span>
               {selected.sessionUrl && <SessionLink url={selected.sessionUrl} />}
             </header>
-            <div className="agent-console-messages">
-              <div className="agent-console-dispatch">
-                <span>{t("agentConsoleDispatchScope")}</span>
-                <div>{selected.items.map((item) => <button key={item.key} type="button" onClick={() => onOpenItem(item.key)}>{item.key}</button>)}</div>
+            <div className="agent-console-message-stage">
+              <div
+                ref={messagesRef}
+                className="agent-console-messages"
+                onScroll={(event) => {
+                  const nearBottom = isNearMessageBottom(event.currentTarget);
+                  setFollowLatest(nearBottom);
+                  if (nearBottom) {
+                    unseenMessageIdsRef.current.clear();
+                    setNewMessageCount(0);
+                  }
+                }}
+              >
+                <div className="agent-console-dispatch">
+                  <span>{t("agentConsoleDispatchScope")}</span>
+                  <div>{selected.items.map((item) => <button key={item.key} type="button" onClick={() => onOpenItem(item.key)}>{item.key}</button>)}</div>
+                </div>
+                {sessionQuery.isLoading && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
+                {sessionQuery.isError && <p className="inline-error">{errorText(sessionQuery.error)}</p>}
+                {sessionQuery.data?.messages.length === 0 && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
+                {sessionQuery.data?.messages.map((message) => {
+                  const labelKey = messageLabelKey(message.role);
+                  return (
+                    <article key={message.id} className={`agent-console-message agent-console-message-${message.role}`}>
+                      {labelKey && <small>{t(labelKey)}</small>}
+                      <MarkdownText>{message.text}</MarkdownText>
+                      {message.questions?.map((question) => (
+                        <div key={question.title} className="agent-session-question">
+                          <strong>{question.title}</strong>
+                          {question.options && <div className="agent-session-options">
+                            {question.options.map((option) => (
+                              <button key={option} type="button" disabled={!selected.canReply} onClick={() => setReply(option)}>{option}</button>
+                            ))}
+                          </div>}
+                        </div>
+                      ))}
+                    </article>
+                  );
+                })}
+                {sessionQuery.data?.lastError && <p className="inline-error">{sessionQuery.data.lastError}</p>}
+                {!sessionQuery.isLoading && !sessionQuery.isError && (
+                  <div className={`agent-console-activity agent-console-activity-${sessionStatus}`} role="status">
+                    <SessionStatusIcon status={sessionStatus} />
+                    <span>{t(activityLabelKey(sessionStatus))}</span>
+                  </div>
+                )}
               </div>
-              {sessionQuery.isLoading && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
-              {sessionQuery.isError && <p className="inline-error">{errorText(sessionQuery.error)}</p>}
-              {sessionQuery.data?.messages.length === 0 && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
-              {sessionQuery.data?.messages.map((message) => (
-                <article key={message.id} className={`agent-console-message agent-console-message-${message.role}`}>
-                  <small>{messageLabel(message.role, t)}</small>
-                  <MarkdownText>{message.text}</MarkdownText>
-                  {message.questions?.map((question) => (
-                    <div key={question.title} className="agent-session-question">
-                      <strong>{question.title}</strong>
-                      {question.options && <div className="agent-session-options">
-                        {question.options.map((option) => (
-                          <button key={option} type="button" disabled={!selected.canReply} onClick={() => setReply(option)}>{option}</button>
-                        ))}
-                      </div>}
-                    </div>
-                  ))}
-                </article>
-              ))}
-              {sessionQuery.data?.lastError && <p className="inline-error">{sessionQuery.data.lastError}</p>}
+              {newMessageCount > 0 && (
+                <button type="button" className="agent-console-new-messages" onClick={() => scrollToLatest("smooth")}>
+                  <span>{t("agentConsoleNewMessages", { count: newMessageCount })}</span>
+                  <ArrowDown size={15} />
+                </button>
+              )}
             </div>
             <footer className="agent-console-reply">
               {sessionQuery.data?.command && (
