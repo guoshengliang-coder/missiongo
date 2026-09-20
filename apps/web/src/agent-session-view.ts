@@ -38,13 +38,14 @@ export function messageLabelKey(
   return role === "plan" ? "agentSessionPlan" : "agentSessionCodex";
 }
 
-export function activityLabelKey(status: AgentSessionStatus):
+export function activityLabelKey(status: AgentSessionStatus, replyQueued = false):
   | "agentSessionActivityActive"
   | "agentSessionActivityIdle"
   | "agentSessionActivityUnavailable"
+  | "agentSessionActivityUnavailableQueued"
   | "agentSessionActivityFailed" {
   if (status === "active") return "agentSessionActivityActive";
   if (status === "idle") return "agentSessionActivityIdle";
   if (status === "failed") return "agentSessionActivityFailed";
-  return "agentSessionActivityUnavailable";
+  return replyQueued ? "agentSessionActivityUnavailableQueued" : "agentSessionActivityUnavailable";
 }

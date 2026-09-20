@@ -446,4 +446,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text }),
     }),
+  cancelAgentSessionCommand: (sessionId: string, commandId: string) =>
+    request<AgentSessionCommand>(
+      `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}/cancel`,
+      { method: "POST" },
+    ),
 };

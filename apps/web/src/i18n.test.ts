@@ -29,4 +29,10 @@ describe("MissionGo interface language", () => {
     expect(translate("en", "agentConsoleOpen")).toBe("Agent console");
     expect(translate("en", "agentConsoleTitle")).toBe("Agent console");
   });
+
+  it("explains queued replies and offers to cancel them for editing", () => {
+    expect(translate("zh-CN", "agentSessionReplyQueued")).toContain("恢复连接后将自动发送");
+    expect(translate("zh-CN", "agentSessionCancelAndEdit")).toBe("取消等待并编辑");
+    expect(translate("en", "agentSessionReplyCancelled")).toBe("Queued reply cancelled");
+  });
 });

@@ -632,7 +632,7 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(result.sessionName, "Mac mini-AND-42")
     }
 
-    func testAnIdleThreadReceivesTheQueuedWebReply() async throws {
+    func testAnIdleThreadReservesThenDeliversTheQueuedWebReply() async throws {
         let control = RecordingControl(threadId: "thread-1")
         control.snapshot = CodexThreadSnapshot(
             status: "idle",
@@ -642,13 +642,24 @@ final class CodexLauncherTests: XCTestCase {
             environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
             location: CodexLocation(codexHome: "/tmp/codex"), control: control
         )
-        let report = try await launcher.synchronize(NodeAgentSession(
+        let reserved = try await launcher.synchronize(NodeAgentSession(
             id: "session-1",
             sessionRef: "thread-1",
             status: "idle",
             command: AgentSessionCommand(id: "command-1", text: "Continue")
         ))
 
+        XCTAssertTrue(control.replies.current.isEmpty)
+        XCTAssertEqual(reserved.status, "idle")
+        XCTAssertEqual(reserved.commandId, "command-1")
+        XCTAssertEqual(reserved.commandStatus, "delivering")
+
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1",
+            sessionRef: "thread-1",
+            status: "idle",
+            command: AgentSessionCommand(id: "command-1", text: "Continue", status: "delivering")
+        ))
         XCTAssertEqual(control.replies.current.map { [$0.0, $0.1] }, [["command-1", "Continue"]])
         XCTAssertEqual(report.status, "active")
         XCTAssertEqual(report.commandId, "command-1")
