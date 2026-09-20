@@ -22,4 +22,11 @@ describe("MissionGo interface language", () => {
     expect(translate("zh-CN", "uploadLog")).toBe("上传日志");
     expect(translate("zh-CN", "notAvailableYet")).toBe("暂时还没有");
   });
+
+  it("calls the session entry and heading the Agent console in both languages", () => {
+    expect(translate("zh-CN", "agentConsoleOpen")).toBe("Agent 控制台");
+    expect(translate("zh-CN", "agentConsoleTitle")).toBe("Agent 控制台");
+    expect(translate("en", "agentConsoleOpen")).toBe("Agent console");
+    expect(translate("en", "agentConsoleTitle")).toBe("Agent console");
+  });
 });
