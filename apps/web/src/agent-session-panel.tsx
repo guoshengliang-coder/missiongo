@@ -22,7 +22,7 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
+export function AgentSessionPanel({ sessionId, canReply }: { sessionId: string; canReply: boolean }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -50,7 +50,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
   return (
     <div className="agent-session-panel">
       <button type="button" className="text-button agent-session-toggle" onClick={() => setOpen((value) => !value)}>
-        {open ? t("agentSessionHide") : t("agentSessionOpen")}
+        {open ? t("agentSessionHide") : t(canReply ? "agentSessionOpen" : "agentSessionOpenReadOnly")}
       </button>
       {open && (
         <div className="agent-session-body">
@@ -78,7 +78,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                         {question.options && (
                           <div className="agent-session-options">
                             {question.options.map((option) => (
-                              <button key={option} type="button" onClick={() => setReply(option)}>{option}</button>
+                              <button key={option} type="button" disabled={!canReply} onClick={() => setReply(option)}>{option}</button>
                             ))}
                           </div>
                         )}
@@ -96,19 +96,25 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                   {session.data.command.error ? `: ${session.data.command.error}` : ""}
                 </p>
               )}
-              <form className="agent-session-reply" onSubmit={submit}>
-                <textarea
-                  rows={3}
-                  value={reply}
-                  onChange={(event) => setReply(event.target.value)}
-                  placeholder={t("agentSessionReplyPlaceholder")}
-                  disabled={pending || send.isPending}
-                />
-                <button type="submit" className="primary-button" disabled={!reply.trim() || pending || send.isPending}>
-                  {send.isPending ? t("agentSessionSending") : t("agentSessionSend")}
-                </button>
-              </form>
-              {send.isError && <p className="inline-error">{errorText(send.error)}</p>}
+              {canReply ? (
+                <>
+                  <form className="agent-session-reply" onSubmit={submit}>
+                    <textarea
+                      rows={3}
+                      value={reply}
+                      onChange={(event) => setReply(event.target.value)}
+                      placeholder={t("agentSessionReplyPlaceholder")}
+                      disabled={pending || send.isPending}
+                    />
+                    <button type="submit" className="primary-button" disabled={!reply.trim() || pending || send.isPending}>
+                      {send.isPending ? t("agentSessionSending") : t("agentSessionSend")}
+                    </button>
+                  </form>
+                  {send.isError && <p className="inline-error">{errorText(send.error)}</p>}
+                </>
+              ) : (
+                <p className="agent-session-muted" role="note">{t("agentSessionReadOnly")}</p>
+              )}
             </>
           )}
         </div>
