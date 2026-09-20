@@ -35,6 +35,28 @@ export interface AgentSessionSnapshot {
   readonly command?: AgentSessionCommand;
 }
 
+export interface AgentSessionListItem {
+  readonly id: string;
+  readonly dispatchId: string;
+  readonly agentKind: "codex";
+  readonly status: AgentSessionStatus;
+  readonly lastError?: string;
+  readonly updatedAt: string;
+  readonly nodeName: string;
+  readonly mode: string;
+  readonly dispatchStatus: string;
+  readonly sessionName?: string;
+  readonly sessionUrl?: string;
+  readonly createdAt: string;
+  readonly items: readonly {
+    readonly key: string;
+    readonly title: string;
+    readonly productId: string;
+  }[];
+  readonly latestMessage?: Pick<AgentSessionMessageInput, "role" | "text">;
+  readonly command?: AgentSessionCommand;
+}
+
 export interface NodeAgentSession {
   readonly id: string;
   readonly sessionRef: string;
@@ -50,6 +72,15 @@ interface SessionRow {
   status: AgentSessionStatus;
   last_error: string | null;
   updated_at: string;
+}
+
+interface SessionListRow extends SessionRow {
+  node_name: string;
+  mode: string;
+  dispatch_status: string;
+  session_name: string | null;
+  session_url: string | null;
+  created_at: string;
 }
 
 interface CommandRow {
@@ -137,6 +168,66 @@ export class AgentSessionStore {
       })),
       ...(command ? { command: this.mapCommand(command) } : {}),
     };
+  }
+
+  /**
+   * The account's mirrored Codex conversations, newest activity first.
+   *
+   * Product authorization is deliberately applied by the HTTP boundary: this
+   * store knows which account created a dispatch, but not which of that
+   * account's product grants are still effective today. Item product ids travel
+   * with each row so the boundary can make that decision without leaking a
+   * title or preview first.
+   */
+  listForAccount(accountId: string, limit = 100): readonly AgentSessionListItem[] {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT s.id, s.dispatch_id, s.agent_kind, s.agent_session_ref, s.status, s.last_error, s.updated_at,
+                COALESCE(n.nickname, n.name) AS node_name, d.mode, d.status AS dispatch_status,
+                d.session_name, d.session_url, d.created_at
+         FROM agent_sessions s
+         JOIN dispatches d ON d.id = s.dispatch_id
+         JOIN nodes n ON n.id = d.node_id
+         WHERE d.account_id = ?
+         ORDER BY s.updated_at DESC
+         LIMIT ?`,
+      )
+      .all(accountId, limit) as unknown as SessionListRow[];
+    const items = this.database.connection.prepare(
+      `SELECT w.item_key, w.title, w.product_id
+       FROM dispatch_items di JOIN work_items w ON w.id = di.item_id
+       WHERE di.dispatch_id = ? ORDER BY di.position`,
+    );
+    const latestMessage = this.database.connection.prepare(
+      `SELECT role, text FROM agent_session_messages
+       WHERE session_id = ? ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
+    );
+    return rows.map((row) => {
+      const itemRows = items.all(row.dispatch_id) as unknown as Array<{
+        item_key: string;
+        title: string;
+        product_id: string;
+      }>;
+      const message = latestMessage.get(row.id) as unknown as Pick<AgentSessionMessageInput, "role" | "text"> | undefined;
+      const command = this.latestCommand(row.id);
+      return {
+        id: row.id,
+        dispatchId: row.dispatch_id,
+        agentKind: row.agent_kind,
+        status: row.status,
+        ...(row.last_error ? { lastError: row.last_error } : {}),
+        updatedAt: row.updated_at,
+        nodeName: row.node_name,
+        mode: row.mode,
+        dispatchStatus: row.dispatch_status,
+        ...(row.session_name ? { sessionName: row.session_name } : {}),
+        ...(row.session_url ? { sessionUrl: row.session_url } : {}),
+        createdAt: row.created_at,
+        items: itemRows.map((item) => ({ key: item.item_key, title: item.title, productId: item.product_id })),
+        ...(message ? { latestMessage: message } : {}),
+        ...(command ? { command: this.mapCommand(command) } : {}),
+      };
+    });
   }
 
   enqueue(accountId: string, sessionId: string, textValue: string): AgentSessionCommand {

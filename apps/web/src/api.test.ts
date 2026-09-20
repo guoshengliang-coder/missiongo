@@ -95,16 +95,21 @@ describe("dispatch API", () => {
   it("reads a mirrored Codex session and queues a reply", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ id: "session-1", status: "idle", messages: [] }))
+      .mockResolvedValueOnce(json({ sessions: [] }))
       .mockResolvedValueOnce(json({ id: "command-1", status: "queued", text: "continue" }, 201));
     vi.stubGlobal("fetch", fetchMock);
 
     await api.getAgentSession("session 1");
+    await api.listAgentSessions("product 1");
     await api.sendAgentSessionCommand("session 1", "continue");
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/agent-sessions/session%201", expect.objectContaining({
       credentials: "same-origin",
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/agent-sessions/session%201/commands", expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/agent-sessions?productId=product%201", expect.objectContaining({
+      credentials: "same-origin",
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/v1/agent-sessions/session%201/commands", expect.objectContaining({
       method: "POST",
       body: JSON.stringify({ text: "continue" }),
     }));

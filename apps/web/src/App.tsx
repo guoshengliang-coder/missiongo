@@ -154,6 +154,7 @@ import {
 import { productBadgeColor } from "./product-color";
 import { SessionLink } from "./session-link";
 import { AgentSessionPanel } from "./agent-session-panel";
+import { AgentSessionConsole } from "./agent-session-console";
 import { registerMissionGoWebMcp } from "./webmcp";
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
@@ -437,6 +438,7 @@ export function App() {
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [agentConsoleOpen, setAgentConsoleOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
@@ -691,6 +693,10 @@ export function App() {
   const selectedProduct = products.find((product) => product.id === selectedProductId);
   const selectedProductCanUseAi = productAllowsAi(selectedProduct);
   const hasAnyAiPermission = products.some(productAllowsAi);
+
+  useEffect(() => {
+    if (!hasAnyAiPermission) setAgentConsoleOpen(false);
+  }, [hasAnyAiPermission]);
 
   useEffect(() => {
     if (products.length === 0) return;
@@ -951,11 +957,11 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""}`}>
       <header className={`topbar ${mobileSearchOpen ? "searching" : ""}`}>
-        <button className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
+        {!agentConsoleOpen && <button className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
           <Menu size={20} />
-        </button>
+        </button>}
         <Brand compact />
         <div className="topbar-divider" />
         <ProductSwitcher
@@ -971,24 +977,42 @@ export function App() {
             clearItemPage();
           }}
         />
-        <div className="header-search">
-          <Search size={17} />
-          <input
-            ref={searchInputRef}
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") setMobileSearchOpen(false);
+        {hasAnyAiPermission && (
+          <button
+            type="button"
+            className={`ai-console-toggle ${agentConsoleOpen ? "active" : ""}`}
+            aria-pressed={agentConsoleOpen}
+            onClick={() => {
+              setAgentConsoleOpen((open) => !open);
+              setMobileSearchOpen(false);
             }}
-            placeholder={t("searchItems")}
-          />
-          <kbd>⌘ K</kbd>
-          <button className="icon-button mobile-only mobile-search-close" onClick={() => setMobileSearchOpen(false)} aria-label={t("closeSearch")}><X size={18} /></button>
-        </div>
-        <button className="icon-button mobile-only mobile-search-trigger" onClick={() => setMobileSearchOpen(true)} aria-label={t("searchItems")}><Search size={19} /></button>
-        <button className="primary-button capture-button" onClick={openCapture}>
-          <Plus size={18} /> <span>{t("capture")}</span>
-        </button>
+          >
+            {agentConsoleOpen ? <ArrowLeft size={16} /> : <Sparkles size={16} />}
+            <span>{t(agentConsoleOpen ? "agentConsoleBack" : "agentConsoleOpen")}</span>
+          </button>
+        )}
+        {!agentConsoleOpen && (
+          <>
+            <div className="header-search">
+              <Search size={17} />
+              <input
+                ref={searchInputRef}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setMobileSearchOpen(false);
+                }}
+                placeholder={t("searchItems")}
+              />
+              <kbd>⌘ K</kbd>
+              <button className="icon-button mobile-only mobile-search-close" onClick={() => setMobileSearchOpen(false)} aria-label={t("closeSearch")}><X size={18} /></button>
+            </div>
+            <button className="icon-button mobile-only mobile-search-trigger" onClick={() => setMobileSearchOpen(true)} aria-label={t("searchItems")}><Search size={19} /></button>
+            <button className="primary-button capture-button" onClick={openCapture}>
+              <Plus size={18} /> <span>{t("capture")}</span>
+            </button>
+          </>
+        )}
       </header>
       {!isOnline && <div className="offline-banner" role="status"><WifiOff size={15} /> {t("offlineMode")}</div>}
 
@@ -1219,7 +1243,17 @@ export function App() {
         )}
       </main>
 
-      {!selectedItemKey && <button className="mobile-fab mobile-only" onClick={openCapture} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
+      {agentConsoleOpen && selectedProductId && (
+        <AgentSessionConsole
+          productId={selectedProductId}
+          onOpenItem={(itemKey) => {
+            setAgentConsoleOpen(false);
+            openItemPage(itemKey);
+          }}
+        />
+      )}
+
+      {!agentConsoleOpen && !selectedItemKey && <button className="mobile-fab mobile-only" onClick={openCapture} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
 
       {captureOpen && selectedProduct && (
         <Modal title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={closeCapture}>
