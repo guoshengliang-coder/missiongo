@@ -2,7 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Bot, CirclePause, LoaderCircle, Rocket, UserRound } from "lucide-react";
 
 import { api } from "./api";
-import { aiAvailability, type AiAvailability } from "./dispatch-eligibility";
+import { aiAvailability, productAllowsAi, type AiAvailability } from "./dispatch-eligibility";
 import { useI18n, type MessageKey } from "./i18n";
 import type { Product, TransitionAction, WorkItem } from "./types";
 
@@ -19,10 +19,10 @@ const UNAVAILABLE_KEYS: Readonly<Record<Extract<AiAvailability, { kind: "not_con
  * "Start work" on a ready item asks how (AND-68): a person picks it up now, or
  * it goes to an AI agent on one of this account's machines.
  *
- * Both choices are always shown, so nobody has to know the second one exists.
- * When the AI one cannot be taken it stays on screen, disabled, with the reason
- * -- and the two reasons are kept apart, because one is fixed by whoever grants
- * permissions and the other by the account holder in Agent management.
+ * Accounts without AI permission only see the ordinary human workflow. Once
+ * permission exists, a missing device/repository/agent is shown as a disabled
+ * choice with a route to Agent management, because that is configuration the
+ * account holder can fix.
  *
  * Picking the AI does not dispatch from here: it opens the dispatch dialog the
  * list already uses, so machine, agent and mode are chosen in one place.
@@ -45,7 +45,7 @@ export function StartWorkDialog({
   const { t } = useI18n();
   // Only asked when it matters: an account without the permission is not told
   // anything about its machines.
-  const mayUseAi = product?.access?.canUseAi !== false;
+  const mayUseAi = productAllowsAi(product);
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, enabled: mayUseAi });
   const availability = aiAvailability(product, nodesQuery.isError ? [] : nodesQuery.data?.nodes);
   const claim = useMutation({
@@ -69,33 +69,31 @@ export function StartWorkDialog({
         </span>
       </button>
 
-      <button
-        type="button"
-        className="start-work-choice"
-        disabled={availability.kind !== "available" || claim.isPending}
-        onClick={onDispatch}
-      >
-        {availability.kind === "checking" ? <LoaderCircle className="spin" size={20} /> : <Rocket size={20} />}
-        <span>
-          <strong>{t("startWorkAi")}</strong>
-          <small>{t("startWorkAiHelp")}</small>
-        </span>
-      </button>
-
-      {availability.kind === "no_permission" && (
-        <div className="start-work-unavailable" role="note">
-          <strong>{t("startWorkAiUnsupported")}</strong>
-          <p>{t("startWorkAiNoPermission")}</p>
-        </div>
-      )}
-      {availability.kind === "not_configured" && (
-        <div className="start-work-unavailable" role="note">
-          <strong>{t("startWorkAiUnsupported")}</strong>
-          <p>{t(UNAVAILABLE_KEYS[availability.reason])}</p>
-          <button type="button" className="text-button" onClick={onOpenAgents}>
-            <Bot size={15} /> {t("agentManagementEntry")}
+      {mayUseAi && (
+        <>
+          <button
+            type="button"
+            className="start-work-choice"
+            disabled={availability.kind !== "available" || claim.isPending}
+            onClick={onDispatch}
+          >
+            {availability.kind === "checking" ? <LoaderCircle className="spin" size={20} /> : <Rocket size={20} />}
+            <span>
+              <strong>{t("startWorkAi")}</strong>
+              <small>{t("startWorkAiHelp")}</small>
+            </span>
           </button>
-        </div>
+
+          {availability.kind === "not_configured" && (
+            <div className="start-work-unavailable" role="note">
+              <strong>{t("startWorkAiUnsupported")}</strong>
+              <p>{t(UNAVAILABLE_KEYS[availability.reason])}</p>
+              <button type="button" className="text-button" onClick={onOpenAgents}>
+                <Bot size={15} /> {t("agentManagementEntry")}
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {claim.isError && (

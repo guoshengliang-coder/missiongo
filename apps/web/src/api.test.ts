@@ -91,6 +91,24 @@ describe("dispatch API", () => {
 
     await expect(api.createDispatch(input)).rejects.toMatchObject({ status: 409, code: "item_already_dispatched" });
   });
+
+  it("reads a mirrored Codex session and queues a reply", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ id: "session-1", status: "idle", messages: [] }))
+      .mockResolvedValueOnce(json({ id: "command-1", status: "queued", text: "continue" }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getAgentSession("session 1");
+    await api.sendAgentSessionCommand("session 1", "continue");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/agent-sessions/session%201", expect.objectContaining({
+      credentials: "same-origin",
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/agent-sessions/session%201/commands", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ text: "continue" }),
+    }));
+  });
 });
 
 describe("machine nickname API", () => {

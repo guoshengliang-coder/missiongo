@@ -38,6 +38,7 @@ import {
 } from "./accounts-store.js";
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
 import { AiTitleService } from "./ai-title.js";
+import { AgentSessionStore, type AgentMessageRole, type AgentSessionStatus } from "./agent-session-store.js";
 import { DispatchStore } from "./dispatch-store.js";
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
@@ -400,6 +401,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? false, trustProxy: options.trustProxy ?? false });
   const store = new MissionGoStore(options.databasePath ?? ":memory:");
   const dispatchStore = new DispatchStore(store.database);
+  const agentSessionStore = new AgentSessionStore(store.database);
   const accountStore = new AccountStore(store.database);
   const aiTitle = new AiTitleService(
     store.database,
@@ -1585,6 +1587,35 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { dispatches: dispatchStore.listDispatchesForItem(requireAccountId(request), key) };
   });
 
+  const authorizedAgentSession = (request: FastifyRequest, sessionId: string, reply = false) => {
+    const account = requireAccount(request);
+    const session = agentSessionStore.getForAccount(account.id, sessionId);
+    const dispatch = dispatchStore.getDispatch(account.id, session.dispatchId);
+    for (const itemKey of dispatch.itemKeys) {
+      const key = requireItemPermission(request, itemKey, reply ? "operate" : "view");
+      if (reply && !accountStore.allows(account, store.getWorkItem(key).productId, "ai")) {
+        throw new MissionGoError("ai_not_permitted", `This account may not reply to the AI session for ${key}.`, 403);
+      }
+    }
+    return session;
+  };
+
+  app.get("/api/v1/agent-sessions/:sessionId", async (request) => {
+    const { sessionId } = request.params as { sessionId: string };
+    return authorizedAgentSession(request, sessionId);
+  });
+
+  app.post("/api/v1/agent-sessions/:sessionId/commands", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    authorizedAgentSession(request, sessionId, true);
+    const command = agentSessionStore.enqueue(
+      requireAccountId(request),
+      sessionId,
+      stringField(objectBody(request.body), "text")!,
+    );
+    return reply.status(201).send(command);
+  });
+
   // The macOS client signs in through the same OAuth flow as an AI client, with
   // the node scope, and trades that login for a machine credential here. The
   // login token is not accepted anywhere else on /api/v1 and the client drops it
@@ -1683,6 +1714,65 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { dispatches: dispatchStore.listDispatchesForNode(node.nodeId) };
   });
 
+  app.get("/api/v1/node/agent-sessions", async (request) => {
+    const node = requireNode(request);
+    return { sessions: agentSessionStore.listForNode(node.nodeId) };
+  });
+
+  app.post("/api/v1/node/agent-sessions/:sessionId/snapshot", async (request, reply) => {
+    const node = requireNode(request);
+    const { sessionId } = request.params as { sessionId: string };
+    const body = objectBody(request.body);
+    const status = stringField(body, "status") as AgentSessionStatus;
+    if (!["active", "idle", "unavailable", "failed"].includes(status)) {
+      throw invalidInput("status must be active, idle, unavailable, or failed.");
+    }
+    if (!Array.isArray(body.messages)) throw invalidInput("messages must be an array.");
+    const messages = body.messages.map((entry) => {
+      const message = objectBody(entry);
+      const role = stringField(message, "role") as AgentMessageRole;
+      if (!["user", "agent", "plan"].includes(role)) {
+        throw invalidInput("message role must be user, agent, or plan.");
+      }
+      let questions: Array<{ title: string; options?: string[] }> | undefined;
+      if (message.questions !== undefined) {
+        if (!Array.isArray(message.questions)) throw invalidInput("questions must be an array.");
+        questions = message.questions.map((entry) => {
+          const question = objectBody(entry);
+          const options = stringArrayField(question, "options");
+          return {
+            title: stringField(question, "title")!,
+            ...(options ? { options: [...options] } : {}),
+          };
+        });
+      }
+      return {
+        sourceId: stringField(message, "sourceId")!,
+        ...(stringField(message, "turnId", false) ? { turnId: message.turnId as string } : {}),
+        role,
+        ...(stringField(message, "phase", false) ? { phase: message.phase as string } : {}),
+        text: stringField(message, "text")!,
+        ...(questions ? { questions } : {}),
+      };
+    });
+    const commandStatusValue = stringField(body, "commandStatus", false);
+    if (commandStatusValue && commandStatusValue !== "delivered" && commandStatusValue !== "failed") {
+      throw invalidInput("commandStatus must be delivered or failed.");
+    }
+    const commandStatus = commandStatusValue as "delivered" | "failed" | undefined;
+    agentSessionStore.recordSnapshot({
+      nodeId: node.nodeId,
+      sessionId,
+      status,
+      messages,
+      ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
+      ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),
+      ...(commandStatus ? { commandStatus } : {}),
+      ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
+    });
+    return reply.status(204).send();
+  });
+
   app.post("/api/v1/node/heartbeat", async (request) => {
     const node = requireNode(request);
     const body = objectBody(request.body);
@@ -1752,6 +1842,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
       ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
     });
+    const sessionRef = stringField(body, "sessionRef", false);
+    if (status === "launched" && sessionRef) {
+      agentSessionStore.createForDispatch({ dispatchId, nodeId: node.nodeId, sessionRef });
+    }
     return reply.status(204).send();
   });
 

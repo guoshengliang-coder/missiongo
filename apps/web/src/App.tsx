@@ -102,6 +102,7 @@ import {
   dispatchStatusLabelKey,
   canJoinSelection,
   isDispatchable,
+  productAllowsAi,
   selectionScope,
   toggleItemSelection,
 } from "./dispatch-eligibility";
@@ -152,6 +153,7 @@ import {
 } from "./pane-layout";
 import { productBadgeColor } from "./product-color";
 import { SessionLink } from "./session-link";
+import { AgentSessionPanel } from "./agent-session-panel";
 import { registerMissionGoWebMcp } from "./webmcp";
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
@@ -686,6 +688,9 @@ export function App() {
     enabled: bootstrapQuery.isSuccess,
   });
   const products = productsQuery.data ?? bootstrapQuery.data?.products ?? [];
+  const selectedProduct = products.find((product) => product.id === selectedProductId);
+  const selectedProductCanUseAi = productAllowsAi(selectedProduct);
+  const hasAnyAiPermission = products.some(productAllowsAi);
 
   useEffect(() => {
     if (products.length === 0) return;
@@ -795,6 +800,13 @@ export function App() {
   // A selection is one status: the one both batch actions are keyed on (AND-66).
   const selectionStatus = selectedItems[0]?.status;
 
+  // Permissions can be changed while this tab is open. A ready-item selection
+  // must disappear with the dispatch controls, while verification selections
+  // remain ordinary product operation and are left intact.
+  useEffect(() => {
+    if (!selectedProductCanUseAi && selectionStatus === "ready") setSelectedItemKeys(new Set());
+  }, [selectedProductCanUseAi, selectionStatus]);
+
   /**
    * A selection belongs to the rows it was made on. Once the filters move those
    * rows off screen, keeping the ticks would mean dispatching work nobody can
@@ -811,7 +823,6 @@ export function App() {
   // after boot, and every filter change made with nothing ticked, free.
   useEffect(() => setSelectedItemKeys((current) => current.size === 0 ? current : new Set()), [listScope]);
 
-  const selectedProduct = products.find((product) => product.id === selectedProductId);
   const selectItemProduct = useCallback((item: WorkItem) => {
     if (item.productId !== selectedProductId) setSelectedProductId(item.productId);
   }, [selectedProductId]);
@@ -1023,13 +1034,15 @@ export function App() {
             setDownloadsOpen(true);
           }}
         ><Download size={15} /> {t("downloadsEntry")}</button>
-        <button
-          className="text-button add-product"
-          onClick={() => {
-            closeSidebar();
-            setAgentsOpen(true);
-          }}
-        ><Bot size={15} /> {t("agentManagementEntry")}</button>
+        {hasAnyAiPermission && (
+          <button
+            className="text-button add-product"
+            onClick={() => {
+              closeSidebar();
+              setAgentsOpen(true);
+            }}
+          ><Bot size={15} /> {t("agentManagementEntry")}</button>
+        )}
         <button className="text-button add-product" onClick={() => setProductOpen(true)}><Settings2 size={15} /> {t("manageProductsEntry")}</button>
         <div className="sidebar-utilities">
           <LanguageSwitch sidebar />
@@ -1112,7 +1125,7 @@ export function App() {
             </div>
           )}
 
-          {selectedItemKeys.size > 0 && (
+          {selectedItemKeys.size > 0 && (selectionStatus === "pending_verification" || selectedProductCanUseAi) && (
             <div className="bulk-bar" role="status">
               {selectionStatus === "pending_verification"
                 ? <ClipboardCheck size={15} aria-hidden="true" />
@@ -1168,6 +1181,7 @@ export function App() {
                   item={item}
                   selected={item.key === selectedItemKey}
                   checked={selectedItemKeys.has(item.key)}
+                  selectionVisible={item.status === "pending_verification" || (selectedProductCanUseAi && isDispatchable(item.status))}
                   selectable={selectedItemKeys.has(item.key) || canJoinSelection(item.status, selectionStatus)}
                   activeDispatch={activeDispatches.get(item.key)}
                   onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item, selectionStatus))}
@@ -1200,7 +1214,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} />
+            <DetailPane itemKey={selectedItemKey} products={products} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} />
           </div>
         )}
       </main>
@@ -1283,7 +1297,7 @@ export function App() {
           />
         </Modal>
       )}
-      {dispatchBatch && (
+      {dispatchBatch && dispatchBatch.every((item) => productAllowsAi(products.find((product) => product.id === item.productId))) && (
         <Modal
           title={t("dispatchTitle")}
           subtitle={t("dispatchSubtitle", { count: dispatchBatch.length })}
@@ -1321,7 +1335,7 @@ export function App() {
           />
         </Modal>
       )}
-      {agentsOpen && (
+      {agentsOpen && hasAnyAiPermission && (
         <Modal title={t("nodeSettings")} subtitle={t("nodeSettingsHelp")} onClose={() => setAgentsOpen(false)} wide scrolls>
           <NodeSettings products={products} />
         </Modal>
@@ -1392,6 +1406,7 @@ function ItemRow({
   showAttachmentColumn,
   selected,
   checked,
+  selectionVisible,
   selectable,
   activeDispatch,
   onToggleChecked,
@@ -1405,6 +1420,8 @@ function ItemRow({
   showAttachmentColumn: boolean;
   selected: boolean;
   checked: boolean;
+  /** Whether this row participates in a batch action available to this account. */
+  selectionVisible: boolean;
   /** Whether the checkbox can be used: the row can join, or leave, the current selection. */
   selectable: boolean;
   /** The dispatch of this item nobody has claimed yet, if there is one. */
@@ -1448,15 +1465,17 @@ function ItemRow({
         {/* Dispatching is a batch action, so the pick has to happen in the list.
             The click guard on the row above already exempts inputs, which is what
             keeps ticking a box from opening the detail pane. */}
-        <input
-          type="checkbox"
-          className="item-select"
-          checked={checked}
-          disabled={!selectable}
-          aria-label={t("selectForDispatch", { key: item.key })}
-          title={selectable ? undefined : t("onlyReadyDispatchable")}
-          onChange={onToggleChecked}
-        />
+        {selectionVisible && (
+          <input
+            type="checkbox"
+            className="item-select"
+            checked={checked}
+            disabled={!selectable}
+            aria-label={t("selectForDispatch", { key: item.key })}
+            title={selectable ? undefined : t("onlyReadyDispatchable")}
+            onChange={onToggleChecked}
+          />
+        )}
         <button className="item-row-main" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
           <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={15} /></span>
           <span className="item-copy">
@@ -2029,6 +2048,7 @@ function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>[
 
 function DetailPane({
   itemKey,
+  products,
   openInEdit,
   onClose,
   onItemLoaded,
@@ -2037,6 +2057,7 @@ function DetailPane({
   onStartWork,
 }: {
   itemKey: string | null;
+  products: readonly Product[];
   openInEdit: boolean;
   onClose: () => void;
   onItemLoaded: (item: WorkItem) => void;
@@ -2295,7 +2316,10 @@ function DetailPane({
                 </details>
               )}
             </section>
-            <DispatchHistory itemKey={item.key} />
+            <DispatchHistory
+              itemKey={item.key}
+              canReply={productAllowsAi(products.find((product) => product.id === item.productId))}
+            />
             <section className="timeline-block">
               <header className="timeline-head">
                 <h3>{t("timeline")}</h3>
@@ -2431,7 +2455,7 @@ function DetailPane({
  * life after the event: the machine picks it up, the session starts or fails to,
  * and the link to that session is the thing worth clicking later.
  */
-function DispatchHistory({ itemKey }: { itemKey: string }) {
+function DispatchHistory({ itemKey, canReply }: { itemKey: string; canReply: boolean }) {
   const { t } = useI18n();
   const dispatchesQuery = useQuery({
     queryKey: ["dispatches", itemKey],
@@ -2449,13 +2473,13 @@ function DispatchHistory({ itemKey }: { itemKey: string }) {
       {dispatchesQuery.isError && <InlineError message={errorMessage(dispatchesQuery.error, t("somethingWentWrong"))} />}
       {!dispatchesQuery.isLoading && dispatches.length === 0 && <p className="section-empty">{t("noDispatches")}</p>}
       {dispatches.map((dispatch) => (
-        <DispatchRow key={dispatch.id} dispatch={dispatch} itemKey={itemKey} />
+        <DispatchRow key={dispatch.id} dispatch={dispatch} itemKey={itemKey} canReply={canReply} />
       ))}
     </section>
   );
 }
 
-function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: string }) {
+function DispatchRow({ dispatch, itemKey, canReply }: { dispatch: Dispatch; itemKey: string; canReply: boolean }) {
   const { formatTime, t } = useI18n();
   const agentKey = agentLabelKey(dispatch.agentKind);
   const modeKey = dispatchModeLabelKey(dispatch.mode);
@@ -2474,6 +2498,7 @@ function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: strin
       </small>
       {batch.length > 0 && <small className="dispatch-row-detail">{t("dispatchBatch", { keys: batch.join("、") })}</small>}
       {dispatch.sessionUrl && <SessionLink url={dispatch.sessionUrl} />}
+      {dispatch.agentSessionId && <AgentSessionPanel sessionId={dispatch.agentSessionId} canReply={canReply} />}
       {dispatch.error && <InlineError message={dispatch.error} />}
     </article>
   );

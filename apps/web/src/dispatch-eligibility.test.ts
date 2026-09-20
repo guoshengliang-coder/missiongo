@@ -10,13 +10,24 @@ import {
   dispatchProblemKey,
   isDispatchable,
   nodeIneligibility,
+  productAllowsAi,
   selectionScope,
   sessionLinkLabelKey,
   toggleItemSelection,
 } from "./dispatch-eligibility";
-import type { DispatchNode, WorkItemStatus } from "./types";
+import type { DispatchNode, Product, WorkItemStatus } from "./types";
 
 const item = (key: string, status: WorkItemStatus) => ({ key, status });
+
+const product = (access?: Product["access"]): Product => ({
+  id: "p1",
+  keyPrefix: "AND",
+  name: "Android",
+  createdAt: "2026-09-13T10:00:00Z",
+  updatedAt: "2026-09-13T10:00:00Z",
+  hasIcon: false,
+  ...(access ? { access } : {}),
+});
 
 const node = (overrides: Partial<DispatchNode> = {}): DispatchNode => ({
   id: "node-1",
@@ -31,6 +42,13 @@ const node = (overrides: Partial<DispatchNode> = {}): DispatchNode => ({
 });
 
 describe("picking items to dispatch", () => {
+  it("only exposes AI controls for a known product that permits AI", () => {
+    expect(productAllowsAi(undefined)).toBe(false);
+    expect(productAllowsAi(product())).toBe(true);
+    expect(productAllowsAi(product({ canOperate: true, canUseAi: true }))).toBe(true);
+    expect(productAllowsAi(product({ canOperate: true, canUseAi: false }))).toBe(false);
+  });
+
   it("only takes items that are waiting", () => {
     expect(isDispatchable("ready")).toBe(true);
     for (const status of ["inbox", "in_progress", "on_hold", "pending_verification", "done", "cancelled"] as const) {

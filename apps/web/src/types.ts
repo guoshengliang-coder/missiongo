@@ -310,10 +310,48 @@ export interface Dispatch {
   readonly itemKeys: readonly string[];
   readonly sessionName?: string;
   readonly sessionUrl?: string;
+  readonly agentSessionId?: string;
   readonly error?: string;
   readonly createdAt: string;
   readonly deliveredAt?: string;
   readonly completedAt?: string;
+}
+
+export type AgentSessionStatus = "active" | "idle" | "unavailable" | "failed";
+
+export interface AgentSessionQuestion {
+  readonly title: string;
+  readonly options?: readonly string[];
+}
+
+export interface AgentSessionMessage {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly turnId?: string;
+  readonly role: "user" | "agent" | "plan";
+  readonly phase?: string;
+  readonly text: string;
+  readonly questions?: readonly AgentSessionQuestion[];
+}
+
+export interface AgentSessionCommand {
+  readonly id: string;
+  readonly text: string;
+  readonly status: "queued" | "delivered" | "failed";
+  readonly error?: string;
+  readonly createdAt: string;
+  readonly deliveredAt?: string;
+}
+
+export interface AgentSession {
+  readonly id: string;
+  readonly dispatchId: string;
+  readonly agentKind: "codex";
+  readonly status: AgentSessionStatus;
+  readonly lastError?: string;
+  readonly updatedAt: string;
+  readonly messages: readonly AgentSessionMessage[];
+  readonly command?: AgentSessionCommand;
 }
 
 export interface CreateDispatchInput {

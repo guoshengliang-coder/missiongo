@@ -303,6 +303,51 @@ export const INITIAL_SCHEMA = `
     PRIMARY KEY (dispatch_id, item_id)
   ) STRICT;
 
+  -- The conversation attached to a launched Codex dispatch. MissionGo only
+  -- mirrors user-visible messages and queues replies; approvals stay in Codex.
+  CREATE TABLE IF NOT EXISTS agent_sessions (
+    id TEXT PRIMARY KEY,
+    dispatch_id TEXT NOT NULL UNIQUE REFERENCES dispatches(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    agent_kind TEXT NOT NULL CHECK (agent_kind IN ('codex')),
+    agent_session_ref TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'unavailable', 'failed')),
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS agent_session_messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    source_id TEXT NOT NULL,
+    turn_id TEXT,
+    role TEXT NOT NULL CHECK (role IN ('user', 'agent', 'plan')),
+    phase TEXT,
+    text TEXT NOT NULL,
+    questions_json TEXT,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    observed_at TEXT NOT NULL,
+    UNIQUE (session_id, source_id)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS agent_session_commands (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'delivered', 'failed')),
+    error TEXT,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT
+  ) STRICT;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_session_one_queued_command
+  ON agent_session_commands(session_id) WHERE status = 'queued';
+
+  CREATE INDEX IF NOT EXISTS idx_agent_session_messages_order
+  ON agent_session_messages(session_id, position, observed_at);
+
   CREATE TABLE IF NOT EXISTS access_tokens (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('sdk', 'mcp', 'node')),

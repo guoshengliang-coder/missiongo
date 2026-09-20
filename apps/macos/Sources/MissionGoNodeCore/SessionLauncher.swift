@@ -12,6 +12,15 @@ public protocol AgentAdapter: Sendable {
     func detect() async -> String?
     /// Throws with a human-readable reason; the loop reports it as the failure.
     func launch(_ job: DispatchJob) async throws -> LaunchResult
+    /// Mirrors an already launched session and, when it is idle, delivers the
+    /// one reply the server has queued for it.
+    func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport
+}
+
+public extension AgentAdapter {
+    func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        throw LaunchError("\(kind) does not support mirrored sessions.")
+    }
 }
 
 /// What the server hands over for one dispatch. Item keys, mode and a
@@ -55,13 +64,17 @@ public struct LaunchResult: Equatable, Sendable {
     /// Code has no such acknowledgement, so its launcher does not return until
     /// it has scraped the remote-control URL.
     public let sessionUrl: String?
+    /// The agent-native identifier used for later reads and replies. It is not
+    /// inferred from the human-facing URL.
+    public let sessionRef: String?
     /// Absent for an agent whose session is not a child process of this app
     /// (Codex runs its threads inside the ChatGPT app).
     public let logPath: String?
 
-    public init(sessionName: String, sessionUrl: String?, logPath: String?) {
+    public init(sessionName: String, sessionUrl: String?, sessionRef: String? = nil, logPath: String?) {
         self.sessionName = sessionName
         self.sessionUrl = sessionUrl
+        self.sessionRef = sessionRef
         self.logPath = logPath
     }
 }

@@ -579,6 +579,20 @@ export class MissionGoDatabase {
           .run(202609180239, new Date().toISOString());
       });
     }
+    // A launched Codex thread can now be followed and answered from the web
+    // console. These tables are additive so the previous release continues to
+    // run if application code is rolled back while the database stays current.
+    const agentSessionMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609201034")
+      .get() as unknown as { version: number } | undefined;
+    if (!agentSessionMigration) {
+      this.transaction(() => {
+        this.connection.exec(INITIAL_SCHEMA);
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609201034, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

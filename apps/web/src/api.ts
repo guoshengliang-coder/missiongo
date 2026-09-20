@@ -1,6 +1,8 @@
 import { attachmentThumbnailPath } from "./attachment-thumbnail";
 import type {
   ActiveDispatch,
+  AgentSession,
+  AgentSessionCommand,
   Component,
   CreatedSdkToken,
   CreateDispatchInput,
@@ -432,4 +434,11 @@ export const api = {
   listActiveDispatches: () => request<{ active: ActiveDispatch[] }>("/api/v1/dispatches/active"),
   listItemDispatches: (itemKey: string) =>
     request<{ dispatches: Dispatch[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/dispatches`),
+  getAgentSession: (sessionId: string) =>
+    request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}`),
+  sendAgentSessionCommand: (sessionId: string, text: string) =>
+    request<AgentSessionCommand>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
 };

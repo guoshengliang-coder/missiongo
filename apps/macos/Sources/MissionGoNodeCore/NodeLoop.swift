@@ -5,6 +5,13 @@ public protocol NodeAPI: Sendable {
     func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate]) async throws -> HeartbeatReply
     func claimNext(waitMs: Int) async throws -> DispatchRequest?
     func reportResult(dispatchId: String, report: DispatchReport) async throws
+    func listAgentSessions() async throws -> [NodeAgentSession]
+    func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws
+}
+
+public extension NodeAPI {
+    func listAgentSessions() async throws -> [NodeAgentSession] { [] }
+    func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {}
 }
 
 extension APIClient: NodeAPI {}
@@ -107,6 +114,10 @@ public final class NodeLoop: @unchecked Sendable {
         /// inside it waits this long — measured at 813ms of the delay when this was
         /// a full second.
         public var claimInterval: TimeInterval = 0.25
+        /// Mirrored Codex threads are snapshots, not an event stream. This is
+        /// short enough for a reply to feel immediate without keeping an
+        /// app-server connection open and stealing approval requests.
+        public var sessionInterval: TimeInterval = 2
         /// Detection starts a process, which is wasteful every 30 seconds, but a CLI
         /// upgrade should still show up in the console without restarting the app.
         public var agentDetectTTL: TimeInterval = 5 * 60
@@ -184,7 +195,8 @@ public final class NodeLoop: @unchecked Sendable {
         await withTaskCancellationHandler {
             async let heartbeat: Void = heartbeatLoop(stop: stop, fatal: fatal)
             async let claim: Void = claimLoop(stop: stop, fatal: fatal)
-            _ = await (heartbeat, claim)
+            async let sessions: Void = sessionLoop(stop: stop, fatal: fatal)
+            _ = await (heartbeat, claim, sessions)
         } onCancel: {
             stop.stop()
         }
@@ -265,6 +277,31 @@ public final class NodeLoop: @unchecked Sendable {
                 }
             }
             await stop.sleep(timing.claimInterval)
+        }
+    }
+
+    private func sessionLoop(stop: StopSignal, fatal: Locked<APIError?>) async {
+        while !stop.isStopped {
+            await shielded {
+                do {
+                    let sessions = try await self.api.listAgentSessions()
+                    for session in sessions {
+                        guard let adapter = self.adapters.first(where: { $0.kind == "codex" }) else { continue }
+                        let report: AgentSessionReport
+                        do {
+                            report = try await adapter.synchronize(session)
+                        } catch {
+                            report = AgentSessionReport(
+                                status: "unavailable", messages: [], error: error.localizedDescription
+                            )
+                        }
+                        try await self.api.reportAgentSession(sessionId: session.id, report: report)
+                    }
+                } catch {
+                    self.handle(error, what: "同步 Agent 会话出错", stop: stop, fatal: fatal)
+                }
+            }
+            await stop.sleep(timing.sessionInterval)
         }
     }
 
@@ -353,13 +390,22 @@ public final class NodeLoop: @unchecked Sendable {
             log("会话「\(launched.sessionName)」已启动" + (launched.logPath.map { "，日志 \($0)" } ?? ""))
             if let url = launched.sessionUrl {
                 log("会话地址 \(url)")
-                return (DispatchReport(status: .launched, sessionName: launched.sessionName, sessionUrl: url), launched.logPath)
+                return (DispatchReport(
+                    status: .launched,
+                    sessionName: launched.sessionName,
+                    sessionUrl: url,
+                    sessionRef: launched.sessionRef
+                ), launched.logPath)
             }
             // Some adapters receive a positive start acknowledgement but cannot
             // represent the resulting identifier as a link. Claude Code never
             // reaches this path: its only acknowledgement is the URL itself.
             log("会话已由 agent 确认启动，但没有可打开的会话地址。")
-            return (DispatchReport(status: .launched, sessionName: launched.sessionName), launched.logPath)
+            return (DispatchReport(
+                status: .launched,
+                sessionName: launched.sessionName,
+                sessionRef: launched.sessionRef
+            ), launched.logPath)
         } catch {
             let reason = error.localizedDescription
             log("派单 \(request.dispatchId) 启动失败：\(reason)")

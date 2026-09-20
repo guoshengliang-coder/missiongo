@@ -1020,7 +1020,12 @@ describe("Claiming a dispatch on the node", () => {
       method: "POST",
       url: `/api/v1/node/dispatches/${dispatchId}/result`,
       headers: { authorization: `Bearer ${node.token}` },
-      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionUrl: link },
+      payload: {
+        status: "launched",
+        sessionName: `Mac mini-${mission.itemKey}`,
+        sessionUrl: link,
+        sessionRef: "01a09f35-d6fa-7eb2-9d90-1352cf2fb661",
+      },
     });
     expect(result.statusCode).toBe(204);
 
@@ -1029,8 +1034,82 @@ describe("Claiming a dispatch on the node", () => {
       url: `/api/v1/items/${mission.itemKey}/dispatches`,
       headers: { cookie },
     });
-    expect(dispatches.json<{ dispatches: Array<{ sessionUrl: string }> }>().dispatches[0])
-      .toMatchObject({ sessionUrl: link });
+    const launched = dispatches.json<{ dispatches: Array<{ sessionUrl: string; agentSessionId: string }> }>().dispatches[0]!;
+    expect(launched).toMatchObject({ sessionUrl: link });
+    expect(launched.agentSessionId).toBeTruthy();
+
+    const nodeSessions = await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(nodeSessions.json()).toMatchObject({
+      sessions: [{ id: launched.agentSessionId, sessionRef: "01a09f35-d6fa-7eb2-9d90-1352cf2fb661" }],
+    });
+
+    const snapshot = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${launched.agentSessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "idle",
+        messages: [
+          { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
+          { sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "I found the cause." },
+        ],
+      },
+    });
+    expect(snapshot.statusCode).toBe(204);
+
+    const webSession = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${launched.agentSessionId}`,
+      headers: { cookie },
+    });
+    expect(webSession.json()).toMatchObject({
+      status: "idle",
+      messages: [
+        { sourceId: "u1", role: "user", text: "Please inspect it." },
+        { sourceId: "a1", role: "agent", text: "I found the cause." },
+      ],
+    });
+
+    const reply = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${launched.agentSessionId}/commands`,
+      headers: { cookie },
+      payload: { text: "Continue with the fix." },
+    });
+    expect(reply.statusCode).toBe(201);
+    const commandId = reply.json<{ id: string }>().id;
+
+    const commandPoll = await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(commandPoll.json()).toMatchObject({
+      sessions: [{ command: { id: commandId, status: "queued", text: "Continue with the fix." } }],
+    });
+
+    const acknowledged = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${launched.agentSessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "active",
+        messages: [],
+        commandId,
+        commandStatus: "delivered",
+      },
+    });
+    expect(acknowledged.statusCode).toBe(204);
+    const afterReply = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${launched.agentSessionId}`,
+      headers: { cookie },
+    });
+    expect(afterReply.json()).toMatchObject({ command: { id: commandId, status: "delivered" } });
   });
 
   it("refuses a Codex link that carries more than a thread id", async () => {
