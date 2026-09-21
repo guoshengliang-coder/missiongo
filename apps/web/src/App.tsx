@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction, type TextareaHTMLAttributes } from "react";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   Archive,
@@ -73,7 +73,7 @@ import {
   type Component,
   type ComponentKind,
   type CreatedSdkToken,
-  type ActiveDispatch,
+  type ItemDispatchSummary,
   type Dispatch,
   type TransitionAction,
   type WorkItem,
@@ -93,7 +93,7 @@ import {
   ACTIVE_DISPATCHES_QUERY_KEY,
   ACTIVE_DISPATCHES_REFETCH_MS,
   activeDispatchStatusKey,
-  activeDispatchesByItem,
+  dispatchesByItem,
 } from "./dispatch-conflicts";
 import { DispatchDialog } from "./dispatch-dialog";
 import {
@@ -997,19 +997,26 @@ export function App() {
     () => new Map((componentsQuery.data ?? []).map((component) => [component.id, component])),
     [componentsQuery.data],
   );
-  // Marks rows that were dispatched and not claimed yet. Its own query rather
-  // than a field on the item: the list pages are cached on disk and refetched on
-  // their own schedule, and whether a Mac has picked the work up moves faster.
+  // Marks rows with their latest dispatch attempt. Its own query rather than a
+  // field on the item: list pages are cached on disk, while a Mac can pick up or
+  // fail a dispatch much sooner than those pages refetch.
   const activeDispatchesQuery = useQuery({
     queryKey: ACTIVE_DISPATCHES_QUERY_KEY,
     queryFn: api.listActiveDispatches,
     enabled: bootstrapQuery.isSuccess,
     refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
   });
-  const activeDispatches = useMemo(
-    () => activeDispatchesByItem(activeDispatchesQuery.data?.active ?? []),
+  const latestDispatches = useMemo(
+    () => dispatchesByItem(activeDispatchesQuery.data?.latest ?? activeDispatchesQuery.data?.active ?? []),
     [activeDispatchesQuery.data],
   );
+  const agentConsoleListFetching = useIsFetching({ queryKey: ["agent-sessions", selectedProductId] });
+  const agentConsoleConversationFetching = useIsFetching({ queryKey: ["agent-session"] });
+  const agentConsoleRefreshing = agentConsoleListFetching + agentConsoleConversationFetching > 0;
+  const refreshAgentConsole = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["agent-sessions", selectedProductId] }),
+    queryClient.invalidateQueries({ queryKey: ["agent-session"] }),
+  ]);
   const visibleItems = items;
   const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(isMediaAttachment));
   const selectedItems = visibleItems.filter((item) => selectedItemKeys.has(item.key));
@@ -1170,12 +1177,20 @@ export function App() {
     <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""} ${
       agentConsoleOpen && agentConsoleSinglePane && agentConversationOpen ? "agent-conversation-open" : ""
     }`}>
-      <header className={`topbar ${mobileSearchOpen ? "searching" : ""}`}>
+      <header className={`topbar ${agentConsoleOpen ? "agent-console-topbar" : ""} ${mobileSearchOpen ? "searching" : ""}`}>
         {!agentConsoleOpen && <button className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
           <Menu size={20} />
         </button>}
-        <Brand compact />
-        <div className="topbar-divider" />
+        {agentConsoleOpen ? (
+          <button type="button" className="icon-button agent-console-topbar-back" onClick={closeAgentConsole} aria-label={t("agentConsoleBack")}>
+            <ArrowLeft size={20} />
+          </button>
+        ) : (
+          <>
+            <Brand compact />
+            <div className="topbar-divider" />
+          </>
+        )}
         <ProductSwitcher
           products={products}
           selectedProductId={selectedProductId}
@@ -1189,18 +1204,25 @@ export function App() {
             clearItemPage();
           }}
         />
-        {hasAnyAiPermission && (
+        {hasAnyAiPermission && !agentConsoleOpen && (
           <button
             type="button"
-            className={`ai-console-toggle ${agentConsoleOpen ? "active" : ""}`}
-            aria-pressed={agentConsoleOpen}
-            onClick={() => {
-              if (agentConsoleOpen) closeAgentConsole();
-              else openAgentConsole();
-            }}
+            className="ai-console-toggle"
+            aria-pressed="false"
+            onClick={openAgentConsole}
           >
-            {agentConsoleOpen ? <ArrowLeft size={16} /> : <Sparkles size={16} />}
-            <span>{t(agentConsoleOpen ? "agentConsoleBack" : "agentConsoleOpen")}</span>
+            <Sparkles size={16} />
+            <span>{t("agentConsoleOpen")}</span>
+          </button>
+        )}
+        {agentConsoleOpen && (
+          <button
+            type="button"
+            className="icon-button agent-console-topbar-refresh"
+            aria-label={t("refresh")}
+            onClick={() => void refreshAgentConsole()}
+          >
+            <RefreshCw className={agentConsoleRefreshing ? "spin" : ""} size={18} />
           </button>
         )}
         {!agentConsoleOpen && (
@@ -1419,7 +1441,7 @@ export function App() {
                   checked={selectedItemKeys.has(item.key)}
                   selectionVisible={item.status === "pending_verification" || (selectedProductCanUseAi && isDispatchable(item.status))}
                   selectable={selectedItemKeys.has(item.key) || canJoinSelection(item.status, selectionStatus)}
-                  activeDispatch={activeDispatches.get(item.key)}
+                  dispatchSummary={latestDispatches.get(item.key)}
                   onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item, selectionStatus))}
                   sourceComponent={item.sourceComponentId ? componentsById.get(item.sourceComponentId) : undefined}
                   showAttachmentColumn={showAttachmentColumn}
@@ -1655,7 +1677,7 @@ function ItemRow({
   checked,
   selectionVisible,
   selectable,
-  activeDispatch,
+  dispatchSummary,
   onToggleChecked,
   onOpen,
   onEdit,
@@ -1671,8 +1693,8 @@ function ItemRow({
   selectionVisible: boolean;
   /** Whether the checkbox can be used: the row can join, or leave, the current selection. */
   selectable: boolean;
-  /** The dispatch of this item nobody has claimed yet, if there is one. */
-  activeDispatch: ActiveDispatch | undefined;
+  /** The latest dispatch attempt for this ready cycle, if there is one. */
+  dispatchSummary: ItemDispatchSummary | undefined;
   onToggleChecked: () => void;
   onOpen: () => void;
   onEdit: () => void;
@@ -1696,8 +1718,8 @@ function ItemRow({
   const dispatchable = isDispatchable(item.status);
   // Only on a ready row: the list can refetch before the dispatch list does, and
   // an item a session has just claimed must not still read as waiting on a Mac.
-  const pendingDispatch = dispatchable ? activeDispatch : undefined;
-  const pendingDispatchStatusKey = pendingDispatch ? activeDispatchStatusKey(pendingDispatch.status) : null;
+  const latestDispatch = dispatchable ? dispatchSummary : undefined;
+  const pendingDispatchStatusKey = latestDispatch ? activeDispatchStatusKey(latestDispatch.status) : null;
   return (
     <article
       className={`item-row ${selected ? "selected" : ""}`}
@@ -1728,17 +1750,17 @@ function ItemRow({
           <span className="item-copy">
             <span className="item-title-line">
               <code>{item.key}</code>
-              {/* Before the title so it is never the part cut off: it is what
-                  stops a second session being started on this item. The time is
-                  given absolutely too, since a relative one goes stale in a tab
-                  left open. */}
-              {pendingDispatch && (
+              {/* Before the title so the current dispatch result is never the
+                  part cut off. Active attempts guard against a second session;
+                  failed ones call out that the item needs attention. */}
+              {latestDispatch && (
                 <small
-                  className="item-dispatch-badge"
-                  title={t("activeDispatchBadgeTitle", {
-                    status: pendingDispatchStatusKey ? t(pendingDispatchStatusKey) : pendingDispatch.status,
-                    time: formatTime(pendingDispatch.createdAt),
-                    at: new Date(pendingDispatch.createdAt).toLocaleString(locale, {
+                  className={`item-dispatch-badge ${latestDispatch.status === "failed" ? "failed" : ""}`}
+                  title={t(latestDispatch.status === "failed" ? "failedDispatchBadgeTitle" : "activeDispatchBadgeTitle", {
+                    node: latestDispatch.nodeName,
+                    status: pendingDispatchStatusKey ? t(pendingDispatchStatusKey) : latestDispatch.status,
+                    time: formatTime(latestDispatch.createdAt),
+                    at: new Date(latestDispatch.createdAt).toLocaleString(locale, {
                       month: "short",
                       day: "numeric",
                       hour: "2-digit",
@@ -1746,7 +1768,7 @@ function ItemRow({
                     }),
                   })}
                 >
-                  {t("activeDispatchBadge", { node: pendingDispatch.nodeName })}
+                  {t(latestDispatch.status === "failed" ? "failedDispatchBadge" : "activeDispatchBadge", { node: latestDispatch.nodeName })}
                 </small>
               )}
               {item.derivedFrom && <small className="item-derived-badge" title={item.derivedFrom.title}>{t("derivedFromBadge", { key: item.derivedFrom.key })}</small>}

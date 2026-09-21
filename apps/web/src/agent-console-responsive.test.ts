@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const styles = readFileSync(fileURLToPath(new URL("./styles.css", import.meta.url)), "utf8");
+const consoleSource = readFileSync(fileURLToPath(new URL("./agent-session-console.tsx", import.meta.url)), "utf8");
 
 function mediaBlock(maxWidth: number): string {
   const marker = `@media (max-width: ${maxWidth}px) {`;
@@ -35,5 +36,17 @@ describe("agent console responsive layout", () => {
     expect(tablet).toContain(".topbar .brand { display: none; }");
     expect(phone).not.toContain(".app-shell.agent-console-open .product-switcher-wrap { display: none; }");
     expect(phone).not.toContain(".app-shell.agent-console-open .topbar .brand { display: flex; }");
+  });
+
+  it("uses one console topbar instead of a second list heading", () => {
+    expect(styles).toMatch(/\.topbar\.agent-console-topbar \{[^}]*grid-template-columns:/);
+    expect(consoleSource).not.toContain('className="agent-console-list-head"');
+  });
+
+  it("keeps replies below the textarea with quick actions", () => {
+    expect(styles).toContain(".agent-console-reply form { display: grid; gap: 9px; }");
+    expect(styles).toContain(".agent-console-reply-actions { display: flex;");
+    expect(consoleSource).toContain('t("agentSessionQuickMergeRelease")');
+    expect(consoleSource).toContain('t("agentSessionQuickRelease")');
   });
 });

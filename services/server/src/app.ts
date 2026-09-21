@@ -1535,10 +1535,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     };
   });
 
-  // Ready items that were dispatched and not yet claimed, for the list to mark
-  // before someone sends them a second time.
+  // `active` keeps its conflict-checking contract. `latest` is presentation:
+  // it also includes a failed attempt, so a ready row can say that it failed
+  // without making that failure block a retry.
   app.get("/api/v1/dispatches/active", async (request) => ({
     active: dispatchStore.listActiveDispatches(requireAccountId(request)),
+    latest: dispatchStore.listLatestDispatches(requireAccountId(request)),
   }));
 
   app.post("/api/v1/dispatches", async (request, reply) => {

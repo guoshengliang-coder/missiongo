@@ -9,7 +9,7 @@ import {
   ACTIVE_DISPATCHES_QUERY_KEY,
   ACTIVE_DISPATCHES_REFETCH_MS,
   activeDispatchStatusKey,
-  activeDispatchesByItem,
+  dispatchesByItem,
   conflictSignature,
   dispatchConflicts,
   includesQueued,
@@ -106,7 +106,7 @@ export function DispatchDialog({
   // Not waited for: while it loads, or if it fails, the server still refuses a
   // second dispatch, and that refusal brings the notice below with it.
   const conflicts = useMemo(
-    () => dispatchConflicts(itemKeys, activeDispatchesByItem(activeQuery.data?.active ?? [])),
+    () => dispatchConflicts(itemKeys, dispatchesByItem(activeQuery.data?.active ?? [])),
     [activeQuery.data, itemKeys],
   );
   const conflictsKey = conflictSignature(conflicts);

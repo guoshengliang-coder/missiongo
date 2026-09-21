@@ -6,6 +6,7 @@ import {
   DEFAULT_AGENT_SESSION_FILTER,
   isNearMessageBottom,
   messageLabelKey,
+  outgoingReply,
   resolvedAgentSessionId,
   shouldResetMessageView,
 } from "./agent-session-view";
@@ -47,6 +48,22 @@ describe("agent session message view", () => {
     expect(messageLabelKey("agent")).toBe("agentSessionCodex");
     expect(messageLabelKey("agent", "claude_code")).toBe("agentClaudeCode");
     expect(messageLabelKey("plan")).toBe("agentSessionPlan");
+  });
+
+  it("keeps one optimistic reply bubble through queueing and failure", () => {
+    expect(outgoingReply(undefined, { text: "发布", status: "sending" })).toEqual({ text: "发布", status: "sending" });
+    expect(outgoingReply({
+      id: "command-1", kind: "message", text: "发布", status: "queued", createdAt: "2026-09-21T00:00:00Z",
+    })).toMatchObject({ text: "发布", status: "queued", commandId: "command-1" });
+    expect(outgoingReply({
+      id: "command-1", kind: "message", text: "发布", status: "failed", error: "offline", createdAt: "2026-09-21T00:00:00Z",
+    })).toMatchObject({ status: "failed", error: "offline" });
+  });
+
+  it("stops synthesizing a reply once it is delivered or cancelled", () => {
+    const command = { id: "command-1", kind: "message", text: "发布", createdAt: "2026-09-21T00:00:00Z" } as const;
+    expect(outgoingReply({ ...command, status: "delivered" })).toBeNull();
+    expect(outgoingReply({ ...command, status: "cancelled" })).toBeNull();
   });
 
   it("has a bottom-of-conversation label for every session state", () => {

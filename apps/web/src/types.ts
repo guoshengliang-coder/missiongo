@@ -406,16 +406,16 @@ export interface CreateDispatchInput {
   readonly force?: boolean;
 }
 
-/**
- * A ready item that was dispatched and has not been claimed yet, as the server
- * reports it: one entry per item, its most recent such dispatch. `status` is
- * typed as the three active states but read as a string wherever it is shown,
- * for the same reason `dispatchStatusLabelKey` takes one.
- */
-export interface ActiveDispatch {
+/** A ready item's newest dispatch attempt in its current ready cycle. */
+export interface ItemDispatchSummary {
   readonly dispatchId: string;
   readonly itemKey: string;
   readonly nodeName: string;
-  readonly status: Extract<DispatchStatus, "queued" | "delivered" | "launched">;
+  readonly status: Extract<DispatchStatus, "queued" | "delivered" | "launched" | "failed">;
   readonly createdAt: string;
+}
+
+/** The subset that can still start or already represents an unclaimed session. */
+export interface ActiveDispatch extends Omit<ItemDispatchSummary, "status"> {
+  readonly status: Extract<DispatchStatus, "queued" | "delivered" | "launched">;
 }

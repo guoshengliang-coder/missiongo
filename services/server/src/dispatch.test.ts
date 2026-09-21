@@ -489,7 +489,18 @@ describe("Dispatching the same item twice", () => {
       payload: { status: "failed", error: "目录未信任" },
     });
 
+    const failed = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
+    expect(failed.json()).toMatchObject({
+      active: [],
+      latest: [{ dispatchId: first.id, itemKey: mission.itemKey, status: "failed" }],
+    });
+
     expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(201);
+    const retried = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
+    expect(retried.json()).toMatchObject({
+      active: [{ itemKey: mission.itemKey, status: "queued" }],
+      latest: [{ itemKey: mission.itemKey, status: "queued" }],
+    });
   });
 
   it("lists ready items with an unclaimed dispatch, and forgets them once claimed", async () => {
@@ -499,6 +510,7 @@ describe("Dispatching the same item twice", () => {
     const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
     expect(active.json()).toMatchObject({
       active: [{ itemKey: mission.itemKey, nodeName: "Mac mini", status: "queued" }],
+      latest: [{ itemKey: mission.itemKey, nodeName: "Mac mini", status: "queued" }],
     });
 
     // The session claims the item: it is no longer ready, so there is nothing to warn about.
@@ -510,7 +522,7 @@ describe("Dispatching the same item twice", () => {
     });
     expect(claimed.json<{ status: string }>().status).toBe("in_progress");
     const after = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
-    expect(after.json()).toEqual({ active: [] });
+    expect(after.json()).toEqual({ active: [], latest: [] });
   });
 
   it("dispatches an item sent back by a failed verification without force", async () => {
@@ -536,7 +548,7 @@ describe("Dispatching the same item twice", () => {
     }
 
     const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
-    expect(active.json()).toEqual({ active: [] });
+    expect(active.json()).toEqual({ active: [], latest: [] });
     expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(201);
 
     // The machine hears that this is a second session, and on reworked work.
