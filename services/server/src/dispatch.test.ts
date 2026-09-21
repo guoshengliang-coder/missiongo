@@ -1453,6 +1453,28 @@ describe("Claiming a dispatch on the node", () => {
       sessions: [{ nodeConnectionState: "offline", nodeLastSeenAt: offlineAt, canReply: true }],
     });
 
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [], sourceArchived: false },
+    })).statusCode).toBe(204);
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json()).toEqual({ sessions: [] });
+
+    const staleSessionAt = new Date(Date.now() - 31_000).toISOString();
+    const staleDatabase = new DatabaseSync(databasePath);
+    staleDatabase.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(staleSessionAt, sessionId);
+    staleDatabase.close();
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json()).toMatchObject({ sessions: [{ id: sessionId, status: "idle" }] });
+
     const archived = await app.inject({
       method: "PATCH",
       url: `/api/v1/agent-sessions/${sessionId}`,
