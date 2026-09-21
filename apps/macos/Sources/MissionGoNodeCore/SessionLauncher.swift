@@ -495,7 +495,7 @@ public struct SessionLauncher: AgentAdapter {
             state.status = "suspended"
             state.hostPid = nil
             state.idleSince = nil
-            state.error = "关联工作条目已进入待验证或完成，会话进程已关闭；如需返工请重新派单。"
+            state.error = "关联工作条目已全部完成，会话进程已关闭；如需返工请重新派单。"
             state.lastProgressAt = Date()
             try ClaudeHostFiles.write(state, to: statePath)
             return AgentSessionReport(

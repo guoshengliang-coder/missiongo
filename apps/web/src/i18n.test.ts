@@ -40,7 +40,7 @@ describe("MissionGo interface language", () => {
   });
 
   it("explains queued replies and offers to cancel them for editing", () => {
-    expect(translate("zh-CN", "agentSessionReplyQueued")).toContain("恢复连接后将自动发送");
+    expect(translate("zh-CN", "agentSessionReplyQueued")).toBe("回复已排队，正在等待 Mac 接收");
     expect(translate("zh-CN", "agentSessionCancelAndEdit")).toBe("取消等待并编辑");
     expect(translate("en", "agentSessionReplyCancelled")).toBe("Queued reply cancelled");
   });

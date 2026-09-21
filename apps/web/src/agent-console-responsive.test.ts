@@ -64,6 +64,9 @@ describe("agent console responsive layout", () => {
 
     expect(appSource).toContain('queryFn: () => api.listAgentSessions()');
     expect(appSource).toContain('className="agent-attention-badge"');
+    expect(appSource).toContain(
+      "attentionCounts={agentConsoleOpen && hasAnyAiPermission ? attentionCounts.byProduct : undefined}",
+    );
     expect(appSource).not.toContain('queryKey: ["agent-sessions", selectedProductId]');
   });
 });

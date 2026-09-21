@@ -349,7 +349,7 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         ))
 
         XCTAssertEqual(report.status, "suspended")
-        XCTAssertTrue(report.error?.contains("待验证或完成") == true)
+        XCTAssertTrue(report.error?.contains("已全部完成") == true)
         let state = try ClaudeHostFiles.readState(
             ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
         )

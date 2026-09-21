@@ -63,7 +63,7 @@ export interface AgentSessionSnapshot {
   readonly messages: readonly (AgentSessionMessageInput & { readonly id: string })[];
   readonly activities: readonly AgentSessionActivity[];
   readonly command?: AgentSessionCommand;
-  /** False once every linked item has reached verification or done. */
+  /** False once every linked item is done. */
   readonly replyable: boolean;
 }
 
@@ -338,7 +338,7 @@ export class AgentSessionStore {
           : {}),
       })),
       ...(command ? { command: this.mapCommand(command) } : {}),
-      replyable: !this.itemsClosed(sessionId),
+      replyable: !this.itemsCompleted(sessionId),
     };
   }
 
@@ -474,7 +474,7 @@ export class AgentSessionStore {
           && itemRows.length > 0 && itemRows.every((item) => item.status === "ready"),
         stoppable: row.dispatch_status === "queued"
           || Boolean(row.session_id && (row.session_status === "active" || row.session_status === "stalled")),
-        replyable: row.session_id ? !this.itemsClosed(row.session_id) : false,
+        replyable: row.session_id ? !this.itemsCompleted(row.session_id) : false,
         activityKey: createHash("sha256").update(JSON.stringify([
           row.dispatch_status, status, lastError ?? "", row.session_archived_at ?? "",
           row.dispatch_archived_at ?? "",
@@ -523,8 +523,8 @@ export class AgentSessionStore {
       )
       .get(sessionId, accountId) as unknown as { id: string; archived_at: string | null } | undefined;
     if (!session) throw notFound("Agent session");
-    if (this.itemsClosed(sessionId)) {
-      throw conflict("agent_session_work_finished", "The linked work items reached verification or done; dispatch again to rework them.");
+    if (this.itemsCompleted(sessionId)) {
+      throw conflict("agent_session_work_finished", "The linked work items are done; move them back to ready and dispatch again to rework them.");
     }
     if (session.archived_at) throw conflict("agent_session_archived", "Restore this session before replying.");
     if (this.pendingCommand(sessionId)) {
@@ -673,7 +673,7 @@ export class AgentSessionStore {
         agentKind: row.agent_kind,
         sessionRef: row.agent_session_ref,
         status: row.status,
-        lifecycle: row.agent_kind === "claude_code" && this.itemsClosed(row.id) ? "close" : "keep",
+        lifecycle: row.agent_kind === "claude_code" && this.itemsCompleted(row.id) ? "close" : "keep",
         occupiesExecutionSlot: row.status === "active" || row.status === "stalled",
         ...(command ? { command: this.mapCommand(command) } : {}),
       };
@@ -950,14 +950,14 @@ export class AgentSessionStore {
       .get(sessionId) as unknown as CommandRow | undefined;
   }
 
-  private itemsClosed(sessionId: string): boolean {
+  private itemsCompleted(sessionId: string): boolean {
     const rows = this.database.connection.prepare(
       `SELECT w.status FROM agent_sessions s
        JOIN dispatch_items di ON di.dispatch_id = s.dispatch_id
        JOIN work_items w ON w.id = di.item_id
        WHERE s.id = ?`,
     ).all(sessionId) as unknown as Array<{ status: string }>;
-    return rows.length > 0 && rows.every((row) => row.status === "pending_verification" || row.status === "done");
+    return rows.length > 0 && rows.every((row) => row.status === "done");
   }
 
   private latestCommand(sessionId: string): CommandRow | undefined {
