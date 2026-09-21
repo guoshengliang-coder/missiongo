@@ -151,4 +151,62 @@ describe("database migrations", () => {
     expect(migration.version).toBe(202609202336);
     migrated.close();
   });
+
+  it("backfills historical launched Codex dispatches for source archive synchronization", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-codex-session-backfill-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+
+    const seeded = new MissionGoDatabase(path);
+    seeded.connection.exec(`
+      INSERT INTO nodes
+        (id, account_id, name, token_hash, created_at, updated_at)
+      VALUES
+        ('node-1', 'account-1', 'Mac mini', 'token-hash', '2026-09-20T00:00:00.000Z', '2026-09-20T00:00:00.000Z');
+      INSERT INTO dispatches
+        (id, account_id, node_id, agent_kind, mode, status, repo_path, session_url, created_at, completed_at)
+      VALUES
+        ('dispatch-valid', 'account-1', 'node-1', 'codex', 'plan', 'launched', '/repo',
+         'codex://threads/01a0b2a3-968f-7a43-9d06-781d15a50d84',
+         '2026-09-20T01:00:00.000Z', '2026-09-20T01:01:00.000Z'),
+        ('dispatch-invalid', 'account-1', 'node-1', 'codex', 'plan', 'launched', '/repo',
+         'codex://threads/unsafe?prompt=ignored',
+         '2026-09-20T02:00:00.000Z', '2026-09-20T02:01:00.000Z'),
+        ('dispatch-existing', 'account-1', 'node-1', 'codex', 'plan', 'launched', '/repo',
+         'codex://threads/already-mirrored',
+         '2026-09-20T03:00:00.000Z', '2026-09-20T03:01:00.000Z');
+      INSERT INTO agent_sessions
+        (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at)
+      VALUES
+        ('session-existing', 'dispatch-existing', 'node-1', 'codex', 'already-mirrored', 'idle',
+         '2026-09-20T03:00:00.000Z', '2026-09-20T03:01:00.000Z');
+      DELETE FROM schema_migrations WHERE version = 202609210545;
+    `);
+    seeded.close();
+
+    const migrated = new MissionGoDatabase(path);
+    const recovered = migrated.connection
+      .prepare(
+        `SELECT dispatch_id, agent_session_ref, status, created_at, updated_at, archived_at, archive_source
+         FROM agent_sessions WHERE dispatch_id = 'dispatch-valid'`,
+      )
+      .get();
+    expect(recovered).toEqual({
+      dispatch_id: "dispatch-valid",
+      agent_session_ref: "01a0b2a3-968f-7a43-9d06-781d15a50d84",
+      status: "unavailable",
+      created_at: "2026-09-20T01:00:00.000Z",
+      updated_at: "2026-09-20T01:01:00.000Z",
+      archived_at: null,
+      archive_source: null,
+    });
+    expect(migrated.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id = 'dispatch-invalid'").get())
+      .toBeUndefined();
+    expect(migrated.connection.prepare("SELECT COUNT(*) AS count FROM agent_sessions WHERE dispatch_id = 'dispatch-existing'").get())
+      .toEqual({ count: 1 });
+    expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210545").get())
+      .toEqual({ version: 202609210545 });
+    expect(migrated.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    migrated.close();
+  });
 });
