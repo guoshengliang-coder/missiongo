@@ -468,11 +468,11 @@ export class AgentSessionStore {
            status IN ('active', 'unavailable') OR EXISTS (
              SELECT 1 FROM agent_session_commands c
              WHERE c.session_id = s.id AND c.status IN ('queued', 'delivering')
-           )
+           ) OR s.updated_at <= ?
          )
          ORDER BY archive_source = 'source', updated_at DESC LIMIT 100`,
       )
-      .all(nodeId, sourceArchiveBefore) as unknown as SessionRow[];
+      .all(nodeId, sourceArchiveBefore, sourceArchiveBefore) as unknown as SessionRow[];
     return rows.map((row) => {
       const command = this.pendingCommand(row.id);
       return {
