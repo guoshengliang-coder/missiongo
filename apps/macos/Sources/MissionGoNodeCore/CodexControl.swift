@@ -19,6 +19,7 @@ public protocol CodexControl: Sendable {
     func startThread(_ request: CodexThreadRequest) async throws -> String
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws
+    func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws
 }
 
 public extension CodexControl {
@@ -28,6 +29,10 @@ public extension CodexControl {
 
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
         throw CodexControlError.rpc(method: "turn/start", message: "这个 Codex 控制器不支持回复会话。")
+    }
+
+    func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
+        throw CodexControlError.rpc(method: "turn/interrupt", message: "这个 Codex 控制器不支持中断会话。")
     }
 }
 
@@ -175,6 +180,10 @@ public enum CodexProtocol {
         return ["threadId": threadId]
     }
 
+    public static func turnInterruptParams(threadId: String, turnId: String) -> [String: Any] {
+        return ["threadId": threadId, "turnId": turnId]
+    }
+
     public static func threadSnapshot(fromRead result: [String: Any]) throws -> CodexThreadSnapshot {
         guard let thread = result["thread"] as? [String: Any] else {
             throw CodexControlError.invalidResponse(method: "thread/read")
@@ -311,6 +320,24 @@ public struct CodexAppServerControl: CodexControl {
                             prompt: text,
                             clientUserMessageId: clientUserMessageId
                         )
+                    )
+                })
+            }
+        }
+    }
+
+    public func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
+        let timeout = self.timeout
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result {
+                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                    defer { connection.close() }
+                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    try connection.notify("initialized")
+                    _ = try connection.call(
+                        "turn/interrupt",
+                        CodexProtocol.turnInterruptParams(threadId: threadId, turnId: turnId)
                     )
                 })
             }

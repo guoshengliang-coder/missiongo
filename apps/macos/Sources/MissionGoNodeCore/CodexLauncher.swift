@@ -231,6 +231,28 @@ public struct CodexLauncher: AgentAdapter {
         guard let command = session.command else {
             return AgentSessionReport(status: snapshot.status, messages: snapshot.messages)
         }
+        if command.kind == "interrupt" {
+            // The turn may have finished between the web click and this poll. In
+            // that case the requested outcome is already true, so acknowledge
+            // the command instead of leaving an impossible interrupt queued.
+            if snapshot.status == "active" {
+                guard let turnId = command.turnId else {
+                    throw LaunchError("终止命令缺少 Codex turn id，未执行中断。")
+                }
+                try await control.interruptTurn(
+                    socketPath: location.controlSocketPath,
+                    threadId: session.sessionRef,
+                    turnId: turnId
+                )
+                snapshot = CodexThreadSnapshot(status: "idle", messages: snapshot.messages)
+            }
+            return AgentSessionReport(
+                status: snapshot.status,
+                messages: snapshot.messages,
+                commandId: command.id,
+                commandStatus: "delivered"
+            )
+        }
         // Codex rejects a second turn while one is active. Keeping the command
         // queued is intentional: the next poll sends it as soon as the thread is idle.
         guard snapshot.status == "idle" else {

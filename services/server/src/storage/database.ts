@@ -593,6 +593,33 @@ export class MissionGoDatabase {
           .run(202609201034, new Date().toISOString());
       });
     }
+    // Commands originally carried reply text only. A stop request is a distinct
+    // operation and pins the exact active turn it is allowed to interrupt.
+    // Both columns are additive so the previous release continues to read and
+    // write ordinary replies if application code is rolled back.
+    const agentSessionCommandKindMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609201550")
+      .get() as unknown as { version: number } | undefined;
+    const commandKindColumns = this.connection
+      .prepare("PRAGMA table_info(agent_session_commands)")
+      .all() as unknown as Array<{ name: string }>;
+    if (!agentSessionCommandKindMigration
+      || !commandKindColumns.some((column) => column.name === "kind")
+      || !commandKindColumns.some((column) => column.name === "turn_id")) {
+      this.transaction(() => {
+        if (!commandKindColumns.some((column) => column.name === "kind")) {
+          this.connection.exec(
+            "ALTER TABLE agent_session_commands ADD COLUMN kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message', 'interrupt'));",
+          );
+        }
+        if (!commandKindColumns.some((column) => column.name === "turn_id")) {
+          this.connection.exec("ALTER TABLE agent_session_commands ADD COLUMN turn_id TEXT;");
+        }
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609201550, new Date().toISOString());
+      });
+    }
     // A reply waiting on an unavailable Mac can now be cancelled and edited.
     // The status CHECK lives in the table definition, so an existing database
     // has to rebuild the table to widen it. Fresh databases already have the
@@ -613,7 +640,9 @@ export class MissionGoDatabase {
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
                 account_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message', 'interrupt')),
                 text TEXT NOT NULL,
+                turn_id TEXT,
                 status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivered', 'failed', 'cancelled')),
                 error TEXT,
                 created_at TEXT NOT NULL,
@@ -621,8 +650,8 @@ export class MissionGoDatabase {
                 cancelled_at TEXT
               ) STRICT;
               INSERT INTO agent_session_commands_new
-                (id, session_id, account_id, text, status, error, created_at, delivered_at, cancelled_at)
-              SELECT id, session_id, account_id, text, status, error, created_at, delivered_at, NULL
+                (id, session_id, account_id, kind, text, turn_id, status, error, created_at, delivered_at, cancelled_at)
+              SELECT id, session_id, account_id, kind, text, turn_id, status, error, created_at, delivered_at, NULL
               FROM agent_session_commands;
               DROP TABLE agent_session_commands;
               ALTER TABLE agent_session_commands_new RENAME TO agent_session_commands;

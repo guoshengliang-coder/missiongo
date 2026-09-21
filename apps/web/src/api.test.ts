@@ -119,6 +119,19 @@ describe("dispatch API", () => {
       method: "POST",
     }));
   });
+
+  it("retries and stops a dispatch through explicit control endpoints", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ id: "dispatch-1", status: "queued" }, 201))
+      .mockResolvedValueOnce(json({ dispatch: { id: "dispatch-1", status: "cancelled" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.retryDispatch("dispatch 1");
+    await api.stopDispatch("dispatch 1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/dispatches/dispatch%201/retry", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/dispatches/dispatch%201/stop", expect.objectContaining({ method: "POST" }));
+  });
 });
 
 describe("machine nickname API", () => {

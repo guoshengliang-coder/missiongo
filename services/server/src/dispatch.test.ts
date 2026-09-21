@@ -962,6 +962,80 @@ describe("Claiming a dispatch on the node", () => {
     expect(claimed.json()).toMatchObject({ itemKeys: [mission.itemKey], mode: "plan" });
   });
 
+  it("keeps failed Claude dispatches in the Agent console and can retry then cancel them", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "claude_code");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    const dispatchId = created.json<{ id: string }>().id;
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "failed", error: "Claude remote control did not start" },
+    });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    });
+    expect(listed.json()).toMatchObject({
+      sessions: [{
+        id: `dispatch:${dispatchId}`,
+        dispatchId,
+        agentKind: "claude_code",
+        status: "failed",
+        lastError: "Claude remote control did not start",
+        canReply: false,
+        canRetry: true,
+        canStop: false,
+      }],
+    });
+
+    const retried = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/retry`,
+      headers: { cookie },
+    });
+    expect(retried.statusCode).toBe(201);
+    expect(retried.json()).toMatchObject({ agentKind: "claude_code", mode: "plan", status: "queued" });
+    const retryId = retried.json<{ id: string }>().id;
+
+    const duplicateRetry = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/retry`,
+      headers: { cookie },
+    });
+    expect(duplicateRetry.statusCode).toBe(409);
+    expect(duplicateRetry.json()).toMatchObject({ code: "item_already_dispatched" });
+
+    const stopped = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${retryId}/stop`,
+      headers: { cookie },
+    });
+    expect(stopped.statusCode).toBe(200);
+    expect(stopped.json()).toMatchObject({ dispatch: { id: retryId, status: "cancelled" } });
+  });
+
   it("ends an idle long poll with 204 rather than holding it open", async () => {
     const { app } = await signedInApp();
     const node = await registeredNode(app);
@@ -1209,6 +1283,30 @@ describe("Claiming a dispatch on the node", () => {
     });
     expect(tooLate.statusCode).toBe(409);
     expect(tooLate.json()).toMatchObject({ code: "agent_reply_not_pending" });
+
+    const pendingReply = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${launched.agentSessionId}/commands`,
+      headers: { cookie },
+      payload: { text: "One more instruction before stopping." },
+    });
+    expect(pendingReply.statusCode).toBe(201);
+
+    const stop = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/stop`,
+      headers: { cookie },
+    });
+    expect(stop.statusCode).toBe(202);
+    const interruptId = stop.json<{ command: { id: string } }>().command.id;
+    const interruptPoll = await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(interruptPoll.json()).toMatchObject({
+      sessions: [{ command: { id: interruptId, kind: "interrupt", turnId: "t1", status: "queued" } }],
+    });
   });
 
   it("refuses a Codex link that carries more than a thread id", async () => {
