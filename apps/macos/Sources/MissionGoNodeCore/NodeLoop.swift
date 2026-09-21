@@ -114,7 +114,7 @@ public final class NodeLoop: @unchecked Sendable {
         /// inside it waits this long — measured at 813ms of the delay when this was
         /// a full second.
         public var claimInterval: TimeInterval = 0.25
-        /// Mirrored Codex threads are snapshots, not an event stream. This is
+        /// Mirrored agent conversations are snapshots, not an event stream. This is
         /// short enough for a reply to feel immediate without keeping an
         /// app-server connection open and stealing approval requests.
         public var sessionInterval: TimeInterval = 2
@@ -286,7 +286,7 @@ public final class NodeLoop: @unchecked Sendable {
                 do {
                     let sessions = try await self.api.listAgentSessions()
                     for session in sessions {
-                        guard let adapter = self.adapters.first(where: { $0.kind == "codex" }) else { continue }
+                        guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else { continue }
                         let report: AgentSessionReport
                         do {
                             report = try await adapter.synchronize(session)

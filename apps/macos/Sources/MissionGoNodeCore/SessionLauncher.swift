@@ -96,12 +96,9 @@ public struct LaunchCommand: Equatable, Sendable {
     public let args: [String]
 }
 
-/// The Claude Code adapter: starts one remote-controllable session per dispatch.
-///
-/// The session is interactive on purpose — the operator approves the plan from
-/// claude.ai or a phone — so this app's job ends once the session is up and
-/// reachable. It does not supervise the work afterwards; the items move through
-/// MCP like any other session.
+/// The Claude Code adapter: starts one remote-controllable session per dispatch
+/// and exchanges user-visible messages with its detached local host. The same
+/// session remains interactive on claude.ai and a phone; approvals stay there.
 public struct SessionLauncher: AgentAdapter {
     public static let sessionUrlTimeout: TimeInterval = 60
     static let sessionUrlPollInterval: UInt64 = 500_000_000
@@ -113,19 +110,25 @@ public struct SessionLauncher: AgentAdapter {
     let home: String
     let logsDirectory: String
     let sessionUrlTimeout: TimeInterval
+    let hostExecutable: String?
+    let sessionsDirectory: String
 
     public init(
         environment: ShellEnvironment,
         run: CommandRunner? = nil,
         home: String = Paths.homeDirectory(),
         logsDirectory: String? = nil,
-        sessionUrlTimeout: TimeInterval = SessionLauncher.sessionUrlTimeout
+        sessionUrlTimeout: TimeInterval = SessionLauncher.sessionUrlTimeout,
+        hostExecutable: String? = ClaudeHostLocation.executable(),
+        sessionsDirectory: String? = nil
     ) {
         self.environment = environment
         self.run = run ?? Commands.runner(environment: environment)
         self.home = home
         self.logsDirectory = logsDirectory ?? SessionLauncher.defaultLogsDirectory(home: home)
         self.sessionUrlTimeout = sessionUrlTimeout
+        self.hostExecutable = hostExecutable
+        self.sessionsDirectory = sessionsDirectory ?? ClaudeHostStore.defaultRoot(home: home)
     }
 
     /// `~/Library/Logs/MissionGo`, where Console.app looks for an app's logs.
@@ -286,6 +289,135 @@ public struct SessionLauncher: AgentAdapter {
     }
 
     public func launch(_ job: DispatchJob) async throws -> LaunchResult {
+        guard hostExecutable != nil else { return try await launchLegacy(job) }
+        do {
+            return try await launchHosted(job)
+        } catch let error as HostedLaunchError {
+            switch error {
+            case .unsupported:
+                // Remote control was rejected before the work prompt was sent,
+                // so starting the established PTY launcher cannot duplicate work.
+                return try await launchLegacy(job)
+            case let .failed(message):
+                throw LaunchError(message)
+            }
+        }
+    }
+
+    private enum HostedLaunchError: Error {
+        case unsupported(String)
+        case failed(String)
+    }
+
+    private func launchHosted(_ job: DispatchJob) async throws -> LaunchResult {
+        if case let .failed(reason) = await Preflight.check(repoPath: job.repoPath, run: run, home: home) {
+            throw LaunchError(reason)
+        }
+
+        let prompt = try LaunchPrompt.build(
+            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys
+        )
+        let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
+        guard ClaudeCodeModes.isAllowed(job.mode) else {
+            throw LaunchError("不支持的 Claude Code 模式：\(JSONValues.quote(job.mode))")
+        }
+        guard let claudeExecutable = environment.which("claude") else {
+            throw LaunchError("无法启动 claude：在 PATH 中找不到它（\(environment.path)）")
+        }
+        guard let hostExecutable else { throw HostedLaunchError.failed("MissionGo 缺少 Claude 会话宿主。") }
+        let sessionRef = UUID().uuidString.lowercased()
+        let sessionDirectory = ClaudeHostStore.sessionDirectory(root: sessionsDirectory, sessionRef: sessionRef)
+        let commandsDirectory = "\(sessionDirectory)/commands"
+        let logPath = SessionLauncher.logPath(for: job.dispatchId, in: logsDirectory)
+        try FileManager.default.createDirectory(
+            atPath: logsDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.createDirectory(
+            atPath: commandsDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let statePath = ClaudeHostStore.statePath(root: sessionsDirectory, sessionRef: sessionRef)
+        let configPath = ClaudeHostStore.configPath(root: sessionsDirectory, sessionRef: sessionRef)
+        try ClaudeHostFiles.write(ClaudeHostConfiguration(
+            claudeExecutable: claudeExecutable,
+            cwd: job.repoPath,
+            mode: job.mode,
+            sessionName: sessionName,
+            sessionRef: sessionRef,
+            prompt: prompt,
+            statePath: statePath,
+            commandsDirectory: commandsDirectory,
+            logPath: logPath
+        ), to: configPath)
+
+        let descriptor = open(logPath, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+        guard descriptor >= 0 else {
+            throw LaunchError("无法写入日志 \(logPath)：\(String(cString: strerror(errno)))")
+        }
+        let logHandle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? logHandle.close() }
+
+        let exitCode = Locked<Int32?>(nil)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: hostExecutable)
+        process.arguments = [configPath]
+        process.environment = environment.environment
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = logHandle
+        process.terminationHandler = { finished in
+            exitCode.withLock { $0 = finished.terminationStatus }
+        }
+        // The session must outlive this app: quitting MissionGo, logging out of
+        // it or updating it never kills work already in progress. Nothing here
+        // terminates the child, and `Process` starts it in its own process group,
+        // so a signal aimed at the app's group does not reach it either.
+        do {
+            try process.run()
+        } catch {
+            throw HostedLaunchError.failed("无法启动 Claude 会话宿主：\(error.localizedDescription)")
+        }
+
+        let deadline = Date().addingTimeInterval(sessionUrlTimeout)
+        while Date() < deadline {
+            if let state = try? ClaudeHostFiles.readState(statePath) {
+                if let url = state.sessionUrl {
+                    return LaunchResult(
+                        sessionName: sessionName,
+                        sessionUrl: url,
+                        sessionRef: sessionRef,
+                        logPath: logPath
+                    )
+                }
+                if state.status == "failed" {
+                    throw HostedLaunchError.unsupported(state.error ?? "Claude Code 无法建立受控 Remote Control 会话。")
+                }
+            }
+            if let code = exitCode.current {
+                throw HostedLaunchError.unsupported(
+                    "Claude 会话宿主已退出（code=\(code)），会话没有启动。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))"
+                )
+            }
+            if Task.isCancelled { break }
+            try? await Task.sleep(nanoseconds: SessionLauncher.sessionUrlPollInterval)
+        }
+        let seconds = max(0, Int(sessionUrlTimeout.rounded(.up)))
+        // The prompt is sent only after the URL is persisted. Check once more
+        // at the deadline before stopping a host that might have completed the
+        // handshake between the last poll and this branch.
+        if let state = try? ClaudeHostFiles.readState(statePath), let url = state.sessionUrl {
+            return LaunchResult(sessionName: sessionName, sessionUrl: url, sessionRef: sessionRef, logPath: logPath)
+        }
+        if process.isRunning { process.terminate() }
+        throw HostedLaunchError.failed(
+            "等待 Claude Code 建立受控远程会话超时（\(seconds) 秒），未启动第二个会话。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))"
+        )
+    }
+
+    private func launchLegacy(_ job: DispatchJob) async throws -> LaunchResult {
         if case let .failed(reason) = await Preflight.check(repoPath: job.repoPath, run: run, home: home) {
             throw LaunchError(reason)
         }
@@ -313,8 +445,6 @@ public struct SessionLauncher: AgentAdapter {
             throw LaunchError("无法启动 \(command.file)：在 PATH 中找不到它（\(environment.path)）")
         }
 
-        // Exit status is recorded rather than thrown from the handler, for the
-        // wait loop below to report.
         let exitCode = Locked<Int32?>(nil)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -327,10 +457,6 @@ public struct SessionLauncher: AgentAdapter {
         process.terminationHandler = { finished in
             exitCode.withLock { $0 = finished.terminationStatus }
         }
-        // The session must outlive this app: quitting MissionGo, logging out of
-        // it or updating it never kills work already in progress. Nothing here
-        // terminates the child, and `Process` starts it in its own process group,
-        // so a signal aimed at the app's group does not reach it either.
         do {
             try process.run()
         } catch {
@@ -342,27 +468,82 @@ public struct SessionLauncher: AgentAdapter {
             if let url = SessionLauncher.scrapeSessionUrl(SessionLauncher.readLog(logPath)) {
                 return LaunchResult(sessionName: sessionName, sessionUrl: url, logPath: logPath)
             }
-            // The process dying before it printed a URL is the failure mode worth
-            // reporting: the trust dialog and the login prompt both hang instead,
-            // and the preflight above is what catches those.
             if let code = exitCode.current {
                 throw LaunchError(
                     "claude 进程已退出（code=\(code)），会话没有启动。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))"
                 )
             }
-            // Cancelled: stop waiting, but the child keeps running and counts as
-            // launched, exactly like a URL that did not show up in time.
             if Task.isCancelled { break }
             try? await Task.sleep(nanoseconds: SessionLauncher.sessionUrlPollInterval)
         }
-        // A live `script` process only proves that the terminal wrapper has not
-        // exited. Claude may still be stuck before remote control comes up, and
-        // without the URL there is no API acknowledgement that a session was
-        // created. Reporting this as launched made the console promise a session
-        // that did not exist in claude.ai/code.
         let seconds = max(0, Int(sessionUrlTimeout.rounded(.up)))
         throw LaunchError(
             "等待 Claude Code 生成远程会话地址超时（\(seconds) 秒），无法确认会话已创建。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))"
         )
+    }
+
+    public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        guard UUID(uuidString: session.sessionRef) != nil else {
+            throw LaunchError("Claude 会话编号无效。")
+        }
+        let statePath = ClaudeHostStore.statePath(root: sessionsDirectory, sessionRef: session.sessionRef)
+        let state = try ClaudeHostFiles.readState(statePath)
+        if let hostPid = state.hostPid, !ClaudeHostProcess.isRunning(hostPid) {
+            return AgentSessionReport(
+                status: "unavailable",
+                messages: state.messages,
+                error: "Claude Code 会话宿主已停止；请在外部 Remote Control 会话中继续，或重新派单。"
+            )
+        }
+        guard let command = session.command else {
+            return AgentSessionReport(status: state.status, messages: state.messages, error: state.error)
+        }
+        if let result = state.commandResults[command.id] {
+            return AgentSessionReport(
+                status: state.status,
+                messages: state.messages,
+                error: state.error,
+                commandId: command.id,
+                commandStatus: result.status,
+                commandError: result.error
+            )
+        }
+        if command.kind == "interrupt", state.status != "active" {
+            return AgentSessionReport(
+                status: state.status,
+                messages: state.messages,
+                error: state.error,
+                commandId: command.id,
+                commandStatus: "delivered"
+            )
+        }
+        if command.kind == "message", state.status == "active" {
+            return AgentSessionReport(status: state.status, messages: state.messages, error: state.error)
+        }
+        if command.kind == "message", command.status == "queued" {
+            return AgentSessionReport(
+                status: state.status,
+                messages: state.messages,
+                error: state.error,
+                commandId: command.id,
+                commandStatus: "delivering"
+            )
+        }
+        let safeCommandId = command.id.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+        guard safeCommandId == command.id, !safeCommandId.isEmpty else {
+            throw LaunchError("Claude 命令编号无效。")
+        }
+        let path = ClaudeHostStore.commandPath(
+            root: sessionsDirectory,
+            sessionRef: session.sessionRef,
+            commandId: safeCommandId
+        )
+        if !FileManager.default.fileExists(atPath: path) {
+            try ClaudeHostFiles.write(
+                ClaudeHostCommand(id: command.id, kind: command.kind ?? "message", text: command.text),
+                to: path
+            )
+        }
+        return AgentSessionReport(status: state.status, messages: state.messages, error: state.error)
     }
 }

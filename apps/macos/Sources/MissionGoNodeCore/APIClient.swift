@@ -132,15 +132,31 @@ public struct AgentSessionCommand: Codable, Equatable, Sendable {
 
 public struct NodeAgentSession: Codable, Equatable, Sendable {
     public let id: String
+    public let agentKind: String
     public let sessionRef: String
     public let status: String
     public let command: AgentSessionCommand?
 
-    public init(id: String, sessionRef: String, status: String, command: AgentSessionCommand? = nil) {
+    public init(id: String, agentKind: String = "codex", sessionRef: String, status: String, command: AgentSessionCommand? = nil) {
         self.id = id
+        self.agentKind = agentKind
         self.sessionRef = sessionRef
         self.status = status
         self.command = command
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, agentKind, sessionRef, status, command
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        // A server from before Claude mirroring only ever lists Codex here.
+        agentKind = try values.decodeIfPresent(String.self, forKey: .agentKind) ?? "codex"
+        sessionRef = try values.decode(String.self, forKey: .sessionRef)
+        status = try values.decode(String.self, forKey: .status)
+        command = try values.decodeIfPresent(AgentSessionCommand.self, forKey: .command)
     }
 }
 

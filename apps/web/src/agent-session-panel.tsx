@@ -5,10 +5,14 @@ import { api } from "./api";
 import { useI18n } from "./i18n";
 import type { AgentSessionMessage, AgentSessionStatus } from "./types";
 
-function messageLabel(role: AgentSessionMessage["role"], t: ReturnType<typeof useI18n>["t"]): string {
+function messageLabel(
+  role: AgentSessionMessage["role"],
+  agentKind: "codex" | "claude_code",
+  t: ReturnType<typeof useI18n>["t"],
+): string {
   if (role === "user") return t("agentSessionYou");
   if (role === "plan") return t("agentSessionPlan");
-  return t("agentSessionCodex");
+  return t(agentKind === "claude_code" ? "agentClaudeCode" : "agentSessionCodex");
 }
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
@@ -79,7 +83,7 @@ export function AgentSessionPanel({ sessionId, canReply }: { sessionId: string; 
               <div className="agent-session-messages">
                 {session.data.messages.map((message) => (
                   <article key={message.id} className={`agent-session-message agent-session-message-${message.role}`}>
-                    <small>{messageLabel(message.role, t)}</small>
+                    <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
                     <p>{message.text}</p>
                     {message.questions?.map((question) => (
                       <div key={question.title} className="agent-session-question">

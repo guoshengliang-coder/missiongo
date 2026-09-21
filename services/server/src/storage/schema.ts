@@ -303,13 +303,14 @@ export const INITIAL_SCHEMA = `
     PRIMARY KEY (dispatch_id, item_id)
   ) STRICT;
 
-  -- The conversation attached to a launched Codex dispatch. MissionGo only
-  -- mirrors user-visible messages and queues replies; approvals stay in Codex.
+  -- The conversation attached to a launched controllable dispatch. MissionGo
+  -- only mirrors user-visible messages and queues replies; approvals stay in
+  -- the agent's own surface.
   CREATE TABLE IF NOT EXISTS agent_sessions (
     id TEXT PRIMARY KEY,
     dispatch_id TEXT NOT NULL UNIQUE REFERENCES dispatches(id) ON DELETE CASCADE,
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    agent_kind TEXT NOT NULL CHECK (agent_kind IN ('codex')),
+    agent_kind TEXT NOT NULL CHECK (agent_kind IN ('codex', 'claude_code')),
     agent_session_ref TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'unavailable', 'failed')),
     last_error TEXT,

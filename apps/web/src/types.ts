@@ -349,7 +349,7 @@ export interface AgentSessionCommand {
 export interface AgentSession {
   readonly id: string;
   readonly dispatchId: string;
-  readonly agentKind: "codex";
+  readonly agentKind: "codex" | "claude_code";
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly updatedAt: string;

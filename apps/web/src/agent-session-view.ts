@@ -1,3 +1,5 @@
+import type { AgentKind } from "@missiongo/domain";
+
 import type { AgentSessionMessage, AgentSessionStatus } from "./types";
 
 export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;
@@ -61,9 +63,11 @@ export function changedMessageIds(
 
 export function messageLabelKey(
   role: AgentSessionMessage["role"],
-): "agentSessionPlan" | "agentSessionCodex" | null {
+  agentKind: AgentKind = "codex",
+): "agentSessionPlan" | "agentSessionCodex" | "agentClaudeCode" | null {
   if (role === "user") return null;
-  return role === "plan" ? "agentSessionPlan" : "agentSessionCodex";
+  if (role === "plan") return "agentSessionPlan";
+  return agentKind === "claude_code" ? "agentClaudeCode" : "agentSessionCodex";
 }
 
 export function activityLabelKey(status: AgentSessionStatus, replyQueued = false):

@@ -33,9 +33,15 @@ identity="${MISSIONGO_MACOS_SIGNING_IDENTITY:--}"
 if [ "${MISSIONGO_MACOS_ALLOW_AD_HOC:-0}" = 1 ]; then identity=-; fi
 if [ "$identity" = - ]; then
   echo "==> Ad-hoc signature (no Developer ID or notarization)"
+  if [ -x "$app/Contents/MacOS/MissionGoClaudeHost" ]; then
+    codesign --force --sign - --timestamp=none "$app/Contents/MacOS/MissionGoClaudeHost"
+  fi
   codesign --force --sign - --timestamp=none "$app"
 else
   echo "==> Signing with configured certificate"
+  if [ -x "$app/Contents/MacOS/MissionGoClaudeHost" ]; then
+    codesign --force --sign "$identity" --options runtime --timestamp "$app/Contents/MacOS/MissionGoClaudeHost"
+  fi
   codesign --force --sign "$identity" --options runtime --timestamp "$app"
 fi
 codesign --verify --deep --strict "$app"

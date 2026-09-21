@@ -1036,6 +1036,94 @@ describe("Claiming a dispatch on the node", () => {
     expect(stopped.json()).toMatchObject({ dispatch: { id: retryId, status: "cancelled" } });
   });
 
+  it("mirrors, replies to and interrupts a launched Claude Remote Control session", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "claude_code");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    const dispatchId = created.json<{ id: string }>().id;
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    const sessionRef = "11111111-2222-4333-8444-555555555555";
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "launched",
+        sessionName: `Mac mini-${mission.itemKey}`,
+        sessionUrl: "https://claude.ai/code/session_test",
+        sessionRef,
+      },
+    })).statusCode).toBe(204);
+
+    const nodeSessions = await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    const mirrored = nodeSessions.json<{ sessions: Array<{ id: string }> }>().sessions[0]!;
+    expect(nodeSessions.json()).toMatchObject({
+      sessions: [{ agentKind: "claude_code", sessionRef, status: "active" }],
+    });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${mirrored.id}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "active",
+        messages: [
+          { sourceId: "u1", turnId: "turn-1", role: "user", text: "Inspect this." },
+          { sourceId: "a1", turnId: "turn-1", role: "agent", text: "Working on it." },
+        ],
+      },
+    })).statusCode).toBe(204);
+
+    const listed = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    });
+    expect(listed.json()).toMatchObject({
+      sessions: [{ agentKind: "claude_code", canReply: true, canStop: true }],
+    });
+    const reply = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${mirrored.id}/commands`,
+      headers: { cookie },
+      payload: { text: "Continue." },
+    });
+    const replyId = reply.json<{ id: string }>().id;
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${mirrored.id}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: [], commandId: replyId, commandStatus: "delivered" },
+    });
+    const stop = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/stop`,
+      headers: { cookie },
+    });
+    expect(stop.statusCode).toBe(202);
+    expect(stop.json()).toMatchObject({ command: { kind: "interrupt", turnId: "turn-1", status: "queued" } });
+  });
+
   it("ends an idle long poll with 204 rather than holding it open", async () => {
     const { app } = await signedInApp();
     const node = await registeredNode(app);

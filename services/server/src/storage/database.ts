@@ -671,6 +671,50 @@ export class MissionGoDatabase {
         .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
         .run(202609202336, new Date().toISOString());
     }
+    // Claude Code can now use the same mirrored conversation channel as Codex.
+    // The agent kind is guarded by a table CHECK, so existing databases need a
+    // table rebuild; fresh databases already have the widened definition.
+    const claudeAgentSessionMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609210206")
+      .get() as unknown as { version: number } | undefined;
+    if (!claudeAgentSessionMigration) {
+      const table = this.connection
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_sessions'")
+        .get() as unknown as { sql: string };
+      if (!table.sql.includes("'claude_code'")) {
+        this.connection.exec("PRAGMA foreign_keys = OFF;");
+        try {
+          this.transaction(() => {
+            this.connection.exec(`
+              CREATE TABLE agent_sessions_new (
+                id TEXT PRIMARY KEY,
+                dispatch_id TEXT NOT NULL UNIQUE REFERENCES dispatches(id) ON DELETE CASCADE,
+                node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                agent_kind TEXT NOT NULL CHECK (agent_kind IN ('codex', 'claude_code')),
+                agent_session_ref TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'unavailable', 'failed')),
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+              ) STRICT;
+              INSERT INTO agent_sessions_new
+                (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, last_error, created_at, updated_at)
+              SELECT id, dispatch_id, node_id, agent_kind, agent_session_ref, status, last_error, created_at, updated_at
+              FROM agent_sessions;
+              DROP TABLE agent_sessions;
+              ALTER TABLE agent_sessions_new RENAME TO agent_sessions;
+            `);
+            const violations = this.connection.prepare("PRAGMA foreign_key_check").all();
+            if (violations.length > 0) throw new Error("Rebuilding agent sessions broke a foreign key.");
+          });
+        } finally {
+          this.connection.exec("PRAGMA foreign_keys = ON;");
+        }
+      }
+      this.connection
+        .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+        .run(202609210206, new Date().toISOString());
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }
