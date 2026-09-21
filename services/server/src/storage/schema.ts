@@ -314,6 +314,7 @@ export const INITIAL_SCHEMA = `
     agent_session_ref TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'unavailable', 'failed')),
     last_error TEXT,
+    activities_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     archived_at TEXT,

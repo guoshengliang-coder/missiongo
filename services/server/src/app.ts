@@ -1835,15 +1835,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (!["user", "agent", "plan"].includes(role)) {
         throw invalidInput("message role must be user, agent, or plan.");
       }
-      let questions: Array<{ title: string; options?: string[] }> | undefined;
+      let questions: Array<{ header?: string; title: string; options?: string[]; multiSelect?: boolean }> | undefined;
       if (message.questions !== undefined) {
         if (!Array.isArray(message.questions)) throw invalidInput("questions must be an array.");
         questions = message.questions.map((entry) => {
           const question = objectBody(entry);
           const options = stringArrayField(question, "options");
           return {
+            ...(stringField(question, "header", false) ? { header: question.header as string } : {}),
             title: stringField(question, "title")!,
             ...(options ? { options: [...options] } : {}),
+            ...(typeof question.multiSelect === "boolean" ? { multiSelect: question.multiSelect } : {}),
           };
         });
       }
@@ -1854,6 +1856,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(stringField(message, "phase", false) ? { phase: message.phase as string } : {}),
         text: stringField(message, "text")!,
         ...(questions ? { questions } : {}),
+      };
+    });
+    if (body.activities !== undefined && !Array.isArray(body.activities)) {
+      throw invalidInput("activities must be an array.");
+    }
+    const activities = (Array.isArray(body.activities) ? body.activities : []).map((entry) => {
+      const activity = objectBody(entry);
+      return {
+        id: stringField(activity, "id")!,
+        title: stringField(activity, "title")!,
+        ...(stringField(activity, "detail", false) ? { detail: activity.detail as string } : {}),
       };
     });
     const commandStatusValue = stringField(body, "commandStatus", false);
@@ -1869,6 +1882,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       sessionId,
       status,
       messages,
+      activities,
       ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
       ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),
       ...(commandStatus ? { commandStatus } : {}),

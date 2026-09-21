@@ -8,6 +8,7 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         snapshot.consume([
             "type": "user",
             "uuid": "user-1",
+            "origin": ["kind": "human"],
             "parent_tool_use_id": NSNull(),
             "message": ["role": "user", "content": [["type": "text", "text": "Inspect this."]]],
         ])
@@ -70,6 +71,89 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
             "message": ["id": "message-1", "content": [["type": "text", "text": "internal"]]],
         ])
         XCTAssertTrue(snapshot.state.messages.isEmpty)
+    }
+
+    func testOnlyMirrorsHumanAndExplicitHostMessages() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.consume([
+            "type": "user", "uuid": "bootstrap", "parent_tool_use_id": NSNull(),
+            "message": ["role": "user", "content": [["type": "text", "text": "dispatch prompt"]]],
+        ])
+        snapshot.consume([
+            "type": "user", "uuid": "skill", "parent_tool_use_id": NSNull(),
+            "message": ["role": "user", "content": [["type": "text", "text": "Base directory for this skill"]]],
+        ])
+        snapshot.consume([
+            "type": "user", "uuid": "native", "origin": ["kind": "human"],
+            "parent_tool_use_id": NSNull(), "message": ["role": "user", "content": "原生回复"],
+        ])
+        snapshot.makeUserMessageVisible(id: "web")
+        snapshot.consume([
+            "type": "user", "uuid": "web", "parent_tool_use_id": NSNull(),
+            "message": ["role": "user", "content": [["type": "text", "text": "网页回复"]]],
+        ])
+
+        XCTAssertEqual(snapshot.state.messages.map(\.text), ["原生回复", "网页回复"])
+    }
+
+    func testBackgroundTasksKeepTheSessionActiveAfterATurnResult() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.consume([
+            "type": "system", "subtype": "background_tasks_changed",
+            "tasks": [[
+                "task_id": "task-1", "task_type": "local_agent",
+                "description": "Inspect the synchronization path",
+            ]],
+        ])
+        snapshot.consume(["type": "result", "subtype": "success"])
+
+        XCTAssertEqual(snapshot.state.status, "active")
+        XCTAssertEqual(snapshot.state.activities, [
+            AgentSessionActivity(id: "task-1", title: "Inspect the synchronization path", detail: "运行中"),
+        ])
+
+        snapshot.consume([
+            "type": "system", "subtype": "background_tasks_changed", "tasks": [],
+        ])
+        snapshot.consume(["type": "result", "subtype": "success"])
+        XCTAssertEqual(snapshot.state.status, "idle")
+        XCTAssertTrue(snapshot.state.activities.isEmpty)
+    }
+
+    func testSummarizesShellTasksWithoutExposingTheCommand() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.consume([
+            "type": "system", "subtype": "background_tasks_changed",
+            "tasks": [[
+                "task_id": "task-1", "task_type": "local_bash",
+                "description": "cd /private/project; printenv SECRET_TOKEN",
+            ]],
+        ])
+        XCTAssertEqual(snapshot.state.activities.first?.title, "后台命令")
+    }
+
+    func testProjectsPlanApprovalAsAVisibleQuestion() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.consume([
+            "type": "assistant", "uuid": "frame-1", "parent_tool_use_id": NSNull(),
+            "message": ["id": "message-1", "content": [[
+                "type": "tool_use", "name": "ExitPlanMode", "input": ["plan": "Do the work"],
+            ]]],
+        ])
+        XCTAssertEqual(snapshot.state.messages.last?.questions, [
+            AgentSessionQuestion(
+                header: "计划审批",
+                title: "是否批准这份计划并开始实施？",
+                options: ["批准并实施", "继续修改计划"]
+            ),
+        ])
+    }
+
+    func testOldHostStateDefaultsNewFields() throws {
+        let data = Data(#"{"status":"idle","sessionRef":"session-1","messages":[],"commandResults":{}}"#.utf8)
+        let state = try JSONDecoder().decode(ClaudeHostState.self, from: data)
+        XCTAssertEqual(state.activities, [])
+        XCTAssertFalse(state.waitingForInput)
     }
 }
 
@@ -154,6 +238,24 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         )
         let acknowledged = try await launcher.synchronize(interrupt)
         XCTAssertEqual(acknowledged.commandStatus, "delivered")
+    }
+
+    func testDeliversAReplyWhileClaudeIsWaitingForInteractiveInput() async throws {
+        let (launcher, root, sessionRef) = try fixture(status: "active")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try ClaudeHostFiles.write(
+            ClaudeHostState(status: "active", sessionRef: sessionRef, waitingForInput: true),
+            to: ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        )
+        let queued = NodeAgentSession(
+            id: "server-session",
+            agentKind: "claude_code",
+            sessionRef: sessionRef,
+            status: "active",
+            command: AgentSessionCommand(id: "answer-1", kind: "message", text: "批准并实施")
+        )
+        let reservation = try await launcher.synchronize(queued)
+        XCTAssertEqual(reservation.commandStatus, "delivering")
     }
 
     func testAStoppedDetachedHostBecomesUnavailable() async throws {

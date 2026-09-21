@@ -15,7 +15,18 @@ export interface AgentSessionMessageInput {
   readonly role: AgentMessageRole;
   readonly phase?: string;
   readonly text: string;
-  readonly questions?: readonly { readonly title: string; readonly options?: readonly string[] }[];
+  readonly questions?: readonly {
+    readonly header?: string;
+    readonly title: string;
+    readonly options?: readonly string[];
+    readonly multiSelect?: boolean;
+  }[];
+}
+
+export interface AgentSessionActivity {
+  readonly id: string;
+  readonly title: string;
+  readonly detail?: string;
 }
 
 export interface AgentSessionCommand {
@@ -40,6 +51,7 @@ export interface AgentSessionSnapshot {
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
   readonly messages: readonly (AgentSessionMessageInput & { readonly id: string })[];
+  readonly activities: readonly AgentSessionActivity[];
   readonly command?: AgentSessionCommand;
 }
 
@@ -93,6 +105,7 @@ interface SessionRow {
   updated_at: string;
   archived_at: string | null;
   archive_source: "missiongo" | "source" | null;
+  activities_json: string;
 }
 
 interface SessionListRow {
@@ -104,6 +117,7 @@ interface SessionListRow {
   session_updated_at: string | null;
   session_archived_at: string | null;
   session_archive_source: "missiongo" | "source" | null;
+  session_activities_json: string | null;
   dispatch_error: string | null;
   node_name: string;
   node_last_seen_at: string | null;
@@ -132,6 +146,7 @@ interface CommandRow {
 const MAX_MESSAGE_LENGTH = 100_000;
 const MAX_COMMAND_LENGTH = 20_000;
 const MAX_MESSAGES_PER_SNAPSHOT = 2_000;
+const MAX_ACTIVITIES_PER_SNAPSHOT = 100;
 const SOURCE_ARCHIVE_POLL_MS = 30_000;
 
 function requiredText(value: string, field: string, maximum: number): string {
@@ -173,7 +188,7 @@ export class AgentSessionStore {
     const row = this.database.connection
       .prepare(
         `SELECT s.id, s.dispatch_id, s.agent_kind, s.agent_session_ref, s.status, s.last_error, s.updated_at,
-                s.archived_at, s.archive_source
+                s.archived_at, s.archive_source, s.activities_json
          FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
          WHERE s.id = ? AND d.account_id = ?`,
       )
@@ -198,6 +213,7 @@ export class AgentSessionStore {
       updatedAt: row.updated_at,
       ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
       ...(row.archive_source ? { archivedSource: row.archive_source } : {}),
+      activities: JSON.parse(row.activities_json) as AgentSessionActivity[],
       messages: messages.map((message) => ({
         id: message.id,
         sourceId: message.source_id,
@@ -228,6 +244,7 @@ export class AgentSessionStore {
         `SELECT s.id AS session_id, d.id AS dispatch_id, d.agent_kind,
                 s.status AS session_status, s.last_error AS session_last_error, s.updated_at AS session_updated_at,
                 s.archived_at AS session_archived_at, s.archive_source AS session_archive_source,
+                s.activities_json AS session_activities_json,
                 COALESCE(n.nickname, n.name) AS node_name, n.last_seen_at AS node_last_seen_at,
                 n.revoked_at AS node_revoked_at, d.mode, d.status AS dispatch_status,
                 d.session_name, d.session_url, d.error AS dispatch_error,
@@ -303,6 +320,9 @@ export class AgentSessionStore {
         items: itemRows.map((item) => ({ key: item.item_key, title: item.title, productId: item.product_id })),
         ...(message ? { latestMessage: { role: message.role, text: message.text } } : {}),
         ...(command ? { command: this.mapCommand(command) } : {}),
+        activities: row.session_activities_json
+          ? JSON.parse(row.session_activities_json) as AgentSessionActivity[]
+          : [],
         waitingForReply,
         retryable: ["failed", "cancelled"].includes(row.dispatch_status)
           && itemRows.length > 0 && itemRows.every((item) => item.status === "ready"),
@@ -313,6 +333,7 @@ export class AgentSessionStore {
           row.session_archive_source ?? "", connectionState, Boolean(row.node_revoked_at),
           message?.id ?? "", message?.text ?? "",
           message?.questions_json ?? "", command?.id ?? "", command?.status ?? "",
+          row.session_activities_json ?? "[]",
         ])).digest("hex"),
       };
     });
@@ -490,6 +511,7 @@ export class AgentSessionStore {
     sessionId: string;
     status: AgentSessionStatus;
     messages: readonly AgentSessionMessageInput[];
+    activities?: readonly AgentSessionActivity[];
     error?: string;
     commandId?: string;
     commandStatus?: "delivering" | "delivered" | "failed";
@@ -499,6 +521,14 @@ export class AgentSessionStore {
     if (input.messages.length > MAX_MESSAGES_PER_SNAPSHOT) {
       throw invalidInput(`messages must contain ${MAX_MESSAGES_PER_SNAPSHOT} entries or fewer.`);
     }
+    if ((input.activities?.length ?? 0) > MAX_ACTIVITIES_PER_SNAPSHOT) {
+      throw invalidInput(`activities must contain ${MAX_ACTIVITIES_PER_SNAPSHOT} entries or fewer.`);
+    }
+    const activities = (input.activities ?? []).map((activity) => ({
+      id: requiredText(activity.id, "activity id", 200),
+      title: requiredText(activity.title, "activity title", 500),
+      ...(activity.detail ? { detail: requiredText(activity.detail, "activity detail", 500) } : {}),
+    }));
     const session = this.database.connection
       .prepare("SELECT id FROM agent_sessions WHERE id = ? AND node_id = ?")
       .get(input.sessionId, input.nodeId) as unknown as { id: string } | undefined;
@@ -506,8 +536,14 @@ export class AgentSessionStore {
     const now = new Date().toISOString();
     this.database.transaction(() => {
       this.database.connection
-        .prepare("UPDATE agent_sessions SET status = ?, last_error = ?, updated_at = ? WHERE id = ?")
-        .run(input.status, input.error?.slice(0, 2_000) || null, now, input.sessionId);
+        .prepare("UPDATE agent_sessions SET status = ?, last_error = ?, activities_json = ?, updated_at = ? WHERE id = ?")
+        .run(
+          input.status,
+          input.error?.slice(0, 2_000) || null,
+          JSON.stringify(activities),
+          now,
+          input.sessionId,
+        );
       if (input.sourceArchived === true) {
         this.database.connection
           .prepare(

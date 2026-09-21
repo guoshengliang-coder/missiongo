@@ -320,8 +320,16 @@ export interface Dispatch {
 export type AgentSessionStatus = "active" | "idle" | "unavailable" | "failed";
 
 export interface AgentSessionQuestion {
+  readonly header?: string;
   readonly title: string;
   readonly options?: readonly string[];
+  readonly multiSelect?: boolean;
+}
+
+export interface AgentSessionActivity {
+  readonly id: string;
+  readonly title: string;
+  readonly detail?: string;
 }
 
 export interface AgentSessionMessage {
@@ -356,6 +364,7 @@ export interface AgentSession {
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
   readonly messages: readonly AgentSessionMessage[];
+  readonly activities: readonly AgentSessionActivity[];
   readonly command?: AgentSessionCommand;
 }
 
@@ -385,6 +394,7 @@ export interface AgentSessionSummary {
   }[];
   readonly latestMessage?: Pick<AgentSessionMessage, "role" | "text">;
   readonly command?: AgentSessionCommand;
+  readonly activities: readonly AgentSessionActivity[];
   readonly canReply: boolean;
   readonly waitingForReply: boolean;
   readonly canRetry: boolean;

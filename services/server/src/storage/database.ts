@@ -793,6 +793,26 @@ export class MissionGoDatabase {
           .run(202609210545, new Date().toISOString());
       });
     }
+    // Keep Claude's background work separate from the conversation transcript.
+    // The host reports only safe task labels, never raw tool output or command
+    // lines, and the JSON column makes the latest task snapshot replaceable.
+    const agentSessionActivitiesMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609210557")
+      .get() as unknown as { version: number } | undefined;
+    const activityColumns = this.connection
+      .prepare("PRAGMA table_info(agent_sessions)")
+      .all() as unknown as Array<{ name: string }>;
+    if (!agentSessionActivitiesMigration
+      || !activityColumns.some((column) => column.name === "activities_json")) {
+      this.transaction(() => {
+        if (!activityColumns.some((column) => column.name === "activities_json")) {
+          this.connection.exec("ALTER TABLE agent_sessions ADD COLUMN activities_json TEXT NOT NULL DEFAULT '[]';");
+        }
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609210557, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }
