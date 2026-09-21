@@ -1,5 +1,5 @@
 import type { MessageKey } from "./i18n";
-import type { ActiveDispatch } from "./types";
+import type { ActiveDispatch, ItemDispatchSummary } from "./types";
 
 /**
  * An item stays ready until a session claims it, and in plan mode that is only
@@ -24,10 +24,10 @@ export const ACTIVE_DISPATCHES_REFETCH_MS = 30_000;
 
 /**
  * One entry per item. The server already sends one, but should it ever send
- * two, the newer one is the session that could still claim the item.
+ * two, the newer attempt is the one the row should describe.
  */
-export function activeDispatchesByItem(active: readonly ActiveDispatch[]): ReadonlyMap<string, ActiveDispatch> {
-  const byItem = new Map<string, ActiveDispatch>();
+export function dispatchesByItem(active: readonly ItemDispatchSummary[]): ReadonlyMap<string, ItemDispatchSummary> {
+  const byItem = new Map<string, ItemDispatchSummary>();
   for (const entry of active) {
     const current = byItem.get(entry.itemKey);
     if (!current || Date.parse(entry.createdAt) > Date.parse(current.createdAt)) byItem.set(entry.itemKey, entry);
@@ -38,11 +38,11 @@ export function activeDispatchesByItem(active: readonly ActiveDispatch[]): Reado
 /** The selected items that were already dispatched and not claimed, in the order they were selected. */
 export function dispatchConflicts(
   itemKeys: readonly string[],
-  byItem: ReadonlyMap<string, ActiveDispatch>,
+  byItem: ReadonlyMap<string, ItemDispatchSummary>,
 ): ActiveDispatch[] {
   return [...new Set(itemKeys)].flatMap((key) => {
     const entry = byItem.get(key);
-    return entry ? [entry] : [];
+    return entry && entry.status !== "failed" ? [entry as ActiveDispatch] : [];
   });
 }
 

@@ -1,6 +1,6 @@
 import type { AgentKind } from "@missiongo/domain";
 
-import type { AgentSessionMessage, AgentSessionStatus } from "./types";
+import type { AgentSessionCommand, AgentSessionMessage, AgentSessionStatus } from "./types";
 
 export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;
 export const MESSAGE_BOTTOM_THRESHOLD_PX = 48;
@@ -9,6 +9,34 @@ export interface ScrollMetrics {
   readonly scrollHeight: number;
   readonly scrollTop: number;
   readonly clientHeight: number;
+}
+
+export interface OutgoingReply {
+  readonly text: string;
+  readonly status: "sending" | "queued" | "delivering" | "failed";
+  readonly error?: string;
+  readonly commandId?: string;
+}
+
+/**
+ * The POST starts before MissionGo has a command id. Once it does, the mirrored
+ * command carries the same bubble through queueing and delivery. Delivered
+ * replies disappear here because the same node snapshot contains the real user
+ * message; cancelled replies return to the editor instead of lingering.
+ */
+export function outgoingReply(
+  command: AgentSessionCommand | undefined,
+  request?: { readonly text: string; readonly status: "sending" | "failed"; readonly error?: string },
+): OutgoingReply | null {
+  if (request) return request;
+  if (!command || command.kind !== "message") return null;
+  if (command.status !== "queued" && command.status !== "delivering" && command.status !== "failed") return null;
+  return {
+    text: command.text,
+    status: command.status,
+    ...(command.error ? { error: command.error } : {}),
+    commandId: command.id,
+  };
 }
 
 /**

@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   activeDispatchStatusKey,
-  activeDispatchesByItem,
+  dispatchesByItem,
   conflictSignature,
   dispatchConflicts,
   includesQueued,
 } from "./dispatch-conflicts";
 import { dispatchProblemKey } from "./dispatch-eligibility";
 import { translate } from "./i18n";
-import type { ActiveDispatch } from "./types";
+import type { ActiveDispatch, ItemDispatchSummary } from "./types";
 
 const active = (itemKey: string, overrides: Partial<ActiveDispatch> = {}): ActiveDispatch => ({
   dispatchId: `d-${itemKey}`,
@@ -20,24 +20,36 @@ const active = (itemKey: string, overrides: Partial<ActiveDispatch> = {}): Activ
   ...overrides,
 });
 
+const failed = (itemKey: string): ItemDispatchSummary => ({
+  ...active(itemKey),
+  status: "failed",
+});
+
 describe("finding the selected items that were already dispatched", () => {
   it("returns only the selected items that have an unclaimed dispatch, in selection order", () => {
-    const byItem = activeDispatchesByItem([active("AND-37"), active("AND-40"), active("AND-12")]);
+    const byItem = dispatchesByItem([active("AND-37"), active("AND-40"), active("AND-12")]);
     expect(dispatchConflicts(["AND-40", "AND-38", "AND-37"], byItem).map((entry) => entry.itemKey))
       .toEqual(["AND-40", "AND-37"]);
   });
 
   it("finds nothing when none of the selection was dispatched", () => {
-    expect(dispatchConflicts(["AND-38"], activeDispatchesByItem([active("AND-37")]))).toEqual([]);
-    expect(dispatchConflicts(["AND-38"], activeDispatchesByItem([]))).toEqual([]);
+    expect(dispatchConflicts(["AND-38"], dispatchesByItem([active("AND-37")]))).toEqual([]);
+    expect(dispatchConflicts(["AND-38"], dispatchesByItem([]))).toEqual([]);
+  });
+
+  it("shows a failed attempt in the item map without treating it as a dispatch conflict", () => {
+    const byItem = dispatchesByItem([failed("AND-38")]);
+    expect(byItem.get("AND-38")?.status).toBe("failed");
+    expect(dispatchConflicts(["AND-38"], byItem)).toEqual([]);
+    expect(translate("zh-CN", "failedDispatchBadge")).toBe("派单失败");
   });
 
   it("does not list an item twice when the selection repeats it", () => {
-    expect(dispatchConflicts(["AND-37", "AND-37"], activeDispatchesByItem([active("AND-37")]))).toHaveLength(1);
+    expect(dispatchConflicts(["AND-37", "AND-37"], dispatchesByItem([active("AND-37")]))).toHaveLength(1);
   });
 
   it("keeps the newest dispatch when an item has more than one", () => {
-    const byItem = activeDispatchesByItem([
+    const byItem = dispatchesByItem([
       active("AND-37", { dispatchId: "old", nodeName: "MacBook", createdAt: "2026-09-14T09:00:00Z" }),
       active("AND-37", { dispatchId: "new", nodeName: "Mac mini", createdAt: "2026-09-14T11:00:00Z" }),
       active("AND-37", { dispatchId: "middle", createdAt: "2026-09-14T10:00:00Z" }),

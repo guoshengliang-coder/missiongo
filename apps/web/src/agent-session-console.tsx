@@ -12,7 +12,6 @@ import {
   LoaderCircle,
   Mail,
   MessageSquare,
-  RefreshCw,
   RotateCcw,
   Search,
   Square,
@@ -26,6 +25,7 @@ import {
   DEFAULT_AGENT_SESSION_FILTER,
   isNearMessageBottom,
   messageLabelKey,
+  outgoingReply,
   resolvedAgentSessionId,
   shouldResetMessageView,
 } from "./agent-session-view";
@@ -40,7 +40,7 @@ import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import { MarkdownText } from "./markdown-text";
 import { SessionLink } from "./session-link";
-import type { AgentSessionCommand, AgentSessionStatus, AgentSessionSummary } from "./types";
+import type { AgentSession, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary } from "./types";
 
 type SessionFilter = "unread" | "waiting" | "active" | "all" | "failed" | "archived";
 
@@ -140,6 +140,16 @@ function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof u
   return t("agentSessionReplyCancelled");
 }
 
+function outgoingReplyStatusLabel(
+  status: "sending" | "queued" | "delivering" | "failed",
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (status === "sending") return t("agentSessionSending");
+  if (status === "queued") return t("agentSessionReplyQueued");
+  if (status === "delivering") return t("agentSessionReplyDelivering");
+  return t("agentSessionReplyFailed");
+}
+
 function updatedTime(value: string, locale: string): string {
   return new Intl.DateTimeFormat(locale, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
     .format(new Date(value));
@@ -165,6 +175,7 @@ export function AgentSessionConsole({
   const [filter, setFilter] = useState<SessionFilter>(DEFAULT_AGENT_SESSION_FILTER);
   const [search, setSearch] = useState("");
   const [reply, setReply] = useState("");
+  const [dismissedCommandId, setDismissedCommandId] = useState<string | null>(null);
   const [followLatest, setFollowLatest] = useState(true);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [readState, setReadState] = useState<AgentSessionReadState>({});
@@ -172,6 +183,7 @@ export function AgentSessionConsole({
   const observedSessionRef = useRef<string | null>(null);
   const conversationOpenRef = useRef(false);
   const previousMessagesRef = useRef<readonly { id: string; text: string }[]>([]);
+  const previousOutgoingRef = useRef("");
   const unseenMessageIdsRef = useRef(new Set<string>());
 
   const sessionsQuery = useQuery({
@@ -219,13 +231,21 @@ export function AgentSessionConsole({
     refetchInterval: selected?.agentSessionId ? 2_000 : false,
   });
   const send = useMutation({
-    mutationFn: (text: string) => api.sendAgentSessionCommand(selected!.agentSessionId!, text),
-    onSuccess: async () => {
+    mutationFn: ({ sessionId, text }: { sessionId: string; text: string }) => api.sendAgentSessionCommand(sessionId, text),
+    onMutate: () => {
       setReply("");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["agent-session", selected?.agentSessionId] }),
+    },
+    onSuccess: (created, input) => {
+      queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current
+        ? { ...current, command: created }
+        : current);
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["agent-sessions", productId] }),
       ]);
+    },
+    onError: (_error, input) => {
+      if (selected?.agentSessionId === input.sessionId) setReply((current) => current || input.text);
     },
   });
   const retryDispatch = useMutation({
@@ -265,6 +285,16 @@ export function AgentSessionConsole({
   });
   const command = sessionQuery.data?.command;
   const pending = command?.status === "queued" || command?.status === "delivering";
+  const sendingSelected = send.isPending && send.variables?.sessionId === selected?.agentSessionId;
+  const failedRequest = send.isError && send.variables?.sessionId === selected?.agentSessionId
+    ? { text: send.variables.text, status: "failed" as const, error: errorText(send.error) }
+    : undefined;
+  const sendingRequest = sendingSelected
+    ? { text: send.variables.text, status: "sending" as const }
+    : failedRequest;
+  const outgoingCandidate = outgoingReply(command, sendingRequest);
+  const outgoing = outgoingCandidate?.commandId === dismissedCommandId ? null : outgoingCandidate;
+  const outgoingSignature = outgoing ? `${selectedId}:${outgoing.commandId ?? "request"}:${outgoing.status}:${outgoing.text}` : "";
   const sessionStatus = sessionQuery.data?.status ?? selected?.status ?? "unavailable";
   const messages = sessionQuery.data?.messages ?? [];
 
@@ -288,9 +318,11 @@ export function AgentSessionConsole({
     const changedSession = observedSessionRef.current !== selectedId;
     const resetView = shouldResetMessageView(changedSession, conversationOpenRef.current, conversationOpen);
     const previousMessages = previousMessagesRef.current;
+    const outgoingChanged = previousOutgoingRef.current !== outgoingSignature;
     observedSessionRef.current = selectedId;
     conversationOpenRef.current = conversationOpen;
     previousMessagesRef.current = messages;
+    previousOutgoingRef.current = outgoingSignature;
 
     if (resetView) {
       unseenMessageIdsRef.current.clear();
@@ -301,18 +333,20 @@ export function AgentSessionConsole({
     }
 
     const changedIds = changedMessageIds(previousMessages, messages);
-    if (changedIds.length === 0) return;
+    if (changedIds.length === 0 && !outgoingChanged) return;
     if (followLatest) scrollToLatest();
-    else {
+    else if (changedIds.length > 0) {
       changedIds.forEach((id) => unseenMessageIdsRef.current.add(id));
       setNewMessageCount(unseenMessageIdsRef.current.size);
     }
-  }, [conversationOpen, followLatest, messages, scrollToLatest, selectedId]);
+  }, [conversationOpen, followLatest, messages, outgoingSignature, scrollToLatest, selectedId]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = reply.trim();
-    if (selected?.canReply && text && !pending && !send.isPending) send.mutate(text);
+    if (selected?.canReply && selected.agentSessionId && text && !pending && !sendingSelected) {
+      send.mutate({ sessionId: selected.agentSessionId, text });
+    }
   };
   const chooseFilter = (next: SessionFilter) => {
     setFilter(next);
@@ -350,15 +384,6 @@ export function AgentSessionConsole({
       </aside>
 
       <section className="agent-console-list" aria-label={t("agentConsoleSessions")}>
-        <header className="agent-console-list-head">
-          <div><h1>{filters.find((entry) => entry.key === filter)?.label}</h1><small>{t("agentConsoleNewestFirst")}</small></div>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={t("refresh")}
-            onClick={() => void sessionsQuery.refetch()}
-          ><RefreshCw className={sessionsQuery.isFetching ? "spin" : ""} size={16} /></button>
-        </header>
         <div className="agent-console-mobile-filters" aria-label={t("agentConsoleFilters")}>
           {filters.map(({ key, count, label }) => (
             <button key={key} type="button" className={filter === key ? "active" : ""} aria-pressed={filter === key} onClick={() => chooseFilter(key)}>
@@ -505,7 +530,7 @@ export function AgentSessionConsole({
                 </div>
                 {selected.agentSessionId && sessionQuery.isLoading && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
                 {sessionQuery.isError && <p className="inline-error">{errorText(sessionQuery.error)}</p>}
-                {sessionQuery.data?.messages.length === 0 && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
+                {sessionQuery.data?.messages.length === 0 && !outgoing && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
                 {!selected.agentSessionId && (
                   <div className="agent-console-dispatch-state">
                     <Bot size={20} />
@@ -532,6 +557,40 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
+                {outgoing && (
+                  <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
+                    <MarkdownText>{outgoing.text}</MarkdownText>
+                    <footer className="agent-console-message-delivery" role="status">
+                      {outgoing.status === "failed"
+                        ? <CircleAlert size={14} />
+                        : <LoaderCircle className="spin" size={14} />}
+                      <span>{outgoingReplyStatusLabel(outgoing.status, t)}{outgoing.error ? `: ${outgoing.error}` : ""}</span>
+                      {outgoing.status === "queued" && outgoing.commandId && selected.canReply && (
+                        <button
+                          type="button"
+                          className="text-button"
+                          disabled={cancel.isPending}
+                          onClick={() => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text })}
+                        >
+                          {cancel.isPending ? t("agentSessionCancelling") : t("agentSessionCancelAndEdit")}
+                        </button>
+                      )}
+                      {outgoing.status === "failed" && (
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => {
+                            setReply(outgoing.text);
+                            if (outgoing.commandId) setDismissedCommandId(outgoing.commandId);
+                            else send.reset();
+                          }}
+                        >
+                          {t("agentSessionEditAndRetry")}
+                        </button>
+                      )}
+                    </footer>
+                  </article>
+                )}
                 {(sessionQuery.data?.lastError ?? selected.lastError) && (
                   <p className="inline-error">{sessionQuery.data?.lastError ?? selected.lastError}</p>
                 )}
@@ -554,22 +613,12 @@ export function AgentSessionConsole({
                 <p className="inline-error">{errorText(retryDispatch.error ?? stopDispatch.error)}</p>
               )}
               {archiveSession.isError && <p className="inline-error">{errorText(archiveSession.error)}</p>}
-              {command && (
+              {command?.kind === "interrupt" && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>
                     {commandStatusLabel(command, t)}
                     {command.error ? `: ${command.error}` : ""}
                   </span>
-                  {command.kind === "message" && command.status === "queued" && selected.canReply && (
-                    <button
-                      type="button"
-                      className="text-button agent-session-cancel"
-                      disabled={cancel.isPending}
-                      onClick={() => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: command.id, text: command.text })}
-                    >
-                      {cancel.isPending ? t("agentSessionCancelling") : t("agentSessionCancelAndEdit")}
-                    </button>
-                  )}
                 </div>
               )}
               {selected.canReply && selected.agentSessionId ? (
@@ -577,13 +626,34 @@ export function AgentSessionConsole({
                   <textarea
                     rows={3}
                     value={reply}
-                    onChange={(event) => setReply(event.target.value)}
+                    onChange={(event) => {
+                      setReply(event.target.value);
+                      if (send.isError && send.variables?.sessionId === selected.agentSessionId) send.reset();
+                    }}
                     placeholder={t("agentSessionReplyPlaceholder")}
-                    disabled={pending || send.isPending}
+                    disabled={pending || sendingSelected}
                   />
-                  <button type="submit" className="primary-button" disabled={!reply.trim() || pending || send.isPending}>
-                    {send.isPending ? t("agentSessionSending") : t("agentSessionSend")}
-                  </button>
+                  <div className="agent-console-reply-actions">
+                    <div className="agent-console-quick-replies" aria-label={t("agentSessionQuickReplies")}>
+                      {[t("agentSessionQuickMergeRelease"), t("agentSessionQuickRelease")].map((quickReply) => (
+                        <button
+                          key={quickReply}
+                          type="button"
+                          className="secondary-button"
+                          disabled={pending || sendingSelected}
+                          onClick={() => {
+                            setReply(quickReply);
+                            if (send.isError && send.variables?.sessionId === selected.agentSessionId) send.reset();
+                          }}
+                        >
+                          {quickReply}
+                        </button>
+                      ))}
+                    </div>
+                    <button type="submit" className="primary-button" disabled={!reply.trim() || pending || sendingSelected}>
+                      {sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}
+                    </button>
+                  </div>
                 </form>
               ) : (
                 <p className="agent-session-muted" role="note">
@@ -593,7 +663,6 @@ export function AgentSessionConsole({
                     : selected.agentSessionId ? t("agentSessionReadOnly") : t("agentConsoleNoInlineReply")}
                 </p>
               )}
-              {send.isError && <p className="inline-error">{errorText(send.error)}</p>}
               {cancel.isError && <p className="inline-error">{errorText(cancel.error)}</p>}
             </footer>
           </>

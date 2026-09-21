@@ -533,7 +533,7 @@ export class DispatchStore {
       // two sessions would plan it, and the one that lost the claim race had been
       // told to carry on anyway. Refuse unless the person says the earlier
       // session is gone.
-      const active = this.activeDispatchesFor(items.map((item) => item.id));
+      const active = this.dispatchesFor(items.map((item) => item.id));
       if (active.length > 0 && !input.force) {
         const described = active
           .map((entry) => `${entry.itemKey} → ${entry.nodeName}（${entry.status}）`)
@@ -597,7 +597,7 @@ export class DispatchStore {
    * item sent back by a failed verification would otherwise read as dispatched
    * and unclaimed forever, and could only go out again with force.
    */
-  private activeDispatchesFor(itemIds: readonly string[]): Array<{
+  private dispatchesFor(itemIds: readonly string[], includeFailed = false): Array<{
     dispatchId: string;
     itemKey: string;
     nodeName: string;
@@ -613,7 +613,9 @@ export class DispatchStore {
          JOIN dispatches d ON d.id = di.dispatch_id
          JOIN nodes n ON n.id = d.node_id
          JOIN work_items w ON w.id = di.item_id
-         WHERE di.item_id IN (${placeholders}) AND d.status IN ('queued', 'delivered', 'launched')
+         WHERE di.item_id IN (${placeholders}) AND d.status IN (${includeFailed
+           ? "'queued', 'delivered', 'launched', 'failed'"
+           : "'queued', 'delivered', 'launched'"})
            AND NOT EXISTS (
              SELECT 1 FROM work_item_events e
              WHERE e.item_id = di.item_id AND e.created_at >= d.created_at
@@ -653,9 +655,37 @@ export class DispatchStore {
          WHERE d.account_id = ? AND w.status = 'ready' AND d.status IN ('queued', 'delivered', 'launched')`,
       )
       .all(accountId) as unknown as Array<{ id: string }>;
-    const byItem = new Map<string, ReturnType<DispatchStore["activeDispatchesFor"]>[number]>();
+    const byItem = new Map<string, ReturnType<DispatchStore["dispatchesFor"]>[number]>();
     // Newest first, so each item keeps its most recent dispatch.
-    for (const entry of this.activeDispatchesFor(rows.map((row) => row.id))) {
+    for (const entry of this.dispatchesFor(rows.map((row) => row.id))) {
+      if (!byItem.has(entry.itemKey)) byItem.set(entry.itemKey, entry);
+    }
+    return [...byItem.values()];
+  }
+
+  /**
+   * For the ready-item list: the newest dispatch result that still belongs to
+   * this ready cycle. Failed attempts are included so the row does not silently
+   * fall back to looking untouched; a newer retry naturally replaces one.
+   */
+  listLatestDispatches(accountId: string): Array<{
+    dispatchId: string;
+    itemKey: string;
+    nodeName: string;
+    status: string;
+    createdAt: string;
+  }> {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT DISTINCT w.id FROM dispatch_items di
+         JOIN dispatches d ON d.id = di.dispatch_id
+         JOIN work_items w ON w.id = di.item_id
+         WHERE d.account_id = ? AND w.status = 'ready'
+           AND d.status IN ('queued', 'delivered', 'launched', 'failed')`,
+      )
+      .all(accountId) as unknown as Array<{ id: string }>;
+    const byItem = new Map<string, ReturnType<DispatchStore["dispatchesFor"]>[number]>();
+    for (const entry of this.dispatchesFor(rows.map((row) => row.id), true)) {
       if (!byItem.has(entry.itemKey)) byItem.set(entry.itemKey, entry);
     }
     return [...byItem.values()];

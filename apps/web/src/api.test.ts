@@ -57,10 +57,10 @@ describe("dispatch API", () => {
   const input = { nodeId: "node-1", agentKind: "claude_code", mode: "plan", itemKeys: ["AND-37"] } as const;
 
   it("lists the unclaimed dispatches with the session cookie", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(json({ active: [] }));
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ active: [], latest: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
-    expect(await api.listActiveDispatches()).toEqual({ active: [] });
+    expect(await api.listActiveDispatches()).toEqual({ active: [], latest: [] });
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/dispatches/active", expect.objectContaining({ credentials: "same-origin" }));
   });
 
