@@ -44,6 +44,7 @@ describe("agent session message view", () => {
     expect(activityLabelKey("active")).toBe("agentSessionActivityActive");
     expect(activityLabelKey("idle")).toBe("agentSessionActivityIdle");
     expect(activityLabelKey("unavailable")).toBe("agentSessionActivityUnavailable");
+    expect(activityLabelKey("unavailable", true)).toBe("agentSessionActivityUnavailableQueued");
     expect(activityLabelKey("failed")).toBe("agentSessionActivityFailed");
   });
 });

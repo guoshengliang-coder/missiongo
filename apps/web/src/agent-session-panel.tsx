@@ -40,7 +40,16 @@ export function AgentSessionPanel({ sessionId, canReply }: { sessionId: string; 
       await queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
     },
   });
-  const pending = session.data?.command?.status === "queued";
+  const cancel = useMutation({
+    mutationFn: ({ commandId }: { commandId: string; text: string }) =>
+      api.cancelAgentSessionCommand(sessionId, commandId),
+    onSuccess: async (_command, input) => {
+      setReply(input.text);
+      await queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
+    },
+  });
+  const command = session.data?.command;
+  const pending = command?.status === "queued" || command?.status === "delivering";
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = reply.trim();
@@ -88,13 +97,27 @@ export function AgentSessionPanel({ sessionId, canReply }: { sessionId: string; 
                 ))}
               </div>
               {session.data.lastError && <p className="inline-error">{session.data.lastError}</p>}
-              {session.data.command && (
-                <p className={`agent-session-command agent-session-command-${session.data.command.status}`}>
-                  {session.data.command.status === "queued" && t("agentSessionReplyQueued")}
-                  {session.data.command.status === "delivered" && t("agentSessionReplyDelivered")}
-                  {session.data.command.status === "failed" && t("agentSessionReplyFailed")}
-                  {session.data.command.error ? `: ${session.data.command.error}` : ""}
-                </p>
+              {command && (
+                <div className={`agent-session-command agent-session-command-${command.status}`}>
+                  <span>
+                    {command.status === "queued" && t("agentSessionReplyQueued")}
+                    {command.status === "delivering" && t("agentSessionReplyDelivering")}
+                    {command.status === "delivered" && t("agentSessionReplyDelivered")}
+                    {command.status === "failed" && t("agentSessionReplyFailed")}
+                    {command.status === "cancelled" && t("agentSessionReplyCancelled")}
+                    {command.error ? `: ${command.error}` : ""}
+                  </span>
+                  {command.status === "queued" && canReply && (
+                    <button
+                      type="button"
+                      className="text-button agent-session-cancel"
+                      disabled={cancel.isPending}
+                      onClick={() => cancel.mutate({ commandId: command.id, text: command.text })}
+                    >
+                      {cancel.isPending ? t("agentSessionCancelling") : t("agentSessionCancelAndEdit")}
+                    </button>
+                  )}
+                </div>
               )}
               {canReply ? (
                 <>
@@ -111,6 +134,7 @@ export function AgentSessionPanel({ sessionId, canReply }: { sessionId: string; 
                     </button>
                   </form>
                   {send.isError && <p className="inline-error">{errorText(send.error)}</p>}
+                  {cancel.isError && <p className="inline-error">{errorText(cancel.error)}</p>}
                 </>
               ) : (
                 <p className="agent-session-muted" role="note">{t("agentSessionReadOnly")}</p>

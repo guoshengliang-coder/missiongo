@@ -337,10 +337,11 @@ export interface AgentSessionMessage {
 export interface AgentSessionCommand {
   readonly id: string;
   readonly text: string;
-  readonly status: "queued" | "delivered" | "failed";
+  readonly status: "queued" | "delivering" | "delivered" | "failed" | "cancelled";
   readonly error?: string;
   readonly createdAt: string;
   readonly deliveredAt?: string;
+  readonly cancelledAt?: string;
 }
 
 export interface AgentSession {

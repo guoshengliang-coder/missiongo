@@ -96,12 +96,14 @@ describe("dispatch API", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ id: "session-1", status: "idle", messages: [] }))
       .mockResolvedValueOnce(json({ sessions: [] }))
-      .mockResolvedValueOnce(json({ id: "command-1", status: "queued", text: "continue" }, 201));
+      .mockResolvedValueOnce(json({ id: "command-1", status: "queued", text: "continue" }, 201))
+      .mockResolvedValueOnce(json({ id: "command-1", status: "cancelled", text: "continue" }));
     vi.stubGlobal("fetch", fetchMock);
 
     await api.getAgentSession("session 1");
     await api.listAgentSessions("product 1");
     await api.sendAgentSessionCommand("session 1", "continue");
+    await api.cancelAgentSessionCommand("session 1", "command 1");
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/agent-sessions/session%201", expect.objectContaining({
       credentials: "same-origin",
@@ -112,6 +114,9 @@ describe("dispatch API", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/v1/agent-sessions/session%201/commands", expect.objectContaining({
       method: "POST",
       body: JSON.stringify({ text: "continue" }),
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/v1/agent-sessions/session%201/commands/command%201/cancel", expect.objectContaining({
+      method: "POST",
     }));
   });
 });
