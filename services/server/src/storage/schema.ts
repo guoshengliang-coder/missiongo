@@ -11,7 +11,7 @@ export const INITIAL_SCHEMA = `
   CREATE TABLE IF NOT EXISTS ai_provider_settings (
     name TEXT PRIMARY KEY,
     encrypted_key TEXT NOT NULL,
-    agent_attention_enabled INTEGER NOT NULL DEFAULT 0 CHECK (agent_attention_enabled IN (0, 1)),
+    agent_attention_enabled INTEGER NOT NULL DEFAULT 1 CHECK (agent_attention_enabled IN (0, 1)),
     updated_at TEXT NOT NULL
   ) STRICT;
 

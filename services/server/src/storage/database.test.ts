@@ -52,7 +52,7 @@ describe("database migrations", () => {
     migrated.close();
   });
 
-  it("adds the opt-in Agent attention flag without losing an existing DeepSeek key", async () => {
+  it("adds the Agent attention flag and enables an existing DeepSeek key", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-agent-attention-migration-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "missiongo.sqlite");
@@ -71,15 +71,40 @@ describe("database migrations", () => {
       VALUES ('deepseek', 'encrypted-value', '2026-09-21T00:00:00.000Z');
       DROP TABLE ai_provider_settings_current;
       DELETE FROM schema_migrations WHERE version = 202609210802;
+      DELETE FROM schema_migrations WHERE version = 202609210953;
     `);
     legacy.close();
 
     const migrated = new MissionGoDatabase(path);
     expect(migrated.connection.prepare(
       "SELECT encrypted_key, agent_attention_enabled FROM ai_provider_settings WHERE name = 'deepseek'",
-    ).get()).toEqual({ encrypted_key: "encrypted-value", agent_attention_enabled: 0 });
+    ).get()).toEqual({ encrypted_key: "encrypted-value", agent_attention_enabled: 1 });
     expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210802").get())
       .toEqual({ version: 202609210802 });
+    expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210953").get())
+      .toEqual({ version: 202609210953 });
+    migrated.close();
+  });
+
+  it("enables attention once for deployments that already have the old opt-in column", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-agent-attention-default-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    seeded.connection.prepare(
+      `INSERT INTO ai_provider_settings
+        (name, encrypted_key, agent_attention_enabled, updated_at)
+       VALUES ('deepseek', 'encrypted-value', 0, '2026-09-21T00:00:00.000Z')`,
+    ).run();
+    seeded.connection.prepare("DELETE FROM schema_migrations WHERE version = 202609210953").run();
+    seeded.close();
+
+    const migrated = new MissionGoDatabase(path);
+    expect(migrated.connection.prepare(
+      "SELECT agent_attention_enabled FROM ai_provider_settings WHERE name = 'deepseek'",
+    ).get()).toEqual({ agent_attention_enabled: 1 });
+    expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210953").get())
+      .toEqual({ version: 202609210953 });
     migrated.close();
   });
 
@@ -160,6 +185,8 @@ describe("database migrations", () => {
       .toEqual({ version: 202609210627 });
     expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210802").get())
       .toEqual({ version: 202609210802 });
+    expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210953").get())
+      .toEqual({ version: 202609210953 });
     migrated.close();
   });
 
