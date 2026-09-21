@@ -5,10 +5,11 @@ import { createHash, randomUUID, scryptSync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 import type { FastifyInstance } from "fastify";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
 import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
+import { AgentSessionStore } from "./agent-session-store.js";
 
 const apps: FastifyInstance[] = [];
 const temporaryDirectories: string[] = [];
@@ -25,7 +26,7 @@ function adminAccount(id = "account-test-1"): AdminAccountConfig {
   };
 }
 
-async function signedInApp(account: AdminAccountConfig = adminAccount()) {
+async function signedInApp(account: AdminAccountConfig = adminAccount(), aiProviderFetch?: typeof fetch) {
   const directory = await mkdtemp(join(tmpdir(), "missiongo-dispatch-"));
   temporaryDirectories.push(directory);
   const databasePath = join(directory, "missiongo.sqlite");
@@ -33,6 +34,7 @@ async function signedInApp(account: AdminAccountConfig = adminAccount()) {
     databasePath,
     attachmentsPath: join(directory, "attachments"),
     adminAccount: account,
+    ...(aiProviderFetch ? { aiProviderFetch } : {}),
   });
   apps.push(app);
   accountsByApp.set(app, account);
@@ -880,8 +882,8 @@ describe("Dispatching a batch", () => {
 });
 
 describe("Claiming a dispatch on the node", () => {
-  async function queuedDispatch() {
-    const { app, cookie, databasePath } = await signedInApp();
+  async function queuedDispatch(aiProviderFetch?: typeof fetch) {
+    const { app, cookie, databasePath } = await signedInApp(adminAccount(), aiProviderFetch);
     const node = await registeredNode(app);
     await heartbeat(app, node.token);
     const mission = await readyItem(app, cookie, "Mission GO", "AND");
@@ -940,6 +942,151 @@ describe("Claiming a dispatch on the node", () => {
     });
     expect(dispatches.json<{ dispatches: Array<{ status: string; sessionUrl: string }> }>().dispatches[0])
       .toMatchObject({ status: "launched", sessionUrl: "https://claude.ai/code/session_016Jhieb3iHbCW5ymeG2kns6" });
+  });
+
+  it("classifies only ambiguous latest Agent replies and caches the result by message", async () => {
+    const provider = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+      const source = body.messages.at(-1)?.content ?? "";
+      if (source.includes("无法判断")) throw new Error("provider unavailable");
+      const needsAttention = source.includes("请批准");
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({
+          needsAttention,
+          kind: needsAttention ? "approval" : "none",
+          reason: needsAttention ? "需要用户批准后继续。" : "仅陈述发布结果，无需后续处理。",
+        }) } }],
+      }), { status: 200 });
+    });
+    const { app, cookie, node, mission, dispatchId } = await queuedDispatch(provider as typeof fetch);
+    expect((await app.inject({
+      method: "PUT",
+      url: "/api/v1/ai/title-settings",
+      headers: { cookie },
+      payload: { apiKey: "secret-deepseek-key", agentAttentionEnabled: true },
+    })).json()).toEqual({ configured: true, agentAttentionEnabled: true });
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "launched",
+        sessionName: `Mac mini-${mission.itemKey}`,
+        sessionUrl: "https://claude.ai/code/session_attention",
+        sessionRef: "11111111-2222-4333-8444-555555555555",
+      },
+    });
+    const sessionId = (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+    const snapshot = (messages: unknown[]) => app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages },
+    });
+    const base = [{ sourceId: "u1", turnId: "t1", role: "user", text: "处理并发布。" }];
+
+    expect((await snapshot([
+      ...base,
+      { sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "已经发包并发布。" },
+    ])).statusCode).toBe(204);
+    await vi.waitFor(async () => {
+      const listed = (await app.inject({
+        method: "GET",
+        url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+        headers: { cookie },
+      })).json<{ sessions: Array<Record<string, unknown>> }>();
+      expect(listed.sessions[0]).toMatchObject({
+        needsAttention: false,
+        waitingForReply: false,
+        attention: { state: "not_needed", reason: "仅陈述发布结果，无需后续处理。", model: "deepseek-flash" },
+      });
+    });
+    expect(provider).toHaveBeenCalledTimes(1);
+    const sent = String(provider.mock.calls[0]?.[1]?.body);
+    expect(sent).toContain("已经发包并发布");
+    expect(sent).not.toContain("dispatch me");
+    expect(sent).not.toContain("AND work");
+    const staleHash = (app.missionGoStore.database.connection.prepare(
+      "SELECT message_hash FROM agent_session_attention WHERE session_id = ?",
+    ).get(sessionId) as { message_hash: string }).message_hash;
+
+    await snapshot([
+      ...base,
+      { sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "已经发包并发布。" },
+    ]);
+    expect(provider).toHaveBeenCalledTimes(1);
+
+    await snapshot([
+      ...base,
+      { sourceId: "a2", turnId: "t2", role: "agent", phase: "final_answer", text: "方案已准备好，请批准后继续。" },
+    ]);
+    await vi.waitFor(async () => {
+      const listed = (await app.inject({
+        method: "GET",
+        url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+        headers: { cookie },
+      })).json<{ sessions: Array<Record<string, unknown>> }>();
+      expect(listed.sessions[0]).toMatchObject({
+        needsAttention: true,
+        waitingForReply: true,
+        attention: { state: "needed", kind: "approval", reason: "需要用户批准后继续。" },
+      });
+    });
+    expect(provider).toHaveBeenCalledTimes(2);
+    expect(new AgentSessionStore(app.missionGoStore.database).completeAttention(sessionId, staleHash, {
+      needsAttention: false,
+      kind: "none",
+      reason: "过期结果不应覆盖新消息。",
+      model: "deepseek-flash",
+    })).toBe(false);
+
+    await snapshot([
+      ...base,
+      { sourceId: "a3", turnId: "t3", role: "agent", phase: "final_answer", text: "这条内容让模型无法判断。" },
+    ]);
+    await vi.waitFor(async () => {
+      const listed = (await app.inject({
+        method: "GET",
+        url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+        headers: { cookie },
+      })).json<{ sessions: Array<Record<string, unknown>> }>();
+      expect(listed.sessions[0]).toMatchObject({
+        needsAttention: true,
+        attention: {
+          state: "needed",
+          kind: "uncertain",
+          reason: "AI 判断暂时不可用，请人工确认是否需要处理。",
+        },
+      });
+    });
+    expect(provider).toHaveBeenCalledTimes(3);
+
+    await snapshot([
+      ...base,
+      {
+        sourceId: "a4", turnId: "t4", role: "agent", text: "选择范围。",
+        questions: [{ title: "选择范围", options: ["小", "完整"] }],
+      },
+    ]);
+    const explicit = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<Record<string, unknown>> }>();
+    expect(explicit.sessions[0]).toMatchObject({
+      needsAttention: true,
+      attention: { state: "needed", kind: "answer", reason: "AI 提出了需要回答的问题。" },
+    });
+    expect(provider).toHaveBeenCalledTimes(3);
   });
 
   it("hands a dispatch to a machine already waiting on a long poll", async () => {

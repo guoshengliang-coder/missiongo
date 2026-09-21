@@ -14,6 +14,37 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("adds the opt-in Agent attention flag without losing an existing DeepSeek key", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-agent-attention-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    seeded.close();
+
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      ALTER TABLE ai_provider_settings RENAME TO ai_provider_settings_current;
+      CREATE TABLE ai_provider_settings (
+        name TEXT PRIMARY KEY,
+        encrypted_key TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      INSERT INTO ai_provider_settings (name, encrypted_key, updated_at)
+      VALUES ('deepseek', 'encrypted-value', '2026-09-21T00:00:00.000Z');
+      DROP TABLE ai_provider_settings_current;
+      DELETE FROM schema_migrations WHERE version = 202609210802;
+    `);
+    legacy.close();
+
+    const migrated = new MissionGoDatabase(path);
+    expect(migrated.connection.prepare(
+      "SELECT encrypted_key, agent_attention_enabled FROM ai_provider_settings WHERE name = 'deepseek'",
+    ).get()).toEqual({ encrypted_key: "encrypted-value", agent_attention_enabled: 0 });
+    expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210802").get())
+      .toEqual({ version: 202609210802 });
+    migrated.close();
+  });
+
   it("widens legacy Agent sessions to include Claude Code without losing Codex sessions", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-claude-session-migration-"));
     temporaryDirectories.push(directory);
@@ -71,6 +102,13 @@ describe("database migrations", () => {
     expect(sessionColumns.map((column) => column.name)).toContain("archived_at");
     expect(sessionColumns.map((column) => column.name)).toContain("archive_source");
     expect(sessionColumns.map((column) => column.name)).toContain("activity_at");
+    const providerColumns = migrated.connection
+      .prepare("PRAGMA table_info(ai_provider_settings)")
+      .all() as unknown as Array<{ name: string }>;
+    expect(providerColumns.map((column) => column.name)).toContain("agent_attention_enabled");
+    expect(migrated.connection
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_session_attention'")
+      .get()).toEqual({ name: "agent_session_attention" });
     expect(migrated.connection.prepare("SELECT agent_session_ref FROM agent_sessions WHERE id = 'session-1'").get())
       .toEqual({ agent_session_ref: "thread-1" });
     expect(migrated.connection.prepare("SELECT activity_at FROM agent_sessions WHERE id = 'session-1'").get())
@@ -82,6 +120,8 @@ describe("database migrations", () => {
       .toEqual({ version: 202609210421 });
     expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210627").get())
       .toEqual({ version: 202609210627 });
+    expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210802").get())
+      .toEqual({ version: 202609210802 });
     migrated.close();
   });
 

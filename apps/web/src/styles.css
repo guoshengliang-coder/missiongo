@@ -504,6 +504,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .agent-console-node-unstable { color: var(--amber); }
 .agent-console-node-offline { color: var(--red); }
 .agent-console-session-copy { min-width: 0; display: block; }
+.agent-console-attention { display: inline-block; margin-top: 6px; padding: 2px 6px; color: var(--warn-text); background: var(--warn-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-style: normal; font-weight: 700; }
 .agent-console-session-copy strong,
 .agent-console-session-copy small,
 .agent-console-session-copy > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1044,6 +1045,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .ai-title-privacy { display: block; color: var(--muted); font-size: var(--text-xs); }
 .account-ai-settings { margin: 18px 0; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); }
 .account-ai-settings h3 { margin: 0 0 6px; font-size: var(--text-sm); }
+.account-ai-toggle { display: flex; align-items: flex-start; gap: 9px; margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--line); cursor: pointer; }
+.account-ai-toggle input { width: 18px; min-width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--mint-dark); }
+.account-ai-toggle span { display: grid; gap: 3px; }
+.account-ai-toggle strong { font-size: var(--text-sm); }
+.account-ai-toggle small { color: var(--muted); font-size: var(--text-xs); line-height: 1.55; }
 /* AND-69: shown while files are dragged over the form. pointer-events stays off
    so the overlay never becomes the drag target and the enter/leave count holds. */
 .file-drop-overlay {

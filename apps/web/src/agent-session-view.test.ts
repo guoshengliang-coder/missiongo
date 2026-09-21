@@ -28,13 +28,13 @@ describe("agent session message view", () => {
       activityKey: "activity-1",
       agentKind: "codex",
       status: "idle",
-      waitingForReply: true,
+      needsAttention: true,
       nodeName: "Mac mini",
       items: [{ key: "AND-1", title: "First item", productId: "product-1" }],
     } as unknown as AgentSessionSummary;
-    expect(agentSessionMatches(session, "waiting", "all", "", {})).toBe(true);
-    expect(agentSessionMatches(session, "waiting", "codex", "first", {})).toBe(true);
-    expect(agentSessionMatches(session, "waiting", "claude_code", "", {})).toBe(false);
+    expect(agentSessionMatches(session, "attention", "all", "", {})).toBe(true);
+    expect(agentSessionMatches(session, "attention", "codex", "first", {})).toBe(true);
+    expect(agentSessionMatches(session, "attention", "claude_code", "", {})).toBe(false);
   });
 
   it("retains the opened read session only for the current unread visit", () => {
@@ -43,7 +43,7 @@ describe("agent session message view", () => {
       activityKey: "activity-1",
       agentKind: "codex",
       status: "idle",
-      waitingForReply: false,
+      needsAttention: false,
       nodeName: "Mac mini",
       items: [],
     } as unknown as AgentSessionSummary;

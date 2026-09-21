@@ -28,11 +28,16 @@ describe("DeepSeek title generation", () => {
     expect(created.statusCode, created.body).toBe(201);
     const product = created.json<{ id: string }>();
 
-    expect((await app.inject({ method: "GET", url: "/api/v1/ai/title-settings", headers })).json()).toEqual({ configured: false });
+    expect((await app.inject({ method: "GET", url: "/api/v1/ai/title-settings", headers })).json())
+      .toEqual({ configured: false, agentAttentionEnabled: false });
+    expect((await app.inject({
+      method: "PUT", url: "/api/v1/ai/title-settings", headers,
+      payload: { agentAttentionEnabled: true },
+    })).statusCode).toBe(409);
     const unconfigured = await app.inject({ method: "POST", url: "/api/v1/ai/title", headers, payload: { productId: product.id, content: "页面空白" } });
     expect(unconfigured.statusCode, unconfigured.body).toBe(503);
     const saved = await app.inject({ method: "PUT", url: "/api/v1/ai/title-settings", headers, payload: { apiKey: "secret-deepseek-key" } });
-    expect(saved.json()).toEqual({ configured: true });
+    expect(saved.json()).toEqual({ configured: true, agentAttentionEnabled: false });
     expect((await readFile(databasePath)).includes(Buffer.from("secret-deepseek-key"))).toBe(false);
 
     const generated = await app.inject({ method: "POST", url: "/api/v1/ai/title", headers, payload: { productId: product.id, content: "页面空白" } });
@@ -43,8 +48,15 @@ describe("DeepSeek title generation", () => {
     expect(JSON.parse(String(init?.body))).toMatchObject({ model: "deepseek-flash", thinking: { type: "disabled" } });
     expect(String(init?.body)).toContain("页面空白");
 
+    const enabled = await app.inject({
+      method: "PUT", url: "/api/v1/ai/title-settings", headers,
+      payload: { agentAttentionEnabled: true },
+    });
+    expect(enabled.json()).toEqual({ configured: true, agentAttentionEnabled: true });
+
     await app.inject({ method: "PUT", url: "/api/v1/ai/title-settings", headers, payload: { apiKey: null } });
-    expect((await app.inject({ method: "GET", url: "/api/v1/ai/title-settings", headers })).json()).toEqual({ configured: false });
+    expect((await app.inject({ method: "GET", url: "/api/v1/ai/title-settings", headers })).json())
+      .toEqual({ configured: false, agentAttentionEnabled: false });
   });
 
   it("refuses untrusted callers and hides provider error bodies", async () => {
