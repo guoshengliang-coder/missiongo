@@ -37,7 +37,7 @@ describe("DeepSeek title generation", () => {
     const unconfigured = await app.inject({ method: "POST", url: "/api/v1/ai/title", headers, payload: { productId: product.id, content: "页面空白" } });
     expect(unconfigured.statusCode, unconfigured.body).toBe(503);
     const saved = await app.inject({ method: "PUT", url: "/api/v1/ai/title-settings", headers, payload: { apiKey: "secret-deepseek-key" } });
-    expect(saved.json()).toEqual({ configured: true, agentAttentionEnabled: false });
+    expect(saved.json()).toEqual({ configured: true, agentAttentionEnabled: true });
     expect((await readFile(databasePath)).includes(Buffer.from("secret-deepseek-key"))).toBe(false);
 
     const generated = await app.inject({ method: "POST", url: "/api/v1/ai/title", headers, payload: { productId: product.id, content: "页面空白" } });
@@ -48,6 +48,16 @@ describe("DeepSeek title generation", () => {
     expect(JSON.parse(String(init?.body))).toMatchObject({ model: "deepseek-flash", thinking: { type: "disabled" } });
     expect(String(init?.body)).toContain("页面空白");
 
+    const disabled = await app.inject({
+      method: "PUT", url: "/api/v1/ai/title-settings", headers,
+      payload: { agentAttentionEnabled: false },
+    });
+    expect(disabled.json()).toEqual({ configured: true, agentAttentionEnabled: false });
+    const replaced = await app.inject({
+      method: "PUT", url: "/api/v1/ai/title-settings", headers,
+      payload: { apiKey: "replacement-deepseek-key" },
+    });
+    expect(replaced.json()).toEqual({ configured: true, agentAttentionEnabled: false });
     const enabled = await app.inject({
       method: "PUT", url: "/api/v1/ai/title-settings", headers,
       payload: { agentAttentionEnabled: true },

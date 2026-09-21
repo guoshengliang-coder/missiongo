@@ -60,7 +60,8 @@ export class AiTitleService {
     const ciphertext = Buffer.concat([cipher.update(key, "utf8"), cipher.final()]);
     const encrypted = Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]).toString("base64");
     this.database.connection.prepare(
-      `INSERT INTO ai_provider_settings (name, encrypted_key, updated_at) VALUES ('deepseek', ?, ?)
+      `INSERT INTO ai_provider_settings (name, encrypted_key, agent_attention_enabled, updated_at)
+       VALUES ('deepseek', ?, 1, ?)
        ON CONFLICT(name) DO UPDATE SET encrypted_key = excluded.encrypted_key, updated_at = excluded.updated_at`,
     ).run(encrypted, new Date().toISOString());
   }

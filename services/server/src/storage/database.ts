@@ -899,6 +899,21 @@ export class MissionGoDatabase {
           .run(202609210926, new Date().toISOString());
       });
     }
+    // Automatic attention classification now follows the configured DeepSeek
+    // key by default. Existing deployments cannot distinguish the old default
+    // zero from an explicit opt-out, so this one-time migration enables every
+    // configured row; the administrator can still switch it off afterwards.
+    const defaultAgentAttentionMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609210953")
+      .get() as unknown as { version: number } | undefined;
+    if (!defaultAgentAttentionMigration) {
+      this.transaction(() => {
+        this.connection.exec("UPDATE ai_provider_settings SET agent_attention_enabled = 1;");
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609210953, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

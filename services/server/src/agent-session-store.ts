@@ -210,6 +210,46 @@ function hasQuestions(value: string | null | undefined): boolean {
   }
 }
 
+function explicitlyRequestsApproval(text: string): boolean {
+  const chinese = /(?:请|需要|等待|待)(?:你|您)?[^。！？\n]{0,40}(?:批准|审批|确认|同意|授权|回复|答复)[^。！？\n]{0,80}(?:(?:后|之后)[^。！？\n]{0,30}(?:继续|开始|执行|实施|动手|推进)|(?:才能|方可)[^。！？\n]{0,30}(?:继续|开始|执行|实施|动手|推进))[^。！？\n]{0,40}[。！？]?\s*$/u;
+  const english = /(?:please\s+)?(?:approve|confirm|reply|respond)[^.!?\n]{0,80}(?:before\s+(?:i|we)\s+(?:continue|start|proceed)|so\s+(?:i|we)\s+can\s+(?:continue|start|proceed)|then\s+(?:i|we)(?:'ll|\s+will)?\s+(?:continue|start|proceed))[^.!?\n]{0,40}[.!?]?\s*$/iu;
+  const waiting = /\bwaiting\s+for\s+(?:your\s+)?(?:approval|confirmation|reply|response)\s+before\s+(?:continuing|starting|proceeding)\b[^.!?\n]{0,40}[.!?]?\s*$/iu;
+  return chinese.test(text) || english.test(text) || waiting.test(text);
+}
+
+function deterministicAttention(
+  status: AgentSessionStatus,
+  message: {
+    role: AgentMessageRole;
+    text: string;
+    questions_json: string | null;
+  } | undefined,
+): AgentSessionAttention | undefined {
+  if (hasQuestions(message?.questions_json)) {
+    return { state: "needed", kind: "answer", reason: "AI 提出了需要回答的问题。" };
+  }
+  if (status !== "idle" || !message) return undefined;
+  if (message.role === "plan") {
+    return { state: "needed", kind: "approval", reason: "AI 正在等待计划审批。" };
+  }
+  if (message.role === "agent" && explicitlyRequestsApproval(message.text)) {
+    return { state: "needed", kind: "approval", reason: "AI 明确要求批准或确认后再继续。" };
+  }
+  return undefined;
+}
+
+function initialAttention(
+  status: AgentSessionStatus,
+  message: {
+    role: AgentMessageRole;
+    text: string;
+    questions_json: string | null;
+  } | undefined,
+): AgentSessionAttention {
+  return deterministicAttention(status, message)
+    ?? (status === "idle" && message?.role === "agent" ? { state: "pending" } : { state: "not_needed" });
+}
+
 function boundedAttentionText(text: string): string {
   if (text.length <= 20_000) return text;
   return `${text.slice(0, 2_000)}\n\n[中间内容已省略]\n\n${text.slice(-17_950)}`;
@@ -369,22 +409,23 @@ export class AgentSessionStore {
         : undefined;
       const pendingReply = command?.kind === "message"
         && (command.status === "queued" || command.status === "delivering");
-      const attention: AgentSessionAttention = pendingReply
+      const replyAlreadyHandled = cachedAttention?.message_hash === messageHash
+        && cachedAttention.state === "not_needed"
+        && !cachedAttention.reason
+        && !cachedAttention.model;
+      const directAttention = deterministicAttention(status, message);
+      const attention: AgentSessionAttention = pendingReply || replyAlreadyHandled
         ? { state: "not_needed" }
-        : cachedAttention?.message_hash === messageHash
-          ? {
-              state: cachedAttention.state,
-              ...(cachedAttention.kind ? { kind: cachedAttention.kind } : {}),
-              ...(cachedAttention.reason ? { reason: cachedAttention.reason } : {}),
-              ...(cachedAttention.model ? { model: cachedAttention.model } : {}),
-            }
-          : hasQuestions(message?.questions_json)
-            ? { state: "needed", kind: "answer", reason: "AI 提出了需要回答的问题。" }
-            : status === "idle" && message?.role === "plan"
-              ? { state: "needed", kind: "approval", reason: "AI 正在等待计划审批。" }
-              : status === "idle" && message?.role === "agent"
-                ? { state: "pending" }
-                : { state: "not_needed" };
+        : directAttention
+          ? directAttention
+          : cachedAttention?.message_hash === messageHash
+            ? {
+                state: cachedAttention.state,
+                ...(cachedAttention.kind ? { kind: cachedAttention.kind } : {}),
+                ...(cachedAttention.reason ? { reason: cachedAttention.reason } : {}),
+                ...(cachedAttention.model ? { model: cachedAttention.model } : {}),
+              }
+            : initialAttention(status, message);
       const needsAttention = attention.state === "needed";
       return {
         id: row.session_id ?? `dispatch:${row.dispatch_id}`,
@@ -650,7 +691,6 @@ export class AgentSessionStore {
       position,
     }));
     const latestMessage = messages.at(-1);
-    const latestHasQuestions = hasQuestions(latestMessage?.questionsJson);
     const messageHash = attentionMessageHash(input.status, latestMessage ? {
       source_id: latestMessage.sourceId,
       role: latestMessage.role,
@@ -658,13 +698,11 @@ export class AgentSessionStore {
       text: latestMessage.text,
       questions_json: latestMessage.questionsJson,
     } : undefined);
-    const initialAttention: AgentSessionAttention = latestHasQuestions
-      ? { state: "needed", kind: "answer", reason: "AI 提出了需要回答的问题。" }
-      : input.status === "idle" && latestMessage?.role === "plan"
-        ? { state: "needed", kind: "approval", reason: "AI 正在等待计划审批。" }
-        : input.status === "idle" && latestMessage?.role === "agent"
-          ? { state: "pending" }
-          : { state: "not_needed" };
+    const initialAttentionState = initialAttention(input.status, latestMessage ? {
+      role: latestMessage.role,
+      text: latestMessage.text,
+      questions_json: latestMessage.questionsJson,
+    } : undefined);
     const session = this.database.connection
       .prepare(
         `SELECT id, status, last_error, archived_at, archive_source, activities_json
@@ -772,9 +810,9 @@ export class AgentSessionStore {
       ).run(
         input.sessionId,
         messageHash,
-        initialAttention.state,
-        initialAttention.kind ?? null,
-        initialAttention.reason ?? null,
+        initialAttentionState.state,
+        initialAttentionState.kind ?? null,
+        initialAttentionState.reason ?? null,
         now,
       );
       if (input.commandId && input.commandStatus) {
