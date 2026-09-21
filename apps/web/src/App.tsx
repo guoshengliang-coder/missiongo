@@ -163,6 +163,7 @@ import { productBadgeColor } from "./product-color";
 import { SessionLink } from "./session-link";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
+import { agentAttentionCounts } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
@@ -889,6 +890,17 @@ export function App() {
   const selectedProduct = products.find((product) => product.id === selectedProductId);
   const selectedProductCanUseAi = productAllowsAi(selectedProduct);
   const hasAnyAiPermission = products.some(productAllowsAi);
+  // One all-product feed drives every attention badge as well as the selected
+  // product's console. Product switching is then a local filter, not another
+  // request, and the header counts keep updating while the console is closed.
+  const agentSessionsQuery = useQuery({
+    queryKey: ["agent-sessions"],
+    queryFn: () => api.listAgentSessions(),
+    enabled: bootstrapQuery.isSuccess && hasAnyAiPermission,
+    refetchInterval: 5_000,
+  });
+  const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
+  const attentionCounts = useMemo(() => agentAttentionCounts(allAgentSessions), [allAgentSessions]);
 
   useEffect(() => {
     if (products.length === 0 || hasAnyAiPermission || !agentConsoleOpen) return;
@@ -1010,11 +1022,11 @@ export function App() {
     () => dispatchesByItem(activeDispatchesQuery.data?.latest ?? activeDispatchesQuery.data?.active ?? []),
     [activeDispatchesQuery.data],
   );
-  const agentConsoleListFetching = useIsFetching({ queryKey: ["agent-sessions", selectedProductId] });
+  const agentConsoleListFetching = useIsFetching({ queryKey: ["agent-sessions"] });
   const agentConsoleConversationFetching = useIsFetching({ queryKey: ["agent-session"] });
   const agentConsoleRefreshing = agentConsoleListFetching + agentConsoleConversationFetching > 0;
   const refreshAgentConsole = () => Promise.all([
-    queryClient.invalidateQueries({ queryKey: ["agent-sessions", selectedProductId] }),
+    queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
     queryClient.invalidateQueries({ queryKey: ["agent-session"] }),
   ]);
   const visibleItems = items;
@@ -1194,6 +1206,8 @@ export function App() {
         <ProductSwitcher
           products={products}
           selectedProductId={selectedProductId}
+          attentionCounts={hasAnyAiPermission ? attentionCounts.byProduct : undefined}
+          attentionCountsLoaded={agentSessionsQuery.data !== undefined}
           onSelect={(productId) => {
             setSelectedProductId(productId);
             // A filter chosen for one product says nothing about the next one,
@@ -1213,6 +1227,13 @@ export function App() {
           >
             <Sparkles size={16} />
             <span>{t("agentConsoleOpen")}</span>
+            <small
+              className="agent-attention-badge"
+              aria-label={t("agentConsoleAttentionCount", {
+                count: agentSessionsQuery.data === undefined ? "–" : attentionCounts.total,
+              })}
+              title={t("agentConsoleNeedsAttention")}
+            >{agentSessionsQuery.data === undefined ? "–" : attentionCounts.total}</small>
           </button>
         )}
         {agentConsoleOpen && (
@@ -1480,6 +1501,9 @@ export function App() {
       {agentConsoleOpen && selectedProductId && (
         <AgentSessionConsole
           productId={selectedProductId}
+          allSessions={allAgentSessions}
+          sessionsLoaded={agentSessionsQuery.data !== undefined}
+          sessionsError={agentSessionsQuery.error}
           selectedSessionId={agentSessionId}
           conversationOpen={agentConversationOpen}
           onSelectSession={selectAgentSession}
@@ -1851,10 +1875,14 @@ function ProductBadge({ product, size = 22 }: { product: Product; size?: number 
 function ProductSwitcher({
   products,
   selectedProductId,
+  attentionCounts,
+  attentionCountsLoaded,
   onSelect,
 }: {
   products: readonly Product[];
   selectedProductId: string;
+  attentionCounts: ReadonlyMap<string, number> | undefined;
+  attentionCountsLoaded: boolean;
   onSelect: (productId: string) => void;
 }) {
   const { t } = useI18n();
@@ -1932,6 +1960,15 @@ function ProductSwitcher({
       >
         <ProductBadge product={selected} />
         <span className="product-switcher-name">{selected.name}</span>
+        {attentionCounts && (
+          <small
+            className="agent-attention-badge"
+            aria-label={t("agentConsoleAttentionCount", {
+              count: attentionCountsLoaded ? attentionCounts.get(selected.id) ?? 0 : "–",
+            })}
+            title={t("agentConsoleNeedsAttention")}
+          >{attentionCountsLoaded ? attentionCounts.get(selected.id) ?? 0 : "–"}</small>
+        )}
         <ChevronDown size={14} aria-hidden="true" />
       </button>
       {open && (
@@ -1958,6 +1995,15 @@ function ProductSwitcher({
               {/* Named, because a bare `li > span` rule also caught the badge and
                   stretched it to fill the row. */}
               <span className="product-switcher-option"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
+              {attentionCounts && (
+                <span
+                  className="agent-attention-badge"
+                  aria-label={t("agentConsoleAttentionCount", {
+                    count: attentionCountsLoaded ? attentionCounts.get(product.id) ?? 0 : "–",
+                  })}
+                  title={t("agentConsoleNeedsAttention")}
+                >{attentionCountsLoaded ? attentionCounts.get(product.id) ?? 0 : "–"}</span>
+              )}
               {product.id === selectedProductId && <Check size={15} aria-hidden="true" />}
             </li>
           ))}
@@ -3447,7 +3493,7 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
   const [filesReady, setFilesReady] = useState(false);
   const [filePersistenceWarning, setFilePersistenceWarning] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
-  const [clearGalleryCopies, setClearGalleryCopies] = useState(false);
+  const [clearGalleryCopies, setClearGalleryCopies] = useState(true);
   const [mediaDeletion] = useState(androidMediaDeletion);
 
   useEffect(() => {

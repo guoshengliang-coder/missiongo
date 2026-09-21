@@ -120,6 +120,17 @@ describe("dispatch API", () => {
     }));
   });
 
+  it("lists all authorized agent sessions when no product is selected", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ sessions: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.listAgentSessions();
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/agent-sessions", expect.objectContaining({
+      credentials: "same-origin",
+    }));
+  });
+
   it("retries and stops a dispatch through explicit control endpoints", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ id: "dispatch-1", status: "queued" }, 201))

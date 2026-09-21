@@ -31,6 +31,41 @@ type FilterableAgentSession = Pick<
   | "items"
 >;
 
+type AttentionCountableSession = Pick<
+  AgentSessionSummary,
+  "id" | "archivedAt" | "needsAttention" | "items"
+>;
+
+export interface AgentAttentionCounts {
+  readonly total: number;
+  readonly byProduct: ReadonlyMap<string, number>;
+}
+
+/**
+ * One conversation can cover items from several products. Count it once in the
+ * global badge, and once for each distinct product it reaches. Repeated items
+ * from the same product must not inflate that product's badge.
+ */
+export function agentAttentionCounts(
+  sessions: readonly AttentionCountableSession[],
+): AgentAttentionCounts {
+  const globalSessionIds = new Set<string>();
+  const productSessionIds = new Map<string, Set<string>>();
+  for (const session of sessions) {
+    if (session.archivedAt || !session.needsAttention) continue;
+    globalSessionIds.add(session.id);
+    for (const productId of new Set(session.items.map((item) => item.productId))) {
+      const sessionIds = productSessionIds.get(productId) ?? new Set<string>();
+      sessionIds.add(session.id);
+      productSessionIds.set(productId, sessionIds);
+    }
+  }
+  return {
+    total: globalSessionIds.size,
+    byProduct: new Map([...productSessionIds].map(([productId, sessionIds]) => [productId, sessionIds.size])),
+  };
+}
+
 export function agentSessionMatches(
   session: FilterableAgentSession,
   filter: AgentSessionFilter,
