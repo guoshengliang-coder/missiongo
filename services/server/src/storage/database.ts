@@ -876,6 +876,29 @@ export class MissionGoDatabase {
           .run(202609210802, new Date().toISOString());
       });
     }
+    // A historical hand-off can predate conversation mirroring and therefore
+    // have no agent_sessions row. Keep a local archive marker on the dispatch
+    // so those finished, dispatch-only entries can leave the main console too.
+    const dispatchArchiveMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609210926")
+      .get() as unknown as { version: number } | undefined;
+    const dispatchColumns = this.connection
+      .prepare("PRAGMA table_info(dispatches)")
+      .all() as unknown as Array<{ name: string }>;
+    if (!dispatchArchiveMigration
+      || !dispatchColumns.some((column) => column.name === "archived_at")) {
+      this.transaction(() => {
+        if (!dispatchColumns.some((column) => column.name === "archived_at")) {
+          this.connection.exec("ALTER TABLE dispatches ADD COLUMN archived_at TEXT;");
+        }
+        this.connection.exec(
+          "CREATE INDEX IF NOT EXISTS idx_dispatches_archived ON dispatches(archived_at, completed_at DESC);",
+        );
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609210926, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

@@ -294,7 +294,8 @@ export const INITIAL_SCHEMA = `
     error TEXT,
     created_at TEXT NOT NULL,
     delivered_at TEXT,
-    completed_at TEXT
+    completed_at TEXT,
+    archived_at TEXT
   ) STRICT;
 
   CREATE TABLE IF NOT EXISTS dispatch_items (

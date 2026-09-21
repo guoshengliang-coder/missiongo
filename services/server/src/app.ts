@@ -1668,9 +1668,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         canStop: !session.archivedAt && !session.nodeRevoked && session.stoppable && session.items.every((item) =>
           accountStore.allows(account, item.productId, "operate")
           && accountStore.allows(account, item.productId, "ai")),
-        canArchive: Boolean(session.agentSessionId) && session.items.every((item) =>
-          accountStore.allows(account, item.productId, "operate")
-          && accountStore.allows(account, item.productId, "ai")),
+        canArchive: (Boolean(session.agentSessionId)
+          || ["launched", "failed", "cancelled"].includes(session.dispatchStatus))
+          && session.items.every((item) =>
+            accountStore.allows(account, item.productId, "operate")
+            && accountStore.allows(account, item.productId, "ai")),
       }));
     sessions.forEach((session) => {
       if (session.agentSessionId && session.attention.state === "pending") {
@@ -1688,6 +1690,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       requireAccountId(request),
       sessionId,
       booleanField(body, "archived"),
+    );
+  });
+
+  app.patch("/api/v1/dispatches/:dispatchId/archive", async (request) => {
+    const { dispatchId } = request.params as { dispatchId: string };
+    authorizedDispatch(request, dispatchId, true);
+    return dispatchStore.setArchived(
+      requireAccountId(request),
+      dispatchId,
+      booleanField(objectBody(request.body), "archived"),
     );
   });
 

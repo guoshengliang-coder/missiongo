@@ -63,6 +63,7 @@ export interface DispatchSnapshot {
   readonly createdAt: string;
   readonly deliveredAt?: string;
   readonly completedAt?: string;
+  readonly archivedAt?: string;
 }
 
 export interface DispatchJob {
@@ -115,6 +116,7 @@ interface DispatchRow {
   created_at: string;
   delivered_at: string | null;
   completed_at: string | null;
+  archived_at: string | null;
 }
 
 function nodeTokenHash(token: string): string {
@@ -311,7 +313,7 @@ export class DispatchStore {
       .prepare(
         `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
                 d.session_name, d.session_url, s.id AS agent_session_id,
-                d.error, d.created_at, d.delivered_at, d.completed_at
+                d.error, d.created_at, d.delivered_at, d.completed_at, d.archived_at
          FROM dispatches d JOIN nodes n ON n.id = d.node_id
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          WHERE d.node_id = ?
@@ -799,7 +801,7 @@ export class DispatchStore {
       .prepare(
         `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
                 d.session_name, d.session_url, s.id AS agent_session_id,
-                d.error, d.created_at, d.delivered_at, d.completed_at
+                d.error, d.created_at, d.delivered_at, d.completed_at, d.archived_at
          FROM dispatches d JOIN nodes n ON n.id = d.node_id
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          WHERE d.id = ? AND d.account_id = ?`,
@@ -807,6 +809,27 @@ export class DispatchStore {
       .get(dispatchId, accountId) as unknown as DispatchRow | undefined;
     if (!row) throw notFound("Dispatch");
     return this.mapDispatch(row);
+  }
+
+  /**
+   * Archive a completed hand-off that has no mirrored conversation. Mirrored
+   * sessions keep using AgentSessionStore so pending commands and source-side
+   * archive rules remain enforced in one place.
+   */
+  setArchived(accountId: string, dispatchId: string, archived: boolean): DispatchSnapshot {
+    const dispatch = this.getDispatch(accountId, dispatchId);
+    if (dispatch.agentSessionId) {
+      throw conflict("dispatch_has_agent_session", "Archive this hand-off through its Agent session.");
+    }
+    if (!["launched", "failed", "cancelled"].includes(dispatch.status)) {
+      throw conflict("dispatch_not_archivable", "This hand-off is still being delivered and cannot be archived yet.");
+    }
+    if (Boolean(dispatch.archivedAt) === archived) return dispatch;
+
+    this.database.connection
+      .prepare("UPDATE dispatches SET archived_at = ? WHERE id = ? AND account_id = ?")
+      .run(archived ? new Date().toISOString() : null, dispatchId, accountId);
+    return this.getDispatch(accountId, dispatchId);
   }
 
   /** Cancel work that has not left the server yet. Once a Mac has claimed it,
@@ -833,7 +856,7 @@ export class DispatchStore {
       .prepare(
         `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
                 d.session_name, d.session_url, s.id AS agent_session_id,
-                d.error, d.created_at, d.delivered_at, d.completed_at
+                d.error, d.created_at, d.delivered_at, d.completed_at, d.archived_at
          FROM dispatches d
          JOIN nodes n ON n.id = d.node_id
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
@@ -898,6 +921,7 @@ export class DispatchStore {
       createdAt: row.created_at,
       ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}),
       ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+      ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
     };
   }
 }

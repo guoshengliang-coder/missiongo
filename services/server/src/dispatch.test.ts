@@ -1168,8 +1168,39 @@ describe("Claiming a dispatch on the node", () => {
         canReply: false,
         canRetry: true,
         canStop: false,
+        canArchive: true,
       }],
     });
+
+    const archived = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/dispatches/${dispatchId}/archive`,
+      headers: { cookie },
+      payload: { archived: true },
+    });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json<{ archivedAt?: string }>().archivedAt).toBeTypeOf("string");
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json()).toMatchObject({
+      sessions: [{
+        id: `dispatch:${dispatchId}`,
+        archivedAt: archived.json<{ archivedAt: string }>().archivedAt,
+        archivedSource: "missiongo",
+        canRetry: false,
+        canArchive: true,
+      }],
+    });
+    const restored = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/dispatches/${dispatchId}/archive`,
+      headers: { cookie },
+      payload: { archived: false },
+    });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json<{ archivedAt?: string }>().archivedAt).toBeUndefined();
 
     const retried = await app.inject({
       method: "POST",
@@ -1651,6 +1682,14 @@ describe("Claiming a dispatch on the node", () => {
     expect(listedOnline.json()).toMatchObject({
       sessions: [{ nodeConnectionState: "online", canReply: true, canArchive: true }],
     });
+    const wrongArchivePath = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/dispatches/${dispatchId}/archive`,
+      headers: { cookie },
+      payload: { archived: true },
+    });
+    expect(wrongArchivePath.statusCode).toBe(409);
+    expect(wrongArchivePath.json()).toMatchObject({ code: "dispatch_has_agent_session" });
 
     const database = new DatabaseSync(databasePath);
     const unstableAt = new Date(Date.now() - 75_000).toISOString();
