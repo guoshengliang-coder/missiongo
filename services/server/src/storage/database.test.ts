@@ -14,6 +14,62 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("widens legacy Agent sessions to include Claude Code without losing Codex sessions", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-claude-session-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+
+    const seeded = new MissionGoDatabase(path);
+    seeded.connection.exec(`
+      INSERT INTO nodes
+        (id, account_id, name, token_hash, created_at, updated_at)
+      VALUES
+        ('node-1', 'account-1', 'Mac mini', 'token-hash', '2026-09-21T00:00:00.000Z', '2026-09-21T00:00:00.000Z');
+      INSERT INTO dispatches
+        (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+      VALUES
+        ('dispatch-1', 'account-1', 'node-1', 'codex', 'plan', 'launched', '/repo', '2026-09-21T00:00:00.000Z');
+      INSERT INTO agent_sessions
+        (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at)
+      VALUES
+        ('session-1', 'dispatch-1', 'node-1', 'codex', 'thread-1', 'idle', '2026-09-21T00:00:00.000Z', '2026-09-21T00:00:00.000Z');
+    `);
+    seeded.close();
+
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE agent_sessions_legacy (
+        id TEXT PRIMARY KEY,
+        dispatch_id TEXT NOT NULL UNIQUE REFERENCES dispatches(id) ON DELETE CASCADE,
+        node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        agent_kind TEXT NOT NULL CHECK (agent_kind IN ('codex')),
+        agent_session_ref TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'unavailable', 'failed')),
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      INSERT INTO agent_sessions_legacy SELECT * FROM agent_sessions;
+      DROP TABLE agent_sessions;
+      ALTER TABLE agent_sessions_legacy RENAME TO agent_sessions;
+      DELETE FROM schema_migrations WHERE version = 202609210206;
+    `);
+    legacy.close();
+
+    const migrated = new MissionGoDatabase(path);
+    const table = migrated.connection
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_sessions'")
+      .get() as unknown as { sql: string };
+    expect(table.sql).toContain("'claude_code'");
+    expect(migrated.connection.prepare("SELECT agent_session_ref FROM agent_sessions WHERE id = 'session-1'").get())
+      .toEqual({ agent_session_ref: "thread-1" });
+    expect(migrated.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210206").get())
+      .toEqual({ version: 202609210206 });
+    migrated.close();
+  });
+
   it("widens legacy Agent reply commands so queued replies can be cancelled", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-command-migration-"));
     temporaryDirectories.push(directory);

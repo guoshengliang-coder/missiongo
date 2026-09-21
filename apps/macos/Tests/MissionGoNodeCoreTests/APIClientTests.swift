@@ -2,6 +2,14 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class APIClientTests: XCTestCase {
+    func testOldNodeSessionPayloadDefaultsToCodex() throws {
+        let session = try JSONDecoder().decode(
+            NodeAgentSession.self,
+            from: Data(#"{"id":"s1","sessionRef":"thread-1","status":"idle"}"#.utf8)
+        )
+        XCTAssertEqual(session.agentKind, "codex")
+    }
+
     private let server = "http://127.0.0.1:8799/"
 
     private func client(token: String? = "mgn_x") -> APIClient {

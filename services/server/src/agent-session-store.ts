@@ -33,7 +33,7 @@ export interface AgentSessionCommand {
 export interface AgentSessionSnapshot {
   readonly id: string;
   readonly dispatchId: string;
-  readonly agentKind: "codex";
+  readonly agentKind: "codex" | "claude_code";
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly updatedAt: string;
@@ -70,6 +70,7 @@ export interface AgentSessionListItem {
 
 export interface NodeAgentSession {
   readonly id: string;
+  readonly agentKind: "codex" | "claude_code";
   readonly sessionRef: string;
   readonly status: AgentSessionStatus;
   readonly command?: AgentSessionCommand;
@@ -78,7 +79,7 @@ export interface NodeAgentSession {
 interface SessionRow {
   id: string;
   dispatch_id: string;
-  agent_kind: "codex";
+  agent_kind: "codex" | "claude_code";
   agent_session_ref: string;
   status: AgentSessionStatus;
   last_error: string | null;
@@ -134,7 +135,9 @@ export class AgentSessionStore {
       .prepare("SELECT agent_kind FROM dispatches WHERE id = ? AND node_id = ?")
       .get(input.dispatchId, input.nodeId) as unknown as { agent_kind: string } | undefined;
     if (!dispatch) throw notFound("Dispatch");
-    if (dispatch.agent_kind !== "codex") throw invalidInput("Only Codex dispatches have mirrored sessions.");
+    if (dispatch.agent_kind !== "codex" && dispatch.agent_kind !== "claude_code") {
+      throw invalidInput("This agent does not support mirrored sessions.");
+    }
     const sessionRef = requiredText(input.sessionRef, "sessionRef", 200);
     const existing = this.database.connection
       .prepare("SELECT id FROM agent_sessions WHERE dispatch_id = ?")
@@ -146,9 +149,9 @@ export class AgentSessionStore {
       .prepare(
         `INSERT INTO agent_sessions
           (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at)
-         VALUES (?, ?, ?, 'codex', ?, 'active', ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`,
       )
-      .run(id, input.dispatchId, input.nodeId, sessionRef, now, now);
+      .run(id, input.dispatchId, input.nodeId, dispatch.agent_kind, sessionRef, now, now);
     return id;
   }
 
@@ -277,7 +280,7 @@ export class AgentSessionStore {
         retryable: ["failed", "cancelled"].includes(row.dispatch_status)
           && itemRows.length > 0 && itemRows.every((item) => item.status === "ready"),
         stoppable: row.dispatch_status === "queued"
-          || Boolean(row.session_id && row.agent_kind === "codex" && row.session_status === "active"),
+          || Boolean(row.session_id && row.session_status === "active"),
         activityKey: createHash("sha256").update(JSON.stringify([
           row.dispatch_status, status, lastError ?? "", message?.id ?? "", message?.text ?? "",
           message?.questions_json ?? "", command?.id ?? "", command?.status ?? "",
@@ -320,7 +323,7 @@ export class AgentSessionStore {
       )
       .get(sessionId, accountId) as unknown as { id: string; status: AgentSessionStatus } | undefined;
     if (!session) throw notFound("Agent session");
-    if (session.status !== "active") throw conflict("agent_not_running", "This Codex session is not currently running.");
+    if (session.status !== "active") throw conflict("agent_not_running", "This agent session is not currently running.");
     const pending = this.pendingCommand(sessionId);
     if (pending?.kind === "interrupt") {
       throw conflict("agent_stop_pending", "This session already has a queued stop request.");
@@ -335,7 +338,7 @@ export class AgentSessionStore {
          ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as { turn_id: string } | undefined;
-    if (!turn?.turn_id) throw conflict("agent_turn_unavailable", "The active Codex turn is not visible yet.");
+    if (!turn?.turn_id) throw conflict("agent_turn_unavailable", "The active agent turn is not visible yet.");
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.transaction(() => {
@@ -413,6 +416,7 @@ export class AgentSessionStore {
       const command = this.pendingCommand(row.id);
       return {
         id: row.id,
+        agentKind: row.agent_kind,
         sessionRef: row.agent_session_ref,
         status: row.status,
         ...(command ? { command: this.mapCommand(command) } : {}),

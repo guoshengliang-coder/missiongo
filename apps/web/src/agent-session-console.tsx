@@ -434,7 +434,7 @@ export function AgentSessionConsole({
                   </div>
                 )}
                 {sessionQuery.data?.messages.map((message) => {
-                  const labelKey = messageLabelKey(message.role);
+                  const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (
                     <article key={message.id} className={`agent-console-message agent-console-message-${message.role}`}>
                       {labelKey && <small>{t(labelKey)}</small>}

@@ -45,6 +45,7 @@ describe("agent session message view", () => {
   it("omits the redundant identity label only for the user's messages", () => {
     expect(messageLabelKey("user")).toBeNull();
     expect(messageLabelKey("agent")).toBe("agentSessionCodex");
+    expect(messageLabelKey("agent", "claude_code")).toBe("agentClaudeCode");
     expect(messageLabelKey("plan")).toBe("agentSessionPlan");
   });
 

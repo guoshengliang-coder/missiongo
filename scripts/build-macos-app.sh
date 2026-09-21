@@ -20,6 +20,7 @@ BUILD_DIRECTORY="$PACKAGE_DIRECTORY/build"
 APP="$BUILD_DIRECTORY/MissionGo.app"
 ZIP="$BUILD_DIRECTORY/MissionGo-macOS.zip"
 EXECUTABLE=MissionGo
+CLAUDE_HOST_EXECUTABLE=MissionGoClaudeHost
 ALLOW_AD_HOC_UPDATES=false
 if [ "${MISSIONGO_MACOS_ALLOW_AD_HOC:-0}" = 1 ]; then ALLOW_AD_HOC_UPDATES=true; fi
 
@@ -54,6 +55,7 @@ BINARY_DIRECTORY=$(swift build --package-path "$PACKAGE_DIRECTORY" -c release --
 rm -rf "$APP" "$ZIP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY_DIRECTORY/$EXECUTABLE" "$APP/Contents/MacOS/$EXECUTABLE"
+cp "$BINARY_DIRECTORY/$CLAUDE_HOST_EXECUTABLE" "$APP/Contents/MacOS/$CLAUDE_HOST_EXECUTABLE"
 # SwiftPM puts package resources in sibling .bundle directories; the executable
 # looks for them inside its own bundle once it is wrapped.
 for resource_bundle in "$BINARY_DIRECTORY"/*.bundle; do

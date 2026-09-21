@@ -1684,7 +1684,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (dispatch.status === "queued") {
       return { dispatch: dispatchStore.cancelQueuedDispatch(requireAccountId(request), dispatchId) };
     }
-    if (dispatch.agentKind === "codex" && dispatch.agentSessionId) {
+    if (dispatch.agentSessionId) {
       authorizedAgentSession(request, dispatch.agentSessionId, true);
       const command = agentSessionStore.enqueueInterrupt(
         requireAccountId(request),
