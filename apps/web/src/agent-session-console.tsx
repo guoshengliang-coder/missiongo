@@ -21,6 +21,7 @@ import {
   DEFAULT_AGENT_SESSION_FILTER,
   isNearMessageBottom,
   messageLabelKey,
+  resolvedAgentSessionId,
 } from "./agent-session-view";
 import { useI18n } from "./i18n";
 import { MarkdownText } from "./markdown-text";
@@ -78,18 +79,24 @@ function updatedTime(value: string, locale: string): string {
 
 export function AgentSessionConsole({
   productId,
+  selectedSessionId,
+  conversationOpen,
+  onSelectSession,
+  onBackToSessions,
   onOpenItem,
 }: {
   productId: string;
+  selectedSessionId: string | null;
+  conversationOpen: boolean;
+  onSelectSession: (sessionId: string | null, showConversation: boolean) => void;
+  onBackToSessions: () => void;
   onOpenItem: (itemKey: string) => void;
 }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<SessionFilter>(DEFAULT_AGENT_SESSION_FILTER);
   const [search, setSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reply, setReply] = useState("");
-  const [mobileConversationOpen, setMobileConversationOpen] = useState(false);
   const [followLatest, setFollowLatest] = useState(true);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -113,12 +120,19 @@ export function AgentSessionConsole({
     () => sessions.filter((session) => sessionMatches(session, filter, search)),
     [filter, search, sessions],
   );
+  // Keep a restored URL selection while the list is still loading. Falling
+  // back to null here would immediately erase the session that survived an
+  // Android Activity recreation, before the request had a chance to confirm it.
+  const selectedId = resolvedAgentSessionId(
+    selectedSessionId,
+    visibleSessions.map((session) => session.id),
+    sessionsQuery.data !== undefined,
+  );
 
   useEffect(() => {
-    if (selectedId && visibleSessions.some((session) => session.id === selectedId)) return;
-    setSelectedId(visibleSessions[0]?.id ?? null);
-    setMobileConversationOpen(false);
-  }, [selectedId, visibleSessions]);
+    if (selectedId === selectedSessionId) return;
+    onSelectSession(selectedId, conversationOpen && Boolean(selectedId));
+  }, [conversationOpen, onSelectSession, selectedId, selectedSessionId]);
 
   const selected = sessions.find((session) => session.id === selectedId);
   const sessionQuery = useQuery({
@@ -180,8 +194,7 @@ export function AgentSessionConsole({
   const chooseFilter = (next: SessionFilter) => {
     setFilter(next);
     const first = sessions.find((session) => sessionMatches(session, next, search));
-    setSelectedId(first?.id ?? null);
-    setMobileConversationOpen(false);
+    onSelectSession(first?.id ?? null, false);
   };
 
   const filters: Array<{ key: SessionFilter; icon: typeof BellRing; count: number; label: string }> = [
@@ -192,7 +205,7 @@ export function AgentSessionConsole({
   ];
 
   return (
-    <main className={`agent-console-page ${mobileConversationOpen ? "mobile-conversation-open" : "mobile-list-open"}`}>
+    <main className={`agent-console-page ${conversationOpen ? "mobile-conversation-open" : "mobile-list-open"}`}>
       <aside className="agent-console-filters" aria-label={t("agentConsoleFilters")}>
         <p className="sidebar-label">{t("agentConsoleTitle")}</p>
         {filters.map(({ key, icon: Icon, count, label }) => (
@@ -244,8 +257,7 @@ export function AgentSessionConsole({
               type="button"
               className={`agent-console-session ${session.id === selectedId ? "active" : ""}`}
               onClick={() => {
-                setSelectedId(session.id);
-                setMobileConversationOpen(true);
+                onSelectSession(session.id, true);
               }}
             >
               <span className={`agent-console-status-icon agent-console-status-${session.status}`}>
@@ -271,7 +283,7 @@ export function AgentSessionConsole({
                 type="button"
                 className="icon-button agent-console-conversation-back"
                 aria-label={t("agentConsoleBackToSessions")}
-                onClick={() => setMobileConversationOpen(false)}
+                onClick={onBackToSessions}
               ><ArrowLeft size={19} /></button>
               <span className="agent-console-avatar"><Bot size={17} /></span>
               <div>

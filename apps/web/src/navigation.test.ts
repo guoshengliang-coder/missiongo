@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AGENT_CONSOLE_HISTORY_MARKER,
+  AGENT_CONSOLE_LAYOUT_KEY,
+  AGENT_CONVERSATION_HISTORY_MARKER,
+  agentConsoleExitUrl,
+  agentConsoleIsOpen,
+  agentConsoleLayoutFromState,
+  agentConsoleUrl,
+  agentSessionIdFromUrl,
   backDepthFromState,
   filtersFromUrl,
   filtersToUrl,
@@ -12,6 +20,35 @@ import {
   OVERLAY_HISTORY_MARKER,
   SIDEBAR_HISTORY_MARKER,
 } from "./navigation";
+
+describe("Agent console navigation", () => {
+  it("round-trips the console and selected session without dropping list filters", () => {
+    const items = new URL("https://example.test/?product=p1&status=all&q=return#latest");
+    const consoleUrl = agentConsoleUrl(null, items);
+    expect(consoleUrl).toBe("/?product=p1&status=all&q=return&console=agent#latest");
+    expect(agentConsoleIsOpen(new URL(consoleUrl, items))).toBe(true);
+    expect(agentSessionIdFromUrl(new URL(consoleUrl, items))).toBeNull();
+
+    const conversationUrl = agentConsoleUrl("session-42", new URL(consoleUrl, items));
+    expect(conversationUrl).toBe("/?product=p1&status=all&q=return&console=agent&session=session-42#latest");
+    expect(agentSessionIdFromUrl(new URL(conversationUrl, items))).toBe("session-42");
+    expect(agentConsoleExitUrl(new URL(conversationUrl, items)))
+      .toBe("/?product=p1&status=all&q=return#latest");
+  });
+
+  it("ignores a session parameter outside the console", () => {
+    const url = new URL("https://example.test/?product=p1&session=session-42");
+    expect(agentConsoleIsOpen(url)).toBe(false);
+    expect(agentSessionIdFromUrl(url)).toBeNull();
+  });
+
+  it("restores only recognised console layouts from history state", () => {
+    expect(agentConsoleLayoutFromState({ [AGENT_CONSOLE_LAYOUT_KEY]: "single" })).toBe("single");
+    expect(agentConsoleLayoutFromState({ [AGENT_CONSOLE_LAYOUT_KEY]: "wide" })).toBe("wide");
+    expect(agentConsoleLayoutFromState({ [AGENT_CONSOLE_LAYOUT_KEY]: "tablet" })).toBeNull();
+    expect(agentConsoleLayoutFromState(null)).toBeNull();
+  });
+});
 
 describe("item navigation", () => {
   it("creates shareable detail URLs without dropping other query parameters", () => {
@@ -119,6 +156,22 @@ describe("android back depth", () => {
     // openCapture carries the existing state forward, so the sheet's entry holds
     // the detail's marker too -- two presses to get back to the list.
     expect(backDepthFromState({ [ITEM_HISTORY_MARKER]: true, [OVERLAY_HISTORY_MARKER]: true })).toBe(2);
+  });
+
+  it("counts the console and its single-pane conversation as separate levels", () => {
+    expect(backDepthFromState({ [AGENT_CONSOLE_HISTORY_MARKER]: true })).toBe(1);
+    expect(backDepthFromState({
+      [AGENT_CONSOLE_HISTORY_MARKER]: true,
+      [AGENT_CONVERSATION_HISTORY_MARKER]: true,
+    })).toBe(2);
+  });
+
+  it("keeps the underlying item depth when the console is opened from a detail", () => {
+    expect(backDepthFromState({
+      [ITEM_HISTORY_MARKER]: true,
+      [AGENT_CONSOLE_HISTORY_MARKER]: true,
+      [AGENT_CONVERSATION_HISTORY_MARKER]: true,
+    })).toBe(3);
   });
 
   it("ignores a state that is not an object", () => {

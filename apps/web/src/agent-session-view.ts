@@ -9,6 +9,20 @@ export interface ScrollMetrics {
   readonly clientHeight: number;
 }
 
+/**
+ * Keep a URL-restored conversation until the session list has actually loaded.
+ * Before that response, absence from the empty array proves nothing and must
+ * not erase the state that survived an Android Activity recreation.
+ */
+export function resolvedAgentSessionId(
+  requestedId: string | null,
+  visibleIds: readonly string[],
+  loaded: boolean,
+): string | null {
+  if (requestedId && (!loaded || visibleIds.includes(requestedId))) return requestedId;
+  return visibleIds[0] ?? null;
+}
+
 /** Small rounding differences must not make a conversation stop following. */
 export function isNearMessageBottom(
   metrics: ScrollMetrics,

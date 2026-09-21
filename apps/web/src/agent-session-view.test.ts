@@ -6,11 +6,19 @@ import {
   DEFAULT_AGENT_SESSION_FILTER,
   isNearMessageBottom,
   messageLabelKey,
+  resolvedAgentSessionId,
 } from "./agent-session-view";
 
 describe("agent session message view", () => {
   it("opens on all conversations by default", () => {
     expect(DEFAULT_AGENT_SESSION_FILTER).toBe("all");
+  });
+
+  it("keeps a restored conversation until the session list can confirm it", () => {
+    expect(resolvedAgentSessionId("session-42", [], false)).toBe("session-42");
+    expect(resolvedAgentSessionId("session-42", ["session-42", "session-41"], true)).toBe("session-42");
+    expect(resolvedAgentSessionId("missing", ["session-41"], true)).toBe("session-41");
+    expect(resolvedAgentSessionId(null, ["session-41"], true)).toBe("session-41");
   });
 
   it("keeps following within the bottom tolerance", () => {
