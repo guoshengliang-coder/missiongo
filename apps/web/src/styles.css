@@ -1348,6 +1348,12 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .app-shell.agent-console-open { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
   .app-shell.agent-console-open .product-switcher-wrap { display: none; }
   .app-shell.agent-console-open .topbar .brand { display: flex; }
+  .app-shell.agent-console-open.agent-conversation-open > .topbar { display: none; }
+  .app-shell.agent-console-open.agent-conversation-open .agent-console-page { height: 100vh; height: 100dvh; }
+  .app-shell.agent-console-open.agent-conversation-open .agent-console-conversation-head {
+    min-height: calc(64px + var(--safe-top));
+    padding: calc(9px + var(--safe-top)) calc(12px + var(--safe-right)) 9px calc(12px + var(--safe-left));
+  }
   .agent-console-page { height: calc(100vh - 64px - var(--safe-top)); height: calc(100dvh - 64px - var(--safe-top)); min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
   .agent-console-list, .agent-console-conversation { min-height: 0; grid-column: 1; grid-row: 1; }
   .agent-console-list { max-height: none; border-right: 0; border-bottom: 0; }

@@ -7,6 +7,7 @@ import {
   isNearMessageBottom,
   messageLabelKey,
   resolvedAgentSessionId,
+  shouldResetMessageView,
 } from "./agent-session-view";
 
 describe("agent session message view", () => {
@@ -24,6 +25,13 @@ describe("agent session message view", () => {
   it("keeps following within the bottom tolerance", () => {
     expect(isNearMessageBottom({ scrollHeight: 1_000, scrollTop: 452, clientHeight: 500 })).toBe(true);
     expect(isNearMessageBottom({ scrollHeight: 1_000, scrollTop: 451, clientHeight: 500 })).toBe(false);
+  });
+
+  it("resets when an already-selected one-pane conversation becomes visible", () => {
+    expect(shouldResetMessageView(false, false, true)).toBe(true);
+    expect(shouldResetMessageView(false, true, true)).toBe(false);
+    expect(shouldResetMessageView(false, true, false)).toBe(false);
+    expect(shouldResetMessageView(true, false, false)).toBe(true);
   });
 
   it("finds new and streamed messages without treating reordering as new", () => {

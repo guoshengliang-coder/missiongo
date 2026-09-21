@@ -25,6 +25,7 @@ import {
   isNearMessageBottom,
   messageLabelKey,
   resolvedAgentSessionId,
+  shouldResetMessageView,
 } from "./agent-session-view";
 import {
   agentSessionReadStorageKey,
@@ -145,6 +146,7 @@ export function AgentSessionConsole({
   const [readState, setReadState] = useState<AgentSessionReadState>({});
   const messagesRef = useRef<HTMLDivElement>(null);
   const observedSessionRef = useRef<string | null>(null);
+  const conversationOpenRef = useRef(false);
   const previousMessagesRef = useRef<readonly { id: string; text: string }[]>([]);
   const unseenMessageIdsRef = useRef(new Set<string>());
 
@@ -249,11 +251,13 @@ export function AgentSessionConsole({
 
   useLayoutEffect(() => {
     const changedSession = observedSessionRef.current !== selectedId;
+    const resetView = shouldResetMessageView(changedSession, conversationOpenRef.current, conversationOpen);
     const previousMessages = previousMessagesRef.current;
     observedSessionRef.current = selectedId;
+    conversationOpenRef.current = conversationOpen;
     previousMessagesRef.current = messages;
 
-    if (changedSession) {
+    if (resetView) {
       unseenMessageIdsRef.current.clear();
       setFollowLatest(true);
       setNewMessageCount(0);
@@ -268,7 +272,7 @@ export function AgentSessionConsole({
       changedIds.forEach((id) => unseenMessageIdsRef.current.add(id));
       setNewMessageCount(unseenMessageIdsRef.current.size);
     }
-  }, [followLatest, messages, scrollToLatest, selectedId]);
+  }, [conversationOpen, followLatest, messages, scrollToLatest, selectedId]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();

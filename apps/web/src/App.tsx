@@ -1167,7 +1167,9 @@ export function App() {
   }
 
   return (
-    <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""}`}>
+    <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""} ${
+      agentConsoleOpen && agentConsoleSinglePane && agentConversationOpen ? "agent-conversation-open" : ""
+    }`}>
       <header className={`topbar ${mobileSearchOpen ? "searching" : ""}`}>
         {!agentConsoleOpen && <button className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
           <Menu size={20} />
