@@ -206,10 +206,14 @@ export interface Bootstrap {
 }
 
 export const api = {
-  getAiTitleSettings: () => request<{ configured: boolean }>("/api/v1/ai/title-settings"),
-  setAiTitleKey: (apiKey: string | null) => request<{ configured: boolean }>("/api/v1/ai/title-settings", {
+  getAiTitleSettings: () => request<{ configured: boolean; agentAttentionEnabled: boolean }>("/api/v1/ai/title-settings"),
+  setAiTitleKey: (apiKey: string | null) => request<{ configured: boolean; agentAttentionEnabled: boolean }>("/api/v1/ai/title-settings", {
     method: "PUT", body: JSON.stringify({ apiKey }),
   }),
+  setAgentAttentionEnabled: (agentAttentionEnabled: boolean) =>
+    request<{ configured: boolean; agentAttentionEnabled: boolean }>("/api/v1/ai/title-settings", {
+      method: "PUT", body: JSON.stringify({ agentAttentionEnabled }),
+    }),
   generateTitle: (productId: string, content: string) => request<{ title: string }>("/api/v1/ai/title", {
     method: "POST", body: JSON.stringify({ productId, content }),
   }),

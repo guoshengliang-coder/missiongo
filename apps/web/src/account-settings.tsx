@@ -703,6 +703,14 @@ function DeepSeekSettings() {
     },
     onError: () => setSaved(false),
   });
+  const attentionMutation = useMutation({
+    mutationFn: api.setAgentAttentionEnabled,
+    onSuccess: async () => {
+      setSaved(true);
+      await queryClient.invalidateQueries({ queryKey: ["ai-title-settings"] });
+    },
+    onError: () => setSaved(false),
+  });
   return (
     <section className="account-ai-settings">
       <h3>{t("deepseekSettings")}</h3>
@@ -721,8 +729,22 @@ function DeepSeekSettings() {
       </div>
       {query.data?.configured && <button type="button" className="text-button" disabled={mutation.isPending}
         onClick={() => mutation.mutate(null)}>{t("deepseekClearKey")}</button>}
+      <label className="account-ai-toggle">
+        <input
+          type="checkbox"
+          checked={query.data?.agentAttentionEnabled ?? false}
+          disabled={!query.data?.configured || mutation.isPending || attentionMutation.isPending}
+          onChange={(event) => attentionMutation.mutate(event.target.checked)}
+        />
+        <span>
+          <strong>{t("agentAttentionSetting")}</strong>
+          <small>{t("agentAttentionSettingHelp")}</small>
+        </span>
+      </label>
       {saved && <p className="account-note">{t("permissionsSaved")}</p>}
-      {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
+      {(mutation.isError || attentionMutation.isError) && (
+        <InlineNote danger message={messageFor(mutation.error ?? attentionMutation.error, t, t("somethingWentWrong"))} />
+      )}
     </section>
   );
 }

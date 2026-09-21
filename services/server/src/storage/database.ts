@@ -851,6 +851,31 @@ export class MissionGoDatabase {
           .run(202609210627, new Date().toISOString());
       });
     }
+    // DeepSeek may classify only the latest Agent reply after an administrator
+    // explicitly enables that automatic third-party transmission. The cached
+    // row is keyed by the source-message hash so a late answer cannot replace
+    // the classification for a newer turn. Both changes are additive: an older
+    // release ignores the flag and the cache table during rollback.
+    const agentAttentionMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609210802")
+      .get() as unknown as { version: number } | undefined;
+    const providerColumns = this.connection
+      .prepare("PRAGMA table_info(ai_provider_settings)")
+      .all() as unknown as Array<{ name: string }>;
+    if (!agentAttentionMigration
+      || !providerColumns.some((column) => column.name === "agent_attention_enabled")) {
+      this.transaction(() => {
+        if (!providerColumns.some((column) => column.name === "agent_attention_enabled")) {
+          this.connection.exec(
+            "ALTER TABLE ai_provider_settings ADD COLUMN agent_attention_enabled INTEGER NOT NULL DEFAULT 0 CHECK (agent_attention_enabled IN (0, 1));",
+          );
+        }
+        this.connection.exec(INITIAL_SCHEMA);
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609210802, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

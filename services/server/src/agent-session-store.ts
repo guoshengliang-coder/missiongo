@@ -2,12 +2,22 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
+import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
 export type AgentSessionStatus = "active" | "idle" | "unavailable" | "failed";
 export type AgentMessageRole = "user" | "agent" | "plan";
 export type AgentSessionCommandStatus = "queued" | "delivering" | "delivered" | "failed" | "cancelled";
+export type AgentAttentionState = "pending" | "needed" | "not_needed";
+export type AgentAttentionKind = Exclude<ClassifiedAttentionKind, "none"> | "uncertain";
+
+export interface AgentSessionAttention {
+  readonly state: AgentAttentionState;
+  readonly kind?: AgentAttentionKind;
+  readonly reason?: string;
+  readonly model?: string;
+}
 
 export interface AgentSessionMessageInput {
   readonly sourceId: string;
@@ -82,6 +92,9 @@ export interface AgentSessionListItem {
   }[];
   readonly latestMessage?: Pick<AgentSessionMessageInput, "role" | "text">;
   readonly command?: AgentSessionCommand;
+  readonly attention: AgentSessionAttention;
+  readonly needsAttention: boolean;
+  /** Kept for clients shipped before the broader "needs attention" wording. */
   readonly waitingForReply: boolean;
   readonly retryable: boolean;
   readonly stoppable: boolean;
@@ -145,6 +158,14 @@ interface CommandRow {
   cancelled_at: string | null;
 }
 
+interface AttentionRow {
+  message_hash: string;
+  state: AgentAttentionState;
+  kind: AgentAttentionKind | null;
+  reason: string | null;
+  model: string | null;
+}
+
 const MAX_MESSAGE_LENGTH = 100_000;
 const MAX_COMMAND_LENGTH = 20_000;
 const MAX_MESSAGES_PER_SNAPSHOT = 2_000;
@@ -156,6 +177,41 @@ function requiredText(value: string, field: string, maximum: number): string {
   if (!text) throw invalidInput(`${field} is required.`);
   if (text.length > maximum) throw invalidInput(`${field} must be ${maximum} characters or fewer.`);
   return text;
+}
+
+function attentionMessageHash(
+  status: AgentSessionStatus,
+  message: {
+    source_id: string;
+    role: AgentMessageRole;
+    phase: string | null;
+    text: string;
+    questions_json: string | null;
+  } | undefined,
+): string {
+  return createHash("sha256").update(JSON.stringify([
+    status,
+    message?.source_id ?? "",
+    message?.role ?? "",
+    message?.phase ?? "",
+    message?.text ?? "",
+    message?.questions_json ?? "",
+  ])).digest("hex");
+}
+
+function hasQuestions(value: string | null | undefined): boolean {
+  if (!value) return false;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) && parsed.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function boundedAttentionText(text: string): string {
+  if (text.length <= 20_000) return text;
+  return `${text.slice(0, 2_000)}\n\n[中间内容已省略]\n\n${text.slice(-17_950)}`;
 }
 
 export class AgentSessionStore {
@@ -266,8 +322,12 @@ export class AgentSessionStore {
        WHERE di.dispatch_id = ? ORDER BY di.position`,
     );
     const latestMessage = this.database.connection.prepare(
-      `SELECT id, role, text, questions_json FROM agent_session_messages
+      `SELECT id, source_id, role, phase, text, questions_json FROM agent_session_messages
        WHERE session_id = ? ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
+    );
+    const attentionForSession = this.database.connection.prepare(
+      `SELECT message_hash, state, kind, reason, model
+       FROM agent_session_attention WHERE session_id = ?`,
     );
     return rows.map((row) => {
       const itemRows = items.all(row.dispatch_id) as unknown as Array<{
@@ -278,7 +338,8 @@ export class AgentSessionStore {
       }>;
       const message = row.session_id
         ? latestMessage.get(row.session_id) as unknown as {
-          id: string; role: AgentMessageRole; text: string; questions_json: string | null;
+          id: string; source_id: string; role: AgentMessageRole; phase: string | null;
+          text: string; questions_json: string | null;
         } | undefined
         : undefined;
       const command = row.session_id ? this.latestCommand(row.session_id) : undefined;
@@ -297,11 +358,29 @@ export class AgentSessionStore {
       const connectionState = row.node_revoked_at
         ? "offline"
         : nodeConnectionState(row.node_last_seen_at ?? undefined);
-      let waitingForReply = false;
-      if (message?.questions_json) {
-        try { waitingForReply = (JSON.parse(message.questions_json) as unknown[]).length > 0; }
-        catch { waitingForReply = false; }
-      }
+      const messageHash = attentionMessageHash(status, message);
+      const cachedAttention = row.session_id
+        ? attentionForSession.get(row.session_id) as unknown as AttentionRow | undefined
+        : undefined;
+      const pendingReply = command?.kind === "message"
+        && (command.status === "queued" || command.status === "delivering");
+      const attention: AgentSessionAttention = pendingReply
+        ? { state: "not_needed" }
+        : cachedAttention?.message_hash === messageHash
+          ? {
+              state: cachedAttention.state,
+              ...(cachedAttention.kind ? { kind: cachedAttention.kind } : {}),
+              ...(cachedAttention.reason ? { reason: cachedAttention.reason } : {}),
+              ...(cachedAttention.model ? { model: cachedAttention.model } : {}),
+            }
+          : hasQuestions(message?.questions_json)
+            ? { state: "needed", kind: "answer", reason: "AI 提出了需要回答的问题。" }
+            : status === "idle" && message?.role === "plan"
+              ? { state: "needed", kind: "approval", reason: "AI 正在等待计划审批。" }
+              : status === "idle" && message?.role === "agent"
+                ? { state: "pending" }
+                : { state: "not_needed" };
+      const needsAttention = attention.state === "needed";
       return {
         id: row.session_id ?? `dispatch:${row.dispatch_id}`,
         ...(row.session_id ? { agentSessionId: row.session_id } : {}),
@@ -325,10 +404,12 @@ export class AgentSessionStore {
         items: itemRows.map((item) => ({ key: item.item_key, title: item.title, productId: item.product_id })),
         ...(message ? { latestMessage: { role: message.role, text: message.text } } : {}),
         ...(command ? { command: this.mapCommand(command) } : {}),
+        attention,
+        needsAttention,
         activities: row.session_activities_json
           ? JSON.parse(row.session_activities_json) as AgentSessionActivity[]
           : [],
-        waitingForReply,
+        waitingForReply: needsAttention,
         retryable: ["failed", "cancelled"].includes(row.dispatch_status)
           && itemRows.length > 0 && itemRows.every((item) => item.status === "ready"),
         stoppable: row.dispatch_status === "queued"
@@ -395,6 +476,13 @@ export class AgentSessionStore {
     this.database.connection
       .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
       .run(now, now, sessionId);
+    this.database.connection
+      .prepare(
+        `UPDATE agent_session_attention
+         SET state = 'not_needed', kind = NULL, reason = NULL, model = NULL, updated_at = ?
+         WHERE session_id = ?`,
+      )
+      .run(now, sessionId);
     return { id, kind: "message", text, status: "queued", createdAt: now };
   }
 
@@ -482,6 +570,13 @@ export class AgentSessionStore {
       this.database.connection
         .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
         .run(now, now, sessionId);
+      this.database.connection
+        .prepare(
+          `UPDATE agent_session_attention
+           SET state = 'needed', kind = 'uncertain', reason = ?, model = NULL, updated_at = ?
+           WHERE session_id = ?`,
+        )
+        .run("回复已取消，请重新确认是否仍需处理。", now, sessionId);
     });
     return this.mapCommand({ ...command, status: "cancelled", cancelled_at: now });
   }
@@ -548,6 +643,22 @@ export class AgentSessionStore {
       questionsJson: message.questions ? JSON.stringify(message.questions) : null,
       position,
     }));
+    const latestMessage = messages.at(-1);
+    const latestHasQuestions = hasQuestions(latestMessage?.questionsJson);
+    const messageHash = attentionMessageHash(input.status, latestMessage ? {
+      source_id: latestMessage.sourceId,
+      role: latestMessage.role,
+      phase: latestMessage.phase,
+      text: latestMessage.text,
+      questions_json: latestMessage.questionsJson,
+    } : undefined);
+    const initialAttention: AgentSessionAttention = latestHasQuestions
+      ? { state: "needed", kind: "answer", reason: "AI 提出了需要回答的问题。" }
+      : input.status === "idle" && latestMessage?.role === "plan"
+        ? { state: "needed", kind: "approval", reason: "AI 正在等待计划审批。" }
+        : input.status === "idle" && latestMessage?.role === "agent"
+          ? { state: "pending" }
+          : { state: "not_needed" };
     const session = this.database.connection
       .prepare(
         `SELECT id, status, last_error, archived_at, archive_source, activities_json
@@ -640,6 +751,26 @@ export class AgentSessionStore {
           message.questionsJson, message.position, now,
         );
       });
+      this.database.connection.prepare(
+        `INSERT INTO agent_session_attention
+          (session_id, message_hash, state, kind, reason, model, updated_at)
+         VALUES (?, ?, ?, ?, ?, NULL, ?)
+         ON CONFLICT(session_id) DO UPDATE SET
+           message_hash = excluded.message_hash,
+           state = excluded.state,
+           kind = excluded.kind,
+           reason = excluded.reason,
+           model = NULL,
+           updated_at = excluded.updated_at
+         WHERE agent_session_attention.message_hash <> excluded.message_hash`,
+      ).run(
+        input.sessionId,
+        messageHash,
+        initialAttention.state,
+        initialAttention.kind ?? null,
+        initialAttention.reason ?? null,
+        now,
+      );
       if (input.commandId && input.commandStatus) {
         const sourceStatus = input.commandStatus === "delivering" ? "status = 'queued'" : "status IN ('queued', 'delivering')";
         const changed = this.database.connection
@@ -659,6 +790,68 @@ export class AgentSessionStore {
         }
       }
     });
+  }
+
+  pendingAttention(sessionId: string): { readonly messageHash: string; readonly text: string } | undefined {
+    const session = this.database.connection.prepare(
+      `SELECT s.status, a.message_hash, a.state
+       FROM agent_sessions s JOIN agent_session_attention a ON a.session_id = s.id
+       WHERE s.id = ?`,
+    ).get(sessionId) as unknown as {
+      status: AgentSessionStatus;
+      message_hash: string;
+      state: AgentAttentionState;
+    } | undefined;
+    if (!session || session.state !== "pending") return undefined;
+    const message = this.database.connection.prepare(
+      `SELECT source_id, role, phase, text, questions_json
+       FROM agent_session_messages WHERE session_id = ?
+       ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
+    ).get(sessionId) as unknown as {
+      source_id: string;
+      role: AgentMessageRole;
+      phase: string | null;
+      text: string;
+      questions_json: string | null;
+    } | undefined;
+    if (!message || message.role !== "agent"
+      || attentionMessageHash(session.status, message) !== session.message_hash) return undefined;
+    return { messageHash: session.message_hash, text: boundedAttentionText(message.text) };
+  }
+
+  completeAttention(
+    sessionId: string,
+    messageHash: string,
+    classification: AgentAttentionClassification,
+  ): boolean {
+    const changed = this.database.connection.prepare(
+      `UPDATE agent_session_attention
+       SET state = ?, kind = ?, reason = ?, model = ?, updated_at = ?
+       WHERE session_id = ? AND message_hash = ? AND state = 'pending'`,
+    ).run(
+      classification.needsAttention ? "needed" : "not_needed",
+      classification.kind === "none" ? null : classification.kind,
+      classification.reason,
+      classification.model,
+      new Date().toISOString(),
+      sessionId,
+      messageHash,
+    );
+    return changed.changes === 1;
+  }
+
+  failAttention(sessionId: string, messageHash: string): boolean {
+    const changed = this.database.connection.prepare(
+      `UPDATE agent_session_attention
+       SET state = 'needed', kind = 'uncertain', reason = ?, model = NULL, updated_at = ?
+       WHERE session_id = ? AND message_hash = ? AND state = 'pending'`,
+    ).run(
+      "AI 判断暂时不可用，请人工确认是否需要处理。",
+      new Date().toISOString(),
+      sessionId,
+      messageHash,
+    );
+    return changed.changes === 1;
   }
 
   private pendingCommand(sessionId: string): CommandRow | undefined {

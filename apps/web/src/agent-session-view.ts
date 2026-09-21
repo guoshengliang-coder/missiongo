@@ -13,7 +13,7 @@ export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;
 export const DEFAULT_AGENT_KIND_FILTER = "all" as const;
 export const MESSAGE_BOTTOM_THRESHOLD_PX = 48;
 
-export type AgentSessionFilter = "unread" | "waiting" | "active" | "all" | "failed" | "archived";
+export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived";
 export type AgentKindFilter = "all" | AgentKind;
 
 type FilterableAgentSession = Pick<
@@ -24,7 +24,7 @@ type FilterableAgentSession = Pick<
   | "archivedAt"
   | "status"
   | "command"
-  | "waitingForReply"
+  | "needsAttention"
   | "nodeName"
   | "sessionName"
   | "latestMessage"
@@ -46,7 +46,7 @@ export function agentSessionMatches(
   if (filter === "unread"
     && session.id !== retainedReadSessionId
     && !isAgentSessionUnread(session, readState)) return false;
-  if (filter === "waiting" && !session.waitingForReply) return false;
+  if (filter === "attention" && !session.needsAttention) return false;
   if (filter === "active" && session.status !== "active") return false;
   if (filter === "failed" && session.status !== "failed" && session.command?.status !== "failed") return false;
   const query = search.trim().toLocaleLowerCase();

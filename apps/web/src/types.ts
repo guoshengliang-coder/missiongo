@@ -398,6 +398,14 @@ export interface AgentSessionSummary {
   readonly command?: AgentSessionCommand;
   readonly activities: readonly AgentSessionActivity[];
   readonly canReply: boolean;
+  readonly attention: {
+    readonly state: "pending" | "needed" | "not_needed";
+    readonly kind?: "answer" | "approval" | "action" | "instruction" | "uncertain";
+    readonly reason?: string;
+    readonly model?: string;
+  };
+  readonly needsAttention: boolean;
+  /** Compatibility alias for older clients; prefer needsAttention. */
   readonly waitingForReply: boolean;
   readonly canRetry: boolean;
   readonly canStop: boolean;

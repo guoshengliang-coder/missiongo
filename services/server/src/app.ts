@@ -408,6 +408,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.adminAccount?.sessionSecret ?? options.adminToken ?? "local-development-only",
     options.aiProviderFetch,
   );
+  const attentionClassifications = new Map<string, Promise<void>>();
+  const scheduleAttentionClassification = (sessionId: string): void => {
+    if (!aiTitle.attentionEnabled() || attentionClassifications.has(sessionId)) return;
+    const candidate = agentSessionStore.pendingAttention(sessionId);
+    if (!candidate) return;
+    const task = aiTitle.classifyAttention(candidate.text)
+      .then((classification) => {
+        agentSessionStore.completeAttention(sessionId, candidate.messageHash, classification);
+      })
+      .catch(() => {
+        // Missing credentials, provider failures and malformed model output all
+        // fail safe: the person sees the session instead of silently missing a
+        // request. Provider bodies and message text never reach logs.
+        agentSessionStore.failAttention(sessionId, candidate.messageHash);
+      });
+    attentionClassifications.set(sessionId, task);
+    void task.finally(() => attentionClassifications.delete(sessionId));
+  };
   if (options.adminAccount) {
     accountStore.seedBootstrapAdmin({
       id: options.adminAccount.id,
@@ -556,6 +574,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.decorate("missionGoStore", store);
   app.decorate("missionGoAccounts", accountStore);
   app.addHook("onClose", async () => {
+    await Promise.allSettled(attentionClassifications.values());
     await mcpHandler?.close();
     store.close();
   });
@@ -1177,17 +1196,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/ai/title-settings", async (request) => {
     requireAdmin(request);
-    return { configured: aiTitle.configured() };
+    return { configured: aiTitle.configured(), agentAttentionEnabled: aiTitle.attentionEnabled() };
   });
 
   app.put("/api/v1/ai/title-settings", async (request) => {
     requireAdmin(request);
     const body = objectBody(request.body);
-    if (body.apiKey !== null && typeof body.apiKey !== "string") {
+    if (body.apiKey !== undefined && body.apiKey !== null && typeof body.apiKey !== "string") {
       throw invalidInput("apiKey must be a string or null.");
     }
-    aiTitle.setKey(body.apiKey);
-    return { configured: aiTitle.configured() };
+    if (body.agentAttentionEnabled !== undefined && typeof body.agentAttentionEnabled !== "boolean") {
+      throw invalidInput("agentAttentionEnabled must be true or false.");
+    }
+    if (body.apiKey === undefined && body.agentAttentionEnabled === undefined) {
+      throw invalidInput("apiKey or agentAttentionEnabled is required.");
+    }
+    if (body.apiKey !== undefined) aiTitle.setKey(body.apiKey as string | null);
+    if (typeof body.agentAttentionEnabled === "boolean") {
+      aiTitle.setAttentionEnabled(body.agentAttentionEnabled);
+    }
+    return { configured: aiTitle.configured(), agentAttentionEnabled: aiTitle.attentionEnabled() };
   });
 
   const titleRequests = new Map<string, { count: number; until: number }>();
@@ -1644,6 +1672,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           accountStore.allows(account, item.productId, "operate")
           && accountStore.allows(account, item.productId, "ai")),
       }));
+    sessions.forEach((session) => {
+      if (session.agentSessionId && session.attention.state === "pending") {
+        scheduleAttentionClassification(session.agentSessionId);
+      }
+    });
     return { sessions };
   });
 
@@ -1889,6 +1922,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
       ...(typeof body.sourceArchived === "boolean" ? { sourceArchived: body.sourceArchived } : {}),
     });
+    scheduleAttentionClassification(sessionId);
     return reply.status(204).send();
   });
 

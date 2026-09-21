@@ -96,6 +96,15 @@ function agentLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>[
   return key ? t(key) : session.agentKind;
 }
 
+function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>["t"]): string | null {
+  if (!session.needsAttention) return null;
+  if (session.attention.kind === "answer") return t("agentAttentionAnswer");
+  if (session.attention.kind === "approval") return t("agentAttentionApproval");
+  if (session.attention.kind === "action") return t("agentAttentionAction");
+  if (session.attention.kind === "instruction") return t("agentAttentionInstruction");
+  return t("agentAttentionUncertain");
+}
+
 function dispatchActivityLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>["t"]): string {
   if (session.dispatchStatus === "queued") return t("agentConsoleDispatchQueued");
   if (session.dispatchStatus === "delivered") return t("agentConsoleDispatchLaunching");
@@ -181,7 +190,7 @@ export function AgentSessionConsole({
   );
   const counts = useMemo(() => ({
     unread: agentSessions.filter((session) => !session.archivedAt && isAgentSessionUnread(session, readState)).length,
-    waiting: agentSessions.filter((session) => !session.archivedAt && session.waitingForReply).length,
+    attention: agentSessions.filter((session) => !session.archivedAt && session.needsAttention).length,
     active: agentSessions.filter((session) => !session.archivedAt && session.status === "active").length,
     all: agentSessions.filter((session) => !session.archivedAt).length,
     failed: agentSessions.filter((session) => !session.archivedAt
@@ -353,7 +362,7 @@ export function AgentSessionConsole({
 
   const filters: Array<{ key: AgentSessionFilter; icon: typeof BellRing; count: number; label: string }> = [
     { key: "unread", icon: Mail, count: counts.unread, label: t("agentConsoleUnread") },
-    { key: "waiting", icon: BellRing, count: counts.waiting, label: t("agentConsoleWaiting") },
+    { key: "attention", icon: BellRing, count: counts.attention, label: t("agentConsoleNeedsAttention") },
     { key: "active", icon: LoaderCircle, count: counts.active, label: t("agentConsoleActive") },
     { key: "all", icon: MessageSquare, count: counts.all, label: t("agentConsoleAll") },
     { key: "failed", icon: CircleAlert, count: counts.failed, label: t("agentConsoleFailed") },
@@ -431,6 +440,11 @@ export function AgentSessionConsole({
               <span className="agent-console-session-copy">
                 <strong>{sessionTitle(session)}</strong>
                 <small>{session.nodeName} · {nodeConnectionLabel(session, t)} · {agentLabel(session, t)} · {session.archivedAt ? t("archived") : statusLabel(session.status, t)}</small>
+                {attentionLabel(session, t) && (
+                  <i className="agent-console-attention" title={session.attention.reason}>
+                    {attentionLabel(session, t)}
+                  </i>
+                )}
                 <span>{session.latestMessage?.text ?? session.lastError ?? t("agentConsoleDispatchOnly")}</span>
               </span>
               {isAgentSessionUnread(session, readState) && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
