@@ -183,9 +183,13 @@ export function activityLabelKey(status: AgentSessionStatus, replyQueued = false
   | "agentSessionActivityIdle"
   | "agentSessionActivityUnavailable"
   | "agentSessionActivityUnavailableQueued"
-  | "agentSessionActivityFailed" {
+  | "agentSessionActivityFailed"
+  | "agentSessionActivitySuspended"
+  | "agentSessionActivityStalled" {
   if (status === "active") return "agentSessionActivityActive";
   if (status === "idle") return "agentSessionActivityIdle";
+  if (status === "suspended") return "agentSessionActivitySuspended";
+  if (status === "stalled") return "agentSessionActivityStalled";
   if (status === "failed") return "agentSessionActivityFailed";
   return replyQueued ? "agentSessionActivityUnavailableQueued" : "agentSessionActivityUnavailable";
 }

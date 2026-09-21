@@ -119,6 +119,8 @@ describe("agent session message view", () => {
   it("has a bottom-of-conversation label for every session state", () => {
     expect(activityLabelKey("active")).toBe("agentSessionActivityActive");
     expect(activityLabelKey("idle")).toBe("agentSessionActivityIdle");
+    expect(activityLabelKey("suspended")).toBe("agentSessionActivitySuspended");
+    expect(activityLabelKey("stalled")).toBe("agentSessionActivityStalled");
     expect(activityLabelKey("unavailable")).toBe("agentSessionActivityUnavailable");
     expect(activityLabelKey("unavailable", true)).toBe("agentSessionActivityUnavailableQueued");
     expect(activityLabelKey("failed")).toBe("agentSessionActivityFailed");

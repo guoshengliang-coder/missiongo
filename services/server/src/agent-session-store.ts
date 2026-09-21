@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
+import { isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
 import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
-export type AgentSessionStatus = "active" | "idle" | "unavailable" | "failed";
+export type AgentSessionStatus = "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
 export type AgentMessageRole = "user" | "agent" | "plan";
 export type AgentSessionCommandStatus = "queued" | "delivering" | "delivered" | "failed" | "cancelled";
 export type AgentAttentionState = "pending" | "needed" | "not_needed";
@@ -98,14 +98,18 @@ export interface AgentSessionListItem {
   readonly waitingForReply: boolean;
   readonly retryable: boolean;
   readonly stoppable: boolean;
+  readonly replyable: boolean;
   readonly activityKey: string;
 }
 
 export interface NodeAgentSession {
   readonly id: string;
+  readonly dispatchId: string;
   readonly agentKind: "codex" | "claude_code";
   readonly sessionRef: string;
   readonly status: AgentSessionStatus;
+  readonly lifecycle: "keep" | "close";
+  readonly occupiesExecutionSlot: boolean;
   readonly command?: AgentSessionCommand;
 }
 
@@ -378,6 +382,8 @@ export class AgentSessionStore {
               ...(cachedAttention.reason ? { reason: cachedAttention.reason } : {}),
               ...(cachedAttention.model ? { model: cachedAttention.model } : {}),
             }
+          : status === "stalled"
+            ? { state: "needed", kind: "uncertain", reason: "会话连续 30 分钟没有输出且进程树 CPU 无进展，MissionGo 未自动终止。" }
           : hasQuestions(message?.questions_json)
             ? { state: "needed", kind: "answer", reason: "AI 提出了需要回答的问题。" }
             : status === "idle" && message?.role === "plan"
@@ -418,7 +424,8 @@ export class AgentSessionStore {
         retryable: ["failed", "cancelled"].includes(row.dispatch_status)
           && itemRows.length > 0 && itemRows.every((item) => item.status === "ready"),
         stoppable: row.dispatch_status === "queued"
-          || Boolean(row.session_id && row.session_status === "active"),
+          || Boolean(row.session_id && (row.session_status === "active" || row.session_status === "stalled")),
+        replyable: row.session_id ? !this.itemsClosed(row.session_id) : false,
         activityKey: createHash("sha256").update(JSON.stringify([
           row.dispatch_status, status, lastError ?? "", row.session_archived_at ?? "",
           row.dispatch_archived_at ?? "",
@@ -467,6 +474,9 @@ export class AgentSessionStore {
       )
       .get(sessionId, accountId) as unknown as { id: string; archived_at: string | null } | undefined;
     if (!session) throw notFound("Agent session");
+    if (this.itemsClosed(sessionId)) {
+      throw conflict("agent_session_work_finished", "The linked work items reached verification or done; dispatch again to rework them.");
+    }
     if (session.archived_at) throw conflict("agent_session_archived", "Restore this session before replying.");
     if (this.pendingCommand(sessionId)) {
       throw conflict("agent_reply_pending", "This session already has a pending reply.");
@@ -503,7 +513,9 @@ export class AgentSessionStore {
       } | undefined;
     if (!session) throw notFound("Agent session");
     if (session.archived_at) throw conflict("agent_session_archived", "Restore this session before stopping it.");
-    if (session.status !== "active") throw conflict("agent_not_running", "This agent session is not currently running.");
+    if (session.status !== "active" && session.status !== "stalled") {
+      throw conflict("agent_not_running", "This agent session is not currently running.");
+    }
     const pending = this.pendingCommand(sessionId);
     if (pending?.kind === "interrupt") {
       throw conflict("agent_stop_pending", "This session already has a queued stop request.");
@@ -596,7 +608,7 @@ export class AgentSessionStore {
          WHERE node_id = ?
          AND (archived_at IS NULL OR (archive_source = 'source' AND updated_at <= ?))
          AND (
-           status IN ('active', 'unavailable') OR EXISTS (
+           status IN ('active', 'stalled', 'unavailable') OR EXISTS (
              SELECT 1 FROM agent_session_commands c
              WHERE c.session_id = s.id AND c.status IN ('queued', 'delivering')
            ) OR s.updated_at <= ?
@@ -608,12 +620,22 @@ export class AgentSessionStore {
       const command = this.pendingCommand(row.id);
       return {
         id: row.id,
+        dispatchId: row.dispatch_id,
         agentKind: row.agent_kind,
         sessionRef: row.agent_session_ref,
         status: row.status,
+        lifecycle: row.agent_kind === "claude_code" && this.itemsClosed(row.id) ? "close" : "keep",
+        occupiesExecutionSlot: row.status === "active" || row.status === "stalled",
         ...(command ? { command: this.mapCommand(command) } : {}),
       };
     });
+  }
+
+  countExecutionSlots(nodeId: string): number {
+    const row = this.database.connection
+      .prepare("SELECT COUNT(*) AS count FROM agent_sessions WHERE node_id = ? AND status IN ('active', 'stalled')")
+      .get(nodeId) as unknown as { count: number };
+    return row.count;
   }
 
   recordSnapshot(input: {
@@ -627,6 +649,7 @@ export class AgentSessionStore {
     commandStatus?: "delivering" | "delivered" | "failed";
     commandError?: string;
     sourceArchived?: boolean;
+    sessionUrl?: string;
   }): void {
     if (input.messages.length > MAX_MESSAGES_PER_SNAPSHOT) {
       throw invalidInput(`messages must contain ${MAX_MESSAGES_PER_SNAPSHOT} entries or fewer.`);
@@ -658,7 +681,9 @@ export class AgentSessionStore {
       text: latestMessage.text,
       questions_json: latestMessage.questionsJson,
     } : undefined);
-    const initialAttention: AgentSessionAttention = latestHasQuestions
+    const initialAttention: AgentSessionAttention = input.status === "stalled"
+      ? { state: "needed", kind: "uncertain", reason: "会话连续 30 分钟没有输出且进程树 CPU 无进展，MissionGo 未自动终止。" }
+      : latestHasQuestions
       ? { state: "needed", kind: "answer", reason: "AI 提出了需要回答的问题。" }
       : input.status === "idle" && latestMessage?.role === "plan"
         ? { state: "needed", kind: "approval", reason: "AI 正在等待计划审批。" }
@@ -681,6 +706,10 @@ export class AgentSessionStore {
     if (!session) throw notFound("Agent session");
     const now = new Date().toISOString();
     const error = input.error?.slice(0, 2_000) || null;
+    const sessionUrl = input.sessionUrl?.trim();
+    if (sessionUrl && !isAcceptedSessionUrl(sessionUrl)) {
+      throw invalidInput("Session URL must be an https:// address or a codex://threads/<id> link.");
+    }
     const storedMessages = this.database.connection
       .prepare(
         `SELECT source_id, turn_id, role, phase, text, questions_json, position
@@ -740,6 +769,12 @@ export class AgentSessionStore {
              WHERE id = ? AND archive_source = 'source'`,
           )
           .run(input.sessionId);
+      }
+      if (sessionUrl) {
+        this.database.connection.prepare(
+          `UPDATE dispatches SET session_url = ?
+           WHERE id = (SELECT dispatch_id FROM agent_sessions WHERE id = ?)`,
+        ).run(sessionUrl, input.sessionId);
       }
       const upsert = this.database.connection.prepare(
         `INSERT INTO agent_session_messages
@@ -869,6 +904,16 @@ export class AgentSessionStore {
          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as CommandRow | undefined;
+  }
+
+  private itemsClosed(sessionId: string): boolean {
+    const rows = this.database.connection.prepare(
+      `SELECT w.status FROM agent_sessions s
+       JOIN dispatch_items di ON di.dispatch_id = s.dispatch_id
+       JOIN work_items w ON w.id = di.item_id
+       WHERE s.id = ?`,
+    ).all(sessionId) as unknown as Array<{ status: string }>;
+    return rows.length > 0 && rows.every((row) => row.status === "pending_verification" || row.status === "done");
   }
 
   private latestCommand(sessionId: string): CommandRow | undefined {

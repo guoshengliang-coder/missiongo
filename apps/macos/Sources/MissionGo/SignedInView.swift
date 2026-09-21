@@ -297,6 +297,15 @@ private struct IntegrationRow: View {
                     Spacer(minLength: 0)
                 }
             }
+            if agent == .claudeCode {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    WrappingCaption(text: "无人值守任务建议授予完全磁盘访问；ad-hoc 更新后可能需要重新授权。")
+                    Button("打开权限设置") { model.openFullDiskAccessSettings() }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                    Spacer(minLength: 0)
+                }
+            }
         }
     }
 }

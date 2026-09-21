@@ -899,6 +899,61 @@ export class MissionGoDatabase {
           .run(202609210926, new Date().toISOString());
       });
     }
+    // A suspended Claude conversation retains its transcript and can resume on
+    // the next reply without keeping a process alive. A stalled conversation is
+    // still running: the status raises a visible warning without pretending the
+    // work failed or automatically killing a long test.
+    const agentLifecycleStatusMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609211018")
+      .get() as unknown as { version: number } | undefined;
+    if (!agentLifecycleStatusMigration) {
+      const table = this.connection
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_sessions'")
+        .get() as unknown as { sql: string };
+      if (!table.sql.includes("'suspended'")) {
+        this.connection.exec("PRAGMA foreign_keys = OFF;");
+        try {
+          this.transaction(() => {
+            this.connection.exec(`
+              CREATE TABLE agent_sessions_new (
+                id TEXT PRIMARY KEY,
+                dispatch_id TEXT NOT NULL UNIQUE REFERENCES dispatches(id) ON DELETE CASCADE,
+                node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                agent_kind TEXT NOT NULL CHECK (agent_kind IN ('codex', 'claude_code')),
+                agent_session_ref TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'suspended', 'stalled', 'unavailable', 'failed')),
+                last_error TEXT,
+                activities_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                activity_at TEXT NOT NULL DEFAULT '',
+                archived_at TEXT,
+                archive_source TEXT CHECK (archive_source IN ('missiongo', 'source'))
+              ) STRICT;
+              INSERT INTO agent_sessions_new
+                (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, last_error,
+                 activities_json, created_at, updated_at, activity_at, archived_at, archive_source)
+              SELECT id, dispatch_id, node_id, agent_kind, agent_session_ref, status, last_error,
+                     activities_json, created_at, updated_at, activity_at, archived_at, archive_source
+              FROM agent_sessions;
+              DROP TABLE agent_sessions;
+              ALTER TABLE agent_sessions_new RENAME TO agent_sessions;
+              CREATE INDEX IF NOT EXISTS idx_agent_sessions_archived
+                ON agent_sessions(archived_at, updated_at DESC);
+              CREATE INDEX IF NOT EXISTS idx_agent_sessions_activity
+                ON agent_sessions(activity_at DESC);
+            `);
+            const violations = this.connection.prepare("PRAGMA foreign_key_check").all();
+            if (violations.length > 0) throw new Error("Rebuilding lifecycle session statuses broke a foreign key.");
+          });
+        } finally {
+          this.connection.exec("PRAGMA foreign_keys = ON;");
+        }
+      }
+      this.connection
+        .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+        .run(202609211018, new Date().toISOString());
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

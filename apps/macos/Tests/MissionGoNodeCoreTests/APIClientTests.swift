@@ -8,6 +8,19 @@ final class APIClientTests: XCTestCase {
             from: Data(#"{"id":"s1","sessionRef":"thread-1","status":"idle"}"#.utf8)
         )
         XCTAssertEqual(session.agentKind, "codex")
+        XCTAssertEqual(session.lifecycle, "keep")
+        XCTAssertFalse(session.occupiesExecutionSlot)
+        XCTAssertNil(session.dispatchId)
+    }
+
+    func testNodeSessionDecodesLifecycleAndCapacityFields() throws {
+        let session = try JSONDecoder().decode(
+            NodeAgentSession.self,
+            from: Data(#"{"id":"s1","dispatchId":"d1","agentKind":"claude_code","sessionRef":"thread-1","status":"stalled","lifecycle":"close","occupiesExecutionSlot":true}"#.utf8)
+        )
+        XCTAssertEqual(session.dispatchId, "d1")
+        XCTAssertEqual(session.lifecycle, "close")
+        XCTAssertTrue(session.occupiesExecutionSlot)
     }
 
     private let server = "http://127.0.0.1:8799/"

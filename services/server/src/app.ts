@@ -132,6 +132,7 @@ function booleanField(body: Record<string, unknown>, field: string): boolean {
  * dropped connection the daemon has to interpret.
  */
 const MAX_CLAIM_WAIT_MS = 25_000;
+const MAX_NODE_EXECUTION_SESSIONS = 10;
 /**
  * How many rows one product-access save may carry.
  *
@@ -1659,7 +1660,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         || session.items.some((item) => item.productId === selectedProductId))
       .map((session) => ({
         ...session,
-        canReply: Boolean(session.agentSessionId) && !session.archivedAt && !session.nodeRevoked && session.items.every((item) =>
+        canReply: Boolean(session.agentSessionId) && session.replyable && !session.archivedAt && !session.nodeRevoked && session.items.every((item) =>
           accountStore.allows(account, item.productId, "operate")
           && accountStore.allows(account, item.productId, "ai")),
         canRetry: !session.archivedAt && !session.nodeRevoked && session.retryable && session.items.every((item) =>
@@ -1870,8 +1871,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { sessionId } = request.params as { sessionId: string };
     const body = objectBody(request.body);
     const status = stringField(body, "status") as AgentSessionStatus;
-    if (!["active", "idle", "unavailable", "failed"].includes(status)) {
-      throw invalidInput("status must be active, idle, unavailable, or failed.");
+    if (!["active", "idle", "suspended", "stalled", "unavailable", "failed"].includes(status)) {
+      throw invalidInput("status must be active, idle, suspended, stalled, unavailable, or failed.");
     }
     if (!Array.isArray(body.messages)) throw invalidInput("messages must be an array.");
     const messages = body.messages.map((entry) => {
@@ -1933,6 +1934,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(commandStatus ? { commandStatus } : {}),
       ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
       ...(typeof body.sourceArchived === "boolean" ? { sourceArchived: body.sourceArchived } : {}),
+      ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
     });
     scheduleAttentionClassification(sessionId);
     return reply.status(204).send();
@@ -1976,6 +1978,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // timeout, which a WebSocket upgrade would have needed configuring for.
   app.post("/api/v1/node/dispatches/claim-next", async (request, reply) => {
     const node = requireNode(request);
+    if (agentSessionStore.countExecutionSlots(node.nodeId) >= MAX_NODE_EXECUTION_SESSIONS) {
+      return reply.status(204).send();
+    }
     const immediate = dispatchStore.claimNextDispatch(node.nodeId);
     if (immediate) return immediate;
 
@@ -1987,6 +1992,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const abort = new AbortController();
       request.raw.on("close", () => abort.abort());
       await dispatchStore.waitForDispatch(node.nodeId, waitMs, abort.signal);
+      if (agentSessionStore.countExecutionSlots(node.nodeId) >= MAX_NODE_EXECUTION_SESSIONS) {
+        return reply.status(204).send();
+      }
       const afterWait = dispatchStore.claimNextDispatch(node.nodeId);
       if (afterWait) return afterWait;
     }

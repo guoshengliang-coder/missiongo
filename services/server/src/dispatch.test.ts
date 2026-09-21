@@ -944,6 +944,45 @@ describe("Claiming a dispatch on the node", () => {
       .toMatchObject({ status: "launched", sessionUrl: "https://claude.ai/code/session_016Jhieb3iHbCW5ymeG2kns6" });
   });
 
+  it("shares a ten-session execution cap across Claude and Codex", async () => {
+    const { app, node, dispatchId } = await queuedDispatch();
+    const now = new Date().toISOString();
+    const insertDispatch = app.missionGoStore.database.connection.prepare(
+      `INSERT INTO dispatches
+        (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+       VALUES (?, ?, ?, ?, 'plan', 'launched', '/repo', ?)`,
+    );
+    const insertSession = app.missionGoStore.database.connection.prepare(
+      `INSERT INTO agent_sessions
+        (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at, activity_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (let index = 0; index < 10; index += 1) {
+      const fakeDispatchId = `busy-dispatch-${index}`;
+      const kind = index % 2 === 0 ? "claude_code" : "codex";
+      insertDispatch.run(fakeDispatchId, "account-test-1", node.nodeId, kind, now);
+      insertSession.run(
+        `busy-session-${index}`, fakeDispatchId, node.nodeId, kind, `session-${index}`,
+        index === 9 ? "stalled" : "active", now, now, now,
+      );
+    }
+
+    const claim = () => app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect((await claim()).statusCode).toBe(204);
+    expect(app.missionGoStore.database.connection.prepare(
+      "SELECT status FROM dispatches WHERE id = ?",
+    ).get(dispatchId)).toMatchObject({ status: "queued" });
+
+    app.missionGoStore.database.connection.prepare(
+      "UPDATE agent_sessions SET status = 'idle' WHERE id = 'busy-session-0'",
+    ).run();
+    expect((await claim()).json()).toMatchObject({ dispatchId });
+  });
+
   it("classifies only ambiguous latest Agent replies and caches the result by message", async () => {
     const provider = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
@@ -1271,14 +1310,18 @@ describe("Claiming a dispatch on the node", () => {
     });
     const mirrored = nodeSessions.json<{ sessions: Array<{ id: string }> }>().sessions[0]!;
     expect(nodeSessions.json()).toMatchObject({
-      sessions: [{ agentKind: "claude_code", sessionRef, status: "active" }],
+      sessions: [{
+        dispatchId, agentKind: "claude_code", sessionRef, status: "active",
+        lifecycle: "keep", occupiesExecutionSlot: true,
+      }],
     });
     expect((await app.inject({
       method: "POST",
       url: `/api/v1/node/agent-sessions/${mirrored.id}/snapshot`,
       headers: { authorization: `Bearer ${node.token}` },
       payload: {
-        status: "active",
+        status: "stalled",
+        sessionUrl: "https://claude.ai/code/session_resumed",
         messages: [
           { sourceId: "u1", turnId: "turn-1", role: "user", text: "Inspect this." },
           {
@@ -1307,12 +1350,19 @@ describe("Claiming a dispatch on the node", () => {
       headers: { cookie },
     });
     expect(detail.json()).toMatchObject({
-      status: "active",
+      status: "stalled",
       activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中" }],
       messages: [{ sourceId: "u1" }, {
         sourceId: "a1",
         questions: [{ header: "Scope", title: "Which scope?", options: ["Small", "Complete"], multiSelect: false }],
       }],
+    });
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/items/${mission.itemKey}/dispatches`,
+      headers: { cookie },
+    })).json()).toMatchObject({
+      dispatches: [{ sessionUrl: "https://claude.ai/code/session_resumed" }],
     });
     const reply = await app.inject({
       method: "POST",
@@ -1334,6 +1384,33 @@ describe("Claiming a dispatch on the node", () => {
     });
     expect(stop.statusCode).toBe(202);
     expect(stop.json()).toMatchObject({ command: { kind: "interrupt", turnId: "turn-1", status: "queued" } });
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${mission.itemKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "in_progress", reason: "claim" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${mission.itemKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "pending_verification", reason: "resolution_submitted" },
+    })).statusCode).toBe(200);
+    const closing = await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(closing.json()).toMatchObject({
+      sessions: [{ id: mirrored.id, lifecycle: "close", occupiesExecutionSlot: true }],
+    });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${mirrored.id}/commands`,
+      headers: { cookie },
+      payload: { text: "Continue after completion." },
+    })).statusCode).toBe(409);
   });
 
   it("ends an idle long poll with 204 rather than holding it open", async () => {

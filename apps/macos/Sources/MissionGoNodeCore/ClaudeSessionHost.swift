@@ -37,6 +37,8 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
     public let statePath: String
     public let commandsDirectory: String
     public let logPath: String
+    public let idleTimeoutSeconds: TimeInterval
+    public let stallWarningSeconds: TimeInterval
 
     public init(
         version: Int = 1,
@@ -48,7 +50,9 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
         prompt: String,
         statePath: String,
         commandsDirectory: String,
-        logPath: String
+        logPath: String,
+        idleTimeoutSeconds: TimeInterval = 2 * 60 * 60,
+        stallWarningSeconds: TimeInterval = 30 * 60
     ) {
         self.version = version
         self.claudeExecutable = claudeExecutable
@@ -60,6 +64,29 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
         self.statePath = statePath
         self.commandsDirectory = commandsDirectory
         self.logPath = logPath
+        self.idleTimeoutSeconds = idleTimeoutSeconds
+        self.stallWarningSeconds = stallWarningSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, claudeExecutable, cwd, mode, sessionName, sessionRef, prompt
+        case statePath, commandsDirectory, logPath, idleTimeoutSeconds, stallWarningSeconds
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        claudeExecutable = try values.decode(String.self, forKey: .claudeExecutable)
+        cwd = try values.decode(String.self, forKey: .cwd)
+        mode = try values.decode(String.self, forKey: .mode)
+        sessionName = try values.decode(String.self, forKey: .sessionName)
+        sessionRef = try values.decode(String.self, forKey: .sessionRef)
+        prompt = try values.decode(String.self, forKey: .prompt)
+        statePath = try values.decode(String.self, forKey: .statePath)
+        commandsDirectory = try values.decode(String.self, forKey: .commandsDirectory)
+        logPath = try values.decode(String.self, forKey: .logPath)
+        idleTimeoutSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .idleTimeoutSeconds) ?? 2 * 60 * 60
+        stallWarningSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .stallWarningSeconds) ?? 30 * 60
     }
 }
 
@@ -84,6 +111,8 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     public var waitingForInput: Bool
     public var commandResults: [String: ClaudeHostCommandResult]
     public var error: String?
+    public var idleSince: Date?
+    public var lastProgressAt: Date
 
     public init(
         status: String,
@@ -94,7 +123,9 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         activities: [AgentSessionActivity] = [],
         waitingForInput: Bool = false,
         commandResults: [String: ClaudeHostCommandResult] = [:],
-        error: String? = nil
+        error: String? = nil,
+        idleSince: Date? = nil,
+        lastProgressAt: Date = Date()
     ) {
         self.status = status
         self.sessionRef = sessionRef
@@ -105,10 +136,13 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         self.waitingForInput = waitingForInput
         self.commandResults = commandResults
         self.error = error
+        self.idleSince = idleSince
+        self.lastProgressAt = lastProgressAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, status, sessionRef, hostPid, sessionUrl, messages, activities, waitingForInput, commandResults, error
+        case idleSince, lastProgressAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -123,6 +157,8 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         waitingForInput = try values.decodeIfPresent(Bool.self, forKey: .waitingForInput) ?? false
         commandResults = try values.decodeIfPresent([String: ClaudeHostCommandResult].self, forKey: .commandResults) ?? [:]
         error = try values.decodeIfPresent(String.self, forKey: .error)
+        idleSince = try values.decodeIfPresent(Date.self, forKey: .idleSince)
+        lastProgressAt = try values.decodeIfPresent(Date.self, forKey: .lastProgressAt) ?? Date()
     }
 }
 
@@ -164,7 +200,21 @@ public struct ClaudeStreamSnapshot: Sendable {
         state = ClaudeHostState(status: "active", sessionRef: sessionRef, hostPid: hostPid)
     }
 
+    /// Resume keeps the durable transcript and command acknowledgements while
+    /// replacing only the process identity and live Remote Control endpoint.
+    public init(resuming state: ClaudeHostState, hostPid: Int32) {
+        var resumed = state
+        resumed.hostPid = hostPid
+        resumed.status = "suspended"
+        resumed.error = nil
+        resumed.idleSince = nil
+        resumed.lastProgressAt = Date()
+        self.state = resumed
+        turnActive = false
+    }
+
     public mutating func consume(_ value: [String: Any]) {
+        noteProgress()
         guard let type = value["type"] as? String else { return }
         if type == "system", value["subtype"] as? String == "init" {
             initialized = true
@@ -184,6 +234,7 @@ public struct ClaudeStreamSnapshot: Sendable {
                 text: text
             ))
             state.status = "active"
+            state.idleSince = nil
             turnActive = true
             state.error = nil
             return
@@ -216,6 +267,7 @@ public struct ClaudeStreamSnapshot: Sendable {
                 ))
             }
             state.status = "active"
+            state.idleSince = nil
             turnActive = true
             state.error = nil
             return
@@ -224,6 +276,7 @@ public struct ClaudeStreamSnapshot: Sendable {
             turnActive = false
             state.waitingForInput = false
             state.status = state.activities.isEmpty ? "idle" : "active"
+            state.idleSince = state.status == "idle" ? Date() : nil
             let subtype = value["subtype"] as? String
             let terminalReason = value["terminal_reason"] as? String
             // interrupt() currently ends a turn with this SDK result. It is a
@@ -244,22 +297,38 @@ public struct ClaudeStreamSnapshot: Sendable {
     public mutating func recordUserMessage(id: String, text: String) {
         upsert(AgentSessionMessage(sourceId: id, turnId: id, role: "user", text: text))
         state.status = "active"
+        state.idleSince = nil
         turnActive = true
         state.error = nil
     }
 
     public mutating func setWaitingForInput(_ waiting: Bool) {
         state.waitingForInput = waiting
+        if waiting {
+            // Waiting for a person is not executing work and therefore does not
+            // consume one of the node's ten execution slots. It is deliberately
+            // exempt from the two-hour automatic suspension policy.
+            state.status = "idle"
+            state.idleSince = nil
+        } else if state.status == "idle" {
+            state.status = "active"
+        }
+        noteProgress()
     }
 
     public mutating func setRemote(sessionUrl: String) {
         state.sessionUrl = sessionUrl
+        if state.status == "suspended" { state.status = "idle" }
+        if state.status == "idle", !state.waitingForInput { state.idleSince = Date() }
         state.error = nil
+        noteProgress()
     }
 
     public mutating func fail(_ message: String) {
         state.status = "failed"
         state.error = message
+        state.idleSince = nil
+        noteProgress()
     }
 
     public mutating func commandFinished(id: String, status: String, error: String? = nil) {
@@ -275,16 +344,50 @@ public struct ClaudeStreamSnapshot: Sendable {
         turnActive = true
         state.status = "active"
         state.error = nil
+        state.idleSince = nil
+        noteProgress()
     }
 
     public mutating func markIdle() {
         turnActive = false
         state.status = state.activities.isEmpty ? "idle" : "active"
+        state.idleSince = state.status == "idle" && !state.waitingForInput ? Date() : nil
+        noteProgress()
     }
 
     public mutating func markUnavailable(_ message: String) {
         state.status = "unavailable"
         state.error = message
+        state.idleSince = nil
+        noteProgress()
+    }
+
+    public mutating func markSuspended(_ message: String = "Claude Code 会话已空闲 2 小时，进程已挂起；发送下一条消息时会恢复。") {
+        turnActive = false
+        state.status = "suspended"
+        state.hostPid = nil
+        state.error = message
+        state.idleSince = nil
+        noteProgress()
+    }
+
+    public mutating func markStalled() {
+        guard state.status == "active" else { return }
+        state.status = "stalled"
+        state.error = "疑似卡住：连续 30 分钟没有输出且进程树 CPU 无进展；为避免误杀长时间测试，MissionGo 未自动终止。"
+    }
+
+    public mutating func noteProgress(at now: Date = Date()) {
+        state.lastProgressAt = now
+        if state.status == "stalled" {
+            state.status = "active"
+            state.error = nil
+        }
+    }
+
+    public mutating func ensureIdleClock(at now: Date = Date()) {
+        guard state.status == "idle", !state.waitingForInput, state.activities.isEmpty else { return }
+        if state.idleSince == nil { state.idleSince = now }
     }
 
     private mutating func upsert(_ message: AgentSessionMessage) {
@@ -339,6 +442,7 @@ public struct ClaudeStreamSnapshot: Sendable {
             AgentSessionActivity(id: id, title: taskTitles[id] ?? "后台任务", detail: "运行中")
         }
         state.status = turnActive || !state.activities.isEmpty ? "active" : "idle"
+        state.idleSince = state.status == "idle" && !state.waitingForInput ? Date() : nil
     }
 
     private static func safeTaskTitle(_ description: String?) -> String {
@@ -404,5 +508,91 @@ public enum ClaudeHostProcess {
         guard pid > 0 else { return false }
         if Darwin.kill(pid, 0) == 0 { return true }
         return errno == EPERM
+    }
+
+    public static func executablePath(_ pid: Int32) -> String? {
+        guard pid > 0 else { return nil }
+        // Darwin's PROC_PIDPATHINFO_MAXSIZE macro is not imported into Swift.
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let count = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard count > 0 else { return nil }
+        return String(cString: buffer)
+    }
+
+    public static func isClaudeHost(_ pid: Int32) -> Bool {
+        guard isRunning(pid), let path = executablePath(pid) else { return false }
+        return URL(fileURLWithPath: path).lastPathComponent == ClaudeHostLocation.executableName
+    }
+
+    public static func terminateGroup(_ pid: Int32) {
+        guard isClaudeHost(pid) else { return }
+        // The host makes itself a process-group leader before starting Claude;
+        // one signal therefore reaches the CLI and any tests/builds it spawned.
+        if Darwin.kill(-pid, SIGTERM) != 0 { _ = Darwin.kill(pid, SIGTERM) }
+    }
+}
+
+public enum ClaudeRuntimePolicy {
+    public static func shouldSuspend(state: ClaudeHostState, now: Date, timeout: TimeInterval) -> Bool {
+        guard state.status == "idle", !state.waitingForInput, state.activities.isEmpty,
+              let idleSince = state.idleSince else { return false }
+        return now.timeIntervalSince(idleSince) >= timeout
+    }
+
+    public static func shouldWarnStalled(
+        state: ClaudeHostState,
+        now: Date,
+        lastCpuProgressAt: Date,
+        timeout: TimeInterval
+    ) -> Bool {
+        guard state.status == "active", !state.waitingForInput else { return false }
+        return now.timeIntervalSince(state.lastProgressAt) >= timeout
+            && now.timeIntervalSince(lastCpuProgressAt) >= timeout
+    }
+}
+
+public enum ClaudeProcessActivity {
+    private static func processInfo(_ pid: pid_t) -> (parent: pid_t, cpu: UInt64)? {
+        var bsd = proc_bsdinfo()
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, Int32(MemoryLayout.size(ofValue: bsd)))
+            == Int32(MemoryLayout.size(ofValue: bsd)) else { return nil }
+        var task = proc_taskinfo()
+        guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &task, Int32(MemoryLayout.size(ofValue: task)))
+            == Int32(MemoryLayout.size(ofValue: task)) else { return nil }
+        return (pid_t(bsd.pbi_ppid), task.pti_total_user &+ task.pti_total_system)
+    }
+
+    /// Sum CPU time for Claude and every descendant, so a quiet parent waiting
+    /// on a one-hour test still counts as progress and never triggers a warning.
+    public static func totalCpuNanoseconds(rootPid: pid_t) -> UInt64? {
+        let capacity = proc_listallpids(nil, 0)
+        guard capacity > 0 else { return nil }
+        var pids = [pid_t](repeating: 0, count: Int(capacity))
+        let bytes = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        guard bytes > 0 else { return nil }
+        let count = min(pids.count, Int(bytes))
+        var info: [pid_t: (parent: pid_t, cpu: UInt64)] = [:]
+        for pid in pids.prefix(count) where pid > 0 {
+            if let value = processInfo(pid) { info[pid] = value }
+        }
+        guard info[rootPid] != nil else { return nil }
+        var descendants: Set<pid_t> = [rootPid]
+        var changed = true
+        while changed {
+            changed = false
+            for (pid, value) in info where !descendants.contains(pid) && descendants.contains(value.parent) {
+                descendants.insert(pid)
+                changed = true
+            }
+        }
+        return descendants.reduce(0) { $0 &+ (info[$1]?.cpu ?? 0) }
+    }
+}
+
+public enum ClaudeProcessEnvironment {
+    public static func unattended(_ base: [String: String]) -> [String: String] {
+        var result = base
+        result["DISABLE_AUTOUPDATER"] = "1"
+        return result
     }
 }

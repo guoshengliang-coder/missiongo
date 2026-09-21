@@ -19,6 +19,8 @@ function messageLabel(
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "active") return t("agentSessionActive");
   if (status === "idle") return t("agentSessionIdle");
+  if (status === "suspended") return t("agentSessionSuspended");
+  if (status === "stalled") return t("agentSessionStalled");
   if (status === "failed") return t("agentSessionFailed");
   return t("agentSessionUnavailable");
 }

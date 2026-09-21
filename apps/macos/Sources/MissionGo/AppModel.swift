@@ -506,12 +506,28 @@ final class AppModel: ObservableObject {
         guard let credential, let environment, checkingIntegrations.isEmpty, !importingPath else { return }
         if integrations.state(for: agent) == nil {
             let alert = NSAlert()
-            alert.messageText = "启用 \(agent.title) 集成？"
-            alert.informativeText = "将检查该客户端的安装和登录状态，并向它的 missiongo Skill 目录写入规则。收到派单后才访问映射的仓库。不会扫描历史项目，也不需要全盘访问、辅助功能或录屏权限。拒绝或失败后会暂停，只有点击重新检查才重试。"
-            alert.addButton(withTitle: "启用并检查")
-            alert.addButton(withTitle: "取消")
+            if agent == .claudeCode {
+                alert.messageText = "先为 MissionGo 授予完全磁盘访问权限"
+                alert.informativeText = "这台无人值守执行机会由 Claude Code 访问映射仓库及任务明确要求的文件。请在「隐私与安全性 → 完全磁盘访问权限」中允许 MissionGo，再回来继续启用。该权限范围很大；ad-hoc 签名的更新仍可能要求重新授权。MissionGo 不会扫描历史项目。"
+                alert.addButton(withTitle: "打开系统设置")
+                alert.addButton(withTitle: "我已授权，继续")
+                alert.addButton(withTitle: "取消")
+            } else {
+                alert.messageText = "启用 \(agent.title) 集成？"
+                alert.informativeText = "将检查该客户端的安装和登录状态，并向它的 missiongo Skill 目录写入规则。收到派单后才访问映射的仓库，不会扫描历史项目。拒绝或失败后会暂停，只有点击重新检查才重试。"
+                alert.addButton(withTitle: "启用并检查")
+                alert.addButton(withTitle: "取消")
+            }
             NSApp.activate(ignoringOtherApps: true)
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let response = alert.runModal()
+            if agent == .claudeCode, response == .alertFirstButtonReturn {
+                openFullDiskAccessSettings()
+                return
+            }
+            let proceed: NSApplication.ModalResponse = agent == .claudeCode
+                ? .alertSecondButtonReturn
+                : .alertFirstButtonReturn
+            guard response == proceed else { return }
         }
         let access = integrations
         let attempt = access.begin(agent)
@@ -565,6 +581,11 @@ final class AppModel: ObservableObject {
                 access.finish(agent, attempt: attempt, version: nil, issue: error.localizedDescription)
             }
         }
+    }
+
+    func openFullDiskAccessSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func startUpdateTimer(_ credential: NodeCredential) {

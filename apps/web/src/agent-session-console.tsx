@@ -51,6 +51,8 @@ import type { AgentSession, AgentSessionCommand, AgentSessionStatus, AgentSessio
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "active") return t("agentSessionActive");
   if (status === "idle") return t("agentSessionIdle");
+  if (status === "suspended") return t("agentSessionSuspended");
+  if (status === "stalled") return t("agentSessionStalled");
   if (status === "failed") return t("agentSessionFailed");
   return t("agentSessionUnavailable");
 }
@@ -58,7 +60,7 @@ function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["
 function SessionStatusIcon({ status }: { status: AgentSessionStatus }) {
   if (status === "active") return <LoaderCircle className="spin" size={14} />;
   if (status === "idle") return <CircleCheck size={14} />;
-  if (status === "failed") return <CircleAlert size={14} />;
+  if (status === "failed" || status === "stalled") return <CircleAlert size={14} />;
   return <CircleDot size={14} />;
 }
 
