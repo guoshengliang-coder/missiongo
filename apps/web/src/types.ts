@@ -319,6 +319,13 @@ export interface Dispatch {
 }
 
 export type AgentSessionStatus = "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
+export type AgentSessionReplyBlockedReason =
+  | "work_finished"
+  | "archived"
+  | "source_archived"
+  | "node_revoked"
+  | "operate_permission"
+  | "ai_permission";
 
 export interface AgentSessionQuestion {
   readonly header?: string;
@@ -367,6 +374,8 @@ export interface AgentSession {
   readonly messages: readonly AgentSessionMessage[];
   readonly activities: readonly AgentSessionActivity[];
   readonly command?: AgentSessionCommand;
+  readonly canReply: boolean;
+  readonly replyBlockedReason?: AgentSessionReplyBlockedReason;
 }
 
 export interface AgentSessionSummary {
@@ -399,6 +408,7 @@ export interface AgentSessionSummary {
   readonly command?: AgentSessionCommand;
   readonly activities: readonly AgentSessionActivity[];
   readonly canReply: boolean;
+  readonly replyBlockedReason?: AgentSessionReplyBlockedReason;
   readonly attention: {
     readonly state: "pending" | "needed" | "not_needed";
     readonly kind?: "answer" | "approval" | "action" | "instruction" | "uncertain";

@@ -63,6 +63,8 @@ export interface AgentSessionSnapshot {
   readonly messages: readonly (AgentSessionMessageInput & { readonly id: string })[];
   readonly activities: readonly AgentSessionActivity[];
   readonly command?: AgentSessionCommand;
+  /** False once every linked item has reached verification or done. */
+  readonly replyable: boolean;
 }
 
 export interface AgentSessionListItem {
@@ -336,6 +338,7 @@ export class AgentSessionStore {
           : {}),
       })),
       ...(command ? { command: this.mapCommand(command) } : {}),
+      replyable: !this.itemsClosed(sessionId),
     };
   }
 

@@ -5,6 +5,7 @@ import type {
   AgentSessionCommand,
   AgentSessionMessage,
   AgentSessionQuestion,
+  AgentSessionReplyBlockedReason,
   AgentSessionStatus,
   AgentSessionSummary,
 } from "./types";
@@ -15,6 +16,23 @@ export const MESSAGE_BOTTOM_THRESHOLD_PX = 48;
 
 export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived";
 export type AgentKindFilter = "all" | AgentKind;
+
+export function replyBlockedLabelKey(reason: AgentSessionReplyBlockedReason | undefined):
+  | "agentSessionWorkFinishedReadOnly"
+  | "agentSessionArchivedReadOnly"
+  | "agentSessionSourceArchivedReadOnly"
+  | "agentNodeRevokedReadOnly"
+  | "agentSessionOperateReadOnly"
+  | "agentSessionReadOnly"
+  | "agentSessionUnavailableReadOnly" {
+  if (reason === "work_finished") return "agentSessionWorkFinishedReadOnly";
+  if (reason === "archived") return "agentSessionArchivedReadOnly";
+  if (reason === "source_archived") return "agentSessionSourceArchivedReadOnly";
+  if (reason === "node_revoked") return "agentNodeRevokedReadOnly";
+  if (reason === "operate_permission") return "agentSessionOperateReadOnly";
+  if (reason === "ai_permission") return "agentSessionReadOnly";
+  return "agentSessionUnavailableReadOnly";
+}
 
 type FilterableAgentSession = Pick<
   AgentSessionSummary,
