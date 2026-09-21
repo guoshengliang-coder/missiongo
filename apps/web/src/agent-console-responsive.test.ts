@@ -49,4 +49,21 @@ describe("agent console responsive layout", () => {
     expect(consoleSource).toContain('t("agentSessionQuickMergeRelease")');
     expect(consoleSource).toContain('t("agentSessionQuickRelease")');
   });
+
+  it("uses one aligned icon-button treatment for phone conversation actions", () => {
+    const tablet = mediaBlock(760);
+
+    expect(styles).toMatch(/\.agent-console-actions \{[^}]*margin-left: auto;/);
+    expect(tablet).toMatch(/\.agent-console-actions button \{[^}]*width: 44px;[^}]*min-height: 44px;/);
+    expect(consoleSource).toContain('className="secondary-button"');
+    expect(consoleSource).not.toMatch(/className="danger-button"[\s\S]{0,250}agentConsoleStop/);
+  });
+
+  it("renders attention badges from the all-product session feed", () => {
+    const appSource = readFileSync(fileURLToPath(new URL("./App.tsx", import.meta.url)), "utf8");
+
+    expect(appSource).toContain('queryFn: () => api.listAgentSessions()');
+    expect(appSource).toContain('className="agent-attention-badge"');
+    expect(appSource).not.toContain('queryKey: ["agent-sessions", selectedProductId]');
+  });
 });

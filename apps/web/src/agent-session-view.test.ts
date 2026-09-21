@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activityLabelKey,
+  agentAttentionCounts,
   agentSessionMatches,
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
@@ -17,6 +18,30 @@ import {
 import type { AgentSessionSummary } from "./types";
 
 describe("agent session message view", () => {
+  it("counts attention once globally and once per distinct product", () => {
+    const sessions = [
+      {
+        id: "cross-product",
+        needsAttention: true,
+        items: [
+          { productId: "product-1" },
+          { productId: "product-1" },
+          { productId: "product-2" },
+        ],
+      },
+      { id: "second", needsAttention: true, items: [{ productId: "product-1" }] },
+      { id: "settled", needsAttention: false, items: [{ productId: "product-2" }] },
+      { id: "archived", needsAttention: true, archivedAt: "2026-09-21T00:00:00Z", items: [{ productId: "product-2" }] },
+    ] as unknown as AgentSessionSummary[];
+
+    const counts = agentAttentionCounts(sessions);
+    expect(counts.total).toBe(2);
+    expect([...counts.byProduct]).toEqual([
+      ["product-1", 2],
+      ["product-2", 1],
+    ]);
+  });
+
   it("opens on all conversations by default", () => {
     expect(DEFAULT_AGENT_SESSION_FILTER).toBe("all");
     expect(DEFAULT_AGENT_KIND_FILTER).toBe("all");

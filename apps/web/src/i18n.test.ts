@@ -30,6 +30,15 @@ describe("MissionGo interface language", () => {
     expect(translate("en", "agentConsoleTitle")).toBe("Agent console");
   });
 
+  it("names the actual agent in the session activity and reply copy", () => {
+    expect(translate("zh-CN", "agentSessionActivityActive", { agent: "Codex" }))
+      .toBe("Codex 正在运行，可能还会有新消息。");
+    expect(translate("zh-CN", "agentSessionReplyPlaceholder", { agent: "Claude Code" }))
+      .toBe("回复这个 Claude Code 会话…");
+    expect(translate("en", "agentSessionReplyPlaceholder", { agent: "Codex" }))
+      .toBe("Reply to this Codex session…");
+  });
+
   it("explains queued replies and offers to cancel them for editing", () => {
     expect(translate("zh-CN", "agentSessionReplyQueued")).toContain("恢复连接后将自动发送");
     expect(translate("zh-CN", "agentSessionCancelAndEdit")).toBe("取消等待并编辑");

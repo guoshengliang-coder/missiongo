@@ -149,6 +149,9 @@ function updatedTime(value: string, locale: string): string {
 
 export function AgentSessionConsole({
   productId,
+  allSessions,
+  sessionsLoaded,
+  sessionsError,
   selectedSessionId,
   conversationOpen,
   onSelectSession,
@@ -156,6 +159,9 @@ export function AgentSessionConsole({
   onOpenItem,
 }: {
   productId: string;
+  allSessions: readonly AgentSessionSummary[];
+  sessionsLoaded: boolean;
+  sessionsError: unknown;
   selectedSessionId: string | null;
   conversationOpen: boolean;
   onSelectSession: (sessionId: string | null, showConversation: boolean) => void;
@@ -179,13 +185,12 @@ export function AgentSessionConsole({
   const previousMessagesRef = useRef<readonly { id: string; text: string }[]>([]);
   const previousOutgoingRef = useRef("");
   const unseenMessageIdsRef = useRef(new Set<string>());
+  const hasSessionsError = sessionsError !== null && sessionsError !== undefined;
 
-  const sessionsQuery = useQuery({
-    queryKey: ["agent-sessions", productId],
-    queryFn: () => api.listAgentSessions(productId),
-    refetchInterval: 5_000,
-  });
-  const sessions = sessionsQuery.data?.sessions ?? [];
+  const sessions = useMemo(
+    () => allSessions.filter((session) => session.items.some((item) => item.productId === productId)),
+    [allSessions, productId],
+  );
   const agentSessions = useMemo(
     () => sessions.filter((session) => agentFilter === "all" || session.agentKind === agentFilter),
     [agentFilter, sessions],
@@ -211,7 +216,7 @@ export function AgentSessionConsole({
   const selectedId = resolvedAgentSessionId(
     selectedSessionId,
     visibleSessions.map((session) => session.id),
-    sessionsQuery.data !== undefined,
+    sessionsLoaded,
   );
 
   useEffect(() => {
@@ -241,7 +246,7 @@ export function AgentSessionConsole({
         : current);
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
-        queryClient.invalidateQueries({ queryKey: ["agent-sessions", productId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
       ]);
     },
     onError: (_error, input) => {
@@ -251,7 +256,7 @@ export function AgentSessionConsole({
   const retryDispatch = useMutation({
     mutationFn: () => api.retryDispatch(selected!.dispatchId),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["agent-sessions", productId] });
+      await queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
     },
   });
   const stopDispatch = useMutation({
@@ -259,7 +264,7 @@ export function AgentSessionConsole({
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", selected?.agentSessionId] }),
-        queryClient.invalidateQueries({ queryKey: ["agent-sessions", productId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
       ]);
     },
   });
@@ -269,7 +274,7 @@ export function AgentSessionConsole({
       else await api.setDispatchArchived(selected!.dispatchId, archived);
     },
     onSuccess: async () => {
-      const invalidations = [queryClient.invalidateQueries({ queryKey: ["agent-sessions", productId] })];
+      const invalidations = [queryClient.invalidateQueries({ queryKey: ["agent-sessions"] })];
       if (selected?.agentSessionId) {
         invalidations.push(queryClient.invalidateQueries({ queryKey: ["agent-session", selected.agentSessionId] }));
       }
@@ -283,7 +288,7 @@ export function AgentSessionConsole({
       if (selectedId === input.sessionId) setReply(input.text);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
-        queryClient.invalidateQueries({ queryKey: ["agent-sessions", productId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
       ]);
     },
   });
@@ -422,9 +427,9 @@ export function AgentSessionConsole({
           </label>
         </div>
         <div className="agent-console-session-list">
-          {sessionsQuery.isLoading && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
-          {sessionsQuery.isError && <p className="inline-error">{errorText(sessionsQuery.error)}</p>}
-          {!sessionsQuery.isLoading && visibleSessions.length === 0 && (
+          {!sessionsLoaded && !hasSessionsError && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
+          {hasSessionsError && <p className="inline-error">{errorText(sessionsError)}</p>}
+          {sessionsLoaded && visibleSessions.length === 0 && (
             <div className="agent-console-empty"><Bot size={22} /><p>{t(search.trim() ? "agentConsoleNoMatch" : "agentConsoleEmpty")}</p></div>
           )}
           {visibleSessions.map((session) => (
@@ -492,12 +497,12 @@ export function AgentSessionConsole({
                 {selected.canStop && (
                   <button
                     type="button"
-                    className="danger-button"
+                    className="secondary-button"
                     disabled={retryDispatch.isPending || stopDispatch.isPending}
                     onClick={() => {
                       if (window.confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate();
                     }}
-                  ><Square size={14} />{t("agentConsoleStop")}</button>
+                  ><Square size={16} />{t("agentConsoleStop")}</button>
                 )}
                 {selected.canArchive && selected.archivedSource !== "source" && (
                   <button
@@ -510,8 +515,8 @@ export function AgentSessionConsole({
                     }}
                   >
                     {archiveSession.isPending
-                      ? <LoaderCircle className="spin" size={15} />
-                      : selected.archivedAt ? <RotateCcw size={15} /> : <Archive size={15} />}
+                      ? <LoaderCircle className="spin" size={16} />
+                      : selected.archivedAt ? <RotateCcw size={16} /> : <Archive size={16} />}
                     {selected.archivedAt ? t("restore") : t("archive")}
                   </button>
                 )}
@@ -650,7 +655,9 @@ export function AgentSessionConsole({
                 {selected.agentSessionId && !sessionQuery.isLoading && !sessionQuery.isError && (
                   <div className={`agent-console-activity agent-console-activity-${sessionStatus}`} role="status">
                     <SessionStatusIcon status={sessionStatus} />
-                    <span>{t(activityLabelKey(sessionStatus, command?.status === "queued"))}</span>
+                    <span>{t(activityLabelKey(sessionStatus, command?.status === "queued"), {
+                      agent: agentLabel(selected, t),
+                    })}</span>
                   </div>
                 )}
               </div>
@@ -683,7 +690,7 @@ export function AgentSessionConsole({
                       setReply(event.target.value);
                       if (send.isError && send.variables?.sessionId === selected.agentSessionId) send.reset();
                     }}
-                    placeholder={t("agentSessionReplyPlaceholder")}
+                    placeholder={t("agentSessionReplyPlaceholder", { agent: agentLabel(selected, t) })}
                     disabled={pending || sendingSelected}
                   />
                   <div className="agent-console-reply-actions">

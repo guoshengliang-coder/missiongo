@@ -152,7 +152,9 @@ export function AgentSessionPanel({ sessionId, canReply }: { sessionId: string; 
                       rows={3}
                       value={reply}
                       onChange={(event) => setReply(event.target.value)}
-                      placeholder={t("agentSessionReplyPlaceholder")}
+                      placeholder={t("agentSessionReplyPlaceholder", {
+                        agent: messageLabel("agent", session.data.agentKind, t),
+                      })}
                       disabled={pending || send.isPending}
                     />
                     <button type="submit" className="primary-button" disabled={!reply.trim() || pending || send.isPending}>

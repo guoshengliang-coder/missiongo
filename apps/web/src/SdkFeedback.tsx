@@ -117,7 +117,7 @@ export function SdkFeedbackPage() {
   const [failedFiles, setFailedFiles] = useState<readonly StoredSdkAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [annotatingId, setAnnotatingId] = useState<string | null>(null);
-  const [clearGalleryCopies, setClearGalleryCopies] = useState(false);
+  const [clearGalleryCopies, setClearGalleryCopies] = useState(true);
   const [mediaDeletion] = useState(androidMediaDeletion);
   const [previews, setPreviews] = useState<ReadonlyMap<string, string>>(new Map());
 
