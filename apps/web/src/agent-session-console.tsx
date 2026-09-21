@@ -262,12 +262,16 @@ export function AgentSessionConsole({
     },
   });
   const archiveSession = useMutation({
-    mutationFn: (archived: boolean) => api.setAgentSessionArchived(selected!.agentSessionId!, archived),
+    mutationFn: async (archived: boolean) => {
+      if (selected!.agentSessionId) await api.setAgentSessionArchived(selected!.agentSessionId, archived);
+      else await api.setDispatchArchived(selected!.dispatchId, archived);
+    },
     onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["agent-session", selected?.agentSessionId] }),
-        queryClient.invalidateQueries({ queryKey: ["agent-sessions", productId] }),
-      ]);
+      const invalidations = [queryClient.invalidateQueries({ queryKey: ["agent-sessions", productId] })];
+      if (selected?.agentSessionId) {
+        invalidations.push(queryClient.invalidateQueries({ queryKey: ["agent-session", selected.agentSessionId] }));
+      }
+      await Promise.all(invalidations);
     },
   });
   const cancel = useMutation({
@@ -493,7 +497,7 @@ export function AgentSessionConsole({
                     }}
                   ><Square size={14} />{t("agentConsoleStop")}</button>
                 )}
-                {selected.canArchive && selected.agentSessionId && selected.archivedSource !== "source" && (
+                {selected.canArchive && selected.archivedSource !== "source" && (
                   <button
                     type="button"
                     className="secondary-button"

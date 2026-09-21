@@ -133,6 +133,7 @@ interface SessionListRow {
   session_archived_at: string | null;
   session_archive_source: "missiongo" | "source" | null;
   session_activities_json: string | null;
+  dispatch_archived_at: string | null;
   dispatch_error: string | null;
   node_name: string;
   node_last_seen_at: string | null;
@@ -307,12 +308,12 @@ export class AgentSessionStore {
                 COALESCE(n.nickname, n.name) AS node_name, n.last_seen_at AS node_last_seen_at,
                 n.revoked_at AS node_revoked_at, d.mode, d.status AS dispatch_status,
                 d.session_name, d.session_url, d.error AS dispatch_error,
-                d.created_at, d.delivered_at, d.completed_at
+                d.created_at, d.delivered_at, d.completed_at, d.archived_at AS dispatch_archived_at
          FROM dispatches d
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          JOIN nodes n ON n.id = d.node_id
          WHERE d.account_id = ?
-         ORDER BY COALESCE(s.activity_at, d.completed_at, d.delivered_at, d.created_at) DESC
+         ORDER BY COALESCE(s.activity_at, d.archived_at, d.completed_at, d.delivered_at, d.created_at) DESC
          LIMIT ?`,
       )
       .all(accountId, limit) as unknown as SessionListRow[];
@@ -352,8 +353,12 @@ export class AgentSessionStore {
             ? "idle"
             : "active";
       const status = row.session_status ?? inferredStatus;
-      const updatedAt = row.session_updated_at ?? row.completed_at ?? row.delivered_at ?? row.created_at;
-      const activityAt = row.session_activity_at ?? row.completed_at ?? row.delivered_at ?? row.created_at;
+      const updatedAt = row.session_updated_at ?? row.dispatch_archived_at
+        ?? row.completed_at ?? row.delivered_at ?? row.created_at;
+      const activityAt = row.session_activity_at ?? row.dispatch_archived_at
+        ?? row.completed_at ?? row.delivered_at ?? row.created_at;
+      const archivedAt = row.session_archived_at ?? row.dispatch_archived_at;
+      const archivedSource = row.session_archive_source ?? (row.dispatch_archived_at ? "missiongo" : null);
       const lastError = row.session_last_error ?? row.dispatch_error;
       const connectionState = row.node_revoked_at
         ? "offline"
@@ -390,8 +395,8 @@ export class AgentSessionStore {
         ...(lastError ? { lastError } : {}),
         updatedAt,
         activityAt,
-        ...(row.session_archived_at ? { archivedAt: row.session_archived_at } : {}),
-        ...(row.session_archive_source ? { archivedSource: row.session_archive_source } : {}),
+        ...(archivedAt ? { archivedAt } : {}),
+        ...(archivedSource ? { archivedSource } : {}),
         nodeName: row.node_name,
         nodeConnectionState: connectionState,
         ...(row.node_last_seen_at ? { nodeLastSeenAt: row.node_last_seen_at } : {}),
@@ -416,6 +421,7 @@ export class AgentSessionStore {
           || Boolean(row.session_id && row.session_status === "active"),
         activityKey: createHash("sha256").update(JSON.stringify([
           row.dispatch_status, status, lastError ?? "", row.session_archived_at ?? "",
+          row.dispatch_archived_at ?? "",
           row.session_archive_source ?? "", connectionState, Boolean(row.node_revoked_at),
           message?.id ?? "", message?.text ?? "",
           message?.questions_json ?? "", command?.id ?? "", command?.status ?? "",

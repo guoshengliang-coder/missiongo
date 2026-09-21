@@ -456,6 +456,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ archived }),
     }),
+  setDispatchArchived: (dispatchId: string, archived: boolean) =>
+    request<Dispatch>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/archive`, {
+      method: "PATCH",
+      body: JSON.stringify({ archived }),
+    }),
   retryDispatch: (dispatchId: string) =>
     request<Dispatch>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/retry`, { method: "POST" }),
   stopDispatch: (dispatchId: string) =>

@@ -132,6 +132,20 @@ describe("dispatch API", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/dispatches/dispatch%201/retry", expect.objectContaining({ method: "POST" }));
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/dispatches/dispatch%201/stop", expect.objectContaining({ method: "POST" }));
   });
+
+  it("archives a dispatch-only conversation through its dispatch id", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({
+      id: "dispatch-1", status: "launched", archivedAt: "2026-09-21T09:26:00.000Z",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.setDispatchArchived("dispatch 1", true);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/dispatches/dispatch%201/archive", expect.objectContaining({
+      method: "PATCH",
+      body: JSON.stringify({ archived: true }),
+    }));
+  });
 });
 
 describe("machine nickname API", () => {

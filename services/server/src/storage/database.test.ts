@@ -14,6 +14,44 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("adds local archive state to historical dispatches without losing them", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-dispatch-archive-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    seeded.connection.exec(`
+      INSERT INTO nodes
+        (id, account_id, name, token_hash, created_at, updated_at)
+      VALUES
+        ('node-1', 'account-1', 'Mac mini', 'token-hash', '2026-09-21T00:00:00.000Z', '2026-09-21T00:00:00.000Z');
+      INSERT INTO dispatches
+        (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at, completed_at)
+      VALUES
+        ('dispatch-1', 'account-1', 'node-1', 'claude_code', 'plan', 'launched', '/repo',
+         '2026-09-21T00:00:00.000Z', '2026-09-21T00:01:00.000Z');
+    `);
+    seeded.close();
+
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      DROP INDEX IF EXISTS idx_dispatches_archived;
+      ALTER TABLE dispatches DROP COLUMN archived_at;
+      DELETE FROM schema_migrations WHERE version = 202609210926;
+    `);
+    legacy.close();
+
+    const migrated = new MissionGoDatabase(path);
+    const dispatchColumns = migrated.connection
+      .prepare("PRAGMA table_info(dispatches)")
+      .all() as unknown as Array<{ name: string }>;
+    expect(dispatchColumns.map((column) => column.name)).toContain("archived_at");
+    expect(migrated.connection.prepare("SELECT status, archived_at FROM dispatches WHERE id = 'dispatch-1'").get())
+      .toEqual({ status: "launched", archived_at: null });
+    expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210926").get())
+      .toEqual({ version: 202609210926 });
+    migrated.close();
+  });
+
   it("adds the opt-in Agent attention flag without losing an existing DeepSeek key", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-agent-attention-migration-"));
     temporaryDirectories.push(directory);

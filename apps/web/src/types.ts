@@ -315,6 +315,7 @@ export interface Dispatch {
   readonly createdAt: string;
   readonly deliveredAt?: string;
   readonly completedAt?: string;
+  readonly archivedAt?: string;
 }
 
 export type AgentSessionStatus = "active" | "idle" | "unavailable" | "failed";
