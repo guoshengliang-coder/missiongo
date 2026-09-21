@@ -318,7 +318,7 @@ export interface Dispatch {
   readonly archivedAt?: string;
 }
 
-export type AgentSessionStatus = "active" | "idle" | "unavailable" | "failed";
+export type AgentSessionStatus = "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
 
 export interface AgentSessionQuestion {
   readonly header?: string;

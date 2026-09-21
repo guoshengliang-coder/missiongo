@@ -132,30 +132,55 @@ public struct AgentSessionCommand: Codable, Equatable, Sendable {
 
 public struct NodeAgentSession: Codable, Equatable, Sendable {
     public let id: String
+    public let dispatchId: String?
     public let agentKind: String
     public let sessionRef: String
     public let status: String
+    /// `close` means every item in this dispatch has reached verification or
+    /// done, so the node should release a Claude process without changing the
+    /// work-item state. Older servers omit it and therefore keep the session.
+    public let lifecycle: String
+    /// The server's durable view of whether this conversation consumes one of
+    /// the node's execution slots. A locally launched session is reserved until
+    /// it appears in this list, closing the poll/snapshot race.
+    public let occupiesExecutionSlot: Bool
     public let command: AgentSessionCommand?
 
-    public init(id: String, agentKind: String = "codex", sessionRef: String, status: String, command: AgentSessionCommand? = nil) {
+    public init(
+        id: String,
+        dispatchId: String? = nil,
+        agentKind: String = "codex",
+        sessionRef: String,
+        status: String,
+        lifecycle: String = "keep",
+        occupiesExecutionSlot: Bool? = nil,
+        command: AgentSessionCommand? = nil
+    ) {
         self.id = id
+        self.dispatchId = dispatchId
         self.agentKind = agentKind
         self.sessionRef = sessionRef
         self.status = status
+        self.lifecycle = lifecycle
+        self.occupiesExecutionSlot = occupiesExecutionSlot ?? ["active", "stalled"].contains(status)
         self.command = command
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, agentKind, sessionRef, status, command
+        case id, dispatchId, agentKind, sessionRef, status, lifecycle, occupiesExecutionSlot, command
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
+        dispatchId = try values.decodeIfPresent(String.self, forKey: .dispatchId)
         // A server from before Claude mirroring only ever lists Codex here.
         agentKind = try values.decodeIfPresent(String.self, forKey: .agentKind) ?? "codex"
         sessionRef = try values.decode(String.self, forKey: .sessionRef)
         status = try values.decode(String.self, forKey: .status)
+        lifecycle = try values.decodeIfPresent(String.self, forKey: .lifecycle) ?? "keep"
+        occupiesExecutionSlot = try values.decodeIfPresent(Bool.self, forKey: .occupiesExecutionSlot)
+            ?? ["active", "stalled"].contains(status)
         command = try values.decodeIfPresent(AgentSessionCommand.self, forKey: .command)
     }
 }
@@ -213,8 +238,11 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let commandStatus: String?
     public let commandError: String?
     public let sourceArchived: Bool?
+    /// A resumed Claude session may receive a new Remote Control URL. The node
+    /// reports the fresh, validated URL instead of leaving a dead link behind.
+    public let sessionUrl: String?
 
-    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil) {
+    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sessionUrl: String? = nil) {
         self.status = status
         self.messages = messages
         self.activities = activities
@@ -223,6 +251,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         self.commandStatus = commandStatus
         self.commandError = commandError
         self.sourceArchived = sourceArchived
+        self.sessionUrl = sessionUrl
     }
 }
 

@@ -130,6 +130,7 @@ public final class NodeLoop: @unchecked Sendable {
     }
 
     public static let recentLaunchLimit = 20
+    public static let maximumExecutingSessions = 10
 
     let api: NodeAPI
     let adapters: [AgentAdapter]
@@ -150,6 +151,11 @@ public final class NodeLoop: @unchecked Sendable {
 
     private let agentCache = Locked<(agents: [DetectedAgent], at: Date)?>(nil)
     private let lastReposFingerprint = Locked<[RepoMapping]?>(nil)
+    private struct CapacityState {
+        var sessions: [NodeAgentSession] = []
+        var reservations: [String: Date] = [:]
+    }
+    private let capacity = Locked(CapacityState())
 
     public init(
         api: NodeAPI,
@@ -244,13 +250,18 @@ public final class NodeLoop: @unchecked Sendable {
         while !stop.isStopped {
             await shielded {
                 do {
+                    guard self.hasExecutionCapacity() else { return }
                     if let request = try await self.api.claimNext(waitMs: self.timing.claimWaitMs) {
+                        self.capacity.withLock { $0.reservations[request.dispatchId] = Date() }
                         self.update {
                             $0.connection = .online
                             $0.lastError = nil
                         }
                         let startedAt = Date()
                         let (report, logPath) = await self.launchDispatch(request)
+                        if report.status == .failed {
+                            _ = self.capacity.withLock { $0.reservations.removeValue(forKey: request.dispatchId) }
+                        }
                         let record = { (reported: Bool) in
                             self.recordLaunch(LocalLaunch(
                                 dispatchId: request.dispatchId, itemKeys: request.itemKeys, mode: request.mode,
@@ -285,6 +296,7 @@ public final class NodeLoop: @unchecked Sendable {
             await shielded {
                 do {
                     let sessions = try await self.api.listAgentSessions()
+                    self.reconcileCapacity(sessions)
                     for session in sessions {
                         guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else { continue }
                         let report: AgentSessionReport
@@ -302,6 +314,26 @@ public final class NodeLoop: @unchecked Sendable {
                 }
             }
             await stop.sleep(timing.sessionInterval)
+        }
+    }
+
+    private func hasExecutionCapacity(now: Date = Date()) -> Bool {
+        capacity.withLock { value in
+            // Compatibility with a server from before dispatchId was included:
+            // a reservation still prevents a burst, but cannot wedge the node
+            // forever if the old response cannot acknowledge it.
+            value.reservations = value.reservations.filter { now.timeIntervalSince($0.value) < 30 }
+            let occupied = value.sessions.filter(\.occupiesExecutionSlot).count
+            return occupied + value.reservations.count < Self.maximumExecutingSessions
+        }
+    }
+
+    private func reconcileCapacity(_ sessions: [NodeAgentSession], now: Date = Date()) {
+        capacity.withLock { value in
+            let observed = Set(sessions.compactMap(\.dispatchId))
+            for dispatchId in observed { value.reservations.removeValue(forKey: dispatchId) }
+            value.reservations = value.reservations.filter { now.timeIntervalSince($0.value) < 30 }
+            value.sessions = sessions
         }
     }
 

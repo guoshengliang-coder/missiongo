@@ -155,6 +155,68 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertEqual(state.activities, [])
         XCTAssertFalse(state.waitingForInput)
     }
+
+    func testOldHostConfigurationGetsApprovedLifecycleDefaults() throws {
+        let data = Data(#"{"version":1,"claudeExecutable":"/usr/bin/claude","cwd":"/repo","mode":"default","sessionName":"M4-AND-111","sessionRef":"session-1","prompt":"work","statePath":"/state","commandsDirectory":"/commands","logPath":"/log"}"#.utf8)
+        let configuration = try JSONDecoder().decode(ClaudeHostConfiguration.self, from: data)
+
+        XCTAssertEqual(configuration.idleTimeoutSeconds, 2 * 60 * 60)
+        XCTAssertEqual(configuration.stallWarningSeconds, 30 * 60)
+    }
+
+    func testRuntimePolicySuspendsOnlyGenuinelyIdleSessions() {
+        let now = Date()
+        let old = now.addingTimeInterval(-(2 * 60 * 60 + 1))
+        let idle = ClaudeHostState(status: "idle", sessionRef: "session-1", idleSince: old)
+        XCTAssertTrue(ClaudeRuntimePolicy.shouldSuspend(state: idle, now: now, timeout: 2 * 60 * 60))
+
+        let waiting = ClaudeHostState(
+            status: "idle", sessionRef: "session-1", waitingForInput: true, idleSince: old
+        )
+        XCTAssertFalse(ClaudeRuntimePolicy.shouldSuspend(state: waiting, now: now, timeout: 2 * 60 * 60))
+        let active = ClaudeHostState(status: "active", sessionRef: "session-1", idleSince: old)
+        XCTAssertFalse(ClaudeRuntimePolicy.shouldSuspend(state: active, now: now, timeout: 2 * 60 * 60))
+    }
+
+    func testRuntimePolicyWarnsWithoutKillingOnlyAfterOutputAndCpuBothStop() {
+        let now = Date()
+        let old = now.addingTimeInterval(-(30 * 60 + 1))
+        let recent = now.addingTimeInterval(-60)
+        let state = ClaudeHostState(status: "active", sessionRef: "session-1", lastProgressAt: old)
+
+        XCTAssertTrue(ClaudeRuntimePolicy.shouldWarnStalled(
+            state: state, now: now, lastCpuProgressAt: old, timeout: 30 * 60
+        ))
+        XCTAssertFalse(ClaudeRuntimePolicy.shouldWarnStalled(
+            state: state, now: now, lastCpuProgressAt: recent, timeout: 30 * 60
+        ))
+    }
+
+    func testResumingPreservesConversationAndAcknowledgements() {
+        let message = AgentSessionMessage(sourceId: "m1", turnId: "m1", role: "agent", text: "done")
+        let old = ClaudeHostState(
+            status: "suspended",
+            sessionRef: "session-1",
+            sessionUrl: "https://claude.ai/code/session_old",
+            messages: [message],
+            commandResults: ["c1": ClaudeHostCommandResult(status: "delivered")],
+            error: "idle"
+        )
+
+        let resumed = ClaudeStreamSnapshot(resuming: old, hostPid: 42).state
+        XCTAssertEqual(resumed.status, "suspended")
+        XCTAssertEqual(resumed.hostPid, 42)
+        XCTAssertEqual(resumed.messages, [message])
+        XCTAssertEqual(resumed.commandResults["c1"]?.status, "delivered")
+        XCTAssertNil(resumed.error)
+    }
+
+    func testUnattendedClaudeDisablesItsCompetingUpdater() {
+        XCTAssertEqual(
+            ClaudeProcessEnvironment.unattended(["PATH": "/usr/bin"])["DISABLE_AUTOUPDATER"],
+            "1"
+        )
+    }
 }
 
 final class ClaudeSessionSynchronizationTests: XCTestCase {
@@ -273,5 +335,25 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         ))
         XCTAssertEqual(report.status, "unavailable")
         XCTAssertTrue(report.error?.contains("宿主已停止") == true)
+    }
+
+    func testFinishedWorkClosesTheHostButKeepsItsConversation() async throws {
+        let (launcher, root, sessionRef) = try fixture(status: "idle")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "server-session",
+            agentKind: "claude_code",
+            sessionRef: sessionRef,
+            status: "idle",
+            lifecycle: "close"
+        ))
+
+        XCTAssertEqual(report.status, "suspended")
+        XCTAssertTrue(report.error?.contains("待验证或完成") == true)
+        let state = try ClaudeHostFiles.readState(
+            ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        )
+        XCTAssertNil(state.hostPid)
+        XCTAssertEqual(state.status, "suspended")
     }
 }

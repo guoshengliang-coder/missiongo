@@ -118,16 +118,25 @@ private func run(configPath: String) throws {
     )
     guard ClaudeCodeModes.isAllowed(config.mode) else { throw HostFailure.invalidMode(config.mode) }
 
+    // MissionGo terminates the whole group on startup timeout or when all work
+    // items reach verification/done. Claude and its test/build descendants
+    // inherit this group, so no orphan survives the host.
+    _ = setpgid(0, 0)
+
     let log = try openLog(config.logPath)
     defer { try? log.close() }
-    var snapshot = ClaudeStreamSnapshot(sessionRef: config.sessionRef, hostPid: getpid())
+    let previous = try? ClaudeHostFiles.readState(config.statePath)
+    let resuming = previous?.status == "suspended"
+    var snapshot = resuming
+        ? ClaudeStreamSnapshot(resuming: previous!, hostPid: getpid())
+        : ClaudeStreamSnapshot(sessionRef: config.sessionRef, hostPid: getpid())
     try ClaudeHostFiles.write(snapshot.state, to: config.statePath)
 
     let input = Pipe()
     let output = Pipe()
     let process = Process()
     process.executableURL = URL(fileURLWithPath: config.claudeExecutable)
-    process.arguments = [
+    var arguments = [
         "--output-format", "stream-json",
         "--verbose",
         "--input-format", "stream-json",
@@ -135,13 +144,18 @@ private func run(configPath: String) throws {
         "--permission-prompts", "host",
         "--no-chrome",
         "--permission-mode", config.mode,
-        "--session-id", config.sessionRef,
         "--name", config.sessionName,
     ]
+    if resuming {
+        arguments.append(contentsOf: ["--resume", config.sessionRef])
+    } else {
+        arguments.append(contentsOf: ["--session-id", config.sessionRef])
+    }
+    process.arguments = arguments
     process.currentDirectoryURL = URL(fileURLWithPath: config.cwd, isDirectory: true)
     var environment = ProcessInfo.processInfo.environment
     environment["CLAUDE_CODE_ENTRYPOINT"] = "sdk-ts"
-    process.environment = environment
+    process.environment = ClaudeProcessEnvironment.unattended(environment)
     process.standardInput = input
     process.standardOutput = output
     process.standardError = log
@@ -158,6 +172,9 @@ private func run(configPath: String) throws {
     var pendingControlCommands: [String: String] = [:]
     var pendingInteraction: PendingInteraction?
     var shouldContinue = true
+    var lastCpu = ClaudeProcessActivity.totalCpuNanoseconds(rootPid: process.processIdentifier)
+    var lastCpuProgressAt = Date()
+    var nextCpuSampleAt = Date().addingTimeInterval(60)
 
     // The Agent SDK performs this handshake before exposing any other control
     // method. Without it the CLI starts hooks but waits forever for its host,
@@ -224,7 +241,11 @@ private func run(configPath: String) throws {
                 }
                 snapshot.setRemote(sessionUrl: sessionUrl)
                 remoteReady = true
-                try write(userMessage(id: UUID().uuidString, text: config.prompt), to: writer)
+                if resuming {
+                    snapshot.markIdle()
+                } else {
+                    try write(userMessage(id: UUID().uuidString, text: config.prompt), to: writer)
+                }
                 persist()
                 return
             }
@@ -293,6 +314,7 @@ private func run(configPath: String) throws {
         if count > 0 {
             let data = Data(bytes.prefix(count))
             appendLog(data, handle: log)
+            snapshot.noteProgress()
             buffer.append(data)
             while let newline = buffer.firstIndex(of: 0x0a) {
                 let line = buffer[..<newline]
@@ -306,14 +328,49 @@ private func run(configPath: String) throws {
             break
         }
         try handleCommands()
+        let now = Date()
+        snapshot.ensureIdleClock(at: now)
+        if ClaudeRuntimePolicy.shouldSuspend(state: snapshot.state, now: now, timeout: config.idleTimeoutSeconds) {
+            snapshot.markSuspended()
+            persist()
+            shouldContinue = false
+        }
+        if now >= nextCpuSampleAt {
+            if let cpu = ClaudeProcessActivity.totalCpuNanoseconds(rootPid: process.processIdentifier) {
+                if let previousCpu = lastCpu, cpu > previousCpu {
+                    lastCpuProgressAt = now
+                    snapshot.noteProgress(at: now)
+                }
+                lastCpu = cpu
+            }
+            if ClaudeRuntimePolicy.shouldWarnStalled(
+                state: snapshot.state,
+                now: now,
+                lastCpuProgressAt: lastCpuProgressAt,
+                timeout: config.stallWarningSeconds
+            ) {
+                snapshot.markStalled()
+                persist()
+            }
+            nextCpuSampleAt = now.addingTimeInterval(60)
+        }
         usleep(100_000)
     }
 
-    if process.isRunning { process.terminate() }
+    if process.isRunning, snapshot.state.status == "suspended" {
+        // The host and Claude share this process group. Ignore the signal only
+        // in the already-persisted host so Claude and any test/build descendants
+        // are stopped together instead of becoming orphans.
+        _ = signal(SIGTERM, SIG_IGN)
+        _ = kill(-getpid(), SIGTERM)
+    } else if process.isRunning {
+        process.terminate()
+    }
     process.waitUntilExit()
+    _ = signal(SIGTERM, SIG_DFL)
     if snapshot.state.sessionUrl == nil && snapshot.state.status != "failed" {
         snapshot.fail("Claude Code 在 Remote Control 建立前退出（code=\(process.terminationStatus)）。")
-    } else if snapshot.state.status == "active" {
+    } else if snapshot.state.status == "active" || snapshot.state.status == "stalled" {
         snapshot.markUnavailable("Claude Code 宿主已退出（code=\(process.terminationStatus)）。")
     }
     persist()

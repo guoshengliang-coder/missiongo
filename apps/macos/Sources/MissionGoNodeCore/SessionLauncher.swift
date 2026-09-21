@@ -100,7 +100,10 @@ public struct LaunchCommand: Equatable, Sendable {
 /// and exchanges user-visible messages with its detached local host. The same
 /// session remains interactive on claude.ai and a phone; approvals stay there.
 public struct SessionLauncher: AgentAdapter {
-    public static let sessionUrlTimeout: TimeInterval = 60
+    /// A cold CLI may legitimately take more than a minute. Three minutes is
+    /// the approved startup watchdog; the work prompt is not sent before this
+    /// handshake completes, so timing out cannot interrupt real work.
+    public static let sessionUrlTimeout: TimeInterval = 3 * 60
     static let sessionUrlPollInterval: UInt64 = 500_000_000
 
     public let kind = "claude_code"
@@ -309,6 +312,26 @@ public struct SessionLauncher: AgentAdapter {
         case failed(String)
     }
 
+    private func startHost(configPath: String, logPath: String) throws -> Process {
+        guard let hostExecutable else { throw LaunchError("MissionGo 缺少 Claude 会话宿主。") }
+        let descriptor = open(logPath, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+        guard descriptor >= 0 else {
+            throw LaunchError("无法写入日志 \(logPath)：\(String(cString: strerror(errno)))")
+        }
+        let logHandle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? logHandle.close() }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: hostExecutable)
+        process.arguments = [configPath]
+        process.environment = ClaudeProcessEnvironment.unattended(environment.environment)
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = logHandle
+        try process.run()
+        return process
+    }
+
     private func launchHosted(_ job: DispatchJob) async throws -> LaunchResult {
         if case let .failed(reason) = await Preflight.check(repoPath: job.repoPath, run: run, home: home) {
             throw LaunchError(reason)
@@ -324,7 +347,6 @@ public struct SessionLauncher: AgentAdapter {
         guard let claudeExecutable = environment.which("claude") else {
             throw LaunchError("无法启动 claude：在 PATH 中找不到它（\(environment.path)）")
         }
-        guard let hostExecutable else { throw HostedLaunchError.failed("MissionGo 缺少 Claude 会话宿主。") }
         let sessionRef = UUID().uuidString.lowercased()
         let sessionDirectory = ClaudeHostStore.sessionDirectory(root: sessionsDirectory, sessionRef: sessionRef)
         let commandsDirectory = "\(sessionDirectory)/commands"
@@ -353,30 +375,9 @@ public struct SessionLauncher: AgentAdapter {
             logPath: logPath
         ), to: configPath)
 
-        let descriptor = open(logPath, O_WRONLY | O_APPEND | O_CREAT, 0o600)
-        guard descriptor >= 0 else {
-            throw LaunchError("无法写入日志 \(logPath)：\(String(cString: strerror(errno)))")
-        }
-        let logHandle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        defer { try? logHandle.close() }
-
-        let exitCode = Locked<Int32?>(nil)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: hostExecutable)
-        process.arguments = [configPath]
-        process.environment = environment.environment
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = logHandle
-        process.terminationHandler = { finished in
-            exitCode.withLock { $0 = finished.terminationStatus }
-        }
-        // The session must outlive this app: quitting MissionGo, logging out of
-        // it or updating it never kills work already in progress. Nothing here
-        // terminates the child, and `Process` starts it in its own process group,
-        // so a signal aimed at the app's group does not reach it either.
+        let process: Process
         do {
-            try process.run()
+            process = try startHost(configPath: configPath, logPath: logPath)
         } catch {
             throw HostedLaunchError.failed("无法启动 Claude 会话宿主：\(error.localizedDescription)")
         }
@@ -396,9 +397,9 @@ public struct SessionLauncher: AgentAdapter {
                     throw HostedLaunchError.unsupported(state.error ?? "Claude Code 无法建立受控 Remote Control 会话。")
                 }
             }
-            if let code = exitCode.current {
+            if !process.isRunning {
                 throw HostedLaunchError.unsupported(
-                    "Claude 会话宿主已退出（code=\(code)），会话没有启动。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))"
+                    "Claude 会话宿主已退出（code=\(process.terminationStatus)），会话没有启动。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))"
                 )
             }
             if Task.isCancelled { break }
@@ -411,7 +412,7 @@ public struct SessionLauncher: AgentAdapter {
         if let state = try? ClaudeHostFiles.readState(statePath), let url = state.sessionUrl {
             return LaunchResult(sessionName: sessionName, sessionUrl: url, sessionRef: sessionRef, logPath: logPath)
         }
-        if process.isRunning { process.terminate() }
+        if process.isRunning { ClaudeHostProcess.terminateGroup(process.processIdentifier) }
         throw HostedLaunchError.failed(
             "等待 Claude Code 建立受控远程会话超时（\(seconds) 秒），未启动第二个会话。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))"
         )
@@ -450,7 +451,7 @@ public struct SessionLauncher: AgentAdapter {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = command.args
         process.currentDirectoryURL = URL(fileURLWithPath: job.repoPath, isDirectory: true)
-        process.environment = environment.environment
+        process.environment = ClaudeProcessEnvironment.unattended(environment.environment)
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = logHandle
         process.standardError = logHandle
@@ -477,6 +478,7 @@ public struct SessionLauncher: AgentAdapter {
             try? await Task.sleep(nanoseconds: SessionLauncher.sessionUrlPollInterval)
         }
         let seconds = max(0, Int(sessionUrlTimeout.rounded(.up)))
+        if process.isRunning { process.terminate() }
         throw LaunchError(
             "等待 Claude Code 生成远程会话地址超时（\(seconds) 秒），无法确认会话已创建。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))"
         )
@@ -487,16 +489,64 @@ public struct SessionLauncher: AgentAdapter {
             throw LaunchError("Claude 会话编号无效。")
         }
         let statePath = ClaudeHostStore.statePath(root: sessionsDirectory, sessionRef: session.sessionRef)
-        let state = try ClaudeHostFiles.readState(statePath)
-        if let hostPid = state.hostPid, !ClaudeHostProcess.isRunning(hostPid) {
+        var state = try ClaudeHostFiles.readState(statePath)
+        if session.lifecycle == "close" {
+            if let hostPid = state.hostPid { ClaudeHostProcess.terminateGroup(hostPid) }
+            state.status = "suspended"
+            state.hostPid = nil
+            state.idleSince = nil
+            state.error = "关联工作条目已进入待验证或完成，会话进程已关闭；如需返工请重新派单。"
+            state.lastProgressAt = Date()
+            try ClaudeHostFiles.write(state, to: statePath)
+            return AgentSessionReport(
+                status: state.status,
+                messages: state.messages,
+                activities: state.activities,
+                error: state.error,
+                sessionUrl: state.sessionUrl
+            )
+        }
+        // Hosts created before lifecycle tracking did not persist a PID. Keep
+        // those sessions replyable until they write a PID-bearing state; only
+        // an explicit suspension or a known dead/wrong process is unavailable.
+        let hostRunning = state.hostPid.map(ClaudeHostProcess.isClaudeHost) ?? (state.status != "suspended")
+        if !hostRunning {
+            if state.status == "suspended", let command = session.command, command.kind == "message" {
+                if command.status == "queued" {
+                    return AgentSessionReport(
+                        status: state.status,
+                        messages: state.messages,
+                        activities: state.activities,
+                        error: state.error,
+                        commandId: command.id,
+                        commandStatus: "delivering",
+                        sessionUrl: state.sessionUrl
+                    )
+                }
+                let configPath = ClaudeHostStore.configPath(root: sessionsDirectory, sessionRef: session.sessionRef)
+                let config = try JSONDecoder().decode(
+                    ClaudeHostConfiguration.self,
+                    from: Data(contentsOf: URL(fileURLWithPath: configPath))
+                )
+                _ = try startHost(configPath: configPath, logPath: config.logPath)
+                return AgentSessionReport(
+                    status: state.status,
+                    messages: state.messages,
+                    activities: state.activities,
+                    error: "正在恢复 Claude Code 会话…",
+                    sessionUrl: state.sessionUrl
+                )
+            }
             return AgentSessionReport(
                 status: "unavailable",
                 messages: state.messages,
-                error: "Claude Code 会话宿主已停止；请在外部 Remote Control 会话中继续，或重新派单。"
+                activities: state.activities,
+                error: "Claude Code 会话宿主已停止；请在外部 Remote Control 会话中继续，或重新派单。",
+                sessionUrl: state.sessionUrl
             )
         }
         guard let command = session.command else {
-            return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error)
+            return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error, sessionUrl: state.sessionUrl)
         }
         if let result = state.commandResults[command.id] {
             return AgentSessionReport(
@@ -506,21 +556,23 @@ public struct SessionLauncher: AgentAdapter {
                 error: state.error,
                 commandId: command.id,
                 commandStatus: result.status,
-                commandError: result.error
+                commandError: result.error,
+                sessionUrl: state.sessionUrl
             )
         }
-        if command.kind == "interrupt", state.status != "active" {
+        if command.kind == "interrupt", !["active", "stalled"].contains(state.status) {
             return AgentSessionReport(
                 status: state.status,
                 messages: state.messages,
                 activities: state.activities,
                 error: state.error,
                 commandId: command.id,
-                commandStatus: "delivered"
+                commandStatus: "delivered",
+                sessionUrl: state.sessionUrl
             )
         }
-        if command.kind == "message", state.status == "active", !state.waitingForInput {
-            return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error)
+        if command.kind == "message", ["active", "stalled"].contains(state.status), !state.waitingForInput {
+            return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error, sessionUrl: state.sessionUrl)
         }
         if command.kind == "message", command.status == "queued" {
             return AgentSessionReport(
@@ -529,7 +581,8 @@ public struct SessionLauncher: AgentAdapter {
                 activities: state.activities,
                 error: state.error,
                 commandId: command.id,
-                commandStatus: "delivering"
+                commandStatus: "delivering",
+                sessionUrl: state.sessionUrl
             )
         }
         let safeCommandId = command.id.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
@@ -547,6 +600,6 @@ public struct SessionLauncher: AgentAdapter {
                 to: path
             )
         }
-        return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error)
+        return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error, sessionUrl: state.sessionUrl)
     }
 }
