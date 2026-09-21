@@ -1,8 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { INITIAL_SCHEMA } from "./schema.js";
+
+const LEGACY_CODEX_THREAD_LINK = /^codex:\/\/threads\/[A-Za-z0-9-]{1,100}$/;
 
 export class MissionGoDatabase {
   readonly connection: DatabaseSync;
@@ -742,6 +745,52 @@ export class MissionGoDatabase {
         this.connection
           .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
           .run(202609210421, new Date().toISOString());
+      });
+    }
+    // Agent-session mirroring was introduced after dispatches already existed
+    // in production. Recover the historical Codex thread refs so the node can
+    // observe whether those source conversations have since been archived.
+    const legacyCodexSessionMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609210545")
+      .get() as unknown as { version: number } | undefined;
+    if (!legacyCodexSessionMigration) {
+      const dispatches = this.connection
+        .prepare(
+          `SELECT d.id, d.node_id, d.session_url, d.created_at, d.completed_at
+           FROM dispatches d
+           LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
+           WHERE d.status = 'launched' AND d.agent_kind = 'codex'
+             AND d.session_url IS NOT NULL AND s.id IS NULL`,
+        )
+        .all() as unknown as Array<{
+          id: string;
+          node_id: string;
+          session_url: string;
+          created_at: string;
+          completed_at: string | null;
+        }>;
+      this.transaction(() => {
+        const insert = this.connection.prepare(
+          `INSERT INTO agent_sessions
+             (id, dispatch_id, node_id, agent_kind, agent_session_ref, status,
+              last_error, created_at, updated_at, archived_at, archive_source)
+           VALUES (?, ?, ?, 'codex', ?, 'unavailable', NULL, ?, ?, NULL, NULL)`,
+        );
+        for (const dispatch of dispatches) {
+          if (!LEGACY_CODEX_THREAD_LINK.test(dispatch.session_url)) continue;
+          const threadId = dispatch.session_url.slice("codex://threads/".length);
+          insert.run(
+            randomUUID(),
+            dispatch.id,
+            dispatch.node_id,
+            threadId,
+            dispatch.created_at,
+            dispatch.completed_at ?? dispatch.created_at,
+          );
+        }
+        this.connection
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609210545, new Date().toISOString());
       });
     }
     this.connection.exec("PRAGMA optimize;");
