@@ -278,6 +278,19 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(CodexProtocol.turnInterruptParams(threadId: "t1", turnId: "r1")["turnId"] as? String, "r1")
     }
 
+    func testArchivedThreadListingIncludesAppServerThreadsAndParsesPagination() throws {
+        let params = CodexProtocol.archivedThreadListParams(cursor: "next-page")
+        XCTAssertEqual(params["archived"] as? Bool, true)
+        XCTAssertEqual(params["cursor"] as? String, "next-page")
+        XCTAssertTrue((params["sourceKinds"] as? [String])?.contains("appServer") == true)
+        let page = try CodexProtocol.threadListPage([
+            "data": [["id": "thread-1"], ["id": "thread-2"]],
+            "nextCursor": "page-2",
+        ])
+        XCTAssertEqual(page.ids, Set(["thread-1", "thread-2"]))
+        XCTAssertEqual(page.nextCursor, "page-2")
+    }
+
     func testOnlyAPlainIdBecomesALink() {
         XCTAssertEqual(
             CodexProtocol.threadLink("01a09f35-d6fa-7eb2-9d90-1352cf2fb661"),
@@ -384,6 +397,27 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(server.methods, ["initialize", "initialized", "turn/interrupt"])
         XCTAssertEqual(server.params(of: "turn/interrupt")?["threadId"] as? String, "thread-1")
         XCTAssertEqual(server.params(of: "turn/interrupt")?["turnId"] as? String, "turn-9")
+    }
+
+    func testDetectsAnArchivedThreadWithoutTryingToReadItAsActive() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"], let method = message["method"] as? String else { return [] }
+            if method == "thread/list" {
+                return [["jsonrpc": "2.0", "id": id, "result": [
+                    "data": [["id": "thread-archived"]],
+                ]]]
+            }
+            return [["jsonrpc": "2.0", "id": id, "result": [:]]]
+        }
+        let snapshot = try await CodexAppServerControl(timeout: 5).readThread(
+            socketPath: server.path,
+            threadId: "thread-archived"
+        )
+        server.waitUntilDone()
+
+        XCTAssertTrue(snapshot.archived)
+        XCTAssertEqual(snapshot.status, "unavailable")
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/list"])
     }
 
     func testSaysTheChatGPTAppIsNotRunningWhenNothingListens() async throws {
@@ -707,6 +741,28 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertTrue(control.replies.current.isEmpty)
         XCTAssertNil(report.commandStatus)
         XCTAssertEqual(report.status, "active")
+    }
+
+    func testAnArchivedCodexThreadIsReportedAndDoesNotReceiveAQueuedReply() async throws {
+        let machine = try machine()
+        defer { machine.listener.map { _ = close($0) } }
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "unavailable", messages: [], archived: true)
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: machine.location, control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1",
+            sessionRef: "thread-1",
+            status: "idle",
+            command: AgentSessionCommand(id: "command-1", text: "Continue")
+        ))
+
+        XCTAssertTrue(control.replies.current.isEmpty)
+        XCTAssertEqual(report.sourceArchived, true)
+        XCTAssertEqual(report.commandStatus, "failed")
+        XCTAssertTrue(report.error?.contains("归档") == true)
     }
 
     func testAnActiveThreadExecutesAQueuedInterrupt() async throws {

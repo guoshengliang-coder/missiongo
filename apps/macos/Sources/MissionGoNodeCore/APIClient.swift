@@ -195,14 +195,16 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let commandId: String?
     public let commandStatus: String?
     public let commandError: String?
+    public let sourceArchived: Bool?
 
-    public init(status: String, messages: [AgentSessionMessage], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil) {
+    public init(status: String, messages: [AgentSessionMessage], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil) {
         self.status = status
         self.messages = messages
         self.error = error
         self.commandId = commandId
         self.commandStatus = commandStatus
         self.commandError = commandError
+        self.sourceArchived = sourceArchived
     }
 }
 

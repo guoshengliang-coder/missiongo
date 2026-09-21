@@ -39,10 +39,12 @@ public extension CodexControl {
 public struct CodexThreadSnapshot: Equatable, Sendable {
     public let status: String
     public let messages: [AgentSessionMessage]
+    public let archived: Bool
 
-    public init(status: String, messages: [AgentSessionMessage]) {
+    public init(status: String, messages: [AgentSessionMessage], archived: Bool = false) {
         self.status = status
         self.messages = messages
+        self.archived = archived
     }
 }
 
@@ -176,6 +178,35 @@ public enum CodexProtocol {
         return ["threadId": threadId, "includeTurns": true]
     }
 
+    public static func archivedThreadListParams(cursor: String? = nil) -> [String: Any] {
+        var params: [String: Any] = [
+            "archived": true,
+            "limit": 100,
+            "sortKey": "updated_at",
+            "sortDirection": "desc",
+            "useStateDbOnly": true,
+            // An omitted or empty sourceKinds list defaults to interactive
+            // threads and would miss sessions MissionGo created via app-server.
+            "sourceKinds": [
+                "cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview",
+                "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown",
+            ],
+        ]
+        if let cursor { params["cursor"] = cursor }
+        return params
+    }
+
+    public static func threadListPage(_ result: [String: Any]) throws -> (ids: Set<String>, nextCursor: String?) {
+        guard let data = result["data"] as? [[String: Any]] else {
+            throw CodexControlError.invalidResponse(method: "thread/list")
+        }
+        let ids = Set(data.compactMap { entry -> String? in
+            guard let id = entry["id"] as? String, !id.isEmpty else { return nil }
+            return id
+        })
+        return (ids, result["nextCursor"] as? String)
+    }
+
     public static func threadResumeParams(threadId: String) -> [String: Any] {
         return ["threadId": threadId]
     }
@@ -269,13 +300,44 @@ public enum CodexProtocol {
     }
 }
 
+private final class CodexArchiveCache: @unchecked Sendable {
+    private struct Entry {
+        let ids: Set<String>
+        let expiresAt: Date
+    }
+
+    private let entries = Locked<[String: Entry]>([:])
+    private let ttl: TimeInterval
+
+    init(ttl: TimeInterval = 15) {
+        self.ttl = ttl
+    }
+
+    func value(socketPath: String, load: () throws -> Set<String>) throws -> Set<String> {
+        let now = Date()
+        if let cached = entries.withLock({ $0[socketPath] }), cached.expiresAt > now {
+            return cached.ids
+        }
+        do {
+            let ids = try load()
+            entries.withLock { $0[socketPath] = Entry(ids: ids, expiresAt: now.addingTimeInterval(ttl)) }
+            return ids
+        } catch {
+            if let stale = entries.withLock({ $0[socketPath] }) { return stale.ids }
+            throw error
+        }
+    }
+}
+
 public struct CodexAppServerControl: CodexControl {
     /// Per call. `thread/start` loads configuration and MCP servers, which can
     /// take a few seconds on a cold app-server.
     public let timeout: TimeInterval
+    private let archiveCache: CodexArchiveCache
 
     public init(timeout: TimeInterval = 30) {
         self.timeout = timeout
+        archiveCache = CodexArchiveCache()
     }
 
     public func startThread(_ request: CodexThreadRequest) async throws -> String {
@@ -289,6 +351,7 @@ public struct CodexAppServerControl: CodexControl {
 
     public func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         let timeout = self.timeout
+        let archiveCache = self.archiveCache
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result {
@@ -296,11 +359,33 @@ public struct CodexAppServerControl: CodexControl {
                     defer { connection.close() }
                     _ = try connection.call("initialize", CodexProtocol.initializeParams())
                     try connection.notify("initialized")
+                    let archived = (try? archiveCache.value(socketPath: socketPath) {
+                        try CodexAppServerControl.archivedThreadIds(connection: connection)
+                    }.contains(threadId)) ?? false
+                    if archived {
+                        return CodexThreadSnapshot(status: "unavailable", messages: [], archived: true)
+                    }
                     let result = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId))
                     return try CodexProtocol.threadSnapshot(fromRead: result)
                 })
             }
         }
+    }
+
+    private static func archivedThreadIds(connection: JSONRPCWebSocket) throws -> Set<String> {
+        var ids = Set<String>()
+        var cursor: String?
+        var seenCursors = Set<String>()
+        repeat {
+            let result = try connection.call("thread/list", CodexProtocol.archivedThreadListParams(cursor: cursor))
+            let page = try CodexProtocol.threadListPage(result)
+            ids.formUnion(page.ids)
+            cursor = page.nextCursor
+            if let cursor, !seenCursors.insert(cursor).inserted {
+                throw CodexControlError.invalidResponse(method: "thread/list")
+            }
+        } while cursor != nil
+        return ids
     }
 
     public func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {

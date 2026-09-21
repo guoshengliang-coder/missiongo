@@ -315,7 +315,9 @@ export const INITIAL_SCHEMA = `
     status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'unavailable', 'failed')),
     last_error TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    archived_at TEXT,
+    archive_source TEXT CHECK (archive_source IN ('missiongo', 'source'))
   ) STRICT;
 
   CREATE TABLE IF NOT EXISTS agent_session_messages (

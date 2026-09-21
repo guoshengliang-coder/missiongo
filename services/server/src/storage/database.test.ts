@@ -50,7 +50,10 @@ describe("database migrations", () => {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       ) STRICT;
-      INSERT INTO agent_sessions_legacy SELECT * FROM agent_sessions;
+      INSERT INTO agent_sessions_legacy
+        (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, last_error, created_at, updated_at)
+      SELECT id, dispatch_id, node_id, agent_kind, agent_session_ref, status, last_error, created_at, updated_at
+      FROM agent_sessions;
       DROP TABLE agent_sessions;
       ALTER TABLE agent_sessions_legacy RENAME TO agent_sessions;
       DELETE FROM schema_migrations WHERE version = 202609210206;
@@ -62,11 +65,18 @@ describe("database migrations", () => {
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_sessions'")
       .get() as unknown as { sql: string };
     expect(table.sql).toContain("'claude_code'");
+    const sessionColumns = migrated.connection
+      .prepare("PRAGMA table_info(agent_sessions)")
+      .all() as unknown as Array<{ name: string }>;
+    expect(sessionColumns.map((column) => column.name)).toContain("archived_at");
+    expect(sessionColumns.map((column) => column.name)).toContain("archive_source");
     expect(migrated.connection.prepare("SELECT agent_session_ref FROM agent_sessions WHERE id = 'session-1'").get())
       .toEqual({ agent_session_ref: "thread-1" });
     expect(migrated.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210206").get())
       .toEqual({ version: 202609210206 });
+    expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210421").get())
+      .toEqual({ version: 202609210421 });
     migrated.close();
   });
 
