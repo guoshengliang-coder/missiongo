@@ -10,6 +10,20 @@ export interface ScrollMetrics {
 }
 
 /**
+ * A one-pane conversation is mounted and populated while its list is visible.
+ * Opening that already-selected conversation therefore needs the same reset as
+ * selecting a different session, even though its id and messages did not
+ * change in that render.
+ */
+export function shouldResetMessageView(
+  sessionChanged: boolean,
+  conversationWasOpen: boolean,
+  conversationOpen: boolean,
+): boolean {
+  return sessionChanged || (!conversationWasOpen && conversationOpen);
+}
+
+/**
  * Keep a URL-restored conversation until the session list has actually loaded.
  * Before that response, absence from the empty array proves nothing and must
  * not erase the state that survived an Android Activity recreation.
