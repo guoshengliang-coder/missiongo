@@ -10,6 +10,10 @@ public protocol AgentAdapter: Sendable {
     var kind: String { get }
     /// `nil` when this agent is not installed on the machine.
     func detect() async -> String?
+    /// Whether this adapter can safely accept a new dispatch right now.
+    /// Temporary pressure must pause claiming, not turn queued work into a
+    /// failed dispatch after the server has already handed it over.
+    func dispatchAvailability() async -> AgentDispatchAvailability
     /// Throws with a human-readable reason; the loop reports it as the failure.
     func launch(_ job: DispatchJob) async throws -> LaunchResult
     /// Mirrors an already launched session and, when it is idle, delivers the
@@ -18,9 +22,16 @@ public protocol AgentAdapter: Sendable {
 }
 
 public extension AgentAdapter {
+    func dispatchAvailability() async -> AgentDispatchAvailability { .ready }
+
     func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         throw LaunchError("\(kind) does not support mirrored sessions.")
     }
+}
+
+public enum AgentDispatchAvailability: Equatable, Sendable {
+    case ready
+    case unavailable(reason: String)
 }
 
 /// What the server hands over for one dispatch. Item keys, mode and a

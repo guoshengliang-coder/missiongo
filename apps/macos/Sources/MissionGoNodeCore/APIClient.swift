@@ -571,9 +571,13 @@ public struct APIClient: Sendable {
     /// Long poll: `waitMs` asks the server to hold the request open until there
     /// is work. It answers 204 when the wait runs out, which is an idle poll, not
     /// an error — the loop simply asks again. `nil` means nothing was queued.
-    public func claimNext(waitMs: Int = defaultClaimWaitMs) async throws -> DispatchRequest? {
+    public func claimNext(
+        waitMs: Int = defaultClaimWaitMs,
+        availableAgentKinds: [String]? = nil
+    ) async throws -> DispatchRequest? {
         struct Body: Encodable {
             let waitMs: Int
+            let availableAgentKinds: [String]?
         }
         // The client timeout has to outlast the wait the server was asked for, or
         // every long poll would abort locally just before the server answers:
@@ -581,7 +585,7 @@ public struct APIClient: Sendable {
         let timeout = waitMs > 0 ? TimeInterval(waitMs) / 1000 + APIClient.requestTimeout : APIClient.requestTimeout
         let response = try await send(
             "POST", "/api/v1/node/dispatches/claim-next",
-            body: Body(waitMs: waitMs),
+            body: Body(waitMs: waitMs, availableAgentKinds: availableAgentKinds),
             bearer: try nodeToken(),
             timeout: timeout
         )

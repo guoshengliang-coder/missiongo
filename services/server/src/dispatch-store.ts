@@ -698,15 +698,19 @@ export class DispatchStore {
    * delivered inside the same transaction is what keeps two polls from starting
    * the same batch twice.
    */
-  claimNextDispatch(nodeId: string): DispatchJob | undefined {
+  claimNextDispatch(nodeId: string, availableAgentKinds?: readonly AgentKind[]): DispatchJob | undefined {
+    if (availableAgentKinds?.length === 0) return undefined;
     return this.database.transaction(() => {
+      const agentFilter = availableAgentKinds
+        ? ` AND d.agent_kind IN (${availableAgentKinds.map(() => "?").join(", ")})`
+        : "";
       const row = this.database.connection
         .prepare(
           `SELECT d.id, d.agent_kind, d.mode, d.repo_path, COALESCE(n.nickname, n.name) AS node_name
            FROM dispatches d JOIN nodes n ON n.id = d.node_id
-           WHERE d.node_id = ? AND d.status = 'queued' ORDER BY d.created_at LIMIT 1`,
+           WHERE d.node_id = ? AND d.status = 'queued'${agentFilter} ORDER BY d.created_at LIMIT 1`,
         )
-        .get(nodeId) as unknown as
+        .get(nodeId, ...(availableAgentKinds ?? [])) as unknown as
           { id: string; agent_kind: string; mode: string; repo_path: string; node_name: string } | undefined;
       if (!row) return undefined;
       const now = new Date().toISOString();

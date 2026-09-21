@@ -5,6 +5,7 @@ import { readFile, stat } from "node:fs/promises";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 
 import {
+  AGENT_KINDS,
   formatFeedbackLog,
   TRANSITION_REASONS,
   WORK_ITEM_PRIORITIES,
@@ -2052,13 +2053,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // timeout, which a WebSocket upgrade would have needed configuring for.
   app.post("/api/v1/node/dispatches/claim-next", async (request, reply) => {
     const node = requireNode(request);
+    const body = objectBodyOrEmpty(request.body);
+    const suppliedAgentKinds = body.availableAgentKinds;
+    if (suppliedAgentKinds !== undefined && (!Array.isArray(suppliedAgentKinds)
+      || suppliedAgentKinds.some((kind) => typeof kind !== "string" || !AGENT_KINDS.includes(kind as AgentKind)))) {
+      throw invalidInput("availableAgentKinds must contain supported agent kinds.");
+    }
+    const availableAgentKinds = suppliedAgentKinds === undefined
+      ? undefined
+      : [...new Set(suppliedAgentKinds as AgentKind[])];
     if (agentSessionStore.countExecutionSlots(node.nodeId) >= MAX_NODE_EXECUTION_SESSIONS) {
       return reply.status(204).send();
     }
-    const immediate = dispatchStore.claimNextDispatch(node.nodeId);
+    const immediate = dispatchStore.claimNextDispatch(node.nodeId, availableAgentKinds);
     if (immediate) return immediate;
 
-    const requested = Number((objectBodyOrEmpty(request.body).waitMs ?? 0));
+    // With nothing locally ready, a long poll could not become claimable until
+    // the client probes again. Answer now so recovery is noticed locally.
+    if (availableAgentKinds?.length === 0) return reply.status(204).send();
+    const requested = Number((body.waitMs ?? 0));
     const waitMs = Number.isFinite(requested) ? Math.min(Math.max(requested, 0), MAX_CLAIM_WAIT_MS) : 0;
     if (waitMs > 0) {
       // Stop waiting if the machine hangs up, so a reconnecting daemon does not
@@ -2069,7 +2082,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (agentSessionStore.countExecutionSlots(node.nodeId) >= MAX_NODE_EXECUTION_SESSIONS) {
         return reply.status(204).send();
       }
-      const afterWait = dispatchStore.claimNextDispatch(node.nodeId);
+      const afterWait = dispatchStore.claimNextDispatch(node.nodeId, availableAgentKinds);
       if (afterWait) return afterWait;
     }
     return reply.status(204).send();

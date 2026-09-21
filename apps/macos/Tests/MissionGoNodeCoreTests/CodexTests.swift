@@ -642,6 +642,100 @@ final class CodexPreflightTests: XCTestCase {
     }
 }
 
+final class CodexFileDescriptorGuardTests: XCTestCase {
+    func testParsesTheProcessThatOwnsTheControlSocket() {
+        XCTAssertEqual(CodexFileDescriptorGuard.ownerPID(fromLsof: "p2809\nccodex\nf12\n"), 2809)
+        XCTAssertNil(CodexFileDescriptorGuard.ownerPID(fromLsof: "ccodex\nf12\n"))
+    }
+
+    func testKeepsSixtyFourDescriptorsInReserve() {
+        XCTAssertNil(CodexFileDescriptorGuard.unavailableReason(openFiles: 191, softLimit: 256))
+        let reason = CodexFileDescriptorGuard.unavailableReason(openFiles: 192, softLimit: 256)
+        XCTAssertTrue(reason?.contains("192/256") == true)
+        XCTAssertTrue(reason?.contains("留在队列") == true)
+        XCTAssertTrue(reason?.contains("daemon restart") == true)
+    }
+
+    func testReadsTheLimitOnlyFromTheExpectedLaunchAgent() throws {
+        let plist: [String: Any] = [
+            "Label": CodexFileDescriptorGuard.launchAgentLabel,
+            "SoftResourceLimits": ["NumberOfFiles": 4096],
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        XCTAssertEqual(CodexFileDescriptorGuard.softLimit(fromLaunchAgentPlist: data), 4096)
+
+        let wrongLabel: [String: Any] = [
+            "Label": "com.example.unrelated",
+            "SoftResourceLimits": ["NumberOfFiles": 4096],
+        ]
+        let wrongData = try PropertyListSerialization.data(fromPropertyList: wrongLabel, format: .xml, options: 0)
+        XCTAssertNil(CodexFileDescriptorGuard.softLimit(fromLaunchAgentPlist: wrongData))
+    }
+
+    func testUsesTheLatestSuccessfulLaunchReceipt() {
+        let log = """
+        {"status":"started","pid":66122}
+        {"status":"alreadyRunning","pid":66122}
+        {"status":"started","pid":68039}
+        """
+        XCTAssertEqual(CodexFileDescriptorGuard.lastStartedPID(fromLaunchLog: log), 68039)
+        XCTAssertNil(CodexFileDescriptorGuard.lastStartedPID(fromLaunchLog: "{\"status\":\"alreadyRunning\",\"pid\":68039}"))
+    }
+
+    func testVerifiesTheReceiptPIDBeforeTrustingTheConfiguredLimit() throws {
+        let root = try shortTemporaryDirectory()
+        let plistPath = "\(root)/agent.plist"
+        let logPath = "\(root)/agent.log"
+        let plist: [String: Any] = [
+            "Label": CodexFileDescriptorGuard.launchAgentLabel,
+            "SoftResourceLimits": ["NumberOfFiles": 4096],
+        ]
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            .write(to: URL(fileURLWithPath: plistPath))
+        try "{\"status\":\"started\",\"pid\":68039}\n".write(toFile: logPath, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(CodexFileDescriptorGuard.verifiedSoftLimit(
+            ownerPID: 68039, launchAgentPath: plistPath, launchLogPath: logPath
+        ), 4096)
+        XCTAssertNil(CodexFileDescriptorGuard.verifiedSoftLimit(
+            ownerPID: 68040, launchAgentPath: plistPath, launchLogPath: logPath
+        ))
+    }
+
+    func testRaisedDaemonLimitDoesNotUseMissionGoProcessLimit() async {
+        let guardrail = CodexFileDescriptorGuard(
+            run: { _, _ in CommandResult(code: 0, stdout: "p68039\nccodex\n", stderr: "") },
+            softLimit: { pid in pid == 68039 ? 4096 : nil },
+            openFiles: { _ in 194 }
+        )
+        let reason = await guardrail.unavailableReason(socketPath: "/tmp/app-server.sock")
+        XCTAssertNil(reason)
+    }
+
+    func testProbeFailuresFailOpen() async {
+        let guardrail = CodexFileDescriptorGuard(
+            run: { _, _ in CommandResult(code: 1, stdout: "", stderr: "not permitted") },
+            softLimit: { _ in 256 }, openFiles: { _ in 255 }
+        )
+        let reason = await guardrail.unavailableReason(socketPath: "/tmp/missing.sock")
+        XCTAssertNil(reason)
+    }
+
+    func testMakesDescriptorExhaustionAndMcpTimeoutActionable() {
+        XCTAssertTrue(CodexFailure.explain(CodexControlError.rpc(
+            method: "thread/start", message: "Too many open files (os error 24)"
+        )).contains("daemon restart"))
+        XCTAssertTrue(CodexFailure.explain(CodexControlError.rpc(
+            method: "mcpServer/tool/call", message: "MCP startup timed out after 30s"
+        )).contains("MCP 启动超时"))
+    }
+}
+
+private struct FixedCodexResources: CodexResourceChecking {
+    let reason: String?
+    func unavailableReason(socketPath: String) async -> String? { reason }
+}
+
 private final class RecordingControl: CodexControl, @unchecked Sendable {
     let requests = Locked<[CodexThreadRequest]>([])
     let replies = Locked<[(String, String)]>([])
@@ -749,6 +843,25 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(sent.prompt, try LaunchPrompt.build(
             itemKeys: ["AND-42"], dispatchId: "d-1", mode: "plan", client: .codex, worktreePath: path
         ))
+    }
+
+    func testResourcePressureStopsBeforeCreatingAThread() async throws {
+        let machine = try machine()
+        defer { machine.listener.map { _ = close($0) } }
+        let control = RecordingControl()
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: "https://missiongo.test",
+            run: fakeCodex(), location: machine.location, control: control,
+            resources: FixedCodexResources(reason: "Codex 后台服务文件描述符余量不足")
+        )
+
+        do {
+            _ = try await launcher.launch(job(repoPath: machine.repoPath))
+            XCTFail("expected resource pressure")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("文件描述符余量不足"))
+        }
+        XCTAssertTrue(control.requests.current.isEmpty)
     }
 
     func testRefusesAModeOutsideTheListBeforeTouchingAnything() async throws {
