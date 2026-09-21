@@ -1206,7 +1206,7 @@ export function App() {
         <ProductSwitcher
           products={products}
           selectedProductId={selectedProductId}
-          attentionCounts={hasAnyAiPermission ? attentionCounts.byProduct : undefined}
+          attentionCounts={agentConsoleOpen && hasAnyAiPermission ? attentionCounts.byProduct : undefined}
           attentionCountsLoaded={agentSessionsQuery.data !== undefined}
           onSelect={(productId) => {
             setSelectedProductId(productId);

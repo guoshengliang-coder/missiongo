@@ -1306,6 +1306,22 @@ describe("Claiming a dispatch on the node", () => {
     const node = await registeredNode(app);
     await heartbeat(app, node.token, "claude_code");
     const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      headers: { cookie },
+      payload: {
+        productId: mission.productId,
+        status: "ready",
+        type: "task",
+        priority: "normal",
+        title: "Second linked work item",
+        description: "Keep the shared session open until both items are done",
+        environment: { platform: "web" },
+      },
+    });
+    expect(second.statusCode).toBe(201);
+    const secondKey = second.json<{ key: string }>().key;
     await app.inject({
       method: "PUT",
       url: `/api/v1/nodes/${node.nodeId}/repos`,
@@ -1316,7 +1332,12 @@ describe("Claiming a dispatch on the node", () => {
       method: "POST",
       url: "/api/v1/dispatches",
       headers: { cookie },
-      payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [mission.itemKey] },
+      payload: {
+        nodeId: node.nodeId,
+        agentKind: "claude_code",
+        mode: "plan",
+        itemKeys: [mission.itemKey, secondKey],
+      },
     });
     const dispatchId = created.json<{ id: string }>().id;
     await app.inject({
@@ -1431,6 +1452,53 @@ describe("Claiming a dispatch on the node", () => {
       url: `/api/v1/items/${mission.itemKey}/transitions`,
       headers: { cookie },
       payload: { to: "pending_verification", reason: "resolution_submitted" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${secondKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "in_progress", reason: "claim" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${secondKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "pending_verification", reason: "resolution_submitted" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${mission.itemKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "done", reason: "verification_passed" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json()).toMatchObject({
+      sessions: [{ id: mirrored.id, canReply: true }],
+    });
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${mirrored.id}`,
+      headers: { cookie },
+    })).json()).toMatchObject({
+      id: mirrored.id, canReply: true,
+    });
+    const awaitingVerification = await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(awaitingVerification.json()).toMatchObject({
+      sessions: [{ id: mirrored.id, lifecycle: "keep", occupiesExecutionSlot: true }],
+    });
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${secondKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "done", reason: "verification_passed" },
     })).statusCode).toBe(200);
     expect((await app.inject({
       method: "GET",

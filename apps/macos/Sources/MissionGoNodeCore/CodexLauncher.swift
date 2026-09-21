@@ -265,9 +265,12 @@ public struct CodexLauncher: AgentAdapter {
                 sourceArchived: false
             )
         }
-        // Codex rejects a second turn while one is active. Keeping the command
-        // queued is intentional: the next poll sends it as soon as the thread is idle.
-        guard snapshot.status == "idle" else {
+        // An active ordinary turn accepts same-turn steering. Older app-server
+        // snapshots that do not identify the active turn keep the reply queued
+        // and fall back to turn/start once the thread becomes idle.
+        let canDeliver = snapshot.status == "idle"
+            || (snapshot.status == "active" && snapshot.activeTurnId != nil)
+        guard canDeliver else {
             return AgentSessionReport(status: snapshot.status, messages: snapshot.messages, sourceArchived: false)
         }
         // Reserve the queued reply on the server before sending it. A person can
@@ -286,13 +289,23 @@ public struct CodexLauncher: AgentAdapter {
         guard command.status == "delivering" else {
             return AgentSessionReport(status: snapshot.status, messages: snapshot.messages, sourceArchived: false)
         }
-        try await control.sendMessage(
-            socketPath: location.controlSocketPath,
-            threadId: session.sessionRef,
-            text: command.text,
-            clientUserMessageId: command.id
-        )
-        snapshot = CodexThreadSnapshot(status: "active", messages: snapshot.messages)
+        if let activeTurnId = snapshot.activeTurnId, snapshot.status == "active" {
+            try await control.steerMessage(
+                socketPath: location.controlSocketPath,
+                threadId: session.sessionRef,
+                turnId: activeTurnId,
+                text: command.text,
+                clientUserMessageId: command.id
+            )
+        } else {
+            try await control.sendMessage(
+                socketPath: location.controlSocketPath,
+                threadId: session.sessionRef,
+                text: command.text,
+                clientUserMessageId: command.id
+            )
+            snapshot = CodexThreadSnapshot(status: "active", messages: snapshot.messages)
+        }
         return AgentSessionReport(
             status: snapshot.status,
             messages: snapshot.messages,

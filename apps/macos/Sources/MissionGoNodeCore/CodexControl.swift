@@ -19,6 +19,7 @@ public protocol CodexControl: Sendable {
     func startThread(_ request: CodexThreadRequest) async throws -> String
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws
+    func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws
 }
 
@@ -31,6 +32,10 @@ public extension CodexControl {
         throw CodexControlError.rpc(method: "turn/start", message: "这个 Codex 控制器不支持回复会话。")
     }
 
+    func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws {
+        throw CodexControlError.rpc(method: "turn/steer", message: "这个 Codex 控制器不支持引导当前回合。")
+    }
+
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
         throw CodexControlError.rpc(method: "turn/interrupt", message: "这个 Codex 控制器不支持中断会话。")
     }
@@ -38,11 +43,13 @@ public extension CodexControl {
 
 public struct CodexThreadSnapshot: Equatable, Sendable {
     public let status: String
+    public let activeTurnId: String?
     public let messages: [AgentSessionMessage]
     public let archived: Bool
 
-    public init(status: String, messages: [AgentSessionMessage], archived: Bool = false) {
+    public init(status: String, activeTurnId: String? = nil, messages: [AgentSessionMessage], archived: Bool = false) {
         self.status = status
+        self.activeTurnId = activeTurnId
         self.messages = messages
         self.archived = archived
     }
@@ -174,6 +181,20 @@ public enum CodexProtocol {
         return params
     }
 
+    public static func turnSteerParams(
+        threadId: String,
+        turnId: String,
+        prompt: String,
+        clientUserMessageId: String
+    ) -> [String: Any] {
+        return [
+            "threadId": threadId,
+            "expectedTurnId": turnId,
+            "input": [["type": "text", "text": prompt]],
+            "clientUserMessageId": clientUserMessageId,
+        ]
+    }
+
     public static func threadReadParams(threadId: String) -> [String: Any] {
         return ["threadId": threadId, "includeTurns": true]
     }
@@ -232,8 +253,9 @@ public enum CodexProtocol {
         default: status = "unavailable"
         }
 
-        var messages: [AgentSessionMessage] = []
         let turns = thread["turns"] as? [[String: Any]] ?? []
+        let activeTurnId = turns.last(where: { $0["status"] as? String == "inProgress" })?["id"] as? String
+        var messages: [AgentSessionMessage] = []
         for turn in turns {
             let turnId = turn["id"] as? String
             for item in turn["items"] as? [[String: Any]] ?? [] {
@@ -282,7 +304,7 @@ public enum CodexProtocol {
                 }
             }
         }
-        return CodexThreadSnapshot(status: status, messages: messages)
+        return CodexThreadSnapshot(status: status, activeTurnId: activeTurnId, messages: messages)
     }
 
     /// `result.thread.id` of a `thread/start` answer.
@@ -405,6 +427,29 @@ public struct CodexAppServerControl: CodexControl {
                         "turn/start",
                         CodexProtocol.turnStartParams(
                             threadId: threadId,
+                            prompt: text,
+                            clientUserMessageId: clientUserMessageId
+                        )
+                    )
+                })
+            }
+        }
+    }
+
+    public func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws {
+        let timeout = self.timeout
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result {
+                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                    defer { connection.close() }
+                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    try connection.notify("initialized")
+                    _ = try connection.call(
+                        "turn/steer",
+                        CodexProtocol.turnSteerParams(
+                            threadId: threadId,
+                            turnId: turnId,
                             prompt: text,
                             clientUserMessageId: clientUserMessageId
                         )

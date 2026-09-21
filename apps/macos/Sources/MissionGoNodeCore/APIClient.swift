@@ -136,8 +136,8 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
     public let agentKind: String
     public let sessionRef: String
     public let status: String
-    /// `close` means every item in this dispatch has reached verification or
-    /// done, so the node should release a Claude process without changing the
+    /// `close` means every item in this dispatch is done, so the node should
+    /// release a Claude process without changing the
     /// work-item state. Older servers omit it and therefore keep the session.
     public let lifecycle: String
     /// The server's durable view of whether this conversation consumes one of

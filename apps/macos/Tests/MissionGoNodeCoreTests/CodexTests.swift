@@ -246,6 +246,18 @@ final class CodexProtocolTests: XCTestCase {
         )
     }
 
+    func testTurnSteerPinsTheActiveTurnAndClientMessage() throws {
+        let params = CodexProtocol.turnSteerParams(
+            threadId: "t1", turnId: "turn-1", prompt: "focus here", clientUserMessageId: "command-1"
+        )
+        XCTAssertEqual(params["threadId"] as? String, "t1")
+        XCTAssertEqual(params["expectedTurnId"] as? String, "turn-1")
+        XCTAssertEqual(params["clientUserMessageId"] as? String, "command-1")
+        let input = params["input"] as? [[String: Any]]
+        XCTAssertEqual(input?.first?["type"] as? String, "text")
+        XCTAssertEqual(input?.first?["text"] as? String, "focus here")
+    }
+
     func testReadsOnlyUserVisibleThreadItems() throws {
         let snapshot = try CodexProtocol.threadSnapshot(fromRead: [
             "thread": [
@@ -269,6 +281,21 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(snapshot.messages.map(\.sourceId), ["u1", "p1", "a1"])
         XCTAssertEqual(snapshot.messages.map(\.role), ["user", "plan", "agent"])
         XCTAssertEqual(snapshot.messages.last?.questions, [AgentSessionQuestion(title: "Scope", options: ["small", "complete"])])
+    }
+
+    func testReadsTheActiveTurnIdForSameTurnSteering() throws {
+        let snapshot = try CodexProtocol.threadSnapshot(fromRead: [
+            "thread": [
+                "status": ["type": "active"],
+                "turns": [
+                    ["id": "turn-1", "status": "completed", "items": []],
+                    ["id": "turn-2", "status": "inProgress", "items": []],
+                ],
+            ],
+        ])
+
+        XCTAssertEqual(snapshot.status, "active")
+        XCTAssertEqual(snapshot.activeTurnId, "turn-2")
     }
 
     func testTreatsAnUnloadedThreadAsIdleBecauseReplyResumesIt() throws {
@@ -407,6 +434,29 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(server.params(of: "turn/interrupt")?["turnId"] as? String, "turn-9")
     }
 
+    func testSteersTheExactActiveTurnWithAStableClientMessageId() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            return [["jsonrpc": "2.0", "id": id, "result": ["turnId": "turn-9"]]]
+        }
+        try await CodexAppServerControl(timeout: 5).steerMessage(
+            socketPath: server.path,
+            threadId: "thread-1",
+            turnId: "turn-9",
+            text: "Focus on the failing test",
+            clientUserMessageId: "command-1"
+        )
+        server.waitUntilDone()
+
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "turn/steer"])
+        let params = server.params(of: "turn/steer")
+        XCTAssertEqual(params?["threadId"] as? String, "thread-1")
+        XCTAssertEqual(params?["expectedTurnId"] as? String, "turn-9")
+        XCTAssertEqual(params?["clientUserMessageId"] as? String, "command-1")
+        let input = params?["input"] as? [[String: Any]]
+        XCTAssertEqual(input?.first?["text"] as? String, "Focus on the failing test")
+    }
+
     func testDetectsAnArchivedThreadWithoutTryingToReadItAsActive() async throws {
         let server = try FakeAppServer { message in
             guard let id = message["id"], let method = message["method"] as? String else { return [] }
@@ -540,6 +590,7 @@ final class CodexPreflightTests: XCTestCase {
 private final class RecordingControl: CodexControl, @unchecked Sendable {
     let requests = Locked<[CodexThreadRequest]>([])
     let replies = Locked<[(String, String)]>([])
+    let steerings = Locked<[(String, String, String)]>([])
     let interruptions = Locked<[(String, String)]>([])
     let threadId: String
     var snapshot = CodexThreadSnapshot(status: "idle", messages: [])
@@ -559,6 +610,10 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
 
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
         replies.withLock { $0.append((clientUserMessageId, text)) }
+    }
+
+    func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws {
+        steerings.withLock { $0.append((clientUserMessageId, turnId, text)) }
     }
 
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
@@ -732,14 +787,14 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(report.messages.map(\.sourceId), ["a1"])
     }
 
-    func testAnActiveThreadKeepsTheWebReplyQueued() async throws {
+    func testAnActiveThreadReservesThenSteersTheQueuedWebReply() async throws {
         let control = RecordingControl(threadId: "thread-1")
-        control.snapshot = CodexThreadSnapshot(status: "active", messages: [])
+        control.snapshot = CodexThreadSnapshot(status: "active", activeTurnId: "turn-9", messages: [])
         let launcher = CodexLauncher(
             environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
             location: CodexLocation(codexHome: "/tmp/codex"), control: control
         )
-        let report = try await launcher.synchronize(NodeAgentSession(
+        let reserved = try await launcher.synchronize(NodeAgentSession(
             id: "session-1",
             sessionRef: "thread-1",
             status: "active",
@@ -747,7 +802,20 @@ final class CodexLauncherTests: XCTestCase {
         ))
 
         XCTAssertTrue(control.replies.current.isEmpty)
-        XCTAssertNil(report.commandStatus)
+        XCTAssertTrue(control.steerings.current.isEmpty)
+        XCTAssertEqual(reserved.commandStatus, "delivering")
+        XCTAssertEqual(reserved.status, "active")
+
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1",
+            sessionRef: "thread-1",
+            status: "active",
+            command: AgentSessionCommand(id: "command-1", text: "Continue", status: "delivering")
+        ))
+
+        XCTAssertTrue(control.replies.current.isEmpty)
+        XCTAssertEqual(control.steerings.current.map { [$0.0, $0.1, $0.2] }, [["command-1", "turn-9", "Continue"]])
+        XCTAssertEqual(report.commandStatus, "delivered")
         XCTAssertEqual(report.status, "active")
     }
 
