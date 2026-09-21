@@ -258,6 +258,21 @@ public struct CodexLauncher: AgentAdapter {
         guard snapshot.status == "idle" else {
             return AgentSessionReport(status: snapshot.status, messages: snapshot.messages)
         }
+        // Reserve the queued reply on the server before sending it. A person can
+        // cancel only while it is still queued; once this acknowledgement wins,
+        // the console says it is being delivered and no longer promises a
+        // cancellation that could race the actual turn/start call below.
+        if command.status == "queued" {
+            return AgentSessionReport(
+                status: snapshot.status,
+                messages: snapshot.messages,
+                commandId: command.id,
+                commandStatus: "delivering"
+            )
+        }
+        guard command.status == "delivering" else {
+            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages)
+        }
         try await control.sendMessage(
             socketPath: location.controlSocketPath,
             threadId: session.sessionRef,

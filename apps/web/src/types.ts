@@ -339,10 +339,11 @@ export interface AgentSessionCommand {
   readonly kind: "message" | "interrupt";
   readonly text: string;
   readonly turnId?: string;
-  readonly status: "queued" | "delivered" | "failed";
+  readonly status: "queued" | "delivering" | "delivered" | "failed" | "cancelled";
   readonly error?: string;
   readonly createdAt: string;
   readonly deliveredAt?: string;
+  readonly cancelledAt?: string;
 }
 
 export interface AgentSession {

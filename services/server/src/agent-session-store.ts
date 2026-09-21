@@ -7,6 +7,7 @@ import type { MissionGoDatabase } from "./storage/database.js";
 
 export type AgentSessionStatus = "active" | "idle" | "unavailable" | "failed";
 export type AgentMessageRole = "user" | "agent" | "plan";
+export type AgentSessionCommandStatus = "queued" | "delivering" | "delivered" | "failed" | "cancelled";
 
 export interface AgentSessionMessageInput {
   readonly sourceId: string;
@@ -22,10 +23,11 @@ export interface AgentSessionCommand {
   readonly kind: "message" | "interrupt";
   readonly text: string;
   readonly turnId?: string;
-  readonly status: "queued" | "delivered" | "failed";
+  readonly status: AgentSessionCommandStatus;
   readonly error?: string;
   readonly createdAt: string;
   readonly deliveredAt?: string;
+  readonly cancelledAt?: string;
 }
 
 export interface AgentSessionSnapshot {
@@ -106,10 +108,11 @@ interface CommandRow {
   kind: "message" | "interrupt";
   text: string;
   turn_id: string | null;
-  status: "queued" | "delivered" | "failed";
+  status: AgentSessionCommandStatus;
   error: string | null;
   created_at: string;
   delivered_at: string | null;
+  cancelled_at: string | null;
 }
 
 const MAX_MESSAGE_LENGTH = 100_000;
@@ -292,8 +295,8 @@ export class AgentSessionStore {
       )
       .get(sessionId, accountId) as unknown as { id: string } | undefined;
     if (!session) throw notFound("Agent session");
-    if (this.queuedCommand(sessionId)) {
-      throw conflict("agent_reply_pending", "This session already has a queued reply.");
+    if (this.pendingCommand(sessionId)) {
+      throw conflict("agent_reply_pending", "This session already has a pending reply.");
     }
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -318,9 +321,12 @@ export class AgentSessionStore {
       .get(sessionId, accountId) as unknown as { id: string; status: AgentSessionStatus } | undefined;
     if (!session) throw notFound("Agent session");
     if (session.status !== "active") throw conflict("agent_not_running", "This Codex session is not currently running.");
-    const queued = this.queuedCommand(sessionId);
-    if (queued?.kind === "interrupt") {
+    const pending = this.pendingCommand(sessionId);
+    if (pending?.kind === "interrupt") {
       throw conflict("agent_stop_pending", "This session already has a queued stop request.");
+    }
+    if (pending?.status === "delivering") {
+      throw conflict("agent_reply_delivering", "A reply is already being delivered; try stopping again shortly.");
     }
     const turn = this.database.connection
       .prepare(
@@ -333,13 +339,13 @@ export class AgentSessionStore {
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.transaction(() => {
-      if (queued) {
+      if (pending) {
         this.database.connection
           .prepare(
-            `UPDATE agent_session_commands SET status = 'failed', error = ?, delivered_at = ?
+            `UPDATE agent_session_commands SET status = 'cancelled', error = ?, cancelled_at = ?
              WHERE id = ? AND status = 'queued'`,
           )
-          .run("已被终止任务请求取代", now, queued.id);
+          .run("已被终止任务请求取代", now, pending.id);
       }
       this.database.connection
         .prepare(
@@ -352,6 +358,43 @@ export class AgentSessionStore {
     return { id, kind: "interrupt", text: "停止当前任务", turnId: turn.turn_id, status: "queued", createdAt: now };
   }
 
+  cancel(accountId: string, sessionId: string, commandId: string): AgentSessionCommand {
+    const command = this.database.connection
+      .prepare(
+        `SELECT c.id, c.kind, c.text, c.turn_id, c.status, c.error, c.created_at, c.delivered_at, c.cancelled_at
+         FROM agent_session_commands c
+         JOIN agent_sessions s ON s.id = c.session_id
+         JOIN dispatches d ON d.id = s.dispatch_id
+         WHERE c.id = ? AND c.session_id = ? AND d.account_id = ?`,
+      )
+      .get(commandId, sessionId, accountId) as unknown as CommandRow | undefined;
+    if (!command) throw notFound("Agent session command");
+    if (command.kind !== "message") {
+      throw conflict("agent_reply_not_pending", "Only a queued reply can be cancelled.");
+    }
+    if (command.status === "cancelled") return this.mapCommand(command);
+    if (command.status !== "queued") {
+      throw conflict("agent_reply_not_pending", "Only a queued reply can be cancelled.");
+    }
+
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      const changed = this.database.connection
+        .prepare(
+          `UPDATE agent_session_commands SET status = 'cancelled', cancelled_at = ?
+           WHERE id = ? AND session_id = ? AND status = 'queued'`,
+        )
+        .run(now, commandId, sessionId);
+      if (changed.changes === 0) {
+        throw conflict("agent_reply_changed", "The queued reply changed before it could be cancelled.");
+      }
+      this.database.connection
+        .prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?")
+        .run(now, sessionId);
+    });
+    return this.mapCommand({ ...command, status: "cancelled", cancelled_at: now });
+  }
+
   listForNode(nodeId: string): readonly NodeAgentSession[] {
     const rows = this.database.connection
       .prepare(
@@ -359,14 +402,15 @@ export class AgentSessionStore {
          FROM agent_sessions s
          WHERE node_id = ? AND (
            status IN ('active', 'unavailable') OR EXISTS (
-             SELECT 1 FROM agent_session_commands c WHERE c.session_id = s.id AND c.status = 'queued'
+             SELECT 1 FROM agent_session_commands c
+             WHERE c.session_id = s.id AND c.status IN ('queued', 'delivering')
            )
          )
          ORDER BY updated_at DESC LIMIT 100`,
       )
       .all(nodeId) as unknown as SessionRow[];
     return rows.map((row) => {
-      const command = this.queuedCommand(row.id);
+      const command = this.pendingCommand(row.id);
       return {
         id: row.id,
         sessionRef: row.agent_session_ref,
@@ -383,7 +427,7 @@ export class AgentSessionStore {
     messages: readonly AgentSessionMessageInput[];
     error?: string;
     commandId?: string;
-    commandStatus?: "delivered" | "failed";
+    commandStatus?: "delivering" | "delivered" | "failed";
     commandError?: string;
   }): void {
     if (input.messages.length > MAX_MESSAGES_PER_SNAPSHOT) {
@@ -417,10 +461,11 @@ export class AgentSessionStore {
         );
       });
       if (input.commandId && input.commandStatus) {
+        const sourceStatus = input.commandStatus === "delivering" ? "status = 'queued'" : "status IN ('queued', 'delivering')";
         const changed = this.database.connection
           .prepare(
             `UPDATE agent_session_commands SET status = ?, error = ?, delivered_at = ?
-             WHERE id = ? AND session_id = ? AND status = 'queued'`,
+             WHERE id = ? AND session_id = ? AND ${sourceStatus}`,
           )
           .run(
             input.commandStatus,
@@ -436,11 +481,12 @@ export class AgentSessionStore {
     });
   }
 
-  private queuedCommand(sessionId: string): CommandRow | undefined {
+  private pendingCommand(sessionId: string): CommandRow | undefined {
     return this.database.connection
       .prepare(
-        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at
-         FROM agent_session_commands WHERE session_id = ? AND status = 'queued'
+        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, cancelled_at
+         FROM agent_session_commands
+         WHERE session_id = ? AND status IN ('queued', 'delivering')
          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as CommandRow | undefined;
@@ -449,7 +495,7 @@ export class AgentSessionStore {
   private latestCommand(sessionId: string): CommandRow | undefined {
     return this.database.connection
       .prepare(
-        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at
+        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, cancelled_at
          FROM agent_session_commands WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as CommandRow | undefined;
@@ -465,6 +511,7 @@ export class AgentSessionStore {
       ...(row.error ? { error: row.error } : {}),
       createdAt: row.created_at,
       ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}),
+      ...(row.cancelled_at ? { cancelledAt: row.cancelled_at } : {}),
     };
   }
 }

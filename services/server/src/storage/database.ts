@@ -600,23 +600,76 @@ export class MissionGoDatabase {
     const agentSessionCommandKindMigration = this.connection
       .prepare("SELECT version FROM schema_migrations WHERE version = 202609201550")
       .get() as unknown as { version: number } | undefined;
-    if (!agentSessionCommandKindMigration) {
+    const commandKindColumns = this.connection
+      .prepare("PRAGMA table_info(agent_session_commands)")
+      .all() as unknown as Array<{ name: string }>;
+    if (!agentSessionCommandKindMigration
+      || !commandKindColumns.some((column) => column.name === "kind")
+      || !commandKindColumns.some((column) => column.name === "turn_id")) {
       this.transaction(() => {
-        const columns = this.connection
-          .prepare("PRAGMA table_info(agent_session_commands)")
-          .all() as unknown as Array<{ name: string }>;
-        if (!columns.some((column) => column.name === "kind")) {
+        if (!commandKindColumns.some((column) => column.name === "kind")) {
           this.connection.exec(
             "ALTER TABLE agent_session_commands ADD COLUMN kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message', 'interrupt'));",
           );
         }
-        if (!columns.some((column) => column.name === "turn_id")) {
+        if (!commandKindColumns.some((column) => column.name === "turn_id")) {
           this.connection.exec("ALTER TABLE agent_session_commands ADD COLUMN turn_id TEXT;");
         }
         this.connection
-          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
           .run(202609201550, new Date().toISOString());
       });
+    }
+    // A reply waiting on an unavailable Mac can now be cancelled and edited.
+    // The status CHECK lives in the table definition, so an existing database
+    // has to rebuild the table to widen it. Fresh databases already have the
+    // new column and only need the migration marker.
+    const cancellableReplyMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609202336")
+      .get() as unknown as { version: number } | undefined;
+    if (!cancellableReplyMigration) {
+      const commandColumns = this.connection
+        .prepare("PRAGMA table_info(agent_session_commands)")
+        .all() as unknown as Array<{ name: string }>;
+      if (!commandColumns.some((column) => column.name === "cancelled_at")) {
+        this.connection.exec("PRAGMA foreign_keys = OFF;");
+        try {
+          this.transaction(() => {
+            this.connection.exec(`
+              CREATE TABLE agent_session_commands_new (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+                account_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message', 'interrupt')),
+                text TEXT NOT NULL,
+                turn_id TEXT,
+                status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivered', 'failed', 'cancelled')),
+                error TEXT,
+                created_at TEXT NOT NULL,
+                delivered_at TEXT,
+                cancelled_at TEXT
+              ) STRICT;
+              INSERT INTO agent_session_commands_new
+                (id, session_id, account_id, kind, text, turn_id, status, error, created_at, delivered_at, cancelled_at)
+              SELECT id, session_id, account_id, kind, text, turn_id, status, error, created_at, delivered_at, NULL
+              FROM agent_session_commands;
+              DROP TABLE agent_session_commands;
+              ALTER TABLE agent_session_commands_new RENAME TO agent_session_commands;
+              CREATE UNIQUE INDEX idx_agent_session_one_queued_command
+                ON agent_session_commands(session_id) WHERE status IN ('queued', 'delivering');
+            `);
+            const violations = this.connection.prepare("PRAGMA foreign_key_check").all();
+            if (violations.length > 0) throw new Error("Rebuilding agent session commands broke a foreign key.");
+          });
+        } finally {
+          this.connection.exec("PRAGMA foreign_keys = ON;");
+        }
+      }
+      // If a process dies after the rebuild and before this insert, the next
+      // start observes cancelled_at and records the migration without rebuilding.
+      this.connection
+        .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+        .run(202609202336, new Date().toISOString());
     }
     this.connection.exec("PRAGMA optimize;");
   }

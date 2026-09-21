@@ -1183,6 +1183,80 @@ describe("Claiming a dispatch on the node", () => {
       sessions: [{ command: { id: commandId, status: "queued", text: "Continue with the fix." } }],
     });
 
+    const cancelled = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${launched.agentSessionId}/commands/${commandId}/cancel`,
+      headers: { cookie },
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelled.json()).toMatchObject({ id: commandId, status: "cancelled" });
+    expect(cancelled.json<{ cancelledAt: string }>().cancelledAt).toBeTruthy();
+
+    const cancelledAgain = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${launched.agentSessionId}/commands/${commandId}/cancel`,
+      headers: { cookie },
+    });
+    expect(cancelledAgain.statusCode).toBe(200);
+    expect(cancelledAgain.json()).toMatchObject({ id: commandId, status: "cancelled" });
+
+    const replacement = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${launched.agentSessionId}/commands`,
+      headers: { cookie },
+      payload: { text: "Continue with the corrected fix." },
+    });
+    expect(replacement.statusCode).toBe(201);
+    const replacementId = replacement.json<{ id: string }>().id;
+
+    const replacementPoll = await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(replacementPoll.json()).toMatchObject({
+      sessions: [{ command: { id: replacementId, status: "queued", text: "Continue with the corrected fix." } }],
+    });
+
+    const reserved = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${launched.agentSessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "idle",
+        messages: [],
+        commandId: replacementId,
+        commandStatus: "delivering",
+      },
+    });
+    expect(reserved.statusCode).toBe(204);
+
+    const reservedCannotBeCancelled = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${launched.agentSessionId}/commands/${replacementId}/cancel`,
+      headers: { cookie },
+    });
+    expect(reservedCannotBeCancelled.statusCode).toBe(409);
+    expect(reservedCannotBeCancelled.json()).toMatchObject({ code: "agent_reply_not_pending" });
+
+    const duplicateWhileDelivering = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${launched.agentSessionId}/commands`,
+      headers: { cookie },
+      payload: { text: "Do not send two replies." },
+    });
+    expect(duplicateWhileDelivering.statusCode).toBe(409);
+    expect(duplicateWhileDelivering.json()).toMatchObject({ code: "agent_reply_pending" });
+
+    const deliveringPoll = await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(deliveringPoll.json()).toMatchObject({
+      sessions: [{ command: { id: replacementId, status: "delivering" } }],
+    });
+
     const acknowledged = await app.inject({
       method: "POST",
       url: `/api/v1/node/agent-sessions/${launched.agentSessionId}/snapshot`,
@@ -1190,7 +1264,7 @@ describe("Claiming a dispatch on the node", () => {
       payload: {
         status: "active",
         messages: [],
-        commandId,
+        commandId: replacementId,
         commandStatus: "delivered",
       },
     });
@@ -1200,7 +1274,15 @@ describe("Claiming a dispatch on the node", () => {
       url: `/api/v1/agent-sessions/${launched.agentSessionId}`,
       headers: { cookie },
     });
-    expect(afterReply.json()).toMatchObject({ command: { id: commandId, status: "delivered" } });
+    expect(afterReply.json()).toMatchObject({ command: { id: replacementId, status: "delivered" } });
+
+    const tooLate = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${launched.agentSessionId}/commands/${replacementId}/cancel`,
+      headers: { cookie },
+    });
+    expect(tooLate.statusCode).toBe(409);
+    expect(tooLate.json()).toMatchObject({ code: "agent_reply_not_pending" });
 
     const pendingReply = await app.inject({
       method: "POST",

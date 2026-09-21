@@ -1695,6 +1695,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     throw conflict("dispatch_not_stoppable", "This dispatch cannot be stopped from MissionGo.");
   });
 
+  app.post("/api/v1/agent-sessions/:sessionId/commands/:commandId/cancel", async (request) => {
+    const { sessionId, commandId } = request.params as { sessionId: string; commandId: string };
+    authorizedAgentSession(request, sessionId, true);
+    return agentSessionStore.cancel(requireAccountId(request), sessionId, commandId);
+  });
+
   // The macOS client signs in through the same OAuth flow as an AI client, with
   // the node scope, and trades that login for a machine credential here. The
   // login token is not accepted anywhere else on /api/v1 and the client drops it
@@ -1835,10 +1841,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       };
     });
     const commandStatusValue = stringField(body, "commandStatus", false);
-    if (commandStatusValue && commandStatusValue !== "delivered" && commandStatusValue !== "failed") {
-      throw invalidInput("commandStatus must be delivered or failed.");
+    if (commandStatusValue && !["delivering", "delivered", "failed"].includes(commandStatusValue)) {
+      throw invalidInput("commandStatus must be delivering, delivered, or failed.");
     }
-    const commandStatus = commandStatusValue as "delivered" | "failed" | undefined;
+    const commandStatus = commandStatusValue as "delivering" | "delivered" | "failed" | undefined;
     agentSessionStore.recordSnapshot({
       nodeId: node.nodeId,
       sessionId,

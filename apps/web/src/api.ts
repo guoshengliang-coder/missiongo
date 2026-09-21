@@ -453,4 +453,9 @@ export const api = {
       `/api/v1/dispatches/${encodeURIComponent(dispatchId)}/stop`,
       { method: "POST" },
     ),
+  cancelAgentSessionCommand: (sessionId: string, commandId: string) =>
+    request<AgentSessionCommand>(
+      `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}/cancel`,
+      { method: "POST" },
+    ),
 };

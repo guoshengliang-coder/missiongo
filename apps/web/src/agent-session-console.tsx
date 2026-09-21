@@ -24,6 +24,7 @@ import {
   DEFAULT_AGENT_SESSION_FILTER,
   isNearMessageBottom,
   messageLabelKey,
+  resolvedAgentSessionId,
 } from "./agent-session-view";
 import {
   agentSessionReadStorageKey,
@@ -36,7 +37,7 @@ import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import { MarkdownText } from "./markdown-text";
 import { SessionLink } from "./session-link";
-import type { AgentSessionStatus, AgentSessionSummary } from "./types";
+import type { AgentSessionCommand, AgentSessionStatus, AgentSessionSummary } from "./types";
 
 type SessionFilter = "unread" | "waiting" | "active" | "all" | "failed";
 
@@ -99,6 +100,21 @@ function dispatchActivityLabel(session: AgentSessionSummary, t: ReturnType<typeo
     : t("agentConsoleDispatchLaunched");
 }
 
+function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof useI18n>["t"]): string {
+  if (command.kind === "interrupt") {
+    if (command.status === "queued") return t("agentSessionStopQueued");
+    if (command.status === "delivering") return t("agentSessionStopDelivering");
+    if (command.status === "delivered") return t("agentSessionStopDelivered");
+    if (command.status === "failed") return t("agentSessionStopFailed");
+    return t("agentSessionStopCancelled");
+  }
+  if (command.status === "queued") return t("agentSessionReplyQueued");
+  if (command.status === "delivering") return t("agentSessionReplyDelivering");
+  if (command.status === "delivered") return t("agentSessionReplyDelivered");
+  if (command.status === "failed") return t("agentSessionReplyFailed");
+  return t("agentSessionReplyCancelled");
+}
+
 function updatedTime(value: string, locale: string): string {
   return new Intl.DateTimeFormat(locale, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
     .format(new Date(value));
@@ -106,18 +122,24 @@ function updatedTime(value: string, locale: string): string {
 
 export function AgentSessionConsole({
   productId,
+  selectedSessionId,
+  conversationOpen,
+  onSelectSession,
+  onBackToSessions,
   onOpenItem,
 }: {
   productId: string;
+  selectedSessionId: string | null;
+  conversationOpen: boolean;
+  onSelectSession: (sessionId: string | null, showConversation: boolean) => void;
+  onBackToSessions: () => void;
   onOpenItem: (itemKey: string) => void;
 }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<SessionFilter>(DEFAULT_AGENT_SESSION_FILTER);
   const [search, setSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reply, setReply] = useState("");
-  const [mobileConversationOpen, setMobileConversationOpen] = useState(false);
   const [followLatest, setFollowLatest] = useState(true);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [readState, setReadState] = useState<AgentSessionReadState>({});
@@ -143,16 +165,23 @@ export function AgentSessionConsole({
     () => sessions.filter((session) => sessionMatches(session, filter, search, readState)),
     [filter, readState, search, sessions],
   );
+  // Keep a restored URL selection while the list is still loading. Falling
+  // back to null here would immediately erase the session that survived an
+  // Android Activity recreation, before the request had a chance to confirm it.
+  const selectedId = resolvedAgentSessionId(
+    selectedSessionId,
+    visibleSessions.map((session) => session.id),
+    sessionsQuery.data !== undefined,
+  );
 
   useEffect(() => {
     setReadState(parseAgentSessionReadState(localStorage.getItem(agentSessionReadStorageKey(productId))));
   }, [productId]);
 
   useEffect(() => {
-    if (selectedId && visibleSessions.some((session) => session.id === selectedId)) return;
-    setSelectedId(visibleSessions[0]?.id ?? null);
-    setMobileConversationOpen(false);
-  }, [selectedId, visibleSessions]);
+    if (selectedId === selectedSessionId) return;
+    onSelectSession(selectedId, conversationOpen && Boolean(selectedId));
+  }, [conversationOpen, onSelectSession, selectedId, selectedSessionId]);
 
   const selected = sessions.find((session) => session.id === selectedId);
   const sessionQuery = useQuery({
@@ -186,7 +215,19 @@ export function AgentSessionConsole({
       ]);
     },
   });
-  const pending = sessionQuery.data?.command?.status === "queued";
+  const cancel = useMutation({
+    mutationFn: ({ sessionId, commandId }: { sessionId: string; commandId: string; text: string }) =>
+      api.cancelAgentSessionCommand(sessionId, commandId),
+    onSuccess: async (_command, input) => {
+      if (selectedId === input.sessionId) setReply(input.text);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-sessions", productId] }),
+      ]);
+    },
+  });
+  const command = sessionQuery.data?.command;
+  const pending = command?.status === "queued" || command?.status === "delivering";
   const sessionStatus = sessionQuery.data?.status ?? selected?.status ?? "unavailable";
   const messages = sessionQuery.data?.messages ?? [];
 
@@ -237,8 +278,7 @@ export function AgentSessionConsole({
   const chooseFilter = (next: SessionFilter) => {
     setFilter(next);
     const first = sessions.find((session) => sessionMatches(session, next, search, readState));
-    setSelectedId(first?.id ?? null);
-    setMobileConversationOpen(false);
+    onSelectSession(first?.id ?? null, false);
   };
 
   const filters: Array<{ key: SessionFilter; icon: typeof BellRing; count: number; label: string }> = [
@@ -250,7 +290,7 @@ export function AgentSessionConsole({
   ];
 
   return (
-    <main className={`agent-console-page ${mobileConversationOpen ? "mobile-conversation-open" : "mobile-list-open"}`}>
+    <main className={`agent-console-page ${conversationOpen ? "mobile-conversation-open" : "mobile-list-open"}`}>
       <aside className="agent-console-filters" aria-label={t("agentConsoleFilters")}>
         <p className="sidebar-label">{t("agentConsoleTitle")}</p>
         {filters.map(({ key, icon: Icon, count, label }) => (
@@ -302,9 +342,8 @@ export function AgentSessionConsole({
               type="button"
               className={`agent-console-session ${session.id === selectedId ? "active" : ""} ${isAgentSessionUnread(session, readState) ? "unread" : ""}`}
               onClick={() => {
-                setSelectedId(session.id);
                 markRead(session);
-                setMobileConversationOpen(true);
+                onSelectSession(session.id, true);
               }}
             >
               <span className={`agent-console-status-icon agent-console-status-${session.status}`}>
@@ -331,7 +370,7 @@ export function AgentSessionConsole({
                 type="button"
                 className="icon-button agent-console-conversation-back"
                 aria-label={t("agentConsoleBackToSessions")}
-                onClick={() => setMobileConversationOpen(false)}
+                onClick={onBackToSessions}
               ><ArrowLeft size={19} /></button>
               <span className="agent-console-avatar"><Bot size={17} /></span>
               <div>
@@ -415,7 +454,7 @@ export function AgentSessionConsole({
                 {selected.agentSessionId && !sessionQuery.isLoading && !sessionQuery.isError && (
                   <div className={`agent-console-activity agent-console-activity-${sessionStatus}`} role="status">
                     <SessionStatusIcon status={sessionStatus} />
-                    <span>{t(activityLabelKey(sessionStatus))}</span>
+                    <span>{t(activityLabelKey(sessionStatus, command?.status === "queued"))}</span>
                   </div>
                 )}
               </div>
@@ -430,13 +469,23 @@ export function AgentSessionConsole({
               {(retryDispatch.isError || stopDispatch.isError) && (
                 <p className="inline-error">{errorText(retryDispatch.error ?? stopDispatch.error)}</p>
               )}
-              {sessionQuery.data?.command && (
-                <p className={`agent-session-command agent-session-command-${sessionQuery.data.command.status}`}>
-                  {sessionQuery.data.command.status === "queued" && t("agentSessionReplyQueued")}
-                  {sessionQuery.data.command.status === "delivered" && t("agentSessionReplyDelivered")}
-                  {sessionQuery.data.command.status === "failed" && t("agentSessionReplyFailed")}
-                  {sessionQuery.data.command.error ? `: ${sessionQuery.data.command.error}` : ""}
-                </p>
+              {command && (
+                <div className={`agent-session-command agent-session-command-${command.status}`}>
+                  <span>
+                    {commandStatusLabel(command, t)}
+                    {command.error ? `: ${command.error}` : ""}
+                  </span>
+                  {command.kind === "message" && command.status === "queued" && selected.canReply && (
+                    <button
+                      type="button"
+                      className="text-button agent-session-cancel"
+                      disabled={cancel.isPending}
+                      onClick={() => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: command.id, text: command.text })}
+                    >
+                      {cancel.isPending ? t("agentSessionCancelling") : t("agentSessionCancelAndEdit")}
+                    </button>
+                  )}
+                </div>
               )}
               {selected.canReply && selected.agentSessionId ? (
                 <form onSubmit={submit}>
@@ -457,6 +506,7 @@ export function AgentSessionConsole({
                 </p>
               )}
               {send.isError && <p className="inline-error">{errorText(send.error)}</p>}
+              {cancel.isError && <p className="inline-error">{errorText(cancel.error)}</p>}
             </footer>
           </>
         )}

@@ -19,6 +19,20 @@ export const OVERLAY_HISTORY_MARKER = "missiongo:overlay";
  */
 export const SIDEBAR_HISTORY_MARKER = "missiongo:sidebar";
 
+/** The full-screen Agent console is one level above item management. */
+export const AGENT_CONSOLE_HISTORY_MARKER = "missiongo:agent-console";
+
+/**
+ * A conversation is a separate level only where the console is a one-pane
+ * mobile layout. Wider layouts already keep the conversation list visible.
+ */
+export const AGENT_CONVERSATION_HISTORY_MARKER = "missiongo:agent-conversation";
+
+/** Records the layout that produced the current console entry across a WebView recreation. */
+export const AGENT_CONSOLE_LAYOUT_KEY = "missiongo:agent-console-layout";
+
+export type AgentConsoleLayout = "single" | "wide";
+
 /**
  * How many of its own history entries the app can still unwind from this state.
  *
@@ -32,7 +46,48 @@ export function backDepthFromState(state: unknown): number {
   const markers = state as Record<string, unknown>;
   return (markers[ITEM_HISTORY_MARKER] ? 1 : 0)
     + (markers[OVERLAY_HISTORY_MARKER] ? 1 : 0)
-    + (markers[SIDEBAR_HISTORY_MARKER] ? 1 : 0);
+    + (markers[SIDEBAR_HISTORY_MARKER] ? 1 : 0)
+    + (markers[AGENT_CONSOLE_HISTORY_MARKER] ? 1 : 0)
+    + (markers[AGENT_CONVERSATION_HISTORY_MARKER] ? 1 : 0);
+}
+
+export function agentConsoleIsOpen(url: URL = new URL(window.location.href)): boolean {
+  return url.searchParams.get("console") === "agent";
+}
+
+export function agentSessionIdFromUrl(url: URL = new URL(window.location.href)): string | null {
+  if (!agentConsoleIsOpen(url)) return null;
+  const value = url.searchParams.get("session")?.trim();
+  return value || null;
+}
+
+/**
+ * Console state lives in the URL so Android WebView restoration can rebuild the
+ * same screen after an Activity recreation. Filters and other unrelated query
+ * parameters are deliberately preserved.
+ */
+export function agentConsoleUrl(
+  sessionId: string | null,
+  url: URL = new URL(window.location.href),
+): string {
+  const next = new URL(url);
+  next.searchParams.set("console", "agent");
+  if (sessionId) next.searchParams.set("session", sessionId);
+  else next.searchParams.delete("session");
+  return `${next.pathname}${next.search}${next.hash}`;
+}
+
+export function agentConsoleExitUrl(url: URL = new URL(window.location.href)): string {
+  const next = new URL(url);
+  next.searchParams.delete("console");
+  next.searchParams.delete("session");
+  return `${next.pathname}${next.search}${next.hash}`;
+}
+
+export function agentConsoleLayoutFromState(state: unknown): AgentConsoleLayout | null {
+  if (typeof state !== "object" || state === null) return null;
+  const value = (state as Record<string, unknown>)[AGENT_CONSOLE_LAYOUT_KEY];
+  return value === "single" || value === "wide" ? value : null;
 }
 
 export interface ListFilters {
