@@ -317,6 +317,7 @@ export const INITIAL_SCHEMA = `
     activities_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    activity_at TEXT NOT NULL DEFAULT '',
     archived_at TEXT,
     archive_source TEXT CHECK (archive_source IN ('missiongo', 'source'))
   ) STRICT;

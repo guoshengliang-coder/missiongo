@@ -2,19 +2,68 @@ import { describe, expect, it } from "vitest";
 
 import {
   activityLabelKey,
+  agentSessionMatches,
   changedMessageIds,
+  DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
   isNearMessageBottom,
   messageLabelKey,
   outgoingReply,
   questionAnswerText,
+  retainedReadSessionAfterSelection,
   resolvedAgentSessionId,
   shouldResetMessageView,
 } from "./agent-session-view";
+import type { AgentSessionSummary } from "./types";
 
 describe("agent session message view", () => {
   it("opens on all conversations by default", () => {
     expect(DEFAULT_AGENT_SESSION_FILTER).toBe("all");
+    expect(DEFAULT_AGENT_KIND_FILTER).toBe("all");
+  });
+
+  it("combines Agent and status filters", () => {
+    const session = {
+      id: "session-1",
+      activityKey: "activity-1",
+      agentKind: "codex",
+      status: "idle",
+      waitingForReply: true,
+      nodeName: "Mac mini",
+      items: [{ key: "AND-1", title: "First item", productId: "product-1" }],
+    } as unknown as AgentSessionSummary;
+    expect(agentSessionMatches(session, "waiting", "all", "", {})).toBe(true);
+    expect(agentSessionMatches(session, "waiting", "codex", "first", {})).toBe(true);
+    expect(agentSessionMatches(session, "waiting", "claude_code", "", {})).toBe(false);
+  });
+
+  it("retains the opened read session only for the current unread visit", () => {
+    const session = {
+      id: "session-1",
+      activityKey: "activity-1",
+      agentKind: "codex",
+      status: "idle",
+      waitingForReply: false,
+      nodeName: "Mac mini",
+      items: [],
+    } as unknown as AgentSessionSummary;
+    const readState = { "session-1": "activity-1" };
+    expect(agentSessionMatches(session, "unread", "all", "", readState)).toBe(false);
+    expect(agentSessionMatches(session, "unread", "all", "", readState, "session-1")).toBe(true);
+    expect(agentSessionMatches(session, "unread", "all", "", readState, "session-2")).toBe(false);
+  });
+
+  it("keeps the same opened unread row until another session is selected", () => {
+    const first = { id: "session-1", activityKey: "activity-1" };
+    const second = { id: "session-2", activityKey: "activity-2" };
+    expect(retainedReadSessionAfterSelection("unread", first, {}, null)).toBe("session-1");
+    expect(retainedReadSessionAfterSelection(
+      "unread", first, { "session-1": "activity-1" }, "session-1",
+    )).toBe("session-1");
+    expect(retainedReadSessionAfterSelection(
+      "unread", second, { "session-1": "activity-1" }, "session-1",
+    )).toBe("session-2");
+    expect(retainedReadSessionAfterSelection("all", second, {}, "session-1")).toBeNull();
   });
 
   it("keeps a restored conversation until the session list can confirm it", () => {

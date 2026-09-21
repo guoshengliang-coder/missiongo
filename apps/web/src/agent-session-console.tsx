@@ -21,14 +21,19 @@ import {
 import { api } from "./api";
 import {
   activityLabelKey,
+  agentSessionMatches,
   changedMessageIds,
+  DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
   isNearMessageBottom,
   messageLabelKey,
   outgoingReply,
   questionAnswerText,
+  retainedReadSessionAfterSelection,
   resolvedAgentSessionId,
   shouldResetMessageView,
+  type AgentKindFilter,
+  type AgentSessionFilter,
 } from "./agent-session-view";
 import {
   agentSessionReadStorageKey,
@@ -42,8 +47,6 @@ import { useI18n } from "./i18n";
 import { MarkdownText } from "./markdown-text";
 import { SessionLink } from "./session-link";
 import type { AgentSession, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary } from "./types";
-
-type SessionFilter = "unread" | "waiting" | "active" | "all" | "failed" | "archived";
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "active") return t("agentSessionActive");
@@ -67,29 +70,6 @@ function sessionTitle(session: AgentSessionSummary): string {
   const keys = session.items.map((item) => item.key).join("、");
   const firstTitle = session.items[0]?.title;
   return firstTitle ? `${keys} · ${firstTitle}` : session.sessionName ?? session.id;
-}
-
-function sessionMatches(
-  session: AgentSessionSummary,
-  filter: SessionFilter,
-  search: string,
-  readState: AgentSessionReadState,
-): boolean {
-  if (filter === "archived") {
-    if (!session.archivedAt) return false;
-  } else if (session.archivedAt) return false;
-  if (filter === "unread" && !isAgentSessionUnread(session, readState)) return false;
-  if (filter === "waiting" && !session.waitingForReply) return false;
-  if (filter === "active" && session.status !== "active") return false;
-  if (filter === "failed" && session.status !== "failed" && session.command?.status !== "failed") return false;
-  const query = search.trim().toLocaleLowerCase();
-  if (!query) return true;
-  return [
-    session.nodeName,
-    session.sessionName ?? "",
-    session.latestMessage?.text ?? "",
-    ...session.items.flatMap((item) => [item.key, item.title]),
-  ].some((value) => value.toLocaleLowerCase().includes(query));
 }
 
 function lastSeenAgo(value: string | undefined, locale: string): string | null {
@@ -173,13 +153,15 @@ export function AgentSessionConsole({
 }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
-  const [filter, setFilter] = useState<SessionFilter>(DEFAULT_AGENT_SESSION_FILTER);
+  const [filter, setFilter] = useState<AgentSessionFilter>(DEFAULT_AGENT_SESSION_FILTER);
+  const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [search, setSearch] = useState("");
   const [reply, setReply] = useState("");
   const [dismissedCommandId, setDismissedCommandId] = useState<string | null>(null);
   const [followLatest, setFollowLatest] = useState(true);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [readState, setReadState] = useState<AgentSessionReadState>({});
+  const [retainedReadSessionId, setRetainedReadSessionId] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const observedSessionRef = useRef<string | null>(null);
   const conversationOpenRef = useRef(false);
@@ -193,18 +175,24 @@ export function AgentSessionConsole({
     refetchInterval: 5_000,
   });
   const sessions = sessionsQuery.data?.sessions ?? [];
+  const agentSessions = useMemo(
+    () => sessions.filter((session) => agentFilter === "all" || session.agentKind === agentFilter),
+    [agentFilter, sessions],
+  );
   const counts = useMemo(() => ({
-    unread: sessions.filter((session) => !session.archivedAt && isAgentSessionUnread(session, readState)).length,
-    waiting: sessions.filter((session) => !session.archivedAt && session.waitingForReply).length,
-    active: sessions.filter((session) => !session.archivedAt && session.status === "active").length,
-    all: sessions.filter((session) => !session.archivedAt).length,
-    failed: sessions.filter((session) => !session.archivedAt
+    unread: agentSessions.filter((session) => !session.archivedAt && isAgentSessionUnread(session, readState)).length,
+    waiting: agentSessions.filter((session) => !session.archivedAt && session.waitingForReply).length,
+    active: agentSessions.filter((session) => !session.archivedAt && session.status === "active").length,
+    all: agentSessions.filter((session) => !session.archivedAt).length,
+    failed: agentSessions.filter((session) => !session.archivedAt
       && (session.status === "failed" || session.command?.status === "failed")).length,
-    archived: sessions.filter((session) => session.archivedAt).length,
-  }), [readState, sessions]);
+    archived: agentSessions.filter((session) => session.archivedAt).length,
+  }), [agentSessions, readState]);
   const visibleSessions = useMemo(
-    () => sessions.filter((session) => sessionMatches(session, filter, search, readState)),
-    [filter, readState, search, sessions],
+    () => sessions.filter((session) => agentSessionMatches(
+      session, filter, agentFilter, search, readState, retainedReadSessionId,
+    )),
+    [agentFilter, filter, readState, retainedReadSessionId, search, sessions],
   );
   // Keep a restored URL selection while the list is still loading. Falling
   // back to null here would immediately erase the session that survived an
@@ -350,13 +338,20 @@ export function AgentSessionConsole({
       send.mutate({ sessionId: selected.agentSessionId, text });
     }
   };
-  const chooseFilter = (next: SessionFilter) => {
+  const chooseFilter = (next: AgentSessionFilter) => {
+    setRetainedReadSessionId(null);
     setFilter(next);
-    const first = sessions.find((session) => sessionMatches(session, next, search, readState));
+    const first = sessions.find((session) => agentSessionMatches(session, next, agentFilter, search, readState));
+    onSelectSession(first?.id ?? null, false);
+  };
+  const chooseAgent = (next: AgentKindFilter) => {
+    setRetainedReadSessionId(null);
+    setAgentFilter(next);
+    const first = sessions.find((session) => agentSessionMatches(session, filter, next, search, readState));
     onSelectSession(first?.id ?? null, false);
   };
 
-  const filters: Array<{ key: SessionFilter; icon: typeof BellRing; count: number; label: string }> = [
+  const filters: Array<{ key: AgentSessionFilter; icon: typeof BellRing; count: number; label: string }> = [
     { key: "unread", icon: Mail, count: counts.unread, label: t("agentConsoleUnread") },
     { key: "waiting", icon: BellRing, count: counts.waiting, label: t("agentConsoleWaiting") },
     { key: "active", icon: LoaderCircle, count: counts.active, label: t("agentConsoleActive") },
@@ -393,10 +388,24 @@ export function AgentSessionConsole({
             </button>
           ))}
         </div>
-        <label className="agent-console-search">
-          <Search size={15} />
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("agentConsoleSearch")} />
-        </label>
+        <div className="agent-console-list-controls">
+          <label className="agent-console-search">
+            <Search size={15} />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("agentConsoleSearch")} />
+          </label>
+          <label className="agent-console-agent-filter">
+            <span>{t("agentConsoleAgentFilter")}</span>
+            <select
+              aria-label={t("agentConsoleAgentFilter")}
+              value={agentFilter}
+              onChange={(event) => chooseAgent(event.target.value as AgentKindFilter)}
+            >
+              <option value="all">{t("agentConsoleAllAgents")}</option>
+              <option value="codex">{t("agentCodex")}</option>
+              <option value="claude_code">{t("agentClaudeCode")}</option>
+            </select>
+          </label>
+        </div>
         <div className="agent-console-session-list">
           {sessionsQuery.isLoading && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
           {sessionsQuery.isError && <p className="inline-error">{errorText(sessionsQuery.error)}</p>}
@@ -409,6 +418,9 @@ export function AgentSessionConsole({
               type="button"
               className={`agent-console-session ${session.id === selectedId ? "active" : ""} ${isAgentSessionUnread(session, readState) ? "unread" : ""}`}
               onClick={() => {
+                setRetainedReadSessionId(retainedReadSessionAfterSelection(
+                  filter, session, readState, retainedReadSessionId,
+                ));
                 markRead(session);
                 onSelectSession(session.id, true);
               }}
@@ -422,7 +434,7 @@ export function AgentSessionConsole({
                 <span>{session.latestMessage?.text ?? session.lastError ?? t("agentConsoleDispatchOnly")}</span>
               </span>
               {isAgentSessionUnread(session, readState) && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
-              <time>{updatedTime(session.updatedAt, locale)}</time>
+              <time>{updatedTime(session.activityAt ?? session.updatedAt, locale)}</time>
             </button>
           ))}
         </div>

@@ -813,6 +813,44 @@ export class MissionGoDatabase {
           .run(202609210557, new Date().toISOString());
       });
     }
+    // Session updated_at is the node mirror checkpoint and moves on every
+    // snapshot. Keep a separate activity clock for user-visible ordering so an
+    // unchanged background poll cannot make an old conversation look new.
+    const agentSessionActivityMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609210627")
+      .get() as unknown as { version: number } | undefined;
+    const orderingColumns = this.connection
+      .prepare("PRAGMA table_info(agent_sessions)")
+      .all() as unknown as Array<{ name: string }>;
+    if (!agentSessionActivityMigration
+      || !orderingColumns.some((column) => column.name === "activity_at")) {
+      this.transaction(() => {
+        if (!orderingColumns.some((column) => column.name === "activity_at")) {
+          this.connection.exec("ALTER TABLE agent_sessions ADD COLUMN activity_at TEXT NOT NULL DEFAULT '';");
+        }
+        // Message observed_at was historically refreshed by every snapshot, so
+        // it cannot recover real activity. Creation, archive and command times
+        // are trustworthy and deliberately produce a conservative backfill.
+        this.connection.exec(`
+          UPDATE agent_sessions AS session
+          SET activity_at = MAX(
+            session.created_at,
+            COALESCE(session.archived_at, session.created_at),
+            COALESCE((
+              SELECT MAX(COALESCE(command.cancelled_at, command.delivered_at, command.created_at))
+              FROM agent_session_commands command
+              WHERE command.session_id = session.id
+            ), session.created_at)
+          )
+          WHERE session.activity_at = '';
+          CREATE INDEX IF NOT EXISTS idx_agent_sessions_activity
+            ON agent_sessions(activity_at DESC);
+        `);
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609210627, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

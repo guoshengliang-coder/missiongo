@@ -1175,7 +1175,7 @@ describe("Claiming a dispatch on the node", () => {
   });
 
   it("runs a Codex dispatch and keeps its thread link", async () => {
-    const { app, cookie } = await signedInApp();
+    const { app, cookie, databasePath } = await signedInApp();
     const node = await registeredNode(app);
     await heartbeat(app, node.token, "codex");
     const mission = await readyItem(app, cookie, "Mission GO", "AND");
@@ -1286,6 +1286,50 @@ describe("Claiming a dispatch on the node", () => {
         { sourceId: "a1", role: "agent", text: "I found the cause." },
       ],
     });
+
+    const fixedActivityAt = "2026-09-19T00:00:00.000Z";
+    const database = new DatabaseSync(databasePath);
+    database.prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
+      .run(fixedActivityAt, fixedActivityAt, launched.agentSessionId);
+    database.close();
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${launched.agentSessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "idle",
+        messages: [
+          { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
+          { sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "I found the cause." },
+        ],
+      },
+    })).statusCode).toBe(204);
+    const unchanged = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ updatedAt: string; activityAt: string }> }>().sessions[0]!;
+    expect(unchanged.activityAt).toBe(fixedActivityAt);
+    expect(unchanged.updatedAt).not.toBe(fixedActivityAt);
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${launched.agentSessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "idle",
+        messages: [
+          { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
+          { sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "I found another cause." },
+        ],
+      },
+    })).statusCode).toBe(204);
+    const changed = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ activityAt: string }> }>().sessions[0]!;
+    expect(changed.activityAt).not.toBe(fixedActivityAt);
 
     const reply = await app.inject({
       method: "POST",

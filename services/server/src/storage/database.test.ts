@@ -70,13 +70,18 @@ describe("database migrations", () => {
       .all() as unknown as Array<{ name: string }>;
     expect(sessionColumns.map((column) => column.name)).toContain("archived_at");
     expect(sessionColumns.map((column) => column.name)).toContain("archive_source");
+    expect(sessionColumns.map((column) => column.name)).toContain("activity_at");
     expect(migrated.connection.prepare("SELECT agent_session_ref FROM agent_sessions WHERE id = 'session-1'").get())
       .toEqual({ agent_session_ref: "thread-1" });
+    expect(migrated.connection.prepare("SELECT activity_at FROM agent_sessions WHERE id = 'session-1'").get())
+      .toEqual({ activity_at: "2026-09-21T00:00:00.000Z" });
     expect(migrated.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210206").get())
       .toEqual({ version: 202609210206 });
     expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210421").get())
       .toEqual({ version: 202609210421 });
+    expect(migrated.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609210627").get())
+      .toEqual({ version: 202609210627 });
     migrated.close();
   });
 
