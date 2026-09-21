@@ -963,7 +963,7 @@ describe("Claiming a dispatch on the node", () => {
       method: "PUT",
       url: "/api/v1/ai/title-settings",
       headers: { cookie },
-      payload: { apiKey: "secret-deepseek-key", agentAttentionEnabled: true },
+      payload: { apiKey: "secret-deepseek-key" },
     })).json()).toEqual({ configured: true, agentAttentionEnabled: true });
     await app.inject({
       method: "POST",
@@ -1027,21 +1027,55 @@ describe("Claiming a dispatch on the node", () => {
 
     await snapshot([
       ...base,
-      { sourceId: "a2", turnId: "t2", role: "agent", phase: "final_answer", text: "方案已准备好，请批准后继续。" },
+      {
+        sourceId: "a2",
+        turnId: "t2",
+        role: "agent",
+        phase: "final_answer",
+        text: "请明确回复‘批准计划’后，我再开始任何写入和实施。",
+      },
     ]);
-    await vi.waitFor(async () => {
-      const listed = (await app.inject({
-        method: "GET",
-        url: `/api/v1/agent-sessions?productId=${mission.productId}`,
-        headers: { cookie },
-      })).json<{ sessions: Array<Record<string, unknown>> }>();
-      expect(listed.sessions[0]).toMatchObject({
-        needsAttention: true,
-        waitingForReply: true,
-        attention: { state: "needed", kind: "approval", reason: "需要用户批准后继续。" },
-      });
+    const explicitApproval = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<Record<string, unknown>> }>();
+    expect(explicitApproval.sessions[0]).toMatchObject({
+      needsAttention: true,
+      waitingForReply: true,
+      attention: { state: "needed", kind: "approval", reason: "AI 明确要求批准或确认后再继续。" },
     });
-    expect(provider).toHaveBeenCalledTimes(2);
+    expect(provider).toHaveBeenCalledTimes(1);
+
+    app.missionGoStore.database.connection.prepare(
+      `UPDATE agent_session_attention
+       SET state = 'not_needed', kind = NULL, reason = '旧模型误判', model = 'deepseek-flash'
+       WHERE session_id = ?`,
+    ).run(sessionId);
+    const cachedFalse = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<Record<string, unknown>> }>();
+    expect(cachedFalse.sessions[0]).toMatchObject({
+      needsAttention: true,
+      attention: { state: "needed", kind: "approval", reason: "AI 明确要求批准或确认后再继续。" },
+    });
+
+    app.missionGoStore.database.connection.prepare(
+      `UPDATE agent_session_attention
+       SET state = 'not_needed', kind = NULL, reason = NULL, model = NULL
+       WHERE session_id = ?`,
+    ).run(sessionId);
+    const answered = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<Record<string, unknown>> }>();
+    expect(answered.sessions[0]).toMatchObject({
+      needsAttention: false,
+      attention: { state: "not_needed" },
+    });
     expect(new AgentSessionStore(app.missionGoStore.database).completeAttention(sessionId, staleHash, {
       needsAttention: false,
       kind: "none",
@@ -1068,7 +1102,7 @@ describe("Claiming a dispatch on the node", () => {
         },
       });
     });
-    expect(provider).toHaveBeenCalledTimes(3);
+    expect(provider).toHaveBeenCalledTimes(2);
 
     await snapshot([
       ...base,
@@ -1086,7 +1120,7 @@ describe("Claiming a dispatch on the node", () => {
       needsAttention: true,
       attention: { state: "needed", kind: "answer", reason: "AI 提出了需要回答的问题。" },
     });
-    expect(provider).toHaveBeenCalledTimes(3);
+    expect(provider).toHaveBeenCalledTimes(2);
   });
 
   it("hands a dispatch to a machine already waiting on a long poll", async () => {
