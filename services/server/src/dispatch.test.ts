@@ -1103,8 +1103,12 @@ describe("Claiming a dispatch on the node", () => {
         status: "active",
         messages: [
           { sourceId: "u1", turnId: "turn-1", role: "user", text: "Inspect this." },
-          { sourceId: "a1", turnId: "turn-1", role: "agent", text: "Working on it." },
+          {
+            sourceId: "a1", turnId: "turn-1", role: "agent", text: "Working on it.",
+            questions: [{ header: "Scope", title: "Which scope?", options: ["Small", "Complete"], multiSelect: false }],
+          },
         ],
+        activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中" }],
       },
     })).statusCode).toBe(204);
 
@@ -1114,7 +1118,23 @@ describe("Claiming a dispatch on the node", () => {
       headers: { cookie },
     });
     expect(listed.json()).toMatchObject({
-      sessions: [{ agentKind: "claude_code", canReply: true, canStop: true }],
+      sessions: [{
+        agentKind: "claude_code", canReply: true, canStop: true,
+        activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中" }],
+      }],
+    });
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${mirrored.id}`,
+      headers: { cookie },
+    });
+    expect(detail.json()).toMatchObject({
+      status: "active",
+      activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中" }],
+      messages: [{ sourceId: "u1" }, {
+        sourceId: "a1",
+        questions: [{ header: "Scope", title: "Which scope?", options: ["Small", "Complete"], multiSelect: false }],
+      }],
     });
     const reply = await app.inject({
       method: "POST",

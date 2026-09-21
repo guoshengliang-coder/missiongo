@@ -1,6 +1,11 @@
 import type { AgentKind } from "@missiongo/domain";
 
-import type { AgentSessionCommand, AgentSessionMessage, AgentSessionStatus } from "./types";
+import type {
+  AgentSessionCommand,
+  AgentSessionMessage,
+  AgentSessionQuestion,
+  AgentSessionStatus,
+} from "./types";
 
 export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;
 export const MESSAGE_BOTTOM_THRESHOLD_PX = 48;
@@ -87,6 +92,22 @@ export function changedMessageIds(
   return next
     .filter((message) => previousText.get(message.id) !== message.text)
     .map((message) => message.id);
+}
+
+/** Build the plain-text answer format understood by Claude's host prompt. */
+export function questionAnswerText(
+  current: string,
+  question: Pick<AgentSessionQuestion, "header" | "title">,
+  option: string,
+  questionCount: number,
+): string {
+  if (questionCount <= 1) return option;
+  const label = question.header ?? question.title;
+  const prefix = `${label}: `;
+  const lines = current.split("\n").filter(Boolean);
+  const next = lines.filter((line) => !line.startsWith(prefix));
+  next.push(`${prefix}${option}`);
+  return next.join("\n");
 }
 
 export function messageLabelKey(

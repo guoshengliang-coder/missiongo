@@ -161,12 +161,28 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
 }
 
 public struct AgentSessionQuestion: Codable, Equatable, Sendable {
+    public let header: String?
     public let title: String
     public let options: [String]?
+    public let multiSelect: Bool?
 
-    public init(title: String, options: [String]? = nil) {
+    public init(header: String? = nil, title: String, options: [String]? = nil, multiSelect: Bool? = nil) {
+        self.header = header
         self.title = title
         self.options = options
+        self.multiSelect = multiSelect
+    }
+}
+
+public struct AgentSessionActivity: Codable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let detail: String?
+
+    public init(id: String, title: String, detail: String? = nil) {
+        self.id = id
+        self.title = title
+        self.detail = detail
     }
 }
 
@@ -191,15 +207,17 @@ public struct AgentSessionMessage: Codable, Equatable, Sendable {
 public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let status: String
     public let messages: [AgentSessionMessage]
+    public let activities: [AgentSessionActivity]
     public let error: String?
     public let commandId: String?
     public let commandStatus: String?
     public let commandError: String?
     public let sourceArchived: Bool?
 
-    public init(status: String, messages: [AgentSessionMessage], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil) {
+    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil) {
         self.status = status
         self.messages = messages
+        self.activities = activities
         self.error = error
         self.commandId = commandId
         self.commandStatus = commandStatus

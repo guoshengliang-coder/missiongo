@@ -496,12 +496,13 @@ public struct SessionLauncher: AgentAdapter {
             )
         }
         guard let command = session.command else {
-            return AgentSessionReport(status: state.status, messages: state.messages, error: state.error)
+            return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error)
         }
         if let result = state.commandResults[command.id] {
             return AgentSessionReport(
                 status: state.status,
                 messages: state.messages,
+                activities: state.activities,
                 error: state.error,
                 commandId: command.id,
                 commandStatus: result.status,
@@ -512,18 +513,20 @@ public struct SessionLauncher: AgentAdapter {
             return AgentSessionReport(
                 status: state.status,
                 messages: state.messages,
+                activities: state.activities,
                 error: state.error,
                 commandId: command.id,
                 commandStatus: "delivered"
             )
         }
-        if command.kind == "message", state.status == "active" {
-            return AgentSessionReport(status: state.status, messages: state.messages, error: state.error)
+        if command.kind == "message", state.status == "active", !state.waitingForInput {
+            return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error)
         }
         if command.kind == "message", command.status == "queued" {
             return AgentSessionReport(
                 status: state.status,
                 messages: state.messages,
+                activities: state.activities,
                 error: state.error,
                 commandId: command.id,
                 commandStatus: "delivering"
@@ -544,6 +547,6 @@ public struct SessionLauncher: AgentAdapter {
                 to: path
             )
         }
-        return AgentSessionReport(status: state.status, messages: state.messages, error: state.error)
+        return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error)
     }
 }

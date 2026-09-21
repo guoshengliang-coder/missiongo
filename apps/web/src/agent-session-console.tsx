@@ -26,6 +26,7 @@ import {
   isNearMessageBottom,
   messageLabelKey,
   outgoingReply,
+  questionAnswerText,
   resolvedAgentSessionId,
   shouldResetMessageView,
 } from "./agent-session-view";
@@ -297,6 +298,7 @@ export function AgentSessionConsole({
   const outgoingSignature = outgoing ? `${selectedId}:${outgoing.commandId ?? "request"}:${outgoing.status}:${outgoing.text}` : "";
   const sessionStatus = sessionQuery.data?.status ?? selected?.status ?? "unavailable";
   const messages = sessionQuery.data?.messages ?? [];
+  const activities = sessionQuery.data?.activities ?? [];
 
   const markRead = useCallback((session: AgentSessionSummary) => {
     setReadState((current) => {
@@ -546,10 +548,21 @@ export function AgentSessionConsole({
                       <MarkdownText>{message.text}</MarkdownText>
                       {message.questions?.map((question) => (
                         <div key={question.title} className="agent-session-question">
+                          {question.header && <small>{question.header}</small>}
                           <strong>{question.title}</strong>
                           {question.options && <div className="agent-session-options">
                             {question.options.map((option) => (
-                              <button key={option} type="button" disabled={!selected.canReply} onClick={() => setReply(option)}>{option}</button>
+                              <button
+                                key={option}
+                                type="button"
+                                disabled={!selected.canReply}
+                                onClick={() => setReply((current) => questionAnswerText(
+                                  current,
+                                  question,
+                                  option,
+                                  message.questions?.length ?? 1,
+                                ))}
+                              >{option}</button>
                             ))}
                           </div>}
                         </div>
@@ -590,6 +603,14 @@ export function AgentSessionConsole({
                       )}
                     </footer>
                   </article>
+                )}
+                {activities.length > 0 && (
+                  <section className="agent-console-background" aria-label={t("agentSessionBackgroundTitle")}>
+                    <header><LoaderCircle className="spin" size={15} /><strong>{t("agentSessionBackgroundCount", { count: activities.length })}</strong></header>
+                    <ul>{activities.map((activity) => (
+                      <li key={activity.id}><span>{activity.title}</span>{activity.detail && <small>{activity.detail}</small>}</li>
+                    ))}</ul>
+                  </section>
                 )}
                 {(sessionQuery.data?.lastError ?? selected.lastError) && (
                   <p className="inline-error">{sessionQuery.data?.lastError ?? selected.lastError}</p>

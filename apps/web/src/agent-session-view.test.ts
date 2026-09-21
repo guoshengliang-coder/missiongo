@@ -7,6 +7,7 @@ import {
   isNearMessageBottom,
   messageLabelKey,
   outgoingReply,
+  questionAnswerText,
   resolvedAgentSessionId,
   shouldResetMessageView,
 } from "./agent-session-view";
@@ -72,5 +73,15 @@ describe("agent session message view", () => {
     expect(activityLabelKey("unavailable")).toBe("agentSessionActivityUnavailable");
     expect(activityLabelKey("unavailable", true)).toBe("agentSessionActivityUnavailableQueued");
     expect(activityLabelKey("failed")).toBe("agentSessionActivityFailed");
+  });
+
+  it("formats one or several question answers for the Claude host", () => {
+    expect(questionAnswerText("", { title: "Ship it?" }, "Yes", 1)).toBe("Yes");
+    const first = questionAnswerText("", { header: "Scope", title: "Which scope?" }, "Complete", 2);
+    expect(first).toBe("Scope: Complete");
+    expect(questionAnswerText(first, { header: "Risk", title: "Accept risk?" }, "No", 2))
+      .toBe("Scope: Complete\nRisk: No");
+    expect(questionAnswerText(first, { header: "Scope", title: "Which scope?" }, "Small", 2))
+      .toBe("Scope: Small");
   });
 });

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./api";
+import { questionAnswerText } from "./agent-session-view";
 import { useI18n } from "./i18n";
 import type { AgentSessionMessage, AgentSessionStatus } from "./types";
 
@@ -87,11 +88,22 @@ export function AgentSessionPanel({ sessionId, canReply }: { sessionId: string; 
                     <p>{message.text}</p>
                     {message.questions?.map((question) => (
                       <div key={question.title} className="agent-session-question">
+                        {question.header && <small>{question.header}</small>}
                         <strong>{question.title}</strong>
                         {question.options && (
                           <div className="agent-session-options">
                             {question.options.map((option) => (
-                              <button key={option} type="button" disabled={!canReply} onClick={() => setReply(option)}>{option}</button>
+                              <button
+                                key={option}
+                                type="button"
+                                disabled={!canReply}
+                                onClick={() => setReply((current) => questionAnswerText(
+                                  current,
+                                  question,
+                                  option,
+                                  message.questions?.length ?? 1,
+                                ))}
+                              >{option}</button>
                             ))}
                           </div>
                         )}
@@ -99,6 +111,14 @@ export function AgentSessionPanel({ sessionId, canReply }: { sessionId: string; 
                     ))}
                   </article>
                 ))}
+                {session.data.activities.length > 0 && (
+                  <section className="agent-session-background" aria-label={t("agentSessionBackgroundTitle")}>
+                    <strong>{t("agentSessionBackgroundCount", { count: session.data.activities.length })}</strong>
+                    <ul>{session.data.activities.map((activity) => (
+                      <li key={activity.id}>{activity.title}</li>
+                    ))}</ul>
+                  </section>
+                )}
               </div>
               {session.data.lastError && <p className="inline-error">{session.data.lastError}</p>}
               {command && (
