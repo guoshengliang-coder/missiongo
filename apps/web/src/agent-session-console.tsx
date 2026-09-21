@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Archive,
   ArrowDown,
   ArrowLeft,
   BellRing,
@@ -15,6 +16,7 @@ import {
   RotateCcw,
   Search,
   Square,
+  WifiOff,
 } from "lucide-react";
 
 import { api } from "./api";
@@ -40,7 +42,7 @@ import { MarkdownText } from "./markdown-text";
 import { SessionLink } from "./session-link";
 import type { AgentSessionCommand, AgentSessionStatus, AgentSessionSummary } from "./types";
 
-type SessionFilter = "unread" | "waiting" | "active" | "all" | "failed";
+type SessionFilter = "unread" | "waiting" | "active" | "all" | "failed" | "archived";
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "active") return t("agentSessionActive");
@@ -72,6 +74,9 @@ function sessionMatches(
   search: string,
   readState: AgentSessionReadState,
 ): boolean {
+  if (filter === "archived") {
+    if (!session.archivedAt) return false;
+  } else if (session.archivedAt) return false;
   if (filter === "unread" && !isAgentSessionUnread(session, readState)) return false;
   if (filter === "waiting" && !session.waitingForReply) return false;
   if (filter === "active" && session.status !== "active") return false;
@@ -84,6 +89,25 @@ function sessionMatches(
     session.latestMessage?.text ?? "",
     ...session.items.flatMap((item) => [item.key, item.title]),
   ].some((value) => value.toLocaleLowerCase().includes(query));
+}
+
+function lastSeenAgo(value: string | undefined, locale: string): string | null {
+  if (!value) return null;
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 1_000));
+  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "always" });
+  if (elapsedSeconds < 60) return formatter.format(-elapsedSeconds, "second");
+  const minutes = Math.floor(elapsedSeconds / 60);
+  if (minutes < 60) return formatter.format(-minutes, "minute");
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return formatter.format(-hours, "hour");
+  return formatter.format(-Math.floor(hours / 24), "day");
+}
+
+function nodeConnectionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>["t"]): string {
+  if (session.nodeRevoked) return t("agentNodeRevoked");
+  if (session.nodeConnectionState === "offline") return t("agentNodeOffline");
+  if (session.nodeConnectionState === "unstable") return t("agentNodeUnstable");
+  return t("agentNodeOnline");
 }
 
 function agentLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>["t"]): string {
@@ -157,11 +181,13 @@ export function AgentSessionConsole({
   });
   const sessions = sessionsQuery.data?.sessions ?? [];
   const counts = useMemo(() => ({
-    unread: sessions.filter((session) => isAgentSessionUnread(session, readState)).length,
-    waiting: sessions.filter((session) => session.waitingForReply).length,
-    active: sessions.filter((session) => session.status === "active").length,
-    all: sessions.length,
-    failed: sessions.filter((session) => session.status === "failed" || session.command?.status === "failed").length,
+    unread: sessions.filter((session) => !session.archivedAt && isAgentSessionUnread(session, readState)).length,
+    waiting: sessions.filter((session) => !session.archivedAt && session.waitingForReply).length,
+    active: sessions.filter((session) => !session.archivedAt && session.status === "active").length,
+    all: sessions.filter((session) => !session.archivedAt).length,
+    failed: sessions.filter((session) => !session.archivedAt
+      && (session.status === "failed" || session.command?.status === "failed")).length,
+    archived: sessions.filter((session) => session.archivedAt).length,
   }), [readState, sessions]);
   const visibleSessions = useMemo(
     () => sessions.filter((session) => sessionMatches(session, filter, search, readState)),
@@ -210,6 +236,15 @@ export function AgentSessionConsole({
   });
   const stopDispatch = useMutation({
     mutationFn: () => api.stopDispatch(selected!.dispatchId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agent-session", selected?.agentSessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-sessions", productId] }),
+      ]);
+    },
+  });
+  const archiveSession = useMutation({
+    mutationFn: (archived: boolean) => api.setAgentSessionArchived(selected!.agentSessionId!, archived),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", selected?.agentSessionId] }),
@@ -291,6 +326,7 @@ export function AgentSessionConsole({
     { key: "active", icon: LoaderCircle, count: counts.active, label: t("agentConsoleActive") },
     { key: "all", icon: MessageSquare, count: counts.all, label: t("agentConsoleAll") },
     { key: "failed", icon: CircleAlert, count: counts.failed, label: t("agentConsoleFailed") },
+    { key: "archived", icon: Archive, count: counts.archived, label: t("agentConsoleArchived") },
   ];
 
   return (
@@ -350,12 +386,12 @@ export function AgentSessionConsole({
                 onSelectSession(session.id, true);
               }}
             >
-              <span className={`agent-console-status-icon agent-console-status-${session.status}`}>
-                <SessionStatusIcon status={session.status} />
+              <span className={`agent-console-status-icon agent-console-status-${session.status} agent-console-node-${session.nodeConnectionState}`}>
+                {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={session.status} />}
               </span>
               <span className="agent-console-session-copy">
                 <strong>{sessionTitle(session)}</strong>
-                <small>{session.nodeName} · {agentLabel(session, t)} · {statusLabel(session.status, t)}</small>
+                <small>{session.nodeName} · {nodeConnectionLabel(session, t)} · {agentLabel(session, t)} · {session.archivedAt ? t("archived") : statusLabel(session.status, t)}</small>
                 <span>{session.latestMessage?.text ?? session.lastError ?? t("agentConsoleDispatchOnly")}</span>
               </span>
               {isAgentSessionUnread(session, readState) && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
@@ -381,7 +417,7 @@ export function AgentSessionConsole({
                 <h2>{sessionTitle(selected)}</h2>
                 <p>{selected.nodeName} · {agentLabel(selected, t)} · {selected.mode}</p>
               </div>
-              <span className={`status-pill agent-session-status-${sessionStatus}`}>{statusLabel(sessionStatus, t)}</span>
+              <span className={`status-pill agent-session-status-${sessionStatus}`}>{selected.archivedAt ? t("archived") : statusLabel(sessionStatus, t)}</span>
               {selected.sessionUrl && <SessionLink url={selected.sessionUrl} />}
               <div className="agent-console-actions">
                 {selected.canRetry && (
@@ -404,6 +440,22 @@ export function AgentSessionConsole({
                     }}
                   ><Square size={14} />{t("agentConsoleStop")}</button>
                 )}
+                {selected.canArchive && selected.agentSessionId && selected.archivedSource !== "source" && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={archiveSession.isPending || pending}
+                    onClick={() => {
+                      const archived = Boolean(selected.archivedAt);
+                      if (archived || window.confirm(t("agentSessionArchiveConfirm"))) archiveSession.mutate(!archived);
+                    }}
+                  >
+                    {archiveSession.isPending
+                      ? <LoaderCircle className="spin" size={15} />
+                      : selected.archivedAt ? <RotateCcw size={15} /> : <Archive size={15} />}
+                    {selected.archivedAt ? t("restore") : t("archive")}
+                  </button>
+                )}
               </div>
             </header>
             <div className="agent-console-message-stage">
@@ -419,6 +471,34 @@ export function AgentSessionConsole({
                   }
                 }}
               >
+                {selected.archivedAt && (
+                  <div className="agent-console-connection-banner archived" role="status">
+                    <Archive size={17} />
+                    <div>
+                      <strong>{selected.archivedSource === "source" ? t("agentSessionSourceArchivedTitle") : t("agentSessionArchivedTitle")}</strong>
+                      <span>{selected.archivedSource === "source" ? t("agentSessionSourceArchivedDetail") : t("agentSessionArchivedDetail")}</span>
+                    </div>
+                  </div>
+                )}
+                {selected.nodeConnectionState !== "online" && (
+                  <div className={`agent-console-connection-banner ${selected.nodeConnectionState}`} role="status">
+                    {selected.nodeConnectionState === "offline" ? <WifiOff size={17} /> : <CircleAlert size={17} />}
+                    <div>
+                      <strong>{selected.nodeRevoked
+                        ? t("agentNodeRevokedTitle", { node: selected.nodeName })
+                        : selected.nodeConnectionState === "offline"
+                        ? t("agentNodeOfflineTitle", { node: selected.nodeName })
+                        : t("agentNodeUnstableTitle", { node: selected.nodeName })}</strong>
+                      <span>{selected.nodeRevoked
+                        ? t("agentNodeRevokedDetail")
+                        : selected.nodeLastSeenAt
+                        ? t(selected.nodeConnectionState === "offline" ? "agentNodeOfflineDetail" : "agentNodeUnstableDetail", {
+                          time: lastSeenAgo(selected.nodeLastSeenAt, locale) ?? "",
+                        })
+                        : t("agentNodeNeverSeen")}</span>
+                    </div>
+                  </div>
+                )}
                 <div className="agent-console-dispatch">
                   <span>{t("agentConsoleDispatchScope")}</span>
                   <div>{selected.items.map((item) => <button key={item.key} type="button" onClick={() => onOpenItem(item.key)}>{item.key}</button>)}</div>
@@ -473,6 +553,7 @@ export function AgentSessionConsole({
               {(retryDispatch.isError || stopDispatch.isError) && (
                 <p className="inline-error">{errorText(retryDispatch.error ?? stopDispatch.error)}</p>
               )}
+              {archiveSession.isError && <p className="inline-error">{errorText(archiveSession.error)}</p>}
               {command && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>
@@ -506,7 +587,10 @@ export function AgentSessionConsole({
                 </form>
               ) : (
                 <p className="agent-session-muted" role="note">
-                  {selected.agentSessionId ? t("agentSessionReadOnly") : t("agentConsoleNoInlineReply")}
+                  {selected.archivedAt
+                    ? t(selected.archivedSource === "source" ? "agentSessionSourceArchivedReadOnly" : "agentSessionArchivedReadOnly")
+                    : selected.nodeRevoked ? t("agentNodeRevokedReadOnly")
+                    : selected.agentSessionId ? t("agentSessionReadOnly") : t("agentConsoleNoInlineReply")}
                 </p>
               )}
               {send.isError && <p className="inline-error">{errorText(send.error)}</p>}

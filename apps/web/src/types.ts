@@ -353,6 +353,8 @@ export interface AgentSession {
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly updatedAt: string;
+  readonly archivedAt?: string;
+  readonly archivedSource?: "missiongo" | "source";
   readonly messages: readonly AgentSessionMessage[];
   readonly command?: AgentSessionCommand;
 }
@@ -365,7 +367,12 @@ export interface AgentSessionSummary {
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly updatedAt: string;
+  readonly archivedAt?: string;
+  readonly archivedSource?: "missiongo" | "source";
   readonly nodeName: string;
+  readonly nodeConnectionState: "online" | "unstable" | "offline";
+  readonly nodeLastSeenAt?: string;
+  readonly nodeRevoked: boolean;
   readonly mode: string;
   readonly dispatchStatus: DispatchStatus;
   readonly sessionName?: string;
@@ -382,6 +389,7 @@ export interface AgentSessionSummary {
   readonly waitingForReply: boolean;
   readonly canRetry: boolean;
   readonly canStop: boolean;
+  readonly canArchive: boolean;
   readonly activityKey: string;
 }
 

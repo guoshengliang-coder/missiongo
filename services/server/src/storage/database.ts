@@ -715,6 +715,35 @@ export class MissionGoDatabase {
         .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
         .run(202609210206, new Date().toISOString());
     }
+    // MissionGo's archive is deliberately local: it hides a mirrored session
+    // without mutating the Codex or Claude conversation that may still be used
+    // from another device. Restoring resumes snapshots from the same ref.
+    const agentSessionArchiveMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609210421")
+      .get() as unknown as { version: number } | undefined;
+    const agentSessionColumns = this.connection
+      .prepare("PRAGMA table_info(agent_sessions)")
+      .all() as unknown as Array<{ name: string }>;
+    if (!agentSessionArchiveMigration
+      || !agentSessionColumns.some((column) => column.name === "archived_at")
+      || !agentSessionColumns.some((column) => column.name === "archive_source")) {
+      this.transaction(() => {
+        if (!agentSessionColumns.some((column) => column.name === "archived_at")) {
+          this.connection.exec("ALTER TABLE agent_sessions ADD COLUMN archived_at TEXT;");
+        }
+        if (!agentSessionColumns.some((column) => column.name === "archive_source")) {
+          this.connection.exec(
+            "ALTER TABLE agent_sessions ADD COLUMN archive_source TEXT CHECK (archive_source IN ('missiongo', 'source'));",
+          );
+        }
+        this.connection.exec(
+          "CREATE INDEX IF NOT EXISTS idx_agent_sessions_archived ON agent_sessions(archived_at, updated_at DESC);",
+        );
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609210421, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

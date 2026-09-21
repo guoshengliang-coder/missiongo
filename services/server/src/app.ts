@@ -1629,17 +1629,31 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         || session.items.some((item) => item.productId === selectedProductId))
       .map((session) => ({
         ...session,
-        canReply: Boolean(session.agentSessionId) && session.items.every((item) =>
+        canReply: Boolean(session.agentSessionId) && !session.archivedAt && !session.nodeRevoked && session.items.every((item) =>
           accountStore.allows(account, item.productId, "operate")
           && accountStore.allows(account, item.productId, "ai")),
-        canRetry: session.retryable && session.items.every((item) =>
+        canRetry: !session.archivedAt && !session.nodeRevoked && session.retryable && session.items.every((item) =>
           accountStore.allows(account, item.productId, "operate")
           && accountStore.allows(account, item.productId, "ai")),
-        canStop: session.stoppable && session.items.every((item) =>
+        canStop: !session.archivedAt && !session.nodeRevoked && session.stoppable && session.items.every((item) =>
+          accountStore.allows(account, item.productId, "operate")
+          && accountStore.allows(account, item.productId, "ai")),
+        canArchive: Boolean(session.agentSessionId) && session.items.every((item) =>
           accountStore.allows(account, item.productId, "operate")
           && accountStore.allows(account, item.productId, "ai")),
       }));
     return { sessions };
+  });
+
+  app.patch("/api/v1/agent-sessions/:sessionId", async (request) => {
+    const { sessionId } = request.params as { sessionId: string };
+    authorizedAgentSession(request, sessionId, true);
+    const body = objectBody(request.body);
+    return agentSessionStore.setArchived(
+      requireAccountId(request),
+      sessionId,
+      booleanField(body, "archived"),
+    );
   });
 
   app.post("/api/v1/agent-sessions/:sessionId/commands", async (request, reply) => {
@@ -1845,6 +1859,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       throw invalidInput("commandStatus must be delivering, delivered, or failed.");
     }
     const commandStatus = commandStatusValue as "delivering" | "delivered" | "failed" | undefined;
+    if (body.sourceArchived !== undefined && typeof body.sourceArchived !== "boolean") {
+      throw invalidInput("sourceArchived must be true or false.");
+    }
     agentSessionStore.recordSnapshot({
       nodeId: node.nodeId,
       sessionId,
@@ -1854,6 +1871,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),
       ...(commandStatus ? { commandStatus } : {}),
       ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
+      ...(typeof body.sourceArchived === "boolean" ? { sourceArchived: body.sourceArchived } : {}),
     });
     return reply.status(204).send();
   });

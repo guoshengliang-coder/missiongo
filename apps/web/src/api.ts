@@ -446,6 +446,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text }),
     }),
+  setAgentSessionArchived: (sessionId: string, archived: boolean) =>
+    request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ archived }),
+    }),
   retryDispatch: (dispatchId: string) =>
     request<Dispatch>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/retry`, { method: "POST" }),
   stopDispatch: (dispatchId: string) =>

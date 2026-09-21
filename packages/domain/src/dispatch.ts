@@ -64,10 +64,28 @@ export type DispatchStatus = (typeof DISPATCH_STATUSES)[number];
 // be dispatched to. Queueing work for a machine that is not listening looks the
 // same as dispatching successfully until someone notices nothing ever started.
 export const NODE_ONLINE_WINDOW_MS = 90_000;
+export const NODE_STABLE_WINDOW_MS = 60_000;
+
+export type NodeConnectionState = "online" | "unstable" | "offline";
+
+/**
+ * A missed heartbeat is not immediately an outage: laptops sleep and networks
+ * roam. Surface the last 30 second grace period separately so the UI can warn
+ * before the existing 90 second dispatch safety boundary is crossed.
+ */
+export function nodeConnectionState(
+  lastSeenAt: string | undefined,
+  now: number = Date.now(),
+): NodeConnectionState {
+  if (!lastSeenAt) return "offline";
+  const seen = Date.parse(lastSeenAt);
+  if (Number.isNaN(seen)) return "offline";
+  const age = now - seen;
+  if (age <= NODE_STABLE_WINDOW_MS) return "online";
+  if (age <= NODE_ONLINE_WINDOW_MS) return "unstable";
+  return "offline";
+}
 
 export function isNodeOnline(lastSeenAt: string | undefined, now: number = Date.now()): boolean {
-  if (!lastSeenAt) return false;
-  const seen = Date.parse(lastSeenAt);
-  if (Number.isNaN(seen)) return false;
-  return now - seen <= NODE_ONLINE_WINDOW_MS;
+  return nodeConnectionState(lastSeenAt, now) !== "offline";
 }

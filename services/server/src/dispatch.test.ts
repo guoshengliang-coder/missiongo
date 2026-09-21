@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID, scryptSync } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
@@ -27,8 +28,9 @@ function adminAccount(id = "account-test-1"): AdminAccountConfig {
 async function signedInApp(account: AdminAccountConfig = adminAccount()) {
   const directory = await mkdtemp(join(tmpdir(), "missiongo-dispatch-"));
   temporaryDirectories.push(directory);
+  const databasePath = join(directory, "missiongo.sqlite");
   const app = buildApp({
-    databasePath: join(directory, "missiongo.sqlite"),
+    databasePath,
     attachmentsPath: join(directory, "attachments"),
     adminAccount: account,
   });
@@ -40,7 +42,7 @@ async function signedInApp(account: AdminAccountConfig = adminAccount()) {
     payload: { username: account.username, password: "correct horse" },
   });
   const cookie = login.headers["set-cookie"]!.split(";", 1)[0]!;
-  return { app, cookie };
+  return { app, cookie, databasePath };
 }
 
 async function readyItem(app: FastifyInstance, cookie: string, productName: string, keyPrefix: string) {
@@ -867,7 +869,7 @@ describe("Dispatching a batch", () => {
 
 describe("Claiming a dispatch on the node", () => {
   async function queuedDispatch() {
-    const { app, cookie } = await signedInApp();
+    const { app, cookie, databasePath } = await signedInApp();
     const node = await registeredNode(app);
     await heartbeat(app, node.token);
     const mission = await readyItem(app, cookie, "Mission GO", "AND");
@@ -883,7 +885,7 @@ describe("Claiming a dispatch on the node", () => {
       headers: { cookie },
       payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [mission.itemKey] },
     });
-    return { app, cookie, node, mission, dispatchId: dispatch.json<{ id: string }>().id };
+    return { app, cookie, databasePath, node, mission, dispatchId: dispatch.json<{ id: string }>().id };
   }
 
   it("hands the batch over once and then reports the session back", async () => {
@@ -1395,6 +1397,139 @@ describe("Claiming a dispatch on the node", () => {
     expect(interruptPoll.json()).toMatchObject({
       sessions: [{ command: { id: interruptId, kind: "interrupt", turnId: "t1", status: "queued" } }],
     });
+  });
+
+  it("reports Mac heartbeat health and locally archives a session without changing its source", async () => {
+    const { app, cookie, databasePath, node, mission, dispatchId } = await queuedDispatch();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    const sessionRef = "11111111-2222-4333-8444-555555555555";
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "launched",
+        sessionName: `Mac mini-${mission.itemKey}`,
+        sessionUrl: "https://claude.ai/code/session_test",
+        sessionRef,
+      },
+    })).statusCode).toBe(204);
+
+    const listedOnline = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    });
+    const sessionId = listedOnline.json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+    expect(listedOnline.json()).toMatchObject({
+      sessions: [{ nodeConnectionState: "online", canReply: true, canArchive: true }],
+    });
+
+    const database = new DatabaseSync(databasePath);
+    const unstableAt = new Date(Date.now() - 75_000).toISOString();
+    database.prepare("UPDATE nodes SET last_seen_at = ? WHERE id = ?").run(unstableAt, node.nodeId);
+    const listedUnstable = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    });
+    expect(listedUnstable.json()).toMatchObject({
+      sessions: [{ nodeConnectionState: "unstable", nodeLastSeenAt: unstableAt }],
+    });
+
+    const offlineAt = new Date(Date.now() - 100_000).toISOString();
+    database.prepare("UPDATE nodes SET last_seen_at = ? WHERE id = ?").run(offlineAt, node.nodeId);
+    database.close();
+    const listedOffline = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    });
+    expect(listedOffline.json()).toMatchObject({
+      sessions: [{ nodeConnectionState: "offline", nodeLastSeenAt: offlineAt, canReply: true }],
+    });
+
+    const archived = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+      payload: { archived: true },
+    });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json<{ archivedAt?: string }>().archivedAt).toBeTypeOf("string");
+
+    const archivedList = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    });
+    expect(archivedList.json()).toMatchObject({
+      sessions: [{ archivedAt: archived.json<{ archivedAt: string }>().archivedAt, canReply: false, canStop: false }],
+    });
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json()).toEqual({ sessions: [] });
+    const replyWhileArchived = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie },
+      payload: { text: "Do not send this yet." },
+    });
+    expect(replyWhileArchived.statusCode).toBe(409);
+    expect(replyWhileArchived.json()).toMatchObject({ code: "agent_session_archived" });
+
+    const restored = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+      payload: { archived: false },
+    });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json<{ archivedAt?: string }>().archivedAt).toBeUndefined();
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "unavailable", messages: [], sourceArchived: true },
+    })).statusCode).toBe(204);
+    const sourceArchived = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    });
+    expect(sourceArchived.json()).toMatchObject({
+      sessions: [{ archivedSource: "source", canReply: false, canStop: false }],
+    });
+    const cannotRestoreSource = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+      payload: { archived: false },
+    });
+    expect(cannotRestoreSource.statusCode).toBe(409);
+    expect(cannotRestoreSource.json()).toMatchObject({ code: "agent_session_source_archived" });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [], sourceArchived: false },
+    })).statusCode).toBe(204);
+
+    const queuedOffline = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie },
+      payload: { text: "Send when the Mac reconnects." },
+    });
+    expect(queuedOffline.statusCode).toBe(201);
+    expect(queuedOffline.json()).toMatchObject({ status: "queued" });
   });
 
   it("refuses a Codex link that carries more than a thread id", async () => {

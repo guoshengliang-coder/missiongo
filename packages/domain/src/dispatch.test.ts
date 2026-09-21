@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { isAcceptedSessionUrl, isNodeOnline, isSupportedDispatchMode, NODE_ONLINE_WINDOW_MS } from "./dispatch.js";
+import {
+  isAcceptedSessionUrl,
+  isNodeOnline,
+  isSupportedDispatchMode,
+  nodeConnectionState,
+  NODE_ONLINE_WINDOW_MS,
+  NODE_STABLE_WINDOW_MS,
+} from "./dispatch.js";
 
 describe("Dispatch modes", () => {
   it("accepts the Claude Code modes a person can still supervise", () => {
@@ -57,5 +64,13 @@ describe("Node liveness", () => {
     expect(isNodeOnline(new Date(now - NODE_ONLINE_WINDOW_MS - 1).toISOString(), now)).toBe(false);
     expect(isNodeOnline(undefined, now)).toBe(false);
     expect(isNodeOnline("not a timestamp", now)).toBe(false);
+  });
+
+  it("warns after two missed heartbeats before declaring a node offline", () => {
+    expect(nodeConnectionState(new Date(now - NODE_STABLE_WINDOW_MS).toISOString(), now)).toBe("online");
+    expect(nodeConnectionState(new Date(now - NODE_STABLE_WINDOW_MS - 1).toISOString(), now)).toBe("unstable");
+    expect(nodeConnectionState(new Date(now - NODE_ONLINE_WINDOW_MS).toISOString(), now)).toBe("unstable");
+    expect(nodeConnectionState(new Date(now - NODE_ONLINE_WINDOW_MS - 1).toISOString(), now)).toBe("offline");
+    expect(nodeConnectionState(undefined, now)).toBe("offline");
   });
 });

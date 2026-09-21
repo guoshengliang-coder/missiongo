@@ -228,8 +228,19 @@ public struct CodexLauncher: AgentAdapter {
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         var snapshot = try await control.readThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        if snapshot.archived {
+            return AgentSessionReport(
+                status: "unavailable",
+                messages: snapshot.messages,
+                error: "Codex 会话已在来源端归档；请在 Codex 中恢复后继续。",
+                commandId: session.command?.id,
+                commandStatus: session.command == nil ? nil : "failed",
+                commandError: session.command == nil ? nil : "Codex 会话已归档，命令未发送。",
+                sourceArchived: true
+            )
+        }
         guard let command = session.command else {
-            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages)
+            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages, sourceArchived: false)
         }
         if command.kind == "interrupt" {
             // The turn may have finished between the web click and this poll. In
@@ -250,13 +261,14 @@ public struct CodexLauncher: AgentAdapter {
                 status: snapshot.status,
                 messages: snapshot.messages,
                 commandId: command.id,
-                commandStatus: "delivered"
+                commandStatus: "delivered",
+                sourceArchived: false
             )
         }
         // Codex rejects a second turn while one is active. Keeping the command
         // queued is intentional: the next poll sends it as soon as the thread is idle.
         guard snapshot.status == "idle" else {
-            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages)
+            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages, sourceArchived: false)
         }
         // Reserve the queued reply on the server before sending it. A person can
         // cancel only while it is still queued; once this acknowledgement wins,
@@ -267,11 +279,12 @@ public struct CodexLauncher: AgentAdapter {
                 status: snapshot.status,
                 messages: snapshot.messages,
                 commandId: command.id,
-                commandStatus: "delivering"
+                commandStatus: "delivering",
+                sourceArchived: false
             )
         }
         guard command.status == "delivering" else {
-            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages)
+            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages, sourceArchived: false)
         }
         try await control.sendMessage(
             socketPath: location.controlSocketPath,
@@ -284,7 +297,8 @@ public struct CodexLauncher: AgentAdapter {
             status: snapshot.status,
             messages: snapshot.messages,
             commandId: command.id,
-            commandStatus: "delivered"
+            commandStatus: "delivered",
+            sourceArchived: false
         )
     }
 }
