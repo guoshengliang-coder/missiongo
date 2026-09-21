@@ -1493,7 +1493,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} products={products} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} />
+            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} />
           </div>
         )}
       </main>
@@ -2363,7 +2363,6 @@ function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>[
 
 function DetailPane({
   itemKey,
-  products,
   openInEdit,
   onClose,
   onItemLoaded,
@@ -2372,7 +2371,6 @@ function DetailPane({
   onStartWork,
 }: {
   itemKey: string | null;
-  products: readonly Product[];
   openInEdit: boolean;
   onClose: () => void;
   onItemLoaded: (item: WorkItem) => void;
@@ -2631,10 +2629,7 @@ function DetailPane({
                 </details>
               )}
             </section>
-            <DispatchHistory
-              itemKey={item.key}
-              canReply={productAllowsAi(products.find((product) => product.id === item.productId))}
-            />
+            <DispatchHistory itemKey={item.key} />
             <section className="timeline-block">
               <header className="timeline-head">
                 <h3>{t("timeline")}</h3>
@@ -2770,7 +2765,7 @@ function DetailPane({
  * life after the event: the machine picks it up, the session starts or fails to,
  * and the link to that session is the thing worth clicking later.
  */
-function DispatchHistory({ itemKey, canReply }: { itemKey: string; canReply: boolean }) {
+function DispatchHistory({ itemKey }: { itemKey: string }) {
   const { t } = useI18n();
   const dispatchesQuery = useQuery({
     queryKey: ["dispatches", itemKey],
@@ -2788,13 +2783,13 @@ function DispatchHistory({ itemKey, canReply }: { itemKey: string; canReply: boo
       {dispatchesQuery.isError && <InlineError message={errorMessage(dispatchesQuery.error, t("somethingWentWrong"))} />}
       {!dispatchesQuery.isLoading && dispatches.length === 0 && <p className="section-empty">{t("noDispatches")}</p>}
       {dispatches.map((dispatch) => (
-        <DispatchRow key={dispatch.id} dispatch={dispatch} itemKey={itemKey} canReply={canReply} />
+        <DispatchRow key={dispatch.id} dispatch={dispatch} itemKey={itemKey} />
       ))}
     </section>
   );
 }
 
-function DispatchRow({ dispatch, itemKey, canReply }: { dispatch: Dispatch; itemKey: string; canReply: boolean }) {
+function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: string }) {
   const { formatTime, t } = useI18n();
   const agentKey = agentLabelKey(dispatch.agentKind);
   const modeKey = dispatchModeLabelKey(dispatch.mode);
@@ -2813,7 +2808,7 @@ function DispatchRow({ dispatch, itemKey, canReply }: { dispatch: Dispatch; item
       </small>
       {batch.length > 0 && <small className="dispatch-row-detail">{t("dispatchBatch", { keys: batch.join("、") })}</small>}
       {dispatch.sessionUrl && <SessionLink url={dispatch.sessionUrl} />}
-      {dispatch.agentSessionId && <AgentSessionPanel sessionId={dispatch.agentSessionId} canReply={canReply} />}
+      {dispatch.agentSessionId && <AgentSessionPanel sessionId={dispatch.agentSessionId} />}
       {dispatch.error && <InlineError message={dispatch.error} />}
     </article>
   );

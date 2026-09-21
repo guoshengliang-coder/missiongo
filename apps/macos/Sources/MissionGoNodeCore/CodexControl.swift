@@ -225,7 +225,10 @@ public enum CodexProtocol {
         case "active": status = "active"
         case "idle": status = "idle"
         case "systemError": status = "failed"
-        case "notLoaded": status = "unavailable"
+        // Codex unloads completed threads from memory. A reply resumes the
+        // thread before starting its next turn, so this is an idle, recoverable
+        // state rather than a broken conversation.
+        case "notLoaded": status = "idle"
         default: status = "unavailable"
         }
 

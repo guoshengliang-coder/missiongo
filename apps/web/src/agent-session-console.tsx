@@ -29,6 +29,7 @@ import {
   messageLabelKey,
   outgoingReply,
   questionAnswerText,
+  replyBlockedLabelKey,
   retainedReadSessionAfterSelection,
   resolvedAgentSessionId,
   shouldResetMessageView,
@@ -717,10 +718,9 @@ export function AgentSessionConsole({
                 </form>
               ) : (
                 <p className="agent-session-muted" role="note">
-                  {selected.archivedAt
-                    ? t(selected.archivedSource === "source" ? "agentSessionSourceArchivedReadOnly" : "agentSessionArchivedReadOnly")
-                    : selected.nodeRevoked ? t("agentNodeRevokedReadOnly")
-                    : selected.agentSessionId ? t("agentSessionReadOnly") : t("agentConsoleNoInlineReply")}
+                  {selected.agentSessionId
+                    ? t(replyBlockedLabelKey(selected.replyBlockedReason))
+                    : t("agentConsoleNoInlineReply")}
                 </p>
               )}
               {cancel.isError && <p className="inline-error">{errorText(cancel.error)}</p>}

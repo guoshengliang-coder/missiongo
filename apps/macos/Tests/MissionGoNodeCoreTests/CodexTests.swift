@@ -271,6 +271,14 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(snapshot.messages.last?.questions, [AgentSessionQuestion(title: "Scope", options: ["small", "complete"])])
     }
 
+    func testTreatsAnUnloadedThreadAsIdleBecauseReplyResumesIt() throws {
+        let snapshot = try CodexProtocol.threadSnapshot(fromRead: [
+            "thread": ["status": ["type": "notLoaded"], "turns": []],
+        ])
+
+        XCTAssertEqual(snapshot.status, "idle")
+    }
+
     func testReadAndResumeParametersKeepTheNativeThreadId() {
         XCTAssertEqual(CodexProtocol.threadReadParams(threadId: "t1")["includeTurns"] as? Bool, true)
         XCTAssertEqual(CodexProtocol.threadReadParams(threadId: "t1")["threadId"] as? String, "t1")

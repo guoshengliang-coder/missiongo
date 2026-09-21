@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./api";
-import { questionAnswerText } from "./agent-session-view";
+import { questionAnswerText, replyBlockedLabelKey } from "./agent-session-view";
 import { useI18n } from "./i18n";
 import type { AgentSessionMessage, AgentSessionStatus } from "./types";
 
@@ -29,7 +29,7 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function AgentSessionPanel({ sessionId, canReply }: { sessionId: string; canReply: boolean }) {
+export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -56,6 +56,7 @@ export function AgentSessionPanel({ sessionId, canReply }: { sessionId: string; 
     },
   });
   const command = session.data?.command;
+  const canReply = session.data?.canReply === true;
   const pending = command?.status === "queued" || command?.status === "delivering";
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -165,7 +166,9 @@ export function AgentSessionPanel({ sessionId, canReply }: { sessionId: string; 
                   {cancel.isError && <p className="inline-error">{errorText(cancel.error)}</p>}
                 </>
               ) : (
-                <p className="agent-session-muted" role="note">{t("agentSessionReadOnly")}</p>
+                <p className="agent-session-muted" role="note">
+                  {t(replyBlockedLabelKey(session.data.replyBlockedReason))}
+                </p>
               )}
             </>
           )}

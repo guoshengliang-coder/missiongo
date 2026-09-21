@@ -1385,6 +1385,7 @@ describe("Claiming a dispatch on the node", () => {
     });
     expect(detail.json()).toMatchObject({
       status: "stalled",
+      canReply: true,
       activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中" }],
       messages: [{ sourceId: "u1" }, {
         sourceId: "a1",
@@ -1431,6 +1432,20 @@ describe("Claiming a dispatch on the node", () => {
       headers: { cookie },
       payload: { to: "pending_verification", reason: "resolution_submitted" },
     })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json()).toMatchObject({
+      sessions: [{ id: mirrored.id, canReply: false, replyBlockedReason: "work_finished" }],
+    });
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${mirrored.id}`,
+      headers: { cookie },
+    })).json()).toMatchObject({
+      id: mirrored.id, canReply: false, replyBlockedReason: "work_finished",
+    });
     const closing = await app.inject({
       method: "GET",
       url: "/api/v1/node/agent-sessions",
@@ -1863,7 +1878,12 @@ describe("Claiming a dispatch on the node", () => {
       headers: { cookie },
     });
     expect(archivedList.json()).toMatchObject({
-      sessions: [{ archivedAt: archived.json<{ archivedAt: string }>().archivedAt, canReply: false, canStop: false }],
+      sessions: [{
+        archivedAt: archived.json<{ archivedAt: string }>().archivedAt,
+        canReply: false,
+        replyBlockedReason: "archived",
+        canStop: false,
+      }],
     });
     expect((await app.inject({
       method: "GET",
@@ -1900,7 +1920,12 @@ describe("Claiming a dispatch on the node", () => {
       headers: { cookie },
     });
     expect(sourceArchived.json()).toMatchObject({
-      sessions: [{ archivedSource: "source", canReply: false, canStop: false }],
+      sessions: [{
+        archivedSource: "source",
+        canReply: false,
+        replyBlockedReason: "source_archived",
+        canStop: false,
+      }],
     });
     const cannotRestoreSource = await app.inject({
       method: "PATCH",

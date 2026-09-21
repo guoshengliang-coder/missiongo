@@ -11,6 +11,7 @@ import {
   messageLabelKey,
   outgoingReply,
   questionAnswerText,
+  replyBlockedLabelKey,
   retainedReadSessionAfterSelection,
   resolvedAgentSessionId,
   shouldResetMessageView,
@@ -149,6 +150,19 @@ describe("agent session message view", () => {
     expect(activityLabelKey("unavailable")).toBe("agentSessionActivityUnavailable");
     expect(activityLabelKey("unavailable", true)).toBe("agentSessionActivityUnavailableQueued");
     expect(activityLabelKey("failed")).toBe("agentSessionActivityFailed");
+  });
+
+  it("distinguishes finished work from missing reply permissions", () => {
+    expect(replyBlockedLabelKey("work_finished")).toBe("agentSessionWorkFinishedReadOnly");
+    expect(replyBlockedLabelKey("operate_permission")).toBe("agentSessionOperateReadOnly");
+    expect(replyBlockedLabelKey("ai_permission")).toBe("agentSessionReadOnly");
+  });
+
+  it("keeps lifecycle reply blocks distinct and falls back to neutral copy", () => {
+    expect(replyBlockedLabelKey("archived")).toBe("agentSessionArchivedReadOnly");
+    expect(replyBlockedLabelKey("source_archived")).toBe("agentSessionSourceArchivedReadOnly");
+    expect(replyBlockedLabelKey("node_revoked")).toBe("agentNodeRevokedReadOnly");
+    expect(replyBlockedLabelKey(undefined)).toBe("agentSessionUnavailableReadOnly");
   });
 
   it("formats one or several question answers for the Claude host", () => {

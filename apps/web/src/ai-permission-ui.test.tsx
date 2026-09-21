@@ -60,8 +60,8 @@ describe("AI permission UI", () => {
     expect(html).not.toContain("AI 调用");
   });
 
-  it("labels an existing Codex conversation as view-only", () => {
-    const html = render(<AgentSessionPanel sessionId="session-1" canReply={false} />);
+  it("does not promise reply access before it has loaded the session capability", () => {
+    const html = render(<AgentSessionPanel sessionId="session-1" />);
 
     expect(html).toContain("在 MissionGo 中查看会话");
     expect(html).not.toContain("在 MissionGo 中查看和回复");

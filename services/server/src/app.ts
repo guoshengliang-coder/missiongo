@@ -97,6 +97,32 @@ const MAX_THUMBNAIL_EDGE = 1024;
 
 const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "server", "shared", "other"] as const;
 
+type AgentSessionReplyBlockedReason =
+  | "work_finished"
+  | "archived"
+  | "source_archived"
+  | "node_revoked"
+  | "operate_permission"
+  | "ai_permission";
+
+function agentSessionReplyBlockedReason(input: {
+  readonly hasSession: boolean;
+  readonly replyable: boolean;
+  readonly archivedAt?: string;
+  readonly archivedSource?: "missiongo" | "source";
+  readonly nodeRevoked: boolean;
+  readonly canOperate: boolean;
+  readonly canUseAi: boolean;
+}): AgentSessionReplyBlockedReason | undefined {
+  if (!input.hasSession) return undefined;
+  if (input.archivedAt) return input.archivedSource === "source" ? "source_archived" : "archived";
+  if (input.nodeRevoked) return "node_revoked";
+  if (!input.replyable) return "work_finished";
+  if (!input.canOperate) return "operate_permission";
+  if (!input.canUseAi) return "ai_permission";
+  return undefined;
+}
+
 function sequenceFromItemKey(itemKey: string | undefined): number | undefined {
   const match = itemKey?.match(/-(\d+)$/);
   if (!match) return undefined;
@@ -1630,22 +1656,46 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return dispatch;
   };
 
-  const authorizedAgentSession = (request: FastifyRequest, sessionId: string, reply = false) => {
+  const loadAuthorizedAgentSession = (request: FastifyRequest, sessionId: string, reply = false) => {
     const account = requireAccount(request);
     const session = agentSessionStore.getForAccount(account.id, sessionId);
     const dispatch = dispatchStore.getDispatch(account.id, session.dispatchId);
+    const productIds: string[] = [];
     for (const itemKey of dispatch.itemKeys) {
       const key = requireItemPermission(request, itemKey, reply ? "operate" : "view");
-      if (reply && !accountStore.allows(account, store.getWorkItem(key).productId, "ai")) {
+      const productId = store.getWorkItem(key).productId;
+      productIds.push(productId);
+      if (reply && !accountStore.allows(account, productId, "ai")) {
         throw new MissionGoError("ai_not_permitted", `This account may not reply to the AI session for ${key}.`, 403);
       }
     }
-    return session;
+    return { account, session, dispatch, productIds };
+  };
+
+  const authorizedAgentSession = (request: FastifyRequest, sessionId: string, reply = false) =>
+    loadAuthorizedAgentSession(request, sessionId, reply).session;
+
+  const agentSessionResponse = ({ account, session, dispatch, productIds }:
+    ReturnType<typeof loadAuthorizedAgentSession>) => {
+    const replyBlockedReason = agentSessionReplyBlockedReason({
+      hasSession: true,
+      replyable: session.replyable,
+      ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
+      ...(session.archivedSource ? { archivedSource: session.archivedSource } : {}),
+      nodeRevoked: Boolean(dispatchStore.getNode(account.id, dispatch.nodeId).revokedAt),
+      canOperate: productIds.every((productId) => accountStore.allows(account, productId, "operate")),
+      canUseAi: productIds.every((productId) => accountStore.allows(account, productId, "ai")),
+    });
+    return {
+      ...session,
+      canReply: replyBlockedReason === undefined,
+      ...(replyBlockedReason ? { replyBlockedReason } : {}),
+    };
   };
 
   app.get("/api/v1/agent-sessions/:sessionId", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
-    return authorizedAgentSession(request, sessionId);
+    return agentSessionResponse(loadAuthorizedAgentSession(request, sessionId));
   });
 
   app.get("/api/v1/agent-sessions", async (request) => {
@@ -1658,23 +1708,29 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         && session.items.every((item) => accountStore.allows(account, item.productId, "view")))
       .filter((session) => !selectedProductId
         || session.items.some((item) => item.productId === selectedProductId))
-      .map((session) => ({
-        ...session,
-        canReply: Boolean(session.agentSessionId) && session.replyable && !session.archivedAt && !session.nodeRevoked && session.items.every((item) =>
-          accountStore.allows(account, item.productId, "operate")
-          && accountStore.allows(account, item.productId, "ai")),
-        canRetry: !session.archivedAt && !session.nodeRevoked && session.retryable && session.items.every((item) =>
-          accountStore.allows(account, item.productId, "operate")
-          && accountStore.allows(account, item.productId, "ai")),
-        canStop: !session.archivedAt && !session.nodeRevoked && session.stoppable && session.items.every((item) =>
-          accountStore.allows(account, item.productId, "operate")
-          && accountStore.allows(account, item.productId, "ai")),
-        canArchive: (Boolean(session.agentSessionId)
-          || ["launched", "failed", "cancelled"].includes(session.dispatchStatus))
-          && session.items.every((item) =>
-            accountStore.allows(account, item.productId, "operate")
-            && accountStore.allows(account, item.productId, "ai")),
-      }));
+      .map((session) => {
+        const canOperate = session.items.every((item) => accountStore.allows(account, item.productId, "operate"));
+        const canUseAi = session.items.every((item) => accountStore.allows(account, item.productId, "ai"));
+        const replyBlockedReason = agentSessionReplyBlockedReason({
+          hasSession: Boolean(session.agentSessionId),
+          replyable: session.replyable,
+          ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
+          ...(session.archivedSource ? { archivedSource: session.archivedSource } : {}),
+          nodeRevoked: session.nodeRevoked,
+          canOperate,
+          canUseAi,
+        });
+        return {
+          ...session,
+          canReply: Boolean(session.agentSessionId) && replyBlockedReason === undefined,
+          ...(replyBlockedReason ? { replyBlockedReason } : {}),
+          canRetry: !session.archivedAt && !session.nodeRevoked && session.retryable && canOperate && canUseAi,
+          canStop: !session.archivedAt && !session.nodeRevoked && session.stoppable && canOperate && canUseAi,
+          canArchive: (Boolean(session.agentSessionId)
+            || ["launched", "failed", "cancelled"].includes(session.dispatchStatus))
+            && canOperate && canUseAi,
+        };
+      });
     sessions.forEach((session) => {
       if (session.agentSessionId && session.attention.state === "pending") {
         scheduleAttentionClassification(session.agentSessionId);
@@ -1687,11 +1743,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { sessionId } = request.params as { sessionId: string };
     authorizedAgentSession(request, sessionId, true);
     const body = objectBody(request.body);
-    return agentSessionStore.setArchived(
+    agentSessionStore.setArchived(
       requireAccountId(request),
       sessionId,
       booleanField(body, "archived"),
     );
+    return agentSessionResponse(loadAuthorizedAgentSession(request, sessionId));
   });
 
   app.patch("/api/v1/dispatches/:dispatchId/archive", async (request) => {
