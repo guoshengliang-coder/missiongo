@@ -63,6 +63,7 @@ export interface AgentSessionListItem {
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly updatedAt: string;
+  readonly activityAt: string;
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
   readonly nodeName: string;
@@ -115,6 +116,7 @@ interface SessionListRow {
   session_status: AgentSessionStatus | null;
   session_last_error: string | null;
   session_updated_at: string | null;
+  session_activity_at: string | null;
   session_archived_at: string | null;
   session_archive_source: "missiongo" | "source" | null;
   session_activities_json: string | null;
@@ -177,10 +179,10 @@ export class AgentSessionStore {
     this.database.connection
       .prepare(
         `INSERT INTO agent_sessions
-          (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`,
+          (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at, activity_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
       )
-      .run(id, input.dispatchId, input.nodeId, dispatch.agent_kind, sessionRef, now, now);
+      .run(id, input.dispatchId, input.nodeId, dispatch.agent_kind, sessionRef, now, now, now);
     return id;
   }
 
@@ -242,7 +244,8 @@ export class AgentSessionStore {
     const rows = this.database.connection
       .prepare(
         `SELECT s.id AS session_id, d.id AS dispatch_id, d.agent_kind,
-                s.status AS session_status, s.last_error AS session_last_error, s.updated_at AS session_updated_at,
+                s.status AS session_status, s.last_error AS session_last_error,
+                s.updated_at AS session_updated_at, s.activity_at AS session_activity_at,
                 s.archived_at AS session_archived_at, s.archive_source AS session_archive_source,
                 s.activities_json AS session_activities_json,
                 COALESCE(n.nickname, n.name) AS node_name, n.last_seen_at AS node_last_seen_at,
@@ -253,7 +256,7 @@ export class AgentSessionStore {
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          JOIN nodes n ON n.id = d.node_id
          WHERE d.account_id = ?
-         ORDER BY COALESCE(s.updated_at, d.completed_at, d.delivered_at, d.created_at) DESC
+         ORDER BY COALESCE(s.activity_at, d.completed_at, d.delivered_at, d.created_at) DESC
          LIMIT ?`,
       )
       .all(accountId, limit) as unknown as SessionListRow[];
@@ -289,6 +292,7 @@ export class AgentSessionStore {
             : "active";
       const status = row.session_status ?? inferredStatus;
       const updatedAt = row.session_updated_at ?? row.completed_at ?? row.delivered_at ?? row.created_at;
+      const activityAt = row.session_activity_at ?? row.completed_at ?? row.delivered_at ?? row.created_at;
       const lastError = row.session_last_error ?? row.dispatch_error;
       const connectionState = row.node_revoked_at
         ? "offline"
@@ -306,6 +310,7 @@ export class AgentSessionStore {
         status,
         ...(lastError ? { lastError } : {}),
         updatedAt,
+        activityAt,
         ...(row.session_archived_at ? { archivedAt: row.session_archived_at } : {}),
         ...(row.session_archive_source ? { archivedSource: row.session_archive_source } : {}),
         nodeName: row.node_name,
@@ -359,8 +364,10 @@ export class AgentSessionStore {
 
     const now = new Date().toISOString();
     this.database.connection
-      .prepare("UPDATE agent_sessions SET archived_at = ?, archive_source = ?, updated_at = ? WHERE id = ?")
-      .run(archived ? now : null, archived ? "missiongo" : null, now, sessionId);
+      .prepare(
+        "UPDATE agent_sessions SET archived_at = ?, archive_source = ?, updated_at = ?, activity_at = ? WHERE id = ?",
+      )
+      .run(archived ? now : null, archived ? "missiongo" : null, now, now, sessionId);
     return this.getForAccount(accountId, sessionId);
   }
 
@@ -386,8 +393,8 @@ export class AgentSessionStore {
       )
       .run(id, sessionId, accountId, text, now);
     this.database.connection
-      .prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?")
-      .run(now, sessionId);
+      .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
+      .run(now, now, sessionId);
     return { id, kind: "message", text, status: "queued", createdAt: now };
   }
 
@@ -435,7 +442,9 @@ export class AgentSessionStore {
            VALUES (?, ?, ?, 'interrupt', ?, ?, 'queued', ?)`,
         )
         .run(id, sessionId, accountId, "停止当前任务", turn.turn_id, now);
-      this.database.connection.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(now, sessionId);
+      this.database.connection
+        .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
+        .run(now, now, sessionId);
     });
     return { id, kind: "interrupt", text: "停止当前任务", turnId: turn.turn_id, status: "queued", createdAt: now };
   }
@@ -471,8 +480,8 @@ export class AgentSessionStore {
         throw conflict("agent_reply_changed", "The queued reply changed before it could be cancelled.");
       }
       this.database.connection
-        .prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?")
-        .run(now, sessionId);
+        .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
+        .run(now, now, sessionId);
     });
     return this.mapCommand({ ...command, status: "cancelled", cancelled_at: now });
   }
@@ -529,21 +538,75 @@ export class AgentSessionStore {
       title: requiredText(activity.title, "activity title", 500),
       ...(activity.detail ? { detail: requiredText(activity.detail, "activity detail", 500) } : {}),
     }));
+    const activitiesJson = JSON.stringify(activities);
+    const messages = input.messages.map((message, position) => ({
+      sourceId: requiredText(message.sourceId, "sourceId", 200),
+      turnId: message.turnId?.slice(0, 200) || null,
+      role: message.role,
+      phase: message.phase?.slice(0, 50) || null,
+      text: requiredText(message.text, "message text", MAX_MESSAGE_LENGTH),
+      questionsJson: message.questions ? JSON.stringify(message.questions) : null,
+      position,
+    }));
     const session = this.database.connection
-      .prepare("SELECT id FROM agent_sessions WHERE id = ? AND node_id = ?")
-      .get(input.sessionId, input.nodeId) as unknown as { id: string } | undefined;
+      .prepare(
+        `SELECT id, status, last_error, archived_at, archive_source, activities_json
+         FROM agent_sessions WHERE id = ? AND node_id = ?`,
+      )
+      .get(input.sessionId, input.nodeId) as unknown as {
+        id: string;
+        status: AgentSessionStatus;
+        last_error: string | null;
+        archived_at: string | null;
+        archive_source: "missiongo" | "source" | null;
+        activities_json: string;
+      } | undefined;
     if (!session) throw notFound("Agent session");
     const now = new Date().toISOString();
+    const error = input.error?.slice(0, 2_000) || null;
+    const storedMessages = this.database.connection
+      .prepare(
+        `SELECT source_id, turn_id, role, phase, text, questions_json, position
+         FROM agent_session_messages WHERE session_id = ?`,
+      )
+      .all(input.sessionId) as unknown as Array<{
+        source_id: string;
+        turn_id: string | null;
+        role: AgentMessageRole;
+        phase: string | null;
+        text: string;
+        questions_json: string | null;
+        position: number;
+      }>;
+    const storedBySource = new Map(storedMessages.map((message) => [message.source_id, message]));
+    const messagesChanged = messages.some((message) => {
+      const stored = storedBySource.get(message.sourceId);
+      return !stored
+        || stored.turn_id !== message.turnId
+        || stored.role !== message.role
+        || stored.phase !== message.phase
+        || stored.text !== message.text
+        || stored.questions_json !== message.questionsJson
+        || stored.position !== message.position;
+    });
+    const archiveChanged = input.sourceArchived === true
+      ? !session.archived_at || session.archive_source === null
+      : input.sourceArchived === false && session.archive_source === "source";
+    const activityChanged = session.status !== input.status
+      || session.last_error !== error
+      || messagesChanged
+      || session.activities_json !== activitiesJson
+      || archiveChanged
+      || Boolean(input.commandId && input.commandStatus);
     this.database.transaction(() => {
       this.database.connection
-        .prepare("UPDATE agent_sessions SET status = ?, last_error = ?, activities_json = ?, updated_at = ? WHERE id = ?")
-        .run(
-          input.status,
-          input.error?.slice(0, 2_000) || null,
-          JSON.stringify(activities),
-          now,
-          input.sessionId,
-        );
+        .prepare(
+          `UPDATE agent_sessions
+           SET status = ?, last_error = ?, activities_json = ?, updated_at = ?,
+               activity_at = CASE WHEN ? THEN ? ELSE activity_at END
+           WHERE id = ?`,
+        )
+        .run(input.status, error, activitiesJson, now, activityChanged ? 1 : 0, now, input.sessionId);
       if (input.sourceArchived === true) {
         this.database.connection
           .prepare(
@@ -570,13 +633,11 @@ export class AgentSessionStore {
            text = excluded.text, questions_json = excluded.questions_json,
            position = excluded.position, observed_at = excluded.observed_at`,
       );
-      input.messages.forEach((message, position) => {
-        const sourceId = requiredText(message.sourceId, "sourceId", 200);
-        const text = requiredText(message.text, "message text", MAX_MESSAGE_LENGTH);
+      messages.forEach((message) => {
         upsert.run(
-          randomUUID(), input.sessionId, sourceId, message.turnId?.slice(0, 200) || null,
-          message.role, message.phase?.slice(0, 50) || null, text,
-          message.questions ? JSON.stringify(message.questions) : null, position, now,
+          randomUUID(), input.sessionId, message.sourceId, message.turnId,
+          message.role, message.phase, message.text,
+          message.questionsJson, message.position, now,
         );
       });
       if (input.commandId && input.commandStatus) {

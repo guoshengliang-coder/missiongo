@@ -376,6 +376,8 @@ export interface AgentSessionSummary {
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly updatedAt: string;
+  /** Last user-visible activity; unlike updatedAt, unchanged mirror polls do not move it. */
+  readonly activityAt?: string;
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
   readonly nodeName: string;

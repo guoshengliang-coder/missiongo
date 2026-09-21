@@ -1,14 +1,73 @@
 import type { AgentKind } from "@missiongo/domain";
 
+import { isAgentSessionUnread, type AgentSessionReadState } from "./agent-session-unread";
 import type {
   AgentSessionCommand,
   AgentSessionMessage,
   AgentSessionQuestion,
   AgentSessionStatus,
+  AgentSessionSummary,
 } from "./types";
 
 export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;
+export const DEFAULT_AGENT_KIND_FILTER = "all" as const;
 export const MESSAGE_BOTTOM_THRESHOLD_PX = 48;
+
+export type AgentSessionFilter = "unread" | "waiting" | "active" | "all" | "failed" | "archived";
+export type AgentKindFilter = "all" | AgentKind;
+
+type FilterableAgentSession = Pick<
+  AgentSessionSummary,
+  | "id"
+  | "activityKey"
+  | "agentKind"
+  | "archivedAt"
+  | "status"
+  | "command"
+  | "waitingForReply"
+  | "nodeName"
+  | "sessionName"
+  | "latestMessage"
+  | "items"
+>;
+
+export function agentSessionMatches(
+  session: FilterableAgentSession,
+  filter: AgentSessionFilter,
+  agentFilter: AgentKindFilter,
+  search: string,
+  readState: AgentSessionReadState,
+  retainedReadSessionId: string | null = null,
+): boolean {
+  if (filter === "archived") {
+    if (!session.archivedAt) return false;
+  } else if (session.archivedAt) return false;
+  if (agentFilter !== "all" && session.agentKind !== agentFilter) return false;
+  if (filter === "unread"
+    && session.id !== retainedReadSessionId
+    && !isAgentSessionUnread(session, readState)) return false;
+  if (filter === "waiting" && !session.waitingForReply) return false;
+  if (filter === "active" && session.status !== "active") return false;
+  if (filter === "failed" && session.status !== "failed" && session.command?.status !== "failed") return false;
+  const query = search.trim().toLocaleLowerCase();
+  if (!query) return true;
+  return [
+    session.nodeName,
+    session.sessionName ?? "",
+    session.latestMessage?.text ?? "",
+    ...session.items.flatMap((item) => [item.key, item.title]),
+  ].some((value) => value.toLocaleLowerCase().includes(query));
+}
+
+export function retainedReadSessionAfterSelection(
+  filter: AgentSessionFilter,
+  session: Pick<AgentSessionSummary, "id" | "activityKey">,
+  readState: AgentSessionReadState,
+  current: string | null,
+): string | null {
+  if (filter !== "unread") return null;
+  return session.id === current || isAgentSessionUnread(session, readState) ? session.id : null;
+}
 
 export interface ScrollMetrics {
   readonly scrollHeight: number;
