@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const styles = readFileSync(fileURLToPath(new URL("./styles.css", import.meta.url)), "utf8");
 const consoleSource = readFileSync(fileURLToPath(new URL("./agent-session-console.tsx", import.meta.url)), "utf8");
+const panelSource = readFileSync(fileURLToPath(new URL("./agent-session-panel.tsx", import.meta.url)), "utf8");
 const appSource = readFileSync(fileURLToPath(new URL("./App.tsx", import.meta.url)), "utf8");
 
 function mediaBlock(maxWidth: number): string {
@@ -67,6 +68,24 @@ describe("agent console responsive layout", () => {
     expect(styles).toContain(".agent-console-reply-actions { display: flex;");
     expect(consoleSource).toContain('t("agentSessionQuickMergeRelease")');
     expect(consoleSource).toContain('t("agentSessionQuickRelease")');
+  });
+
+  it("starts both agent reply fields on one line and grows them to a bounded height", () => {
+    for (const source of [consoleSource, panelSource]) {
+      expect(source).toContain("<AutoGrowTextarea");
+      expect(source).toContain("rows={1}");
+      expect(source).toContain("maximumHeight={240}");
+      expect(source).not.toContain("rows={3}");
+    }
+    expect(styles).toMatch(/\.agent-console-reply textarea \{[^}]*min-height: 38px;[^}]*max-height: 240px;[^}]*resize: none;/);
+    expect(styles).toMatch(/\.agent-session-reply textarea \{[^}]*min-height: 42px;[^}]*max-height: 240px;[^}]*resize: none;/);
+  });
+
+  it("keeps unread and total badges visually distinct", () => {
+    expect(styles).toContain("--badge-unread-fg: #ffffff;");
+    expect(styles).toContain("--badge-count-fg: #303846;");
+    expect(styles).toMatch(/\.agent-console-filter-unread \{[^}]*color: var\(--badge-unread-fg\);[^}]*background: var\(--badge-unread-bg\);/);
+    expect(styles).toMatch(/\.agent-console-filter small \{[^}]*color: var\(--badge-count-fg\);[^}]*background: var\(--badge-count-bg\);/);
   });
 
   it("uses one aligned icon-button treatment for phone conversation actions", () => {

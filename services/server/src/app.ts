@@ -16,6 +16,7 @@ import {
   type WorkItemEnvironment,
   type WorkItemReport,
 } from "@missiongo/domain";
+import { skillVersionInfo } from "@missiongo/contracts";
 
 import {
   ADMIN_SESSION_COOKIE,
@@ -2084,6 +2085,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       // so it is the one channel that can carry a new product to a machine
       // nobody is looking at.
       products: nodeProducts(node.accountId),
+      expectedSkillVersion: skillVersionInfo(options.publicOrigin).expectedVersion,
       repos: dispatchStore.recordHeartbeat(
         node.nodeId,
         agents.map((entry) => {

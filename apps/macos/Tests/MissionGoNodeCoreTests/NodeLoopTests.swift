@@ -166,6 +166,26 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertEqual(adapter.jobs.current.first?.effort, "low")
     }
 
+    func testHeartbeatPublishesTheSkillVersionToTheMenuState() async throws {
+        let api = FakeAPI(
+            claims: [],
+            heartbeat: .success(HeartbeatReply(repos: [], expectedSkillVersion: "5.10.0"))
+        )
+        let loop = NodeLoop(
+            api: api,
+            adapters: [FakeAdapter(outcome: .failure(LaunchError("not used")))],
+            fallbackNodeName: "M",
+            timing: fastTiming(),
+            log: { _ in }
+        )
+        let task = Task { try await loop.run() }
+        await waitUntil { loop.currentState.expectedSkillVersion == "5.10.0" }
+        task.cancel()
+        try await task.value
+
+        XCTAssertEqual(loop.currentState.expectedSkillVersion, "5.10.0")
+    }
+
     func testMissingAgentIsDetectedAgainOnTheNextHeartbeat() async throws {
         let api = FakeAPI(claims: [])
         let adapter = RecoveringAdapter()

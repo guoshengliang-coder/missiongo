@@ -28,11 +28,49 @@ public enum AppUpdater {
 
     /// What the server says the current build is.
     public struct Manifest: Equatable, Sendable, Decodable {
+        public struct ReleaseItem: Equatable, Sendable, Decodable {
+            public let key: String
+            public let title: String
+        }
+
+        public struct ReleaseNote: Equatable, Sendable, Decodable {
+            public let pullRequestNumber: Int
+            public let title: String
+            public let items: [ReleaseItem]
+        }
+
         public let version: String
         public let sha256: String
         public let size: Int
         public let downloadPath: String
+        public let buildTimestamp: String?
         public let minimumSystemVersion: String?
+        public let releaseNotes: [ReleaseNote]?
+
+        public var publishedAtLabel: String? {
+            guard let buildTimestamp else { return nil }
+            let input = DateFormatter()
+            input.locale = Locale(identifier: "en_US_POSIX")
+            input.timeZone = TimeZone(secondsFromGMT: 0)
+            input.dateFormat = "yyyyMMddHHmmss"
+            guard let date = input.date(from: buildTimestamp) else { return nil }
+            let output = DateFormatter()
+            output.locale = Locale(identifier: "zh_CN")
+            output.timeZone = TimeZone.current
+            output.dateFormat = "yyyy-MM-dd HH:mm"
+            return output.string(from: date)
+        }
+
+        public var releaseNotesText: String {
+            let notes = releaseNotes ?? []
+            guard !notes.isEmpty else { return "本次发布未提供更新记录。" }
+            return notes.map { note in
+                let items = note.items.map { "\($0.key) · \($0.title)" }.joined(separator: "；")
+                return items.isEmpty
+                    ? "PR #\(note.pullRequestNumber) · \(note.title)"
+                    : "PR #\(note.pullRequestNumber) · \(note.title)\n\(items)"
+            }.joined(separator: "\n\n")
+        }
     }
 
     public struct Available: Equatable, Sendable {
@@ -120,6 +158,18 @@ public enum AppUpdater {
         }
         guard isHexDigest(manifest.sha256) else { throw UpdateError.badManifest("校验和格式不对") }
         guard manifest.size > 0, manifest.size <= maxZipBytes else { throw UpdateError.badManifest("大小不合理") }
+        if let notes = manifest.releaseNotes {
+            guard notes.count <= 100,
+                  notes.allSatisfy({ note in
+                      note.pullRequestNumber > 0 && !note.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          && note.items.count <= 50
+                          && note.items.allSatisfy {
+                              !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  && !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          }
+                  })
+            else { throw UpdateError.badManifest("更新记录格式不对") }
+        }
         // A path, never a host: the update must come from the server this Mac is
         // signed in to, not from wherever a manifest points.
         guard manifest.downloadPath.hasPrefix("/"), !manifest.downloadPath.hasPrefix("//") else {

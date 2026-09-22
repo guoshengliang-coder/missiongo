@@ -45,6 +45,7 @@ import { useI18n } from "./i18n";
 import { MarkdownText } from "./markdown-text";
 import { SessionLink } from "./session-link";
 import type { AgentSession, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary } from "./types";
+import { AutoGrowTextarea } from "./auto-grow-textarea";
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "active") return t("agentSessionActive");
@@ -884,8 +885,9 @@ export function AgentSessionConsole({
               )}
               {selected.canReply && selected.agentSessionId ? (
                 <form onSubmit={submit}>
-                  <textarea
-                    rows={3}
+                  <AutoGrowTextarea
+                    rows={1}
+                    maximumHeight={240}
                     value={reply}
                     onChange={(event) => {
                       setReply(event.target.value);

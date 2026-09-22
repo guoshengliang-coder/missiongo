@@ -155,4 +155,24 @@ final class LocalIntegrationsTests: XCTestCase {
         } catch is CancellationError {} catch { XCTFail("unexpected error: \(error)") }
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
     }
+
+    func testHeartbeatVersionMustMatchDownloadedSkillBeforeWriting() async throws {
+        StubURLProtocol.install { _, _ in
+            .response(status: 200, body: "---\nname: missiongo\nversion: 5.9.0\n---\nTest")
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let target = directory.appendingPathComponent("SKILL.md")
+        do {
+            _ = try await SkillSync.run(
+                serverUrl: "https://s.invalid",
+                targets: [target.path],
+                expectedVersion: "5.10.0",
+                session: StubURLProtocol.session()
+            )
+            XCTFail("mismatched skill must not be written")
+        } catch let error as SkillSync.SyncError {
+            XCTAssertEqual(error, .versionMismatch(expected: "5.10.0", received: "5.9.0"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
 }

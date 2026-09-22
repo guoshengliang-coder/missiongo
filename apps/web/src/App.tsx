@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction, type TextareaHTMLAttributes } from "react";
+import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
 import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -166,6 +166,7 @@ import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
 import { agentAttentionCounts, agentSessionsRefetchInterval } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
+import { AutoGrowTextarea } from "./auto-grow-textarea";
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
   inbox: Inbox,
@@ -307,35 +308,6 @@ function FieldLabel({ children, required = false }: { children: ReactNode; requi
       {children}
       {required && <small className="field-requirement required">{t("requiredField")}</small>}
     </span>
-  );
-}
-
-function resizeTextarea(textarea: HTMLTextAreaElement): void {
-  const maximumHeight = 480;
-  textarea.style.height = "auto";
-  const nextHeight = Math.min(textarea.scrollHeight, maximumHeight);
-  textarea.style.height = `${nextHeight}px`;
-  textarea.style.overflowY = textarea.scrollHeight > maximumHeight ? "auto" : "hidden";
-}
-
-function AutoGrowTextarea({ className, onInput, value, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    if (textareaRef.current) resizeTextarea(textareaRef.current);
-  }, [value]);
-
-  return (
-    <textarea
-      {...props}
-      ref={textareaRef}
-      className={`auto-grow-textarea ${className ?? ""}`.trim()}
-      value={value}
-      onInput={(event) => {
-        resizeTextarea(event.currentTarget);
-        onInput?.(event);
-      }}
-    />
   );
 }
 

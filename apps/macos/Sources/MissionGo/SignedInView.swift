@@ -185,47 +185,57 @@ private struct SkillRow: View {
             }
             if let reason = status.failureReason {
                 WrappingCaption(text: reason, color: .orange)
-                WrappingCaption(text: "已停止自动重试，请点击对应客户端的「重新检查」。")
+                WrappingCaption(text: "已启用的客户端会稍后自动重试，也可点击对应客户端的「重新检查」。")
             }
         }
     }
 }
 
 /// Client updates, beside the agents it checks on. The version itself is in
-/// the header (AND-53), so this row only appears when there is something to
-/// say about an update: one being looked for, offered, installed, or failing.
+/// the header (AND-53). The row stays visible so a person can check on demand,
+/// in addition to the startup and six-hour checks.
 private struct UpdateRow: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        switch model.updateState {
-        case .unavailable, .current:
-            EmptyView()
-        default:
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("MissionGo")
-                        .font(.caption)
-                    Spacer()
-                    detail
-                }
-                if case let .failed(_, reason) = model.updateState {
-                    WrappingCaption(text: reason, color: .orange)
-                }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("MissionGo")
+                    .font(.caption)
+                Spacer()
+                detail
+            }
+            if case let .failed(_, reason) = model.updateState {
+                WrappingCaption(text: reason, color: .orange)
+            }
+            if let notice = model.updateNotice {
+                WrappingCaption(text: notice)
             }
         }
     }
 
     @ViewBuilder private var detail: some View {
         switch model.updateState {
-        case .unavailable, .current:
-            EmptyView()
+        case .unavailable:
+            Button("检测更新") { model.checkForUpdates() }
+                .buttonStyle(.borderless)
+                .font(.caption)
+        case let .current(version):
+            HStack(spacing: 6) {
+                Text(version).font(.caption).foregroundColor(.secondary)
+                Button("检测更新") { model.checkForUpdates() }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+            }
         case .checking:
             progress("正在检查更新…")
         case let .available(update):
             HStack(spacing: 6) {
                 Text(update.current).font(.caption).foregroundColor(.secondary)
-                Button("更新到 \(update.version)") { model.installUpdate() }
+                Button("查看 \(update.version)") { model.showAvailableUpdate() }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                Button("检测更新") { model.checkForUpdates() }
                     .buttonStyle(.borderless)
                     .font(.caption)
             }
@@ -234,7 +244,12 @@ private struct UpdateRow: View {
         case let .installing(update):
             progress("正在安装 \(update.version)…")
         case let .failed(current, _):
-            Text(current).font(.caption).foregroundColor(.orange)
+            HStack(spacing: 6) {
+                Text(current).font(.caption).foregroundColor(.orange)
+                Button("重试") { model.checkForUpdates() }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+            }
         }
     }
 

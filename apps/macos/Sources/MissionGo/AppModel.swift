@@ -114,6 +114,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var launchAtLogin = LaunchAtLogin()
     /// The client's own version, and whether a newer one is published.
     @Published private(set) var updateState: UpdateState = .unavailable
+    @Published private(set) var updateNotice: String?
     /// This build's version, for the menu to name; nil when run without a bundle.
     let appVersion: String? = AppUpdater.currentVersion()
 
@@ -136,6 +137,11 @@ final class AppModel: ObservableObject {
     private var lastLoopRepos: [RepoMapping]?
     private var lastSeenLaunchId: String?
     private var updateTimer: Task<Void, Never>?
+    private var autoSkillSyncTask: Task<Void, Never>?
+    private var lastAutoSkillSyncVersion: String?
+    private var failedAutoSkillSyncVersion: String?
+    private var autoSkillRetryAfter: Date?
+    private var lastPresentedUpdateVersion: String?
     private var menuTimer: Task<Void, Never>?
     private var lastOpenRefresh: Date?
 
@@ -233,6 +239,8 @@ final class AppModel: ObservableObject {
         refreshIntegrationStates()
         updateTimer?.cancel()
         updateTimer = nil
+        autoSkillSyncTask?.cancel()
+        autoSkillSyncTask = nil
         do {
             // The installation id stays: logging in again finds the same machine
             // with its mappings and history.
@@ -255,6 +263,10 @@ final class AppModel: ObservableObject {
         claude = .checking
         codex = .checking
         skillSync = nil
+        lastAutoSkillSyncVersion = nil
+        failedAutoSkillSyncVersion = nil
+        autoSkillRetryAfter = nil
+        updateNotice = nil
         // The version is a property of this build, not of the session, so it
         // stays; anything in flight does not.
         updateState = AppUpdater.currentVersion().map { .current($0) } ?? .unavailable
@@ -346,6 +358,9 @@ final class AppModel: ObservableObject {
         // stands as it was.
         if let products = state.products, products != latestProducts {
             latestProducts = products
+        }
+        if let expectedVersion = state.expectedSkillVersion {
+            scheduleSkillSync(expectedVersion: expectedVersion)
         }
         if let launch = state.recentLaunches.first, launch.dispatchId != lastSeenLaunchId {
             lastSeenLaunchId = launch.dispatchId
@@ -497,13 +512,20 @@ final class AppModel: ObservableObject {
     func disableIntegration(_ agent: LocalAgent) {
         integrations.disable(agent)
         if checkingIntegrations.contains(agent) { skillSync = nil }
+        if LocalAgent.allCases.allSatisfy({ integrations.state(for: $0) == nil }) {
+            autoSkillSyncTask?.cancel()
+            autoSkillSyncTask = nil
+        }
         refreshIntegrationStates()
     }
 
-    /// The only path that checks client login and writes Skill files. No timer,
-    /// menu-open callback or heartbeat calls it. Each client is independent.
+    /// The only path that checks client login or enables an integration. A
+    /// heartbeat may later refresh the Skill for enabled clients, but it never
+    /// invokes this permission/login flow. Each client is independent.
     func checkIntegration(_ agent: LocalAgent) {
         guard let credential, let environment, checkingIntegrations.isEmpty, !importingPath else { return }
+        autoSkillSyncTask?.cancel()
+        autoSkillSyncTask = nil
         if integrations.state(for: agent) == nil {
             let alert = NSAlert()
             if agent == .claudeCode {
@@ -583,6 +605,60 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// A heartbeat only refreshes Skill files for integrations the person has
+    /// already enabled. It never probes or enables another client. Failures are
+    /// shown and retried after a bounded delay; a newer local Skill and symlinks
+    /// remain protected by SkillSync.apply.
+    private func scheduleSkillSync(expectedVersion: String) {
+        guard let credential, let environment,
+              SkillSync.version(ofSkill: "---\nname: missiongo\nversion: \(expectedVersion)\n---") != nil,
+              expectedVersion != lastAutoSkillSyncVersion,
+              autoSkillSyncTask == nil
+        else { return }
+        if failedAutoSkillSyncVersion == expectedVersion,
+           let retry = autoSkillRetryAfter, retry > Date() { return }
+        let enabled = LocalAgent.allCases.filter { integrations.state(for: $0) != nil }
+        guard !enabled.isEmpty else { return }
+        let targets = enabled.map {
+            SkillSync.target(
+                for: $0,
+                home: Paths.homeDirectory(),
+                codexHome: CodexLocation(environment: environment).codexHome
+            )
+        }
+        let access = integrations
+        skillSync = .syncing
+        autoSkillSyncTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.autoSkillSyncTask = nil }
+            do {
+                let outcome = try await SkillSync.run(
+                    serverUrl: credential.serverUrl,
+                    targets: targets,
+                    expectedVersion: expectedVersion,
+                    shouldApply: { enabled.allSatisfy { access.state(for: $0) != nil } }
+                )
+                guard self.credential == credential else { return }
+                self.skillSync = .outcome(outcome)
+                if outcome.failures.isEmpty {
+                    self.lastAutoSkillSyncVersion = expectedVersion
+                    self.failedAutoSkillSyncVersion = nil
+                    self.autoSkillRetryAfter = nil
+                } else {
+                    self.failedAutoSkillSyncVersion = expectedVersion
+                    self.autoSkillRetryAfter = Date().addingTimeInterval(5 * 60)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.credential == credential else { return }
+                self.skillSync = .failed(reason: error.localizedDescription)
+                self.failedAutoSkillSyncVersion = expectedVersion
+                self.autoSkillRetryAfter = Date().addingTimeInterval(5 * 60)
+            }
+        }
+    }
+
     func openFullDiskAccessSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") else { return }
         NSWorkspace.shared.open(url)
@@ -601,18 +677,35 @@ final class AppModel: ObservableObject {
     /// Asks the server this Mac is signed in to whether a newer client is
     /// published. Shown, never fatal: a machine that cannot reach the manifest
     /// keeps taking dispatches on the build it has.
-    private func checkForUpdate(_ credential: NodeCredential) async {
+    func checkForUpdates() {
+        guard let credential else { return }
+        Task { await checkForUpdate(credential, manual: true) }
+    }
+
+    func showAvailableUpdate() {
+        guard case let .available(update) = updateState else { return }
+        presentUpdate(update, force: true)
+    }
+
+    private func checkForUpdate(_ credential: NodeCredential, manual: Bool = false) async {
         guard let current = AppUpdater.currentVersion() else {
             updateState = .unavailable
             return
         }
         // A download or an install already under way owns this state.
         guard !updateState.isBusy else { return }
+        updateNotice = nil
         updateState = .checking(current)
         do {
             let found = try await AppUpdater.check(serverUrl: credential.serverUrl, currentVersion: current)
             guard self.credential == credential, !updateState.isBusy else { return }
-            updateState = found.map { .available($0) } ?? .current(current)
+            if let found {
+                updateState = .available(found)
+                presentUpdate(found, force: manual)
+            } else {
+                updateState = .current(current)
+                if manual { updateNotice = "当前已是最新版（\(current)）。" }
+            }
         } catch {
             guard self.credential == credential, !updateState.isBusy else { return }
             updateState = .failed(current: current, reason: error.localizedDescription)
@@ -626,19 +719,67 @@ final class AppModel: ObservableObject {
         updateState = .downloading(update)
         Task {
             do {
-                let zip = try await AppUpdater.download(update.manifest, serverUrl: credential.serverUrl)
-                updateState = .installing(update)
+                // The confirmation may have been open for a while. Re-fetch so
+                // a superseding release cannot be installed under stale notes.
+                guard let latest = try await AppUpdater.check(
+                    serverUrl: credential.serverUrl,
+                    currentVersion: update.current
+                ) else {
+                    updateState = .current(update.current)
+                    updateNotice = "更新信息已变化，请重新检查。"
+                    return
+                }
+                guard latest.manifest == update.manifest else {
+                    updateState = .available(latest)
+                    presentUpdate(latest, force: true)
+                    return
+                }
+                let zip = try await AppUpdater.download(latest.manifest, serverUrl: credential.serverUrl)
+                updateState = .installing(latest)
                 let bundle = try await AppUpdater.install(
                     zip: zip,
-                    manifest: update.manifest,
+                    manifest: latest.manifest,
                     replacing: Bundle.main.bundleURL,
                     expectedIdentifier: Bundle.main.bundleIdentifier
                 )
+                await drainLoopForRelaunch()
                 relaunch(bundle)
             } catch {
                 updateState = .failed(current: update.current, reason: error.localizedDescription)
             }
         }
+    }
+
+    private func presentUpdate(_ update: AppUpdater.Available, force: Bool) {
+        guard force || lastPresentedUpdateVersion != update.version else { return }
+        lastPresentedUpdateVersion = update.version
+        let alert = NSAlert()
+        alert.messageText = "发现 MissionGo \(update.version)"
+        var details = "当前版本：\(update.current)"
+        if let published = update.manifest.publishedAtLabel {
+            details += "\n发布时间：\(published)"
+        }
+        details += "\n\n\(update.manifest.releaseNotesText)"
+        if Bundle.main.object(forInfoDictionaryKey: "MissionGoAllowsAdHocUpdates") as? Bool == true {
+            details += "\n\n此安装使用 ad-hoc 签名；更新后 macOS 可能要求重新授予权限。"
+        }
+        alert.informativeText = details
+        alert.addButton(withTitle: "同意更新")
+        alert.addButton(withTitle: "稍后")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn { installUpdate() }
+    }
+
+    /// Stop requesting new work, then wait for an already claimed dispatch to
+    /// finish its launch/report sequence before this process exits.
+    private func drainLoopForRelaunch() async {
+        loopGeneration += 1
+        let running = loopTask
+        loopTask?.cancel()
+        if let running { await running.value }
+        loopTask = nil
+        loopStatesTask?.cancel()
+        loopStatesTask = nil
     }
 
     /// Hands the relaunch to a detached child and quits. Sessions this app

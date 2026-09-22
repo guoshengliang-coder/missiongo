@@ -657,6 +657,39 @@ describe("MissionGo REST API", () => {
     });
     expect(uploadedImage.statusCode).toBe(201);
     const imageAttachmentId = uploadedImage.json<{ id: string }>().id;
+    const videoBytes = Buffer.from("small-video-fixture");
+    const uploadedVideo = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/HG-1/attachments",
+      headers: {
+        authorization: "Bearer management-test-token",
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "video/mp4",
+        "x-missiongo-filename": "launch.mp4",
+      },
+      payload: videoBytes,
+    });
+    expect(uploadedVideo.statusCode).toBe(201);
+    const videoAttachmentId = uploadedVideo.json<{ id: string }>().id;
+    const additionalVideos: Array<{ filename: string; contentType: string; bytes: Buffer; id: string }> = [];
+    for (const fixture of [
+      { filename: "capture.mov", contentType: "video/quicktime", bytes: Buffer.from("small-mov-fixture") },
+      { filename: "capture.webm", contentType: "video/webm", bytes: Buffer.from("small-webm-fixture") },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/items/HG-1/attachments",
+        headers: {
+          authorization: "Bearer management-test-token",
+          "content-type": "application/octet-stream",
+          "x-missiongo-content-type": fixture.contentType,
+          "x-missiongo-filename": fixture.filename,
+        },
+        payload: fixture.bytes,
+      });
+      expect(response.statusCode).toBe(201);
+      additionalVideos.push({ ...fixture, id: response.json<{ id: string }>().id });
+    }
     const timelineCountBeforeRead = app.missionGoStore.getTimeline("HG-1").length;
 
     const call = async (id: number, method: string, params: Readonly<Record<string, unknown>> = {}) => {
@@ -708,12 +741,15 @@ describe("MissionGo REST API", () => {
         attachments: [
           { id: attachmentId, kind: "log", displayNumber: 1 },
           { id: imageAttachmentId, kind: "image", displayNumber: 1 },
+          { id: videoAttachmentId, kind: "video", displayNumber: 1 },
+          { id: additionalVideos[0]!.id, kind: "video", displayNumber: 2 },
+          { id: additionalVideos[1]!.id, kind: "video", displayNumber: 3 },
         ],
       },
       product: { id: product.id, name: "Hermes Go", keyPrefix: "HG" },
       sourceComponent: null,
       affectedComponents: [],
-      attachmentCount: 2,
+      attachmentCount: 5,
       timelineEventCount: timelineCountBeforeRead,
     });
 
@@ -741,13 +777,53 @@ describe("MissionGo REST API", () => {
     });
     expect(image.result?.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image" })]));
 
+    const video = await call(7, "tools/call", {
+      name: "get_attachment",
+      arguments: { itemKey: "HG-1", attachmentId: videoAttachmentId },
+    });
+    expect(video.result?.structuredContent).toMatchObject({
+      attachment: { id: videoAttachmentId, kind: "video", filename: "launch.mp4", contentType: "video/mp4" },
+      inline: true,
+      representation: "original_file",
+    });
+    expect(video.result?.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "resource",
+        resource: expect.objectContaining({
+          uri: `missiongo://attachments/${videoAttachmentId}/launch.mp4`,
+          mimeType: "video/mp4",
+          blob: videoBytes.toString("base64"),
+        }),
+      }),
+    ]));
+    for (const [index, fixture] of additionalVideos.entries()) {
+      const result = await call(8 + index, "tools/call", {
+        name: "get_attachment",
+        arguments: { itemKey: "HG-1", attachmentId: fixture.id },
+      });
+      expect(result.result?.structuredContent).toMatchObject({
+        attachment: { filename: fixture.filename, contentType: fixture.contentType },
+        inline: true,
+        representation: "original_file",
+      });
+      expect(result.result?.content).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "resource",
+          resource: expect.objectContaining({
+            mimeType: fixture.contentType,
+            blob: fixture.bytes.toString("base64"),
+          }),
+        }),
+      ]));
+    }
+
     expect((await app.inject({ method: "GET", url: "/api/v1/items/HG-1", headers: { authorization: "Bearer management-test-token" } })).json()).toMatchObject({ status: "inbox" });
     expect(app.missionGoStore.getTimeline("HG-1")).toHaveLength(timelineCountBeforeRead);
   });
 
   it("uses first-time account login and limits AI reads to authorized products", async () => {
     const adminAccount = testAdminAccount();
-    const app = buildApp({ adminAccount, publicOrigin: "https://missiongo.test" });
+    const app = buildApp({ adminAccount, adminToken: "management-test-token", publicOrigin: "https://missiongo.test" });
     apps.push(app);
 
     const allowed = app.missionGoStore.createProduct({ name: "Allowed", keyPrefix: "OK" });
@@ -766,6 +842,19 @@ describe("MissionGo REST API", () => {
       title: "Must stay private",
       description: "Account cannot read this item",
     });
+    const privateVideo = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/NO-1/attachments",
+      headers: {
+        authorization: "Bearer management-test-token",
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "video/mp4",
+        "x-missiongo-filename": "private.mp4",
+      },
+      payload: Buffer.from("private-video-bytes"),
+    });
+    expect(privateVideo.statusCode).toBe(201);
+    const privateVideoId = privateVideo.json<{ id: string }>().id;
 
     const protectedMetadata = await app.inject({ method: "GET", url: "/.well-known/oauth-protected-resource/mcp" });
     expect(protectedMetadata.statusCode).toBe(200);
@@ -870,6 +959,9 @@ describe("MissionGo REST API", () => {
     const forbidden = await call(3, "get_item_context", { itemKey: "NO-1" });
     expect(forbidden.isError).toBe(true);
     expect(JSON.stringify(forbidden)).not.toContain("Must stay private");
+    const forbiddenVideo = await call(4, "get_attachment", { itemKey: "NO-1", attachmentId: privateVideoId });
+    expect(forbiddenVideo.isError).toBe(true);
+    expect(JSON.stringify(forbiddenVideo)).not.toContain("private-video-bytes");
   });
 
   it("protects management routes when an admin token is configured", async () => {

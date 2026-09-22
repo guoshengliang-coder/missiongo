@@ -16,6 +16,8 @@ private func manifestJSON(
     return """
     {"version":"\(version)","sha256":"\(sha256)","size":\(size),\
     "buildTimestamp":"20260915033846","minimumSystemVersion":"13.0",\
+    "releaseNotes":[{"pullRequestNumber":94,"title":"Improve batch UX",\
+    "items":[{"key":"AND-122","title":"批量操作体验"}]}],\
     "downloadPath":"\(downloadPath)"}
     """
 }
@@ -57,6 +59,10 @@ final class AppUpdaterManifestTests: XCTestCase {
         XCTAssertEqual(manifest.size, 1234)
         XCTAssertEqual(manifest.downloadPath, "/downloads/missiongo-macos-latest.zip")
         XCTAssertEqual(manifest.minimumSystemVersion, "13.0")
+        XCTAssertEqual(manifest.buildTimestamp, "20260915033846")
+        XCTAssertEqual(manifest.releaseNotes?.first?.pullRequestNumber, 94)
+        XCTAssertEqual(manifest.releaseNotes?.first?.items.first?.key, "AND-122")
+        XCTAssertTrue(manifest.releaseNotesText.contains("AND-122 · 批量操作体验"))
     }
 
     /// The console's index.html is what a misconfigured server actually returns.
