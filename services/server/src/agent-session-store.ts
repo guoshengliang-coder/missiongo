@@ -959,6 +959,9 @@ export class AgentSessionStore {
              WHERE c.session_id = s.id AND c.status IN ('queued', 'delivering')
            ) OR s.settings_revision > MAX(s.applied_settings_revision, s.settings_error_revision)
            OR s.source_restore_pending = 1
+           -- A source archive still owed goes out now, not after the idle cool-down.
+           OR (archived_at IS NOT NULL AND archive_source = 'missiongo' AND agent_kind = 'codex'
+             AND source_archived_at IS NULL AND source_archive_error IS NULL)
            OR s.updated_at <= ?
          )
          ORDER BY archive_source = 'source', updated_at DESC LIMIT 100`,

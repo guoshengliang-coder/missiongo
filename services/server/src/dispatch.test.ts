@@ -2524,6 +2524,9 @@ describe("Archiving a finished hand-off (AND-129)", () => {
       payload: { status: "idle", messages: [], ...payload },
     });
 
+    // An idle session the Mac just reported on would otherwise wait out the
+    // idle cool-down before the archive request reaches it.
+    await snapshot({});
     expect((await setArchived(true)).statusCode).toBe(200);
     expect((await nodeSessions(app, node.token)).find((session) => session.id === sessionId))
       .toMatchObject({ archiveInSource: true });
