@@ -138,7 +138,12 @@ final class FakeAppServer: @unchecked Sendable {
     }
 
     /// Answers every request the way the real app-server did in the spike.
-    static func happy(threadId: String = "01a09f35-d6fa-7eb2-9d90-1352cf2fb661", accountResult: [String: Any]? = nil) throws -> FakeAppServer {
+    static func happy(
+        threadId: String = "01a09f35-d6fa-7eb2-9d90-1352cf2fb661",
+        accountResult: [String: Any]? = nil,
+        accountStartupFailures: Int = 0
+    ) throws -> FakeAppServer {
+        let remainingAccountFailures = Locked(accountStartupFailures)
         return try FakeAppServer { message in
             guard let id = message["id"], let method = message["method"] as? String else { return [] }
             switch method {
@@ -158,6 +163,17 @@ final class FakeAppServer: @unchecked Sendable {
                     ]],
                 ]
             case "mcpServer/tool/call":
+                let shouldFail = remainingAccountFailures.withLock { remaining in
+                    guard remaining > 0 else { return false }
+                    remaining -= 1
+                    return true
+                }
+                if shouldFail {
+                    return [["id": id, "error": [
+                        "code": -32603,
+                        "message": "failed to get client: MCP startup failed: MCP client startup timed out after 30s",
+                    ]]]
+                }
                 if let accountResult { return [["id": id, "result": accountResult]] }
                 return [["id": id, "result": ["structuredContent": [
                     "capabilities": ["canComment": true, "writeTools": ["append_comment", "claim_item"]],
@@ -262,6 +278,7 @@ final class CodexProtocolTests: XCTestCase {
         let snapshot = try CodexProtocol.threadSnapshot(fromRead: [
             "thread": [
                 "status": ["type": "idle"],
+                "updatedAt": 1_797_808_200_123 as NSNumber,
                 "turns": [[
                     "id": "turn-1",
                     "items": [
@@ -281,6 +298,15 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(snapshot.messages.map(\.sourceId), ["u1", "p1", "a1"])
         XCTAssertEqual(snapshot.messages.map(\.role), ["user", "plan", "agent"])
         XCTAssertEqual(snapshot.messages.last?.questions, [AgentSessionQuestion(title: "Scope", options: ["small", "complete"])])
+        XCTAssertEqual(snapshot.activityAt, "2026-12-20T23:10:00.123Z")
+    }
+
+    func testNormalizesCodexSourceActivityTimestamps() {
+        XCTAssertEqual(
+            CodexProtocol.sourceActivityTimestamp("2026-09-21T05:30:00Z"),
+            "2026-09-21T05:30:00.000Z"
+        )
+        XCTAssertNil(CodexProtocol.sourceActivityTimestamp("not-a-date"))
     }
 
     func testReadsTheActiveTurnIdForSameTurnSteering() throws {
@@ -414,6 +440,35 @@ final class CodexAppServerControlTests: XCTestCase {
             XCTAssertEqual(error as? CodexControlError, .rpc(method: "thread/start", message: "cwd does not exist"))
         }
         server.waitUntilDone()
+        XCTAssertFalse(server.methods.contains("turn/start"))
+    }
+
+    func testRetriesOneMissionGoStartupTimeoutBeforeStartingTheTurn() async throws {
+        let server = try FakeAppServer.happy(accountStartupFailures: 1)
+        let threadId = try await CodexAppServerControl(timeout: 5).startThread(request(socketPath: server.path))
+        server.waitUntilDone()
+
+        XCTAssertEqual(threadId, "01a09f35-d6fa-7eb2-9d90-1352cf2fb661")
+        XCTAssertEqual(server.methods.filter { $0 == "mcpServer/tool/call" }.count, 2)
+        XCTAssertEqual(server.methods.filter { $0 == "turn/start" }.count, 1)
+    }
+
+    func testStopsAfterTheSecondMissionGoStartupTimeoutWithoutStartingTheTurn() async throws {
+        let server = try FakeAppServer.happy(accountStartupFailures: 2)
+        do {
+            _ = try await CodexAppServerControl(timeout: 5).startThread(request(socketPath: server.path))
+            XCTFail("expected a failure")
+        } catch {
+            XCTAssertEqual(
+                error as? CodexControlError,
+                .rpc(
+                    method: "mcpServer/tool/call",
+                    message: "failed to get client: MCP startup failed: MCP client startup timed out after 30s"
+                )
+            )
+        }
+        server.waitUntilDone()
+        XCTAssertEqual(server.methods.filter { $0 == "mcpServer/tool/call" }.count, 2)
         XCTAssertFalse(server.methods.contains("turn/start"))
     }
 
@@ -756,7 +811,8 @@ final class CodexLauncherTests: XCTestCase {
         let control = RecordingControl(threadId: "thread-1")
         control.snapshot = CodexThreadSnapshot(
             status: "idle",
-            messages: [AgentSessionMessage(sourceId: "a1", role: "agent", text: "Ready")]
+            messages: [AgentSessionMessage(sourceId: "a1", role: "agent", text: "Ready")],
+            activityAt: "2026-09-21T05:30:00.000Z"
         )
         let launcher = CodexLauncher(
             environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
@@ -785,6 +841,7 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(report.commandId, "command-1")
         XCTAssertEqual(report.commandStatus, "delivered")
         XCTAssertEqual(report.messages.map(\.sourceId), ["a1"])
+        XCTAssertEqual(report.activityAt, "2026-09-21T05:30:00.000Z")
     }
 
     func testAnActiveThreadReservesThenSteersTheQueuedWebReply() async throws {

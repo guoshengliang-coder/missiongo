@@ -335,6 +335,7 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         ))
         XCTAssertEqual(report.status, "unavailable")
         XCTAssertTrue(report.error?.contains("宿主已停止") == true)
+        XCTAssertNotNil(report.activityAt)
     }
 
     func testFinishedWorkClosesTheHostButKeepsItsConversation() async throws {

@@ -347,6 +347,9 @@ export const INITIAL_SCHEMA = `
     kind TEXT CHECK (kind IN ('answer', 'approval', 'action', 'instruction', 'uncertain')),
     reason TEXT,
     model TEXT,
+    dismissed_message_hash TEXT,
+    dismissed_at TEXT,
+    dismissed_by_account_id TEXT,
     updated_at TEXT NOT NULL
   ) STRICT;
 

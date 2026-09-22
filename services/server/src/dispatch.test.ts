@@ -1162,6 +1162,95 @@ describe("Claiming a dispatch on the node", () => {
     expect(provider).toHaveBeenCalledTimes(2);
   });
 
+  it("dismisses attention for unchanged content and reopens it for new content or a stall", async () => {
+    const { app, cookie, node, mission, dispatchId } = await queuedDispatch();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "launched",
+        sessionName: `Mac mini-${mission.itemKey}`,
+        sessionUrl: "https://claude.ai/code/session_attention_dismiss",
+        sessionRef: "21111111-2222-4333-8444-555555555555",
+      },
+    });
+    const sessionId = (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+    const messages = [
+      { sourceId: "u1", turnId: "t1", role: "user", text: "处理它。" },
+      {
+        sourceId: "a1", turnId: "t1", role: "agent", text: "选择范围。",
+        questions: [{ title: "选择范围", options: ["小", "完整"] }],
+      },
+    ];
+    const snapshot = (status: string, nextMessages = messages) => app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status, messages: nextMessages },
+    });
+    const list = async () => (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{
+      needsAttention: boolean;
+      attention: { revision: string; dismissed?: boolean; reason?: string };
+    }> }>().sessions[0]!;
+
+    expect((await snapshot("idle")).statusCode).toBe(204);
+    const before = await list();
+    expect(before.needsAttention).toBe(true);
+    expect(before.attention.revision).toBeTruthy();
+
+    const dismissed = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/attention/dismiss`,
+      headers: { cookie },
+      payload: { revision: before.attention.revision },
+    });
+    expect(dismissed.statusCode).toBe(200);
+    expect(await list()).toMatchObject({
+      needsAttention: false,
+      attention: { dismissed: true, reason: "已由用户标记为无需处理。" },
+    });
+
+    expect((await snapshot("active")).statusCode).toBe(204);
+    expect(await list()).toMatchObject({ needsAttention: false, attention: { dismissed: true } });
+
+    expect((await snapshot("stalled")).statusCode).toBe(204);
+    expect((await list()).needsAttention).toBe(true);
+
+    const newMessages = [
+      ...messages,
+      {
+        sourceId: "a2", turnId: "t2", role: "agent", text: "请确认新的方案。",
+        questions: [{ title: "是否继续", options: ["继续", "停止"] }],
+      },
+    ];
+    expect((await snapshot("idle", newMessages)).statusCode).toBe(204);
+    const staleDismissal = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/attention/dismiss`,
+      headers: { cookie },
+      payload: { revision: before.attention.revision },
+    });
+    expect(staleDismissal.statusCode).toBe(409);
+    expect(staleDismissal.json()).toMatchObject({ code: "agent_attention_changed" });
+    const after = await list();
+    expect(after.needsAttention).toBe(true);
+    expect(after.attention.revision).not.toBe(before.attention.revision);
+  });
+
   it("hands a dispatch to a machine already waiting on a long poll", async () => {
     const { app, cookie } = await signedInApp();
     const node = await registeredNode(app);
@@ -1621,6 +1710,7 @@ describe("Claiming a dispatch on the node", () => {
       headers: { authorization: `Bearer ${node.token}` },
       payload: {
         status: "idle",
+        activityAt: "2026-09-19T01:30:00.000Z",
         messages: [
           { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
           { sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "I found the cause." },
@@ -1690,6 +1780,7 @@ describe("Claiming a dispatch on the node", () => {
       headers: { authorization: `Bearer ${node.token}` },
       payload: {
         status: "idle",
+        activityAt: "2026-09-19T01:30:00.000Z",
         messages: [
           { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
           { sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "I found another cause." },
@@ -1701,7 +1792,7 @@ describe("Claiming a dispatch on the node", () => {
       url: `/api/v1/agent-sessions?productId=${mission.productId}`,
       headers: { cookie },
     })).json<{ sessions: Array<{ activityAt: string }> }>().sessions[0]!;
-    expect(changed.activityAt).not.toBe(fixedActivityAt);
+    expect(changed.activityAt).toBe("2026-09-19T01:30:00.000Z");
 
     const reply = await app.inject({
       method: "POST",

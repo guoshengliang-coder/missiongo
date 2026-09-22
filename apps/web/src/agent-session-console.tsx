@@ -22,6 +22,7 @@ import { api } from "./api";
 import {
   activityLabelKey,
   agentSessionMatches,
+  archivableVisibleSessionIds,
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
@@ -180,6 +181,8 @@ export function AgentSessionConsole({
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [readState, setReadState] = useState<AgentSessionReadState>({});
   const [retainedReadSessionId, setRetainedReadSessionId] = useState<string | null>(null);
+  const [selectedForArchive, setSelectedForArchive] = useState<Set<string>>(new Set());
+  const [bulkArchiveMessage, setBulkArchiveMessage] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const observedSessionRef = useRef<string | null>(null);
   const conversationOpenRef = useRef(false);
@@ -211,6 +214,9 @@ export function AgentSessionConsole({
     )),
     [agentFilter, filter, readState, retainedReadSessionId, search, sessions],
   );
+  const archivableIds = useMemo(() => archivableVisibleSessionIds(visibleSessions), [visibleSessions]);
+  const allArchivableSelected = archivableIds.length > 0
+    && archivableIds.every((sessionId) => selectedForArchive.has(sessionId));
   // Keep a restored URL selection while the list is still loading. Falling
   // back to null here would immediately erase the session that survived an
   // Android Activity recreation, before the request had a chance to confirm it.
@@ -223,6 +229,11 @@ export function AgentSessionConsole({
   useEffect(() => {
     setReadState(parseAgentSessionReadState(localStorage.getItem(agentSessionReadStorageKey(productId))));
   }, [productId]);
+
+  useEffect(() => {
+    setSelectedForArchive(new Set());
+    setBulkArchiveMessage(null);
+  }, [agentFilter, filter, productId, search]);
 
   useEffect(() => {
     if (selectedId === selectedSessionId) return;
@@ -280,6 +291,48 @@ export function AgentSessionConsole({
         invalidations.push(queryClient.invalidateQueries({ queryKey: ["agent-session", selected.agentSessionId] }));
       }
       await Promise.all(invalidations);
+    },
+  });
+  const dismissAttention = useMutation({
+    mutationFn: ({ sessionId, revision }: { sessionId: string; revision: string }) =>
+      api.dismissAgentSessionAttention(sessionId, revision),
+    onSuccess: async (_session, input) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
+      ]);
+    },
+  });
+  const bulkArchive = useMutation({
+    mutationFn: async (sessionIds: readonly string[]) => {
+      const results = await Promise.allSettled(sessionIds.map(async (sessionId) => {
+        const session = visibleSessions.find((candidate) => candidate.id === sessionId);
+        if (!session?.canArchive || session.archivedAt || session.archivedSource === "source") {
+          throw new Error(t("agentConsoleBulkArchiveUnavailable"));
+        }
+        if (session.agentSessionId) await api.setAgentSessionArchived(session.agentSessionId, true);
+        else await api.setDispatchArchived(session.dispatchId, true);
+        return sessionId;
+      }));
+      return results.map((result, index) => ({ sessionId: sessionIds[index]!, result }));
+    },
+    onSuccess: async (results) => {
+      const succeeded = results.filter((entry) => entry.result.status === "fulfilled").map((entry) => entry.sessionId);
+      const failures = results.filter((entry) => entry.result.status === "rejected");
+      const failureDetails = failures.map((entry) => {
+        const session = visibleSessions.find((candidate) => candidate.id === entry.sessionId);
+        const reason = entry.result.status === "rejected" ? errorText(entry.result.reason) : "";
+        return `${session ? sessionTitle(session) : entry.sessionId}: ${reason}`;
+      }).join("; ");
+      setSelectedForArchive((current) => {
+        const next = new Set(current);
+        succeeded.forEach((sessionId) => next.delete(sessionId));
+        return next;
+      });
+      setBulkArchiveMessage(failures.length === 0
+        ? t("agentConsoleBulkArchiveSuccess", { count: succeeded.length })
+        : `${t("agentConsoleBulkArchivePartial", { success: succeeded.length, failed: failures.length })} ${failureDetails}`);
+      await queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
     },
   });
   const cancel = useMutation({
@@ -427,42 +480,91 @@ export function AgentSessionConsole({
             </select>
           </label>
         </div>
+        {filter !== "archived" && archivableIds.length > 0 && (
+          <div className="agent-console-bulk-actions">
+            <label>
+              <input
+                type="checkbox"
+                checked={allArchivableSelected}
+                onChange={(event) => setSelectedForArchive(
+                  event.target.checked ? new Set(archivableIds) : new Set(),
+                )}
+              />
+              <span>{t("agentConsoleSelectVisible")}</span>
+            </label>
+            <span>{t("agentConsoleSelectedCount", { count: selectedForArchive.size })}</span>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={selectedForArchive.size === 0 || bulkArchive.isPending}
+              onClick={() => {
+                const ids = [...selectedForArchive];
+                if (window.confirm(t("agentConsoleBulkArchiveConfirm", { count: ids.length }))) {
+                  setBulkArchiveMessage(null);
+                  bulkArchive.mutate(ids);
+                }
+              }}
+            >
+              {bulkArchive.isPending ? <LoaderCircle className="spin" size={15} /> : <Archive size={15} />}
+              {t("agentConsoleBulkArchive")}
+            </button>
+          </div>
+        )}
+        {bulkArchiveMessage && <p className="agent-console-bulk-result" role="status">{bulkArchiveMessage}</p>}
         <div className="agent-console-session-list">
           {!sessionsLoaded && !hasSessionsError && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
           {hasSessionsError && <p className="inline-error">{errorText(sessionsError)}</p>}
           {sessionsLoaded && visibleSessions.length === 0 && (
             <div className="agent-console-empty"><Bot size={22} /><p>{t(search.trim() ? "agentConsoleNoMatch" : "agentConsoleEmpty")}</p></div>
           )}
-          {visibleSessions.map((session) => (
-            <button
-              key={session.id}
-              type="button"
-              className={`agent-console-session ${session.id === selectedId ? "active" : ""} ${isAgentSessionUnread(session, readState) ? "unread" : ""}`}
-              onClick={() => {
-                setRetainedReadSessionId(retainedReadSessionAfterSelection(
-                  filter, session, readState, retainedReadSessionId,
-                ));
-                markRead(session);
-                onSelectSession(session.id, true);
-              }}
-            >
-              <span className={`agent-console-status-icon agent-console-status-${session.status} agent-console-node-${session.nodeConnectionState}`}>
-                {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={session.status} />}
-              </span>
-              <span className="agent-console-session-copy">
-                <strong>{sessionTitle(session)}</strong>
-                <small>{session.nodeName} · {nodeConnectionLabel(session, t)} · {agentLabel(session, t)} · {session.archivedAt ? t("archived") : statusLabel(session.status, t)}</small>
-                {attentionLabel(session, t) && (
-                  <i className="agent-console-attention" title={session.attention.reason}>
-                    {attentionLabel(session, t)}
-                  </i>
+          {visibleSessions.map((session) => {
+            const selectable = archivableIds.includes(session.id);
+            return (
+              <div key={session.id} className="agent-console-session-row">
+                {selectable && (
+                  <label className="agent-console-session-select" aria-label={t("agentConsoleSelectConversation")}>
+                    <input
+                      type="checkbox"
+                      checked={selectedForArchive.has(session.id)}
+                      onChange={(event) => setSelectedForArchive((current) => {
+                        const next = new Set(current);
+                        if (event.target.checked) next.add(session.id);
+                        else next.delete(session.id);
+                        return next;
+                      })}
+                    />
+                  </label>
                 )}
-                <span>{session.latestMessage?.text ?? session.lastError ?? t("agentConsoleDispatchOnly")}</span>
-              </span>
-              {isAgentSessionUnread(session, readState) && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
-              <time>{updatedTime(session.activityAt ?? session.updatedAt, locale)}</time>
-            </button>
-          ))}
+                <button
+                  type="button"
+                  className={`agent-console-session ${session.id === selectedId ? "active" : ""} ${isAgentSessionUnread(session, readState) ? "unread" : ""}`}
+                  onClick={() => {
+                    setRetainedReadSessionId(retainedReadSessionAfterSelection(
+                      filter, session, readState, retainedReadSessionId,
+                    ));
+                    markRead(session);
+                    onSelectSession(session.id, true);
+                  }}
+                >
+                  <span className={`agent-console-status-icon agent-console-status-${session.status} agent-console-node-${session.nodeConnectionState}`}>
+                    {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={session.status} />}
+                  </span>
+                  <span className="agent-console-session-copy">
+                    <strong>{sessionTitle(session)}</strong>
+                    <small>{session.nodeName} · {nodeConnectionLabel(session, t)} · {agentLabel(session, t)} · {session.archivedAt ? t("archived") : statusLabel(session.status, t)}</small>
+                    {attentionLabel(session, t) && (
+                      <i className="agent-console-attention" title={session.attention.reason}>
+                        {attentionLabel(session, t)}
+                      </i>
+                    )}
+                    <span>{session.latestMessage?.text ?? session.lastError ?? t("agentConsoleDispatchOnly")}</span>
+                  </span>
+                  {isAgentSessionUnread(session, readState) && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
+                  <time>{updatedTime(session.activityAt ?? session.updatedAt, locale)}</time>
+                </button>
+              </div>
+            );
+          })}
         </div>
       </section>
 
@@ -536,6 +638,35 @@ export function AgentSessionConsole({
                   }
                 }}
               >
+                {(selected.needsAttention || selected.attention.dismissed) && selected.attention.reason && (
+                  <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}`} role="status">
+                    <BellRing size={17} />
+                    <div>
+                      <strong>{selected.attention.dismissed
+                        ? t("agentAttentionDismissedTitle")
+                        : attentionLabel(selected, t)}</strong>
+                      <span>{selected.attention.reason}</span>
+                    </div>
+                    {selected.needsAttention
+                      && selected.status !== "stalled"
+                      && selected.agentSessionId
+                      && selected.attention.revision && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={dismissAttention.isPending}
+                        onClick={() => dismissAttention.mutate({
+                          sessionId: selected.agentSessionId!,
+                          revision: selected.attention.revision!,
+                        })}
+                      >
+                        {dismissAttention.isPending && <LoaderCircle className="spin" size={14} />}
+                        {t("agentAttentionDismiss")}
+                      </button>
+                    )}
+                  </div>
+                )}
+                {dismissAttention.isError && <p className="inline-error">{errorText(dismissAttention.error)}</p>}
                 {selected.archivedAt && (
                   <div className="agent-console-connection-banner archived" role="status">
                     <Archive size={17} />

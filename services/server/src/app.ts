@@ -1656,16 +1656,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return dispatch;
   };
 
-  const loadAuthorizedAgentSession = (request: FastifyRequest, sessionId: string, reply = false) => {
+  const loadAuthorizedAgentSession = (
+    request: FastifyRequest,
+    sessionId: string,
+    operate = false,
+    requireAi = operate,
+  ) => {
     const account = requireAccount(request);
     const session = agentSessionStore.getForAccount(account.id, sessionId);
     const dispatch = dispatchStore.getDispatch(account.id, session.dispatchId);
     const productIds: string[] = [];
     for (const itemKey of dispatch.itemKeys) {
-      const key = requireItemPermission(request, itemKey, reply ? "operate" : "view");
+      const key = requireItemPermission(request, itemKey, operate ? "operate" : "view");
       const productId = store.getWorkItem(key).productId;
       productIds.push(productId);
-      if (reply && !accountStore.allows(account, productId, "ai")) {
+      if (requireAi && !accountStore.allows(account, productId, "ai")) {
         throw new MissionGoError("ai_not_permitted", `This account may not reply to the AI session for ${key}.`, 403);
       }
     }
@@ -1747,6 +1752,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       requireAccountId(request),
       sessionId,
       booleanField(body, "archived"),
+    );
+    return agentSessionResponse(loadAuthorizedAgentSession(request, sessionId));
+  });
+
+  app.post("/api/v1/agent-sessions/:sessionId/attention/dismiss", async (request) => {
+    const { sessionId } = request.params as { sessionId: string };
+    loadAuthorizedAgentSession(request, sessionId, true, false);
+    agentSessionStore.dismissAttention(
+      requireAccountId(request),
+      sessionId,
+      stringField(objectBody(request.body), "revision")!,
     );
     return agentSessionResponse(loadAuthorizedAgentSession(request, sessionId));
   });
@@ -1992,6 +2008,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
       ...(typeof body.sourceArchived === "boolean" ? { sourceArchived: body.sourceArchived } : {}),
       ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
+      ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
     });
     scheduleAttentionClassification(sessionId);
     return reply.status(204).send();
