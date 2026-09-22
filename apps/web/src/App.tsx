@@ -453,6 +453,8 @@ export function App() {
   const [agentConversationOpen, setAgentConversationOpen] = useState(
     () => Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]),
   );
+  const [agentConsoleBulkMode, setAgentConsoleBulkMode] = useState(false);
+  const [agentConsoleBulkAvailable, setAgentConsoleBulkAvailable] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
@@ -524,6 +526,7 @@ export function App() {
     syncBackDepth();
     setAgentSessionId(null);
     setAgentConversationOpen(false);
+    setAgentConsoleBulkMode(false);
     setAgentConsoleOpen(true);
     setMobileSearchOpen(false);
   };
@@ -553,6 +556,7 @@ export function App() {
     setAgentConsoleOpen(false);
     setAgentSessionId(null);
     setAgentConversationOpen(false);
+    setAgentConsoleBulkMode(false);
   };
 
   const selectAgentSession = (sessionId: string | null, showConversation: boolean) => {
@@ -815,6 +819,12 @@ export function App() {
     setAgentConversationOpen(false);
     syncBackDepth();
   }, [agentConsoleLayout, agentConsoleOpen, agentConsoleSinglePane, agentConversationOpen, agentSessionId]);
+
+  useEffect(() => {
+    if (!agentConsoleOpen || (agentConsoleSinglePane && agentConversationOpen)) {
+      setAgentConsoleBulkMode(false);
+    }
+  }, [agentConsoleOpen, agentConsoleSinglePane, agentConversationOpen]);
 
   /**
    * The whole first screen in one request. It used to be three, chained --
@@ -1220,6 +1230,7 @@ export function App() {
           attentionCountsLoaded={agentSessionsQuery.data !== undefined}
           onSelect={(productId) => {
             setSelectedProductId(productId);
+            setAgentConsoleBulkMode(false);
             // A filter chosen for one product says nothing about the next one,
             // and the item asks for the default view "no matter what".
             setStatusFilter(DEFAULT_STATUS);
@@ -1247,14 +1258,29 @@ export function App() {
           </button>
         )}
         {agentConsoleOpen && (
-          <button
-            type="button"
-            className="icon-button agent-console-topbar-refresh"
-            aria-label={t("refresh")}
-            onClick={() => void refreshAgentConsole()}
-          >
-            <RefreshCw className={agentConsoleRefreshing ? "spin" : ""} size={18} />
-          </button>
+          <div className="agent-console-topbar-actions">
+            {agentConsoleBulkAvailable && !agentConversationOpen && (
+              <button
+                type="button"
+                className={`secondary-button agent-console-topbar-bulk ${agentConsoleBulkMode ? "active" : ""}`}
+                aria-label={t(agentConsoleBulkMode ? "agentConsoleBulkDone" : "agentConsoleBulkMode")}
+                aria-pressed={agentConsoleBulkMode}
+                title={t(agentConsoleBulkMode ? "agentConsoleBulkDone" : "agentConsoleBulkMode")}
+                onClick={() => setAgentConsoleBulkMode((current) => !current)}
+              >
+                <CheckCircle2 size={17} />
+                <span>{t(agentConsoleBulkMode ? "agentConsoleBulkDone" : "agentConsoleBulkMode")}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              className="icon-button agent-console-topbar-refresh"
+              aria-label={t("refresh")}
+              onClick={() => void refreshAgentConsole()}
+            >
+              <RefreshCw className={agentConsoleRefreshing ? "spin" : ""} size={18} />
+            </button>
+          </div>
         )}
         {!agentConsoleOpen && (
           <>
@@ -1516,6 +1542,9 @@ export function App() {
           sessionsError={agentSessionsQuery.error}
           selectedSessionId={agentSessionId}
           conversationOpen={agentConversationOpen}
+          bulkMode={agentConsoleBulkMode}
+          onBulkModeChange={setAgentConsoleBulkMode}
+          onBulkAvailabilityChange={setAgentConsoleBulkAvailable}
           onSelectSession={selectAgentSession}
           onBackToSessions={closeAgentConversation}
           onOpenItem={openItemFromAgentConsole}

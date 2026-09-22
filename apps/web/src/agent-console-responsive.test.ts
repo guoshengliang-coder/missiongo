@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const styles = readFileSync(fileURLToPath(new URL("./styles.css", import.meta.url)), "utf8");
 const consoleSource = readFileSync(fileURLToPath(new URL("./agent-session-console.tsx", import.meta.url)), "utf8");
+const appSource = readFileSync(fileURLToPath(new URL("./App.tsx", import.meta.url)), "utf8");
 
 function mediaBlock(maxWidth: number): string {
   const marker = `@media (max-width: ${maxWidth}px) {`;
@@ -44,6 +45,23 @@ describe("agent console responsive layout", () => {
     expect(consoleSource).not.toContain('className="agent-console-list-head"');
   });
 
+  it("starts batch selection from the console topbar and hides selection controls by default", () => {
+    expect(appSource).toContain('className={`secondary-button agent-console-topbar-bulk');
+    expect(appSource).toContain('aria-pressed={agentConsoleBulkMode}');
+    expect(consoleSource).toContain('{bulkMode && bulkAvailable && (');
+    expect(consoleSource).toContain('{bulkMode && selectable && (');
+    expect(consoleSource).not.toContain('{filter !== "archived" && archivableIds.length > 0 && (');
+  });
+
+  it("uses rounded batch controls and preserves a compact phone topbar", () => {
+    const phone = mediaBlock(520);
+
+    expect(styles).toMatch(/\.agent-console-topbar-bulk \{[^}]*border-radius: 999px;/);
+    expect(styles).toMatch(/\.agent-console-bulk-actions \{[^}]*border-radius: var\(--radius-lg\);/);
+    expect(styles).toMatch(/\.agent-console-session-select input \{[^}]*border-radius: 6px;/);
+    expect(phone).toContain(".agent-console-topbar-bulk span { display: none; }");
+  });
+
   it("keeps replies below the textarea with quick actions", () => {
     expect(styles).toContain(".agent-console-reply form { display: grid; gap: 9px; }");
     expect(styles).toContain(".agent-console-reply-actions { display: flex;");
@@ -61,8 +79,6 @@ describe("agent console responsive layout", () => {
   });
 
   it("renders attention badges from the all-product session feed", () => {
-    const appSource = readFileSync(fileURLToPath(new URL("./App.tsx", import.meta.url)), "utf8");
-
     expect(appSource).toContain('queryFn: () => api.listAgentSessions()');
     expect(appSource).toContain('className="agent-attention-badge"');
     expect(appSource).toContain("agentSessionsQuery.data !== undefined && (");
