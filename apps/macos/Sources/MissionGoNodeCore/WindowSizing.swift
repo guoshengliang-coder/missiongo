@@ -18,7 +18,7 @@ public enum MainWindowSizing {
     public static let fallbackHeight: CGFloat = 560
     /// A floor, not a target: the content is normally taller than this, and a
     /// window this short still shows a line or two rather than a title bar.
-    public static let minimumHeight: CGFloat = 120
+    public static let minimumHeight: CGFloat = 40
     /// On a short screen the window stops here and the content scrolls.
     public static let maximumScreenShare: CGFloat = 0.8
     /// Height changes smaller than this are rounding, not new content; applying

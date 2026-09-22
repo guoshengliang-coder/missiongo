@@ -18,8 +18,9 @@ final class WindowSizingTests: XCTestCase {
     }
 
     func testNeverShorterThanTheFloor() {
-        XCTAssertEqual(MainWindowSizing.contentHeight(measuredHeight: 40, availableHeight: 1200), MainWindowSizing.minimumHeight)
-        XCTAssertEqual(MainWindowSizing.contentHeight(measuredHeight: 400, availableHeight: 100), MainWindowSizing.minimumHeight)
+        XCTAssertEqual(MainWindowSizing.contentHeight(measuredHeight: 48, availableHeight: 1200), 48)
+        XCTAssertEqual(MainWindowSizing.contentHeight(measuredHeight: 10, availableHeight: 1200), MainWindowSizing.minimumHeight)
+        XCTAssertEqual(MainWindowSizing.contentHeight(measuredHeight: 400, availableHeight: 30), MainWindowSizing.minimumHeight)
     }
 
     func testAnUnmeasuredContentFallsBackInsteadOfOpeningAsATitleBar() {
