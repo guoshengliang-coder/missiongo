@@ -332,6 +332,7 @@ export const INITIAL_SCHEMA = `
     auto_archive_suppressed INTEGER NOT NULL DEFAULT 0,
     source_archived_at TEXT,
     source_archive_error TEXT,
+    source_restore_pending INTEGER NOT NULL DEFAULT 0,
     model TEXT,
     effort TEXT,
     mode TEXT,

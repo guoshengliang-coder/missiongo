@@ -247,9 +247,13 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
     /// it appears in this list, closing the poll/snapshot race.
     public let occupiesExecutionSlot: Bool
     public let command: AgentSessionCommand?
-    /// MissionGo archived this conversation because its work finished; archive
-    /// the Codex thread at the source too (AND-129). Older servers omit it.
+    /// MissionGo archived this conversation (its work finished, or a person
+    /// archived it); archive the Codex thread at the source too (AND-129).
+    /// Older servers omit it.
     public let archiveInSource: Bool
+    /// A person restored it in MissionGo after its Codex thread was archived;
+    /// restore the thread too, or the next read would archive it again.
+    public let restoreInSource: Bool
     /// What a person asked this running session to switch to. Sent on every
     /// poll, not only once, so the node needs no memory of it between polls.
     public let desiredSettings: AgentSessionSettings?
@@ -267,6 +271,7 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
         occupiesExecutionSlot: Bool? = nil,
         command: AgentSessionCommand? = nil,
         archiveInSource: Bool = false,
+        restoreInSource: Bool = false,
         desiredSettings: AgentSessionSettings? = nil,
         appliedSettingsRevision: Int = 0
     ) {
@@ -279,6 +284,7 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
         self.occupiesExecutionSlot = occupiesExecutionSlot ?? ["active", "stalled"].contains(status)
         self.command = command
         self.archiveInSource = archiveInSource
+        self.restoreInSource = restoreInSource
         self.desiredSettings = desiredSettings
         self.appliedSettingsRevision = appliedSettingsRevision
     }
@@ -291,7 +297,7 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, dispatchId, agentKind, sessionRef, status, lifecycle, occupiesExecutionSlot, command, archiveInSource
-        case desiredSettings, appliedSettingsRevision
+        case restoreInSource, desiredSettings, appliedSettingsRevision
     }
 
     public init(from decoder: Decoder) throws {
@@ -307,6 +313,7 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
             ?? ["active", "stalled"].contains(status)
         command = try values.decodeIfPresent(AgentSessionCommand.self, forKey: .command)
         archiveInSource = try values.decodeIfPresent(Bool.self, forKey: .archiveInSource) ?? false
+        restoreInSource = try values.decodeIfPresent(Bool.self, forKey: .restoreInSource) ?? false
         // A server from before runtime settings sends neither.
         desiredSettings = try values.decodeIfPresent(AgentSessionSettings.self, forKey: .desiredSettings)
         appliedSettingsRevision = try values.decodeIfPresent(Int.self, forKey: .appliedSettingsRevision) ?? 0
@@ -370,6 +377,8 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let sourceArchived: Bool?
     /// The source archive MissionGo asked for failed; the server stops asking.
     public let sourceArchiveError: String?
+    /// The Codex thread MissionGo asked to bring back was restored.
+    public let sourceRestored: Bool?
     /// A resumed Claude session may receive a new Remote Control URL. The node
     /// reports the fresh, validated URL instead of leaving a dead link behind.
     public let sessionUrl: String?
@@ -384,7 +393,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let settingsRevision: Int?
     public let settingsError: String?
 
-    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sessionUrl: String? = nil, activityAt: String? = nil, model: String? = nil, effort: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil) {
+    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, activityAt: String? = nil, model: String? = nil, effort: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil) {
         self.status = status
         self.messages = messages
         self.activities = activities
@@ -394,6 +403,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         self.commandError = commandError
         self.sourceArchived = sourceArchived
         self.sourceArchiveError = sourceArchiveError
+        self.sourceRestored = sourceRestored
         self.sessionUrl = sessionUrl
         self.activityAt = activityAt
         self.model = model
@@ -408,7 +418,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         AgentSessionReport(
             status: status, messages: messages, activities: activities, error: error,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
-            sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError,
+            sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, activityAt: activityAt,
             model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
         )

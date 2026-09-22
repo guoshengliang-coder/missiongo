@@ -24,6 +24,7 @@ public protocol CodexControl: Sendable {
     func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws
     func archiveThread(socketPath: String, threadId: String) async throws
+    func unarchiveThread(socketPath: String, threadId: String) async throws
     /// Switches an idle thread's model, approvals and sandbox without starting a turn.
     func applySettings(socketPath: String, threadId: String, overrides: CodexTurnOverrides) async throws -> CodexAppliedSettings
     /// The models this app-server offers, hidden ones left out.
@@ -49,6 +50,10 @@ public extension CodexControl {
 
     func archiveThread(socketPath: String, threadId: String) async throws {
         throw CodexControlError.rpc(method: "thread/archive", message: "这个 Codex 控制器不支持归档会话。")
+    }
+
+    func unarchiveThread(socketPath: String, threadId: String) async throws {
+        throw CodexControlError.rpc(method: "thread/unarchive", message: "这个 Codex 控制器不支持恢复会话。")
     }
 
     func applySettings(socketPath: String, threadId: String, overrides: CodexTurnOverrides) async throws -> CodexAppliedSettings {
@@ -341,6 +346,10 @@ public enum CodexProtocol {
         return ["threadId": threadId]
     }
 
+    public static func threadUnarchiveParams(threadId: String) -> [String: Any] {
+        return ["threadId": threadId]
+    }
+
     /// `thread/resume` takes no effort; that one rides on the next `turn/start`.
     public static func threadResumeParams(threadId: String, overrides: CodexTurnOverrides? = nil) -> [String: Any] {
         var params: [String: Any] = ["threadId": threadId]
@@ -545,6 +554,12 @@ private final class CodexArchiveCache: @unchecked Sendable {
             throw error
         }
     }
+
+    /// After MissionGo itself archives or restores a thread the cached list is
+    /// wrong for up to its whole lifetime; drop it so the next read asks again.
+    func forget(socketPath: String) {
+        entries.withLock { $0[socketPath] = nil }
+    }
 }
 
 public struct CodexAppServerControl: CodexControl {
@@ -591,15 +606,28 @@ public struct CodexAppServerControl: CodexControl {
     }
 
     public func archiveThread(socketPath: String, threadId: String) async throws {
+        try await archiveCall("thread/archive", socketPath: socketPath, threadId: threadId)
+    }
+
+    public func unarchiveThread(socketPath: String, threadId: String) async throws {
+        try await archiveCall("thread/unarchive", socketPath: socketPath, threadId: threadId)
+    }
+
+    private func archiveCall(_ method: String, socketPath: String, threadId: String) async throws {
         let timeout = self.timeout
+        let archiveCache = self.archiveCache
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result {
+                    defer { archiveCache.forget(socketPath: socketPath) }
                     let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
                     defer { connection.close() }
                     _ = try connection.call("initialize", CodexProtocol.initializeParams())
                     try connection.notify("initialized")
-                    _ = try connection.call("thread/archive", CodexProtocol.threadArchiveParams(threadId: threadId))
+                    let params = method == "thread/archive"
+                        ? CodexProtocol.threadArchiveParams(threadId: threadId)
+                        : CodexProtocol.threadUnarchiveParams(threadId: threadId)
+                    _ = try connection.call(method, params)
                 })
             }
         }

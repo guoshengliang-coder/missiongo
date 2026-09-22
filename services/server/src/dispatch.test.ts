@@ -2508,6 +2508,42 @@ describe("Archiving a finished hand-off (AND-129)", () => {
     expect((await listed(app, cookie, mission.productId)).archivedAt).toBeUndefined();
   });
 
+  it("archives the Codex thread when a person archives in MissionGo, and restores it when they restore", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, mission, sessionId } = await batchSession(app, cookie);
+    const setArchived = (archived: boolean) => app.inject({
+      method: "PATCH",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+      payload: { archived },
+    });
+    const snapshot = (payload: Record<string, unknown>) => app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [], ...payload },
+    });
+
+    expect((await setArchived(true)).statusCode).toBe(200);
+    expect((await nodeSessions(app, node.token)).find((session) => session.id === sessionId))
+      .toMatchObject({ archiveInSource: true });
+    await snapshot({ sourceArchived: true });
+    expect((await nodeSessions(app, node.token)).some((session) => session.id === sessionId)).toBe(false);
+
+    expect((await setArchived(false)).statusCode).toBe(200);
+    expect((await nodeSessions(app, node.token)).find((session) => session.id === sessionId))
+      .toMatchObject({ restoreInSource: true });
+    // A snapshot taken before the Mac restored the thread still reads it as
+    // archived; that must not archive the conversation again.
+    await snapshot({ sourceArchived: true });
+    expect((await listed(app, cookie, mission.productId)).archivedAt).toBeUndefined();
+
+    await snapshot({ sourceArchived: false, sourceRestored: true });
+    expect((await nodeSessions(app, node.token)).find((session) => session.id === sessionId)?.restoreInSource)
+      .toBeUndefined();
+    expect((await listed(app, cookie, mission.productId)).archivedAt).toBeUndefined();
+  });
+
   it("leaves a batch where everything was cancelled for a person", async () => {
     const { app, cookie } = await signedInApp();
     const { mission, second } = await batchSession(app, cookie);

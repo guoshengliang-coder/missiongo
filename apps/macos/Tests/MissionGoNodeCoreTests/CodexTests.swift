@@ -969,6 +969,14 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
         if let archiveError { throw archiveError }
         archived.withLock { $0.append(threadId) }
     }
+
+    let unarchived = Locked<[String]>([])
+    var snapshotAfterUnarchive: CodexThreadSnapshot?
+
+    func unarchiveThread(socketPath: String, threadId: String) async throws {
+        unarchived.withLock { $0.append(threadId) }
+        if let snapshotAfterUnarchive { snapshot = snapshotAfterUnarchive }
+    }
 }
 
 final class CodexLauncherTests: XCTestCase {
@@ -1263,11 +1271,31 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertNotNil(report.sourceArchiveError)
     }
 
+    func testRestoresTheSourceThreadOfAConversationRestoredInMissionGo() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "unavailable", messages: [], archived: true)
+        control.snapshotAfterUnarchive = CodexThreadSnapshot(status: "idle", messages: [])
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle", restoreInSource: true
+        ))
+
+        XCTAssertEqual(control.unarchived.current, ["thread-1"])
+        XCTAssertEqual(report.sourceRestored, true)
+        XCTAssertEqual(report.sourceArchived, false)
+        XCTAssertEqual(report.status, "idle")
+        XCTAssertNil(report.error)
+    }
+
     func testDecodesTheSourceArchiveRequestAndDefaultsItOff() throws {
         let asked = try JSONDecoder().decode(NodeAgentSession.self, from: Data(
             #"{"id":"s","sessionRef":"t","status":"idle","archiveInSource":true}"#.utf8
         ))
         XCTAssertTrue(asked.archiveInSource)
+        XCTAssertFalse(asked.restoreInSource)
         let older = try JSONDecoder().decode(NodeAgentSession.self, from: Data(
             #"{"id":"s","sessionRef":"t","status":"idle"}"#.utf8
         ))

@@ -35,7 +35,8 @@ export function autoArchiveFinishedDispatches(
   const placeholders = dispatchIds.map(() => "?").join(", ");
   database.connection.prepare(
     `UPDATE agent_sessions
-     SET archived_at = ?, archive_source = 'missiongo', archive_reason = 'auto', updated_at = ?
+     SET archived_at = ?, archive_source = 'missiongo', archive_reason = 'auto', updated_at = ?,
+        source_restore_pending = 0
      WHERE archived_at IS NULL AND auto_archive_suppressed = 0
        AND dispatch_id IN (${placeholders})
        AND dispatch_id IN (${FINISHED_DISPATCHES_SQL})

@@ -505,6 +505,30 @@ public struct CodexLauncher: AgentAdapter {
 
     private func synchronize(_ session: NodeAgentSession, snapshot: CodexThreadSnapshot) async throws -> AgentSessionReport {
         var snapshot = snapshot
+        if session.restoreInSource {
+            // Restored in MissionGo: bring the thread back in Codex first, then
+            // carry on with the fresh read so a queued reply can still go out.
+            // A failure throws and is retried on the next poll.
+            if snapshot.archived {
+                try await control.unarchiveThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+                snapshot = try await control.readThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+            }
+            let report = try await synchronize(
+                NodeAgentSession(
+                    id: session.id, dispatchId: session.dispatchId, agentKind: session.agentKind,
+                    sessionRef: session.sessionRef, status: session.status, lifecycle: session.lifecycle,
+                    occupiesExecutionSlot: session.occupiesExecutionSlot, command: session.command,
+                    desiredSettings: session.desiredSettings, appliedSettingsRevision: session.appliedSettingsRevision
+                ),
+                snapshot: snapshot
+            )
+            return AgentSessionReport(
+                status: report.status, messages: report.messages, activities: report.activities, error: report.error,
+                commandId: report.commandId, commandStatus: report.commandStatus, commandError: report.commandError,
+                sourceArchived: report.sourceArchived, sourceRestored: true,
+                sessionUrl: report.sessionUrl, activityAt: report.activityAt
+            )
+        }
         if session.archiveInSource {
             // MissionGo archived this finished conversation; follow it at the
             // source. Report the thread as it was, without the "restore it in

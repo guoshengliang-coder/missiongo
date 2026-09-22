@@ -1062,6 +1062,7 @@ export class MissionGoDatabase {
         ["auto_archive_suppressed", "INTEGER NOT NULL DEFAULT 0"],
         ["source_archived_at", "TEXT"],
         ["source_archive_error", "TEXT"],
+        ["source_restore_pending", "INTEGER NOT NULL DEFAULT 0"],
       ]],
     ];
     const missingAutoArchiveColumns = autoArchiveColumns.flatMap(([table, columns]) => {
