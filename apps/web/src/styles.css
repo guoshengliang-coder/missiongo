@@ -245,7 +245,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-topbar-back { justify-self: start; }
 .agent-console-topbar-actions { justify-self: end; display: flex; align-items: center; gap: 8px; }
 .agent-console-topbar-bulk { min-height: 38px; display: inline-flex; align-items: center; gap: 7px; padding: 0 12px; border-radius: 999px; white-space: nowrap; }
-.agent-console-topbar-bulk.active { color: var(--accent-text-strong); background: var(--accent-bg); border-color: var(--accent-line); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mint-dark) 12%, transparent); }
+.agent-console-topbar-bulk.active { color: var(--accent-text-strong); background: var(--accent-bg); border-color: var(--accent-line); box-shadow: inset 0 0 0 1px var(--accent-line); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mint-dark) 12%, transparent); }
 .agent-console-topbar-refresh { flex: 0 0 auto; }
 .offline-banner { position: fixed; top: 82px; right: 18px; z-index: 35; display: inline-flex; align-items: center; gap: 7px; padding: 9px 11px; color: var(--warn-text); background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: var(--radius-md); box-shadow: var(--shadow); font-size: var(--text-sm); font-weight: 700; }
 
@@ -519,19 +519,19 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-agent-filter { min-width: 96px; }
 .agent-console-agent-filter > span { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .agent-console-agent-filter select { width: 100%; height: 38px; padding: 0 28px 0 9px; color: var(--ink); background: var(--surface-field); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); font-weight: 700; }
-.agent-console-bulk-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 10px; margin: 0 12px 10px; padding: 9px 10px; color: var(--muted); background: linear-gradient(135deg, var(--accent-bg), color-mix(in srgb, var(--surface-strong) 82%, var(--accent-bg))); border: 1px solid var(--accent-line); border-radius: var(--radius-lg); box-shadow: 0 5px 16px rgba(24,31,45,.06); font-size: var(--text-xs); }
-.agent-console-bulk-select-all { min-height: 32px; display: flex; align-items: center; gap: 7px; padding: 0 8px; color: var(--ink); background: color-mix(in srgb, var(--surface-strong) 78%, transparent); border-radius: 999px; font-weight: 720; cursor: pointer; }
+.agent-console-bulk-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 10px; margin: 0 12px 10px; padding: 9px 10px; color: var(--muted); background: var(--accent-bg); background: linear-gradient(135deg, var(--accent-bg), color-mix(in srgb, var(--surface-strong) 82%, var(--accent-bg))); border: 1px solid var(--accent-line); border-radius: var(--radius-lg); box-shadow: 0 5px 16px rgba(24,31,45,.06); font-size: var(--text-xs); }
+.agent-console-bulk-select-all { min-height: 32px; display: flex; align-items: center; gap: 7px; padding: 0 8px; color: var(--ink); background: var(--surface-strong); background: color-mix(in srgb, var(--surface-strong) 78%, transparent); border-radius: 999px; font-weight: 720; cursor: pointer; }
 .agent-console-bulk-actions input,
 .agent-console-session-select input { width: 19px; height: 19px; flex: 0 0 19px; display: grid; place-items: center; margin: 0; appearance: none; color: var(--on-mint); background: var(--surface-strong); border: 1.5px solid var(--line-dark); border-radius: 6px; cursor: pointer; transition: background 130ms ease, border-color 130ms ease, box-shadow 130ms ease, transform 130ms ease; }
 .agent-console-bulk-actions input::after,
 .agent-console-session-select input::after { content: "✓"; opacity: 0; transform: scale(.6); font-size: 13px; font-weight: 900; line-height: 1; transition: opacity 120ms ease, transform 120ms ease; }
 .agent-console-bulk-actions input:checked,
-.agent-console-session-select input:checked { background: var(--mint-dark); border-color: var(--mint-dark); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mint) 24%, transparent); }
+.agent-console-session-select input:checked { background: var(--mint-dark); border-color: var(--mint-dark); box-shadow: 0 0 0 3px var(--accent-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mint) 24%, transparent); }
 .agent-console-bulk-actions input:checked::after,
 .agent-console-session-select input:checked::after { opacity: 1; transform: scale(1); }
 .agent-console-bulk-actions input:active,
 .agent-console-session-select input:active { transform: scale(.92); }
-.agent-console-bulk-count { padding: 5px 8px; color: var(--accent-text); background: color-mix(in srgb, var(--surface-strong) 66%, transparent); border-radius: 999px; font-weight: 760; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.agent-console-bulk-count { padding: 5px 8px; color: var(--accent-text); background: var(--surface-strong); background: color-mix(in srgb, var(--surface-strong) 66%, transparent); border-radius: 999px; font-weight: 760; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .agent-console-bulk-buttons { grid-column: 1 / -1; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .agent-console-bulk-buttons button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: 999px; white-space: nowrap; }
 .agent-console-bulk-cancel { padding-inline: 9px; }
@@ -599,8 +599,8 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-message-stage { min-height: 0; flex: 1; position: relative; }
 .agent-console-messages { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 11px; padding: 18px 22px; overflow-y: auto; overscroll-behavior: contain; }
 .agent-console-dispatch { display: flex; align-items: center; gap: 9px; padding: 9px 11px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); }
-.agent-console-connection-banner { display: flex; align-items: flex-start; gap: 9px; padding: 11px 13px; color: var(--amber); background: color-mix(in srgb, var(--amber) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line)); border-radius: var(--radius-md); }
-.agent-console-attention-banner { display: flex; align-items: flex-start; gap: 10px; padding: 11px 13px; color: var(--warn-text); background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line)); border-radius: var(--radius-md); }
+.agent-console-connection-banner { display: flex; align-items: flex-start; gap: 9px; padding: 11px 13px; color: var(--amber); background: var(--warn-bg); background: color-mix(in srgb, var(--amber) 10%, var(--surface)); border: 1px solid var(--warn-line); border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line)); border-radius: var(--radius-md); }
+.agent-console-attention-banner { display: flex; align-items: flex-start; gap: 10px; padding: 11px 13px; color: var(--warn-text); background: var(--warn-bg); border: 1px solid var(--warn-line); border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line)); border-radius: var(--radius-md); }
 .agent-console-attention-banner.dismissed { color: var(--muted); background: var(--surface-sunken); border-color: var(--line); }
 .agent-console-attention-banner > div { min-width: 0; flex: 1; }
 .agent-console-attention-banner strong,
@@ -1139,11 +1139,12 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
   inset: -6px;
   z-index: 20;
   pointer-events: none;
+  background: var(--accent-bg);
   background: color-mix(in srgb, var(--accent-bg) 88%, transparent);
   border: 2px dashed var(--mint-dark);
   border-radius: var(--radius-md);
 }
-.file-drop-overlay.full { background: color-mix(in srgb, var(--danger-bg) 88%, transparent); border-color: var(--danger); }
+.file-drop-overlay.full { background: var(--danger-bg); background: color-mix(in srgb, var(--danger-bg) 88%, transparent); border-color: var(--danger); }
 /* The form can be taller than the dialog, so keep the message in view while scrolling. */
 .file-drop-overlay-message {
   position: sticky;
