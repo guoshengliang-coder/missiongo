@@ -996,6 +996,27 @@ export class MissionGoDatabase {
           .run(202609211500, new Date().toISOString());
       });
     }
+    // A mirror poll observes every transcript entry again. Keep the source's
+    // occurrence time separately, falling back to the best observation already
+    // available for messages written before nodes started reporting it.
+    const agentMessageOccurredAtMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609220501")
+      .get() as unknown as { version: number } | undefined;
+    const messageColumns = this.connection
+      .prepare("PRAGMA table_info(agent_session_messages)")
+      .all() as unknown as Array<{ name: string }>;
+    if (!agentMessageOccurredAtMigration
+      || !messageColumns.some((column) => column.name === "occurred_at")) {
+      this.transaction(() => {
+        if (!messageColumns.some((column) => column.name === "occurred_at")) {
+          this.connection.exec("ALTER TABLE agent_session_messages ADD COLUMN occurred_at TEXT NOT NULL DEFAULT '';");
+          this.connection.exec("UPDATE agent_session_messages SET occurred_at = observed_at WHERE occurred_at = '';");
+        }
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609220501, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

@@ -166,11 +166,13 @@ public struct ClaudeHostCommand: Codable, Equatable, Sendable {
     public let id: String
     public let kind: String
     public let text: String
+    public let createdAt: String?
 
-    public init(id: String, kind: String, text: String) {
+    public init(id: String, kind: String, text: String, createdAt: String? = nil) {
         self.id = id
         self.kind = kind
         self.text = text
+        self.createdAt = createdAt
     }
 }
 
@@ -231,7 +233,10 @@ public struct ClaudeStreamSnapshot: Sendable {
                 sourceId: sourceId,
                 turnId: sourceId,
                 role: "user",
-                text: text
+                text: text,
+                occurredAt: CodexProtocol.sourceActivityTimestamp(
+                    value["timestamp"] ?? value["createdAt"] ?? value["created_at"]
+                )
             ))
             state.status = "active"
             state.idleSince = nil
@@ -263,6 +268,9 @@ public struct ClaudeStreamSnapshot: Sendable {
                     turnId: turnId,
                     role: "agent",
                     text: combinedText.isEmpty ? "Claude Code 正在等待你的选择。" : combinedText,
+                    occurredAt: previous?.occurredAt ?? CodexProtocol.sourceActivityTimestamp(
+                        value["timestamp"] ?? value["createdAt"] ?? value["created_at"]
+                    ),
                     questions: questions.isEmpty ? previous?.questions : questions
                 ))
             }
@@ -294,8 +302,10 @@ public struct ClaudeStreamSnapshot: Sendable {
         visibleUserMessageIds.insert(id)
     }
 
-    public mutating func recordUserMessage(id: String, text: String) {
-        upsert(AgentSessionMessage(sourceId: id, turnId: id, role: "user", text: text))
+    public mutating func recordUserMessage(id: String, text: String, occurredAt: String? = nil) {
+        upsert(AgentSessionMessage(
+            sourceId: id, turnId: id, role: "user", text: text, occurredAt: occurredAt
+        ))
         state.status = "active"
         state.idleSince = nil
         turnActive = true

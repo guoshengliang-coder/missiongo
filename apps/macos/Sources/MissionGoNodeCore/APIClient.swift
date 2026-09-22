@@ -217,14 +217,16 @@ public struct AgentSessionMessage: Codable, Equatable, Sendable {
     public let role: String
     public let phase: String?
     public let text: String
+    public let occurredAt: String?
     public let questions: [AgentSessionQuestion]?
 
-    public init(sourceId: String, turnId: String? = nil, role: String, phase: String? = nil, text: String, questions: [AgentSessionQuestion]? = nil) {
+    public init(sourceId: String, turnId: String? = nil, role: String, phase: String? = nil, text: String, occurredAt: String? = nil, questions: [AgentSessionQuestion]? = nil) {
         self.sourceId = sourceId
         self.turnId = turnId
         self.role = role
         self.phase = phase
         self.text = text
+        self.occurredAt = occurredAt
         self.questions = questions
     }
 }

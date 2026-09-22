@@ -13,6 +13,21 @@ import type {
 export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;
 export const DEFAULT_AGENT_KIND_FILTER = "all" as const;
 export const MESSAGE_BOTTOM_THRESHOLD_PX = 48;
+export const AGENT_SESSIONS_CONSOLE_REFETCH_MS = 5_000;
+export const AGENT_SESSIONS_BACKGROUND_REFETCH_MS = 60_000;
+
+export function agentSessionsRefetchInterval(consoleOpen: boolean): number {
+  return consoleOpen ? AGENT_SESSIONS_CONSOLE_REFETCH_MS : AGENT_SESSIONS_BACKGROUND_REFETCH_MS;
+}
+
+export function formatAgentMessageTime(value: string, locale: string): string {
+  return new Intl.DateTimeFormat(locale, {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
 
 export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived";
 export type AgentKindFilter = "all" | AgentKind;
@@ -138,6 +153,7 @@ export interface ScrollMetrics {
 
 export interface OutgoingReply {
   readonly text: string;
+  readonly occurredAt: string;
   readonly status: "sending" | "queued" | "delivering" | "failed";
   readonly error?: string;
   readonly commandId?: string;
@@ -151,13 +167,14 @@ export interface OutgoingReply {
  */
 export function outgoingReply(
   command: AgentSessionCommand | undefined,
-  request?: { readonly text: string; readonly status: "sending" | "failed"; readonly error?: string },
+  request?: { readonly text: string; readonly occurredAt: string; readonly status: "sending" | "failed"; readonly error?: string },
 ): OutgoingReply | null {
   if (request) return request;
   if (!command || command.kind !== "message") return null;
   if (command.status !== "queued" && command.status !== "delivering" && command.status !== "failed") return null;
   return {
     text: command.text,
+    occurredAt: command.createdAt,
     status: command.status,
     ...(command.error ? { error: command.error } : {}),
     commandId: command.id,

@@ -216,10 +216,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .topbar.agent-console-topbar {
   display: grid;
-  grid-template-columns: minmax(44px, 1fr) minmax(156px, 360px) minmax(44px, 1fr);
+  grid-template-columns: auto minmax(156px, 360px) minmax(44px, 1fr);
   gap: 12px;
 }
-.agent-console-topbar .product-switcher-wrap { width: 100%; max-width: 360px; min-width: 0; justify-self: center; }
+.agent-console-topbar .product-switcher-wrap { width: 100%; max-width: 360px; min-width: 0; justify-self: start; }
 .agent-console-topbar .product-switcher { width: 100%; max-width: none; }
 .agent-console-topbar-back { justify-self: start; }
 .agent-console-topbar-refresh { justify-self: end; }
@@ -574,7 +574,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .agent-console-message-outgoing-queued,
 .agent-console-message-outgoing-delivering { color: var(--muted); background: var(--surface-sunken); border-style: dashed; }
 .agent-console-message-outgoing-failed { background: var(--danger-bg); border-color: var(--danger-line); }
-.agent-console-message > small { color: var(--muted); font-size: var(--text-xs); font-weight: 750; }
+.agent-console-message-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: var(--text-xs); }
+.agent-console-message-meta small { font-size: inherit; font-weight: 750; }
+.agent-console-message-meta time { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .agent-console-message .markdown-text { margin-top: 5px; font-size: var(--text-sm); line-height: 1.6; }
 .agent-console-message-user .markdown-text { margin-top: 0; }
 .agent-console-message .markdown-text > :first-child { margin-top: 0; }
@@ -1668,7 +1670,9 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-session-messages { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow: auto; }
 .agent-session-message { padding: 9px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .agent-session-message-user { margin-left: 28px; background: var(--mint-soft); border-color: var(--mint-line); }
-.agent-session-message small { color: var(--muted); font-weight: 700; }
+.agent-session-message-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: var(--text-xs); }
+.agent-session-message-meta small { font-weight: 700; }
+.agent-session-message-meta time { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .agent-session-message p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-sm); line-height: 1.55; }
 .agent-session-question { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; font-size: var(--text-xs); }
 .agent-session-question > small { color: var(--muted); font-weight: 700; }

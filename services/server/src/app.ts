@@ -1975,6 +1975,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         role,
         ...(stringField(message, "phase", false) ? { phase: message.phase as string } : {}),
         text: stringField(message, "text")!,
+        ...(stringField(message, "occurredAt", false) ? { occurredAt: message.occurredAt as string } : {}),
         ...(questions ? { questions } : {}),
       };
     });

@@ -26,6 +26,7 @@ import {
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
+  formatAgentMessageTime,
   isNearMessageBottom,
   messageLabelKey,
   outgoingReply,
@@ -248,7 +249,7 @@ export function AgentSessionConsole({
     refetchInterval: selected?.agentSessionId ? 2_000 : false,
   });
   const send = useMutation({
-    mutationFn: ({ sessionId, text }: { sessionId: string; text: string }) => api.sendAgentSessionCommand(sessionId, text),
+    mutationFn: ({ sessionId, text }: { sessionId: string; text: string; occurredAt: string }) => api.sendAgentSessionCommand(sessionId, text),
     onMutate: () => {
       setReply("");
     },
@@ -350,10 +351,10 @@ export function AgentSessionConsole({
   const pending = command?.status === "queued" || command?.status === "delivering";
   const sendingSelected = send.isPending && send.variables?.sessionId === selected?.agentSessionId;
   const failedRequest = send.isError && send.variables?.sessionId === selected?.agentSessionId
-    ? { text: send.variables.text, status: "failed" as const, error: errorText(send.error) }
+    ? { text: send.variables.text, occurredAt: send.variables.occurredAt, status: "failed" as const, error: errorText(send.error) }
     : undefined;
   const sendingRequest = sendingSelected
-    ? { text: send.variables.text, status: "sending" as const }
+    ? { text: send.variables.text, occurredAt: send.variables.occurredAt, status: "sending" as const }
     : failedRequest;
   const outgoingCandidate = outgoingReply(command, sendingRequest);
   const outgoing = outgoingCandidate?.commandId === dismissedCommandId ? null : outgoingCandidate;
@@ -409,7 +410,7 @@ export function AgentSessionConsole({
     event.preventDefault();
     const text = reply.trim();
     if (selected?.canReply && selected.agentSessionId && text && !pending && !sendingSelected) {
-      send.mutate({ sessionId: selected.agentSessionId, text });
+      send.mutate({ sessionId: selected.agentSessionId, text, occurredAt: new Date().toISOString() });
     }
   };
   const chooseFilter = (next: AgentSessionFilter) => {
@@ -713,7 +714,10 @@ export function AgentSessionConsole({
                   const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (
                     <article key={message.id} className={`agent-console-message agent-console-message-${message.role}`}>
-                      {labelKey && <small>{t(labelKey)}</small>}
+                      <header className="agent-console-message-meta">
+                        {labelKey && <small>{t(labelKey)}</small>}
+                        <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
+                      </header>
                       <MarkdownText>{message.text}</MarkdownText>
                       {message.questions?.map((question) => (
                         <div key={question.title} className="agent-session-question">
@@ -741,6 +745,9 @@ export function AgentSessionConsole({
                 })}
                 {outgoing && (
                   <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
+                    <header className="agent-console-message-meta">
+                      <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
+                    </header>
                     <MarkdownText>{outgoing.text}</MarkdownText>
                     <footer className="agent-console-message-delivery" role="status">
                       {outgoing.status === "failed"
