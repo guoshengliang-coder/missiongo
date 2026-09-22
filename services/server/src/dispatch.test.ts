@@ -180,6 +180,7 @@ describe("Registering a Mac by signing in", () => {
     await readyItem(app, cookie, "Mission GO", "AND");
     expect((await heartbeat(app, node.token)).json()).toMatchObject({
       products: [{ keyPrefix: "AND", name: "Mission GO" }],
+      expectedSkillVersion: expect.stringMatching(/^\d+\.\d+\.\d+$/),
     });
 
     await readyItem(app, cookie, "HitGO", "HIG");

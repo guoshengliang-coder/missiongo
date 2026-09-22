@@ -40,6 +40,9 @@ public struct NodeLoopState: Equatable, Sendable {
     /// the client being restarted. nil means no server has said yet — an empty
     /// array is a real answer and means there are none.
     public var products: [NodeProfile.Product]?
+    /// The Skill version the server will require when the next dispatch starts.
+    /// nil keeps compatibility with a server from before heartbeat sync.
+    public var expectedSkillVersion: String?
     /// Most recent first, capped at `NodeLoop.recentLaunchLimit`.
     public var recentLaunches: [LocalLaunch] = []
 
@@ -246,6 +249,7 @@ public final class NodeLoop: @unchecked Sendable {
                         // A server from before this field keeps the list it had:
                         // an older server must not empty the repository menu.
                         if let products = beat.products { $0.products = products }
+                        if let expected = beat.expectedSkillVersion { $0.expectedSkillVersion = expected }
                     }
                 } catch {
                     self.handle(error, what: "上报心跳出错", stop: stop, fatal: fatal)

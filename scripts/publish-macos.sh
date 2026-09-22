@@ -89,6 +89,7 @@ SIZE=$(wc -c < "$LATEST_ZIP" | tr -d ' ')
 # Read back from the bundle rather than repeated here: build-macos-app.sh is the
 # one place that decides which macOS versions this build runs on.
 MINIMUM_SYSTEM_VERSION=$(plutil -extract LSMinimumSystemVersion raw "$PACKAGE_DIRECTORY/build/MissionGo.app/Contents/Info.plist")
+RELEASE_NOTES=$(node "$REPOSITORY_ROOT/scripts/macos-release-notes.mjs" --to "$SOURCE_COMMIT")
 
 # The zip has a fixed name, so this file is the only record of what is in it;
 # scripts/deploy.sh refuses a zip whose digest no longer matches it.
@@ -110,6 +111,7 @@ cat > "$UPDATE_MANIFEST" <<MANIFEST
   "sha256": "$SHA256",
   "size": $SIZE,
   "buildTimestamp": "$BUILD_TIMESTAMP",
+  "releaseNotes": $RELEASE_NOTES,
   "minimumSystemVersion": "$MINIMUM_SYSTEM_VERSION",
   "downloadPath": "/downloads/missiongo-macos-latest.zip"
 }

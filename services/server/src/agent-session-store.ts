@@ -462,7 +462,7 @@ export class AgentSessionStore {
     const messages = this.database.connection
       .prepare(
         `SELECT id, source_id, turn_id, role, phase, text, questions_json, occurred_at
-         FROM agent_session_messages WHERE session_id = ? ORDER BY position, observed_at, id`,
+         FROM agent_session_messages WHERE session_id = ? ORDER BY position, observed_at, rowid`,
       )
       .all(sessionId) as unknown as Array<{
         id: string; source_id: string; turn_id: string | null; role: AgentMessageRole;
@@ -537,7 +537,7 @@ export class AgentSessionStore {
     );
     const latestMessage = this.database.connection.prepare(
       `SELECT id, source_id, role, phase, text, questions_json FROM agent_session_messages
-       WHERE session_id = ? ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
+       WHERE session_id = ? ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
     );
     const attentionForSession = this.database.connection.prepare(
       `SELECT message_hash, state, kind, reason, model,
@@ -778,7 +778,7 @@ export class AgentSessionStore {
     }
     const message = this.database.connection.prepare(
       `SELECT source_id, role, phase, text, questions_json FROM agent_session_messages
-       WHERE session_id = ? ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
+       WHERE session_id = ? ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
     ).get(sessionId) as unknown as {
       source_id: string; role: AgentMessageRole; phase: string | null; text: string; questions_json: string | null;
     } | undefined;
@@ -866,7 +866,7 @@ export class AgentSessionStore {
       .prepare(
         `SELECT turn_id FROM agent_session_messages
          WHERE session_id = ? AND turn_id IS NOT NULL
-         ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
+         ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as { turn_id: string } | undefined;
     if (!turn?.turn_id) throw conflict("agent_turn_unavailable", "The active agent turn is not visible yet.");
@@ -1287,7 +1287,7 @@ export class AgentSessionStore {
     const message = this.database.connection.prepare(
       `SELECT source_id, role, phase, text, questions_json
        FROM agent_session_messages WHERE session_id = ?
-       ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
+       ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
     ).get(sessionId) as unknown as {
       source_id: string;
       role: AgentMessageRole;

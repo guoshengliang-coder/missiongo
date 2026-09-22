@@ -5,6 +5,7 @@ import { api } from "./api";
 import { formatAgentMessageTime, questionAnswerText, replyBlockedLabelKey } from "./agent-session-view";
 import { useI18n } from "./i18n";
 import type { AgentSessionMessage, AgentSessionStatus } from "./types";
+import { AutoGrowTextarea } from "./auto-grow-textarea";
 
 function messageLabel(
   role: AgentSessionMessage["role"],
@@ -152,8 +153,9 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               {canReply ? (
                 <>
                   <form className="agent-session-reply" onSubmit={submit}>
-                    <textarea
-                      rows={3}
+                    <AutoGrowTextarea
+                      rows={1}
+                      maximumHeight={240}
                       value={reply}
                       onChange={(event) => setReply(event.target.value)}
                       placeholder={t("agentSessionReplyPlaceholder", {

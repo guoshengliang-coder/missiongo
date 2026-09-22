@@ -1,12 +1,13 @@
 import Foundation
 
-/// Syncs missiongo Skill for the client the person explicitly selects.
+/// Syncs missiongo Skill for clients the person explicitly enabled.
 ///
 /// A dispatched session is told to "use the missiongo skill"; an agent without
 /// it, or with an old copy, works the items by rules the server has moved on
 /// from. The foreground integration check fetches SKILL.md from this Mac's
-/// server and writes just the selected target, never over a newer copy or a
-/// symlink someone set up by hand. There is no periodic background sync.
+/// server and writes just enabled targets, never over a newer copy or a
+/// symlink someone set up by hand. Heartbeats may trigger a sync when the
+/// server advertises a newer expected version; they never enable a client.
 public enum SkillSync {
     public static let downloadPath = "/downloads/missiongo-skill/SKILL.md"
     static let maxBytes = 1_000_000
@@ -22,11 +23,14 @@ public enum SkillSync {
     public enum SyncError: Error, Equatable, LocalizedError {
         case download(String)
         case invalidSkill
+        case versionMismatch(expected: String, received: String)
 
         public var errorDescription: String? {
             switch self {
             case let .download(detail): return "下载 missiongo Skill 失败：\(detail)"
             case .invalidSkill: return "服务器返回的内容不是 missiongo Skill。"
+            case let .versionMismatch(expected, received):
+                return "服务器声明 missiongo Skill \(expected)，但下载到的是 \(received)。"
             }
         }
     }
@@ -117,6 +121,7 @@ public enum SkillSync {
     public static func run(
         serverUrl: String,
         targets: [String],
+        expectedVersion: String? = nil,
         session: URLSession = .shared,
         shouldApply: @Sendable () -> Bool = { true }
     ) async throws -> Outcome {
@@ -134,6 +139,10 @@ public enum SkillSync {
             throw SyncError.download("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
         }
         guard data.count <= maxBytes, let text = String(data: data, encoding: .utf8) else { throw SyncError.invalidSkill }
+        guard let receivedVersion = version(ofSkill: text) else { throw SyncError.invalidSkill }
+        if let expectedVersion, receivedVersion != expectedVersion {
+            throw SyncError.versionMismatch(expected: expectedVersion, received: receivedVersion)
+        }
         guard shouldApply() else { throw CancellationError() }
         return try apply(skill: text, targets: targets)
     }

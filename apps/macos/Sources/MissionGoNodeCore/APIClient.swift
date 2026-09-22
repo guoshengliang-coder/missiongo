@@ -460,10 +460,16 @@ public struct NodeProfile: Codable, Equatable, Sendable {
 public struct HeartbeatReply: Equatable, Sendable {
     public let repos: [RepoMapping]
     public let products: [NodeProfile.Product]?
+    public let expectedSkillVersion: String?
 
-    public init(repos: [RepoMapping], products: [NodeProfile.Product]? = nil) {
+    public init(
+        repos: [RepoMapping],
+        products: [NodeProfile.Product]? = nil,
+        expectedSkillVersion: String? = nil
+    ) {
         self.repos = repos
         self.products = products
+        self.expectedSkillVersion = expectedSkillVersion
     }
 }
 
@@ -724,6 +730,7 @@ public struct APIClient: Sendable {
         struct Reply: Decodable {
             let repos: [RepoMapping]?
             let products: [NodeProfile.Product]?
+            let expectedSkillVersion: String?
         }
         let response = try await send(
             "POST", "/api/v1/node/heartbeat",
@@ -732,7 +739,11 @@ public struct APIClient: Sendable {
         )
         try requireSuccess(response, operation: "heartbeat")
         let reply: Reply = try decode(response, operation: "heartbeat")
-        return HeartbeatReply(repos: reply.repos ?? [], products: reply.products)
+        return HeartbeatReply(
+            repos: reply.repos ?? [],
+            products: reply.products,
+            expectedSkillVersion: reply.expectedSkillVersion
+        )
     }
 
     /// Long poll: `waitMs` asks the server to hold the request open until there
