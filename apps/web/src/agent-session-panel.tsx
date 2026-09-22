@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 import { formatAgentMessageTime, questionAnswerText, replyBlockedLabelKey } from "./agent-session-view";
 import { useI18n } from "./i18n";
+import { localizedErrorText } from "./error-text";
 import type { AgentSessionMessage, AgentSessionStatus } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 
@@ -24,10 +25,6 @@ function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["
   if (status === "stalled") return t("agentSessionStalled");
   if (status === "failed") return t("agentSessionFailed");
   return t("agentSessionUnavailable");
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
@@ -73,7 +70,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
       {open && (
         <div className="agent-session-body">
           {session.isLoading && <small className="agent-session-muted">{t("agentSessionLoading")}</small>}
-          {session.isError && <p className="inline-error">{errorText(session.error)}</p>}
+          {session.isError && <p className="inline-error">{localizedErrorText(session.error, t)}</p>}
           {session.data && (
             <>
               <header className="agent-session-head">
@@ -167,8 +164,8 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                       {send.isPending ? t("agentSessionSending") : t("agentSessionSend")}
                     </button>
                   </form>
-                  {send.isError && <p className="inline-error">{errorText(send.error)}</p>}
-                  {cancel.isError && <p className="inline-error">{errorText(cancel.error)}</p>}
+                  {send.isError && <p className="inline-error">{localizedErrorText(send.error, t)}</p>}
+                  {cancel.isError && <p className="inline-error">{localizedErrorText(cancel.error, t)}</p>}
                 </>
               ) : (
                 <p className="agent-session-muted" role="note">

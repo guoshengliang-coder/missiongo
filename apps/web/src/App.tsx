@@ -428,6 +428,12 @@ export function App() {
   const [agentConsoleBulkMode, setAgentConsoleBulkMode] = useState(false);
   const [agentConsoleBulkAvailable, setAgentConsoleBulkAvailable] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Below the two-pane breakpoint the sidebar is a drawer, and a closed drawer
+  // is only moved off-screen: without inert, Tab still walked through every
+  // link in it while nothing on screen showed where focus had gone.
+  const sidebarIsDrawer = useSinglePaneLayout();
+  const sidebarRef = useRef<HTMLElement>(null);
+  const sidebarTriggerRef = useRef<HTMLButtonElement>(null);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [notice, setNotice] = useState<string | null>(null);
@@ -661,6 +667,24 @@ export function App() {
     }
     setSidebarOpen(false);
   };
+  const closeSidebarRef = useRef(closeSidebar);
+  closeSidebarRef.current = closeSidebar;
+
+  // An open drawer behaves like the dialog it looks like: focus moves into it,
+  // Escape closes it, and closing hands focus back to the button that opened it.
+  useEffect(() => {
+    if (!sidebarOpen || !sidebarIsDrawer) return;
+    sidebarRef.current?.querySelector<HTMLElement>(".sidebar-mobile-head button")?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeSidebarRef.current();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    const trigger = sidebarTriggerRef.current;
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      trigger?.focus();
+    };
+  }, [sidebarOpen, sidebarIsDrawer]);
 
   // Closing from the UI unwinds the entry the open added, so a later back press
   // is not spent on a sheet that is already gone.
@@ -1181,8 +1205,8 @@ export function App() {
     <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""} ${
       agentConsoleOpen && agentConsoleSinglePane && agentConversationOpen ? "agent-conversation-open" : ""
     }`}>
-      <header className={`topbar ${agentConsoleOpen ? "agent-console-topbar" : ""} ${mobileSearchOpen ? "searching" : ""}`}>
-        {!agentConsoleOpen && <button className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
+      <header className={`topbar ${agentConsoleOpen ? "agent-console-topbar" : ""} ${mobileSearchOpen ? "searching" : ""}`} inert={sidebarIsDrawer && sidebarOpen}>
+        {!agentConsoleOpen && <button ref={sidebarTriggerRef} className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
           <Menu size={20} />
         </button>}
         {agentConsoleOpen ? (
@@ -1279,7 +1303,7 @@ export function App() {
       </header>
       {!isOnline && <div className="offline-banner" role="status"><WifiOff size={15} /> {t("offlineMode")}</div>}
 
-      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+      <aside ref={sidebarRef} className={`sidebar ${sidebarOpen ? "open" : ""}`} inert={sidebarIsDrawer && !sidebarOpen}>
         <div className="sidebar-mobile-head mobile-only">
           <Brand compact />
           <button className="icon-button" onClick={() => closeSidebar()} aria-label={t("closeNavigation")}><X size={20} /></button>
@@ -1347,6 +1371,7 @@ export function App() {
       <main
         className={`workspace ${selectedItemKey ? "detail-open" : ""}`}
         ref={workspaceRef}
+        inert={sidebarIsDrawer && sidebarOpen}
         style={{ "--list-pane-width": `${listPaneWidth}px` } as CSSProperties}
       >
         {/* Visibility is a layout decision: below the two-pane breakpoint the
@@ -1872,7 +1897,7 @@ function ProductBadge({ product, size = 22 }: { product: Product; size?: number 
     <span
       className="product-badge generated"
       aria-hidden="true"
-      style={{ width: size, height: size, background: productBadgeColor(product.id), fontSize: Math.round(size * 0.38) }}
+      style={{ width: size, height: size, background: productBadgeColor(product.id), fontSize: Math.max(11, Math.round(size * 0.38)) }}
     >
       {product.keyPrefix.slice(0, 3)}
     </span>

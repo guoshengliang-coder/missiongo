@@ -42,6 +42,7 @@ import {
 import { AgentSessionSettingsBar } from "./agent-session-settings";
 import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
+import { localizedErrorText } from "./error-text";
 import { MarkdownText } from "./markdown-text";
 import { SessionLink } from "./session-link";
 import type { AgentSession, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary } from "./types";
@@ -61,10 +62,6 @@ function SessionStatusIcon({ status }: { status: AgentSessionStatus }) {
   if (status === "idle") return <CircleCheck size={14} />;
   if (status === "failed" || status === "stalled") return <CircleAlert size={14} />;
   return <CircleDot size={14} />;
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function sessionTitle(session: AgentSessionSummary): string {
@@ -346,7 +343,7 @@ export function AgentSessionConsole({
       const failures = results.filter((entry) => entry.result.status === "rejected");
       const failureDetails = failures.map((entry) => {
         const session = visibleSessions.find((candidate) => candidate.id === entry.sessionId);
-        const reason = entry.result.status === "rejected" ? errorText(entry.result.reason) : "";
+        const reason = entry.result.status === "rejected" ? localizedErrorText(entry.result.reason, t) : "";
         return `${session ? sessionTitle(session) : entry.sessionId}: ${reason}`;
       }).join("; ");
       setSelectedForArchive((current) => {
@@ -376,7 +373,7 @@ export function AgentSessionConsole({
   const pending = command?.status === "queued" || command?.status === "delivering";
   const sendingSelected = send.isPending && send.variables?.sessionId === selected?.agentSessionId;
   const failedRequest = send.isError && send.variables?.sessionId === selected?.agentSessionId
-    ? { text: send.variables.text, occurredAt: send.variables.occurredAt, status: "failed" as const, error: errorText(send.error) }
+    ? { text: send.variables.text, occurredAt: send.variables.occurredAt, status: "failed" as const, error: localizedErrorText(send.error, t) }
     : undefined;
   const sendingRequest = sendingSelected
     ? { text: send.variables.text, occurredAt: send.variables.occurredAt, status: "sending" as const }
@@ -487,7 +484,10 @@ export function AgentSessionConsole({
             {Boolean(unread) && (
               <em className="agent-console-filter-unread" title={t("agentConsoleUnreadCount", { count: unread! })}>{unread}</em>
             )}
-            <small>{count}</small>
+            {/* A count is only a fact once the list has arrived. Before that, or
+                after it failed, "0" reads as "nothing here" -- which is not what
+                anyone knows. */}
+            {sessionsLoaded && <small>{count}</small>}
           </button>
         ))}
         <p className="agent-console-scope-note">{t("agentConsoleScopeNote")}</p>
@@ -497,7 +497,7 @@ export function AgentSessionConsole({
         <div className="agent-console-mobile-filters" aria-label={t("agentConsoleFilters")}>
           {filters.map(({ key, count, unread, label }) => (
             <button key={key} type="button" className={filter === key ? "active" : ""} aria-pressed={filter === key} onClick={() => chooseFilter(key)}>
-              {label}{Boolean(unread) && <em className="agent-console-filter-unread">{unread}</em>}<small>{count}</small>
+              {label}{Boolean(unread) && <em className="agent-console-filter-unread">{unread}</em>}{sessionsLoaded && <small>{count}</small>}
             </button>
           ))}
         </div>
@@ -563,7 +563,7 @@ export function AgentSessionConsole({
         {bulkArchiveMessage && <p className="agent-console-bulk-result" role="status">{bulkArchiveMessage}</p>}
         <div className="agent-console-session-list">
           {!sessionsLoaded && !hasSessionsError && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
-          {hasSessionsError && <p className="inline-error">{errorText(sessionsError)}</p>}
+          {hasSessionsError && <p className="inline-error">{localizedErrorText(sessionsError, t)}</p>}
           {sessionsLoaded && visibleSessions.length === 0 && (
             <div className="agent-console-empty"><Bot size={22} /><p>{t(search.trim() ? "agentConsoleNoMatch" : "agentConsoleEmpty")}</p></div>
           )}
@@ -730,7 +730,7 @@ export function AgentSessionConsole({
                     )}
                   </div>
                 )}
-                {dismissAttention.isError && <p className="inline-error">{errorText(dismissAttention.error)}</p>}
+                {dismissAttention.isError && <p className="inline-error">{localizedErrorText(dismissAttention.error, t)}</p>}
                 {selected.archivedAt && (
                   <div className="agent-console-connection-banner archived" role="status">
                     <Archive size={17} />
@@ -764,7 +764,7 @@ export function AgentSessionConsole({
                   <div>{selected.items.map((item) => <button key={item.key} type="button" onClick={() => onOpenItem(item.key)}>{item.key}</button>)}</div>
                 </div>
                 {selected.agentSessionId && sessionQuery.isLoading && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
-                {sessionQuery.isError && <p className="inline-error">{errorText(sessionQuery.error)}</p>}
+                {sessionQuery.isError && <p className="inline-error">{localizedErrorText(sessionQuery.error, t)}</p>}
                 {sessionQuery.data?.messages.length === 0 && !outgoing && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
                 {!selected.agentSessionId && (
                   <div className="agent-console-dispatch-state">
@@ -872,9 +872,9 @@ export function AgentSessionConsole({
             </div>
             <footer className="agent-console-reply">
               {(retryDispatch.isError || stopDispatch.isError) && (
-                <p className="inline-error">{errorText(retryDispatch.error ?? stopDispatch.error)}</p>
+                <p className="inline-error">{localizedErrorText(retryDispatch.error ?? stopDispatch.error, t)}</p>
               )}
-              {archiveSession.isError && <p className="inline-error">{errorText(archiveSession.error)}</p>}
+              {archiveSession.isError && <p className="inline-error">{localizedErrorText(archiveSession.error, t)}</p>}
               {command?.kind === "interrupt" && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>
@@ -925,7 +925,7 @@ export function AgentSessionConsole({
                     : t("agentConsoleNoInlineReply")}
                 </p>
               )}
-              {cancel.isError && <p className="inline-error">{errorText(cancel.error)}</p>}
+              {cancel.isError && <p className="inline-error">{localizedErrorText(cancel.error, t)}</p>}
             </footer>
           </>
         )}
