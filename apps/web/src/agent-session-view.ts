@@ -59,6 +59,14 @@ export interface AgentAttentionCounts {
   readonly byProduct: ReadonlyMap<string, number>;
 }
 
+export function archivableVisibleSessionIds(
+  sessions: readonly Pick<AgentSessionSummary, "id" | "canArchive" | "archivedAt" | "archivedSource">[],
+): readonly string[] {
+  return sessions
+    .filter((session) => session.canArchive && !session.archivedAt && session.archivedSource !== "source")
+    .map((session) => session.id);
+}
+
 /**
  * One conversation can cover items from several products. Count it once in the
  * global badge, and once for each distinct product it reaches. Repeated items

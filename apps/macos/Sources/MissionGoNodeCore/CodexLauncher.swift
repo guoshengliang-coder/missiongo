@@ -236,11 +236,15 @@ public struct CodexLauncher: AgentAdapter {
                 commandId: session.command?.id,
                 commandStatus: session.command == nil ? nil : "failed",
                 commandError: session.command == nil ? nil : "Codex 会话已归档，命令未发送。",
-                sourceArchived: true
+                sourceArchived: true,
+                activityAt: snapshot.activityAt
             )
         }
         guard let command = session.command else {
-            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages, sourceArchived: false)
+            return AgentSessionReport(
+                status: snapshot.status, messages: snapshot.messages,
+                sourceArchived: false, activityAt: snapshot.activityAt
+            )
         }
         if command.kind == "interrupt" {
             // The turn may have finished between the web click and this poll. In
@@ -255,14 +259,17 @@ public struct CodexLauncher: AgentAdapter {
                     threadId: session.sessionRef,
                     turnId: turnId
                 )
-                snapshot = CodexThreadSnapshot(status: "idle", messages: snapshot.messages)
+                snapshot = CodexThreadSnapshot(
+                    status: "idle", messages: snapshot.messages, activityAt: snapshot.activityAt
+                )
             }
             return AgentSessionReport(
                 status: snapshot.status,
                 messages: snapshot.messages,
                 commandId: command.id,
                 commandStatus: "delivered",
-                sourceArchived: false
+                sourceArchived: false,
+                activityAt: snapshot.activityAt
             )
         }
         // An active ordinary turn accepts same-turn steering. Older app-server
@@ -271,7 +278,10 @@ public struct CodexLauncher: AgentAdapter {
         let canDeliver = snapshot.status == "idle"
             || (snapshot.status == "active" && snapshot.activeTurnId != nil)
         guard canDeliver else {
-            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages, sourceArchived: false)
+            return AgentSessionReport(
+                status: snapshot.status, messages: snapshot.messages,
+                sourceArchived: false, activityAt: snapshot.activityAt
+            )
         }
         // Reserve the queued reply on the server before sending it. A person can
         // cancel only while it is still queued; once this acknowledgement wins,
@@ -283,11 +293,15 @@ public struct CodexLauncher: AgentAdapter {
                 messages: snapshot.messages,
                 commandId: command.id,
                 commandStatus: "delivering",
-                sourceArchived: false
+                sourceArchived: false,
+                activityAt: snapshot.activityAt
             )
         }
         guard command.status == "delivering" else {
-            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages, sourceArchived: false)
+            return AgentSessionReport(
+                status: snapshot.status, messages: snapshot.messages,
+                sourceArchived: false, activityAt: snapshot.activityAt
+            )
         }
         if let activeTurnId = snapshot.activeTurnId, snapshot.status == "active" {
             try await control.steerMessage(
@@ -304,14 +318,17 @@ public struct CodexLauncher: AgentAdapter {
                 text: command.text,
                 clientUserMessageId: command.id
             )
-            snapshot = CodexThreadSnapshot(status: "active", messages: snapshot.messages)
+            snapshot = CodexThreadSnapshot(
+                status: "active", messages: snapshot.messages, activityAt: snapshot.activityAt
+            )
         }
         return AgentSessionReport(
             status: snapshot.status,
             messages: snapshot.messages,
             commandId: command.id,
             commandStatus: "delivered",
-            sourceArchived: false
+            sourceArchived: false,
+            activityAt: snapshot.activityAt
         )
     }
 }

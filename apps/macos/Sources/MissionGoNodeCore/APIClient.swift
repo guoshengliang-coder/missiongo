@@ -241,8 +241,10 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     /// A resumed Claude session may receive a new Remote Control URL. The node
     /// reports the fresh, validated URL instead of leaving a dead link behind.
     public let sessionUrl: String?
+    /// Last activity timestamp from the source conversation, not this mirror poll.
+    public let activityAt: String?
 
-    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sessionUrl: String? = nil) {
+    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sessionUrl: String? = nil, activityAt: String? = nil) {
         self.status = status
         self.messages = messages
         self.activities = activities
@@ -252,6 +254,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         self.commandError = commandError
         self.sourceArchived = sourceArchived
         self.sessionUrl = sessionUrl
+        self.activityAt = activityAt
     }
 }
 

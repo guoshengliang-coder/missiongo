@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   activityLabelKey,
   agentAttentionCounts,
+  archivableVisibleSessionIds,
   agentSessionMatches,
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
@@ -46,6 +47,15 @@ describe("agent session message view", () => {
   it("opens on all conversations by default", () => {
     expect(DEFAULT_AGENT_SESSION_FILTER).toBe("all");
     expect(DEFAULT_AGENT_KIND_FILTER).toBe("all");
+  });
+
+  it("selects only archivable visible conversations for a batch", () => {
+    expect(archivableVisibleSessionIds([
+      { id: "one", canArchive: true },
+      { id: "two", canArchive: false },
+      { id: "three", canArchive: true, archivedAt: "2026-09-21T00:00:00Z" },
+      { id: "four", canArchive: true, archivedSource: "source" },
+    ])).toEqual(["one"]);
   });
 
   it("combines Agent and status filters", () => {

@@ -17,6 +17,9 @@ export interface AgentSessionAttention {
   readonly kind?: AgentAttentionKind;
   readonly reason?: string;
   readonly model?: string;
+  /** Opaque fingerprint of the latest visible content, used for race-safe dismissal. */
+  readonly revision?: string;
+  readonly dismissed?: boolean;
 }
 
 export interface AgentSessionMessageInput {
@@ -171,6 +174,9 @@ interface AttentionRow {
   kind: AgentAttentionKind | null;
   reason: string | null;
   model: string | null;
+  dismissed_message_hash: string | null;
+  dismissed_at: string | null;
+  dismissed_by_account_id: string | null;
 }
 
 const MAX_MESSAGE_LENGTH = 100_000;
@@ -204,6 +210,35 @@ function attentionMessageHash(
     message?.text ?? "",
     message?.questions_json ?? "",
   ])).digest("hex");
+}
+
+function attentionContentHash(
+  message: {
+    source_id: string;
+    role: AgentMessageRole;
+    phase: string | null;
+    text: string;
+    questions_json: string | null;
+  } | undefined,
+): string {
+  return createHash("sha256").update(JSON.stringify([
+    message?.source_id ?? "",
+    message?.role ?? "",
+    message?.phase ?? "",
+    message?.text ?? "",
+    message?.questions_json ?? "",
+  ])).digest("hex");
+}
+
+function normalizedSourceActivityAt(value: string | undefined, now: string): string | undefined {
+  if (!value) return undefined;
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) throw invalidInput("activityAt must be an ISO 8601 timestamp.");
+  const nowMilliseconds = Date.parse(now);
+  if (milliseconds > nowMilliseconds + 5 * 60_000) {
+    throw invalidInput("activityAt cannot be more than five minutes in the future.");
+  }
+  return new Date(Math.min(milliseconds, nowMilliseconds)).toISOString();
 }
 
 function hasQuestions(value: string | null | undefined): boolean {
@@ -381,7 +416,8 @@ export class AgentSessionStore {
        WHERE session_id = ? ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
     );
     const attentionForSession = this.database.connection.prepare(
-      `SELECT message_hash, state, kind, reason, model
+      `SELECT message_hash, state, kind, reason, model,
+              dismissed_message_hash, dismissed_at, dismissed_by_account_id
        FROM agent_session_attention WHERE session_id = ?`,
     );
     return rows.map((row) => {
@@ -418,6 +454,7 @@ export class AgentSessionStore {
         ? "offline"
         : nodeConnectionState(row.node_last_seen_at ?? undefined);
       const messageHash = attentionMessageHash(status, message);
+      const contentHash = attentionContentHash(message);
       const cachedAttention = row.session_id
         ? attentionForSession.get(row.session_id) as unknown as AttentionRow | undefined
         : undefined;
@@ -428,18 +465,26 @@ export class AgentSessionStore {
         && !cachedAttention.reason
         && !cachedAttention.model;
       const directAttention = deterministicAttention(status, message);
-      const attention: AgentSessionAttention = pendingReply || replyAlreadyHandled
-        ? { state: "not_needed" }
-        : directAttention
-          ? directAttention
-          : cachedAttention?.message_hash === messageHash
-            ? {
-                state: cachedAttention.state,
-                ...(cachedAttention.kind ? { kind: cachedAttention.kind } : {}),
-                ...(cachedAttention.reason ? { reason: cachedAttention.reason } : {}),
-                ...(cachedAttention.model ? { model: cachedAttention.model } : {}),
-              }
-            : initialAttention(status, message);
+      const manuallyDismissed = cachedAttention?.dismissed_message_hash === contentHash;
+      const attention: AgentSessionAttention = status === "stalled" && directAttention
+        ? { ...directAttention, revision: contentHash }
+        : pendingReply
+          ? { state: "not_needed", revision: contentHash }
+          : manuallyDismissed
+            ? { state: "not_needed", reason: "已由用户标记为无需处理。", revision: contentHash, dismissed: true }
+            : replyAlreadyHandled
+              ? { state: "not_needed", revision: contentHash }
+              : directAttention
+                ? { ...directAttention, revision: contentHash }
+                : cachedAttention?.message_hash === messageHash
+                  ? {
+                      state: cachedAttention.state,
+                      ...(cachedAttention.kind ? { kind: cachedAttention.kind } : {}),
+                      ...(cachedAttention.reason ? { reason: cachedAttention.reason } : {}),
+                      ...(cachedAttention.model ? { model: cachedAttention.model } : {}),
+                      revision: contentHash,
+                    }
+                  : { ...initialAttention(status, message), revision: contentHash };
       const needsAttention = attention.state === "needed";
       return {
         id: row.session_id ?? `dispatch:${row.dispatch_id}`,
@@ -512,6 +557,45 @@ export class AgentSessionStore {
       )
       .run(archived ? now : null, archived ? "missiongo" : null, now, now, sessionId);
     return this.getForAccount(accountId, sessionId);
+  }
+
+  dismissAttention(accountId: string, sessionId: string, expectedRevision: string): void {
+    const session = this.database.connection
+      .prepare(
+        `SELECT s.id, s.status FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
+         WHERE s.id = ? AND d.account_id = ?`,
+      )
+      .get(sessionId, accountId) as unknown as { id: string; status: AgentSessionStatus } | undefined;
+    if (!session) throw notFound("Agent session");
+    if (session.status === "stalled") {
+      throw conflict("agent_attention_stalled", "A stalled session cannot be dismissed as a message-classification mistake.");
+    }
+    const message = this.database.connection.prepare(
+      `SELECT source_id, role, phase, text, questions_json FROM agent_session_messages
+       WHERE session_id = ? ORDER BY position DESC, observed_at DESC, id DESC LIMIT 1`,
+    ).get(sessionId) as unknown as {
+      source_id: string; role: AgentMessageRole; phase: string | null; text: string; questions_json: string | null;
+    } | undefined;
+    if (!message) throw conflict("agent_attention_unavailable", "This session has no visible message to dismiss.");
+    const revision = attentionContentHash(message);
+    if (revision !== expectedRevision) {
+      throw conflict("agent_attention_changed", "The session received new content; review it before dismissing attention.");
+    }
+    const now = new Date().toISOString();
+    const messageHash = attentionMessageHash(session.status, message);
+    this.database.connection.prepare(
+      `INSERT INTO agent_session_attention
+        (session_id, message_hash, state, kind, reason, model, updated_at,
+         dismissed_message_hash, dismissed_at, dismissed_by_account_id)
+       VALUES (?, ?, 'not_needed', NULL, NULL, NULL, ?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         message_hash = excluded.message_hash,
+         state = 'not_needed', kind = NULL, reason = NULL, model = NULL,
+         updated_at = excluded.updated_at,
+         dismissed_message_hash = excluded.dismissed_message_hash,
+         dismissed_at = excluded.dismissed_at,
+         dismissed_by_account_id = excluded.dismissed_by_account_id`,
+    ).run(sessionId, messageHash, now, revision, now, accountId);
   }
 
   enqueue(accountId: string, sessionId: string, textValue: string): AgentSessionCommand {
@@ -699,6 +783,7 @@ export class AgentSessionStore {
     commandError?: string;
     sourceArchived?: boolean;
     sessionUrl?: string;
+    activityAt?: string;
   }): void {
     if (input.messages.length > MAX_MESSAGES_PER_SNAPSHOT) {
       throw invalidInput(`messages must contain ${MAX_MESSAGES_PER_SNAPSHOT} entries or fewer.`);
@@ -736,7 +821,7 @@ export class AgentSessionStore {
     } : undefined);
     const session = this.database.connection
       .prepare(
-        `SELECT id, status, last_error, archived_at, archive_source, activities_json
+        `SELECT id, status, last_error, archived_at, archive_source, activities_json, activity_at
          FROM agent_sessions WHERE id = ? AND node_id = ?`,
       )
       .get(input.sessionId, input.nodeId) as unknown as {
@@ -746,9 +831,11 @@ export class AgentSessionStore {
         archived_at: string | null;
         archive_source: "missiongo" | "source" | null;
         activities_json: string;
+        activity_at: string;
       } | undefined;
     if (!session) throw notFound("Agent session");
     const now = new Date().toISOString();
+    const sourceActivityAt = normalizedSourceActivityAt(input.activityAt, now);
     const error = input.error?.slice(0, 2_000) || null;
     const sessionUrl = input.sessionUrl?.trim();
     if (sessionUrl && !isAcceptedSessionUrl(sessionUrl)) {
@@ -788,15 +875,16 @@ export class AgentSessionStore {
       || session.activities_json !== activitiesJson
       || archiveChanged
       || Boolean(input.commandId && input.commandStatus);
+    const nextActivityAt = activityChanged ? sourceActivityAt ?? now : session.activity_at;
     this.database.transaction(() => {
       this.database.connection
         .prepare(
           `UPDATE agent_sessions
            SET status = ?, last_error = ?, activities_json = ?, updated_at = ?,
-               activity_at = CASE WHEN ? THEN ? ELSE activity_at END
+               activity_at = ?
            WHERE id = ?`,
         )
-        .run(input.status, error, activitiesJson, now, activityChanged ? 1 : 0, now, input.sessionId);
+        .run(input.status, error, activitiesJson, now, nextActivityAt, input.sessionId);
       if (input.sourceArchived === true) {
         this.database.connection
           .prepare(

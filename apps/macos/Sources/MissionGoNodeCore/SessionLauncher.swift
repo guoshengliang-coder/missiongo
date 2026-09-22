@@ -108,6 +108,12 @@ public struct SessionLauncher: AgentAdapter {
 
     public let kind = "claude_code"
 
+    static func activityTimestamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
     let environment: ShellEnvironment
     let run: CommandRunner
     let home: String
@@ -503,7 +509,8 @@ public struct SessionLauncher: AgentAdapter {
                 messages: state.messages,
                 activities: state.activities,
                 error: state.error,
-                sessionUrl: state.sessionUrl
+                sessionUrl: state.sessionUrl,
+                activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )
         }
         // Hosts created before lifecycle tracking did not persist a PID. Keep
@@ -520,7 +527,8 @@ public struct SessionLauncher: AgentAdapter {
                         error: state.error,
                         commandId: command.id,
                         commandStatus: "delivering",
-                        sessionUrl: state.sessionUrl
+                        sessionUrl: state.sessionUrl,
+                        activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
                     )
                 }
                 let configPath = ClaudeHostStore.configPath(root: sessionsDirectory, sessionRef: session.sessionRef)
@@ -534,7 +542,8 @@ public struct SessionLauncher: AgentAdapter {
                     messages: state.messages,
                     activities: state.activities,
                     error: "正在恢复 Claude Code 会话…",
-                    sessionUrl: state.sessionUrl
+                    sessionUrl: state.sessionUrl,
+                    activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
                 )
             }
             return AgentSessionReport(
@@ -542,11 +551,16 @@ public struct SessionLauncher: AgentAdapter {
                 messages: state.messages,
                 activities: state.activities,
                 error: "Claude Code 会话宿主已停止；请在外部 Remote Control 会话中继续，或重新派单。",
-                sessionUrl: state.sessionUrl
+                sessionUrl: state.sessionUrl,
+                activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )
         }
         guard let command = session.command else {
-            return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error, sessionUrl: state.sessionUrl)
+            return AgentSessionReport(
+                status: state.status, messages: state.messages, activities: state.activities,
+                error: state.error, sessionUrl: state.sessionUrl,
+                activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
+            )
         }
         if let result = state.commandResults[command.id] {
             return AgentSessionReport(
@@ -557,7 +571,8 @@ public struct SessionLauncher: AgentAdapter {
                 commandId: command.id,
                 commandStatus: result.status,
                 commandError: result.error,
-                sessionUrl: state.sessionUrl
+                sessionUrl: state.sessionUrl,
+                activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )
         }
         if command.kind == "interrupt", !["active", "stalled"].contains(state.status) {
@@ -568,11 +583,16 @@ public struct SessionLauncher: AgentAdapter {
                 error: state.error,
                 commandId: command.id,
                 commandStatus: "delivered",
-                sessionUrl: state.sessionUrl
+                sessionUrl: state.sessionUrl,
+                activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )
         }
         if command.kind == "message", ["active", "stalled"].contains(state.status), !state.waitingForInput {
-            return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error, sessionUrl: state.sessionUrl)
+            return AgentSessionReport(
+                status: state.status, messages: state.messages, activities: state.activities,
+                error: state.error, sessionUrl: state.sessionUrl,
+                activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
+            )
         }
         if command.kind == "message", command.status == "queued" {
             return AgentSessionReport(
@@ -582,7 +602,8 @@ public struct SessionLauncher: AgentAdapter {
                 error: state.error,
                 commandId: command.id,
                 commandStatus: "delivering",
-                sessionUrl: state.sessionUrl
+                sessionUrl: state.sessionUrl,
+                activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )
         }
         let safeCommandId = command.id.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
@@ -600,6 +621,10 @@ public struct SessionLauncher: AgentAdapter {
                 to: path
             )
         }
-        return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities, error: state.error, sessionUrl: state.sessionUrl)
+        return AgentSessionReport(
+            status: state.status, messages: state.messages, activities: state.activities,
+            error: state.error, sessionUrl: state.sessionUrl,
+            activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
+        )
     }
 }

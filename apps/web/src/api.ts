@@ -456,6 +456,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ archived }),
     }),
+  dismissAgentSessionAttention: (sessionId: string, revision: string) =>
+    request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attention/dismiss`, {
+      method: "POST",
+      body: JSON.stringify({ revision }),
+    }),
   setDispatchArchived: (dispatchId: string, archived: boolean) =>
     request<Dispatch>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/archive`, {
       method: "PATCH",

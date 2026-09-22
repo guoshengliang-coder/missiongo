@@ -414,6 +414,8 @@ export interface AgentSessionSummary {
     readonly kind?: "answer" | "approval" | "action" | "instruction" | "uncertain";
     readonly reason?: string;
     readonly model?: string;
+    readonly revision?: string;
+    readonly dismissed?: boolean;
   };
   readonly needsAttention: boolean;
   /** Compatibility alias for older clients; prefer needsAttention. */

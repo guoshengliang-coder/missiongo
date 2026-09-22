@@ -108,6 +108,34 @@ describe("database migrations", () => {
     migrated.close();
   });
 
+  it("adds content-bound attention dismissal columns to an existing database", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-agent-attention-dismissal-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    seeded.close();
+
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      ALTER TABLE agent_session_attention DROP COLUMN dismissed_by_account_id;
+      ALTER TABLE agent_session_attention DROP COLUMN dismissed_at;
+      ALTER TABLE agent_session_attention DROP COLUMN dismissed_message_hash;
+      DELETE FROM schema_migrations WHERE version = 202609211500;
+    `);
+    legacy.close();
+
+    const migrated = new MissionGoDatabase(path);
+    const columns = migrated.connection.prepare("PRAGMA table_info(agent_session_attention)")
+      .all() as unknown as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      "dismissed_message_hash", "dismissed_at", "dismissed_by_account_id",
+    ]));
+    expect(migrated.connection.prepare(
+      "SELECT version FROM schema_migrations WHERE version = 202609211500",
+    ).get()).toEqual({ version: 202609211500 });
+    migrated.close();
+  });
+
   it("widens legacy Agent sessions to include Claude Code without losing Codex sessions", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-claude-session-migration-"));
     temporaryDirectories.push(directory);

@@ -969,6 +969,33 @@ export class MissionGoDatabase {
         .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
         .run(202609211018, new Date().toISOString());
     }
+    // A person can dismiss a false-positive attention classification without
+    // replying to the source conversation. The dismissal follows the exact
+    // latest visible content, so unchanged mirror polls stay dismissed while a
+    // genuinely new message is classified again.
+    const agentAttentionDismissalMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609211500")
+      .get() as unknown as { version: number } | undefined;
+    const attentionColumns = this.connection
+      .prepare("PRAGMA table_info(agent_session_attention)")
+      .all() as unknown as Array<{ name: string }>;
+    if (!agentAttentionDismissalMigration
+      || !attentionColumns.some((column) => column.name === "dismissed_message_hash")) {
+      this.transaction(() => {
+        if (!attentionColumns.some((column) => column.name === "dismissed_message_hash")) {
+          this.connection.exec("ALTER TABLE agent_session_attention ADD COLUMN dismissed_message_hash TEXT;");
+        }
+        if (!attentionColumns.some((column) => column.name === "dismissed_at")) {
+          this.connection.exec("ALTER TABLE agent_session_attention ADD COLUMN dismissed_at TEXT;");
+        }
+        if (!attentionColumns.some((column) => column.name === "dismissed_by_account_id")) {
+          this.connection.exec("ALTER TABLE agent_session_attention ADD COLUMN dismissed_by_account_id TEXT;");
+        }
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609211500, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

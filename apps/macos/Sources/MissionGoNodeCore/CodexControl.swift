@@ -46,12 +46,14 @@ public struct CodexThreadSnapshot: Equatable, Sendable {
     public let activeTurnId: String?
     public let messages: [AgentSessionMessage]
     public let archived: Bool
+    public let activityAt: String?
 
-    public init(status: String, activeTurnId: String? = nil, messages: [AgentSessionMessage], archived: Bool = false) {
+    public init(status: String, activeTurnId: String? = nil, messages: [AgentSessionMessage], archived: Bool = false, activityAt: String? = nil) {
         self.status = status
         self.activeTurnId = activeTurnId
         self.messages = messages
         self.archived = archived
+        self.activityAt = activityAt
     }
 }
 
@@ -304,7 +306,30 @@ public enum CodexProtocol {
                 }
             }
         }
-        return CodexThreadSnapshot(status: status, activeTurnId: activeTurnId, messages: messages)
+        return CodexThreadSnapshot(
+            status: status,
+            activeTurnId: activeTurnId,
+            messages: messages,
+            activityAt: sourceActivityTimestamp(thread["updatedAt"] ?? thread["updated_at"])
+        )
+    }
+
+    static func sourceActivityTimestamp(_ value: Any?) -> String? {
+        let date: Date?
+        if let number = value as? NSNumber {
+            let raw = number.doubleValue
+            date = Date(timeIntervalSince1970: raw > 10_000_000_000 ? raw / 1_000 : raw)
+        } else if let text = value as? String {
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            date = fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+        } else {
+            date = nil
+        }
+        guard let date else { return nil }
+        let output = ISO8601DateFormatter()
+        output.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return output.string(from: date)
     }
 
     /// `result.thread.id` of a `thread/start` answer.
@@ -492,15 +517,31 @@ public struct CodexAppServerControl: CodexControl {
             throw CodexControlError.invalidResponse(method: "thread/start")
         }
         try CodexProtocol.validateStarted(started, request: request)
-        let account = try connection.call("mcpServer/tool/call", [
+        let accountParams: [String: Any] = [
             "threadId": threadId, "server": "missiongo", "tool": "get_current_account", "arguments": [:],
-        ])
+        ]
+        let account: [String: Any]
+        do {
+            account = try connection.call("mcpServer/tool/call", accountParams)
+        } catch let error as CodexControlError where isMissionGoStartupTimeout(error) {
+            // A cold MCP process can miss Codex's first 30-second startup
+            // window. Retry this read-only permission probe once, but never
+            // retry another error and never start the work turn until it passes.
+            account = try connection.call("mcpServer/tool/call", accountParams)
+        }
         try CodexProtocol.validateAccount(account, skillVersion: request.skillVersion)
         // A thread that could not be named is still a working thread; failing the
         // dispatch here would leave it running with nobody told about it.
         _ = try? connection.call("thread/name/set", CodexProtocol.threadNameParams(threadId: threadId, name: request.name))
         _ = try connection.call("turn/start", CodexProtocol.turnStartParams(threadId: threadId, prompt: request.prompt))
         return threadId
+    }
+
+    static func isMissionGoStartupTimeout(_ error: CodexControlError) -> Bool {
+        guard case let .rpc(method, message) = error, method == "mcpServer/tool/call" else { return false }
+        let normalized = message.lowercased()
+        return normalized.contains("mcp startup failed")
+            && normalized.contains("mcp client startup timed out")
     }
 }
 
