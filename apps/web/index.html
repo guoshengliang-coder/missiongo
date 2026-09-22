@@ -42,6 +42,48 @@
   </head>
   <body>
     <div id="root"></div>
+    <!--
+      Below the build target (see vite.config.ts) the console does not fail loudly: the bundle
+      may parse, and the styles it relies on are simply dropped. Say so in plain words instead,
+      before the bundle gets a chance to draw a half-styled page. color-mix() is the newest
+      feature styles.css depends on, so it stands in for the whole floor. Deliberately ES5 and
+      self-styled: nothing else on the page can be assumed to work here.
+    -->
+    <script>
+      (function () {
+        var css = window.CSS;
+        if (css && css.supports && css.supports("color", "color-mix(in srgb, red, red)")) return;
+        window.missiongoUnsupportedBrowser = true;
+        var zh = /^zh/i.test(navigator.language || "");
+        var android = /Android/i.test(navigator.userAgent);
+        var dark = document.documentElement.getAttribute("data-appearance") === "dark";
+        var title = zh ? "浏览器版本过低" : "This browser is too old";
+        var body = zh
+          ? "MissionGo 需要 Chrome / Edge 111、Firefox 113 或 Safari / iOS 16.2 及以上版本。"
+          : "MissionGo needs Chrome / Edge 111, Firefox 113 or Safari / iOS 16.2 or later.";
+        var hint = android
+          ? zh
+            ? "请在应用商店更新 Chrome 和 Android System WebView 后重新打开。"
+            : "Update Chrome and Android System WebView from your app store, then reopen."
+          : zh
+            ? "请更新浏览器或系统后重新打开。"
+            : "Update your browser or operating system, then reopen.";
+        var root = document.getElementById("root");
+        root.setAttribute(
+          "style",
+          "min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;" +
+            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;" +
+            (dark ? "background:#10161f;color:#e8ecef;" : "background:#f3f1eb;color:#172033;")
+        );
+        root.setAttribute("role", "alert");
+        root.innerHTML =
+          '<div style="max-width:420px;line-height:1.6">' +
+          '<h1 style="margin:0 0 8px;font-size:22px">' + title + "</h1>" +
+          '<p style="margin:0 0 6px;font-size:15px">' + body + "</p>" +
+          '<p style="margin:0;font-size:15px;opacity:.8">' + hint + "</p>" +
+          "</div>";
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

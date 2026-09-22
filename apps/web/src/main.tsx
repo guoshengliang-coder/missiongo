@@ -11,60 +11,72 @@ import { UpdateBanner } from "./UpdateBanner";
 import { startVersionWatch } from "./version-check";
 import "./styles.css";
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 10_000,
-      retry: 1,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
-
-// Before the first render, so the previous screen is what paints rather than a
-// skeleton. Synchronous by design; see query-persistence.ts.
-restorePersistedQueryCache(queryClient);
-persistQueryCache(queryClient);
-
-// Importing both statically put the whole console into the one chunk the SDK feedback
-// form had to download inside a host's WebView, on a phone connection, before it could
-// render anything. Only one of the two ever runs, so only one is fetched.
-const RootPage = window.location.pathname.startsWith("/sdk/feedback")
-  ? lazy(() => import("./SdkFeedback").then(({ SdkFeedbackPage }) => ({ default: SdkFeedbackPage })))
-  : lazy(() => import("./App").then(({ App }) => ({ default: App })));
-
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <I18nProvider>
-        {/* Inside I18nProvider so the notice can be read in the reader's own
-            language, and outside Suspense so it also covers the page chunk
-            failing to arrive -- which is the same dead-chunk failure as AND-35,
-            one level up, and blanked the console just as completely. */}
-        <ErrorBoundary fallback={(error) => <LoadFailureNotice error={error} />}>
-          {/* Both pages draw their own loading state once mounted, but reaching that
-              point still costs a chunk fetch and its evaluation, and `null` left the
-              screen blank for all of it. BootSkeleton lives in this chunk, so it can
-              paint immediately. */}
-          <Suspense fallback={<BootSkeleton />}>
-            <RootPage />
-          </Suspense>
-        </ErrorBoundary>
-        <UpdateBanner />
-      </I18nProvider>
-    </QueryClientProvider>
-  </StrictMode>,
-);
-
-if (import.meta.env.PROD && "serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    void navigator.serviceWorker.register("/sw.js");
-  });
+declare global {
+  interface Window {
+    /** Set by the gate in index.html when the browser is below the build target. */
+    missiongoUnsupportedBrowser?: boolean;
+  }
 }
 
-// Independent of the service worker: a browser that never installed one, or an
-// Android app left in the background for days, still has to find out that the
-// build it is running has been replaced.
-if (import.meta.env.PROD) {
-  startVersionWatch({ hasUnsavedInput });
+// index.html has already told the reader their browser is too old. Mounting
+// over that notice would only replace a clear message with a broken page, and
+// registering the service worker would pin that broken page in place.
+if (!window.missiongoUnsupportedBrowser) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 10_000,
+        retry: 1,
+        refetchOnWindowFocus: false,
+      },
+    },
+  });
+
+  // Before the first render, so the previous screen is what paints rather than a
+  // skeleton. Synchronous by design; see query-persistence.ts.
+  restorePersistedQueryCache(queryClient);
+  persistQueryCache(queryClient);
+
+  // Importing both statically put the whole console into the one chunk the SDK feedback
+  // form had to download inside a host's WebView, on a phone connection, before it could
+  // render anything. Only one of the two ever runs, so only one is fetched.
+  const RootPage = window.location.pathname.startsWith("/sdk/feedback")
+    ? lazy(() => import("./SdkFeedback").then(({ SdkFeedbackPage }) => ({ default: SdkFeedbackPage })))
+    : lazy(() => import("./App").then(({ App }) => ({ default: App })));
+
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider>
+          {/* Inside I18nProvider so the notice can be read in the reader's own
+              language, and outside Suspense so it also covers the page chunk
+              failing to arrive -- which is the same dead-chunk failure as AND-35,
+              one level up, and blanked the console just as completely. */}
+          <ErrorBoundary fallback={(error) => <LoadFailureNotice error={error} />}>
+            {/* Both pages draw their own loading state once mounted, but reaching that
+                point still costs a chunk fetch and its evaluation, and `null` left the
+                screen blank for all of it. BootSkeleton lives in this chunk, so it can
+                paint immediately. */}
+            <Suspense fallback={<BootSkeleton />}>
+              <RootPage />
+            </Suspense>
+          </ErrorBoundary>
+          <UpdateBanner />
+        </I18nProvider>
+      </QueryClientProvider>
+    </StrictMode>,
+  );
+
+  if (import.meta.env.PROD && "serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      void navigator.serviceWorker.register("/sw.js");
+    });
+  }
+
+  // Independent of the service worker: a browser that never installed one, or an
+  // Android app left in the background for days, still has to find out that the
+  // build it is running has been replaced.
+  if (import.meta.env.PROD) {
+    startVersionWatch({ hasUnsavedInput });
+  }
 }

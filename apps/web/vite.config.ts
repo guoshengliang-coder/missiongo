@@ -275,9 +275,14 @@ export default defineConfig(({ mode }) => {
       // speeding it up. See query-persistence.ts.
       MISSIONGO_BUILD_STAMP: JSON.stringify(`${Date.now().toString(36)}`),
     },
+    // The floor is set by what styles.css actually uses: color-mix() needs
+    // Chrome/Edge 111, Firefox 113 and Safari 16.2, and @container and
+    // overflow: clip sit just below it. esbuild lowers syntax but never writes a
+    // fallback for these, so a lower target only hid the breakage. Keep this in
+    // step with the gate in index.html and the README.
     build: {
-      target: ["chrome90", "edge90", "firefox90", "safari15.4"],
-      cssTarget: "safari15.4",
+      target: ["chrome111", "edge111", "firefox113", "safari16.2"],
+      cssTarget: ["chrome111", "edge111", "firefox113", "safari16.2"],
     },
   };
 });
