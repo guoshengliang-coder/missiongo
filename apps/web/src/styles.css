@@ -1270,7 +1270,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .account-identity > div { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 10px; }
 .account-identity small { grid-column: 1 / -1; color: var(--muted); font-size: var(--text-xs); }
 .account-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-base); }
-.account-identity em { padding: 3px 6px; color: var(--on-mint); background: var(--status-progress-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-style: normal; font-weight: 750; }
+.account-identity em { padding: 3px 6px; color: var(--status-progress-fg); background: var(--status-progress-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-style: normal; font-weight: 750; }
 .account-tabs { display: flex; gap: 4px; padding-bottom: 2px; border-bottom: 1px solid var(--line); }
 .account-tabs .text-button { padding: 8px 12px; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); font-weight: 700; }
 .account-tabs .text-button.selected { color: var(--ink); border-bottom-color: var(--mint-dark); }
@@ -1289,7 +1289,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .account-row > header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .account-row > header > strong { flex: 1 1 auto; min-width: 0; }
 .account-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-base); }
-.account-row em { padding: 3px 6px; color: var(--on-mint); background: var(--status-progress-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-style: normal; font-weight: 750; }
+.account-row em { padding: 3px 6px; color: var(--status-progress-fg); background: var(--status-progress-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-style: normal; font-weight: 750; }
 .account-row .secondary-button { height: 34px; white-space: nowrap; }
 .account-permissions { display: flex; flex-direction: column; gap: 10px; margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--line); }
 /* The grid can outgrow a narrow modal; it scrolls rather than pushing the dialog wider. */
