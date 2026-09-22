@@ -96,10 +96,10 @@ describe("agent session message view", () => {
     expect(ordered.map((session) => session.id)).toEqual(["older-unread", "oldest-unread", "newest-read", "oldest-read"]);
   });
 
-  it("marks read only a conversation that is open and in front", () => {
+  it("marks read only a conversation the person opened, while the tab is in front", () => {
     const unread = { unread: true, unreadAt: "2026-09-22T06:00:00.000Z" };
     expect(shouldMarkRead(unread, true, true)).toBe(true);
-    // Auto-selected on a narrow screen: the list is showing, not the conversation.
+    // Selected automatically as the first row: nobody opened it.
     expect(shouldMarkRead(unread, false, true)).toBe(false);
     expect(shouldMarkRead(unread, true, false)).toBe(false);
     expect(shouldMarkRead({ unread: false, unreadAt: unread.unreadAt }, true, true)).toBe(false);

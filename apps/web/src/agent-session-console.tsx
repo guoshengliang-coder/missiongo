@@ -175,6 +175,11 @@ export function AgentSessionConsole({
   const [followLatest, setFollowLatest] = useState(true);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
+  // The conversation the person clicked. Only that one counts as read: on a
+  // wide screen the first row is selected and shown automatically, and with
+  // unread rows first that would read the top one the moment the console opens.
+  // (conversationOpen cannot tell: it only ever turns true on the one-pane layout.)
+  const [openedSessionId, setOpenedSessionId] = useState<string | null>(null);
   const [selectedForArchive, setSelectedForArchive] = useState<Set<string>>(new Set());
   const [bulkArchiveMessage, setBulkArchiveMessage] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -379,11 +384,11 @@ export function AgentSessionConsole({
   const { mutate: markReadMutate } = markRead;
   const selectedUnreadAt = selected?.unread ? selected.unreadAt : undefined;
   useEffect(() => {
-    if (!selected || !shouldMarkRead(selected, conversationOpen, documentVisible)) return;
+    if (!selected || !shouldMarkRead(selected, openedSessionId === selected.id, documentVisible)) return;
     markReadMutate({ dispatchId: selected.dispatchId, through: selected.unreadAt });
     // Keyed on the unread clock, not the object: each poll returns a new one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.dispatchId, selectedUnreadAt, conversationOpen, documentVisible, markReadMutate]);
+  }, [selected?.dispatchId, selectedUnreadAt, openedSessionId, documentVisible, markReadMutate]);
 
   const scrollToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
     const messages = messagesRef.current;
@@ -553,7 +558,10 @@ export function AgentSessionConsole({
                 <button
                   type="button"
                   className={`agent-console-session ${session.id === selectedId ? "active" : ""} ${session.unread ? "unread" : ""}`}
-                  onClick={() => onSelectSession(session.id, true)}
+                  onClick={() => {
+                    setOpenedSessionId(session.id);
+                    onSelectSession(session.id, true);
+                  }}
                 >
                   <span className={`agent-console-status-icon agent-console-status-${session.status} agent-console-node-${session.nodeConnectionState}`}>
                     {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={session.status} />}

@@ -138,17 +138,16 @@ export function unreadFirst<T extends Pick<AgentSessionSummary, "unread">>(sessi
 }
 
 /**
- * Only a conversation the person can actually see is marked read: the one
- * they opened, while its pane is showing and the tab is in front. Merely being
- * first in the list -- and so auto-selected on a narrow screen -- is not
- * reading it.
+ * Only a conversation the person opened is marked read, and only while the tab
+ * is in front. Merely being first in the list -- and so selected and shown
+ * automatically -- is not reading it.
  */
 export function shouldMarkRead(
   session: Pick<AgentSessionSummary, "unread" | "unreadAt"> | undefined,
-  conversationOpen: boolean,
+  openedByPerson: boolean,
   documentVisible: boolean,
 ): session is Pick<AgentSessionSummary, "unread"> & { readonly unreadAt: string } {
-  return Boolean(session?.unread && session.unreadAt && conversationOpen && documentVisible);
+  return Boolean(session?.unread && session.unreadAt && openedByPerson && documentVisible);
 }
 
 export interface ScrollMetrics {
