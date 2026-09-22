@@ -335,6 +335,7 @@ export const INITIAL_SCHEMA = `
     questions_json TEXT,
     position INTEGER NOT NULL CHECK (position >= 0),
     observed_at TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
     UNIQUE (session_id, source_id)
   ) STRICT;
 

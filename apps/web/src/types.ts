@@ -347,6 +347,7 @@ export interface AgentSessionMessage {
   readonly role: "user" | "agent" | "plan";
   readonly phase?: string;
   readonly text: string;
+  readonly occurredAt: string;
   readonly questions?: readonly AgentSessionQuestion[];
 }
 

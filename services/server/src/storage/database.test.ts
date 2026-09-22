@@ -14,6 +14,53 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("backfills stable Agent message occurrence times from the last legacy observation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-message-time-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    seeded.connection.exec(`
+      INSERT INTO nodes
+        (id, account_id, name, token_hash, created_at, updated_at)
+      VALUES
+        ('node-1', 'account-1', 'Mac mini', 'token-hash', '2026-09-21T00:00:00.000Z', '2026-09-21T00:00:00.000Z');
+      INSERT INTO dispatches
+        (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+      VALUES
+        ('dispatch-1', 'account-1', 'node-1', 'codex', 'plan', 'launched', '/repo', '2026-09-21T00:00:00.000Z');
+      INSERT INTO agent_sessions
+        (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at, activity_at)
+      VALUES
+        ('session-1', 'dispatch-1', 'node-1', 'codex', 'thread-1', 'idle',
+         '2026-09-21T00:00:00.000Z', '2026-09-21T00:01:00.000Z', '2026-09-21T00:01:00.000Z');
+      INSERT INTO agent_session_messages
+        (id, session_id, source_id, role, text, position, observed_at, occurred_at)
+      VALUES
+        ('message-1', 'session-1', 'source-1', 'agent', 'Done', 0,
+         '2026-09-21T00:01:00.000Z', '2026-09-21T00:00:30.000Z');
+    `);
+    seeded.close();
+
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      ALTER TABLE agent_session_messages DROP COLUMN occurred_at;
+      DELETE FROM schema_migrations WHERE version = 202609220501;
+    `);
+    legacy.close();
+
+    const migrated = new MissionGoDatabase(path);
+    expect(migrated.connection.prepare(
+      "SELECT observed_at, occurred_at FROM agent_session_messages WHERE id = 'message-1'",
+    ).get()).toEqual({
+      observed_at: "2026-09-21T00:01:00.000Z",
+      occurred_at: "2026-09-21T00:01:00.000Z",
+    });
+    expect(migrated.connection.prepare(
+      "SELECT version FROM schema_migrations WHERE version = 202609220501",
+    ).get()).toEqual({ version: 202609220501 });
+    migrated.close();
+  });
+
   it("adds local archive state to historical dispatches without losing them", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-dispatch-archive-migration-"));
     temporaryDirectories.push(directory);

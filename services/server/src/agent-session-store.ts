@@ -28,6 +28,7 @@ export interface AgentSessionMessageInput {
   readonly role: AgentMessageRole;
   readonly phase?: string;
   readonly text: string;
+  readonly occurredAt?: string;
   readonly questions?: readonly {
     readonly header?: string;
     readonly title: string;
@@ -230,13 +231,13 @@ function attentionContentHash(
   ])).digest("hex");
 }
 
-function normalizedSourceActivityAt(value: string | undefined, now: string): string | undefined {
+function normalizedSourceTimestamp(value: string | undefined, now: string, field: string): string | undefined {
   if (!value) return undefined;
   const milliseconds = Date.parse(value);
-  if (!Number.isFinite(milliseconds)) throw invalidInput("activityAt must be an ISO 8601 timestamp.");
+  if (!Number.isFinite(milliseconds)) throw invalidInput(`${field} must be an ISO 8601 timestamp.`);
   const nowMilliseconds = Date.parse(now);
   if (milliseconds > nowMilliseconds + 5 * 60_000) {
-    throw invalidInput("activityAt cannot be more than five minutes in the future.");
+    throw invalidInput(`${field} cannot be more than five minutes in the future.`);
   }
   return new Date(Math.min(milliseconds, nowMilliseconds)).toISOString();
 }
@@ -343,12 +344,12 @@ export class AgentSessionStore {
     if (!row) throw notFound("Agent session");
     const messages = this.database.connection
       .prepare(
-        `SELECT id, source_id, turn_id, role, phase, text, questions_json
+        `SELECT id, source_id, turn_id, role, phase, text, questions_json, occurred_at
          FROM agent_session_messages WHERE session_id = ? ORDER BY position, observed_at, id`,
       )
       .all(sessionId) as unknown as Array<{
         id: string; source_id: string; turn_id: string | null; role: AgentMessageRole;
-        phase: string | null; text: string; questions_json: string | null;
+        phase: string | null; text: string; questions_json: string | null; occurred_at: string;
       }>;
     const command = this.latestCommand(sessionId);
     return {
@@ -368,6 +369,7 @@ export class AgentSessionStore {
         role: message.role,
         ...(message.phase ? { phase: message.phase } : {}),
         text: message.text,
+        occurredAt: message.occurred_at,
         ...(message.questions_json
           ? { questions: JSON.parse(message.questions_json) as Array<{ title: string; options?: string[] }> }
           : {}),
@@ -797,6 +799,7 @@ export class AgentSessionStore {
       ...(activity.detail ? { detail: requiredText(activity.detail, "activity detail", 500) } : {}),
     }));
     const activitiesJson = JSON.stringify(activities);
+    const now = new Date().toISOString();
     const messages = input.messages.map((message, position) => ({
       sourceId: requiredText(message.sourceId, "sourceId", 200),
       turnId: message.turnId?.slice(0, 200) || null,
@@ -804,6 +807,7 @@ export class AgentSessionStore {
       phase: message.phase?.slice(0, 50) || null,
       text: requiredText(message.text, "message text", MAX_MESSAGE_LENGTH),
       questionsJson: message.questions ? JSON.stringify(message.questions) : null,
+      sourceOccurredAt: normalizedSourceTimestamp(message.occurredAt, now, "message occurredAt"),
       position,
     }));
     const latestMessage = messages.at(-1);
@@ -834,8 +838,7 @@ export class AgentSessionStore {
         activity_at: string;
       } | undefined;
     if (!session) throw notFound("Agent session");
-    const now = new Date().toISOString();
-    const sourceActivityAt = normalizedSourceActivityAt(input.activityAt, now);
+    const sourceActivityAt = normalizedSourceTimestamp(input.activityAt, now, "activityAt");
     const error = input.error?.slice(0, 2_000) || null;
     const sessionUrl = input.sessionUrl?.trim();
     if (sessionUrl && !isAcceptedSessionUrl(sessionUrl)) {
@@ -843,7 +846,7 @@ export class AgentSessionStore {
     }
     const storedMessages = this.database.connection
       .prepare(
-        `SELECT source_id, turn_id, role, phase, text, questions_json, position
+        `SELECT source_id, turn_id, role, phase, text, questions_json, position, occurred_at
          FROM agent_session_messages WHERE session_id = ?`,
       )
       .all(input.sessionId) as unknown as Array<{
@@ -854,6 +857,7 @@ export class AgentSessionStore {
         text: string;
         questions_json: string | null;
         position: number;
+        occurred_at: string;
       }>;
     const storedBySource = new Map(storedMessages.map((message) => [message.source_id, message]));
     const messagesChanged = messages.some((message) => {
@@ -910,18 +914,22 @@ export class AgentSessionStore {
       }
       const upsert = this.database.connection.prepare(
         `INSERT INTO agent_session_messages
-          (id, session_id, source_id, turn_id, role, phase, text, questions_json, position, observed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, session_id, source_id, turn_id, role, phase, text, questions_json, position, observed_at, occurred_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(session_id, source_id) DO UPDATE SET
            turn_id = excluded.turn_id, role = excluded.role, phase = excluded.phase,
            text = excluded.text, questions_json = excluded.questions_json,
-           position = excluded.position, observed_at = excluded.observed_at`,
+           position = excluded.position, observed_at = excluded.observed_at,
+           occurred_at = excluded.occurred_at`,
       );
       messages.forEach((message) => {
+        const occurredAt = message.sourceOccurredAt
+          ?? storedBySource.get(message.sourceId)?.occurred_at
+          ?? now;
         upsert.run(
           randomUUID(), input.sessionId, message.sourceId, message.turnId,
           message.role, message.phase, message.text,
-          message.questionsJson, message.position, now,
+          message.questionsJson, message.position, now, occurredAt,
         );
       });
       this.database.connection.prepare(

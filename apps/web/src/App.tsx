@@ -163,7 +163,7 @@ import { productBadgeColor } from "./product-color";
 import { SessionLink } from "./session-link";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
-import { agentAttentionCounts } from "./agent-session-view";
+import { agentAttentionCounts, agentSessionsRefetchInterval } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
@@ -470,6 +470,7 @@ export function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
+  const previousAgentConsoleOpenRef = useRef(agentConsoleOpen);
   const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
   const agentConsoleSinglePane = useMediaQuery("(max-width: 520px)");
   const agentConsoleLayout = agentConsoleSinglePane ? "single" : "wide";
@@ -897,10 +898,18 @@ export function App() {
     queryKey: ["agent-sessions"],
     queryFn: () => api.listAgentSessions(),
     enabled: bootstrapQuery.isSuccess && hasAnyAiPermission,
-    refetchInterval: 5_000,
+    refetchInterval: agentSessionsRefetchInterval(agentConsoleOpen),
   });
   const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
   const attentionCounts = useMemo(() => agentAttentionCounts(allAgentSessions), [allAgentSessions]);
+
+  useEffect(() => {
+    const wasOpen = previousAgentConsoleOpenRef.current;
+    previousAgentConsoleOpenRef.current = agentConsoleOpen;
+    if (wasOpen && !agentConsoleOpen) {
+      void queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    }
+  }, [agentConsoleOpen, queryClient]);
 
   useEffect(() => {
     if (products.length === 0 || hasAnyAiPermission || !agentConsoleOpen) return;
@@ -1227,13 +1236,13 @@ export function App() {
           >
             <Sparkles size={16} />
             <span>{t("agentConsoleOpen")}</span>
-            <small
-              className="agent-attention-badge"
-              aria-label={t("agentConsoleAttentionCount", {
-                count: agentSessionsQuery.data === undefined ? "–" : attentionCounts.total,
-              })}
-              title={t("agentConsoleNeedsAttention")}
-            >{agentSessionsQuery.data === undefined ? "–" : attentionCounts.total}</small>
+            {agentSessionsQuery.data !== undefined && (
+              <small
+                className="agent-attention-badge"
+                aria-label={t("agentConsoleAttentionCount", { count: attentionCounts.total })}
+                title={t("agentConsoleNeedsAttention")}
+              >{attentionCounts.total}</small>
+            )}
           </button>
         )}
         {agentConsoleOpen && (
@@ -1960,14 +1969,14 @@ function ProductSwitcher({
       >
         <ProductBadge product={selected} />
         <span className="product-switcher-name">{selected.name}</span>
-        {attentionCounts && (
+        {attentionCounts && attentionCountsLoaded && (
           <small
             className="agent-attention-badge"
             aria-label={t("agentConsoleAttentionCount", {
-              count: attentionCountsLoaded ? attentionCounts.get(selected.id) ?? 0 : "–",
+              count: attentionCounts.get(selected.id) ?? 0,
             })}
             title={t("agentConsoleNeedsAttention")}
-          >{attentionCountsLoaded ? attentionCounts.get(selected.id) ?? 0 : "–"}</small>
+          >{attentionCounts.get(selected.id) ?? 0}</small>
         )}
         <ChevronDown size={14} aria-hidden="true" />
       </button>
@@ -1995,14 +2004,14 @@ function ProductSwitcher({
               {/* Named, because a bare `li > span` rule also caught the badge and
                   stretched it to fill the row. */}
               <span className="product-switcher-option"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
-              {attentionCounts && (
+              {attentionCounts && attentionCountsLoaded && (
                 <span
                   className="agent-attention-badge"
                   aria-label={t("agentConsoleAttentionCount", {
-                    count: attentionCountsLoaded ? attentionCounts.get(product.id) ?? 0 : "–",
+                    count: attentionCounts.get(product.id) ?? 0,
                   })}
                   title={t("agentConsoleNeedsAttention")}
-                >{attentionCountsLoaded ? attentionCounts.get(product.id) ?? 0 : "–"}</span>
+                >{attentionCounts.get(product.id) ?? 0}</span>
               )}
               {product.id === selectedProductId && <Check size={15} aria-hidden="true" />}
             </li>

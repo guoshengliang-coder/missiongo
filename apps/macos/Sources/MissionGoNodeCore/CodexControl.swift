@@ -263,6 +263,9 @@ public enum CodexProtocol {
             for item in turn["items"] as? [[String: Any]] ?? [] {
                 guard let sourceId = item["id"] as? String,
                       let itemType = item["type"] as? String else { continue }
+                let occurredAt = sourceActivityTimestamp(
+                    item["createdAt"] ?? item["created_at"] ?? item["timestamp"]
+                )
                 switch itemType {
                 case "userMessage":
                     let parts = (item["content"] as? [[String: Any]] ?? []).compactMap { content -> String? in
@@ -272,7 +275,8 @@ public enum CodexProtocol {
                     let text = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {
                         messages.append(AgentSessionMessage(
-                            sourceId: sourceId, turnId: turnId, role: "user", text: text
+                            sourceId: sourceId, turnId: turnId, role: "user", text: text,
+                            occurredAt: occurredAt
                         ))
                     }
                 case "agentMessage":
@@ -291,6 +295,7 @@ public enum CodexProtocol {
                             role: "agent",
                             phase: item["phase"] as? String,
                             text: text,
+                            occurredAt: occurredAt,
                             questions: questions
                         ))
                     }
@@ -298,7 +303,8 @@ public enum CodexProtocol {
                     let text = (item["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {
                         messages.append(AgentSessionMessage(
-                            sourceId: sourceId, turnId: turnId, role: "plan", text: text
+                            sourceId: sourceId, turnId: turnId, role: "plan", text: text,
+                            occurredAt: occurredAt
                         ))
                     }
                 default:
