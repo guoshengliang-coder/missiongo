@@ -1768,6 +1768,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return agentSessionResponse(loadAuthorizedAgentSession(request, sessionId));
   });
 
+  app.post("/api/v1/dispatches/:dispatchId/read", async (request, reply) => {
+    const { dispatchId } = request.params as { dispatchId: string };
+    authorizedDispatch(request, dispatchId, false);
+    agentSessionStore.markRead(
+      requireAccountId(request),
+      dispatchId,
+      stringField(objectBody(request.body), "through")!,
+    );
+    return reply.status(204).send();
+  });
+
   app.patch("/api/v1/dispatches/:dispatchId/archive", async (request) => {
     const { dispatchId } = request.params as { dispatchId: string };
     authorizedDispatch(request, dispatchId, true);

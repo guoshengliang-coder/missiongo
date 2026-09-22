@@ -788,14 +788,24 @@ export class DispatchStore {
     if (sessionUrl && !isAcceptedSessionUrl(sessionUrl)) {
       throw invalidInput("Session URL must be an https:// address or a codex://threads/<id> link.");
     }
+    const now = new Date().toISOString();
+    // A launch failure is something to come back for, so it moves the unread
+    // clock (AND-135). A successful launch does not: the session's own first
+    // message will.
     this.database.connection
-      .prepare("UPDATE dispatches SET status = ?, session_name = ?, session_url = ?, error = ?, completed_at = ? WHERE id = ?")
+      .prepare(
+        `UPDATE dispatches SET status = ?, session_name = ?, session_url = ?, error = ?, completed_at = ?,
+                unread_at = CASE WHEN ? = 'failed' THEN ? ELSE unread_at END
+         WHERE id = ?`,
+      )
       .run(
         input.status,
         input.sessionName?.trim() || null,
         sessionUrl || null,
         input.error?.slice(0, 2_000) || null,
-        new Date().toISOString(),
+        now,
+        input.status,
+        now,
         input.dispatchId,
       );
   }

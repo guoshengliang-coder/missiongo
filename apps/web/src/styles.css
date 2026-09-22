@@ -466,7 +466,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   width: 100%;
   min-height: 42px;
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   padding: 0 10px;
@@ -483,6 +483,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .agent-console-filter.active { color: var(--ink); background: var(--surface-strong); box-shadow: 0 1px 3px rgba(24,31,45,.08); }
 .agent-console-filter.active small { color: var(--on-mint); background: var(--mint); font-weight: 800; }
 .agent-console-filter .spin-when-active { animation: spin 1.2s linear infinite; }
+.agent-console-filter-unread { min-width: 20px; padding: 1px 6px; color: var(--on-mint); background: var(--mint-dark); border-radius: 999px; text-align: center; font-size: var(--text-xs); font-style: normal; font-weight: 800; }
 .agent-console-scope-note { margin: auto 2px 0; padding: 11px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); line-height: 1.55; }
 
 .agent-console-list { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--surface-strong); border-right: 1px solid var(--line); }

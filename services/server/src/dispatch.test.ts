@@ -2220,3 +2220,161 @@ describe("Account scoping", () => {
     expect(foreign.statusCode).toBe(404);
   });
 });
+
+/** A launched Codex dispatch with a mirrored session, as the Mac reports one. */
+async function launchedCodexSession(app: FastifyInstance, cookie: string) {
+  const node = await registeredNode(app);
+  await heartbeat(app, node.token, "codex");
+  const mission = await readyItem(app, cookie, "Mission GO", "AND");
+  await app.inject({
+    method: "PUT",
+    url: `/api/v1/nodes/${node.nodeId}/repos`,
+    headers: { cookie },
+    payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+  });
+  const created = await app.inject({
+    method: "POST",
+    url: "/api/v1/dispatches",
+    headers: { cookie },
+    payload: { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: [mission.itemKey] },
+  });
+  const dispatchId = created.json<{ id: string }>().id;
+  await app.inject({
+    method: "POST",
+    url: "/api/v1/node/dispatches/claim-next",
+    headers: { authorization: `Bearer ${node.token}` },
+  });
+  await app.inject({
+    method: "POST",
+    url: `/api/v1/node/dispatches/${dispatchId}/result`,
+    headers: { authorization: `Bearer ${node.token}` },
+    payload: { status: "launched", sessionRef: "01a09f35-d6fa-7eb2-9d90-1352cf2fb661" },
+  });
+  const sessionId = (await app.inject({
+    method: "GET",
+    url: `/api/v1/items/${mission.itemKey}/dispatches`,
+    headers: { cookie },
+  })).json<{ dispatches: Array<{ agentSessionId: string }> }>().dispatches[0]!.agentSessionId;
+  return { node, mission, dispatchId, sessionId };
+}
+
+describe("Unread conversations (AND-135)", () => {
+  type Row = { id: string; unread: boolean; unreadAt?: string };
+
+  async function row(app: FastifyInstance, cookie: string, productId: string): Promise<Row> {
+    return (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Row[] }>().sessions[0]!;
+  }
+
+  async function snapshot(
+    app: FastifyInstance,
+    token: string,
+    sessionId: string,
+    payload: Record<string, unknown>,
+  ) {
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${token}` },
+      payload,
+    });
+    expect(response.statusCode).toBe(204);
+  }
+
+  it("turns unread for a new Agent message and stays read through connectivity and sync noise", async () => {
+    const { app, cookie, databasePath } = await signedInApp();
+    const { node, mission, dispatchId, sessionId } = await launchedCodexSession(app, cookie);
+    const answered = [
+      { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
+      { sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "I found the cause." },
+    ];
+
+    // A launch that has said nothing yet is not something to come back for.
+    expect((await row(app, cookie, mission.productId)).unread).toBe(false);
+
+    await snapshot(app, node.token, sessionId, { status: "idle", messages: answered });
+    const fresh = await row(app, cookie, mission.productId);
+    expect(fresh).toMatchObject({ unread: true });
+    expect(fresh.unreadAt).toBeTruthy();
+
+    const read = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/read`,
+      headers: { cookie },
+      payload: { through: fresh.unreadAt },
+    });
+    expect(read.statusCode).toBe(204);
+    expect((await row(app, cookie, mission.productId)).unread).toBe(false);
+
+    // A sync error, its recovery, a plain re-read and the Mac dropping off the
+    // network all used to relight old conversations.
+    await snapshot(app, node.token, sessionId, {
+      status: "unavailable", error: "Codex app-server is not running.", messages: answered,
+    });
+    await snapshot(app, node.token, sessionId, { status: "idle", messages: answered });
+    await snapshot(app, node.token, sessionId, { status: "idle", messages: answered });
+    const database = new DatabaseSync(databasePath);
+    database.prepare("UPDATE nodes SET last_seen_at = ? WHERE id = ?")
+      .run("2026-01-01T00:00:00.000Z", node.nodeId);
+    database.close();
+    expect((await row(app, cookie, mission.productId)).unread).toBe(false);
+
+    // Streamed text growing on a message already seen is not a new message.
+    await snapshot(app, node.token, sessionId, {
+      status: "idle",
+      messages: [answered[0], { ...answered[1], text: "I found the cause, and the fix." }],
+    });
+    expect((await row(app, cookie, mission.productId)).unread).toBe(false);
+
+    await snapshot(app, node.token, sessionId, {
+      status: "idle",
+      messages: [...answered, { sourceId: "a2", turnId: "t2", role: "agent", text: "Here is a follow-up." }],
+    });
+    expect((await row(app, cookie, mission.productId)).unread).toBe(true);
+  });
+
+  it("keeps a message that lands after the displayed list unread", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, mission, dispatchId, sessionId } = await launchedCodexSession(app, cookie);
+    await snapshot(app, node.token, sessionId, {
+      status: "active",
+      messages: [{ sourceId: "a1", turnId: "t1", role: "agent", text: "Working on it." }],
+    });
+    const displayed = await row(app, cookie, mission.productId);
+    // The turn ends between the list poll and the read call.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await snapshot(app, node.token, sessionId, {
+      status: "idle",
+      messages: [{ sourceId: "a1", turnId: "t1", role: "agent", text: "Working on it." }],
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/read`,
+      headers: { cookie },
+      payload: { through: displayed.unreadAt },
+    });
+    expect((await row(app, cookie, mission.productId)).unread).toBe(true);
+  });
+
+  it("refuses to mark another account's hand-off read", async () => {
+    const { app, cookie } = await signedInApp();
+    const { dispatchId } = await launchedCodexSession(app, cookie);
+    const foreign = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${randomUUID()}/read`,
+      headers: { cookie },
+      payload: { through: new Date().toISOString() },
+    });
+    expect(foreign.statusCode).toBe(404);
+    const invalid = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/read`,
+      headers: { cookie },
+      payload: { through: "yesterday" },
+    });
+    expect(invalid.statusCode).toBe(400);
+  });
+});

@@ -424,7 +424,10 @@ export interface AgentSessionSummary {
   readonly canRetry: boolean;
   readonly canStop: boolean;
   readonly canArchive: boolean;
-  readonly activityKey: string;
+  /** Server-side, per account: something to look at arrived since this conversation was last opened. */
+  readonly unread: boolean;
+  /** The unread clock value; marking read sends it back so later arrivals stay unread. */
+  readonly unreadAt?: string;
 }
 
 export interface CreateDispatchInput {

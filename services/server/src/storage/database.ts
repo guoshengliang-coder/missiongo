@@ -1017,6 +1017,32 @@ export class MissionGoDatabase {
           .run(202609220501, new Date().toISOString());
       });
     }
+    // AND-135: unread is a server-side, per-dispatch clock that only moves on
+    // things a person should look at (a new Agent message, a failure, a turn
+    // ending). The earlier browser-side fingerprint also changed with node
+    // connectivity and sync errors, so old conversations kept turning unread.
+    // Existing rows start read: nothing before this release counts as unseen.
+    const dispatchUnreadMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609220600")
+      .get() as unknown as { version: number } | undefined;
+    const unreadColumns = this.connection
+      .prepare("PRAGMA table_info(dispatches)")
+      .all() as unknown as Array<{ name: string }>;
+    if (!dispatchUnreadMigration
+      || !unreadColumns.some((column) => column.name === "unread_at")
+      || !unreadColumns.some((column) => column.name === "read_at")) {
+      this.transaction(() => {
+        if (!unreadColumns.some((column) => column.name === "unread_at")) {
+          this.connection.exec("ALTER TABLE dispatches ADD COLUMN unread_at TEXT;");
+        }
+        if (!unreadColumns.some((column) => column.name === "read_at")) {
+          this.connection.exec("ALTER TABLE dispatches ADD COLUMN read_at TEXT;");
+        }
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609220600, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

@@ -461,6 +461,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ revision }),
     }),
+  markDispatchRead: (dispatchId: string, through: string) =>
+    request<void>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/read`, {
+      method: "POST",
+      body: JSON.stringify({ through }),
+    }),
   setDispatchArchived: (dispatchId: string, archived: boolean) =>
     request<Dispatch>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/archive`, {
       method: "PATCH",

@@ -105,7 +105,10 @@ export interface AgentSessionListItem {
   readonly retryable: boolean;
   readonly stoppable: boolean;
   readonly replyable: boolean;
-  readonly activityKey: string;
+  /** Something a person should look at arrived after they last opened this conversation. */
+  readonly unread: boolean;
+  /** The unread clock; opening the conversation marks it read up to this value. */
+  readonly unreadAt?: string;
 }
 
 export interface NodeAgentSession {
@@ -155,6 +158,8 @@ interface SessionListRow {
   created_at: string;
   delivered_at: string | null;
   completed_at: string | null;
+  unread_at: string | null;
+  read_at: string | null;
 }
 
 interface CommandRow {
@@ -304,6 +309,32 @@ function boundedAttentionText(text: string): string {
   return `${text.slice(0, 2_000)}\n\n[中间内容已省略]\n\n${text.slice(-17_950)}`;
 }
 
+/**
+ * Whether a node snapshot contains something a person should come back for:
+ * a new Agent or plan message, questions newly attached to one, a turn that
+ * finished, or a session that failed or stalled. Everything else the node
+ * reports -- connectivity, sync errors and their recovery, a re-read of the
+ * same transcript, streamed text growing, the person's own delivered reply --
+ * changes the mirror without making the conversation unread (AND-135).
+ */
+export function snapshotMakesUnread(
+  previousStatus: AgentSessionStatus,
+  nextStatus: AgentSessionStatus,
+  messages: readonly { sourceId: string; role: AgentMessageRole; questionsJson: string | null }[],
+  stored: ReadonlyMap<string, { questions_json: string | null }>,
+): boolean {
+  const newOutput = messages.some((message) => {
+    if (message.role === "user") return false;
+    const previous = stored.get(message.sourceId);
+    return !previous || (!hasQuestions(previous.questions_json) && hasQuestions(message.questionsJson));
+  });
+  if (newOutput) return true;
+  if (previousStatus === nextStatus) return false;
+  return nextStatus === "failed"
+    || nextStatus === "stalled"
+    || (previousStatus === "active" && nextStatus === "idle");
+}
+
 export class AgentSessionStore {
   constructor(private readonly database: MissionGoDatabase) {}
 
@@ -399,7 +430,8 @@ export class AgentSessionStore {
                 COALESCE(n.nickname, n.name) AS node_name, n.last_seen_at AS node_last_seen_at,
                 n.revoked_at AS node_revoked_at, d.mode, d.status AS dispatch_status,
                 d.session_name, d.session_url, d.error AS dispatch_error,
-                d.created_at, d.delivered_at, d.completed_at, d.archived_at AS dispatch_archived_at
+                d.created_at, d.delivered_at, d.completed_at, d.archived_at AS dispatch_archived_at,
+                d.unread_at, d.read_at
          FROM dispatches d
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          JOIN nodes n ON n.id = d.node_id
@@ -522,14 +554,8 @@ export class AgentSessionStore {
         stoppable: row.dispatch_status === "queued"
           || Boolean(row.session_id && (row.session_status === "active" || row.session_status === "stalled")),
         replyable: row.session_id ? !this.itemsCompleted(row.session_id) : false,
-        activityKey: createHash("sha256").update(JSON.stringify([
-          row.dispatch_status, status, lastError ?? "", row.session_archived_at ?? "",
-          row.dispatch_archived_at ?? "",
-          row.session_archive_source ?? "", connectionState, Boolean(row.node_revoked_at),
-          message?.id ?? "", message?.text ?? "",
-          message?.questions_json ?? "", command?.id ?? "", command?.status ?? "",
-          row.session_activities_json ?? "[]",
-        ])).digest("hex"),
+        unread: Boolean(row.unread_at && (!row.read_at || row.unread_at > row.read_at)),
+        ...(row.unread_at ? { unreadAt: row.unread_at } : {}),
       };
     });
   }
@@ -559,6 +585,27 @@ export class AgentSessionStore {
       )
       .run(archived ? now : null, archived ? "missiongo" : null, now, now, sessionId);
     return this.getForAccount(accountId, sessionId);
+  }
+
+  /**
+   * Mark a hand-off read up to the unread clock the client actually displayed.
+   * Taking the client's value rather than "now" keeps a message that lands
+   * between the list poll and this call unread.
+   */
+  markRead(accountId: string, dispatchId: string, through: string): void {
+    if (!Number.isFinite(Date.parse(through))) throw invalidInput("through must be an ISO 8601 timestamp.");
+    const changed = this.database.connection
+      .prepare(
+        `UPDATE dispatches SET read_at = ?
+         WHERE id = ? AND account_id = ? AND (read_at IS NULL OR read_at < ?)`,
+      )
+      .run(through, dispatchId, accountId, through);
+    if (changed.changes === 0) {
+      const exists = this.database.connection
+        .prepare("SELECT 1 FROM dispatches WHERE id = ? AND account_id = ?")
+        .get(dispatchId, accountId);
+      if (!exists) throw notFound("Dispatch");
+    }
   }
 
   dismissAttention(accountId: string, sessionId: string, expectedRevision: string): void {
@@ -825,11 +872,12 @@ export class AgentSessionStore {
     } : undefined);
     const session = this.database.connection
       .prepare(
-        `SELECT id, status, last_error, archived_at, archive_source, activities_json, activity_at
+        `SELECT id, dispatch_id, status, last_error, archived_at, archive_source, activities_json, activity_at
          FROM agent_sessions WHERE id = ? AND node_id = ?`,
       )
       .get(input.sessionId, input.nodeId) as unknown as {
         id: string;
+        dispatch_id: string;
         status: AgentSessionStatus;
         last_error: string | null;
         archived_at: string | null;
@@ -880,6 +928,7 @@ export class AgentSessionStore {
       || archiveChanged
       || Boolean(input.commandId && input.commandStatus);
     const nextActivityAt = activityChanged ? sourceActivityAt ?? now : session.activity_at;
+    const unreadEvent = snapshotMakesUnread(session.status, input.status, messages, storedBySource);
     this.database.transaction(() => {
       this.database.connection
         .prepare(
@@ -889,6 +938,11 @@ export class AgentSessionStore {
            WHERE id = ?`,
         )
         .run(input.status, error, activitiesJson, now, nextActivityAt, input.sessionId);
+      if (unreadEvent) {
+        this.database.connection
+          .prepare("UPDATE dispatches SET unread_at = ? WHERE id = ?")
+          .run(now, session.dispatch_id);
+      }
       if (input.sourceArchived === true) {
         this.database.connection
           .prepare(

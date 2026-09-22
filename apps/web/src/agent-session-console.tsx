@@ -10,7 +10,6 @@ import {
   CircleCheck,
   CircleDot,
   LoaderCircle,
-  Mail,
   MessageSquare,
   RotateCcw,
   Search,
@@ -32,19 +31,13 @@ import {
   outgoingReply,
   questionAnswerText,
   replyBlockedLabelKey,
-  retainedReadSessionAfterSelection,
   resolvedAgentSessionId,
+  shouldMarkRead,
   shouldResetMessageView,
+  unreadFirst,
   type AgentKindFilter,
   type AgentSessionFilter,
 } from "./agent-session-view";
-import {
-  agentSessionReadStorageKey,
-  isAgentSessionUnread,
-  markAgentSessionRead,
-  parseAgentSessionReadState,
-  type AgentSessionReadState,
-} from "./agent-session-unread";
 import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import { MarkdownText } from "./markdown-text";
@@ -180,8 +173,7 @@ export function AgentSessionConsole({
   const [dismissedCommandId, setDismissedCommandId] = useState<string | null>(null);
   const [followLatest, setFollowLatest] = useState(true);
   const [newMessageCount, setNewMessageCount] = useState(0);
-  const [readState, setReadState] = useState<AgentSessionReadState>({});
-  const [retainedReadSessionId, setRetainedReadSessionId] = useState<string | null>(null);
+  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [selectedForArchive, setSelectedForArchive] = useState<Set<string>>(new Set());
   const [bulkArchiveMessage, setBulkArchiveMessage] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -201,19 +193,17 @@ export function AgentSessionConsole({
     [agentFilter, sessions],
   );
   const counts = useMemo(() => ({
-    unread: agentSessions.filter((session) => !session.archivedAt && isAgentSessionUnread(session, readState)).length,
+    unread: agentSessions.filter((session) => !session.archivedAt && session.unread).length,
     attention: agentSessions.filter((session) => !session.archivedAt && session.needsAttention).length,
     active: agentSessions.filter((session) => !session.archivedAt && session.status === "active").length,
     all: agentSessions.filter((session) => !session.archivedAt).length,
     failed: agentSessions.filter((session) => !session.archivedAt
       && (session.status === "failed" || session.command?.status === "failed")).length,
     archived: agentSessions.filter((session) => session.archivedAt).length,
-  }), [agentSessions, readState]);
+  }), [agentSessions]);
   const visibleSessions = useMemo(
-    () => sessions.filter((session) => agentSessionMatches(
-      session, filter, agentFilter, search, readState, retainedReadSessionId,
-    )),
-    [agentFilter, filter, readState, retainedReadSessionId, search, sessions],
+    () => unreadFirst(sessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search))),
+    [agentFilter, filter, search, sessions],
   );
   const archivableIds = useMemo(() => archivableVisibleSessionIds(visibleSessions), [visibleSessions]);
   const allArchivableSelected = archivableIds.length > 0
@@ -228,8 +218,18 @@ export function AgentSessionConsole({
   );
 
   useEffect(() => {
-    setReadState(parseAgentSessionReadState(localStorage.getItem(agentSessionReadStorageKey(productId))));
-  }, [productId]);
+    const update = () => setDocumentVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  // Read state used to live in this browser only (AND-135). Drop what earlier
+  // releases left behind so it cannot be mistaken for the server's.
+  useEffect(() => {
+    Object.keys(localStorage)
+      .filter((key) => key.startsWith("missiongo.agent-console.read.v1:"))
+      .forEach((key) => localStorage.removeItem(key));
+  }, []);
 
   useEffect(() => {
     setSelectedForArchive(new Set());
@@ -363,13 +363,26 @@ export function AgentSessionConsole({
   const messages = sessionQuery.data?.messages ?? [];
   const activities = sessionQuery.data?.activities ?? [];
 
-  const markRead = useCallback((session: AgentSessionSummary) => {
-    setReadState((current) => {
-      const next = markAgentSessionRead(session, current);
-      if (next !== current) localStorage.setItem(agentSessionReadStorageKey(productId), JSON.stringify(next));
-      return next;
-    });
-  }, [productId]);
+  const markRead = useMutation({
+    mutationFn: ({ dispatchId, through }: { dispatchId: string; through: string }) =>
+      api.markDispatchRead(dispatchId, through),
+    onMutate: ({ dispatchId, through }) => {
+      queryClient.setQueryData<{ sessions: AgentSessionSummary[] }>(["agent-sessions"], (current) => current && {
+        sessions: current.sessions.map((session) => session.dispatchId === dispatchId && session.unreadAt === through
+          ? { ...session, unread: false }
+          : session),
+      });
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
+  });
+  const { mutate: markReadMutate } = markRead;
+  const selectedUnreadAt = selected?.unread ? selected.unreadAt : undefined;
+  useEffect(() => {
+    if (!selected || !shouldMarkRead(selected, conversationOpen, documentVisible)) return;
+    markReadMutate({ dispatchId: selected.dispatchId, through: selected.unreadAt });
+    // Keyed on the unread clock, not the object: each poll returns a new one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.dispatchId, selectedUnreadAt, conversationOpen, documentVisible, markReadMutate]);
 
   const scrollToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
     const messages = messagesRef.current;
@@ -414,23 +427,20 @@ export function AgentSessionConsole({
     }
   };
   const chooseFilter = (next: AgentSessionFilter) => {
-    setRetainedReadSessionId(null);
     setFilter(next);
-    const first = sessions.find((session) => agentSessionMatches(session, next, agentFilter, search, readState));
+    const first = unreadFirst(sessions).find((session) => agentSessionMatches(session, next, agentFilter, search));
     onSelectSession(first?.id ?? null, false);
   };
   const chooseAgent = (next: AgentKindFilter) => {
-    setRetainedReadSessionId(null);
     setAgentFilter(next);
-    const first = sessions.find((session) => agentSessionMatches(session, filter, next, search, readState));
+    const first = unreadFirst(sessions).find((session) => agentSessionMatches(session, filter, next, search));
     onSelectSession(first?.id ?? null, false);
   };
 
-  const filters: Array<{ key: AgentSessionFilter; icon: typeof BellRing; count: number; label: string }> = [
-    { key: "unread", icon: Mail, count: counts.unread, label: t("agentConsoleUnread") },
+  const filters: Array<{ key: AgentSessionFilter; icon: typeof BellRing; count: number; unread?: number; label: string }> = [
     { key: "attention", icon: BellRing, count: counts.attention, label: t("agentConsoleNeedsAttention") },
     { key: "active", icon: LoaderCircle, count: counts.active, label: t("agentConsoleActive") },
-    { key: "all", icon: MessageSquare, count: counts.all, label: t("agentConsoleAll") },
+    { key: "all", icon: MessageSquare, count: counts.all, unread: counts.unread, label: t("agentConsoleAll") },
     { key: "failed", icon: CircleAlert, count: counts.failed, label: t("agentConsoleFailed") },
     { key: "archived", icon: Archive, count: counts.archived, label: t("agentConsoleArchived") },
   ];
@@ -439,7 +449,7 @@ export function AgentSessionConsole({
     <main className={`agent-console-page ${conversationOpen ? "mobile-conversation-open" : "mobile-list-open"}`}>
       <aside className="agent-console-filters" aria-label={t("agentConsoleFilters")}>
         <p className="sidebar-label">{t("agentConsoleTitle")}</p>
-        {filters.map(({ key, icon: Icon, count, label }) => (
+        {filters.map(({ key, icon: Icon, count, unread, label }) => (
           <button
             key={key}
             type="button"
@@ -449,6 +459,9 @@ export function AgentSessionConsole({
           >
             <Icon className={key === "active" && filter === key ? "spin-when-active" : ""} size={16} />
             <span>{label}</span>
+            {Boolean(unread) && (
+              <em className="agent-console-filter-unread" title={t("agentConsoleUnreadCount", { count: unread! })}>{unread}</em>
+            )}
             <small>{count}</small>
           </button>
         ))}
@@ -457,9 +470,9 @@ export function AgentSessionConsole({
 
       <section className="agent-console-list" aria-label={t("agentConsoleSessions")}>
         <div className="agent-console-mobile-filters" aria-label={t("agentConsoleFilters")}>
-          {filters.map(({ key, count, label }) => (
+          {filters.map(({ key, count, unread, label }) => (
             <button key={key} type="button" className={filter === key ? "active" : ""} aria-pressed={filter === key} onClick={() => chooseFilter(key)}>
-              {label}<small>{count}</small>
+              {label}{Boolean(unread) && <em className="agent-console-filter-unread">{unread}</em>}<small>{count}</small>
             </button>
           ))}
         </div>
@@ -538,14 +551,8 @@ export function AgentSessionConsole({
                 )}
                 <button
                   type="button"
-                  className={`agent-console-session ${session.id === selectedId ? "active" : ""} ${isAgentSessionUnread(session, readState) ? "unread" : ""}`}
-                  onClick={() => {
-                    setRetainedReadSessionId(retainedReadSessionAfterSelection(
-                      filter, session, readState, retainedReadSessionId,
-                    ));
-                    markRead(session);
-                    onSelectSession(session.id, true);
-                  }}
+                  className={`agent-console-session ${session.id === selectedId ? "active" : ""} ${session.unread ? "unread" : ""}`}
+                  onClick={() => onSelectSession(session.id, true)}
                 >
                   <span className={`agent-console-status-icon agent-console-status-${session.status} agent-console-node-${session.nodeConnectionState}`}>
                     {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={session.status} />}
@@ -560,7 +567,7 @@ export function AgentSessionConsole({
                     )}
                     <span>{session.latestMessage?.text ?? session.lastError ?? t("agentConsoleDispatchOnly")}</span>
                   </span>
-                  {isAgentSessionUnread(session, readState) && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
+                  {session.unread && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
                   <time>{updatedTime(session.activityAt ?? session.updatedAt, locale)}</time>
                 </button>
               </div>
