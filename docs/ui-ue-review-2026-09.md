@@ -70,7 +70,7 @@
 | B9 | 反馈 SDK 页的说明、复选框、上下文字号是 9–10px；部分控件写死白底和浅色红框，在 `?appearance=dark` 下出错 | `sdk-feedback.css:20-51, 83` | 代码 |
 | B10 | 移动端抽屉关闭后只是移出屏幕，没有 `inert`，键盘 Tab 仍会走进看不见的导航；打开时没有焦点陷阱，也不能用 Esc 关闭 | `.sidebar`（1326）、`App.tsx:1283-1346` | 代码 |
 | B11 | 反馈 SDK 旋转屏幕后会重建 WebView，已填的内容会丢 | `MissionGoFeedbackActivity.kt:69,74` | 代码，需真机确认 |
-| B12 | **生产环境的深色模式从未生效。** 决定主题的是 `index.html` 里的一段内联脚本，而部署的 CSP 是 `script-src 'self'`，浏览器会直接拦截它。结果是 `data-appearance` 永远为空，所有用户都只看到浅色；Android SDK 传入的 `?appearance=dark` 也不起作用。本地开发没有 CSP，所以一直没被发现 | `apps/web/index.html`、`deploy/nginx-container.conf:15` | **实测**：线上页面在系统深色时 `data-appearance` 为空、背景为浅色，控制台报 CSP 拦截内联脚本 |
+| B12 | **生产环境的深色模式从未生效。** 决定主题的是 `index.html` 里的一段内联脚本，而部署的 CSP 是 `script-src 'self'`，浏览器会直接拦截它。结果是 `data-appearance` 永远为空，所有用户都只看到浅色；Android SDK 传入的 `?appearance=dark` 也不起作用。本地开发没有 CSP，所以一直没被发现 | `apps/web/index.html`、`deploy/nginx-container.conf:15` | **实测**：线上页面在系统深色时 `data-appearance` 为空、背景为浅色，控制台报 CSP 拦截内联脚本。**已修复**：脚本移到 `src/appearance-boot.js`，构建时带哈希输出并在 `<head>` 同步加载；构建遇到内联 `<script>` 会直接失败 |
 
 ### 3.2 适配问题（A）
 
