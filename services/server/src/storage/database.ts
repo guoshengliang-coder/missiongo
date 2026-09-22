@@ -1085,6 +1085,49 @@ export class MissionGoDatabase {
           .run(202609220610, new Date().toISOString());
       });
     }
+    // AND-130: a dispatch may pick a model and an effort; a session reports the
+    // ones actually in use and carries a revisioned request to change mode,
+    // model or effort while it runs. Nullable/defaulted columns only, so an
+    // older release reading this database simply ignores them.
+    const agentSettingsMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609220620")
+      .get() as unknown as { version: number } | undefined;
+    const agentSettingsColumns: ReadonlyArray<readonly [string, ReadonlyArray<readonly [string, string]>]> = [
+      ["dispatches", [["model", "TEXT"], ["effort", "TEXT"]]],
+      ["agent_sessions", [
+        ["model", "TEXT"],
+        ["effort", "TEXT"],
+        ["mode", "TEXT"],
+        ["desired_settings_json", "TEXT"],
+        ["settings_revision", "INTEGER NOT NULL DEFAULT 0"],
+        ["applied_settings_revision", "INTEGER NOT NULL DEFAULT 0"],
+        ["settings_error", "TEXT"],
+        ["settings_error_revision", "INTEGER NOT NULL DEFAULT 0"],
+      ]],
+    ];
+    const missingAgentSettingsColumns = agentSettingsColumns.flatMap(([table, columns]) => {
+      const existing = this.connection
+        .prepare(`PRAGMA table_info(${table})`)
+        .all() as unknown as Array<{ name: string }>;
+      return columns
+        .filter(([name]) => !existing.some((column) => column.name === name))
+        .map(([name, definition]) => `ALTER TABLE ${table} ADD COLUMN ${name} ${definition};`);
+    });
+    if (!agentSettingsMigration || missingAgentSettingsColumns.length > 0) {
+      this.transaction(() => {
+        missingAgentSettingsColumns.forEach((statement) => this.connection.exec(statement));
+        this.connection.exec(`
+          CREATE TABLE IF NOT EXISTS account_dispatch_defaults (
+            account_id TEXT PRIMARY KEY,
+            settings_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          ) STRICT;
+        `);
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609220620, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

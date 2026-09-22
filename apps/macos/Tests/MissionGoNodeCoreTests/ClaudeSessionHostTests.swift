@@ -169,6 +169,120 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertEqual(configuration.stallWarningSeconds, 30 * 60)
     }
 
+    func testOldHostFilesDefaultTheSettingsFields() throws {
+        let state = try JSONDecoder().decode(ClaudeHostState.self, from: Data(#"{"status":"idle","sessionRef":"s"}"#.utf8))
+        XCTAssertNil(state.model)
+        XCTAssertNil(state.settingsRevision)
+        // A host from before settings commands never writes this, so it is
+        // never handed one.
+        XCTAssertFalse(state.acceptsSettings)
+        let data = Data(#"{"version":1,"claudeExecutable":"/usr/bin/claude","cwd":"/repo","mode":"default","sessionName":"M4-AND-111","sessionRef":"session-1","prompt":"work","statePath":"/state","commandsDirectory":"/commands","logPath":"/log"}"#.utf8)
+        let configuration = try JSONDecoder().decode(ClaudeHostConfiguration.self, from: data)
+        XCTAssertNil(configuration.model)
+        XCTAssertNil(configuration.effort)
+        XCTAssertNil(configuration.modelsCachePath)
+        XCTAssertNil(configuration.settingsRevision)
+    }
+
+    func testSettingsLayerOverTheConfigurationFieldByField() {
+        let configuration = ClaudeHostConfiguration(
+            claudeExecutable: "/c", cwd: "/r", mode: "plan", sessionName: "n", sessionRef: "s", prompt: "p",
+            statePath: "/s", commandsDirectory: "/d", logPath: "/l", model: "opus", effort: "high"
+        )
+        let updated = configuration.applying(AgentSessionSettings(revision: 5, mode: "acceptEdits", effort: "low"))
+        XCTAssertEqual(updated.mode, "acceptEdits")
+        XCTAssertEqual(updated.model, "opus")
+        XCTAssertEqual(updated.effort, "low")
+        XCTAssertEqual(updated.settingsRevision, 5)
+        XCTAssertEqual(updated.prompt, "p")
+    }
+
+    func testRecordsTheModelFromInitAndTheLaunchSettings() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "s")
+        snapshot.adoptConfiguration(ClaudeHostConfiguration(
+            claudeExecutable: "/c", cwd: "/r", mode: "plan", sessionName: "n", sessionRef: "s", prompt: "p",
+            statePath: "/s", commandsDirectory: "/d", logPath: "/l", model: "sonnet", effort: "low", settingsRevision: 2
+        ))
+        XCTAssertEqual(snapshot.state.model, "sonnet")
+        XCTAssertEqual(snapshot.state.effort, "low")
+        XCTAssertEqual(snapshot.state.mode, "plan")
+        XCTAssertEqual(snapshot.state.settingsRevision, 2)
+        XCTAssertTrue(snapshot.state.acceptsSettings)
+        snapshot.consume(["type": "system", "subtype": "init", "model": "claude-sonnet-4-6"])
+        XCTAssertEqual(snapshot.state.model, "claude-sonnet-4-6")
+    }
+
+    func testMapsTheInitializeModelListAndSkipsDefault() async throws {
+        let options = ClaudeModelCatalog.options(fromInitialize: [
+            "models": [
+                ["value": "default", "resolvedModel": "claude-opus-5", "displayName": "Default (recommended)", "supportsEffort": true,
+                 "supportedEffortLevels": ["low", "high"]],
+                ["value": "opus[1m]", "displayName": "Opus (1M context)", "supportsEffort": true,
+                 "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]],
+                ["value": "haiku", "displayName": "Haiku", "description": "Fastest"],
+            ],
+            "current_permission_mode": "plan",
+        ])
+        XCTAssertEqual(options, [
+            AgentModelOption(id: "opus[1m]", label: "Opus (1M context)", efforts: ["low", "medium", "high", "xhigh", "max"]),
+            AgentModelOption(id: "haiku", label: "Haiku"),
+        ])
+        XCTAssertNil(ClaudeModelCatalog.options(fromInitialize: ["current_permission_mode": "plan"]))
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("mg-models-\(UUID().uuidString)").path
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let launcher = SessionLauncher(
+            environment: ShellEnvironment(path: "/usr/bin:/bin"), hostExecutable: nil, sessionsDirectory: root
+        )
+        // No session has run yet: the long-standing aliases.
+        let fallback = await launcher.availableModels()
+        XCTAssertEqual(fallback?.map(\.id), ["opus", "sonnet", "haiku"])
+        XCTAssertEqual(fallback?.last?.efforts, [])
+        try ClaudeModelCatalog.save(try XCTUnwrap(options), to: ClaudeHostStore.modelsCachePath(root: root))
+        let saved = await launcher.availableModels()
+        XCTAssertEqual(saved, options)
+    }
+
+    func testASettingsChangeBecomesOneControlRequestPerPart() {
+        var ids = ["r1", "r2", "r3"].makeIterator()
+        var change = ClaudeSettingsChange(
+            AgentSessionSettings(revision: 7, mode: "acceptEdits", model: "sonnet", effort: "low"),
+            makeRequestId: { ids.next()! }
+        )
+        XCTAssertEqual(change.requests.map(\.id), ["r1", "r2", "r3"])
+        XCTAssertEqual(change.requests[0].request as NSDictionary, ["subtype": "set_permission_mode", "mode": "acceptEdits"])
+        XCTAssertEqual(change.requests[1].request as NSDictionary, ["subtype": "set_model", "model": "sonnet"])
+        XCTAssertEqual(
+            change.requests[2].request as NSDictionary,
+            ["subtype": "apply_flag_settings", "settings": ["effortLevel": "low"]]
+        )
+        XCTAssertFalse(change.receive(requestId: "other", response: ["subtype": "success"]))
+        XCTAssertTrue(change.receive(requestId: "r1", response: ["subtype": "success"]))
+        XCTAssertTrue(change.receive(requestId: "r2", response: ["subtype": "error", "error": "model not available"]))
+        XCTAssertFalse(change.isComplete)
+        XCTAssertTrue(change.receive(requestId: "r3", response: ["subtype": "success"]))
+        XCTAssertTrue(change.isComplete)
+        XCTAssertEqual(change.appliedSettings, AgentSessionSettings(revision: 7, mode: "acceptEdits", effort: "low"))
+
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "s")
+        snapshot.consume(["type": "system", "subtype": "init", "model": "claude-opus-5"])
+        snapshot.finishSettings(change)
+        XCTAssertEqual(snapshot.state.mode, "acceptEdits")
+        XCTAssertEqual(snapshot.state.model, "claude-opus-5", "a model that failed to switch is not claimed")
+        XCTAssertEqual(snapshot.state.effort, "low")
+        XCTAssertEqual(snapshot.state.settingsRevision, 7)
+        XCTAssertEqual(snapshot.state.settingsError, "切换模型失败：model not available")
+    }
+
+    func testAMalformedSettingNeverReachesClaude() {
+        let change = ClaudeSettingsChange(AgentSessionSettings(revision: 2, mode: "bypassPermissions", model: "-x"))
+        XCTAssertTrue(change.requests.isEmpty)
+        XCTAssertTrue(change.isComplete)
+        XCTAssertEqual(change.errors.count, 2)
+        XCTAssertTrue(change.errors[0].contains("不支持的 Claude Code 模式"))
+    }
+
     func testRuntimePolicySuspendsOnlyGenuinelyIdleSessions() {
         let now = Date()
         let old = now.addingTimeInterval(-(2 * 60 * 60 + 1))
@@ -341,6 +455,94 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         XCTAssertEqual(report.status, "unavailable")
         XCTAssertTrue(report.error?.contains("宿主已停止") == true)
         XCTAssertNotNil(report.activityAt)
+    }
+
+    func testHandsADueSettingsChangeToARunningHostAndReportsTheOutcome() async throws {
+        let (launcher, root, sessionRef) = try fixture(status: "idle")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let statePath = ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        var state = ClaudeHostState(status: "idle", sessionRef: sessionRef, acceptsSettings: true)
+        state.model = "claude-opus-5"
+        state.settingsRevision = 1
+        try ClaudeHostFiles.write(state, to: statePath)
+        let desired = AgentSessionSettings(revision: 2, mode: "acceptEdits", model: "sonnet", effort: "low")
+        let session = NodeAgentSession(
+            id: "server-session", agentKind: "claude_code", sessionRef: sessionRef, status: "idle",
+            desiredSettings: desired, appliedSettingsRevision: 1
+        )
+        let pending = try await launcher.synchronize(session)
+        XCTAssertEqual(pending.settingsRevision, 1)
+        XCTAssertEqual(pending.model, "claude-opus-5")
+        let path = ClaudeHostStore.commandPath(root: root, sessionRef: sessionRef, commandId: "settings-2")
+        let command = try JSONDecoder().decode(ClaudeHostCommand.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        XCTAssertEqual(command.kind, "settings")
+        XCTAssertEqual(command.settings, desired)
+
+        // The host applied it, partly: the next poll says so and writes nothing more.
+        try FileManager.default.removeItem(atPath: path)
+        state.settingsRevision = 2
+        state.settingsError = "切换模型失败：x"
+        state.effort = "low"
+        try ClaudeHostFiles.write(state, to: statePath)
+        let applied = try await launcher.synchronize(session)
+        XCTAssertEqual(applied.settingsRevision, 2)
+        XCTAssertEqual(applied.settingsError, "切换模型失败：x")
+        XCTAssertEqual(applied.effort, "low")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+    }
+
+    func testAnOlderRunningHostIsNotHandedASettingsCommand() async throws {
+        let (launcher, root, sessionRef) = try fixture(status: "idle")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        _ = try await launcher.synchronize(NodeAgentSession(
+            id: "server-session", agentKind: "claude_code", sessionRef: sessionRef, status: "idle",
+            desiredSettings: AgentSessionSettings(revision: 1, model: "sonnet")
+        ))
+        let path = ClaudeHostStore.commandPath(root: root, sessionRef: sessionRef, commandId: "settings-1")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+    }
+
+    func testASuspendedSessionResumesWithTheSettingsChosenMeanwhile() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missiongo-claude-resume-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let sessionRef = UUID().uuidString.lowercased()
+        let directory = ClaudeHostStore.sessionDirectory(root: root, sessionRef: sessionRef)
+        try FileManager.default.createDirectory(atPath: "\(directory)/commands", withIntermediateDirectories: true)
+        let statePath = ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        let configPath = ClaudeHostStore.configPath(root: root, sessionRef: sessionRef)
+        try ClaudeHostFiles.write(ClaudeHostState(status: "suspended", sessionRef: sessionRef), to: statePath)
+        try ClaudeHostFiles.write(ClaudeHostConfiguration(
+            claudeExecutable: "/c", cwd: "/r", mode: "plan", sessionName: "n", sessionRef: sessionRef, prompt: "p",
+            statePath: statePath, commandsDirectory: "\(directory)/commands", logPath: "\(root)/host.log"
+        ), to: configPath)
+        // A stand-in host that exits at once: this test is about the files.
+        let launcher = SessionLauncher(
+            environment: ShellEnvironment(path: "/usr/bin:/bin"), hostExecutable: "/usr/bin/true", sessionsDirectory: root
+        )
+        let reply = AgentSessionCommand(id: "command-1", kind: "message", text: "Continue", status: "delivering")
+        _ = try await launcher.synchronize(NodeAgentSession(
+            id: "server-session", agentKind: "claude_code", sessionRef: sessionRef, status: "idle",
+            command: reply, desiredSettings: AgentSessionSettings(revision: 4, mode: "acceptEdits", model: "sonnet", effort: "max"),
+            appliedSettingsRevision: 3
+        ))
+        let resumed = try JSONDecoder().decode(ClaudeHostConfiguration.self, from: Data(contentsOf: URL(fileURLWithPath: configPath)))
+        XCTAssertEqual(resumed.mode, "acceptEdits")
+        XCTAssertEqual(resumed.model, "sonnet")
+        XCTAssertEqual(resumed.effort, "max")
+        XCTAssertEqual(resumed.settingsRevision, 4)
+
+        // A malformed change is recorded as failed; the session resumes as it was.
+        _ = try await launcher.synchronize(NodeAgentSession(
+            id: "server-session", agentKind: "claude_code", sessionRef: sessionRef, status: "idle",
+            command: reply, desiredSettings: AgentSessionSettings(revision: 5, mode: "bypassPermissions"),
+            appliedSettingsRevision: 4
+        ))
+        let state = try ClaudeHostFiles.readState(statePath)
+        XCTAssertEqual(state.settingsRevision, 5)
+        XCTAssertTrue(state.settingsError?.contains("不支持的 Claude Code 模式") == true)
+        let unchanged = try JSONDecoder().decode(ClaudeHostConfiguration.self, from: Data(contentsOf: URL(fileURLWithPath: configPath)))
+        XCTAssertEqual(unchanged.mode, "acceptEdits")
     }
 
     func testFinishedWorkClosesTheHostButKeepsItsConversation() async throws {

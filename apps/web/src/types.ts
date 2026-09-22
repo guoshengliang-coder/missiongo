@@ -241,9 +241,39 @@ export interface CreatedSdkToken extends SdkToken {
   readonly token: string;
 }
 
+/** One model a Mac's agent offers, as that Mac reported it (AND-130). */
+export interface NodeAgentModel {
+  readonly id: string;
+  readonly label: string;
+  readonly efforts: readonly string[];
+  readonly defaultEffort?: string;
+  readonly isDefault?: boolean;
+}
+
 export interface NodeAgentReport {
   readonly kind: AgentKind;
   readonly version?: string;
+  /** Absent: this Mac's client cannot choose a model or change a running session. */
+  readonly models?: readonly NodeAgentModel[];
+}
+
+/** Where the dispatch dialog starts for this account (AND-130). */
+export interface DispatchDefaults {
+  readonly nodeId?: string;
+  readonly agentKind?: AgentKind;
+  readonly agents: Partial<Record<AgentKind, { readonly mode?: string; readonly model?: string; readonly effort?: string }>>;
+}
+
+/** A conversation's mode, model and effort, and any change still on its way. */
+export interface AgentSessionSettings {
+  readonly mode: string;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly requestedModel?: string;
+  readonly requestedEffort?: string;
+  readonly pending?: { readonly revision: number; readonly mode?: string; readonly model?: string; readonly effort?: string };
+  readonly error?: string;
+  readonly adjustable: boolean;
 }
 
 /**
@@ -306,6 +336,8 @@ export interface Dispatch {
   readonly nodeName: string;
   readonly agentKind: AgentKind;
   readonly mode: string;
+  readonly model?: string;
+  readonly effort?: string;
   readonly status: DispatchStatus;
   readonly itemKeys: readonly string[];
   readonly sessionName?: string;
@@ -424,6 +456,8 @@ export interface AgentSessionSummary {
   readonly canRetry: boolean;
   readonly canStop: boolean;
   readonly canArchive: boolean;
+  readonly nodeId: string;
+  readonly settings: AgentSessionSettings;
   /** Server-side, per account: something to look at arrived since this conversation was last opened. */
   readonly unread: boolean;
   /** The unread clock value; marking read sends it back so later arrivals stay unread. */
@@ -434,6 +468,9 @@ export interface CreateDispatchInput {
   readonly nodeId: string;
   readonly agentKind: AgentKind;
   readonly mode: string;
+  /** Absent: the Mac's own configured model and effort. */
+  readonly model?: string;
+  readonly effort?: string;
   readonly itemKeys: readonly string[];
   /**
    * Dispatch even though some of these items were already sent and not yet

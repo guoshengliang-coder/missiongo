@@ -231,7 +231,7 @@ public final class NodeLoop: @unchecked Sendable {
                     let availableKinds = Set(await self.availableAgentKinds())
                     // Heartbeats drive the dispatch UI. Do not advertise an
                     // installed-but-pressured adapter as a valid new target.
-                    let agents = detectedAgents.filter { availableKinds.contains($0.kind) }
+                    let agents = await self.withModels(detectedAgents.filter { availableKinds.contains($0.kind) })
                     // The app supplies an in-memory list of mapped repositories.
                     // Heartbeats must not probe historical project directories.
                     let candidates = self.detectRepoCandidates()
@@ -427,6 +427,19 @@ public final class NodeLoop: @unchecked Sendable {
         return detected
     }
 
+    /// Attaches each agent's model list. Kept out of `detectAgents`, whose
+    /// five-minute cache is about sparing a process: each adapter caches its
+    /// own list for as long as that list is worth keeping.
+    private func withModels(_ agents: [DetectedAgent]) async -> [DetectedAgent] {
+        var result: [DetectedAgent] = []
+        for agent in agents {
+            let adapter = adapters.first(where: { $0.kind == agent.kind })
+            let models = await adapter?.availableModels()
+            result.append(DetectedAgent(kind: agent.kind, version: agent.version, models: models))
+        }
+        return result
+    }
+
     /// The mapping is configured in the console or the menu, so logging it when
     /// it changes is the confirmation on this machine that a product actually
     /// points at a local repository.
@@ -448,7 +461,8 @@ public final class NodeLoop: @unchecked Sendable {
         guard let adapter = adapters.first(where: { $0.kind == request.agentKind }) else {
             return (DispatchReport(status: .failed, error: "本机没有 \(request.agentKind) 的适配器。"), nil)
         }
-        log("派单 \(request.dispatchId)：\(request.itemKeys.joined(separator: "、"))（\(request.agentKind)/\(request.mode)）于 \(request.repoPath)")
+        let choice = [request.model, request.effort].compactMap { $0 }.joined(separator: "/")
+        log("派单 \(request.dispatchId)：\(request.itemKeys.joined(separator: "、"))（\(request.agentKind)/\(request.mode)\(choice.isEmpty ? "" : "/\(choice)")）于 \(request.repoPath)")
         do {
             let launched = try await adapter.launch(DispatchJob(
                 dispatchId: request.dispatchId, itemKeys: request.itemKeys,
@@ -457,7 +471,9 @@ public final class NodeLoop: @unchecked Sendable {
                 // the console or the menu names the very next session.
                 nodeName: request.nodeName ?? fallbackNodeName,
                 round: request.round ?? 1,
-                reworkItemKeys: request.reworkItemKeys ?? []
+                reworkItemKeys: request.reworkItemKeys ?? [],
+                model: request.model,
+                effort: request.effort
             ))
             log("会话「\(launched.sessionName)」已启动" + (launched.logPath.map { "，日志 \($0)" } ?? ""))
             if let url = launched.sessionUrl {

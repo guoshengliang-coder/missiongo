@@ -88,6 +88,20 @@ private struct UnavailableAdapter: AgentAdapter {
     func launch(_ job: DispatchJob) async throws -> LaunchResult { throw LaunchError("not used") }
 }
 
+private struct ModelAdapter: AgentAdapter {
+    let kind = "codex"
+    let jobs = Locked<[DispatchJob]>([])
+
+    func detect() async -> String? { "0.155.1" }
+    func availableModels() async -> [AgentModelOption]? {
+        [AgentModelOption(id: "gpt-5.1-codex", label: "GPT-5.1 Codex", efforts: ["low"])]
+    }
+    func launch(_ job: DispatchJob) async throws -> LaunchResult {
+        jobs.withLock { $0.append(job) }
+        return LaunchResult(sessionName: "M-AND-1", sessionUrl: nil, sessionRef: "t", logPath: nil)
+    }
+}
+
 private func fastTiming() -> NodeLoop.Timing {
     var timing = NodeLoop.Timing()
     timing.heartbeatInterval = 0.05
@@ -133,6 +147,23 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertTrue(api.calls.current.contains("heartbeat:2.1.232:1"))
         // Agent detection is cached across beats.
         XCTAssertEqual(adapter.detections.current, 1)
+    }
+
+    func testHeartbeatCarriesTheAdaptersModelsAndTheDispatchPassesItsChoice() async throws {
+        let api = FakeAPI(claims: [.success(DispatchRequest(
+            dispatchId: "d2", itemKeys: ["AND-1"], repoPath: "/p", agentKind: "codex", mode: "plan",
+            model: "gpt-5.1-codex", effort: "low"
+        ))])
+        let adapter = ModelAdapter()
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "M", timing: fastTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { !loop.currentState.recentLaunches.isEmpty && loop.currentState.lastHeartbeatAt != nil }
+        task.cancel()
+        try await task.value
+
+        XCTAssertEqual(loop.currentState.agents.first?.models?.map(\.id), ["gpt-5.1-codex"])
+        XCTAssertEqual(adapter.jobs.current.first?.model, "gpt-5.1-codex")
+        XCTAssertEqual(adapter.jobs.current.first?.effort, "low")
     }
 
     func testMissingAgentIsDetectedAgainOnTheNextHeartbeat() async throws {

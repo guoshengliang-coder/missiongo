@@ -112,6 +112,7 @@ import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
 import { AccountSettings, ProductAccessSettings } from "./account-settings";
 import { mayAdministerProduct } from "./product-permissions";
+import { DispatchDefaultsSettings } from "./dispatch-defaults-settings";
 import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog, transitionRequiresNote } from "@missiongo/domain";
 import { statusChangeNote, dispatchedEvent, groupTimeline } from "./timeline";
@@ -1640,6 +1641,7 @@ export function App() {
       {agentsOpen && hasAnyAiPermission && (
         <Modal title={t("nodeSettings")} subtitle={t("nodeSettingsHelp")} onClose={() => setAgentsOpen(false)} wide scrolls>
           <NodeSettings products={products} />
+          <DispatchDefaultsSettings />
         </Modal>
       )}
       {downloadsOpen && (

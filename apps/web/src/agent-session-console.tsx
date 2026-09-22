@@ -38,6 +38,7 @@ import {
   type AgentKindFilter,
   type AgentSessionFilter,
 } from "./agent-session-view";
+import { AgentSessionSettingsBar } from "./agent-session-settings";
 import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import { MarkdownText } from "./markdown-text";
@@ -590,7 +591,8 @@ export function AgentSessionConsole({
               <span className="agent-console-avatar"><Bot size={17} /></span>
               <div>
                 <h2>{sessionTitle(selected)}</h2>
-                <p>{selected.nodeName} · {agentLabel(selected, t)} · {selected.mode}</p>
+                <p>{agentLabel(selected, t)}</p>
+                <AgentSessionSettingsBar session={selected} />
               </div>
               <span className={`status-pill agent-session-status-${sessionStatus}`}>{selected.archivedAt ? t("archived") : statusLabel(sessionStatus, t)}</span>
               {selected.sessionUrl && <SessionLink url={selected.sessionUrl} />}

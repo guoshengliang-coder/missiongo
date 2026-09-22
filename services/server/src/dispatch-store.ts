@@ -2,12 +2,15 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { AGENT_KINDS, isAcceptedSessionUrl, isNodeOnline, isSupportedDispatchMode, type AgentKind } from "@missiongo/domain";
 
+import { requireOfferedModel, type NodeAgentModel } from "./agent-settings.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
 export interface NodeAgentReport {
   readonly kind: AgentKind;
   readonly version?: string;
+  /** Models this agent offers on the machine (AND-130); absent from clients that cannot choose one. */
+  readonly models?: readonly NodeAgentModel[];
 }
 
 /** A checkout the machine reported it can already work in. */
@@ -48,12 +51,21 @@ export interface CreatedNodeCredential {
   readonly token: string;
 }
 
+/** Where the dispatch dialog starts for one account (AND-130). Every field is optional. */
+export interface DispatchDefaults {
+  readonly nodeId?: string;
+  readonly agentKind?: AgentKind;
+  readonly agents: Partial<Record<AgentKind, { readonly mode?: string; readonly model?: string; readonly effort?: string }>>;
+}
+
 export interface DispatchSnapshot {
   readonly id: string;
   readonly nodeId: string;
   readonly nodeName: string;
   readonly agentKind: AgentKind;
   readonly mode: string;
+  readonly model?: string;
+  readonly effort?: string;
   readonly status: string;
   readonly itemKeys: readonly string[];
   readonly sessionName?: string;
@@ -74,6 +86,9 @@ export interface DispatchJob {
   readonly repoPath: string;
   readonly agentKind: AgentKind;
   readonly mode: string;
+  /** Absent: run with the machine's own configured model and effort. */
+  readonly model?: string;
+  readonly effort?: string;
   /**
    * Which session on these items this is: 1 for the first, 2 when one of them
    * already had a session, and so on (the highest across the batch). The
@@ -108,6 +123,8 @@ interface DispatchRow {
   node_name: string;
   agent_kind: string;
   mode: string;
+  model: string | null;
+  effort: string | null;
   status: string;
   session_name: string | null;
   session_url: string | null;
@@ -311,7 +328,7 @@ export class DispatchStore {
   listDispatchesForNode(nodeId: string, limit = 20): readonly DispatchSnapshot[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
+        `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.model, d.effort, d.status,
                 d.session_name, d.session_url, s.id AS agent_session_id,
                 d.error, d.created_at, d.delivered_at, d.completed_at, d.archived_at
          FROM dispatches d JOIN nodes n ON n.id = d.node_id
@@ -498,6 +515,8 @@ export class DispatchStore {
     nodeId: string;
     agentKind: AgentKind;
     mode: string;
+    model?: string;
+    effort?: string;
     itemKeys: readonly string[];
     /** Dispatch again even though an earlier dispatch of these items was never claimed. */
     force?: boolean;
@@ -513,9 +532,14 @@ export class DispatchStore {
       const node = this.getNode(input.accountId, input.nodeId);
       if (node.revokedAt) throw conflict("node_revoked", "This node was revoked.");
       if (!node.online) throw conflict("node_offline", "This node is not currently connected.");
-      if (!node.agents.some((agent) => agent.kind === input.agentKind)) {
+      const agent = node.agents.find((entry) => entry.kind === input.agentKind);
+      if (!agent) {
         throw conflict("agent_unavailable", "This node did not report that agent.");
       }
+      requireOfferedModel(input.agentKind, agent.models, {
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
+      });
 
       const keys = [...new Set(input.itemKeys.map((key) => key.trim().toUpperCase()))];
       const items = keys.map((key) => {
@@ -572,10 +596,13 @@ export class DispatchStore {
       const dispatchId = randomUUID();
       this.database.connection
         .prepare(
-          `INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
-           VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)`,
+          `INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, model, effort, status, repo_path, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
         )
-        .run(dispatchId, input.accountId, node.id, input.agentKind, input.mode, repoPath, now);
+        .run(
+          dispatchId, input.accountId, node.id, input.agentKind, input.mode,
+          input.model ?? null, input.effort ?? null, repoPath, now,
+        );
       const insertItem = this.database.connection.prepare(
         "INSERT INTO dispatch_items (dispatch_id, item_id, position) VALUES (?, ?, ?)",
       );
@@ -706,12 +733,15 @@ export class DispatchStore {
         : "";
       const row = this.database.connection
         .prepare(
-          `SELECT d.id, d.agent_kind, d.mode, d.repo_path, COALESCE(n.nickname, n.name) AS node_name
+          `SELECT d.id, d.agent_kind, d.mode, d.model, d.effort, d.repo_path, COALESCE(n.nickname, n.name) AS node_name
            FROM dispatches d JOIN nodes n ON n.id = d.node_id
            WHERE d.node_id = ? AND d.status = 'queued'${agentFilter} ORDER BY d.created_at LIMIT 1`,
         )
         .get(nodeId, ...(availableAgentKinds ?? [])) as unknown as
-          { id: string; agent_kind: string; mode: string; repo_path: string; node_name: string } | undefined;
+          {
+            id: string; agent_kind: string; mode: string; model: string | null; effort: string | null;
+            repo_path: string; node_name: string;
+          } | undefined;
       if (!row) return undefined;
       const now = new Date().toISOString();
       this.database.connection
@@ -723,6 +753,8 @@ export class DispatchStore {
         repoPath: row.repo_path,
         agentKind: row.agent_kind as AgentKind,
         mode: row.mode,
+        ...(row.model ? { model: row.model } : {}),
+        ...(row.effort ? { effort: row.effort } : {}),
         nodeName: row.node_name,
         round: this.dispatchRound(row.id),
         reworkItemKeys: this.listReworkItemKeys(row.id),
@@ -813,7 +845,7 @@ export class DispatchStore {
   getDispatch(accountId: string, dispatchId: string): DispatchSnapshot {
     const row = this.database.connection
       .prepare(
-        `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
+        `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.model, d.effort, d.status,
                 d.session_name, d.session_url, s.id AS agent_session_id,
                 d.error, d.created_at, d.delivered_at, d.completed_at, d.archived_at
          FROM dispatches d JOIN nodes n ON n.id = d.node_id
@@ -874,7 +906,7 @@ export class DispatchStore {
   listDispatchesForItem(accountId: string, itemKey: string): readonly DispatchSnapshot[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.status,
+        `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.model, d.effort, d.status,
                 d.session_name, d.session_url, s.id AS agent_session_id,
                 d.error, d.created_at, d.delivered_at, d.completed_at, d.archived_at
          FROM dispatches d
@@ -925,6 +957,57 @@ export class DispatchStore {
     };
   }
 
+  getDispatchDefaults(accountId: string): DispatchDefaults {
+    const row = this.database.connection
+      .prepare("SELECT settings_json FROM account_dispatch_defaults WHERE account_id = ?")
+      .get(accountId) as unknown as { settings_json: string } | undefined;
+    return row ? JSON.parse(row.settings_json) as DispatchDefaults : { agents: {} };
+  }
+
+  /**
+   * Checked for shape and for modes the agent has, not against any machine: the
+   * machine may be asleep, and the dialog already falls back when a saved model
+   * is no longer offered.
+   */
+  setDispatchDefaults(accountId: string, body: Record<string, unknown>): DispatchDefaults {
+    const name = (value: unknown, field: string): string | undefined => {
+      if (value === undefined || value === null || value === "") return undefined;
+      if (typeof value !== "string" || value.length > 200) throw invalidInput(`${field} must be a short string.`);
+      return value;
+    };
+    const agentKind = name(body.agentKind, "agentKind") as AgentKind | undefined;
+    if (agentKind && !AGENT_KINDS.includes(agentKind)) throw invalidInput("Unsupported agent kind.");
+    const agentsInput = body.agents ?? {};
+    if (typeof agentsInput !== "object" || Array.isArray(agentsInput)) throw invalidInput("agents must be an object.");
+    const agents: Record<string, { mode?: string; model?: string; effort?: string }> = {};
+    for (const [kind, value] of Object.entries(agentsInput as Record<string, unknown>)) {
+      if (!AGENT_KINDS.includes(kind as AgentKind)) throw invalidInput(`Unsupported agent kind: ${kind}.`);
+      if (!value || typeof value !== "object") throw invalidInput("Each agent default must be an object.");
+      const entry = value as Record<string, unknown>;
+      const mode = name(entry.mode, "mode");
+      if (mode && !isSupportedDispatchMode(kind as AgentKind, mode)) {
+        throw invalidInput(`Unsupported mode for this agent: ${mode}.`);
+      }
+      const model = name(entry.model, "model");
+      const effort = name(entry.effort, "effort");
+      agents[kind] = { ...(mode ? { mode } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+    }
+    const nodeId = name(body.nodeId, "nodeId");
+    if (nodeId) this.getNode(accountId, nodeId);
+    const defaults: DispatchDefaults = {
+      ...(nodeId ? { nodeId } : {}),
+      ...(agentKind ? { agentKind } : {}),
+      agents,
+    };
+    this.database.connection
+      .prepare(
+        `INSERT INTO account_dispatch_defaults (account_id, settings_json, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(account_id) DO UPDATE SET settings_json = excluded.settings_json, updated_at = excluded.updated_at`,
+      )
+      .run(accountId, JSON.stringify(defaults), new Date().toISOString());
+    return defaults;
+  }
+
   private mapDispatch(row: DispatchRow): DispatchSnapshot {
     return {
       id: row.id,
@@ -932,6 +1015,8 @@ export class DispatchStore {
       nodeName: row.node_name,
       agentKind: row.agent_kind as AgentKind,
       mode: row.mode,
+      ...(row.model ? { model: row.model } : {}),
+      ...(row.effort ? { effort: row.effort } : {}),
       status: row.status,
       itemKeys: this.listDispatchItemKeys(row.id),
       ...(row.session_name ? { sessionName: row.session_name } : {}),

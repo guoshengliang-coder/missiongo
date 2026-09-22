@@ -2531,3 +2531,168 @@ describe("Archiving a finished hand-off (AND-129)", () => {
     expect((await listed(app, cookie, mission.productId)).archivedAt).toBeTruthy();
   });
 });
+
+describe("Model, effort and running-session settings (AND-130)", () => {
+  const codexModels = [
+    { id: "gpt-5.5", label: "GPT-5.5", efforts: ["low", "medium", "high"], defaultEffort: "medium", isDefault: true },
+    { id: "gpt-5.5-mini", label: "GPT-5.5 mini", efforts: ["low", "medium"] },
+  ];
+
+  async function modelHeartbeat(app: FastifyInstance, token: string, models?: unknown) {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/heartbeat",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { agents: [{ kind: "codex", version: "0.155.1", ...(models ? { models } : {}) }], repoCandidates: [] },
+    });
+    expect(response.statusCode).toBe(200);
+  }
+
+  async function mappedProduct(app: FastifyInstance, cookie: string, nodeId: string) {
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    return mission;
+  }
+
+  function dispatch(app: FastifyInstance, cookie: string, payload: Record<string, unknown>) {
+    return app.inject({ method: "POST", url: "/api/v1/dispatches", headers: { cookie }, payload });
+  }
+
+  it("dispatches with a model and effort the Mac offers and hands them to the Mac", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await modelHeartbeat(app, node.token, codexModels);
+    const mission = await mappedProduct(app, cookie, node.nodeId);
+    const base = { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: [mission.itemKey] };
+
+    expect((await dispatch(app, cookie, { ...base, model: "gpt-9" })).statusCode).toBe(400);
+    expect((await dispatch(app, cookie, { ...base, model: "gpt-5.5-mini", effort: "high" })).statusCode).toBe(400);
+    const created = await dispatch(app, cookie, { ...base, model: "gpt-5.5", effort: "high" });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ model: "gpt-5.5", effort: "high" });
+
+    const claim = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(claim.json()).toMatchObject({ mode: "plan", model: "gpt-5.5", effort: "high" });
+  });
+
+  it("refuses a model choice for a Mac whose client cannot make one, and still dispatches without", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await modelHeartbeat(app, node.token);
+    const mission = await mappedProduct(app, cookie, node.nodeId);
+    const base = { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: [mission.itemKey] };
+    const refused = await dispatch(app, cookie, { ...base, effort: "high" });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ code: "node_upgrade_required" });
+    expect((await dispatch(app, cookie, base)).statusCode).toBe(201);
+  });
+
+  it("reports what the agent uses and carries a running change to the Mac once", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    await modelHeartbeat(app, node.token, codexModels);
+    const listSettings = async () => (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ settings: Record<string, unknown> }> }>().sessions[0]!.settings;
+    const nodeSession = async () => (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<Record<string, unknown>> }>().sessions.find((session) => session.id === sessionId)!;
+    const report = (payload: Record<string, unknown>) => app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [], ...payload },
+    });
+
+    await report({ model: "gpt-5.5", effort: "medium" });
+    expect(await listSettings()).toMatchObject({ mode: "plan", model: "gpt-5.5", effort: "medium", adjustable: true });
+
+    const change = (payload: Record<string, unknown>) => app.inject({
+      method: "PATCH",
+      url: `/api/v1/agent-sessions/${sessionId}/settings`,
+      headers: { cookie },
+      payload,
+    });
+    expect((await change({ model: "gpt-9" })).statusCode).toBe(400);
+    expect((await change({ mode: "acceptEdits" })).statusCode).toBe(400);
+    const requested = await change({ mode: "default", effort: "high" });
+    expect(requested.statusCode).toBe(200);
+    expect(requested.json()).toMatchObject({ pending: { mode: "default", effort: "high", revision: 1 } });
+    expect(await nodeSession()).toMatchObject({
+      desiredSettings: { mode: "default", effort: "high", revision: 1 },
+      appliedSettingsRevision: 0,
+    });
+
+    expect((await report({ model: "gpt-5.5", effort: "high", settingsRevision: 1 })).statusCode).toBe(204);
+    const applied = await listSettings();
+    expect(applied).toMatchObject({ mode: "default", effort: "high" });
+    expect(applied.pending).toBeUndefined();
+    // Nothing left to deliver, so the idle session drops out of the Mac's next poll.
+    expect(await nodeSession()).toBeUndefined();
+
+    // A change the Mac cannot apply is reported once and not sent again.
+    await change({ model: "gpt-5.5-mini", effort: "low" });
+    await report({ settingsRevision: 2, settingsError: "set_model failed" });
+    const failed = await listSettings();
+    expect(failed).toMatchObject({ error: "set_model failed", mode: "default" });
+    expect(failed.pending).toBeUndefined();
+    expect(await nodeSession()).toBeUndefined();
+  });
+
+  it("refuses to change a running session on a Mac whose client cannot", async () => {
+    const { app, cookie } = await signedInApp();
+    const { sessionId } = await launchedCodexSession(app, cookie);
+    const refused = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/agent-sessions/${sessionId}/settings`,
+      headers: { cookie },
+      payload: { mode: "default" },
+    });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ code: "node_upgrade_required" });
+  });
+
+  it("keeps an account's dispatch defaults", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    expect((await app.inject({ method: "GET", url: "/api/v1/dispatch-defaults", headers: { cookie } })).json())
+      .toEqual({ agents: {} });
+    const saved = await app.inject({
+      method: "PUT",
+      url: "/api/v1/dispatch-defaults",
+      headers: { cookie },
+      payload: {
+        nodeId: node.nodeId,
+        agentKind: "codex",
+        agents: { codex: { mode: "default", model: "gpt-5.5", effort: "high" }, claude_code: { mode: "plan" } },
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/v1/dispatch-defaults", headers: { cookie } })).json())
+      .toEqual({
+        nodeId: node.nodeId,
+        agentKind: "codex",
+        agents: { codex: { mode: "default", model: "gpt-5.5", effort: "high" }, claude_code: { mode: "plan" } },
+      });
+    const invalid = await app.inject({
+      method: "PUT",
+      url: "/api/v1/dispatch-defaults",
+      headers: { cookie },
+      payload: { agents: { codex: { mode: "acceptEdits" } } },
+    });
+    expect(invalid.statusCode).toBe(400);
+  });
+});
