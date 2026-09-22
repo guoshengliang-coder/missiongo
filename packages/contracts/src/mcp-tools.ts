@@ -24,7 +24,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "append_comment", access: "write", purpose: "Add one comment to a work item without changing anything a person wrote." },
   { name: "claim_item", access: "write", purpose: "Take a ready work item into progress." },
   { name: "submit_for_verification", access: "write", purpose: "Hand merged work over for a person to verify, naming the pull request that carried it." },
-  { name: "create_item", access: "write", purpose: "Record a follow-up item split off from another, after the user approved its content in the session." },
+  { name: "create_item", access: "write", purpose: "Record a follow-up split off from another item, or an independent item in a product, after the user approved its content (including the product) in the session." },
 ] as const satisfies readonly McpToolDefinition[];
 
 export interface ListItemsInput {
@@ -48,8 +48,16 @@ export interface ClaimItemInput {
 }
 
 export interface CreateItemInput {
-  /** The item being worked on; the new item is created in its product and linked to it. */
-  readonly sourceItemKey: string;
+  /**
+   * The item being worked on, for a related follow-up; the new item is created in
+   * its product and linked to it. Give exactly one of sourceItemKey and productId.
+   */
+  readonly sourceItemKey?: string;
+  /**
+   * The product for an independent item (AND-134): an unrelated issue found while
+   * working, or one the user asked for. Not linked to any item.
+   */
+  readonly productId?: string;
   readonly title: string;
   readonly description: string;
   readonly type: WorkItemType;

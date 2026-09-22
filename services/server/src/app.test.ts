@@ -327,6 +327,87 @@ describe("Commenting over MCP", () => {
       });
       expect(JSON.stringify(eleventh)).toMatch(/last hour/);
     });
+
+    // AND-134: an unrelated issue found while working, or one the user asked
+    // for, is created in a product rather than hung off an unrelated item.
+    const { sourceItemKey: _source, ...independent } = followUp;
+
+    it("creates an independent item in a product, linked to nothing", async () => {
+      const { app, call, writeToken, productId } = await commentingApp();
+      const created = await call(writeToken, 1, "tools/call", {
+        name: "create_item",
+        arguments: { ...independent, productId, idempotencyKey: "independent-1" },
+      });
+      expect(created.error).toBeUndefined();
+      expect(created.result?.structuredContent).toMatchObject({ statusChanged: false, item: { key: "HG-2", status: "ready" } });
+      expect(created.result?.structuredContent).not.toHaveProperty("item.derivedFrom");
+
+      const timeline = (key: string) => app.inject({
+        method: "GET",
+        url: `/api/v1/items/${key}/timeline`,
+        headers: { authorization: "Bearer management-test-token" },
+      }).then((response) => response.json<{ events: Array<{ eventType: string; actorKind: string; payload: Record<string, unknown> }> }>().events);
+      const createdEvent = (await timeline("HG-2")).find((event) => event.eventType === "item_created");
+      expect(createdEvent).toMatchObject({
+        actorKind: "agent",
+        payload: { independent: true, agentName: "Claude Code · studio-mac" },
+      });
+      expect(createdEvent?.payload.derivedFrom).toBeUndefined();
+      expect((await timeline("HG-1")).some((event) => event.eventType === "derived_item_created")).toBe(false);
+
+      const retried = await call(writeToken, 2, "tools/call", {
+        name: "create_item",
+        arguments: { ...independent, productId, idempotencyKey: "independent-1" },
+      });
+      expect(retried.result?.structuredContent).toMatchObject({ item: { key: "HG-2" } });
+    });
+
+    it("refuses an independent item in a product outside the account's AI reach", async () => {
+      const { app, call, writeToken, productId } = await commentingApp();
+      const other = app.missionGoStore.createProduct({ name: "Other", keyPrefix: "OT" });
+      app.missionGoAccounts.replacePermissions("account-test-1", [
+        { productId, canView: true, canOperate: true, canUseAi: true },
+      ]);
+      const refused = await call(writeToken, 1, "tools/call", {
+        name: "create_item",
+        arguments: { ...independent, productId: other.id, idempotencyKey: "independent-1" },
+      });
+      expect(JSON.stringify(refused)).toMatch(/access is not permitted/);
+      expect(app.missionGoStore.listWorkItems({ productId: other.id })).toHaveLength(0);
+    });
+
+    it("refuses a call that names both a source item and a product, or neither", async () => {
+      const { call, writeToken, productId } = await commentingApp();
+      expect(JSON.stringify(await call(writeToken, 1, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, productId, idempotencyKey: "both-1" },
+      }))).toMatch(/not both/);
+      expect(JSON.stringify(await call(writeToken, 2, "tools/call", {
+        name: "create_item",
+        arguments: { ...independent, idempotencyKey: "neither-1" },
+      }))).toMatch(/sourceItemKey.*productId/);
+    });
+
+    it("caps how many independent items AI can create in one product in an hour", async () => {
+      const { call, writeToken, productId } = await commentingApp();
+      // Follow-ups split off an item count against that item, not against this cap.
+      await call(writeToken, 1, "tools/call", {
+        name: "create_item",
+        arguments: { ...followUp, idempotencyKey: "follow-up-0" },
+      });
+      for (let index = 0; index < 10; index += 1) {
+        const created = await call(writeToken, index + 2, "tools/call", {
+          name: "create_item",
+          arguments: { ...independent, productId, title: `Independent ${index}`, idempotencyKey: `independent-${index}` },
+        });
+        expect(JSON.stringify(created)).not.toMatch(/isError":true/);
+      }
+      const eleventh = await call(writeToken, 99, "tools/call", {
+        name: "create_item",
+        arguments: { ...independent, productId, title: "One too many", idempotencyKey: "independent-10" },
+      });
+      expect(JSON.stringify(eleventh)).toMatch(/independent items created by AI in the last hour/);
+    });
   });
 
   it("reports no write capability when the deployment has writing switched off", async () => {
