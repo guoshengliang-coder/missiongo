@@ -43,7 +43,7 @@
 以下做法保持不变，并写进了[设计规范](design-system.md)：
 
 - **文字与颜色**：中性文字色全部达到 WCAG AA；最小字号令牌是 11px（UI-05/06）。
-- **深色模式**：只重定义令牌，不写主题分支；首帧前写入 `data-appearance`，不闪屏。
+- **深色模式**：只重定义令牌，不写主题分支。（本意是在首帧前写入 `data-appearance`，但这一步在生产环境没有生效，见 B12。）
 - **视口与安全区**：先写 `100vh` 再用 `100dvh` 覆盖；设置 `viewport-fit=cover`；安全区通过 `--safe-*` 令牌引用。
 - **弹层**：用原生 `<dialog>` 加 `showModal()`，背景自动 inert，Esc 交给 `onCancel` 处理。
 - **移动端交互**：录入表单的提交栏吸底；输入框字号 16px，避免 iOS 聚焦放大；动效会遵守 `prefers-reduced-motion`。
@@ -70,6 +70,7 @@
 | B9 | 反馈 SDK 页的说明、复选框、上下文字号是 9–10px；部分控件写死白底和浅色红框，在 `?appearance=dark` 下出错 | `sdk-feedback.css:20-51, 83` | 代码 |
 | B10 | 移动端抽屉关闭后只是移出屏幕，没有 `inert`，键盘 Tab 仍会走进看不见的导航；打开时没有焦点陷阱，也不能用 Esc 关闭 | `.sidebar`（1326）、`App.tsx:1283-1346` | 代码 |
 | B11 | 反馈 SDK 旋转屏幕后会重建 WebView，已填的内容会丢 | `MissionGoFeedbackActivity.kt:69,74` | 代码，需真机确认 |
+| B12 | **生产环境的深色模式从未生效。** 决定主题的是 `index.html` 里的一段内联脚本，而部署的 CSP 是 `script-src 'self'`，浏览器会直接拦截它。结果是 `data-appearance` 永远为空，所有用户都只看到浅色；Android SDK 传入的 `?appearance=dark` 也不起作用。本地开发没有 CSP，所以一直没被发现 | `apps/web/index.html`、`deploy/nginx-container.conf:15` | **实测**：线上页面在系统深色时 `data-appearance` 为空、背景为浅色，控制台报 CSP 拦截内联脚本 |
 
 ### 3.2 适配问题（A）
 
@@ -125,7 +126,7 @@
 | C1 | **提交栏吸底只在 ≤520px 生效。** 横屏手机（812×375）打开录入表单，「提交到待处理」按钮在 1437px 处，要滚 4 屏才能点到；竖屏平板和展开的折叠屏（521–1023px）也是一样。AND-30 当时只修了竖屏手机 | 横屏手机、平板、折叠屏 | **实测** |
 | C2 | **横屏时固定在顶部的区域太高。** 812×375 下，顶栏加状态导航占了 34% 的高度；真机浏览器还有地址栏，比例会更高。样式表里没有任何按高度或按屏幕方向的媒体查询，README 里「适配横屏」的说法没有落到实处 | 横屏手机 | **实测** |
 | C3 | **触控规则按宽度判断，不按输入方式判断。** 44px 触控尺寸、16px 输入框字号都写在 `max-width:1023px` 里。iPad 横屏（1024、1180、1366）和触屏笔记本会拿到桌面布局：按钮 34–40px，只能悬停才看到的提示看不到；iPad Pro 横屏还会进入双栏，要用手指拖动分隔条 | iPad 横屏、触屏 PC | 代码 |
-| C4 | **声明支持的浏览器与实际用到的 CSS 特性不符。** 构建目标是 Chrome 90、Safari 15.4、Firefox 90，但用了 `color-mix()` 4 处（需要 Chrome 111、Safari 16.2、Firefox 113），没有回退写法，旧浏览器上连接状态横幅、拖入文件遮罩的背景会失效。另外还用了 `@container`（需要 Chrome 105、Safari 16）和 `overflow: clip`（需要 Safari 16）。已验证 esbuild 会自动给 `backdrop-filter` 补前缀，但不会为上面这几个特性生成回退。**已处理（2026-09-22 决定）**：基线提高到 Chrome/Edge 111、Firefox 113、Safari 16.2，低于基线的浏览器显示「浏览器版本过低」提示，见 DC-3 | iOS 15–16.1、旧 Android 系统的 WebView | 代码，已验证构建产物 |
+| C4 | **声明支持的浏览器与实际用到的 CSS 特性不符。** 构建目标是 Chrome 90、Safari 15.4、Firefox 90，但 `color-mix()` 用了 10 处（需要 Chrome 111、Safari 16.2、Firefox 113），没有回退写法；另外 `@container` 用了 1 处（需要 Chrome 105、Safari 16）。实际影响是样式层面的：旧浏览器上几个横幅、批量操作栏和拖入文件遮罩少了背景色或描边，宽屏详情页的列表不切换成卡片，功能不受影响。（初稿还列了 `overflow: clip`，那是误判，代码里是所有浏览器都支持的 `text-overflow: clip`。）已验证 esbuild 会自动给 `backdrop-filter` 补前缀，但不会为 `color-mix()` 生成回退。**已处理（2026-09-22）**：保留现有基线，给每处 `color-mix()` 前加一条普通令牌作为回退，见 DC-3 | iOS 15.4–16.1、旧 Android 系统的 WebView | 代码，已验证构建产物 |
 | C5 | **Android 没有检查 WebView 版本。** App 和 SDK 的最低系统版本是 Android 6（minSdk 23），但 WebView 内核低于 Chrome 90 时（例如没有 GMS 的部分国产机，或者系统 WebView 长期没更新），页面会白屏或样式残缺，用户只能看到一个说不清原因的错误页 | 旧 Android、无 GMS 的设备 | 代码 |
 | C6 | **iPhone 拍的附件在其他设备上看不了。** HEIC 图片原样存储、没有转码，Chrome、Edge、Firefox 和 Android 上的 `<img>` 都显示不出来，只有 Safari 可以。iPhone 录的 `.mov` 多数是 HEVC 编码，在 Windows 的 Firefox 以及部分 Chrome 上放不了 | iPhone 上传 → PC、Android 查看 | 代码 |
 | C7 | **弹出软键盘时没有处理。** 没有用 `visualViewport`，viewport meta 里也没有 `interactive-widget`。Android Chrome 108 之后，弹出键盘默认只缩小可视区域、不改变 `100dvh`，所以吸底的提交栏和控制台输入框可能被键盘挡住；iOS Safari 弹出键盘时会把整个固定外壳往上推。Android App 壳设置了 `adjustResize`，不受影响 | 手机浏览器、iPad | 代码，需要真机确认 |
@@ -230,8 +231,8 @@
 |---|---|---|
 | DC-1 | **录入表单在所有紧凑布局下都吸底**：提交栏的吸底规则从 ≤520px 扩展到 ≤1023px，并在横屏时生效。横屏时，顶栏的状态导航改为随页面滚动收起 | 812×375、768×1024 下不用滚动就能看到提交按钮 |
 | DC-2 | **触控规则按输入方式判断**：44px 尺寸、16px 输入框字号、常驻的操作入口，统一挂到 `@media (pointer: coarse)` 下，和宽度断点脱钩；悬停效果统一挂到 `(hover: hover)` 下 | 以 iPad 1180×820 触屏模式截图，没有小于 44px 的目标 |
-| DC-3 | **浏览器基线**：已决定提高基线（2026-09-22），不再为旧浏览器写回退。<br>已完成：`build.target` 和 `cssTarget` 改为 Chrome/Edge 111、Firefox 113、Safari 16.2；`index.html` 用 `color-mix()` 做特性检测，低于基线时显示中英文提示，Android 上会提示去更新 System WebView，同时 `main.tsx` 不再挂载应用、不注册 Service Worker；README 同步更新。<br>待做：在 D1-2 的检查里加上「用到的特性超出基线」这一项。<br>影响：iOS 15 到 16.1、Chrome 110 及以下（包括未更新的 Android WebView）将无法使用 | 低于基线的浏览器看到提示，而不是残缺的页面 |
-| DC-4 | **Android 启动时检查 WebView 版本**：低于基线时，用原生页面说明原因，并引导用户去更新 WebView；SDK 同样处理 | 用低版本 WebView 的模拟器能看到明确提示 |
+| DC-3 | **浏览器基线**：保持 Chrome/Edge 90、Firefox 90、Safari/iOS 15.4 不变，为超出基线的特性补回退（2026-09-22 决定）。<br>曾考虑过提高基线到 Chrome 111 / Safari 16.2，并对低版本浏览器显示拦截页，但放弃了：这些浏览器上的问题只是几处装饰样式，为此把 iOS 15.4–16.1 的用户整个挡在门外得不偿失；而且部署的 CSP 是 `script-src 'self'`，内联的拦截脚本在生产环境根本不会执行。<br>已完成：10 处 `color-mix()` 前各加一条普通令牌作为回退，并确认压缩后的产物里回退值仍然保留；`@container` 在旧浏览器上维持原来的列表布局，不做处理。<br>待做：在 D1-2 的检查里加上「用了超出基线的特性却没有回退」这一项。<br>以后真正需要提高基线，是在用到缺了会让功能失效的特性时 | 旧浏览器上横幅和遮罩都有背景色；构建产物里保留回退声明 |
+| DC-4 | **Android 启动时检查 WebView 版本**：低于 Chrome 90 基线时，用原生页面说明原因，并引导用户去更新 WebView；SDK 同样处理 | 用低版本 WebView 的模拟器能看到明确提示 |
 | DC-5 | **附件格式兜底**：服务端给 HEIC 生成 JPEG 预览；浏览器放不了的视频显示「无法在此设备播放，下载查看」，不再是一个黑框 | iPhone 上传的 HEIC 在 Windows 版 Chrome 上能看到 |
 | DC-6 | **软键盘**：viewport meta 加上 `interactive-widget=resizes-content`；iOS 用 `visualViewport` 把吸底元素抬到键盘上方 | iPhone 和 Android 真机上，打开键盘后仍能看到提交按钮和控制台输入框 |
 | DC-7 | **字体**：决定是自托管 Inter 的子集，还是从字体栈里去掉 Inter；补上中文字体栈（`"PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC"`）；把固定的 `height` 改成 `min-height`；中文标题去掉负字距 | Windows 下侧栏、按钮、徽章里的中文没有被裁切 |

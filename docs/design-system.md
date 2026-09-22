@@ -62,6 +62,7 @@
 ### 2.6 深色模式
 
 - 由 `index.html` 在首帧前把 `data-appearance` 写到 `<html>`：优先 `?appearance=` 参数（Android SDK 用），否则跟随 `prefers-color-scheme`。
+- 这段脚本必须以同源外部文件的形式同步加载，不能内联：部署的 CSP 是 `script-src 'self'`，内联脚本在生产环境会被拦截（见复盘 B12）。
 - 深色块只重定义令牌。**组件样式里不允许出现 `rgba(255,255,255,…)`、`#fff` 这类只在一种主题下成立的值**；需要半透明时，新增令牌。
 
 ## 3. 字体与字号
@@ -129,9 +130,11 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 
 ### 5.5 浏览器基线
 
-- 当前基线是 **Chrome/Edge 111、Firefox 113、Safari/iOS 16.2**（2026-09-22 起）。以 `vite.config.ts` 的 `build.target` 为准；README 和 `index.html` 里的版本检测必须和它保持一致。
-- 低于基线的浏览器不做降级适配，统一显示「浏览器版本过低」的提示。
-- 使用基线之外的 CSS 特性（例如 `color-mix()`、`@container`、`overflow: clip`），必须同时写好回退，或者先正式提高基线。
+- 当前基线是 **Chrome/Edge 90、Firefox 90、Safari/iOS 15.4**，以 `vite.config.ts` 的 `build.target` 为准，README 里的说法必须和它一致。
+- 可以使用基线之外的 CSS 特性（例如 `color-mix()`、`@container`），但必须保证旧浏览器上**功能不受影响**：
+  - 颜色类的特性，在同一条规则里先写一条普通令牌作为回退，再写新写法，例如 `background: var(--warn-bg); background: color-mix(...);`；
+  - 布局类的特性（例如容器查询），必须保证不支持时退回到的默认布局本身也是可用的。
+- 只有当某个特性缺了会让功能失效、并且无法回退时，才考虑提高基线。提高基线要同时更新 README，并给出不依赖内联脚本的提示页（部署的 CSP 是 `script-src 'self'`，禁止内联脚本）。
 - 附件预览不能假设浏览器支持所有格式：HEIC 图片要转码后再预览；浏览器无法播放的视频，给出下载入口。
 
 ### 5.6 测试矩阵
