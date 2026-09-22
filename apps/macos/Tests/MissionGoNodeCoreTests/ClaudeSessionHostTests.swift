@@ -546,8 +546,19 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
     }
 
     func testFinishedWorkClosesTheHostButKeepsItsConversation() async throws {
-        let (launcher, root, sessionRef) = try fixture(status: "idle")
+        let (_, root, sessionRef) = try fixture(status: "idle")
         defer { try? FileManager.default.removeItem(atPath: root) }
+        let statePath = ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        try ClaudeHostFiles.write(
+            ClaudeHostState(status: "idle", sessionRef: sessionRef, hostPid: 4242),
+            to: statePath
+        )
+        let launcher = SessionLauncher(
+            environment: ShellEnvironment(path: "/usr/bin:/bin"),
+            hostExecutable: nil,
+            sessionsDirectory: root,
+            terminateHost: { $0 == 4242 }
+        )
         let report = try await launcher.synchronize(NodeAgentSession(
             id: "server-session",
             agentKind: "claude_code",
@@ -558,8 +569,9 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
 
         XCTAssertEqual(report.status, "suspended")
         XCTAssertTrue(report.error?.contains("已全部完成") == true)
+        XCTAssertEqual(report.sourceArchived, true)
         let state = try ClaudeHostFiles.readState(
-            ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+            statePath
         )
         XCTAssertNil(state.hostPid)
         XCTAssertEqual(state.status, "suspended")

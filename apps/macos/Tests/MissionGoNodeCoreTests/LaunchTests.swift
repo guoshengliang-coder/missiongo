@@ -275,7 +275,8 @@ final class SessionLauncherProcessTests: XCTestCase {
         """#)
         let launcher = SessionLauncher(
             environment: ShellEnvironment(path: "\(script.bin):/usr/bin:/bin"),
-            run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", sessionUrlTimeout: 10
+            run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", sessionUrlTimeout: 10,
+            hostExecutable: nil
         )
         let result = try await launcher.launch(DispatchJob(dispatchId: "d-1", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan", nodeName: " Mac mini "))
         XCTAssertEqual(result.sessionName, "Mac mini-AND-1")
@@ -294,7 +295,8 @@ final class SessionLauncherProcessTests: XCTestCase {
         let script = try fakeScript("echo 'Error: something went wrong'\nexit 3")
         let launcher = SessionLauncher(
             environment: ShellEnvironment(path: "\(script.bin):/usr/bin:/bin"),
-            run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", sessionUrlTimeout: 10
+            run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", sessionUrlTimeout: 10,
+            hostExecutable: nil
         )
         do {
             _ = try await launcher.launch(DispatchJob(dispatchId: "d-2", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan", nodeName: "Mac mini"))
@@ -308,10 +310,11 @@ final class SessionLauncherProcessTests: XCTestCase {
 
     func testDoesNotReportALiveProcessAsLaunchedWithoutASessionURL() async throws {
         let (home, repoPath) = try makeTrustedRepo(trusted: true)
-        let script = try fakeScript("echo 'Connecting remote control...'\nsleep 2")
+        let script = try fakeScript("echo 'Connecting remote control...'\nsleep 4")
         let launcher = SessionLauncher(
             environment: ShellEnvironment(path: "\(script.bin):/usr/bin:/bin"),
-            run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", sessionUrlTimeout: 0.75
+            run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", sessionUrlTimeout: 1.5,
+            hostExecutable: nil
         )
         do {
             _ = try await launcher.launch(DispatchJob(
@@ -320,7 +323,7 @@ final class SessionLauncherProcessTests: XCTestCase {
             XCTFail("expected a failure")
         } catch {
             let message = error.localizedDescription
-            XCTAssertTrue(message.hasPrefix("等待 Claude Code 生成远程会话地址超时（1 秒），无法确认会话已创建。"), message)
+            XCTAssertTrue(message.hasPrefix("等待 Claude Code 生成远程会话地址超时（2 秒），无法确认会话已创建。"), message)
             XCTAssertTrue(message.contains("Connecting remote control..."), message)
             XCTAssertTrue(message.contains("d-timeout.log"), message)
         }
@@ -331,7 +334,7 @@ final class SessionLauncherProcessTests: XCTestCase {
         let script = try fakeScript("touch \"$HOME/should-not-run\"")
         let launcher = SessionLauncher(
             environment: ShellEnvironment(path: "\(script.bin):/usr/bin:/bin"),
-            run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs"
+            run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", hostExecutable: nil
         )
         do {
             _ = try await launcher.launch(DispatchJob(dispatchId: "d-3", itemKeys: ["AND-1"], repoPath: repoPath, mode: "plan", nodeName: "Mac mini"))

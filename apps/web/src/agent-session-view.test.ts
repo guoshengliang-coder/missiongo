@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   activityLabelKey,
   agentAttentionCounts,
+  agentSessionDetailRefetchInterval,
   agentSessionsRefetchInterval,
   archivableVisibleSessionIds,
   agentSessionMatches,
+  byLatestActivity,
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
@@ -18,20 +20,26 @@ import {
   resolvedAgentSessionId,
   shouldMarkRead,
   shouldResetMessageView,
-  unreadFirst,
 } from "./agent-session-view";
 import type { AgentSessionSummary } from "./types";
 
 describe("agent session message view", () => {
-  it("polls the open console quickly and the item page once a minute", () => {
+  it("pauses in a hidden page and backs off repeated polling failures", () => {
     expect(agentSessionsRefetchInterval(true)).toBe(5_000);
     expect(agentSessionsRefetchInterval(false)).toBe(60_000);
+    expect(agentSessionsRefetchInterval(true, false)).toBe(false);
+    expect(agentSessionsRefetchInterval(true, true, 3)).toBe(40_000);
+    expect(agentSessionsRefetchInterval(false, true, 4)).toBe(300_000);
+    expect(agentSessionDetailRefetchInterval(true)).toBe(2_000);
+    expect(agentSessionDetailRefetchInterval(true, 2)).toBe(8_000);
+    expect(agentSessionDetailRefetchInterval(false)).toBe(false);
   });
 
-  it("formats a message occurrence time with both date and minute precision", () => {
-    const formatted = formatAgentMessageTime("2026-09-21T00:00:00.000Z", "zh-CN");
-    expect(formatted).toMatch(/9.*21/);
-    expect(formatted).toMatch(/\d{1,2}:00/);
+  it("formats today as time, yesterday by name, and older messages with a date", () => {
+    const now = new Date(2026, 8, 23, 12, 0);
+    expect(formatAgentMessageTime(new Date(2026, 8, 23, 9, 5).toISOString(), "zh-CN", now)).toMatch(/^09:05$/);
+    expect(formatAgentMessageTime(new Date(2026, 8, 22, 18, 23).toISOString(), "zh-CN", now)).toMatch(/^昨天 18:23$/);
+    expect(formatAgentMessageTime(new Date(2026, 7, 31, 23, 59).toISOString(), "zh-CN", now)).toMatch(/8.*31.*23:59/);
   });
 
   it("counts attention once globally and once per distinct product", () => {
@@ -86,20 +94,19 @@ describe("agent session message view", () => {
     expect(agentSessionMatches(session, "attention", "claude_code", "")).toBe(false);
   });
 
-  it("puts unread conversations first and keeps newest-first order inside each group", () => {
-    const ordered = unreadFirst([
-      { id: "newest-read", unread: false },
-      { id: "older-unread", unread: true },
-      { id: "oldest-read", unread: false },
-      { id: "oldest-unread", unread: true },
+  it("sorts only by activity and ignores unread state", () => {
+    const ordered = byLatestActivity([
+      { id: "oldest-unread", unread: true, activityAt: "2026-09-20T00:00:00Z", updatedAt: "", createdAt: "" },
+      { id: "newest-read", unread: false, activityAt: "2026-09-23T00:00:00Z", updatedAt: "", createdAt: "" },
+      { id: "middle-unread", unread: true, activityAt: "2026-09-22T00:00:00Z", updatedAt: "", createdAt: "" },
     ]);
-    expect(ordered.map((session) => session.id)).toEqual(["older-unread", "oldest-unread", "newest-read", "oldest-read"]);
+    expect(ordered.map((session) => session.id)).toEqual(["newest-read", "middle-unread", "oldest-unread"]);
   });
 
   it("marks read only a conversation the person opened, while the tab is in front", () => {
     const unread = { unread: true, unreadAt: "2026-09-22T06:00:00.000Z" };
     expect(shouldMarkRead(unread, true, true)).toBe(true);
-    // Selected automatically as the first row: nobody opened it.
+    // Merely appearing first in the list is not an explicit open.
     expect(shouldMarkRead(unread, false, true)).toBe(false);
     expect(shouldMarkRead(unread, true, false)).toBe(false);
     expect(shouldMarkRead({ unread: false, unreadAt: unread.unreadAt }, true, true)).toBe(false);
@@ -109,8 +116,8 @@ describe("agent session message view", () => {
   it("keeps a restored conversation until the session list can confirm it", () => {
     expect(resolvedAgentSessionId("session-42", [], false)).toBe("session-42");
     expect(resolvedAgentSessionId("session-42", ["session-42", "session-41"], true)).toBe("session-42");
-    expect(resolvedAgentSessionId("missing", ["session-41"], true)).toBe("session-41");
-    expect(resolvedAgentSessionId(null, ["session-41"], true)).toBe("session-41");
+    expect(resolvedAgentSessionId("missing", ["session-41"], true)).toBeNull();
+    expect(resolvedAgentSessionId(null, ["session-41"], true)).toBeNull();
   });
 
   it("keeps following within the bottom tolerance", () => {

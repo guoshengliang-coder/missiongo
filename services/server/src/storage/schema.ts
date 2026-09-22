@@ -257,6 +257,8 @@ export const INITIAL_SCHEMA = `
     nickname TEXT,
     hostname TEXT,
     token_hash TEXT NOT NULL UNIQUE,
+    client_version TEXT,
+    expected_skill_version TEXT,
     agents_json TEXT NOT NULL DEFAULT '[]',
     -- Checkouts the machine reported it can already work in, so the console can
     -- offer a list instead of asking someone to type an absolute path.
@@ -292,6 +294,9 @@ export const INITIAL_SCHEMA = `
     session_name TEXT,
     session_url TEXT,
     error TEXT,
+    failure_code TEXT,
+    failure_stage TEXT,
+    diagnostic_snapshot_json TEXT,
     created_at TEXT NOT NULL,
     delivered_at TEXT,
     completed_at TEXT,

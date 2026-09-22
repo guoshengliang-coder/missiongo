@@ -1129,6 +1129,39 @@ export class MissionGoDatabase {
           .run(202609220620, new Date().toISOString());
       });
     }
+    // AND-144/146: node readiness and dispatch failures are data, not text to
+    // reverse-engineer later. Nullable columns keep older clients compatible;
+    // their failures land in the explicit unknown fallback.
+    const dispatchDiagnosticsMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609221610")
+      .get() as unknown as { version: number } | undefined;
+    const diagnosticsColumns: ReadonlyArray<readonly [string, ReadonlyArray<readonly [string, string]>]> = [
+      ["nodes", [
+        ["client_version", "TEXT"],
+        ["expected_skill_version", "TEXT"],
+      ]],
+      ["dispatches", [
+        ["failure_code", "TEXT"],
+        ["failure_stage", "TEXT"],
+        ["diagnostic_snapshot_json", "TEXT"],
+      ]],
+    ];
+    const missingDiagnosticsColumns = diagnosticsColumns.flatMap(([table, columns]) => {
+      const existing = this.connection
+        .prepare(`PRAGMA table_info(${table})`)
+        .all() as unknown as Array<{ name: string }>;
+      return columns
+        .filter(([name]) => !existing.some((column) => column.name === name))
+        .map(([name, definition]) => `ALTER TABLE ${table} ADD COLUMN ${name} ${definition};`);
+    });
+    if (!dispatchDiagnosticsMigration || missingDiagnosticsColumns.length > 0) {
+      this.transaction(() => {
+        missingDiagnosticsColumns.forEach((statement) => this.connection.exec(statement));
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609221610, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

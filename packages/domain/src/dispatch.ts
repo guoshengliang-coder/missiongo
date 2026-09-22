@@ -60,6 +60,58 @@ export function isCodexThreadLink(value: string): boolean {
 export const DISPATCH_STATUSES = ["queued", "delivered", "launched", "failed", "cancelled"] as const;
 export type DispatchStatus = (typeof DISPATCH_STATUSES)[number];
 
+/** Stable machine-readable reasons. Human copy stays in `error`. */
+export const DISPATCH_FAILURE_CODES = [
+  "skill_stale",
+  "daemon_down",
+  "resource_exhausted",
+  "mcp_timeout",
+  "mcp_auth",
+  "cli_missing",
+  "agent_auth_invalid",
+  "unknown",
+] as const;
+export type DispatchFailureCode = (typeof DISPATCH_FAILURE_CODES)[number];
+
+export const DISPATCH_FAILURE_STAGES = [
+  "readiness",
+  "preflight",
+  "daemon",
+  "mcp",
+  "thread_start",
+  "turn_start",
+  "host_start",
+  "unknown",
+] as const;
+export type DispatchFailureStage = (typeof DISPATCH_FAILURE_STAGES)[number];
+
+export const AGENT_SKILL_SYNC_STATES = ["ready", "syncing", "failed", "missing", "stale", "unknown"] as const;
+export type AgentSkillSyncState = (typeof AGENT_SKILL_SYNC_STATES)[number];
+
+export interface AgentSkillSnapshot {
+  readonly localVersion?: string;
+  readonly expectedVersion?: string;
+  readonly syncState: AgentSkillSyncState;
+  readonly checkedAt?: string;
+}
+
+export interface AgentResourceSnapshot {
+  readonly pid?: number;
+  readonly openFiles?: number;
+  readonly softLimit?: number;
+  readonly source?: string;
+  readonly checkedAt?: string;
+  readonly status: "ready" | "unavailable" | "unknown";
+  readonly reason?: string;
+}
+
+export interface DispatchDiagnosticSnapshot {
+  readonly nodeClientVersion?: string;
+  readonly agentVersion?: string;
+  readonly skill?: AgentSkillSnapshot;
+  readonly resource?: AgentResourceSnapshot;
+}
+
 // A node that has not checked in for this long is treated as offline and cannot
 // be dispatched to. Queueing work for a machine that is not listening looks the
 // same as dispatching successfully until someone notices nothing ever started.

@@ -832,49 +832,13 @@ final class CodexFileDescriptorGuardTests: XCTestCase {
         XCTAssertTrue(reason?.contains("daemon restart") == true)
     }
 
-    func testReadsTheLimitOnlyFromTheExpectedLaunchAgent() throws {
-        let plist: [String: Any] = [
-            "Label": CodexFileDescriptorGuard.launchAgentLabel,
-            "SoftResourceLimits": ["NumberOfFiles": 4096],
-        ]
-        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-        XCTAssertEqual(CodexFileDescriptorGuard.softLimit(fromLaunchAgentPlist: data), 4096)
-
-        let wrongLabel: [String: Any] = [
-            "Label": "com.example.unrelated",
-            "SoftResourceLimits": ["NumberOfFiles": 4096],
-        ]
-        let wrongData = try PropertyListSerialization.data(fromPropertyList: wrongLabel, format: .xml, options: 0)
-        XCTAssertNil(CodexFileDescriptorGuard.softLimit(fromLaunchAgentPlist: wrongData))
-    }
-
-    func testUsesTheLatestSuccessfulLaunchReceipt() {
-        let log = """
-        {"status":"started","pid":66122}
-        {"status":"alreadyRunning","pid":66122}
-        {"status":"started","pid":68039}
-        """
-        XCTAssertEqual(CodexFileDescriptorGuard.lastStartedPID(fromLaunchLog: log), 68039)
-        XCTAssertNil(CodexFileDescriptorGuard.lastStartedPID(fromLaunchLog: "{\"status\":\"alreadyRunning\",\"pid\":68039}"))
-    }
-
-    func testVerifiesTheReceiptPIDBeforeTrustingTheConfiguredLimit() throws {
-        let root = try shortTemporaryDirectory()
-        let plistPath = "\(root)/agent.plist"
-        let logPath = "\(root)/agent.log"
-        let plist: [String: Any] = [
-            "Label": CodexFileDescriptorGuard.launchAgentLabel,
-            "SoftResourceLimits": ["NumberOfFiles": 4096],
-        ]
-        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-            .write(to: URL(fileURLWithPath: plistPath))
-        try "{\"status\":\"started\",\"pid\":68039}\n".write(toFile: logPath, atomically: true, encoding: .utf8)
-
-        XCTAssertEqual(CodexFileDescriptorGuard.verifiedSoftLimit(
-            ownerPID: 68039, launchAgentPath: plistPath, launchLogPath: logPath
-        ), 4096)
-        XCTAssertNil(CodexFileDescriptorGuard.verifiedSoftLimit(
-            ownerPID: 68040, launchAgentPath: plistPath, launchLogPath: logPath
+    func testTrustsOnlyTheCurrentManagedDaemonIdentity() throws {
+        let data = Data(#"{"pid":68039,"processStartTime":"2026-09-22T12:00:00Z","executableIdentity":{"digest":[1,2,3]}}"#.utf8)
+        XCTAssertEqual(CodexFileDescriptorGuard.verifiedManagedSoftLimit(ownerPID: 68039, stateData: data), 4096)
+        XCTAssertNil(CodexFileDescriptorGuard.verifiedManagedSoftLimit(ownerPID: 68040, stateData: data))
+        XCTAssertNil(CodexFileDescriptorGuard.verifiedManagedSoftLimit(
+            ownerPID: 68039,
+            stateData: Data(#"{"pid":68039,"processStartTime":"","executableIdentity":{"digest":[]}}"#.utf8)
         ))
     }
 
@@ -888,13 +852,16 @@ final class CodexFileDescriptorGuardTests: XCTestCase {
         XCTAssertNil(reason)
     }
 
-    func testProbeFailuresFailOpen() async {
+    func testProbeFailuresFailClosedAndExposeTheSource() async {
         let guardrail = CodexFileDescriptorGuard(
             run: { _, _ in CommandResult(code: 1, stdout: "", stderr: "not permitted") },
-            softLimit: { _ in 256 }, openFiles: { _ in 255 }
+            softLimit: { _ in 256 }, openFiles: { _ in 255 }, managedStatePath: "/managed/app-server.pid"
         )
-        let reason = await guardrail.unavailableReason(socketPath: "/tmp/missing.sock")
-        XCTAssertNil(reason)
+        let snapshot = await guardrail.snapshot(socketPath: "/tmp/missing.sock")
+        XCTAssertEqual(snapshot?.status, "unavailable")
+        XCTAssertEqual(snapshot?.source, "/managed/app-server.pid")
+        XCTAssertNotNil(snapshot?.checkedAt)
+        XCTAssertTrue(snapshot?.reason?.contains("暂停") == true)
     }
 
     func testMakesDescriptorExhaustionAndMcpTimeoutActionable() {
@@ -994,6 +961,13 @@ final class CodexLauncherTests: XCTestCase {
         let repoPath = "\(root)/repo"
         try FileManager.default.createDirectory(atPath: "\(repoPath)/.git", withIntermediateDirectories: true)
         let listener = socket ? try listeningSocket(at: location.controlSocketPath) : nil
+        if socket {
+            let daemonDirectory = "\(codexHome)/app-server-daemon"
+            try FileManager.default.createDirectory(atPath: daemonDirectory, withIntermediateDirectories: true)
+            try Data("""
+            {"pid":\(getpid()),"processStartTime":"test-process","executableIdentity":{"digest":[1]}}
+            """.utf8).write(to: URL(fileURLWithPath: "\(daemonDirectory)/app-server.pid"))
+        }
         return (location, repoPath, listener)
     }
 

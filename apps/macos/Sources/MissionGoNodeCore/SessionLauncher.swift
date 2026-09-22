@@ -14,6 +14,8 @@ public protocol AgentAdapter: Sendable {
     /// Temporary pressure must pause claiming, not turn queued work into a
     /// failed dispatch after the server has already handed it over.
     func dispatchAvailability() async -> AgentDispatchAvailability
+    /// Structured health captured with the heartbeat and copied onto a dispatch.
+    func resourceSnapshot() async -> AgentResourceSnapshot?
     /// Throws with a human-readable reason; the loop reports it as the failure.
     func launch(_ job: DispatchJob) async throws -> LaunchResult
     /// Mirrors an already launched session and, when it is idle, delivers the
@@ -27,6 +29,8 @@ public protocol AgentAdapter: Sendable {
 
 public extension AgentAdapter {
     func dispatchAvailability() async -> AgentDispatchAvailability { .ready }
+
+    func resourceSnapshot() async -> AgentResourceSnapshot? { nil }
 
     func availableModels() async -> [AgentModelOption]? { nil }
 
@@ -105,9 +109,13 @@ public struct LaunchResult: Equatable, Sendable {
 
 public struct LaunchError: Error, Equatable, LocalizedError {
     public let message: String
+    public let failureCode: String
+    public let failureStage: String
 
-    public init(_ message: String) {
+    public init(_ message: String, failureCode: String = "unknown", failureStage: String = "unknown") {
         self.message = message
+        self.failureCode = failureCode
+        self.failureStage = failureStage
     }
 
     public var errorDescription: String? {
@@ -145,6 +153,7 @@ public struct SessionLauncher: AgentAdapter {
     let sessionUrlTimeout: TimeInterval
     let hostExecutable: String?
     let sessionsDirectory: String
+    let terminateHost: @Sendable (Int32) async -> Bool
 
     public init(
         environment: ShellEnvironment,
@@ -153,7 +162,8 @@ public struct SessionLauncher: AgentAdapter {
         logsDirectory: String? = nil,
         sessionUrlTimeout: TimeInterval = SessionLauncher.sessionUrlTimeout,
         hostExecutable: String? = ClaudeHostLocation.executable(),
-        sessionsDirectory: String? = nil
+        sessionsDirectory: String? = nil,
+        terminateHost: @escaping @Sendable (Int32) async -> Bool = { await ClaudeHostProcess.terminateGroupAndWait($0) }
     ) {
         self.environment = environment
         self.run = run ?? Commands.runner(environment: environment)
@@ -162,6 +172,7 @@ public struct SessionLauncher: AgentAdapter {
         self.sessionUrlTimeout = sessionUrlTimeout
         self.hostExecutable = hostExecutable
         self.sessionsDirectory = sessionsDirectory ?? ClaudeHostStore.defaultRoot(home: home)
+        self.terminateHost = terminateHost
     }
 
     /// `~/Library/Logs/MissionGo`, where Console.app looks for an app's logs.
@@ -602,8 +613,57 @@ public struct SessionLauncher: AgentAdapter {
 
     private func synchronize(_ session: NodeAgentSession, state: ClaudeHostState, statePath: String) async throws -> AgentSessionReport {
         var state = state
+        if session.restoreInSource {
+            if let hostPid = state.hostPid, ClaudeHostProcess.isClaudeHost(hostPid) {
+                return AgentSessionReport(
+                    status: state.status, messages: state.messages, activities: state.activities,
+                    error: state.error, sourceRestored: true, sessionUrl: state.sessionUrl,
+                    activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
+                )
+            }
+            let configPath = ClaudeHostStore.configPath(root: sessionsDirectory, sessionRef: session.sessionRef)
+            let config = try JSONDecoder().decode(
+                ClaudeHostConfiguration.self,
+                from: Data(contentsOf: URL(fileURLWithPath: configPath))
+            )
+            let process = try startHost(configPath: configPath, logPath: config.logPath)
+            state.status = "active"
+            state.hostPid = process.processIdentifier
+            state.error = nil
+            state.lastProgressAt = Date()
+            try ClaudeHostFiles.write(state, to: statePath)
+            return AgentSessionReport(
+                status: state.status, messages: state.messages, activities: state.activities,
+                sourceRestored: true, sessionUrl: state.sessionUrl,
+                activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
+            )
+        }
         if session.lifecycle == "close" {
-            if let hostPid = state.hostPid { ClaudeHostProcess.terminateGroup(hostPid) }
+            guard let hostPid = state.hostPid else {
+                if state.status == "suspended" {
+                    return AgentSessionReport(
+                        status: state.status, messages: state.messages, activities: state.activities,
+                        error: state.error, sourceArchived: true, sessionUrl: state.sessionUrl,
+                        activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
+                    )
+                }
+                return AgentSessionReport(
+                    status: state.status, messages: state.messages, activities: state.activities,
+                    error: state.error,
+                    sourceArchiveError: "旧版 Claude 会话没有可核验的宿主 PID，未执行可能误伤其他进程的归档。",
+                    sessionUrl: state.sessionUrl,
+                    activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
+                )
+            }
+            guard await terminateHost(hostPid) else {
+                return AgentSessionReport(
+                    status: state.status, messages: state.messages, activities: state.activities,
+                    error: state.error,
+                    sourceArchiveError: "Claude 会话进程组未能安全停止，归档未完成。",
+                    sessionUrl: state.sessionUrl,
+                    activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
+                )
+            }
             state.status = "suspended"
             state.hostPid = nil
             state.idleSince = nil
@@ -615,6 +675,7 @@ public struct SessionLauncher: AgentAdapter {
                 messages: state.messages,
                 activities: state.activities,
                 error: state.error,
+                sourceArchived: true,
                 sessionUrl: state.sessionUrl,
                 activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )

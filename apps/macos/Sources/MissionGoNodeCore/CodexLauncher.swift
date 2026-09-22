@@ -2,9 +2,12 @@ import Darwin
 import Foundation
 
 public protocol CodexResourceChecking: Sendable {
-    /// Returns a reason only when pressure is positively identified. Probe
-    /// failures fail open: normal preflight still protects the actual launch.
     func unavailableReason(socketPath: String) async -> String?
+    func snapshot(socketPath: String) async -> AgentResourceSnapshot?
+}
+
+public extension CodexResourceChecking {
+    func snapshot(socketPath: String) async -> AgentResourceSnapshot? { nil }
 }
 
 /// The app-server opens files, sockets and subprocess pipes for every active
@@ -12,9 +15,13 @@ public protocol CodexResourceChecking: Sendable {
 /// reserve prevents the next MCP startup from crossing that hard boundary.
 public struct CodexFileDescriptorGuard: CodexResourceChecking {
     public static let minimumReserve = 64
-    static let launchAgentLabel = "com.missiongo.codex-app-server-limits"
+    /// The official managed daemon raises RLIMIT_NOFILE before exec and records
+    /// the exact process identity in app-server.pid. Never apply this contract
+    /// to an unrelated process merely because it owns a similarly named socket.
+    static let managedDaemonSoftLimit = 4096
 
     private let run: CommandRunner
+    private let managedStatePath: String
     private let softLimit: @Sendable (Int32) -> Int?
     private let openFiles: @Sendable (Int32) -> Int?
 
@@ -24,36 +31,60 @@ public struct CodexFileDescriptorGuard: CodexResourceChecking {
         home: String = Paths.homeDirectory()
     ) {
         let resolvedLocation = location ?? CodexLocation(environment: environment, home: home)
-        let launchAgentPath = "\(home)/Library/LaunchAgents/\(Self.launchAgentLabel).plist"
-        let launchLogPath = "\(resolvedLocation.codexHome)/app-server-control/launch-agent.log"
+        let statePath = "\(resolvedLocation.codexHome)/app-server-daemon/app-server.pid"
         self.init(
             run: Commands.runner(environment: environment),
             softLimit: { pid in
-                Self.verifiedSoftLimit(
-                    ownerPID: pid,
-                    launchAgentPath: launchAgentPath,
-                    launchLogPath: launchLogPath
-                )
+                guard let data = FileManager.default.contents(atPath: statePath) else { return nil }
+                return Self.verifiedManagedSoftLimit(ownerPID: pid, stateData: data)
             },
-            openFiles: { Self.processOpenFileCount($0) }
+            openFiles: { Self.processOpenFileCount($0) },
+            managedStatePath: statePath
         )
     }
 
     init(
         run: @escaping CommandRunner,
         softLimit: @escaping @Sendable (Int32) -> Int?,
-        openFiles: @escaping @Sendable (Int32) -> Int?
+        openFiles: @escaping @Sendable (Int32) -> Int?,
+        managedStatePath: String = "managed-daemon-state"
     ) {
         self.run = run
         self.softLimit = softLimit
         self.openFiles = openFiles
+        self.managedStatePath = managedStatePath
     }
 
     public func unavailableReason(socketPath: String) async -> String? {
-        guard let pid = await ownerPID(socketPath: socketPath),
-              let used = openFiles(pid), let limit = softLimit(pid)
-        else { return nil }
-        return Self.unavailableReason(openFiles: used, softLimit: limit)
+        let health = await snapshot(socketPath: socketPath)
+        return health?.status == "unavailable" ? health?.reason : nil
+    }
+
+    public func snapshot(socketPath: String) async -> AgentResourceSnapshot? {
+        let checkedAt = ISO8601DateFormatter().string(from: Date())
+        guard let pid = await ownerPID(socketPath: socketPath) else {
+            return AgentResourceSnapshot(
+                source: managedStatePath, checkedAt: checkedAt, status: "unavailable",
+                reason: "无法核实 Codex managed daemon 的当前进程；MissionGo 已暂停 Codex 派单。"
+            )
+        }
+        guard let limit = softLimit(pid) else {
+            return AgentResourceSnapshot(
+                pid: pid, source: managedStatePath, checkedAt: checkedAt, status: "unavailable",
+                reason: "Codex managed daemon 状态凭据缺失、过期或与控制 socket 的 PID 不一致；MissionGo 已暂停派单。"
+            )
+        }
+        guard let used = openFiles(pid) else {
+            return AgentResourceSnapshot(
+                pid: pid, softLimit: limit, source: managedStatePath, checkedAt: checkedAt, status: "unavailable",
+                reason: "无法读取 Codex managed daemon 的文件描述符数量；MissionGo 已暂停派单。"
+            )
+        }
+        let reason = Self.unavailableReason(openFiles: used, softLimit: limit)
+        return AgentResourceSnapshot(
+            pid: pid, openFiles: used, softLimit: limit, source: managedStatePath, checkedAt: checkedAt,
+            status: reason == nil ? "ready" : "unavailable", reason: reason
+        )
     }
 
     static func unavailableReason(openFiles: Int, softLimit: Int) -> String? {
@@ -77,53 +108,15 @@ public struct CodexFileDescriptorGuard: CodexResourceChecking {
         return Self.ownerPID(fromLsof: result.stdout)
     }
 
-    /// macOS does not expose another process's per-process `RLIMIT_NOFILE` to
-    /// an ordinary caller. Reading MissionGo's own limit would compare values
-    /// from two different processes and can falsely pause a healthy daemon.
-    /// Trust the configured limit only when the launch receipt proves that the
-    /// LaunchAgent started the exact PID currently owning the control socket.
-    static func verifiedSoftLimit(ownerPID: Int32, launchAgentPath: String, launchLogPath: String) -> Int? {
-        guard let log = tail(path: launchLogPath), lastStartedPID(fromLaunchLog: log) == ownerPID,
-              let data = try? Data(contentsOf: URL(fileURLWithPath: launchAgentPath))
+    static func verifiedManagedSoftLimit(ownerPID: Int32, stateData: Data) -> Int? {
+        guard let object = try? JSONSerialization.jsonObject(with: stateData) as? [String: Any],
+              let number = object["pid"] as? NSNumber,
+              number.int64Value == Int64(ownerPID),
+              let started = object["processStartTime"] as? String, !started.isEmpty,
+              let identity = object["executableIdentity"] as? [String: Any],
+              let digest = identity["digest"] as? [Any], !digest.isEmpty
         else { return nil }
-        return softLimit(fromLaunchAgentPlist: data)
-    }
-
-    static func softLimit(fromLaunchAgentPlist data: Data) -> Int? {
-        guard let root = try? PropertyListSerialization.propertyList(from: data, format: nil),
-              let dictionary = root as? [String: Any],
-              dictionary["Label"] as? String == launchAgentLabel,
-              let limits = dictionary["SoftResourceLimits"] as? [String: Any],
-              let number = limits["NumberOfFiles"] as? NSNumber
-        else { return nil }
-        let value = number.intValue
-        return value > minimumReserve ? value : nil
-    }
-
-    static func lastStartedPID(fromLaunchLog log: String) -> Int32? {
-        for line in log.split(whereSeparator: \.isNewline).reversed() {
-            guard let data = String(line).data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  object["status"] as? String == "started",
-                  let number = object["pid"] as? NSNumber,
-                  number.int64Value > 0, number.int64Value <= Int64(Int32.max)
-            else { continue }
-            return Int32(number.int64Value)
-        }
-        return nil
-    }
-
-    private static func tail(path: String, maximumBytes: UInt64 = 64 * 1024) -> String? {
-        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
-        defer { try? handle.close() }
-        guard let size = try? handle.seekToEnd() else { return nil }
-        let offset = size > maximumBytes ? size - maximumBytes : 0
-        do {
-            try handle.seek(toOffset: offset)
-            return String(decoding: try handle.readToEnd() ?? Data(), as: UTF8.self)
-        } catch {
-            return nil
-        }
+        return managedDaemonSoftLimit
     }
 
     private static func processOpenFileCount(_ pid: Int32) -> Int? {
@@ -193,6 +186,10 @@ public struct CodexLocation: Equatable, Sendable {
 /// counterpart of `Preflight`, with the same rule: say what is missing and how
 /// to fix it, because nobody is at the machine to see it go wrong.
 public enum CodexPreflight {
+    public enum Result: Equatable, Sendable {
+        case ok(version: String)
+        case failed(LaunchError)
+    }
     public enum McpState: Equatable, Sendable {
         case ready
         case missing
@@ -291,36 +288,63 @@ public enum CodexPreflight {
         serverUrl: String?,
         run: CommandRunner,
         daemonWait: TimeInterval = 5
-    ) async -> Preflight.Result {
+    ) async -> Result {
         guard let binary = CodexLocation.binary(environment: environment),
               let version = await version(binary: binary, run: run)
         else {
-            return .failed(reason: "本机找不到可用的 codex 命令：确认已安装 ChatGPT App 或 Codex CLI。")
+            return .failed(LaunchError(
+                "本机找不到可用的 codex 命令：确认已安装 ChatGPT App 或 Codex CLI。",
+                failureCode: "cli_missing", failureStage: "preflight"
+            ))
         }
         switch await isLoggedIn(binary: binary, run: run) {
         case true?: break
-        case false?: return .failed(reason: "Codex 未登录：在本机运行 codex login，或在 ChatGPT App 里登录后再派单。")
-        case nil: return .failed(reason: "无法读取 codex login status 的输出，无法确认登录状态。")
+        case false?: return .failed(LaunchError(
+            "Codex 未登录：在本机运行 codex login，或在 ChatGPT App 里登录后再派单。",
+            failureCode: "agent_auth_invalid", failureStage: "preflight"
+        ))
+        case nil: return .failed(LaunchError(
+            "无法读取 codex login status 的输出，无法确认登录状态。",
+            failureCode: "agent_auth_invalid", failureStage: "preflight"
+        ))
         }
         if let problem = Preflight.repositoryProblem(repoPath) {
-            return .failed(reason: problem)
+            return .failed(LaunchError(problem, failureStage: "preflight"))
         }
         if case let .failed(output) = await ensureDaemon(binary: binary, location: location, run: run, wait: daemonWait) {
-            return .failed(reason: "连不上 Codex 的控制通道（\(location.controlSocketPath)）：它由 codex app-server daemon 提供，MissionGo 自动运行 \(daemonStartCommand) 后仍然没有连上（\(output)）。在本机终端运行这条命令查看原因。")
+            return .failed(LaunchError(
+                "连不上 Codex 的控制通道（\(location.controlSocketPath)）：它由 codex app-server daemon 提供，MissionGo 自动运行 \(daemonStartCommand) 后仍然没有连上（\(output)）。在本机终端运行这条命令查看原因。",
+                failureCode: "daemon_down", failureStage: "daemon"
+            ))
         }
         switch await mcpState(binary: binary, run: run) {
         case .ready: break
         case .missing:
-            return .failed(reason: "Codex 还没有配置 missiongo MCP：在终端运行 \(mcpSetupCommand(serverUrl: serverUrl))")
+            return .failed(LaunchError(
+                "Codex 还没有配置 missiongo MCP：在终端运行 \(mcpSetupCommand(serverUrl: serverUrl))",
+                failureCode: "mcp_auth", failureStage: "mcp"
+            ))
         case .disabled:
-            return .failed(reason: "Codex 的 missiongo MCP 处于停用状态：在 ~/.codex/config.toml 里启用它。")
+            return .failed(LaunchError(
+                "Codex 的 missiongo MCP 处于停用状态：在 ~/.codex/config.toml 里启用它。",
+                failureCode: "mcp_auth", failureStage: "mcp"
+            ))
         case .notLoggedIn:
-            return .failed(reason: "Codex 的 missiongo MCP 还没有登录：在终端运行 codex mcp login missiongo")
+            return .failed(LaunchError(
+                "Codex 的 missiongo MCP 还没有登录：在终端运行 codex mcp login missiongo",
+                failureCode: "mcp_auth", failureStage: "mcp"
+            ))
         case .unreadable:
-            return .failed(reason: "无法读取 codex mcp list 的输出，无法确认 missiongo MCP 是否已配置。")
+            return .failed(LaunchError(
+                "无法读取 codex mcp list 的输出，无法确认 missiongo MCP 是否已配置。",
+                failureCode: "mcp_auth", failureStage: "mcp"
+            ))
         }
         guard Paths.exists(location.skillPath) else {
-            return .failed(reason: "Codex 里还没有 missiongo Skill（\(location.skillPath)）：MissionGo 会自动同步，稍后再派单。")
+            return .failed(LaunchError(
+                "Codex 里还没有 missiongo Skill（\(location.skillPath)）：MissionGo 会自动同步，稍后再派单。",
+                failureCode: "skill_stale", failureStage: "readiness"
+            ))
         }
         return .ok(version: version)
     }
@@ -415,6 +439,10 @@ public struct CodexLauncher: AgentAdapter {
         return .ready
     }
 
+    public func resourceSnapshot() async -> AgentResourceSnapshot? {
+        return await resources.snapshot(socketPath: location.controlSocketPath)
+    }
+
     public func launch(_ job: DispatchJob) async throws -> LaunchResult {
         guard let settings = CodexModes.threadSettings(for: job.mode) else {
             throw LaunchError("不支持的 Codex 模式：\(JSONValues.quote(job.mode))")
@@ -422,20 +450,23 @@ public struct CodexLauncher: AgentAdapter {
         if let problem = AgentModelSettings.problem(model: job.model, effort: job.effort) {
             throw LaunchError(problem)
         }
-        if case let .failed(reason) = await CodexPreflight.check(
+        if case let .failed(error) = await CodexPreflight.check(
             repoPath: job.repoPath, environment: environment, location: location, serverUrl: serverUrl, run: run,
             daemonWait: daemonWait
         ) {
-            throw LaunchError(reason)
+            throw error
         }
         if case let .unavailable(reason) = await dispatchAvailability() {
-            throw LaunchError(reason)
+            throw LaunchError(reason, failureCode: "resource_exhausted", failureStage: "readiness")
         }
 
         let worktreePath = try CodexWorkspace.worktreePath(repoPath: job.repoPath, dispatchId: job.dispatchId)
         guard let skill = try? String(contentsOfFile: location.skillPath, encoding: .utf8),
               let skillVersion = SkillSync.version(ofSkill: skill) else {
-            throw LaunchError("无法读取 Codex 的 MissionGo Skill 版本，请等待 Skill 同步完成再派单。")
+            throw LaunchError(
+                "无法读取 Codex 的 MissionGo Skill 版本，请等待 Skill 同步完成再派单。",
+                failureCode: "skill_stale", failureStage: "readiness"
+            )
         }
         let prompt = try LaunchPrompt.build(
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys,
@@ -456,7 +487,7 @@ public struct CodexLauncher: AgentAdapter {
                 effort: job.effort
             ))
         } catch {
-            throw LaunchError(CodexFailure.explain(error))
+            throw CodexFailure.launchError(error)
         }
         return LaunchResult(
             sessionName: sessionName,
@@ -655,6 +686,37 @@ public struct CodexLauncher: AgentAdapter {
 }
 
 enum CodexFailure {
+    static func launchError(_ error: Error) -> LaunchError {
+        let message = explain(error)
+        guard let control = error as? CodexControlError else {
+            return LaunchError(message, failureStage: "thread_start")
+        }
+        switch control {
+        case .skillStale:
+            return LaunchError(message, failureCode: "skill_stale", failureStage: "readiness")
+        case .mcpAuthorization:
+            return LaunchError(message, failureCode: "mcp_auth", failureStage: "mcp")
+        case let .timedOut(method) where method == "mcpServer/tool/call":
+            return LaunchError(message, failureCode: "mcp_timeout", failureStage: "mcp")
+        case let .rpc(method, _) where method == "mcpServer/tool/call":
+            return LaunchError(
+                message,
+                failureCode: isMissionGoStartupTimeout(control) ? "mcp_timeout" : "mcp_auth",
+                failureStage: "mcp"
+            )
+        case .connect, .handshake, .closed:
+            return LaunchError(message, failureCode: "daemon_down", failureStage: "daemon")
+        default:
+            return LaunchError(message, failureCode: "unknown", failureStage: "thread_start")
+        }
+    }
+
+    private static func isMissionGoStartupTimeout(_ error: CodexControlError) -> Bool {
+        guard case let .rpc(method, message) = error, method == "mcpServer/tool/call" else { return false }
+        let normalized = message.lowercased()
+        return normalized.contains("mcp startup failed") && normalized.contains("timed out")
+    }
+
     static func explain(_ error: Error) -> String {
         let message = error.localizedDescription
         let lower = message.lowercased()

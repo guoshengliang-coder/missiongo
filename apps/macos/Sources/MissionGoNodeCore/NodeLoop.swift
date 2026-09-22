@@ -106,6 +106,7 @@ final class StopSignal: @unchecked Sendable {
 /// the first failed request would be down long before anyone noticed, and the
 /// console would only show the machine as offline hours later.
 public final class NodeLoop: @unchecked Sendable {
+    public typealias SkillReadiness = @Sendable (_ agentKind: String, _ expectedVersion: String?) async -> AgentSkillSnapshot
     public struct Timing: Sendable {
         public var heartbeatInterval: TimeInterval = 30
         /// How long the server is asked to hold a poll open. Work is handed over
@@ -149,6 +150,7 @@ public final class NodeLoop: @unchecked Sendable {
     let timing: Timing
     let log: @Sendable (String) -> Void
     let onState: @Sendable (NodeLoopState) -> Void
+    let skillReadiness: SkillReadiness?
 
     private let state = Locked(NodeLoopState())
     private let stateContinuation: AsyncStream<NodeLoopState>.Continuation
@@ -164,6 +166,7 @@ public final class NodeLoop: @unchecked Sendable {
     }
     private let capacity = Locked(CapacityState())
     private let unavailableAgents = Locked<[String: String]>([:])
+    private let skillReadyAgents = Locked<Set<String>>([])
 
     public init(
         api: NodeAPI,
@@ -171,6 +174,7 @@ public final class NodeLoop: @unchecked Sendable {
         fallbackNodeName: String,
         detectRepoCandidates: @escaping @Sendable () -> [RepoCandidate] = { [] },
         timing: Timing = Timing(),
+        skillReadiness: SkillReadiness? = nil,
         log: @escaping @Sendable (String) -> Void = { NSLog("%@", $0) },
         onState: @escaping @Sendable (NodeLoopState) -> Void = { _ in }
     ) {
@@ -179,6 +183,7 @@ public final class NodeLoop: @unchecked Sendable {
         self.fallbackNodeName = fallbackNodeName
         self.detectRepoCandidates = detectRepoCandidates
         self.timing = timing
+        self.skillReadiness = skillReadiness
         self.log = log
         self.onState = onState
         let (stream, continuation) = AsyncStream.makeStream(of: NodeLoopState.self, bufferingPolicy: .bufferingNewest(1))
@@ -231,14 +236,25 @@ public final class NodeLoop: @unchecked Sendable {
             await shielded {
                 do {
                     let detectedAgents = await self.detectAgents()
-                    let availableKinds = Set(await self.availableAgentKinds())
-                    // Heartbeats drive the dispatch UI. Do not advertise an
-                    // installed-but-pressured adapter as a valid new target.
-                    let agents = await self.withModels(detectedAgents.filter { availableKinds.contains($0.kind) })
+                    var agents = await self.heartbeatAgents(
+                        detectedAgents,
+                        expectedSkillVersion: self.currentState.expectedSkillVersion
+                    )
                     // The app supplies an in-memory list of mapped repositories.
                     // Heartbeats must not probe historical project directories.
                     let candidates = self.detectRepoCandidates()
-                    let beat = try await self.api.heartbeat(agents: agents, repoCandidates: candidates)
+                    var beat = try await self.api.heartbeat(agents: agents, repoCandidates: candidates)
+                    // The first response after a server upgrade carries the new
+                    // required version. Synchronize inside the loop and publish
+                    // the corrected readiness immediately, rather than leaving a
+                    // 30-second window in which claimLoop can take stale work.
+                    if beat.expectedSkillVersion != self.currentState.expectedSkillVersion {
+                        agents = await self.heartbeatAgents(
+                            detectedAgents,
+                            expectedSkillVersion: beat.expectedSkillVersion
+                        )
+                        beat = try await self.api.heartbeat(agents: agents, repoCandidates: candidates)
+                    }
                     self.noteReposChanged(beat.repos)
                     self.update {
                         $0.connection = .online
@@ -355,6 +371,16 @@ public final class NodeLoop: @unchecked Sendable {
     private func availableAgentKinds() async -> [String] {
         var available: [String] = []
         for adapter in adapters {
+            if skillReadiness != nil && !skillReadyAgents.current.contains(adapter.kind) {
+                let reason = "MissionGo Skill 尚未同步到服务端要求的版本。"
+                let changed = unavailableAgents.withLock { previous -> Bool in
+                    if previous[adapter.kind] == reason { return false }
+                    previous[adapter.kind] = reason
+                    return true
+                }
+                if changed { log("暂停领取 \(adapter.kind) 派单：\(reason)") }
+                continue
+            }
             switch await adapter.dispatchAvailability() {
             case .ready:
                 available.append(adapter.kind)
@@ -431,17 +457,47 @@ public final class NodeLoop: @unchecked Sendable {
         return detected
     }
 
-    /// Attaches each agent's model list. Kept out of `detectAgents`, whose
-    /// five-minute cache is about sparing a process: each adapter caches its
-    /// own list for as long as that list is worth keeping.
-    private func withModels(_ agents: [DetectedAgent]) async -> [DetectedAgent] {
-        var result: [DetectedAgent] = []
-        for agent in agents {
-            let adapter = adapters.first(where: { $0.kind == agent.kind })
-            let models = await adapter?.availableModels()
-            result.append(DetectedAgent(kind: agent.kind, version: agent.version, models: models))
+    private func heartbeatAgents(
+        _ detected: [DetectedAgent],
+        expectedSkillVersion: String?
+    ) async -> [DetectedAgent] {
+        var reports: [DetectedAgent] = []
+        var readyKinds = Set<String>()
+        for agent in detected {
+            guard let adapter = adapters.first(where: { $0.kind == agent.kind }) else { continue }
+            let skill = await skillReadiness?(agent.kind, expectedSkillVersion)
+            let resource = await adapter.resourceSnapshot()
+            let skillReady = skillReadiness == nil || (
+                expectedSkillVersion != nil
+                    && skill?.syncState == "ready"
+                    && skill?.localVersion == expectedSkillVersion
+            )
+            let availabilityReason: String?
+            if let resource {
+                availabilityReason = resource.status == "unavailable"
+                    ? resource.reason ?? "Agent resource readiness could not be verified."
+                    : nil
+            } else {
+                switch await adapter.dispatchAvailability() {
+                case .ready: availabilityReason = nil
+                case let .unavailable(reason): availabilityReason = reason
+                }
+            }
+            let ready = skillReady && availabilityReason == nil && resource?.status != "unavailable"
+            if ready { readyKinds.insert(agent.kind) }
+            let reason = availabilityReason ?? resource?.reason ?? (skillReady ? nil : "MissionGo Skill 尚未同步。")
+            reports.append(DetectedAgent(
+                kind: agent.kind,
+                version: agent.version,
+                models: await adapter.availableModels(),
+                ready: skillReadiness == nil && resource == nil && availabilityReason == nil ? nil : ready,
+                unavailableReason: reason,
+                skill: skill,
+                resource: resource
+            ))
         }
-        return result
+        skillReadyAgents.withLock { $0 = readyKinds }
+        return reports
     }
 
     /// The mapping is configured in the console or the menu, so logging it when
@@ -463,7 +519,12 @@ public final class NodeLoop: @unchecked Sendable {
     /// the console as "the machine took it and is working on it".
     func launchDispatch(_ request: DispatchRequest) async -> (DispatchReport, String?) {
         guard let adapter = adapters.first(where: { $0.kind == request.agentKind }) else {
-            return (DispatchReport(status: .failed, error: "本机没有 \(request.agentKind) 的适配器。"), nil)
+            return (DispatchReport(
+                status: .failed,
+                error: "本机没有 \(request.agentKind) 的适配器。",
+                failureCode: "unknown",
+                failureStage: "readiness"
+            ), nil)
         }
         let choice = [request.model, request.effort].compactMap { $0 }.joined(separator: "/")
         log("派单 \(request.dispatchId)：\(request.itemKeys.joined(separator: "、"))（\(request.agentKind)/\(request.mode)\(choice.isEmpty ? "" : "/\(choice)")）于 \(request.repoPath)")
@@ -501,7 +562,13 @@ public final class NodeLoop: @unchecked Sendable {
         } catch {
             let reason = error.localizedDescription
             log("派单 \(request.dispatchId) 启动失败：\(reason)")
-            return (DispatchReport(status: .failed, error: reason), nil)
+            let launchError = error as? LaunchError
+            return (DispatchReport(
+                status: .failed,
+                error: reason,
+                failureCode: launchError?.failureCode ?? "unknown",
+                failureStage: launchError?.failureStage ?? "unknown"
+            ), nil)
         }
     }
 

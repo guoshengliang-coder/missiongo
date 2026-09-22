@@ -21,8 +21,10 @@ import {
 import { api } from "./api";
 import {
   activityLabelKey,
+  agentSessionDetailRefetchInterval,
   agentSessionMatches,
   archivableVisibleSessionIds,
+  byLatestActivity,
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
@@ -35,7 +37,6 @@ import {
   resolvedAgentSessionId,
   shouldMarkRead,
   shouldResetMessageView,
-  unreadFirst,
   type AgentKindFilter,
   type AgentSessionFilter,
 } from "./agent-session-view";
@@ -45,7 +46,7 @@ import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
 import { MarkdownText } from "./markdown-text";
 import { SessionLink } from "./session-link";
-import type { AgentSession, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary } from "./types";
+import type { AgentSession, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary, Dispatch } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
@@ -111,6 +112,15 @@ function dispatchActivityLabel(session: AgentSessionSummary, t: ReturnType<typeo
   return session.agentKind === "claude_code"
     ? t("agentConsoleClaudeManaged")
     : t("agentConsoleDispatchLaunched");
+}
+
+function dispatchVersion(dispatch: Dispatch): string {
+  const snapshot = dispatch.diagnosticSnapshot;
+  return [
+    snapshot?.nodeClientVersion && `client ${snapshot.nodeClientVersion}`,
+    snapshot?.agentVersion && `agent ${snapshot.agentVersion}`,
+    snapshot?.skill?.localVersion && `skill ${snapshot.skill.localVersion}`,
+  ].filter(Boolean).join(" / ") || "unknown";
 }
 
 function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof useI18n>["t"]): string {
@@ -180,13 +190,16 @@ export function AgentSessionConsole({
   const [followLatest, setFollowLatest] = useState(true);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
-  // The conversation the person clicked. Only that one counts as read: on a
-  // wide screen the first row is selected and shown automatically, and with
-  // unread rows first that would read the top one the moment the console opens.
+  // The conversation the person clicked. Only that one counts as read; merely
+  // opening the console or changing a filter never selects or reads a row.
   // (conversationOpen cannot tell: it only ever turns true on the one-pane layout.)
   const [openedSessionId, setOpenedSessionId] = useState<string | null>(null);
   const [selectedForArchive, setSelectedForArchive] = useState<Set<string>>(new Set());
   const [bulkArchiveMessage, setBulkArchiveMessage] = useState<string | null>(null);
+  const [healthNode, setHealthNode] = useState("all");
+  const [healthAgent, setHealthAgent] = useState("all");
+  const [healthVersion, setHealthVersion] = useState("all");
+  const [healthCode, setHealthCode] = useState("all");
   const messagesRef = useRef<HTMLDivElement>(null);
   const observedSessionRef = useRef<string | null>(null);
   const conversationOpenRef = useRef(false);
@@ -213,7 +226,7 @@ export function AgentSessionConsole({
     archived: agentSessions.filter((session) => session.archivedAt).length,
   }), [agentSessions]);
   const visibleSessions = useMemo(
-    () => unreadFirst(sessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search))),
+    () => byLatestActivity(sessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search))),
     [agentFilter, filter, search, sessions],
   );
   const archivableIds = useMemo(() => archivableVisibleSessionIds(visibleSessions), [visibleSessions]);
@@ -266,9 +279,23 @@ export function AgentSessionConsole({
   const sessionQuery = useQuery({
     queryKey: ["agent-session", selected?.agentSessionId],
     queryFn: () => api.getAgentSession(selected!.agentSessionId!),
-    enabled: Boolean(selected?.agentSessionId),
-    refetchInterval: selected?.agentSessionId ? 2_000 : false,
+    enabled: Boolean(selected?.agentSessionId) && documentVisible,
+    refetchInterval: (query) => selected?.agentSessionId
+      ? agentSessionDetailRefetchInterval(documentVisible, query.state.fetchFailureCount)
+      : false,
   });
+  const healthQuery = useQuery({
+    queryKey: ["dispatch-health", 7],
+    queryFn: () => api.getDispatchHealth(7),
+    enabled: filter === "failed" && documentVisible,
+    refetchInterval: documentVisible ? 60_000 : false,
+  });
+  const healthFailures = useMemo(() => (healthQuery.data?.recentFailures ?? []).filter((dispatch) => (
+    (healthNode === "all" || dispatch.nodeName === healthNode)
+    && (healthAgent === "all" || dispatch.agentKind === healthAgent)
+    && (healthVersion === "all" || dispatchVersion(dispatch) === healthVersion)
+    && (healthCode === "all" || (dispatch.failureCode ?? "unknown") === healthCode)
+  )), [healthAgent, healthCode, healthNode, healthQuery.data?.recentFailures, healthVersion]);
   const send = useMutation({
     mutationFn: ({ sessionId, text }: { sessionId: string; text: string; occurredAt: string }) => api.sendAgentSessionCommand(sessionId, text),
     onMutate: () => {
@@ -450,13 +477,13 @@ export function AgentSessionConsole({
   };
   const chooseFilter = (next: AgentSessionFilter) => {
     setFilter(next);
-    const first = unreadFirst(sessions).find((session) => agentSessionMatches(session, next, agentFilter, search));
-    onSelectSession(first?.id ?? null, false);
+    if (selectedId && !sessions.some((session) => session.id === selectedId
+      && agentSessionMatches(session, next, agentFilter, search))) onSelectSession(null, false);
   };
   const chooseAgent = (next: AgentKindFilter) => {
     setAgentFilter(next);
-    const first = unreadFirst(sessions).find((session) => agentSessionMatches(session, filter, next, search));
-    onSelectSession(first?.id ?? null, false);
+    if (selectedId && !sessions.some((session) => session.id === selectedId
+      && agentSessionMatches(session, filter, next, search))) onSelectSession(null, false);
   };
 
   const filters: Array<{ key: AgentSessionFilter; icon: typeof BellRing; count: number; unread?: number; label: string }> = [
@@ -561,6 +588,38 @@ export function AgentSessionConsole({
           </div>
         )}
         {bulkArchiveMessage && <p className="agent-console-bulk-result" role="status">{bulkArchiveMessage}</p>}
+        {filter === "failed" && healthQuery.data && (
+          <section className="dispatch-health" aria-label={t("dispatchHealthTitle")}>
+            <header>
+              <strong>{t("dispatchHealthTitle")}</strong>
+              <span>{t("dispatchHealthSummary", {
+                failed: healthQuery.data.failed,
+                total: healthQuery.data.total,
+                rate: Math.round(healthQuery.data.failureRate * 100),
+              })}</span>
+            </header>
+            <div className="dispatch-health-filters">
+              {([
+                ["node", healthNode, setHealthNode, healthQuery.data.groups.nodes],
+                ["agent", healthAgent, setHealthAgent, healthQuery.data.groups.agents],
+                ["version", healthVersion, setHealthVersion, healthQuery.data.groups.versions],
+                ["code", healthCode, setHealthCode, healthQuery.data.groups.codes],
+              ] as const).map(([kind, value, update, options]) => (
+                <select key={kind} aria-label={t(`dispatchHealth${kind[0]!.toUpperCase()}${kind.slice(1)}` as "dispatchHealthNode")} value={value} onChange={(event) => update(event.target.value)}>
+                  <option value="all">{t(`dispatchHealthAll${kind[0]!.toUpperCase()}${kind.slice(1)}s` as "dispatchHealthAllNodes")}</option>
+                  {options.map((option) => <option key={option.key} value={option.key}>{option.key} ({option.failed}/{option.total})</option>)}
+                </select>
+              ))}
+            </div>
+            {healthFailures.slice(0, 5).map((dispatch) => (
+              <article key={dispatch.id} className="dispatch-health-failure">
+                <strong>{dispatch.itemKeys.join("、") || dispatch.id}</strong>
+                <span>{dispatch.nodeName} · {dispatch.agentKind} · {dispatch.failureCode ?? "unknown"}/{dispatch.failureStage ?? "unknown"}</span>
+                <small>{dispatch.error ?? t("dispatchHealthNoDetail")}</small>
+              </article>
+            ))}
+          </section>
+        )}
         <div className="agent-console-session-list">
           {!sessionsLoaded && !hasSessionsError && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
           {hasSessionsError && <p className="inline-error">{localizedErrorText(sessionsError, t)}</p>}
@@ -678,7 +737,11 @@ export function AgentSessionConsole({
                     disabled={archiveSession.isPending || pending}
                     onClick={() => {
                       const archived = Boolean(selected.archivedAt);
-                      if (archived || window.confirm(t("agentSessionArchiveConfirm"))) archiveSession.mutate(!archived);
+                      const confirmation = selected.agentKind === "claude_code"
+                        && (selected.status === "active" || selected.status === "stalled")
+                        ? t("agentSessionArchiveClaudeConfirm")
+                        : t("agentSessionArchiveConfirm");
+                      if (archived || window.confirm(confirmation)) archiveSession.mutate(!archived);
                     }}
                   >
                     {archiveSession.isPending

@@ -13,6 +13,7 @@ import type {
   ComponentKind,
   CreateWorkItemInput,
   Dispatch,
+  DispatchHealthSnapshot,
   DispatchDefaults,
   DispatchNode,
   NodeRepoMapping,
@@ -440,6 +441,7 @@ export const api = {
   // Ready items already sent to a machine and not yet claimed, so the list can
   // say so before somebody sends one again.
   listActiveDispatches: () => request<{ active: ActiveDispatch[]; latest: ItemDispatchSummary[] }>("/api/v1/dispatches/active"),
+  getDispatchHealth: (days = 7) => request<DispatchHealthSnapshot>(`/api/v1/dispatches/health?days=${days}`),
   listItemDispatches: (itemKey: string) =>
     request<{ dispatches: Dispatch[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/dispatches`),
   getAgentSession: (sessionId: string) =>
