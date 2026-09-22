@@ -145,6 +145,9 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
     /// it appears in this list, closing the poll/snapshot race.
     public let occupiesExecutionSlot: Bool
     public let command: AgentSessionCommand?
+    /// MissionGo archived this conversation because its work finished; archive
+    /// the Codex thread at the source too (AND-129). Older servers omit it.
+    public let archiveInSource: Bool
 
     public init(
         id: String,
@@ -154,7 +157,8 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
         status: String,
         lifecycle: String = "keep",
         occupiesExecutionSlot: Bool? = nil,
-        command: AgentSessionCommand? = nil
+        command: AgentSessionCommand? = nil,
+        archiveInSource: Bool = false
     ) {
         self.id = id
         self.dispatchId = dispatchId
@@ -164,10 +168,11 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
         self.lifecycle = lifecycle
         self.occupiesExecutionSlot = occupiesExecutionSlot ?? ["active", "stalled"].contains(status)
         self.command = command
+        self.archiveInSource = archiveInSource
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, dispatchId, agentKind, sessionRef, status, lifecycle, occupiesExecutionSlot, command
+        case id, dispatchId, agentKind, sessionRef, status, lifecycle, occupiesExecutionSlot, command, archiveInSource
     }
 
     public init(from decoder: Decoder) throws {
@@ -182,6 +187,7 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
         occupiesExecutionSlot = try values.decodeIfPresent(Bool.self, forKey: .occupiesExecutionSlot)
             ?? ["active", "stalled"].contains(status)
         command = try values.decodeIfPresent(AgentSessionCommand.self, forKey: .command)
+        archiveInSource = try values.decodeIfPresent(Bool.self, forKey: .archiveInSource) ?? false
     }
 }
 
@@ -240,13 +246,15 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let commandStatus: String?
     public let commandError: String?
     public let sourceArchived: Bool?
+    /// The source archive MissionGo asked for failed; the server stops asking.
+    public let sourceArchiveError: String?
     /// A resumed Claude session may receive a new Remote Control URL. The node
     /// reports the fresh, validated URL instead of leaving a dead link behind.
     public let sessionUrl: String?
     /// Last activity timestamp from the source conversation, not this mirror poll.
     public let activityAt: String?
 
-    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sessionUrl: String? = nil, activityAt: String? = nil) {
+    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sessionUrl: String? = nil, activityAt: String? = nil) {
         self.status = status
         self.messages = messages
         self.activities = activities
@@ -255,6 +263,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         self.commandStatus = commandStatus
         self.commandError = commandError
         self.sourceArchived = sourceArchived
+        self.sourceArchiveError = sourceArchiveError
         self.sessionUrl = sessionUrl
         self.activityAt = activityAt
     }

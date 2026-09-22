@@ -395,3 +395,65 @@ describe("database migrations", () => {
     migrated.close();
   });
 });
+
+describe("finished hand-off archive migration (AND-129)", () => {
+  it("archives conversations whose items had all finished before the release, once", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-auto-archive-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    const at = "2026-09-21T00:00:00.000Z";
+    seeded.connection.exec(`
+      INSERT INTO products (id, key_prefix, name, next_item_sequence, created_at, updated_at)
+      VALUES ('product-1', 'AND', 'Mission GO', 10, '${at}', '${at}');
+      INSERT INTO nodes (id, account_id, name, token_hash, created_at, updated_at)
+      VALUES ('node-1', 'account-1', 'Mac mini', 'token-hash', '${at}', '${at}');
+    `);
+    const item = seeded.connection.prepare(
+      `INSERT INTO work_items (id, product_id, item_key, sequence, type, priority, status, title, description, created_at, updated_at)
+       VALUES (?, 'product-1', ?, ?, 'task', 'normal', ?, 'T', 'D', '${at}', '${at}')`,
+    );
+    const dispatch = seeded.connection.prepare(
+      `INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+       VALUES (?, 'account-1', 'node-1', 'codex', 'plan', 'launched', '/repo', '${at}')`,
+    );
+    const link = seeded.connection.prepare("INSERT INTO dispatch_items (dispatch_id, item_id, position) VALUES (?, ?, ?)");
+    const session = seeded.connection.prepare(
+      `INSERT INTO agent_sessions (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at, activity_at)
+       VALUES (?, ?, 'node-1', 'codex', ?, 'idle', '${at}', '${at}', '${at}')`,
+    );
+    // finished: done + cancelled; open: done + in progress; cancelled-only: nothing accepted.
+    let sequence = 0;
+    for (const [name, statuses] of [
+      ["finished", ["done", "cancelled"]],
+      ["open", ["done", "in_progress"]],
+      ["cancelled", ["cancelled", "cancelled"]],
+    ] as const) {
+      dispatch.run(`dispatch-${name}`);
+      session.run(`session-${name}`, `dispatch-${name}`, `thread-${name}`);
+      statuses.forEach((status, index) => {
+        const id = `item-${name}-${index}`;
+        sequence += 1;
+        item.run(id, `AND-${sequence}`, sequence, status);
+        link.run(`dispatch-${name}`, id, index);
+      });
+    }
+    seeded.connection.exec("DELETE FROM schema_migrations WHERE version = 202609220610");
+    seeded.close();
+
+    const migrated = new MissionGoDatabase(path);
+    const archived = migrated.connection
+      .prepare("SELECT id, archive_source, archive_reason, activity_at FROM agent_sessions WHERE archived_at IS NOT NULL")
+      .all() as unknown as Array<{ id: string; archive_source: string; archive_reason: string; activity_at: string }>;
+    expect(archived).toEqual([
+      { id: "session-finished", archive_source: "missiongo", archive_reason: "auto", activity_at: at },
+    ]);
+    migrated.connection.exec("UPDATE agent_sessions SET archived_at = NULL, archive_reason = NULL");
+    migrated.close();
+    // Recorded once: reopening the database does not archive again.
+    const reopened = new MissionGoDatabase(path);
+    expect(reopened.connection.prepare("SELECT COUNT(*) AS count FROM agent_sessions WHERE archived_at IS NOT NULL").get())
+      .toEqual({ count: 0 });
+    reopened.close();
+  });
+});

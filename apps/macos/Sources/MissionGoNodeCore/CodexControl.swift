@@ -21,6 +21,7 @@ public protocol CodexControl: Sendable {
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws
     func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws
+    func archiveThread(socketPath: String, threadId: String) async throws
 }
 
 public extension CodexControl {
@@ -38,6 +39,10 @@ public extension CodexControl {
 
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
         throw CodexControlError.rpc(method: "turn/interrupt", message: "这个 Codex 控制器不支持中断会话。")
+    }
+
+    func archiveThread(socketPath: String, threadId: String) async throws {
+        throw CodexControlError.rpc(method: "thread/archive", message: "这个 Codex 控制器不支持归档会话。")
     }
 }
 
@@ -228,6 +233,10 @@ public enum CodexProtocol {
             return id
         })
         return (ids, result["nextCursor"] as? String)
+    }
+
+    public static func threadArchiveParams(threadId: String) -> [String: Any] {
+        return ["threadId": threadId]
     }
 
     public static func threadResumeParams(threadId: String) -> [String: Any] {
@@ -423,6 +432,21 @@ public struct CodexAppServerControl: CodexControl {
                     }
                     let result = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId))
                     return try CodexProtocol.threadSnapshot(fromRead: result)
+                })
+            }
+        }
+    }
+
+    public func archiveThread(socketPath: String, threadId: String) async throws {
+        let timeout = self.timeout
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result {
+                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                    defer { connection.close() }
+                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    try connection.notify("initialized")
+                    _ = try connection.call("thread/archive", CodexProtocol.threadArchiveParams(threadId: threadId))
                 })
             }
         }

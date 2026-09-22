@@ -2020,6 +2020,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(commandStatus ? { commandStatus } : {}),
       ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
       ...(typeof body.sourceArchived === "boolean" ? { sourceArchived: body.sourceArchived } : {}),
+      ...(stringField(body, "sourceArchiveError", false)
+        ? { sourceArchiveError: body.sourceArchiveError as string }
+        : {}),
       ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
       ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
     });

@@ -23,6 +23,7 @@ import {
   type WorkItemType,
 } from "@missiongo/domain";
 
+import { autoArchiveForItem } from "./auto-archive.js";
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { MissionGoDatabase } from "./storage/database.js";
 import {
@@ -1650,6 +1651,9 @@ export class MissionGoStore {
       now,
       attribution,
     );
+    // Every status write passes here, so this is the one place a hand-off can
+    // notice that its last open item just finished (AND-129).
+    if (to === "done" || to === "cancelled") autoArchiveForItem(this.database, current.id, now);
   }
 
   private getProductRow(productId: string): ProductRow | undefined {

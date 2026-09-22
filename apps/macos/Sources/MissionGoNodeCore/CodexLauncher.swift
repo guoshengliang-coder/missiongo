@@ -422,6 +422,25 @@ public struct CodexLauncher: AgentAdapter {
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         var snapshot = try await control.readThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        if session.archiveInSource {
+            // MissionGo archived this finished conversation; follow it at the
+            // source. Report the thread as it was, without the "restore it in
+            // Codex" error below: nobody is waiting on this conversation.
+            if !snapshot.archived {
+                do {
+                    try await control.archiveThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+                } catch {
+                    return AgentSessionReport(
+                        status: snapshot.status, messages: snapshot.messages,
+                        sourceArchiveError: CodexFailure.explain(error), activityAt: snapshot.activityAt
+                    )
+                }
+            }
+            return AgentSessionReport(
+                status: snapshot.archived ? "idle" : snapshot.status, messages: snapshot.messages,
+                sourceArchived: true, activityAt: snapshot.activityAt
+            )
+        }
         if snapshot.archived {
             return AgentSessionReport(
                 status: "unavailable",

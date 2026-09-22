@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { AUTO_ARCHIVE_BACKFILL_SQL } from "../auto-archive.js";
 import { INITIAL_SCHEMA } from "./schema.js";
 
 const LEGACY_CODEX_THREAD_LINK = /^codex:\/\/threads\/[A-Za-z0-9-]{1,100}$/;
@@ -1041,6 +1042,47 @@ export class MissionGoDatabase {
         this.connection
           .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
           .run(202609220600, new Date().toISOString());
+      });
+    }
+    // AND-129: a conversation whose items are all finished is archived by
+    // MissionGo itself. archive_reason marks those so a Codex thread can be
+    // archived at the source too and a person's restore sticks
+    // (auto_archive_suppressed). The backfill archives what had already
+    // finished before this release, once.
+    const autoArchiveMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609220610")
+      .get() as unknown as { version: number } | undefined;
+    const autoArchiveColumns: ReadonlyArray<readonly [string, ReadonlyArray<readonly [string, string]>]> = [
+      ["dispatches", [
+        ["archive_reason", "TEXT CHECK (archive_reason IN ('auto'))"],
+        ["auto_archive_suppressed", "INTEGER NOT NULL DEFAULT 0"],
+      ]],
+      ["agent_sessions", [
+        ["archive_reason", "TEXT CHECK (archive_reason IN ('auto'))"],
+        ["auto_archive_suppressed", "INTEGER NOT NULL DEFAULT 0"],
+        ["source_archived_at", "TEXT"],
+        ["source_archive_error", "TEXT"],
+      ]],
+    ];
+    const missingAutoArchiveColumns = autoArchiveColumns.flatMap(([table, columns]) => {
+      const existing = this.connection
+        .prepare(`PRAGMA table_info(${table})`)
+        .all() as unknown as Array<{ name: string }>;
+      return columns
+        .filter(([name]) => !existing.some((column) => column.name === name))
+        .map(([name, definition]) => `ALTER TABLE ${table} ADD COLUMN ${name} ${definition};`);
+    });
+    if (!autoArchiveMigration || missingAutoArchiveColumns.length > 0) {
+      this.transaction(() => {
+        missingAutoArchiveColumns.forEach((statement) => this.connection.exec(statement));
+        if (!autoArchiveMigration) {
+          const now = new Date().toISOString();
+          this.connection.prepare(AUTO_ARCHIVE_BACKFILL_SQL.sessions).run(now, now);
+          this.connection.prepare(AUTO_ARCHIVE_BACKFILL_SQL.dispatches).run(now);
+        }
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609220610, new Date().toISOString());
       });
     }
     this.connection.exec("PRAGMA optimize;");

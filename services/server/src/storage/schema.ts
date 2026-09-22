@@ -297,7 +297,9 @@ export const INITIAL_SCHEMA = `
     completed_at TEXT,
     archived_at TEXT,
     unread_at TEXT,
-    read_at TEXT
+    read_at TEXT,
+    archive_reason TEXT CHECK (archive_reason IN ('auto')),
+    auto_archive_suppressed INTEGER NOT NULL DEFAULT 0
   ) STRICT;
 
   CREATE TABLE IF NOT EXISTS dispatch_items (
@@ -323,7 +325,11 @@ export const INITIAL_SCHEMA = `
     updated_at TEXT NOT NULL,
     activity_at TEXT NOT NULL DEFAULT '',
     archived_at TEXT,
-    archive_source TEXT CHECK (archive_source IN ('missiongo', 'source'))
+    archive_source TEXT CHECK (archive_source IN ('missiongo', 'source')),
+    archive_reason TEXT CHECK (archive_reason IN ('auto')),
+    auto_archive_suppressed INTEGER NOT NULL DEFAULT 0,
+    source_archived_at TEXT,
+    source_archive_error TEXT
   ) STRICT;
 
   CREATE TABLE IF NOT EXISTS agent_session_messages (

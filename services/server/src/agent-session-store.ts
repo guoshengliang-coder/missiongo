@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
 import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
+import { autoArchiveFinishedDispatches } from "./auto-archive.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
@@ -120,6 +121,12 @@ export interface NodeAgentSession {
   readonly lifecycle: "keep" | "close";
   readonly occupiesExecutionSlot: boolean;
   readonly command?: AgentSessionCommand;
+  /**
+   * MissionGo archived this conversation because its work finished (AND-129);
+   * archive the Codex thread at the source as well. A separate flag rather than
+   * a new lifecycle value, because an older Mac would fail to decode one.
+   */
+  readonly archiveInSource?: true;
 }
 
 interface SessionRow {
@@ -133,6 +140,9 @@ interface SessionRow {
   archived_at: string | null;
   archive_source: "missiongo" | "source" | null;
   activities_json: string;
+  archive_reason?: "auto" | null;
+  source_archived_at?: string | null;
+  source_archive_error?: string | null;
 }
 
 interface SessionListRow {
@@ -579,11 +589,17 @@ export class AgentSessionStore {
     if (Boolean(session.archived_at) === archived) return this.getForAccount(accountId, sessionId);
 
     const now = new Date().toISOString();
+    // A person's own archive is not an automatic one; a person's restore of an
+    // automatic one must stick, so it switches the automatic path off for good.
     this.database.connection
       .prepare(
-        "UPDATE agent_sessions SET archived_at = ?, archive_source = ?, updated_at = ?, activity_at = ? WHERE id = ?",
+        `UPDATE agent_sessions
+         SET archived_at = ?, archive_source = ?, updated_at = ?, activity_at = ?,
+             auto_archive_suppressed = CASE WHEN ? = 0 AND archive_reason = 'auto' THEN 1 ELSE auto_archive_suppressed END,
+             archive_reason = NULL
+         WHERE id = ?`,
       )
-      .run(archived ? now : null, archived ? "missiongo" : null, now, now, sessionId);
+      .run(archived ? now : null, archived ? "missiongo" : null, now, now, archived ? 1 : 0, sessionId);
     return this.getForAccount(accountId, sessionId);
   }
 
@@ -785,10 +801,17 @@ export class AgentSessionStore {
     const sourceArchiveBefore = new Date(Date.now() - SOURCE_ARCHIVE_POLL_MS).toISOString();
     const rows = this.database.connection
       .prepare(
-        `SELECT id, dispatch_id, agent_kind, agent_session_ref, status, last_error, updated_at
+        `SELECT id, dispatch_id, agent_kind, agent_session_ref, status, last_error, updated_at,
+                archive_reason, source_archived_at, source_archive_error
          FROM agent_sessions s
          WHERE node_id = ?
-         AND (archived_at IS NULL OR (archive_source = 'source' AND updated_at <= ?))
+         AND (archived_at IS NULL OR (archive_source = 'source' AND updated_at <= ?)
+           -- Finished work archived by MissionGo still needs the Mac once: a
+           -- Codex thread to archive at the source, a Claude process to close.
+           OR (archive_reason = 'auto' AND (
+             (agent_kind = 'codex' AND source_archived_at IS NULL AND source_archive_error IS NULL)
+             OR (agent_kind = 'claude_code' AND status NOT IN ('suspended', 'failed'))
+           )))
          AND (
            status IN ('active', 'stalled', 'unavailable') OR EXISTS (
              SELECT 1 FROM agent_session_commands c
@@ -800,15 +823,19 @@ export class AgentSessionStore {
       .all(nodeId, sourceArchiveBefore, sourceArchiveBefore) as unknown as SessionRow[];
     return rows.map((row) => {
       const command = this.pendingCommand(row.id);
+      const autoArchived = row.archive_reason === "auto";
       return {
         id: row.id,
         dispatchId: row.dispatch_id,
         agentKind: row.agent_kind,
         sessionRef: row.agent_session_ref,
         status: row.status,
-        lifecycle: row.agent_kind === "claude_code" && this.itemsCompleted(row.id) ? "close" : "keep",
+        lifecycle: row.agent_kind === "claude_code" && (autoArchived || this.itemsCompleted(row.id)) ? "close" : "keep",
         occupiesExecutionSlot: row.status === "active" || row.status === "stalled",
         ...(command ? { command: this.mapCommand(command) } : {}),
+        ...(autoArchived && row.agent_kind === "codex" && !row.source_archived_at && !row.source_archive_error
+          ? { archiveInSource: true as const }
+          : {}),
       };
     });
   }
@@ -831,6 +858,8 @@ export class AgentSessionStore {
     commandStatus?: "delivering" | "delivered" | "failed";
     commandError?: string;
     sourceArchived?: boolean;
+    /** The node tried to archive the source thread MissionGo asked it to and could not. */
+    sourceArchiveError?: string;
     sessionUrl?: string;
     activityAt?: string;
   }): void {
@@ -948,10 +977,11 @@ export class AgentSessionStore {
           .prepare(
             `UPDATE agent_sessions
              SET archived_at = COALESCE(archived_at, ?),
-                 archive_source = CASE WHEN archive_source = 'missiongo' THEN archive_source ELSE 'source' END
+                 archive_source = CASE WHEN archive_source = 'missiongo' THEN archive_source ELSE 'source' END,
+                 source_archived_at = COALESCE(source_archived_at, ?)
              WHERE id = ?`,
           )
-          .run(now, input.sessionId);
+          .run(now, now, input.sessionId);
       } else if (input.sourceArchived === false) {
         this.database.connection
           .prepare(
@@ -959,6 +989,13 @@ export class AgentSessionStore {
              WHERE id = ? AND archive_source = 'source'`,
           )
           .run(input.sessionId);
+      }
+      if (input.sourceArchiveError) {
+        // Asked once. A thread Codex no longer has cannot be archived, and
+        // asking every poll would not change that; the MissionGo archive stands.
+        this.database.connection
+          .prepare("UPDATE agent_sessions SET source_archive_error = ? WHERE id = ?")
+          .run(input.sourceArchiveError.slice(0, 2_000), input.sessionId);
       }
       if (sessionUrl) {
         this.database.connection.prepare(
@@ -1022,6 +1059,10 @@ export class AgentSessionStore {
           );
         if (changed.changes === 0) {
           throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
+        }
+        // A pending reply held back the automatic archive; retry now it settled.
+        if (input.commandStatus !== "delivering") {
+          autoArchiveFinishedDispatches(this.database, [session.dispatch_id], now);
         }
       }
     });

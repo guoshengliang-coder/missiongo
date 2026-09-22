@@ -2378,3 +2378,156 @@ describe("Unread conversations (AND-135)", () => {
     expect(invalid.statusCode).toBe(400);
   });
 });
+
+describe("Archiving a finished hand-off (AND-129)", () => {
+  async function move(app: FastifyInstance, cookie: string, itemKey: string, steps: Array<[string, string]>) {
+    for (const [to, reason] of steps) {
+      const moved = await app.inject({
+        method: "POST",
+        url: `/api/v1/items/${itemKey}/transitions`,
+        headers: { cookie },
+        payload: { to, reason, note: `Moved to ${to} by the AND-129 test.` },
+      });
+      if (moved.statusCode !== 200) throw new Error(`${itemKey} → ${to}: ${moved.statusCode} ${moved.body}`);
+    }
+  }
+  const toDone: Array<[string, string]> = [
+    ["in_progress", "claim"],
+    ["pending_verification", "resolution_submitted"],
+    ["done", "verification_passed"],
+  ];
+
+  async function secondItem(app: FastifyInstance, cookie: string, productId: string) {
+    const item = await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      headers: { cookie },
+      payload: {
+        productId, status: "ready", type: "task", priority: "normal",
+        title: "Second", description: "also dispatched", environment: { platform: "web" },
+      },
+    });
+    return item.json<{ key: string }>().key;
+  }
+
+  async function batchSession(app: FastifyInstance, cookie: string) {
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "codex");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    const second = await secondItem(app, cookie, mission.productId);
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const dispatchId = (await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: [mission.itemKey, second] },
+    })).json<{ id: string }>().id;
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionRef: "thread-and-129" },
+    });
+    const sessionId = (await app.inject({
+      method: "GET",
+      url: `/api/v1/items/${mission.itemKey}/dispatches`,
+      headers: { cookie },
+    })).json<{ dispatches: Array<{ agentSessionId: string }> }>().dispatches[0]!.agentSessionId;
+    return { node, mission, second, dispatchId, sessionId };
+  }
+
+  async function listed(app: FastifyInstance, cookie: string, productId: string) {
+    return (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ id: string; archivedAt?: string; activityAt: string; unread: boolean }> }>()
+      .sessions[0]!;
+  }
+
+  async function nodeSessions(app: FastifyInstance, token: string) {
+    return (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${token}` },
+    })).json<{ sessions: Array<{ id: string; archiveInSource?: boolean; lifecycle: string }> }>().sessions;
+  }
+
+  it("archives once every item is done or cancelled, asks the Mac to archive the Codex thread, and lets a restore stick", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, mission, second, sessionId } = await batchSession(app, cookie);
+
+    await move(app, cookie, mission.itemKey, toDone);
+    const halfway = await listed(app, cookie, mission.productId);
+    expect(halfway.archivedAt).toBeUndefined();
+
+    await move(app, cookie, second, [["cancelled", "cancelled"]]);
+    const finished = await listed(app, cookie, mission.productId);
+    expect(finished.archivedAt).toBeTruthy();
+    // Quiet: an automatic archive neither reorders the list nor makes it unread.
+    expect(finished.activityAt).toBe(halfway.activityAt);
+    expect(finished.unread).toBe(false);
+
+    const asked = (await nodeSessions(app, node.token)).find((session) => session.id === sessionId);
+    expect(asked).toMatchObject({ archiveInSource: true });
+
+    const reported = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [], sourceArchived: true },
+    });
+    expect(reported.statusCode).toBe(204);
+    expect((await nodeSessions(app, node.token)).some((session) => session.id === sessionId)).toBe(false);
+    const detail = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+    })).json<{ archivedSource: string }>();
+    // Still MissionGo's archive, so a person can restore it here.
+    expect(detail.archivedSource).toBe("missiongo");
+
+    const restored = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+      payload: { archived: false },
+    });
+    expect(restored.statusCode).toBe(200);
+    await move(app, cookie, mission.itemKey, [["ready", "reopened"], ...toDone]);
+    expect((await listed(app, cookie, mission.productId)).archivedAt).toBeUndefined();
+  });
+
+  it("leaves a batch where everything was cancelled for a person", async () => {
+    const { app, cookie } = await signedInApp();
+    const { mission, second } = await batchSession(app, cookie);
+    await move(app, cookie, mission.itemKey, [["cancelled", "cancelled"]]);
+    await move(app, cookie, second, [["cancelled", "cancelled"]]);
+    expect((await listed(app, cookie, mission.productId)).archivedAt).toBeUndefined();
+  });
+
+  it("stops asking for a source archive the Mac could not perform", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, mission, second, sessionId } = await batchSession(app, cookie);
+    await move(app, cookie, mission.itemKey, toDone);
+    await move(app, cookie, second, toDone);
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [], sourceArchiveError: "thread not found" },
+    });
+    expect((await nodeSessions(app, node.token)).some((session) => session.id === sessionId)).toBe(false);
+    expect((await listed(app, cookie, mission.productId)).archivedAt).toBeTruthy();
+  });
+});

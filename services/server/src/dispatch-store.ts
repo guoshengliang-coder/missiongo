@@ -841,8 +841,14 @@ export class DispatchStore {
     if (Boolean(dispatch.archivedAt) === archived) return dispatch;
 
     this.database.connection
-      .prepare("UPDATE dispatches SET archived_at = ? WHERE id = ? AND account_id = ?")
-      .run(archived ? new Date().toISOString() : null, dispatchId, accountId);
+      .prepare(
+        `UPDATE dispatches
+         SET archived_at = ?,
+             auto_archive_suppressed = CASE WHEN ? = 0 AND archive_reason = 'auto' THEN 1 ELSE auto_archive_suppressed END,
+             archive_reason = NULL
+         WHERE id = ? AND account_id = ?`,
+      )
+      .run(archived ? new Date().toISOString() : null, archived ? 1 : 0, dispatchId, accountId);
     return this.getDispatch(accountId, dispatchId);
   }
 
