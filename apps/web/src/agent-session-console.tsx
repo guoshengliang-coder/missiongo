@@ -15,6 +15,7 @@ import {
   Search,
   Square,
   WifiOff,
+  X,
 } from "lucide-react";
 
 import { api } from "./api";
@@ -151,6 +152,9 @@ export function AgentSessionConsole({
   sessionsError,
   selectedSessionId,
   conversationOpen,
+  bulkMode,
+  onBulkModeChange,
+  onBulkAvailabilityChange,
   onSelectSession,
   onBackToSessions,
   onOpenItem,
@@ -161,6 +165,9 @@ export function AgentSessionConsole({
   sessionsError: unknown;
   selectedSessionId: string | null;
   conversationOpen: boolean;
+  bulkMode: boolean;
+  onBulkModeChange: (enabled: boolean) => void;
+  onBulkAvailabilityChange: (available: boolean) => void;
   onSelectSession: (sessionId: string | null, showConversation: boolean) => void;
   onBackToSessions: () => void;
   onOpenItem: (itemKey: string) => void;
@@ -214,6 +221,7 @@ export function AgentSessionConsole({
   const archivableIds = useMemo(() => archivableVisibleSessionIds(visibleSessions), [visibleSessions]);
   const allArchivableSelected = archivableIds.length > 0
     && archivableIds.every((sessionId) => selectedForArchive.has(sessionId));
+  const bulkAvailable = filter !== "archived" && archivableIds.length > 0;
   // Keep a restored URL selection while the list is still loading. Falling
   // back to null here would immediately erase the session that survived an
   // Android Activity recreation, before the request had a chance to confirm it.
@@ -241,6 +249,15 @@ export function AgentSessionConsole({
     setSelectedForArchive(new Set());
     setBulkArchiveMessage(null);
   }, [agentFilter, filter, productId, search]);
+
+  useEffect(() => {
+    onBulkAvailabilityChange(bulkAvailable);
+    if (bulkMode && !bulkAvailable) onBulkModeChange(false);
+  }, [bulkAvailable, bulkMode, onBulkAvailabilityChange, onBulkModeChange]);
+
+  useEffect(() => {
+    if (!bulkMode) setSelectedForArchive(new Set());
+  }, [bulkMode]);
 
   useEffect(() => {
     if (selectedId === selectedSessionId) return;
@@ -339,6 +356,7 @@ export function AgentSessionConsole({
       setBulkArchiveMessage(failures.length === 0
         ? t("agentConsoleBulkArchiveSuccess", { count: succeeded.length })
         : `${t("agentConsoleBulkArchivePartial", { success: succeeded.length, failed: failures.length })} ${failureDetails}`);
+      if (failures.length === 0) onBulkModeChange(false);
       await queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
     },
   });
@@ -500,9 +518,9 @@ export function AgentSessionConsole({
             </select>
           </label>
         </div>
-        {filter !== "archived" && archivableIds.length > 0 && (
-          <div className="agent-console-bulk-actions">
-            <label>
+        {bulkMode && bulkAvailable && (
+          <div className="agent-console-bulk-actions" role="group" aria-label={t("agentConsoleBulkMode")}>
+            <label className="agent-console-bulk-select-all">
               <input
                 type="checkbox"
                 checked={allArchivableSelected}
@@ -512,22 +530,33 @@ export function AgentSessionConsole({
               />
               <span>{t("agentConsoleSelectVisible")}</span>
             </label>
-            <span>{t("agentConsoleSelectedCount", { count: selectedForArchive.size })}</span>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={selectedForArchive.size === 0 || bulkArchive.isPending}
-              onClick={() => {
-                const ids = [...selectedForArchive];
-                if (window.confirm(t("agentConsoleBulkArchiveConfirm", { count: ids.length }))) {
-                  setBulkArchiveMessage(null);
-                  bulkArchive.mutate(ids);
-                }
-              }}
-            >
-              {bulkArchive.isPending ? <LoaderCircle className="spin" size={15} /> : <Archive size={15} />}
-              {t("agentConsoleBulkArchive")}
-            </button>
+            <span className="agent-console-bulk-count">{t("agentConsoleSelectedCount", { count: selectedForArchive.size })}</span>
+            <div className="agent-console-bulk-buttons">
+              <button
+                type="button"
+                className="text-button agent-console-bulk-cancel"
+                disabled={bulkArchive.isPending}
+                onClick={() => onBulkModeChange(false)}
+              >
+                <X size={15} />
+                {t("agentConsoleBulkCancel")}
+              </button>
+              <button
+                type="button"
+                className="primary-button agent-console-bulk-submit"
+                disabled={selectedForArchive.size === 0 || bulkArchive.isPending}
+                onClick={() => {
+                  const ids = [...selectedForArchive];
+                  if (window.confirm(t("agentConsoleBulkArchiveConfirm", { count: ids.length }))) {
+                    setBulkArchiveMessage(null);
+                    bulkArchive.mutate(ids);
+                  }
+                }}
+              >
+                {bulkArchive.isPending ? <LoaderCircle className="spin" size={15} /> : <Archive size={15} />}
+                {t("agentConsoleBulkArchive")}
+              </button>
+            </div>
           </div>
         )}
         {bulkArchiveMessage && <p className="agent-console-bulk-result" role="status">{bulkArchiveMessage}</p>}
@@ -539,13 +568,17 @@ export function AgentSessionConsole({
           )}
           {visibleSessions.map((session) => {
             const selectable = archivableIds.includes(session.id);
+            const checked = selectedForArchive.has(session.id);
             return (
-              <div key={session.id} className="agent-console-session-row">
-                {selectable && (
+              <div
+                key={session.id}
+                className={`agent-console-session-row ${bulkMode ? "bulk-selecting" : ""} ${checked ? "selected" : ""}`}
+              >
+                {bulkMode && selectable && (
                   <label className="agent-console-session-select" aria-label={t("agentConsoleSelectConversation")}>
                     <input
                       type="checkbox"
-                      checked={selectedForArchive.has(session.id)}
+                      checked={checked}
                       onChange={(event) => setSelectedForArchive((current) => {
                         const next = new Set(current);
                         if (event.target.checked) next.add(session.id);
@@ -558,7 +591,19 @@ export function AgentSessionConsole({
                 <button
                   type="button"
                   className={`agent-console-session ${session.id === selectedId ? "active" : ""} ${session.unread ? "unread" : ""}`}
+                  aria-pressed={bulkMode && selectable ? checked : undefined}
                   onClick={() => {
+                    if (bulkMode) {
+                      if (selectable) {
+                        setSelectedForArchive((current) => {
+                          const next = new Set(current);
+                          if (next.has(session.id)) next.delete(session.id);
+                          else next.add(session.id);
+                          return next;
+                        });
+                      }
+                      return;
+                    }
                     setOpenedSessionId(session.id);
                     onSelectSession(session.id, true);
                   }}
