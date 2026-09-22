@@ -5,12 +5,14 @@ import MissionGoNodeCore
 private enum HostFailure: Error, LocalizedError {
     case usage
     case invalidMode(String)
+    case invalidSettings(String)
     case writeClosed
 
     var errorDescription: String? {
         switch self {
         case .usage: return "usage: MissionGoClaudeHost <config.json>"
         case let .invalidMode(mode): return "unsupported Claude Code mode: \(mode)"
+        case let .invalidSettings(problem): return problem
         case .writeClosed: return "Claude Code closed its control input."
         }
     }
@@ -70,11 +72,16 @@ private func commandFiles(in directory: String) -> [String] {
 }
 
 private func run(configPath: String) throws {
-    let config = try JSONDecoder().decode(
+    // Rewritten after a person switches settings, so a later resume starts
+    // Claude Code with what they chose rather than what the dispatch said.
+    var config = try JSONDecoder().decode(
         ClaudeHostConfiguration.self,
         from: Data(contentsOf: URL(fileURLWithPath: configPath))
     )
     guard ClaudeCodeModes.isAllowed(config.mode) else { throw HostFailure.invalidMode(config.mode) }
+    if let problem = AgentModelSettings.problem(model: config.model, effort: config.effort) {
+        throw HostFailure.invalidSettings(problem)
+    }
 
     // MissionGo terminates the whole group on startup timeout or when all work
     // items reach verification/done. Claude and its test/build descendants
@@ -88,6 +95,7 @@ private func run(configPath: String) throws {
     var snapshot = resuming
         ? ClaudeStreamSnapshot(resuming: previous!, hostPid: getpid())
         : ClaudeStreamSnapshot(sessionRef: config.sessionRef, hostPid: getpid())
+    snapshot.adoptConfiguration(config)
     try ClaudeHostFiles.write(snapshot.state, to: config.statePath)
 
     let input = Pipe()
@@ -98,7 +106,9 @@ private func run(configPath: String) throws {
         mode: config.mode,
         sessionName: config.sessionName,
         sessionRef: config.sessionRef,
-        resuming: resuming
+        resuming: resuming,
+        model: config.model,
+        effort: config.effort
     )
     process.currentDirectoryURL = URL(fileURLWithPath: config.cwd, isDirectory: true)
     var environment = ProcessInfo.processInfo.environment
@@ -118,6 +128,7 @@ private func run(configPath: String) throws {
     var remoteRequestId: String?
     var remoteReady = false
     var pendingControlCommands: [String: String] = [:]
+    var settingsChange: ClaudeSettingsChange?
     var permissions = ClaudePermissionQueue()
     var shouldContinue = true
     var lastCpu = ClaudeProcessActivity.totalCpuNanoseconds(rootPid: process.processIdentifier)
@@ -131,6 +142,15 @@ private func run(configPath: String) throws {
 
     func persist() {
         try? ClaudeHostFiles.write(snapshot.state, to: config.statePath)
+    }
+
+    func finishSettings(_ change: ClaudeSettingsChange) {
+        snapshot.finishSettings(change)
+        config = config.applying(change.appliedSettings)
+        // Best effort: the running session already has the settings; only a
+        // later resume would miss them.
+        try? ClaudeHostFiles.write(config, to: configPath)
+        persist()
     }
 
     func showNextPermission() {
@@ -171,6 +191,12 @@ private func run(configPath: String) throws {
                     shouldContinue = false
                     return
                 }
+                // The heartbeat reads this instead of starting `claude` itself.
+                if let path = config.modelsCachePath,
+                   let body = response["response"] as? [String: Any],
+                   let options = ClaudeModelCatalog.options(fromInitialize: body) {
+                    try? ClaudeModelCatalog.save(options, to: path)
+                }
                 let requestId = UUID().uuidString
                 remoteRequestId = requestId
                 try write(controlRequest(id: requestId, request: [
@@ -199,6 +225,14 @@ private func run(configPath: String) throws {
                     try write(userMessage(id: UUID().uuidString, text: config.prompt), to: writer)
                 }
                 persist()
+                return
+            }
+            if var change = settingsChange, change.receive(requestId: requestId, response: response) {
+                settingsChange = change
+                if change.isComplete {
+                    settingsChange = nil
+                    finishSettings(change)
+                }
                 return
             }
             if let commandId = pendingControlCommands.removeValue(forKey: requestId) {
@@ -232,6 +266,27 @@ private func run(configPath: String) throws {
                 continue
             }
             if snapshot.state.commandResults[command.id] != nil {
+                try? FileManager.default.removeItem(atPath: path)
+                continue
+            }
+            if command.kind == "settings" {
+                guard let settings = command.settings,
+                      settings.revision > (snapshot.state.settingsRevision ?? 0)
+                else {
+                    try? FileManager.default.removeItem(atPath: path)
+                    continue
+                }
+                // One change at a time; a newer one waits for its file to be read again.
+                if settingsChange != nil { continue }
+                let change = ClaudeSettingsChange(settings)
+                for (requestId, request) in change.requests {
+                    try write(controlRequest(id: requestId, request: request), to: writer)
+                }
+                if change.isComplete {
+                    finishSettings(change)
+                } else {
+                    settingsChange = change
+                }
                 try? FileManager.default.removeItem(atPath: path)
                 continue
             }

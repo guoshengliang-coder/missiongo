@@ -295,7 +295,13 @@ export const INITIAL_SCHEMA = `
     created_at TEXT NOT NULL,
     delivered_at TEXT,
     completed_at TEXT,
-    archived_at TEXT
+    archived_at TEXT,
+    unread_at TEXT,
+    read_at TEXT,
+    archive_reason TEXT CHECK (archive_reason IN ('auto')),
+    auto_archive_suppressed INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    effort TEXT
   ) STRICT;
 
   CREATE TABLE IF NOT EXISTS dispatch_items (
@@ -321,7 +327,28 @@ export const INITIAL_SCHEMA = `
     updated_at TEXT NOT NULL,
     activity_at TEXT NOT NULL DEFAULT '',
     archived_at TEXT,
-    archive_source TEXT CHECK (archive_source IN ('missiongo', 'source'))
+    archive_source TEXT CHECK (archive_source IN ('missiongo', 'source')),
+    archive_reason TEXT CHECK (archive_reason IN ('auto')),
+    auto_archive_suppressed INTEGER NOT NULL DEFAULT 0,
+    source_archived_at TEXT,
+    source_archive_error TEXT,
+    source_restore_pending INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    effort TEXT,
+    mode TEXT,
+    desired_settings_json TEXT,
+    settings_revision INTEGER NOT NULL DEFAULT 0,
+    applied_settings_revision INTEGER NOT NULL DEFAULT 0,
+    settings_error TEXT,
+    settings_error_revision INTEGER NOT NULL DEFAULT 0
+  ) STRICT;
+
+  -- What the dispatch dialog starts from for this account (AND-130): machine,
+  -- agent, and each agent's mode, model and effort.
+  CREATE TABLE IF NOT EXISTS account_dispatch_defaults (
+    account_id TEXT PRIMARY KEY,
+    settings_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
   ) STRICT;
 
   CREATE TABLE IF NOT EXISTS agent_session_messages (

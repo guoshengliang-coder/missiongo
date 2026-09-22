@@ -71,15 +71,23 @@ export interface CreateWorkItemInput {
 }
 
 /**
- * A follow-up an AI records on the user's behalf while working on another item.
+ * An item an AI records on the user's behalf: either a follow-up split off from
+ * the item it is working on (sourceItemKey), or, since AND-134, an independent
+ * item in a product (productId) -- an unrelated issue found while working, or
+ * one the user asked for in the conversation. Exactly one of the two is given.
  *
  * The user approves the content in the AI session; the server cannot see that
- * conversation and does not pretend to. What it can do is keep the item tied to
- * the one it came from, attribute it to the connection that wrote it, and cap
- * how many one source item can spawn.
+ * conversation and does not pretend to. What it can do is keep a follow-up tied
+ * to the one it came from, attribute the item to the connection that wrote it,
+ * and cap how many one source item, or one product for independent items, gets
+ * an hour.
  */
-export interface CreateDerivedWorkItemInput {
-  readonly sourceItemKey: string;
+export type CreateDerivedWorkItemInput = CreateAgentWorkItemFields & (
+  | { readonly sourceItemKey: string; readonly productId?: undefined }
+  | { readonly productId: string; readonly sourceItemKey?: undefined }
+);
+
+interface CreateAgentWorkItemFields {
   readonly status: "inbox" | "ready";
   readonly type: WorkItemType;
   readonly priority: WorkItemPriority;

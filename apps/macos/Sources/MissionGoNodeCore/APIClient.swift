@@ -12,10 +12,103 @@ import Foundation
 public struct DetectedAgent: Codable, Equatable, Sendable {
     public let kind: String
     public let version: String
+    /// The models a dispatch may pick for this agent. Its presence, even as an
+    /// empty list, is what tells the server this client understands model and
+    /// effort selection and runtime settings; nil leaves the key out, which
+    /// an older server ignored anyway.
+    public let models: [AgentModelOption]?
 
-    public init(kind: String, version: String) {
+    public init(kind: String, version: String, models: [AgentModelOption]? = nil) {
         self.kind = kind
         self.version = version
+        self.models = models
+    }
+}
+
+/// One model an agent offers, as the console lists it.
+public struct AgentModelOption: Codable, Equatable, Sendable {
+    /// What goes back to the agent: `--model` for Claude Code, `model` for Codex.
+    public let id: String
+    public let label: String
+    /// Reasoning efforts the model accepts; empty when it takes none.
+    public let efforts: [String]
+    public let defaultEffort: String?
+    public let isDefault: Bool?
+
+    public init(id: String, label: String, efforts: [String] = [], defaultEffort: String? = nil, isDefault: Bool? = nil) {
+        self.id = id
+        self.label = label
+        self.efforts = efforts
+        self.defaultEffort = defaultEffort
+        self.isDefault = isDefault
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, label, efforts, defaultEffort, isDefault
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        label = try values.decodeIfPresent(String.self, forKey: .label) ?? id
+        efforts = try values.decodeIfPresent([String].self, forKey: .efforts) ?? []
+        defaultEffort = try values.decodeIfPresent(String.self, forKey: .defaultEffort)
+        isDefault = try values.decodeIfPresent(Bool.self, forKey: .isDefault)
+    }
+}
+
+/// The mode, model and effort a person wants a running session to use.
+/// Each field left out means "leave this one as it is".
+public struct AgentSessionSettings: Codable, Equatable, Sendable {
+    /// Grows with every change a person makes; the node reports back the one
+    /// it has applied, so a change is applied once however often it is sent.
+    public let revision: Int
+    public let mode: String?
+    public let model: String?
+    public let effort: String?
+
+    public init(revision: Int, mode: String? = nil, model: String? = nil, effort: String? = nil) {
+        self.revision = revision
+        self.mode = mode
+        self.model = model
+        self.effort = effort
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case revision, mode, model, effort
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        revision = try values.decodeIfPresent(Int.self, forKey: .revision) ?? 0
+        mode = try values.decodeIfPresent(String.self, forKey: .mode)
+        model = try values.decodeIfPresent(String.self, forKey: .model)
+        effort = try values.decodeIfPresent(String.self, forKey: .effort)
+    }
+}
+
+/// Model names and efforts arrive over the wire and end up in argv or an RPC
+/// field. Arguments never pass through a shell, but a value starting with `-`
+/// could still be read by the CLI as another flag, so the machine checks the
+/// shape itself instead of trusting the server to have checked.
+public enum AgentModelSettings {
+    /// Covers `opus[1m]`, `claude-fable-5-1[1m]`, `gpt-5.1-codex`, `provider/model`.
+    static let modelPattern = AnchoredPattern("[A-Za-z0-9][A-Za-z0-9._:/\\[\\]-]{0,127}")
+    static let effortPattern = AnchoredPattern("[a-z][a-z0-9_-]{0,31}")
+
+    public static func isValidModel(_ value: String) -> Bool {
+        modelPattern.matches(value)
+    }
+
+    public static func isValidEffort(_ value: String) -> Bool {
+        effortPattern.matches(value)
+    }
+
+    /// nil when both are acceptable (or absent), else the reason to refuse.
+    public static func problem(model: String?, effort: String?) -> String? {
+        if let model, !isValidModel(model) { return "不支持的模型名：\(JSONValues.quote(model))" }
+        if let effort, !isValidEffort(effort) { return "不支持的推理强度：\(JSONValues.quote(effort))" }
+        return nil
     }
 }
 
@@ -64,6 +157,11 @@ public struct DispatchRequest: Codable, Equatable, Sendable {
     public let round: Int?
     /// Items sent back after their work was handed over.
     public let reworkItemKeys: [String]?
+    /// The model and reasoning effort picked for this dispatch. Absent means
+    /// "follow this machine's own agent configuration", which is also all a
+    /// server from before model selection can mean.
+    public let model: String?
+    public let effort: String?
 
     public init(
         dispatchId: String,
@@ -73,7 +171,9 @@ public struct DispatchRequest: Codable, Equatable, Sendable {
         mode: String,
         nodeName: String? = nil,
         round: Int? = nil,
-        reworkItemKeys: [String]? = nil
+        reworkItemKeys: [String]? = nil,
+        model: String? = nil,
+        effort: String? = nil
     ) {
         self.dispatchId = dispatchId
         self.itemKeys = itemKeys
@@ -83,6 +183,8 @@ public struct DispatchRequest: Codable, Equatable, Sendable {
         self.nodeName = nodeName
         self.round = round
         self.reworkItemKeys = reworkItemKeys
+        self.model = model
+        self.effort = effort
     }
 }
 
@@ -145,6 +247,19 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
     /// it appears in this list, closing the poll/snapshot race.
     public let occupiesExecutionSlot: Bool
     public let command: AgentSessionCommand?
+    /// MissionGo archived this conversation (its work finished, or a person
+    /// archived it); archive the Codex thread at the source too (AND-129).
+    /// Older servers omit it.
+    public let archiveInSource: Bool
+    /// A person restored it in MissionGo after its Codex thread was archived;
+    /// restore the thread too, or the next read would archive it again.
+    public let restoreInSource: Bool
+    /// What a person asked this running session to switch to. Sent on every
+    /// poll, not only once, so the node needs no memory of it between polls.
+    public let desiredSettings: AgentSessionSettings?
+    /// The revision the server has already heard the node apply (or fail to).
+    /// A change is due only while `desiredSettings.revision` is past this.
+    public let appliedSettingsRevision: Int
 
     public init(
         id: String,
@@ -154,7 +269,11 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
         status: String,
         lifecycle: String = "keep",
         occupiesExecutionSlot: Bool? = nil,
-        command: AgentSessionCommand? = nil
+        command: AgentSessionCommand? = nil,
+        archiveInSource: Bool = false,
+        restoreInSource: Bool = false,
+        desiredSettings: AgentSessionSettings? = nil,
+        appliedSettingsRevision: Int = 0
     ) {
         self.id = id
         self.dispatchId = dispatchId
@@ -164,10 +283,21 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
         self.lifecycle = lifecycle
         self.occupiesExecutionSlot = occupiesExecutionSlot ?? ["active", "stalled"].contains(status)
         self.command = command
+        self.archiveInSource = archiveInSource
+        self.restoreInSource = restoreInSource
+        self.desiredSettings = desiredSettings
+        self.appliedSettingsRevision = appliedSettingsRevision
+    }
+
+    /// The settings still to apply, or nil when there is nothing new.
+    public var pendingSettings: AgentSessionSettings? {
+        guard let desiredSettings, desiredSettings.revision > appliedSettingsRevision else { return nil }
+        return desiredSettings
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, dispatchId, agentKind, sessionRef, status, lifecycle, occupiesExecutionSlot, command
+        case id, dispatchId, agentKind, sessionRef, status, lifecycle, occupiesExecutionSlot, command, archiveInSource
+        case restoreInSource, desiredSettings, appliedSettingsRevision
     }
 
     public init(from decoder: Decoder) throws {
@@ -182,6 +312,11 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
         occupiesExecutionSlot = try values.decodeIfPresent(Bool.self, forKey: .occupiesExecutionSlot)
             ?? ["active", "stalled"].contains(status)
         command = try values.decodeIfPresent(AgentSessionCommand.self, forKey: .command)
+        archiveInSource = try values.decodeIfPresent(Bool.self, forKey: .archiveInSource) ?? false
+        restoreInSource = try values.decodeIfPresent(Bool.self, forKey: .restoreInSource) ?? false
+        // A server from before runtime settings sends neither.
+        desiredSettings = try values.decodeIfPresent(AgentSessionSettings.self, forKey: .desiredSettings)
+        appliedSettingsRevision = try values.decodeIfPresent(Int.self, forKey: .appliedSettingsRevision) ?? 0
     }
 }
 
@@ -240,13 +375,25 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let commandStatus: String?
     public let commandError: String?
     public let sourceArchived: Bool?
+    /// The source archive MissionGo asked for failed; the server stops asking.
+    public let sourceArchiveError: String?
+    /// The Codex thread MissionGo asked to bring back was restored.
+    public let sourceRestored: Bool?
     /// A resumed Claude session may receive a new Remote Control URL. The node
     /// reports the fresh, validated URL instead of leaving a dead link behind.
     public let sessionUrl: String?
     /// Last activity timestamp from the source conversation, not this mirror poll.
     public let activityAt: String?
+    /// The model and effort actually in use as far as this machine knows;
+    /// nil when it does not know (an effort left to the agent's own default).
+    public let model: String?
+    public let effort: String?
+    /// The desired-settings revision now applied. With `settingsError` it is
+    /// the revision whose application failed, so the server stops asking.
+    public let settingsRevision: Int?
+    public let settingsError: String?
 
-    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sessionUrl: String? = nil, activityAt: String? = nil) {
+    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, activityAt: String? = nil, model: String? = nil, effort: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil) {
         self.status = status
         self.messages = messages
         self.activities = activities
@@ -255,8 +402,26 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         self.commandStatus = commandStatus
         self.commandError = commandError
         self.sourceArchived = sourceArchived
+        self.sourceArchiveError = sourceArchiveError
+        self.sourceRestored = sourceRestored
         self.sessionUrl = sessionUrl
         self.activityAt = activityAt
+        self.model = model
+        self.effort = effort
+        self.settingsRevision = settingsRevision
+        self.settingsError = settingsError
+    }
+
+    /// The same report carrying the session's settings. Kept apart so every
+    /// branch that decides status and commands need not repeat them.
+    public func reportingSettings(model: String?, effort: String?, settingsRevision: Int?, settingsError: String?) -> AgentSessionReport {
+        AgentSessionReport(
+            status: status, messages: messages, activities: activities, error: error,
+            commandId: commandId, commandStatus: commandStatus, commandError: commandError,
+            sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
+            sessionUrl: sessionUrl, activityAt: activityAt,
+            model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
+        )
     }
 }
 

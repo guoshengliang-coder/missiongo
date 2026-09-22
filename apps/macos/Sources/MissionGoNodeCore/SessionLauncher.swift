@@ -19,10 +19,16 @@ public protocol AgentAdapter: Sendable {
     /// Mirrors an already launched session and, when it is idle, delivers the
     /// one reply the server has queued for it.
     func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport
+    /// The models a dispatch may choose for this agent, for the heartbeat.
+    /// nil for an adapter that cannot take a model at all; it must never start
+    /// the agent itself just to find out, since that runs the user's hooks.
+    func availableModels() async -> [AgentModelOption]?
 }
 
 public extension AgentAdapter {
     func dispatchAvailability() async -> AgentDispatchAvailability { .ready }
+
+    func availableModels() async -> [AgentModelOption]? { nil }
 
     func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         throw LaunchError("\(kind) does not support mirrored sessions.")
@@ -48,6 +54,9 @@ public struct DispatchJob: Equatable, Sendable {
     public let round: Int
     /// Items sent back after their work was handed over (see `LaunchPrompt`).
     public let reworkItemKeys: [String]
+    /// nil leaves the choice to the agent's own configuration on this machine.
+    public let model: String?
+    public let effort: String?
 
     public init(
         dispatchId: String,
@@ -56,7 +65,9 @@ public struct DispatchJob: Equatable, Sendable {
         mode: String,
         nodeName: String,
         round: Int = 1,
-        reworkItemKeys: [String] = []
+        reworkItemKeys: [String] = [],
+        model: String? = nil,
+        effort: String? = nil
     ) {
         self.dispatchId = dispatchId
         self.itemKeys = itemKeys
@@ -65,6 +76,8 @@ public struct DispatchJob: Equatable, Sendable {
         self.nodeName = nodeName
         self.round = round
         self.reworkItemKeys = reworkItemKeys
+        self.model = model
+        self.effort = effort
     }
 }
 
@@ -247,9 +260,18 @@ public struct SessionLauncher: AgentAdapter {
     /// from `/resume` in the repository it belongs to. The prompt tells the
     /// session to create its own worktree before editing — decided by the
     /// session rather than imposed by the launcher.
-    public static func launchCommand(sessionName: String, mode: String, prompt: String) throws -> LaunchCommand {
+    public static func launchCommand(
+        sessionName: String,
+        mode: String,
+        prompt: String,
+        model: String? = nil,
+        effort: String? = nil
+    ) throws -> LaunchCommand {
         guard ClaudeCodeModes.isAllowed(mode) else {
             throw LaunchError("不支持的 Claude Code 模式：\(JSONValues.quote(mode))")
+        }
+        if let problem = AgentModelSettings.problem(model: model, effort: effort) {
+            throw LaunchError(problem)
         }
         return LaunchCommand(
             file: "script",
@@ -264,8 +286,10 @@ public struct SessionLauncher: AgentAdapter {
                 mode,
                 "-n",
                 sessionName,
-                prompt,
             ]
+                + (model.map { ["--model", $0] } ?? [])
+                + (effort.map { ["--effort", $0] } ?? [])
+                + [prompt]
         )
     }
 
@@ -306,6 +330,11 @@ public struct SessionLauncher: AgentAdapter {
 
     public func detect() async -> String? {
         return await Preflight.claudeVersion(run: run)
+    }
+
+    /// Read from what the last session's host saved; never by starting `claude`.
+    public func availableModels() async -> [AgentModelOption]? {
+        return ClaudeModelCatalog.load(from: ClaudeHostStore.modelsCachePath(root: sessionsDirectory))
     }
 
     public func launch(_ job: DispatchJob) async throws -> LaunchResult {
@@ -361,6 +390,9 @@ public struct SessionLauncher: AgentAdapter {
         guard ClaudeCodeModes.isAllowed(job.mode) else {
             throw LaunchError("不支持的 Claude Code 模式：\(JSONValues.quote(job.mode))")
         }
+        if let problem = AgentModelSettings.problem(model: job.model, effort: job.effort) {
+            throw LaunchError(problem)
+        }
         guard let claudeExecutable = environment.which("claude") else {
             throw LaunchError("无法启动 claude：在 PATH 中找不到它（\(environment.path)）")
         }
@@ -389,7 +421,10 @@ public struct SessionLauncher: AgentAdapter {
             prompt: prompt,
             statePath: statePath,
             commandsDirectory: commandsDirectory,
-            logPath: logPath
+            logPath: logPath,
+            model: job.model,
+            effort: job.effort,
+            modelsCachePath: ClaudeHostStore.modelsCachePath(root: sessionsDirectory)
         ), to: configPath)
 
         let process: Process
@@ -444,7 +479,9 @@ public struct SessionLauncher: AgentAdapter {
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys
         )
         let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
-        let command = try SessionLauncher.launchCommand(sessionName: sessionName, mode: job.mode, prompt: prompt)
+        let command = try SessionLauncher.launchCommand(
+            sessionName: sessionName, mode: job.mode, prompt: prompt, model: job.model, effort: job.effort
+        )
 
         let logPath = SessionLauncher.logPath(for: job.dispatchId, in: logsDirectory)
         try FileManager.default.createDirectory(
@@ -506,7 +543,65 @@ public struct SessionLauncher: AgentAdapter {
             throw LaunchError("Claude 会话编号无效。")
         }
         let statePath = ClaudeHostStore.statePath(root: sessionsDirectory, sessionRef: session.sessionRef)
-        var state = try ClaudeHostFiles.readState(statePath)
+        let state = try ClaudeHostFiles.readState(statePath)
+        let report = try await synchronize(session, state: state, statePath: statePath)
+        return report.reportingSettings(
+            model: state.model,
+            effort: state.effort,
+            settingsRevision: state.settingsRevision,
+            settingsError: state.settingsError
+        )
+    }
+
+    /// Hands a person's settings change to a running host. Nothing to do when
+    /// the host already applied (or failed) this revision, or when it is a
+    /// host from before settings commands, which would mistake the file for a
+    /// chat message; such a session picks the change up when it next resumes.
+    private func deliverSettings(_ session: NodeAgentSession, state: ClaudeHostState) throws {
+        guard let settings = session.pendingSettings,
+              settings.revision > (state.settingsRevision ?? 0),
+              state.acceptsSettings
+        else { return }
+        let path = ClaudeHostStore.commandPath(
+            root: sessionsDirectory,
+            sessionRef: session.sessionRef,
+            commandId: "settings-\(settings.revision)"
+        )
+        guard !FileManager.default.fileExists(atPath: path) else { return }
+        try ClaudeHostFiles.write(
+            ClaudeHostCommand(id: "settings-\(settings.revision)", kind: "settings", text: "", settings: settings),
+            to: path
+        )
+    }
+
+    /// Before a suspended session resumes, folds any settings change made
+    /// meanwhile into its configuration: the host starts Claude Code with them
+    /// and records the revision as applied. A malformed change is recorded as
+    /// failed instead, and the session resumes as it was.
+    private func prepareResume(
+        _ session: NodeAgentSession,
+        state: ClaudeHostState,
+        config: ClaudeHostConfiguration,
+        configPath: String,
+        statePath: String
+    ) throws {
+        guard let settings = session.pendingSettings,
+              settings.revision > (state.settingsRevision ?? 0),
+              settings.revision > (config.settingsRevision ?? 0)
+        else { return }
+        let modeProblem = settings.mode.flatMap { ClaudeCodeModes.isAllowed($0) ? nil : "不支持的 Claude Code 模式：\(JSONValues.quote($0))" }
+        if let problem = modeProblem ?? AgentModelSettings.problem(model: settings.model, effort: settings.effort) {
+            var state = state
+            state.settingsRevision = settings.revision
+            state.settingsError = problem
+            try ClaudeHostFiles.write(state, to: statePath)
+            return
+        }
+        try ClaudeHostFiles.write(config.applying(settings), to: configPath)
+    }
+
+    private func synchronize(_ session: NodeAgentSession, state: ClaudeHostState, statePath: String) async throws -> AgentSessionReport {
+        var state = state
         if session.lifecycle == "close" {
             if let hostPid = state.hostPid { ClaudeHostProcess.terminateGroup(hostPid) }
             state.status = "suspended"
@@ -547,6 +642,7 @@ public struct SessionLauncher: AgentAdapter {
                     ClaudeHostConfiguration.self,
                     from: Data(contentsOf: URL(fileURLWithPath: configPath))
                 )
+                try prepareResume(session, state: state, config: config, configPath: configPath, statePath: statePath)
                 _ = try startHost(configPath: configPath, logPath: config.logPath)
                 return AgentSessionReport(
                     status: state.status,
@@ -566,6 +662,7 @@ public struct SessionLauncher: AgentAdapter {
                 activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )
         }
+        try deliverSettings(session, state: state)
         guard let command = session.command else {
             return AgentSessionReport(
                 status: state.status, messages: state.messages, activities: state.activities,

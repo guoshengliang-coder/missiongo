@@ -4,6 +4,7 @@ import type {
   ItemDispatchSummary,
   AgentSession,
   AgentSessionCommand,
+  AgentSessionSettings,
   AgentSessionSummary,
   Component,
   CreatedSdkToken,
@@ -12,6 +13,7 @@ import type {
   ComponentKind,
   CreateWorkItemInput,
   Dispatch,
+  DispatchDefaults,
   DispatchNode,
   NodeRepoMapping,
   Product,
@@ -460,6 +462,19 @@ export const api = {
     request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attention/dismiss`, {
       method: "POST",
       body: JSON.stringify({ revision }),
+    }),
+  getDispatchDefaults: () => request<DispatchDefaults>("/api/v1/dispatch-defaults"),
+  setDispatchDefaults: (defaults: DispatchDefaults) =>
+    request<DispatchDefaults>("/api/v1/dispatch-defaults", { method: "PUT", body: JSON.stringify(defaults) }),
+  setAgentSessionSettings: (sessionId: string, change: { mode?: string; model?: string; effort?: string }) =>
+    request<AgentSessionSettings>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/settings`, {
+      method: "PATCH",
+      body: JSON.stringify(change),
+    }),
+  markDispatchRead: (dispatchId: string, through: string) =>
+    request<void>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/read`, {
+      method: "POST",
+      body: JSON.stringify({ through }),
     }),
   setDispatchArchived: (dispatchId: string, archived: boolean) =>
     request<Dispatch>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/archive`, {

@@ -40,6 +40,7 @@ import {
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
 import { AiTitleService } from "./ai-title.js";
 import { AgentSessionStore, type AgentMessageRole, type AgentSessionStatus } from "./agent-session-store.js";
+import { optionalName, parseAgentModels } from "./agent-settings.js";
 import { DispatchStore } from "./dispatch-store.js";
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
@@ -1624,6 +1625,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       nodeId: stringField(body, "nodeId")!,
       agentKind: stringField(body, "agentKind")! as AgentKind,
       mode: stringField(body, "mode")!,
+      ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
+      ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
       itemKeys: authorizedKeys,
       force: body.force === true,
     });
@@ -1633,6 +1636,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         nodeName: dispatch.nodeName,
         agentKind: dispatch.agentKind,
         mode: dispatch.mode,
+        ...(dispatch.model ? { model: dispatch.model } : {}),
+        ...(dispatch.effort ? { effort: dispatch.effort } : {}),
         itemKeys: dispatch.itemKeys,
       });
     }
@@ -1768,6 +1773,41 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return agentSessionResponse(loadAuthorizedAgentSession(request, sessionId));
   });
 
+  // AND-130: change a running conversation's mode, model or effort. The Mac
+  // applies it on its next poll and reports which revision it is on.
+  app.patch("/api/v1/agent-sessions/:sessionId/settings", async (request) => {
+    const { sessionId } = request.params as { sessionId: string };
+    authorizedAgentSession(request, sessionId, true);
+    const body = objectBody(request.body);
+    return agentSessionStore.requestSettings(requireAccountId(request), sessionId, {
+      ...(optionalName(body, "mode") ? { mode: optionalName(body, "mode")! } : {}),
+      ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
+      ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
+    });
+  });
+
+  // What the dispatch dialog starts from, per account (AND-130). Stored as the
+  // person left it; the dialog falls back field by field when a machine, agent
+  // or model saved here is no longer offered.
+  app.get("/api/v1/dispatch-defaults", async (request) => {
+    return dispatchStore.getDispatchDefaults(requireAccountId(request));
+  });
+
+  app.put("/api/v1/dispatch-defaults", async (request) => {
+    return dispatchStore.setDispatchDefaults(requireAccountId(request), objectBody(request.body));
+  });
+
+  app.post("/api/v1/dispatches/:dispatchId/read", async (request, reply) => {
+    const { dispatchId } = request.params as { dispatchId: string };
+    authorizedDispatch(request, dispatchId, false);
+    agentSessionStore.markRead(
+      requireAccountId(request),
+      dispatchId,
+      stringField(objectBody(request.body), "through")!,
+    );
+    return reply.status(204).send();
+  });
+
   app.patch("/api/v1/dispatches/:dispatchId/archive", async (request) => {
     const { dispatchId } = request.params as { dispatchId: string };
     authorizedDispatch(request, dispatchId, true);
@@ -1800,6 +1840,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       nodeId: original.nodeId,
       agentKind: original.agentKind,
       mode: original.mode,
+      ...(original.model ? { model: original.model } : {}),
+      ...(original.effort ? { effort: original.effort } : {}),
       itemKeys: original.itemKeys,
     });
     for (const itemId of dispatchStore.listDispatchItemIds(dispatch.id)) {
@@ -1808,6 +1850,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         nodeName: dispatch.nodeName,
         agentKind: dispatch.agentKind,
         mode: dispatch.mode,
+        ...(dispatch.model ? { model: dispatch.model } : {}),
+        ...(dispatch.effort ? { effort: dispatch.effort } : {}),
         itemKeys: dispatch.itemKeys,
       });
     }
@@ -1998,6 +2042,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (body.sourceArchived !== undefined && typeof body.sourceArchived !== "boolean") {
       throw invalidInput("sourceArchived must be true or false.");
     }
+    const settingsRevisionValue = body.settingsRevision ?? undefined;
+    if (settingsRevisionValue !== undefined
+      && (typeof settingsRevisionValue !== "number" || !Number.isInteger(settingsRevisionValue) || settingsRevisionValue < 0)) {
+      throw invalidInput("settingsRevision must be a non-negative integer.");
+    }
+    const settingsRevision = settingsRevisionValue as number | undefined;
     agentSessionStore.recordSnapshot({
       nodeId: node.nodeId,
       sessionId,
@@ -2009,6 +2059,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(commandStatus ? { commandStatus } : {}),
       ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
       ...(typeof body.sourceArchived === "boolean" ? { sourceArchived: body.sourceArchived } : {}),
+      ...(body.sourceRestored === true ? { sourceRestored: true } : {}),
+      ...(stringField(body, "sourceArchiveError", false)
+        ? { sourceArchiveError: body.sourceArchiveError as string }
+        : {}),
+      ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
+      ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
+      ...(settingsRevision !== undefined ? { settingsRevision } : {}),
+      ...(stringField(body, "settingsError", false) ? { settingsError: body.settingsError as string } : {}),
       ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
       ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
     });
@@ -2030,9 +2088,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         node.nodeId,
         agents.map((entry) => {
           const agent = objectBody(entry);
+          const models = parseAgentModels(agent.models);
           return {
             kind: stringField(agent, "kind")! as AgentKind,
             ...(stringField(agent, "version", false) ? { version: agent.version as string } : {}),
+            ...(models ? { models } : {}),
           };
         }),
         repoCandidates.map((entry) => {

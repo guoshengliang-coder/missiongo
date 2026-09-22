@@ -15,9 +15,10 @@ import {
   outgoingReply,
   questionAnswerText,
   replyBlockedLabelKey,
-  retainedReadSessionAfterSelection,
   resolvedAgentSessionId,
+  shouldMarkRead,
   shouldResetMessageView,
+  unreadFirst,
 } from "./agent-session-view";
 import type { AgentSessionSummary } from "./types";
 
@@ -74,45 +75,35 @@ describe("agent session message view", () => {
   it("combines Agent and status filters", () => {
     const session = {
       id: "session-1",
-      activityKey: "activity-1",
       agentKind: "codex",
       status: "idle",
       needsAttention: true,
       nodeName: "Mac mini",
       items: [{ key: "AND-1", title: "First item", productId: "product-1" }],
     } as unknown as AgentSessionSummary;
-    expect(agentSessionMatches(session, "attention", "all", "", {})).toBe(true);
-    expect(agentSessionMatches(session, "attention", "codex", "first", {})).toBe(true);
-    expect(agentSessionMatches(session, "attention", "claude_code", "", {})).toBe(false);
+    expect(agentSessionMatches(session, "attention", "all", "")).toBe(true);
+    expect(agentSessionMatches(session, "attention", "codex", "first")).toBe(true);
+    expect(agentSessionMatches(session, "attention", "claude_code", "")).toBe(false);
   });
 
-  it("retains the opened read session only for the current unread visit", () => {
-    const session = {
-      id: "session-1",
-      activityKey: "activity-1",
-      agentKind: "codex",
-      status: "idle",
-      needsAttention: false,
-      nodeName: "Mac mini",
-      items: [],
-    } as unknown as AgentSessionSummary;
-    const readState = { "session-1": "activity-1" };
-    expect(agentSessionMatches(session, "unread", "all", "", readState)).toBe(false);
-    expect(agentSessionMatches(session, "unread", "all", "", readState, "session-1")).toBe(true);
-    expect(agentSessionMatches(session, "unread", "all", "", readState, "session-2")).toBe(false);
+  it("puts unread conversations first and keeps newest-first order inside each group", () => {
+    const ordered = unreadFirst([
+      { id: "newest-read", unread: false },
+      { id: "older-unread", unread: true },
+      { id: "oldest-read", unread: false },
+      { id: "oldest-unread", unread: true },
+    ]);
+    expect(ordered.map((session) => session.id)).toEqual(["older-unread", "oldest-unread", "newest-read", "oldest-read"]);
   });
 
-  it("keeps the same opened unread row until another session is selected", () => {
-    const first = { id: "session-1", activityKey: "activity-1" };
-    const second = { id: "session-2", activityKey: "activity-2" };
-    expect(retainedReadSessionAfterSelection("unread", first, {}, null)).toBe("session-1");
-    expect(retainedReadSessionAfterSelection(
-      "unread", first, { "session-1": "activity-1" }, "session-1",
-    )).toBe("session-1");
-    expect(retainedReadSessionAfterSelection(
-      "unread", second, { "session-1": "activity-1" }, "session-1",
-    )).toBe("session-2");
-    expect(retainedReadSessionAfterSelection("all", second, {}, "session-1")).toBeNull();
+  it("marks read only a conversation the person opened, while the tab is in front", () => {
+    const unread = { unread: true, unreadAt: "2026-09-22T06:00:00.000Z" };
+    expect(shouldMarkRead(unread, true, true)).toBe(true);
+    // Selected automatically as the first row: nobody opened it.
+    expect(shouldMarkRead(unread, false, true)).toBe(false);
+    expect(shouldMarkRead(unread, true, false)).toBe(false);
+    expect(shouldMarkRead({ unread: false, unreadAt: unread.unreadAt }, true, true)).toBe(false);
+    expect(shouldMarkRead(undefined, true, true)).toBe(false);
   });
 
   it("keeps a restored conversation until the session list can confirm it", () => {

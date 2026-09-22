@@ -18,9 +18,17 @@ public protocol CodexControl: Sendable {
     /// Returns the thread id.
     func startThread(_ request: CodexThreadRequest) async throws -> String
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
-    func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws
+    /// `overrides` carry the settings a person chose for this conversation;
+    /// Codex keeps turn-level overrides for the turns after it too.
+    func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws
     func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws
+    func archiveThread(socketPath: String, threadId: String) async throws
+    func unarchiveThread(socketPath: String, threadId: String) async throws
+    /// Switches an idle thread's model, approvals and sandbox without starting a turn.
+    func applySettings(socketPath: String, threadId: String, overrides: CodexTurnOverrides) async throws -> CodexAppliedSettings
+    /// The models this app-server offers, hidden ones left out.
+    func listModels(socketPath: String) async throws -> [AgentModelOption]
 }
 
 public extension CodexControl {
@@ -28,7 +36,7 @@ public extension CodexControl {
         throw CodexControlError.rpc(method: "thread/read", message: "这个 Codex 控制器不支持读取会话。")
     }
 
-    func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
+    func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws {
         throw CodexControlError.rpc(method: "turn/start", message: "这个 Codex 控制器不支持回复会话。")
     }
 
@@ -39,6 +47,63 @@ public extension CodexControl {
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
         throw CodexControlError.rpc(method: "turn/interrupt", message: "这个 Codex 控制器不支持中断会话。")
     }
+
+    func archiveThread(socketPath: String, threadId: String) async throws {
+        throw CodexControlError.rpc(method: "thread/archive", message: "这个 Codex 控制器不支持归档会话。")
+    }
+
+    func unarchiveThread(socketPath: String, threadId: String) async throws {
+        throw CodexControlError.rpc(method: "thread/unarchive", message: "这个 Codex 控制器不支持恢复会话。")
+    }
+
+    func applySettings(socketPath: String, threadId: String, overrides: CodexTurnOverrides) async throws -> CodexAppliedSettings {
+        throw CodexControlError.rpc(method: "thread/resume", message: "这个 Codex 控制器不支持切换会话设置。")
+    }
+
+    func listModels(socketPath: String) async throws -> [AgentModelOption] {
+        throw CodexControlError.rpc(method: "model/list", message: "这个 Codex 控制器不支持列出模型。")
+    }
+}
+
+/// Settings a person chose for a running thread, sent with `thread/resume`
+/// and every `turn/start` MissionGo sends for it. nil fields are left out.
+public struct CodexTurnOverrides: Equatable, Sendable {
+    public let model: String?
+    public let effort: String?
+    public let settings: CodexThreadSettings?
+
+    public init(model: String? = nil, effort: String? = nil, settings: CodexThreadSettings? = nil) {
+        self.model = model
+        self.effort = effort
+        self.settings = settings
+    }
+
+    /// Checks what arrived over the wire, as a launch does: a mode maps to the
+    /// fixed thread settings of `CodexModes`, never to raw policy names.
+    public init(desired: AgentSessionSettings) throws {
+        var settings: CodexThreadSettings?
+        if let mode = desired.mode {
+            guard let mapped = CodexModes.threadSettings(for: mode) else {
+                throw LaunchError("不支持的 Codex 模式：\(JSONValues.quote(mode))")
+            }
+            settings = mapped
+        }
+        if let problem = AgentModelSettings.problem(model: desired.model, effort: desired.effort) {
+            throw LaunchError(problem)
+        }
+        self.init(model: desired.model, effort: desired.effort, settings: settings)
+    }
+}
+
+/// What `thread/resume` reports the thread now runs with.
+public struct CodexAppliedSettings: Equatable, Sendable {
+    public let model: String?
+    public let reasoningEffort: String?
+
+    public init(model: String? = nil, reasoningEffort: String? = nil) {
+        self.model = model
+        self.reasoningEffort = reasoningEffort
+    }
 }
 
 public struct CodexThreadSnapshot: Equatable, Sendable {
@@ -47,13 +112,26 @@ public struct CodexThreadSnapshot: Equatable, Sendable {
     public let messages: [AgentSessionMessage]
     public let archived: Bool
     public let activityAt: String?
+    /// `thread.model` / `thread.reasoningEffort` as `thread/read` reports them.
+    public let model: String?
+    public let reasoningEffort: String?
 
-    public init(status: String, activeTurnId: String? = nil, messages: [AgentSessionMessage], archived: Bool = false, activityAt: String? = nil) {
+    public init(
+        status: String,
+        activeTurnId: String? = nil,
+        messages: [AgentSessionMessage],
+        archived: Bool = false,
+        activityAt: String? = nil,
+        model: String? = nil,
+        reasoningEffort: String? = nil
+    ) {
         self.status = status
         self.activeTurnId = activeTurnId
         self.messages = messages
         self.archived = archived
         self.activityAt = activityAt
+        self.model = model
+        self.reasoningEffort = reasoningEffort
     }
 }
 
@@ -65,8 +143,21 @@ public struct CodexThreadRequest: Equatable, Sendable {
     public let prompt: String
     public let workspaceRoots: [String]
     public let skillVersion: String?
+    /// nil leaves the choice to Codex's own configuration.
+    public let model: String?
+    public let effort: String?
 
-    public init(socketPath: String, cwd: String, settings: CodexThreadSettings, name: String, prompt: String, workspaceRoots: [String] = [], skillVersion: String? = nil) {
+    public init(
+        socketPath: String,
+        cwd: String,
+        settings: CodexThreadSettings,
+        name: String,
+        prompt: String,
+        workspaceRoots: [String] = [],
+        skillVersion: String? = nil,
+        model: String? = nil,
+        effort: String? = nil
+    ) {
         self.socketPath = socketPath
         self.cwd = cwd
         self.settings = settings
@@ -74,6 +165,8 @@ public struct CodexThreadRequest: Equatable, Sendable {
         self.prompt = prompt
         self.workspaceRoots = workspaceRoots.isEmpty ? [cwd] : workspaceRoots
         self.skillVersion = skillVersion
+        self.model = model
+        self.effort = effort
     }
 }
 
@@ -113,14 +206,22 @@ public enum CodexProtocol {
         ]
     }
 
-    public static func threadStartParams(cwd: String, settings: CodexThreadSettings, workspaceRoots: [String] = []) -> [String: Any] {
-        return [
+    public static func threadStartParams(
+        cwd: String,
+        settings: CodexThreadSettings,
+        workspaceRoots: [String] = [],
+        model: String? = nil
+    ) -> [String: Any] {
+        var params: [String: Any] = [
             "cwd": cwd,
             "sandbox": settings.sandbox,
             "approvalPolicy": settings.approvalPolicy,
             "approvalsReviewer": settings.approvalsReviewer,
             "runtimeWorkspaceRoots": workspaceRoots.isEmpty ? [cwd] : workspaceRoots,
         ]
+        // Left out rather than null: absent is Codex's own configured model.
+        if let model { params["model"] = model }
+        return params
     }
 
     /// Check the effective policy returned by the running server, not the CLI
@@ -177,9 +278,20 @@ public enum CodexProtocol {
         return ["threadId": threadId, "name": name]
     }
 
-    public static func turnStartParams(threadId: String, prompt: String, clientUserMessageId: String? = nil) -> [String: Any] {
+    public static func turnStartParams(
+        threadId: String,
+        prompt: String,
+        clientUserMessageId: String? = nil,
+        overrides: CodexTurnOverrides? = nil
+    ) -> [String: Any] {
         var params: [String: Any] = ["threadId": threadId, "input": [["type": "text", "text": prompt]]]
         if let clientUserMessageId { params["clientUserMessageId"] = clientUserMessageId }
+        if let model = overrides?.model { params["model"] = model }
+        if let effort = overrides?.effort { params["effort"] = effort }
+        if let settings = overrides?.settings {
+            params["approvalPolicy"] = settings.approvalPolicy
+            params["approvalsReviewer"] = settings.approvalsReviewer
+        }
         return params
     }
 
@@ -230,8 +342,65 @@ public enum CodexProtocol {
         return (ids, result["nextCursor"] as? String)
     }
 
-    public static func threadResumeParams(threadId: String) -> [String: Any] {
+    public static func threadArchiveParams(threadId: String) -> [String: Any] {
         return ["threadId": threadId]
+    }
+
+    public static func threadUnarchiveParams(threadId: String) -> [String: Any] {
+        return ["threadId": threadId]
+    }
+
+    /// `thread/resume` takes no effort; that one rides on the next `turn/start`.
+    public static func threadResumeParams(threadId: String, overrides: CodexTurnOverrides? = nil) -> [String: Any] {
+        var params: [String: Any] = ["threadId": threadId]
+        if let model = overrides?.model { params["model"] = model }
+        if let settings = overrides?.settings {
+            params["approvalPolicy"] = settings.approvalPolicy
+            params["approvalsReviewer"] = settings.approvalsReviewer
+            params["sandbox"] = settings.sandbox
+        }
+        return params
+    }
+
+    public static func appliedSettings(fromResume result: [String: Any]) -> CodexAppliedSettings {
+        let thread = result["thread"] as? [String: Any]
+        return CodexAppliedSettings(
+            model: (result["model"] as? String) ?? (thread?["model"] as? String),
+            reasoningEffort: (result["reasoningEffort"] as? String) ?? (thread?["reasoningEffort"] as? String)
+        )
+    }
+
+    public static func modelListParams(cursor: String? = nil) -> [String: Any] {
+        var params: [String: Any] = ["includeHidden": false, "limit": 100]
+        if let cursor { params["cursor"] = cursor }
+        return params
+    }
+
+    /// One `model/list` page. Hidden models are skipped even if the server
+    /// sends them: they are not meant to be picked.
+    public static func modelListPage(_ result: [String: Any]) throws -> (models: [AgentModelOption], nextCursor: String?) {
+        guard let data = result["data"] as? [[String: Any]] else {
+            throw CodexControlError.invalidResponse(method: "model/list")
+        }
+        let models = data.compactMap { entry -> AgentModelOption? in
+            guard !JSONValues.isTrue(entry["hidden"]) else { return nil }
+            // `model` is what thread/start and turn/start take; `id` is the
+            // catalogue key, used only when a server leaves `model` out.
+            guard let id = (entry["model"] as? String).flatMap({ $0.isEmpty ? nil : $0 })
+                    ?? (entry["id"] as? String).flatMap({ $0.isEmpty ? nil : $0 })
+            else { return nil }
+            let efforts = (entry["supportedReasoningEfforts"] as? [[String: Any]] ?? [])
+                .compactMap { $0["reasoningEffort"] as? String }
+            let label = (entry["displayName"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? id
+            return AgentModelOption(
+                id: id,
+                label: label,
+                efforts: efforts,
+                defaultEffort: entry["defaultReasoningEffort"] as? String,
+                isDefault: JSONValues.bool(entry["isDefault"])
+            )
+        }
+        return (models, result["nextCursor"] as? String)
     }
 
     public static func turnInterruptParams(threadId: String, turnId: String) -> [String: Any] {
@@ -316,7 +485,9 @@ public enum CodexProtocol {
             status: status,
             activeTurnId: activeTurnId,
             messages: messages,
-            activityAt: sourceActivityTimestamp(thread["updatedAt"] ?? thread["updated_at"])
+            activityAt: sourceActivityTimestamp(thread["updatedAt"] ?? thread["updated_at"]),
+            model: thread["model"] as? String,
+            reasoningEffort: thread["reasoningEffort"] as? String
         )
     }
 
@@ -383,6 +554,12 @@ private final class CodexArchiveCache: @unchecked Sendable {
             throw error
         }
     }
+
+    /// After MissionGo itself archives or restores a thread the cached list is
+    /// wrong for up to its whole lifetime; drop it so the next read asks again.
+    func forget(socketPath: String) {
+        entries.withLock { $0[socketPath] = nil }
+    }
 }
 
 public struct CodexAppServerControl: CodexControl {
@@ -428,6 +605,34 @@ public struct CodexAppServerControl: CodexControl {
         }
     }
 
+    public func archiveThread(socketPath: String, threadId: String) async throws {
+        try await archiveCall("thread/archive", socketPath: socketPath, threadId: threadId)
+    }
+
+    public func unarchiveThread(socketPath: String, threadId: String) async throws {
+        try await archiveCall("thread/unarchive", socketPath: socketPath, threadId: threadId)
+    }
+
+    private func archiveCall(_ method: String, socketPath: String, threadId: String) async throws {
+        let timeout = self.timeout
+        let archiveCache = self.archiveCache
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result {
+                    defer { archiveCache.forget(socketPath: socketPath) }
+                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                    defer { connection.close() }
+                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    try connection.notify("initialized")
+                    let params = method == "thread/archive"
+                        ? CodexProtocol.threadArchiveParams(threadId: threadId)
+                        : CodexProtocol.threadUnarchiveParams(threadId: threadId)
+                    _ = try connection.call(method, params)
+                })
+            }
+        }
+    }
+
     private static func archivedThreadIds(connection: JSONRPCWebSocket) throws -> Set<String> {
         var ids = Set<String>()
         var cursor: String?
@@ -444,7 +649,7 @@ public struct CodexAppServerControl: CodexControl {
         return ids
     }
 
-    public func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
+    public func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws {
         let timeout = self.timeout
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
@@ -453,15 +658,65 @@ public struct CodexAppServerControl: CodexControl {
                     defer { connection.close() }
                     _ = try connection.call("initialize", CodexProtocol.initializeParams())
                     try connection.notify("initialized")
-                    _ = try connection.call("thread/resume", CodexProtocol.threadResumeParams(threadId: threadId))
+                    _ = try connection.call(
+                        "thread/resume",
+                        CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides)
+                    )
                     _ = try connection.call(
                         "turn/start",
                         CodexProtocol.turnStartParams(
                             threadId: threadId,
                             prompt: text,
-                            clientUserMessageId: clientUserMessageId
+                            clientUserMessageId: clientUserMessageId,
+                            overrides: overrides
                         )
                     )
+                })
+            }
+        }
+    }
+
+    public func applySettings(socketPath: String, threadId: String, overrides: CodexTurnOverrides) async throws -> CodexAppliedSettings {
+        let timeout = self.timeout
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result {
+                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                    defer { connection.close() }
+                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    try connection.notify("initialized")
+                    let result = try connection.call(
+                        "thread/resume",
+                        CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides)
+                    )
+                    return CodexProtocol.appliedSettings(fromResume: result)
+                })
+            }
+        }
+    }
+
+    public func listModels(socketPath: String) async throws -> [AgentModelOption] {
+        let timeout = self.timeout
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result {
+                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                    defer { connection.close() }
+                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    try connection.notify("initialized")
+                    var models: [AgentModelOption] = []
+                    var cursor: String?
+                    var seenCursors = Set<String>()
+                    repeat {
+                        let result = try connection.call("model/list", CodexProtocol.modelListParams(cursor: cursor))
+                        let page = try CodexProtocol.modelListPage(result)
+                        models += page.models
+                        cursor = page.nextCursor
+                        if let cursor, !seenCursors.insert(cursor).inserted {
+                            throw CodexControlError.invalidResponse(method: "model/list")
+                        }
+                    } while cursor != nil
+                    return models
                 })
             }
         }
@@ -517,7 +772,9 @@ public struct CodexAppServerControl: CodexControl {
 
         let started = try connection.call(
             "thread/start",
-            CodexProtocol.threadStartParams(cwd: request.cwd, settings: request.settings, workspaceRoots: request.workspaceRoots)
+            CodexProtocol.threadStartParams(
+                cwd: request.cwd, settings: request.settings, workspaceRoots: request.workspaceRoots, model: request.model
+            )
         )
         guard let threadId = CodexProtocol.threadId(fromThreadStart: started) else {
             throw CodexControlError.invalidResponse(method: "thread/start")
@@ -539,7 +796,11 @@ public struct CodexAppServerControl: CodexControl {
         // A thread that could not be named is still a working thread; failing the
         // dispatch here would leave it running with nobody told about it.
         _ = try? connection.call("thread/name/set", CodexProtocol.threadNameParams(threadId: threadId, name: request.name))
-        _ = try connection.call("turn/start", CodexProtocol.turnStartParams(threadId: threadId, prompt: request.prompt))
+        _ = try connection.call("turn/start", CodexProtocol.turnStartParams(
+            threadId: threadId,
+            prompt: request.prompt,
+            overrides: CodexTurnOverrides(model: request.model, effort: request.effort)
+        ))
         return threadId
     }
 

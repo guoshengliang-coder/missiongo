@@ -23,6 +23,7 @@ import {
   type WorkItemType,
 } from "@missiongo/domain";
 
+import { autoArchiveForItem } from "./auto-archive.js";
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { MissionGoDatabase } from "./storage/database.js";
 import {
@@ -181,7 +182,8 @@ interface FeedbackDraftRow {
 const PRODUCT_PREFIX_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
 
 /**
- * How many items AI may split off one source item per hour. Well above what a
+ * How many items AI may split off one source item per hour, and how many
+ * independent items (AND-134) it may create in one product per hour. Well above what a
  * person approves one at a time in a session, and low enough that content
  * injected into an item cannot use an agent to flood the queue.
  */
@@ -705,29 +707,37 @@ export class MissionGoStore {
   }
 
   /**
-   * Record a follow-up split off from an item an AI is working on (AND-50).
+   * Record an item an AI creates on the user's behalf: a follow-up split off
+   * from an item it is working on (AND-50), or, with a productId instead of a
+   * source item, an independent item in that product (AND-134).
    *
    * The user approves each one in the AI session, which this server cannot see,
    * so nothing here claims that approval happened. What it enforces instead:
-   * the new item lives in the source item's product, it is attributed to the
-   * agent connection that wrote it rather than passed off as a person's, and one
-   * source item can only spawn so many an hour -- content injected into an item
-   * should not be able to drive an agent into filling the queue.
+   * a follow-up lives in the source item's product, the item is attributed to
+   * the agent connection that wrote it rather than passed off as a person's,
+   * and one source item -- or one product, for independent items -- can only
+   * get so many an hour, so content injected into an item cannot drive an agent
+   * into filling the queue.
    */
   createDerivedWorkItem(input: CreateDerivedWorkItemInput): WorkItemSnapshot {
     const agentName = this.validateByline(input.agentName, "Agent name", 100);
     const summary = this.validateByline(input.summary, "Summary", 300);
     const idempotencyKey = this.validateIdempotencyKey(input.idempotencyKey);
-    const operation = `create_item:${input.sourceItemKey.toUpperCase()}`;
+    const sourceKey = input.sourceItemKey?.toUpperCase();
+    if ((sourceKey === undefined) === (input.productId === undefined)) {
+      throw invalidInput("Give exactly one of sourceItemKey or productId.");
+    }
+    const operation = sourceKey ? `create_item:${sourceKey}` : `create_item:product:${input.productId}`;
 
     return this.database.transaction(() => {
       const repeated = this.getIdempotentResult<WorkItemSnapshot>(idempotencyKey, operation);
       if (repeated) return repeated;
 
-      const source = this.getWorkItemRow(input.sourceItemKey.toUpperCase());
-      if (!source) throw notFound("Work item");
+      const source = sourceKey ? this.getWorkItemRow(sourceKey) : undefined;
+      if (sourceKey && !source) throw notFound("Work item");
+      const productId = source?.product_id ?? input.productId!;
       const itemInput: CreateWorkItemInput = {
-        productId: source.product_id,
+        productId,
         status: input.status,
         type: input.type,
         priority: input.priority,
@@ -739,17 +749,28 @@ export class MissionGoStore {
       if (input.status === undefined) throw invalidInput("status is required: inbox or ready.");
 
       const nowMs = Date.now();
-      const recent = this.database.connection
-        .prepare(
-          `SELECT COUNT(*) AS count FROM work_items w
-           JOIN work_item_events e ON e.item_id = w.id AND e.event_type = 'item_created'
-           WHERE w.derived_from_item_id = ? AND e.actor_kind = 'agent' AND w.created_at >= ?`,
-        )
-        .get(source.id, new Date(nowMs - DERIVED_ITEM_WINDOW_MILLISECONDS).toISOString()) as unknown as { count: number };
+      const since = new Date(nowMs - DERIVED_ITEM_WINDOW_MILLISECONDS).toISOString();
+      const recent = (source
+        ? this.database.connection
+          .prepare(
+            `SELECT COUNT(*) AS count FROM work_items w
+             JOIN work_item_events e ON e.item_id = w.id AND e.event_type = 'item_created'
+             WHERE w.derived_from_item_id = ? AND e.actor_kind = 'agent' AND w.created_at >= ?`,
+          )
+          .get(source.id, since)
+        : this.database.connection
+          .prepare(
+            `SELECT COUNT(*) AS count FROM work_items w
+             JOIN work_item_events e ON e.item_id = w.id AND e.event_type = 'item_created'
+             WHERE w.product_id = ? AND w.derived_from_item_id IS NULL AND e.actor_kind = 'agent' AND w.created_at >= ?`,
+          )
+          .get(productId, since)) as unknown as { count: number };
       if (recent.count >= DERIVED_ITEM_LIMIT_PER_WINDOW) {
         throw new MissionGoError(
           "rate_limit_exceeded",
-          `${source.item_key} already has ${DERIVED_ITEM_LIMIT_PER_WINDOW} items created from it by AI in the last hour.`,
+          source
+            ? `${source.item_key} already has ${DERIVED_ITEM_LIMIT_PER_WINDOW} items created from it by AI in the last hour.`
+            : `This product already has ${DERIVED_ITEM_LIMIT_PER_WINDOW} independent items created by AI in the last hour.`,
           429,
         );
       }
@@ -759,17 +780,19 @@ export class MissionGoStore {
       const attribution = input.attribution ?? {};
       const key = this.insertWorkItem(itemInput, title, description, id, now, {
         type: input.type,
-        derivedFrom: source.item_key,
+        ...(source ? { derivedFrom: source.item_key } : { independent: true }),
         ...(agentName ? { agentName } : {}),
         ...(summary ? { summary } : {}),
-      }, { actor: "agent", attribution, derivedFromItemId: source.id });
-      this.insertEvent(source.id, "derived_item_created", "agent", null, null, {
-        itemKey: key,
-        title,
-        type: input.type,
-        ...(agentName ? { agentName } : {}),
-      }, now, attribution);
-      this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, source.id);
+      }, { actor: "agent", attribution, ...(source ? { derivedFromItemId: source.id } : {}) });
+      if (source) {
+        this.insertEvent(source.id, "derived_item_created", "agent", null, null, {
+          itemKey: key,
+          title,
+          type: input.type,
+          ...(agentName ? { agentName } : {}),
+        }, now, attribution);
+        this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, source.id);
+      }
 
       const result = this.getWorkItem(key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
@@ -1628,6 +1651,9 @@ export class MissionGoStore {
       now,
       attribution,
     );
+    // Every status write passes here, so this is the one place a hand-off can
+    // notice that its last open item just finished (AND-129).
+    if (to === "done" || to === "cancelled") autoArchiveForItem(this.database, current.id, now);
   }
 
   private getProductRow(productId: string): ProductRow | undefined {

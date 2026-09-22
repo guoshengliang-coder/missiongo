@@ -23,6 +23,49 @@ final class APIClientTests: XCTestCase {
         XCTAssertTrue(session.occupiesExecutionSlot)
     }
 
+    func testNodeSessionDecodesDesiredSettingsAndDefaultsThemForAnOlderServer() throws {
+        let session = try JSONDecoder().decode(
+            NodeAgentSession.self,
+            from: Data(#"{"id":"s1","sessionRef":"t","status":"idle","desiredSettings":{"revision":3,"mode":"auto","model":"sonnet","effort":"high"},"appliedSettingsRevision":2}"#.utf8)
+        )
+        XCTAssertEqual(session.desiredSettings, AgentSessionSettings(revision: 3, mode: "auto", model: "sonnet", effort: "high"))
+        XCTAssertEqual(session.appliedSettingsRevision, 2)
+        XCTAssertEqual(session.pendingSettings?.revision, 3)
+
+        let partial = try JSONDecoder().decode(
+            NodeAgentSession.self,
+            from: Data(#"{"id":"s1","sessionRef":"t","status":"idle","desiredSettings":{"revision":2,"model":null},"appliedSettingsRevision":2}"#.utf8)
+        )
+        XCTAssertEqual(partial.desiredSettings, AgentSessionSettings(revision: 2))
+        XCTAssertNil(partial.pendingSettings, "an applied revision is not applied again")
+
+        let older = try JSONDecoder().decode(
+            NodeAgentSession.self,
+            from: Data(#"{"id":"s1","sessionRef":"t","status":"idle"}"#.utf8)
+        )
+        XCTAssertNil(older.desiredSettings)
+        XCTAssertEqual(older.appliedSettingsRevision, 0)
+        XCTAssertNil(older.pendingSettings)
+    }
+
+    func testSnapshotCarriesSettingsFieldsOnlyWhenKnown() throws {
+        let bare = try JSONSerialization.jsonObject(with: APIClient.encoder.encode(
+            AgentSessionReport(status: "idle", messages: [])
+        )) as? [String: Any]
+        for key in ["model", "effort", "settingsRevision", "settingsError"] {
+            XCTAssertNil(bare?[key], key)
+        }
+        let full = try JSONSerialization.jsonObject(with: APIClient.encoder.encode(
+            AgentSessionReport(status: "idle", messages: [], error: "e")
+                .reportingSettings(model: "sonnet", effort: "low", settingsRevision: 4, settingsError: "切换模型失败：x")
+        )) as? [String: Any]
+        XCTAssertEqual(full?["model"] as? String, "sonnet")
+        XCTAssertEqual(full?["effort"] as? String, "low")
+        XCTAssertEqual(full?["settingsRevision"] as? Int, 4)
+        XCTAssertEqual(full?["settingsError"] as? String, "切换模型失败：x")
+        XCTAssertEqual(full?["error"] as? String, "e", "the rest of the report is kept")
+    }
+
     private let server = "http://127.0.0.1:8799/"
 
     private func client(token: String? = "mgn_x") -> APIClient {
@@ -123,6 +166,43 @@ final class APIClientTests: XCTestCase {
         let agents = jsonObject(sent.body)["agents"] as? [[String: Any]]
         XCTAssertEqual(agents?.first?["kind"] as? String, "claude_code")
         XCTAssertEqual(agents?.first?["version"] as? String, "2.1.232")
+    }
+
+    func testHeartbeatCarriesEachAgentsModelsAndLeavesThemOutWhenUnknown() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"repos":[]}"#) }
+        _ = try await client().heartbeat(agents: [
+            DetectedAgent(kind: "codex", version: "0.155.1", models: [
+                AgentModelOption(id: "gpt-5.1-codex", label: "GPT-5.1 Codex", efforts: ["low", "high"], defaultEffort: "high", isDefault: true),
+            ]),
+            DetectedAgent(kind: "claude_code", version: "2.1.278", models: []),
+            DetectedAgent(kind: "other", version: "1"),
+        ])
+        let agents = try XCTUnwrap(jsonObject(try XCTUnwrap(StubURLProtocol.recorded.first).body)["agents"] as? [[String: Any]])
+        let codex = try XCTUnwrap((agents[0]["models"] as? [[String: Any]])?.first)
+        XCTAssertEqual(codex["id"] as? String, "gpt-5.1-codex")
+        XCTAssertEqual(codex["label"] as? String, "GPT-5.1 Codex")
+        XCTAssertEqual(codex["efforts"] as? [String], ["low", "high"])
+        XCTAssertEqual(codex["defaultEffort"] as? String, "high")
+        XCTAssertEqual(codex["isDefault"] as? Bool, true)
+        // An empty list still says "this client can choose models".
+        XCTAssertEqual((agents[1]["models"] as? [Any])?.count, 0)
+        XCTAssertNil(agents[2]["models"])
+    }
+
+    func testClaimNextDecodesTheChosenModelAndEffort() async throws {
+        StubURLProtocol.install { _, _ in
+            .response(status: 200, body: #"{"dispatchId":"d9","itemKeys":["HG-49"],"repoPath":"/p","agentKind":"claude_code","mode":"plan","model":"opus[1m]","effort":"max"}"#)
+        }
+        let chosen = try await client().claimNext()
+        XCTAssertEqual(chosen?.model, "opus[1m]")
+        XCTAssertEqual(chosen?.effort, "max")
+
+        StubURLProtocol.install { _, _ in
+            .response(status: 200, body: #"{"dispatchId":"d9","itemKeys":["HG-49"],"repoPath":"/p","agentKind":"claude_code","mode":"plan","model":null}"#)
+        }
+        let local = try await client().claimNext()
+        XCTAssertNil(local?.model)
+        XCTAssertNil(local?.effort)
     }
 
     func testRevokedCredentialIsDistinctForBoth401And403() async {

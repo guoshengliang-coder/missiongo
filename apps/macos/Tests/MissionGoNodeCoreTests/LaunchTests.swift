@@ -83,6 +83,27 @@ final class LaunchCommandTests: XCTestCase {
         ])
     }
 
+    func testTheLegacyLauncherPassesAChosenModelAndEffortBeforeThePrompt() throws {
+        let command = try SessionLauncher.launchCommand(
+            sessionName: "Mac mini-AND-1", mode: "plan", prompt: "work", model: "sonnet", effort: "low"
+        )
+        XCTAssertEqual(Array(command.args.suffix(5)), ["--model", "sonnet", "--effort", "low", "work"])
+        let local = try SessionLauncher.launchCommand(sessionName: "Mac mini-AND-1", mode: "plan", prompt: "work")
+        XCTAssertFalse(local.args.contains("--model"))
+        XCTAssertFalse(local.args.contains("--effort"))
+    }
+
+    func testRefusesAModelOrEffortThatCouldBeReadAsAFlag() {
+        for (model, effort) in [("--dangerously-skip-permissions", nil), ("sonnet", "-x"), ("a b", nil), ("", nil)] as [(String?, String?)] {
+            XCTAssertThrowsError(try SessionLauncher.launchCommand(
+                sessionName: "Mac mini-AND-1", mode: "plan", prompt: "x", model: model, effort: effort
+            ), "\(String(describing: model)) \(String(describing: effort))")
+        }
+        for model in ["opus[1m]", "claude-fable-5-1[1m]", "gpt-5.1-codex", "haiku"] {
+            XCTAssertTrue(AgentModelSettings.isValidModel(model), model)
+        }
+    }
+
     func testPassesThePromptAsOneArgument() throws {
         let prompt = try LaunchPrompt.build(itemKeys: ["AND-1"], dispatchId: "abc")
         let command = try SessionLauncher.launchCommand(sessionName: "Mac mini-AND-1", mode: "default", prompt: prompt)

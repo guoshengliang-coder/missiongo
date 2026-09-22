@@ -1,6 +1,5 @@
 import type { AgentKind } from "@missiongo/domain";
 
-import { isAgentSessionUnread, type AgentSessionReadState } from "./agent-session-unread";
 import type {
   AgentSessionCommand,
   AgentSessionMessage,
@@ -29,7 +28,7 @@ export function formatAgentMessageTime(value: string, locale: string): string {
   }).format(new Date(value));
 }
 
-export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived";
+export type AgentSessionFilter = "attention" | "active" | "all" | "failed" | "archived";
 export type AgentKindFilter = "all" | AgentKind;
 
 export function replyBlockedLabelKey(reason: AgentSessionReplyBlockedReason | undefined):
@@ -52,7 +51,6 @@ export function replyBlockedLabelKey(reason: AgentSessionReplyBlockedReason | un
 type FilterableAgentSession = Pick<
   AgentSessionSummary,
   | "id"
-  | "activityKey"
   | "agentKind"
   | "archivedAt"
   | "status"
@@ -112,16 +110,11 @@ export function agentSessionMatches(
   filter: AgentSessionFilter,
   agentFilter: AgentKindFilter,
   search: string,
-  readState: AgentSessionReadState,
-  retainedReadSessionId: string | null = null,
 ): boolean {
   if (filter === "archived") {
     if (!session.archivedAt) return false;
   } else if (session.archivedAt) return false;
   if (agentFilter !== "all" && session.agentKind !== agentFilter) return false;
-  if (filter === "unread"
-    && session.id !== retainedReadSessionId
-    && !isAgentSessionUnread(session, readState)) return false;
   if (filter === "attention" && !session.needsAttention) return false;
   if (filter === "active" && session.status !== "active") return false;
   if (filter === "failed" && session.status !== "failed" && session.command?.status !== "failed") return false;
@@ -135,14 +128,26 @@ export function agentSessionMatches(
   ].some((value) => value.toLocaleLowerCase().includes(query));
 }
 
-export function retainedReadSessionAfterSelection(
-  filter: AgentSessionFilter,
-  session: Pick<AgentSessionSummary, "id" | "activityKey">,
-  readState: AgentSessionReadState,
-  current: string | null,
-): string | null {
-  if (filter !== "unread") return null;
-  return session.id === current || isAgentSessionUnread(session, readState) ? session.id : null;
+/**
+ * Unread conversations lead every list (AND-135); within each group the
+ * server's newest-activity order is kept. There is no separate unread filter:
+ * a conversation stops leading once it is opened.
+ */
+export function unreadFirst<T extends Pick<AgentSessionSummary, "unread">>(sessions: readonly T[]): readonly T[] {
+  return [...sessions.filter((session) => session.unread), ...sessions.filter((session) => !session.unread)];
+}
+
+/**
+ * Only a conversation the person opened is marked read, and only while the tab
+ * is in front. Merely being first in the list -- and so selected and shown
+ * automatically -- is not reading it.
+ */
+export function shouldMarkRead(
+  session: Pick<AgentSessionSummary, "unread" | "unreadAt"> | undefined,
+  openedByPerson: boolean,
+  documentVisible: boolean,
+): session is Pick<AgentSessionSummary, "unread"> & { readonly unreadAt: string } {
+  return Boolean(session?.unread && session.unreadAt && openedByPerson && documentVisible);
 }
 
 export interface ScrollMetrics {

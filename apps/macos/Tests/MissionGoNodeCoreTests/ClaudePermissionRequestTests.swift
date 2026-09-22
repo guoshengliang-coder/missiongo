@@ -16,6 +16,23 @@ final class ClaudePermissionRequestTests: XCTestCase {
         XCTAssertTrue(resumed.contains("--permission-prompt-tool"))
     }
 
+    func testModelAndEffortFlagsAppearOnlyWhenChosen() {
+        let chosen = ClaudeHostArguments.claude(
+            mode: "plan", sessionName: "M4-AND-130", sessionRef: "s-1", resuming: true, model: "opus[1m]", effort: "xhigh"
+        )
+        let model = try? XCTUnwrap(chosen.firstIndex(of: "--model"))
+        XCTAssertEqual(model.map { chosen[$0 + 1] }, "opus[1m]")
+        let effort = try? XCTUnwrap(chosen.firstIndex(of: "--effort"))
+        XCTAssertEqual(effort.map { chosen[$0 + 1] }, "xhigh")
+        // The session flag stays last either way.
+        XCTAssertEqual(chosen.suffix(2), ["--resume", "s-1"])
+
+        // Without a choice Claude Code follows the user's own settings.
+        let local = ClaudeHostArguments.claude(mode: "plan", sessionName: "M4-AND-130", sessionRef: "s-1", resuming: false)
+        XCTAssertFalse(local.contains("--model"))
+        XCTAssertFalse(local.contains("--effort"))
+    }
+
     func testReadsCanUseToolRequestsOnly() {
         let request = ClaudePermissionRequest(event: [
             "type": "control_request", "request_id": "r-1",

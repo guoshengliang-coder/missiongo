@@ -567,6 +567,116 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/list"])
     }
 
+    func testPassesTheModelToThreadStartAndTheEffortToTheFirstTurn() async throws {
+        let server = try FakeAppServer.happy()
+        let base = request(socketPath: server.path)
+        _ = try await CodexAppServerControl(timeout: 5).startThread(CodexThreadRequest(
+            socketPath: base.socketPath, cwd: base.cwd, settings: base.settings, name: base.name, prompt: base.prompt,
+            model: "gpt-5.1-codex", effort: "xhigh"
+        ))
+        server.waitUntilDone()
+        XCTAssertEqual(server.params(of: "thread/start")?["model"] as? String, "gpt-5.1-codex")
+        XCTAssertNil(server.params(of: "thread/start")?["effort"])
+        XCTAssertEqual(server.params(of: "turn/start")?["model"] as? String, "gpt-5.1-codex")
+        XCTAssertEqual(server.params(of: "turn/start")?["effort"] as? String, "xhigh")
+    }
+
+    func testLeavesModelAndEffortOutWhenTheDispatchFollowsLocalConfig() async throws {
+        let server = try FakeAppServer.happy()
+        _ = try await CodexAppServerControl(timeout: 5).startThread(request(socketPath: server.path))
+        server.waitUntilDone()
+        XCTAssertNil(server.params(of: "thread/start")?["model"])
+        XCTAssertNil(server.params(of: "turn/start")?["model"])
+        XCTAssertNil(server.params(of: "turn/start")?["effort"])
+    }
+
+    func testListsModelsAcrossPagesAndSkipsHiddenOnes() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"], let method = message["method"] as? String else { return [] }
+            guard method == "model/list" else { return [["jsonrpc": "2.0", "id": id, "result": [:]]] }
+            let cursor = (message["params"] as? [String: Any])?["cursor"] as? String
+            if cursor == nil {
+                return [["jsonrpc": "2.0", "id": id, "result": [
+                    "data": [
+                        ["id": "m1", "model": "gpt-5.1-codex", "displayName": "GPT-5.1 Codex", "hidden": false, "isDefault": true,
+                         "defaultReasoningEffort": "medium",
+                         "supportedReasoningEfforts": [["reasoningEffort": "low", "description": ""], ["reasoningEffort": "medium", "description": ""]]],
+                        ["id": "secret", "model": "internal", "displayName": "Internal", "hidden": true],
+                    ],
+                    "nextCursor": "page-2",
+                ]]]
+            }
+            return [["jsonrpc": "2.0", "id": id, "result": [
+                "data": [["id": "gpt-5-mini", "displayName": "GPT-5 mini", "hidden": false, "isDefault": false,
+                          "supportedReasoningEfforts": []]],
+            ]]]
+        }
+        let models = try await CodexAppServerControl(timeout: 5).listModels(socketPath: server.path)
+        server.waitUntilDone()
+
+        XCTAssertEqual(models, [
+            AgentModelOption(id: "gpt-5.1-codex", label: "GPT-5.1 Codex", efforts: ["low", "medium"], defaultEffort: "medium", isDefault: true),
+            AgentModelOption(id: "gpt-5-mini", label: "GPT-5 mini", efforts: [], isDefault: false),
+        ])
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "model/list", "model/list"])
+        XCTAssertEqual(server.params(of: "model/list")?["includeHidden"] as? Bool, false)
+    }
+
+    func testAppliesSettingsThroughThreadResume() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            if message["method"] as? String == "thread/resume" {
+                return [["jsonrpc": "2.0", "id": id, "result": ["model": "gpt-5.1-codex", "reasoningEffort": "high", "thread": ["id": "thread-1"]]]]
+            }
+            return [["jsonrpc": "2.0", "id": id, "result": [:]]]
+        }
+        let applied = try await CodexAppServerControl(timeout: 5).applySettings(
+            socketPath: server.path, threadId: "thread-1",
+            overrides: CodexTurnOverrides(model: "gpt-5.1-codex", effort: "high", settings: CodexModes.threadSettings(for: "default"))
+        )
+        server.waitUntilDone()
+
+        XCTAssertEqual(applied, CodexAppliedSettings(model: "gpt-5.1-codex", reasoningEffort: "high"))
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume"])
+        let params = server.params(of: "thread/resume")
+        XCTAssertEqual(params?["threadId"] as? String, "thread-1")
+        XCTAssertEqual(params?["model"] as? String, "gpt-5.1-codex")
+        XCTAssertEqual(params?["approvalPolicy"] as? String, "on-request")
+        XCTAssertEqual(params?["approvalsReviewer"] as? String, "user")
+        XCTAssertEqual(params?["sandbox"] as? String, "workspace-write")
+        // thread/resume takes no effort; it rides on the next turn/start.
+        XCTAssertNil(params?["effort"])
+    }
+
+    func testAReplyResumesAndStartsTheTurnWithTheOverrides() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            return [["jsonrpc": "2.0", "id": id, "result": [:]]]
+        }
+        try await CodexAppServerControl(timeout: 5).sendMessage(
+            socketPath: server.path, threadId: "thread-1", text: "Continue", clientUserMessageId: "command-1",
+            overrides: CodexTurnOverrides(model: "gpt-5.1-codex", effort: "low", settings: CodexModes.threadSettings(for: "auto"))
+        )
+        server.waitUntilDone()
+
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume", "turn/start"])
+        XCTAssertEqual(server.params(of: "thread/resume")?["model"] as? String, "gpt-5.1-codex")
+        let turn = server.params(of: "turn/start")
+        XCTAssertEqual(turn?["model"] as? String, "gpt-5.1-codex")
+        XCTAssertEqual(turn?["effort"] as? String, "low")
+        XCTAssertEqual(turn?["approvalPolicy"] as? String, "on-request")
+        XCTAssertEqual(turn?["approvalsReviewer"] as? String, "auto_review")
+        XCTAssertEqual(turn?["clientUserMessageId"] as? String, "command-1")
+    }
+
+    func testReadsTheThreadsModelAndEffort() throws {
+        let snapshot = try CodexProtocol.threadSnapshot(fromRead: [
+            "thread": ["status": ["type": "idle"], "turns": [], "model": "gpt-5.1-codex", "reasoningEffort": "high"],
+        ])
+        XCTAssertEqual(snapshot.model, "gpt-5.1-codex")
+        XCTAssertEqual(snapshot.reasoningEffort, "high")
+    }
+
     func testSaysTheChatGPTAppIsNotRunningWhenNothingListens() async throws {
         let path = try shortTemporaryDirectory() + "/missing.sock"
         do {
@@ -807,6 +917,14 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     let replies = Locked<[(String, String)]>([])
     let steerings = Locked<[(String, String, String)]>([])
     let interruptions = Locked<[(String, String)]>([])
+    let archived = Locked<[String]>([])
+    var archiveError: Error?
+    let replyOverrides = Locked<[CodexTurnOverrides?]>([])
+    let appliedSettings = Locked<[(String, CodexTurnOverrides)]>([])
+    var applyError: Error?
+    var applyResult = CodexAppliedSettings()
+    let modelLists = Locked(0)
+    var modelListResult: Result<[AgentModelOption], Error> = .success([])
     let threadId: String
     var snapshot = CodexThreadSnapshot(status: "idle", messages: [])
 
@@ -823,8 +941,20 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
         return snapshot
     }
 
-    func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
+    func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws {
         replies.withLock { $0.append((clientUserMessageId, text)) }
+        replyOverrides.withLock { $0.append(overrides) }
+    }
+
+    func applySettings(socketPath: String, threadId: String, overrides: CodexTurnOverrides) async throws -> CodexAppliedSettings {
+        if let applyError { throw applyError }
+        appliedSettings.withLock { $0.append((threadId, overrides)) }
+        return applyResult
+    }
+
+    func listModels(socketPath: String) async throws -> [AgentModelOption] {
+        modelLists.withLock { $0 += 1 }
+        return try modelListResult.get()
     }
 
     func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws {
@@ -833,6 +963,19 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
 
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
         interruptions.withLock { $0.append((threadId, turnId)) }
+    }
+
+    func archiveThread(socketPath: String, threadId: String) async throws {
+        if let archiveError { throw archiveError }
+        archived.withLock { $0.append(threadId) }
+    }
+
+    let unarchived = Locked<[String]>([])
+    var snapshotAfterUnarchive: CodexThreadSnapshot?
+
+    func unarchiveThread(socketPath: String, threadId: String) async throws {
+        unarchived.withLock { $0.append(threadId) }
+        if let snapshotAfterUnarchive { snapshot = snapshotAfterUnarchive }
     }
 }
 
@@ -1095,6 +1238,70 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertTrue(report.error?.contains("归档") == true)
     }
 
+    func testArchivesTheSourceThreadOfAFinishedConversation() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [])
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle", archiveInSource: true
+        ))
+
+        XCTAssertEqual(control.archived.current, ["thread-1"])
+        XCTAssertEqual(report.sourceArchived, true)
+        XCTAssertEqual(report.status, "idle")
+        XCTAssertNil(report.error)
+    }
+
+    func testReportsASourceArchiveThatFailedInsteadOfRetryingForever() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [])
+        control.archiveError = CodexControlError.rpc(method: "thread/archive", message: "thread not found")
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle", archiveInSource: true
+        ))
+
+        XCTAssertNil(report.sourceArchived)
+        XCTAssertNotNil(report.sourceArchiveError)
+    }
+
+    func testRestoresTheSourceThreadOfAConversationRestoredInMissionGo() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "unavailable", messages: [], archived: true)
+        control.snapshotAfterUnarchive = CodexThreadSnapshot(status: "idle", messages: [])
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle", restoreInSource: true
+        ))
+
+        XCTAssertEqual(control.unarchived.current, ["thread-1"])
+        XCTAssertEqual(report.sourceRestored, true)
+        XCTAssertEqual(report.sourceArchived, false)
+        XCTAssertEqual(report.status, "idle")
+        XCTAssertNil(report.error)
+    }
+
+    func testDecodesTheSourceArchiveRequestAndDefaultsItOff() throws {
+        let asked = try JSONDecoder().decode(NodeAgentSession.self, from: Data(
+            #"{"id":"s","sessionRef":"t","status":"idle","archiveInSource":true}"#.utf8
+        ))
+        XCTAssertTrue(asked.archiveInSource)
+        XCTAssertFalse(asked.restoreInSource)
+        let older = try JSONDecoder().decode(NodeAgentSession.self, from: Data(
+            #"{"id":"s","sessionRef":"t","status":"idle"}"#.utf8
+        ))
+        XCTAssertFalse(older.archiveInSource)
+    }
+
     func testAnActiveThreadExecutesAQueuedInterrupt() async throws {
         let control = RecordingControl(threadId: "thread-1")
         control.snapshot = CodexThreadSnapshot(status: "active", messages: [])
@@ -1115,6 +1322,176 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(report.status, "idle")
         XCTAssertEqual(report.commandId, "command-stop")
         XCTAssertEqual(report.commandStatus, "delivered")
+    }
+
+    func testPassesTheDispatchModelAndEffortToTheThread() async throws {
+        let machine = try machine()
+        defer { machine.listener.map { _ = close($0) } }
+        let control = RecordingControl()
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: "https://missiongo.test",
+            run: fakeCodex(), location: machine.location, control: control
+        )
+        _ = try await launcher.launch(DispatchJob(
+            dispatchId: "d-1", itemKeys: ["AND-42"], repoPath: machine.repoPath, mode: "plan", nodeName: "Mac mini",
+            model: "gpt-5.1-codex", effort: "high"
+        ))
+        let sent = try XCTUnwrap(control.requests.current.first)
+        XCTAssertEqual(sent.model, "gpt-5.1-codex")
+        XCTAssertEqual(sent.effort, "high")
+    }
+
+    func testRefusesAMalformedModelBeforeTouchingAnything() async throws {
+        let control = RecordingControl()
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/nonexistent"), control: control
+        )
+        do {
+            _ = try await launcher.launch(DispatchJob(
+                dispatchId: "d-1", itemKeys: ["AND-42"], repoPath: "/nonexistent", mode: "plan", nodeName: "M",
+                model: "--dangerously-bypass-approvals-and-sandbox"
+            ))
+            XCTFail("expected a failure")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.hasPrefix("不支持的模型名"), error.localizedDescription)
+        }
+        XCTAssertTrue(control.requests.current.isEmpty)
+    }
+
+    func testAnIdleThreadAppliesDesiredSettingsAndAcknowledgesTheRevision() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [], model: "gpt-5", reasoningEffort: "medium")
+        control.applyResult = CodexAppliedSettings(model: "gpt-5.1-codex", reasoningEffort: "medium")
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle",
+            desiredSettings: AgentSessionSettings(revision: 3, mode: "default", model: "gpt-5.1-codex", effort: "high"),
+            appliedSettingsRevision: 2
+        ))
+
+        let applied = try XCTUnwrap(control.appliedSettings.current.first)
+        XCTAssertEqual(applied.0, "thread-1")
+        XCTAssertEqual(applied.1, CodexTurnOverrides(
+            model: "gpt-5.1-codex", effort: "high", settings: CodexModes.threadSettings(for: "default")
+        ))
+        XCTAssertEqual(report.settingsRevision, 3)
+        XCTAssertNil(report.settingsError)
+        XCTAssertEqual(report.model, "gpt-5.1-codex")
+        XCTAssertEqual(report.effort, "medium")
+    }
+
+    func testAlreadyAppliedOrActiveSettingsAreNotAppliedAgain() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "active", activeTurnId: "turn-1", messages: [], model: "gpt-5")
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let desired = AgentSessionSettings(revision: 3, model: "gpt-5.1-codex")
+        // A running turn keeps its settings; the change waits for an idle poll.
+        let active = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "active", desiredSettings: desired, appliedSettingsRevision: 2
+        ))
+        XCTAssertNil(active.settingsRevision)
+        XCTAssertEqual(active.model, "gpt-5")
+
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [])
+        let applied = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle", desiredSettings: desired, appliedSettingsRevision: 3
+        ))
+        XCTAssertNil(applied.settingsRevision)
+        XCTAssertTrue(control.appliedSettings.current.isEmpty)
+    }
+
+    func testAFailedSettingsChangeIsReportedForItsRevision() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [])
+        control.applyError = CodexControlError.rpc(method: "thread/resume", message: "unknown model")
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let failed = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle",
+            desiredSettings: AgentSessionSettings(revision: 1, model: "nope")
+        ))
+        XCTAssertEqual(failed.settingsRevision, 1)
+        XCTAssertTrue(failed.settingsError?.contains("unknown model") == true)
+
+        // A mode outside the list never reaches Codex at all.
+        let refused = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle",
+            desiredSettings: AgentSessionSettings(revision: 2, mode: "danger-full-access")
+        ))
+        XCTAssertEqual(refused.settingsRevision, 2)
+        XCTAssertTrue(refused.settingsError?.contains("不支持的 Codex 模式") == true)
+    }
+
+    func testEveryReplyCarriesTheDesiredSettings() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [])
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        _ = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "command-1", text: "Continue", status: "delivering"),
+            desiredSettings: AgentSessionSettings(revision: 4, mode: "auto", model: "gpt-5.1-codex", effort: "low"),
+            appliedSettingsRevision: 4
+        ))
+        XCTAssertEqual(control.replyOverrides.current, [CodexTurnOverrides(
+            model: "gpt-5.1-codex", effort: "low", settings: CodexModes.threadSettings(for: "auto")
+        )])
+
+        _ = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "command-2", text: "Again", status: "delivering")
+        ))
+        XCTAssertEqual(control.replyOverrides.current.last, .some(nil))
+    }
+
+    func testModelListIsCachedAndAFailureReusesTheLastOne() async throws {
+        let machine = try machine()
+        defer { machine.listener.map { _ = close($0) } }
+        let control = RecordingControl()
+        let models = [AgentModelOption(id: "gpt-5.1-codex", label: "GPT-5.1 Codex", efforts: ["low", "high"], defaultEffort: "high", isDefault: true)]
+        control.modelListResult = .success(models)
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: machine.location, control: control, modelCacheTTL: 0
+        )
+        let first = await launcher.availableModels()
+        XCTAssertEqual(first, models)
+        control.modelListResult = .failure(CodexControlError.timedOut(method: "model/list"))
+        let second = await launcher.availableModels()
+        XCTAssertEqual(second, models)
+        XCTAssertEqual(control.modelLists.current, 2)
+
+        let cached = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: machine.location, control: control
+        )
+        control.modelListResult = .success(models)
+        _ = await cached.availableModels()
+        _ = await cached.availableModels()
+        XCTAssertEqual(control.modelLists.current, 3)
+    }
+
+    func testNoControlChannelReportsNoModelsWithoutStartingAnything() async throws {
+        let machine = try machine(socket: false)
+        let control = RecordingControl()
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: machine.location, control: control
+        )
+        let models = await launcher.availableModels()
+        XCTAssertEqual(models, [])
+        XCTAssertEqual(control.modelLists.current, 0)
     }
 
     func testDetectReportsTheVersionOnlyWhenCodexIsInstalled() async throws {

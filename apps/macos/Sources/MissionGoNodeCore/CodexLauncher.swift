@@ -326,6 +326,28 @@ public enum CodexPreflight {
     }
 }
 
+/// The last model list Codex gave, so a heartbeat every 30 seconds does not
+/// ask the app-server each time, and a failed ask still has an answer.
+final class CodexModelCache: @unchecked Sendable {
+    private let entry = Locked<(models: [AgentModelOption], at: Date)?>(nil)
+    let ttl: TimeInterval
+
+    init(ttl: TimeInterval = 10 * 60) {
+        self.ttl = ttl
+    }
+
+    func fresh(now: Date = Date()) -> [AgentModelOption]? {
+        guard let cached = entry.current, now.timeIntervalSince(cached.at) < ttl else { return nil }
+        return cached.models
+    }
+
+    var last: [AgentModelOption]? { entry.current?.models }
+
+    func store(_ models: [AgentModelOption], now: Date = Date()) {
+        entry.withLock { $0 = (models, now) }
+    }
+}
+
 /// The Codex adapter: starts one thread per dispatch in the ChatGPT app's
 /// Codex, where the operator follows it from a Mac or the phone.
 ///
@@ -343,6 +365,7 @@ public struct CodexLauncher: AgentAdapter {
     let serverUrl: String?
     /// How long a dispatch waits for a daemon it just started.
     let daemonWait: TimeInterval
+    let modelCache: CodexModelCache
     public init(
         environment: ShellEnvironment,
         serverUrl: String?,
@@ -350,10 +373,12 @@ public struct CodexLauncher: AgentAdapter {
         location: CodexLocation? = nil,
         control: CodexControl = CodexAppServerControl(),
         resources: CodexResourceChecking? = nil,
-        daemonWait: TimeInterval = 5
+        daemonWait: TimeInterval = 5,
+        modelCacheTTL: TimeInterval = 10 * 60
     ) {
         self.environment = environment
         self.daemonWait = daemonWait
+        self.modelCache = CodexModelCache(ttl: modelCacheTTL)
         self.serverUrl = serverUrl
         self.run = run ?? Commands.runner(environment: environment)
         let resolvedLocation = location ?? CodexLocation(environment: environment)
@@ -367,6 +392,22 @@ public struct CodexLauncher: AgentAdapter {
         return await CodexPreflight.version(binary: binary, run: run)
     }
 
+    /// From the app-server's own `model/list`. Only asked when the control
+    /// channel is already up: a heartbeat must never start the daemon. Any
+    /// failure reuses the last list, else reports none rather than guessing.
+    public func availableModels() async -> [AgentModelOption]? {
+        if let fresh = modelCache.fresh() { return fresh }
+        let socketPath = location.controlSocketPath
+        guard CodexLocation.controlChannelIsUp(socketPath) else { return modelCache.last ?? [] }
+        do {
+            let models = try await control.listModels(socketPath: socketPath)
+            modelCache.store(models)
+            return models
+        } catch {
+            return modelCache.last ?? []
+        }
+    }
+
     public func dispatchAvailability() async -> AgentDispatchAvailability {
         if let reason = await resources.unavailableReason(socketPath: location.controlSocketPath) {
             return .unavailable(reason: reason)
@@ -377,6 +418,9 @@ public struct CodexLauncher: AgentAdapter {
     public func launch(_ job: DispatchJob) async throws -> LaunchResult {
         guard let settings = CodexModes.threadSettings(for: job.mode) else {
             throw LaunchError("不支持的 Codex 模式：\(JSONValues.quote(job.mode))")
+        }
+        if let problem = AgentModelSettings.problem(model: job.model, effort: job.effort) {
+            throw LaunchError(problem)
         }
         if case let .failed(reason) = await CodexPreflight.check(
             repoPath: job.repoPath, environment: environment, location: location, serverUrl: serverUrl, run: run,
@@ -407,7 +451,9 @@ public struct CodexLauncher: AgentAdapter {
                 name: sessionName,
                 prompt: prompt,
                 workspaceRoots: [job.repoPath, worktreePath],
-                skillVersion: skillVersion
+                skillVersion: skillVersion,
+                model: job.model,
+                effort: job.effort
             ))
         } catch {
             throw LaunchError(CodexFailure.explain(error))
@@ -421,7 +467,87 @@ public struct CodexLauncher: AgentAdapter {
     }
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
-        var snapshot = try await control.readThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        let snapshot = try await control.readThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        var model = snapshot.model
+        var effort = snapshot.reasoningEffort
+        var settingsRevision: Int?
+        var settingsError: String?
+        // Settings change only between turns: a running turn keeps what it
+        // started with, so an active thread gets the change at a later idle poll.
+        if let desired = session.pendingSettings, !session.archiveInSource, !snapshot.archived,
+           snapshot.status == "idle" {
+            settingsRevision = desired.revision
+            do {
+                let overrides = try CodexTurnOverrides(desired: desired)
+                let applied = try await control.applySettings(
+                    socketPath: location.controlSocketPath, threadId: session.sessionRef, overrides: overrides
+                )
+                model = applied.model ?? desired.model ?? model
+                effort = applied.reasoningEffort ?? effort
+            } catch {
+                settingsError = CodexFailure.explain(error)
+            }
+        }
+        let report = try await synchronize(session, snapshot: snapshot)
+        return report.reportingSettings(
+            model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
+        )
+    }
+
+    /// What a person chose for this thread, passed on every turn MissionGo
+    /// starts. The server sends the desired settings on every poll, so this
+    /// needs no memory of its own. A malformed value was already reported as
+    /// a failed revision; the turn then goes ahead without it.
+    private func turnOverrides(_ session: NodeAgentSession) -> CodexTurnOverrides? {
+        guard let desired = session.desiredSettings else { return nil }
+        return try? CodexTurnOverrides(desired: desired)
+    }
+
+    private func synchronize(_ session: NodeAgentSession, snapshot: CodexThreadSnapshot) async throws -> AgentSessionReport {
+        var snapshot = snapshot
+        if session.restoreInSource {
+            // Restored in MissionGo: bring the thread back in Codex first, then
+            // carry on with the fresh read so a queued reply can still go out.
+            // A failure throws and is retried on the next poll.
+            if snapshot.archived {
+                try await control.unarchiveThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+                snapshot = try await control.readThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+            }
+            let report = try await synchronize(
+                NodeAgentSession(
+                    id: session.id, dispatchId: session.dispatchId, agentKind: session.agentKind,
+                    sessionRef: session.sessionRef, status: session.status, lifecycle: session.lifecycle,
+                    occupiesExecutionSlot: session.occupiesExecutionSlot, command: session.command,
+                    desiredSettings: session.desiredSettings, appliedSettingsRevision: session.appliedSettingsRevision
+                ),
+                snapshot: snapshot
+            )
+            return AgentSessionReport(
+                status: report.status, messages: report.messages, activities: report.activities, error: report.error,
+                commandId: report.commandId, commandStatus: report.commandStatus, commandError: report.commandError,
+                sourceArchived: report.sourceArchived, sourceRestored: true,
+                sessionUrl: report.sessionUrl, activityAt: report.activityAt
+            )
+        }
+        if session.archiveInSource {
+            // MissionGo archived this finished conversation; follow it at the
+            // source. Report the thread as it was, without the "restore it in
+            // Codex" error below: nobody is waiting on this conversation.
+            if !snapshot.archived {
+                do {
+                    try await control.archiveThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+                } catch {
+                    return AgentSessionReport(
+                        status: snapshot.status, messages: snapshot.messages,
+                        sourceArchiveError: CodexFailure.explain(error), activityAt: snapshot.activityAt
+                    )
+                }
+            }
+            return AgentSessionReport(
+                status: snapshot.archived ? "idle" : snapshot.status, messages: snapshot.messages,
+                sourceArchived: true, activityAt: snapshot.activityAt
+            )
+        }
         if snapshot.archived {
             return AgentSessionReport(
                 status: "unavailable",
@@ -510,7 +636,8 @@ public struct CodexLauncher: AgentAdapter {
                 socketPath: location.controlSocketPath,
                 threadId: session.sessionRef,
                 text: command.text,
-                clientUserMessageId: command.id
+                clientUserMessageId: command.id,
+                overrides: turnOverrides(session)
             )
             snapshot = CodexThreadSnapshot(
                 status: "active", messages: snapshot.messages, activityAt: snapshot.activityAt

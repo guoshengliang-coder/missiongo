@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
 import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
+import { parseAgentModels, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
+import { autoArchiveFinishedDispatches } from "./auto-archive.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
@@ -82,6 +84,7 @@ export interface AgentSessionListItem {
   readonly activityAt: string;
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
+  readonly nodeId: string;
   readonly nodeName: string;
   readonly nodeConnectionState: NodeConnectionState;
   readonly nodeLastSeenAt?: string;
@@ -105,7 +108,29 @@ export interface AgentSessionListItem {
   readonly retryable: boolean;
   readonly stoppable: boolean;
   readonly replyable: boolean;
-  readonly activityKey: string;
+  /** Mode, model and effort this conversation runs with, and any change still on its way (AND-130). */
+  readonly settings: AgentSessionSettings;
+  /** Something a person should look at arrived after they last opened this conversation. */
+  readonly unread: boolean;
+  /** The unread clock; opening the conversation marks it read up to this value. */
+  readonly unreadAt?: string;
+}
+
+export interface AgentSessionSettings {
+  /** The mode in effect: the last change the Mac confirmed, else the dispatch's. */
+  readonly mode: string;
+  /** What the agent reported using; absent until it says. */
+  readonly model?: string;
+  readonly effort?: string;
+  /** What the dispatch asked for; absent means the Mac's own configuration. */
+  readonly requestedModel?: string;
+  readonly requestedEffort?: string;
+  /** A change a person asked for that the Mac has not confirmed yet. */
+  readonly pending?: AgentRunSettings & { readonly revision: number };
+  /** The last change the Mac could not apply. */
+  readonly error?: string;
+  /** False for a Mac whose client cannot change a running session, or a finished conversation. */
+  readonly adjustable: boolean;
 }
 
 export interface NodeAgentSession {
@@ -117,6 +142,19 @@ export interface NodeAgentSession {
   readonly lifecycle: "keep" | "close";
   readonly occupiesExecutionSlot: boolean;
   readonly command?: AgentSessionCommand;
+  /**
+   * MissionGo archived this conversation -- automatically because its work
+   * finished, or by a person (AND-129) -- so archive the Codex thread at the
+   * source as well. A separate flag rather than a new lifecycle value, because
+   * an older Mac would fail to decode one.
+   */
+  readonly archiveInSource?: true;
+  /** A person restored it in MissionGo after the Codex thread was archived; restore the thread too. */
+  readonly restoreInSource?: true;
+  /** The latest mode/model/effort a person asked for; apply it when its revision is newer than the next field. */
+  readonly desiredSettings?: AgentRunSettings & { readonly revision: number };
+  /** The newest revision the Mac applied, or failed to apply -- either way, not to be sent again. */
+  readonly appliedSettingsRevision: number;
 }
 
 interface SessionRow {
@@ -130,6 +168,54 @@ interface SessionRow {
   archived_at: string | null;
   archive_source: "missiongo" | "source" | null;
   activities_json: string;
+  archive_reason?: "auto" | null;
+  source_archived_at?: string | null;
+  source_archive_error?: string | null;
+  source_restore_pending?: number;
+  desired_settings_json?: string | null;
+  settings_revision?: number;
+  applied_settings_revision?: number;
+  settings_error_revision?: number;
+}
+
+interface SessionSettingsColumns {
+  agent_kind: AgentKind;
+  dispatch_mode: string;
+  dispatch_model: string | null;
+  dispatch_effort: string | null;
+  session_mode: string | null;
+  session_model: string | null;
+  session_effort: string | null;
+  desired_settings_json: string | null;
+  settings_revision: number | null;
+  applied_settings_revision: number | null;
+  settings_error: string | null;
+  settings_error_revision: number | null;
+  node_agents_json: string;
+}
+
+function nodeAgentModels(agentsJson: string, agentKind: AgentKind) {
+  const agents = JSON.parse(agentsJson) as Array<{ kind: string; models?: unknown }>;
+  const agent = agents.find((entry) => entry.kind === agentKind);
+  return agent ? parseAgentModels(agent.models) : undefined;
+}
+
+function sessionSettings(row: SessionSettingsColumns, open: boolean): AgentSessionSettings {
+  const desired = row.desired_settings_json ? JSON.parse(row.desired_settings_json) as AgentRunSettings : undefined;
+  const revision = row.settings_revision ?? 0;
+  const settled = Math.max(row.applied_settings_revision ?? 0, row.settings_error_revision ?? 0);
+  return {
+    mode: row.session_mode ?? row.dispatch_mode,
+    ...(row.session_model ? { model: row.session_model } : {}),
+    ...(row.session_effort ? { effort: row.session_effort } : {}),
+    ...(row.dispatch_model ? { requestedModel: row.dispatch_model } : {}),
+    ...(row.dispatch_effort ? { requestedEffort: row.dispatch_effort } : {}),
+    ...(desired && revision > settled ? { pending: { ...desired, revision } } : {}),
+    ...(row.settings_error && (row.settings_error_revision ?? 0) >= (row.applied_settings_revision ?? 0)
+      ? { error: row.settings_error }
+      : {}),
+    adjustable: open && nodeAgentModels(row.node_agents_json, row.agent_kind) !== undefined,
+  };
 }
 
 interface SessionListRow {
@@ -145,6 +231,7 @@ interface SessionListRow {
   session_activities_json: string | null;
   dispatch_archived_at: string | null;
   dispatch_error: string | null;
+  node_id: string;
   node_name: string;
   node_last_seen_at: string | null;
   node_revoked_at: string | null;
@@ -155,7 +242,11 @@ interface SessionListRow {
   created_at: string;
   delivered_at: string | null;
   completed_at: string | null;
+  unread_at: string | null;
+  read_at: string | null;
 }
+
+type SessionListSettingsRow = SessionListRow & SessionSettingsColumns;
 
 interface CommandRow {
   id: string;
@@ -304,6 +395,32 @@ function boundedAttentionText(text: string): string {
   return `${text.slice(0, 2_000)}\n\n[中间内容已省略]\n\n${text.slice(-17_950)}`;
 }
 
+/**
+ * Whether a node snapshot contains something a person should come back for:
+ * a new Agent or plan message, questions newly attached to one, a turn that
+ * finished, or a session that failed or stalled. Everything else the node
+ * reports -- connectivity, sync errors and their recovery, a re-read of the
+ * same transcript, streamed text growing, the person's own delivered reply --
+ * changes the mirror without making the conversation unread (AND-135).
+ */
+export function snapshotMakesUnread(
+  previousStatus: AgentSessionStatus,
+  nextStatus: AgentSessionStatus,
+  messages: readonly { sourceId: string; role: AgentMessageRole; questionsJson: string | null }[],
+  stored: ReadonlyMap<string, { questions_json: string | null }>,
+): boolean {
+  const newOutput = messages.some((message) => {
+    if (message.role === "user") return false;
+    const previous = stored.get(message.sourceId);
+    return !previous || (!hasQuestions(previous.questions_json) && hasQuestions(message.questionsJson));
+  });
+  if (newOutput) return true;
+  if (previousStatus === nextStatus) return false;
+  return nextStatus === "failed"
+    || nextStatus === "stalled"
+    || (previousStatus === "active" && nextStatus === "idle");
+}
+
 export class AgentSessionStore {
   constructor(private readonly database: MissionGoDatabase) {}
 
@@ -396,10 +513,15 @@ export class AgentSessionStore {
                 s.updated_at AS session_updated_at, s.activity_at AS session_activity_at,
                 s.archived_at AS session_archived_at, s.archive_source AS session_archive_source,
                 s.activities_json AS session_activities_json,
-                COALESCE(n.nickname, n.name) AS node_name, n.last_seen_at AS node_last_seen_at,
+                d.node_id, COALESCE(n.nickname, n.name) AS node_name, n.last_seen_at AS node_last_seen_at,
                 n.revoked_at AS node_revoked_at, d.mode, d.status AS dispatch_status,
                 d.session_name, d.session_url, d.error AS dispatch_error,
-                d.created_at, d.delivered_at, d.completed_at, d.archived_at AS dispatch_archived_at
+                d.created_at, d.delivered_at, d.completed_at, d.archived_at AS dispatch_archived_at,
+                d.unread_at, d.read_at,
+                d.mode AS dispatch_mode, d.model AS dispatch_model, d.effort AS dispatch_effort,
+                s.mode AS session_mode, s.model AS session_model, s.effort AS session_effort,
+                s.desired_settings_json, s.settings_revision, s.applied_settings_revision,
+                s.settings_error, s.settings_error_revision, n.agents_json AS node_agents_json
          FROM dispatches d
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          JOIN nodes n ON n.id = d.node_id
@@ -407,7 +529,7 @@ export class AgentSessionStore {
          ORDER BY COALESCE(s.activity_at, d.archived_at, d.completed_at, d.delivered_at, d.created_at) DESC
          LIMIT ?`,
       )
-      .all(accountId, limit) as unknown as SessionListRow[];
+      .all(accountId, limit) as unknown as SessionListSettingsRow[];
     const items = this.database.connection.prepare(
       `SELECT w.item_key, w.title, w.product_id, w.status
        FROM dispatch_items di JOIN work_items w ON w.id = di.item_id
@@ -499,6 +621,7 @@ export class AgentSessionStore {
         activityAt,
         ...(archivedAt ? { archivedAt } : {}),
         ...(archivedSource ? { archivedSource } : {}),
+        nodeId: row.node_id,
         nodeName: row.node_name,
         nodeConnectionState: connectionState,
         ...(row.node_last_seen_at ? { nodeLastSeenAt: row.node_last_seen_at } : {}),
@@ -522,14 +645,12 @@ export class AgentSessionStore {
         stoppable: row.dispatch_status === "queued"
           || Boolean(row.session_id && (row.session_status === "active" || row.session_status === "stalled")),
         replyable: row.session_id ? !this.itemsCompleted(row.session_id) : false,
-        activityKey: createHash("sha256").update(JSON.stringify([
-          row.dispatch_status, status, lastError ?? "", row.session_archived_at ?? "",
-          row.dispatch_archived_at ?? "",
-          row.session_archive_source ?? "", connectionState, Boolean(row.node_revoked_at),
-          message?.id ?? "", message?.text ?? "",
-          message?.questions_json ?? "", command?.id ?? "", command?.status ?? "",
-          row.session_activities_json ?? "[]",
-        ])).digest("hex"),
+        settings: sessionSettings(
+          row,
+          Boolean(row.session_id) && !archivedAt && !(row.session_id && this.itemsCompleted(row.session_id)),
+        ),
+        unread: Boolean(row.unread_at && (!row.read_at || row.unread_at > row.read_at)),
+        ...(row.unread_at ? { unreadAt: row.unread_at } : {}),
       };
     });
   }
@@ -553,12 +674,95 @@ export class AgentSessionStore {
     if (Boolean(session.archived_at) === archived) return this.getForAccount(accountId, sessionId);
 
     const now = new Date().toISOString();
+    // A person's own archive is not an automatic one; a person's restore of an
+    // automatic one must stick, so it switches the automatic path off for good.
+    // Either way the Codex thread follows (AND-129): archiving asks the Mac to
+    // archive it once more, and restoring one already archived there asks the
+    // Mac to bring it back -- otherwise the next sync would read the thread as
+    // archived at the source and archive the conversation again.
     this.database.connection
       .prepare(
-        "UPDATE agent_sessions SET archived_at = ?, archive_source = ?, updated_at = ?, activity_at = ? WHERE id = ?",
+        `UPDATE agent_sessions
+         SET archived_at = ?, archive_source = ?, updated_at = ?, activity_at = ?,
+             auto_archive_suppressed = CASE WHEN ? = 0 AND archive_reason = 'auto' THEN 1 ELSE auto_archive_suppressed END,
+             archive_reason = NULL,
+             source_archive_error = NULL,
+             source_restore_pending = CASE WHEN ? = 0 AND source_archived_at IS NOT NULL THEN 1 ELSE 0 END
+         WHERE id = ?`,
       )
-      .run(archived ? now : null, archived ? "missiongo" : null, now, now, sessionId);
+      .run(
+        archived ? now : null, archived ? "missiongo" : null, now, now,
+        archived ? 1 : 0, archived ? 1 : 0, sessionId,
+      );
     return this.getForAccount(accountId, sessionId);
+  }
+
+  /**
+   * Mark a hand-off read up to the unread clock the client actually displayed.
+   * Taking the client's value rather than "now" keeps a message that lands
+   * between the list poll and this call unread.
+   */
+  markRead(accountId: string, dispatchId: string, through: string): void {
+    if (!Number.isFinite(Date.parse(through))) throw invalidInput("through must be an ISO 8601 timestamp.");
+    const changed = this.database.connection
+      .prepare(
+        `UPDATE dispatches SET read_at = ?
+         WHERE id = ? AND account_id = ? AND (read_at IS NULL OR read_at < ?)`,
+      )
+      .run(through, dispatchId, accountId, through);
+    if (changed.changes === 0) {
+      const exists = this.database.connection
+        .prepare("SELECT 1 FROM dispatches WHERE id = ? AND account_id = ?")
+        .get(dispatchId, accountId);
+      if (!exists) throw notFound("Dispatch");
+    }
+  }
+
+  /**
+   * Ask the Mac to change a running conversation's mode, model or effort
+   * (AND-130). Fields left out keep their earlier request; the revision lets the
+   * Mac apply each request once and report which one it is on.
+   */
+  requestSettings(accountId: string, sessionId: string, change: AgentRunSettings): AgentSessionSettings {
+    const row = this.database.connection
+      .prepare(
+        `SELECT s.agent_kind, d.mode AS dispatch_mode, d.model AS dispatch_model, d.effort AS dispatch_effort,
+                s.mode AS session_mode, s.model AS session_model, s.effort AS session_effort,
+                s.desired_settings_json, s.settings_revision, s.applied_settings_revision,
+                s.settings_error, s.settings_error_revision, n.agents_json AS node_agents_json,
+                s.archived_at
+         FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id JOIN nodes n ON n.id = s.node_id
+         WHERE s.id = ? AND d.account_id = ?`,
+      )
+      .get(sessionId, accountId) as unknown as (SessionSettingsColumns & { archived_at: string | null }) | undefined;
+    if (!row) throw notFound("Agent session");
+    if (row.archived_at) throw conflict("agent_session_archived", "Restore this session before changing it.");
+    if (this.itemsCompleted(sessionId)) {
+      throw conflict("agent_session_work_finished", "The linked work items are done; this session is finished.");
+    }
+    if (change.mode === undefined && change.model === undefined && change.effort === undefined) {
+      throw invalidInput("Choose a mode, model or effort to change.");
+    }
+    const models = nodeAgentModels(row.node_agents_json, row.agent_kind);
+    if (models === undefined) {
+      throw conflict(
+        "node_upgrade_required",
+        "This Mac's MissionGo client cannot change a running session yet; update it first.",
+      );
+    }
+    const earlier = row.desired_settings_json ? JSON.parse(row.desired_settings_json) as AgentRunSettings : {};
+    const next: AgentRunSettings = { ...earlier, ...change };
+    requireOfferedModel(row.agent_kind, models, next);
+    this.database.connection
+      .prepare(
+        "UPDATE agent_sessions SET desired_settings_json = ?, settings_revision = settings_revision + 1 WHERE id = ?",
+      )
+      .run(JSON.stringify(next), sessionId);
+    return sessionSettings({
+      ...row,
+      desired_settings_json: JSON.stringify(next),
+      settings_revision: (row.settings_revision ?? 0) + 1,
+    }, true);
   }
 
   dismissAttention(accountId: string, sessionId: string, expectedRevision: string): void {
@@ -738,30 +942,57 @@ export class AgentSessionStore {
     const sourceArchiveBefore = new Date(Date.now() - SOURCE_ARCHIVE_POLL_MS).toISOString();
     const rows = this.database.connection
       .prepare(
-        `SELECT id, dispatch_id, agent_kind, agent_session_ref, status, last_error, updated_at
+        `SELECT id, dispatch_id, agent_kind, agent_session_ref, status, last_error, updated_at,
+                archived_at, archive_source, archive_reason, source_archived_at, source_archive_error, source_restore_pending,
+                desired_settings_json, settings_revision, applied_settings_revision, settings_error_revision
          FROM agent_sessions s
          WHERE node_id = ?
-         AND (archived_at IS NULL OR (archive_source = 'source' AND updated_at <= ?))
+         AND (archived_at IS NULL OR (archive_source = 'source' AND updated_at <= ?)
+           -- Finished work archived by MissionGo still needs the Mac once: a
+           -- Codex thread to archive at the source, a Claude process to close.
+           OR (archive_source = 'missiongo' AND agent_kind = 'codex'
+             AND source_archived_at IS NULL AND source_archive_error IS NULL)
+           OR (archive_reason = 'auto' AND agent_kind = 'claude_code' AND status NOT IN ('suspended', 'failed')))
          AND (
            status IN ('active', 'stalled', 'unavailable') OR EXISTS (
              SELECT 1 FROM agent_session_commands c
              WHERE c.session_id = s.id AND c.status IN ('queued', 'delivering')
-           ) OR s.updated_at <= ?
+           ) OR s.settings_revision > MAX(s.applied_settings_revision, s.settings_error_revision)
+           OR s.source_restore_pending = 1
+           -- A source archive still owed goes out now, not after the idle cool-down.
+           OR (archived_at IS NOT NULL AND archive_source = 'missiongo' AND agent_kind = 'codex'
+             AND source_archived_at IS NULL AND source_archive_error IS NULL)
+           OR s.updated_at <= ?
          )
          ORDER BY archive_source = 'source', updated_at DESC LIMIT 100`,
       )
       .all(nodeId, sourceArchiveBefore, sourceArchiveBefore) as unknown as SessionRow[];
     return rows.map((row) => {
       const command = this.pendingCommand(row.id);
+      const autoArchived = row.archive_reason === "auto";
       return {
         id: row.id,
         dispatchId: row.dispatch_id,
         agentKind: row.agent_kind,
         sessionRef: row.agent_session_ref,
         status: row.status,
-        lifecycle: row.agent_kind === "claude_code" && this.itemsCompleted(row.id) ? "close" : "keep",
+        lifecycle: row.agent_kind === "claude_code" && (autoArchived || this.itemsCompleted(row.id)) ? "close" : "keep",
         occupiesExecutionSlot: row.status === "active" || row.status === "stalled",
         ...(command ? { command: this.mapCommand(command) } : {}),
+        ...(row.archive_source === "missiongo" && row.archived_at && row.agent_kind === "codex"
+          && !row.source_archived_at && !row.source_archive_error
+          ? { archiveInSource: true as const }
+          : {}),
+        ...(row.source_restore_pending ? { restoreInSource: true as const } : {}),
+        ...(row.desired_settings_json && (row.settings_revision ?? 0) > 0
+          ? {
+              desiredSettings: {
+                ...(JSON.parse(row.desired_settings_json) as AgentRunSettings),
+                revision: row.settings_revision ?? 0,
+              },
+            }
+          : {}),
+        appliedSettingsRevision: Math.max(row.applied_settings_revision ?? 0, row.settings_error_revision ?? 0),
       };
     });
   }
@@ -784,6 +1015,16 @@ export class AgentSessionStore {
     commandStatus?: "delivering" | "delivered" | "failed";
     commandError?: string;
     sourceArchived?: boolean;
+    /** The node tried to archive the source thread MissionGo asked it to and could not. */
+    sourceArchiveError?: string;
+    /** The node restored the source thread MissionGo asked it to. */
+    sourceRestored?: boolean;
+    /** Model and effort the agent reports using (AND-130). */
+    model?: string;
+    effort?: string;
+    /** The settings revision now applied -- or, with settingsError, the one that failed. */
+    settingsRevision?: number;
+    settingsError?: string;
     sessionUrl?: string;
     activityAt?: string;
   }): void {
@@ -825,11 +1066,14 @@ export class AgentSessionStore {
     } : undefined);
     const session = this.database.connection
       .prepare(
-        `SELECT id, status, last_error, archived_at, archive_source, activities_json, activity_at
+        `SELECT id, dispatch_id, status, last_error, archived_at, archive_source, activities_json, activity_at,
+                source_restore_pending
          FROM agent_sessions WHERE id = ? AND node_id = ?`,
       )
       .get(input.sessionId, input.nodeId) as unknown as {
         id: string;
+        dispatch_id: string;
+        source_restore_pending: number;
         status: AgentSessionStatus;
         last_error: string | null;
         archived_at: string | null;
@@ -870,9 +1114,14 @@ export class AgentSessionStore {
         || stored.questions_json !== message.questionsJson
         || stored.position !== message.position;
     });
-    const archiveChanged = input.sourceArchived === true
+    // While a restore is on its way to the Mac, a snapshot still reading the
+    // thread as archived is stale, not a new archive in Codex.
+    const sourceArchived = session.source_restore_pending && input.sourceArchived === true && !input.sourceRestored
+      ? undefined
+      : input.sourceArchived;
+    const archiveChanged = sourceArchived === true
       ? !session.archived_at || session.archive_source === null
-      : input.sourceArchived === false && session.archive_source === "source";
+      : sourceArchived === false && session.archive_source === "source";
     const activityChanged = session.status !== input.status
       || session.last_error !== error
       || messagesChanged
@@ -880,6 +1129,7 @@ export class AgentSessionStore {
       || archiveChanged
       || Boolean(input.commandId && input.commandStatus);
     const nextActivityAt = activityChanged ? sourceActivityAt ?? now : session.activity_at;
+    const unreadEvent = snapshotMakesUnread(session.status, input.status, messages, storedBySource);
     this.database.transaction(() => {
       this.database.connection
         .prepare(
@@ -889,22 +1139,68 @@ export class AgentSessionStore {
            WHERE id = ?`,
         )
         .run(input.status, error, activitiesJson, now, nextActivityAt, input.sessionId);
-      if (input.sourceArchived === true) {
+      if (unreadEvent) {
+        this.database.connection
+          .prepare("UPDATE dispatches SET unread_at = ? WHERE id = ?")
+          .run(now, session.dispatch_id);
+      }
+      if (input.sourceRestored) {
+        this.database.connection
+          .prepare("UPDATE agent_sessions SET source_archived_at = NULL, source_restore_pending = 0 WHERE id = ?")
+          .run(input.sessionId);
+      }
+      if (sourceArchived === true) {
         this.database.connection
           .prepare(
             `UPDATE agent_sessions
              SET archived_at = COALESCE(archived_at, ?),
-                 archive_source = CASE WHEN archive_source = 'missiongo' THEN archive_source ELSE 'source' END
+                 archive_source = CASE WHEN archive_source = 'missiongo' THEN archive_source ELSE 'source' END,
+                 source_archived_at = COALESCE(source_archived_at, ?)
              WHERE id = ?`,
           )
-          .run(now, input.sessionId);
-      } else if (input.sourceArchived === false) {
+          .run(now, now, input.sessionId);
+      } else if (sourceArchived === false) {
         this.database.connection
           .prepare(
             `UPDATE agent_sessions SET archived_at = NULL, archive_source = NULL
              WHERE id = ? AND archive_source = 'source'`,
           )
           .run(input.sessionId);
+      }
+      if (input.model || input.effort) {
+        this.database.connection
+          .prepare("UPDATE agent_sessions SET model = COALESCE(?, model), effort = COALESCE(?, effort) WHERE id = ?")
+          .run(input.model?.slice(0, 200) || null, input.effort?.slice(0, 200) || null, input.sessionId);
+      }
+      if (input.settingsRevision !== undefined) {
+        if (input.settingsError) {
+          this.database.connection
+            .prepare(
+              `UPDATE agent_sessions SET settings_error = ?, settings_error_revision = MAX(settings_error_revision, ?)
+               WHERE id = ? AND ? <= settings_revision`,
+            )
+            .run(input.settingsError.slice(0, 2_000), input.settingsRevision, input.sessionId, input.settingsRevision);
+        } else {
+          // The confirmed mode comes from the request the Mac just applied;
+          // a later request may already be waiting, so read it by revision.
+          this.database.connection
+            .prepare(
+              `UPDATE agent_sessions
+               SET applied_settings_revision = MAX(applied_settings_revision, ?),
+                   mode = CASE WHEN ? = settings_revision
+                     THEN COALESCE(json_extract(desired_settings_json, '$.mode'), mode) ELSE mode END,
+                   settings_error = CASE WHEN ? >= settings_error_revision THEN NULL ELSE settings_error END
+               WHERE id = ? AND ? <= settings_revision`,
+            )
+            .run(input.settingsRevision, input.settingsRevision, input.settingsRevision, input.sessionId, input.settingsRevision);
+        }
+      }
+      if (input.sourceArchiveError) {
+        // Asked once. A thread Codex no longer has cannot be archived, and
+        // asking every poll would not change that; the MissionGo archive stands.
+        this.database.connection
+          .prepare("UPDATE agent_sessions SET source_archive_error = ? WHERE id = ?")
+          .run(input.sourceArchiveError.slice(0, 2_000), input.sessionId);
       }
       if (sessionUrl) {
         this.database.connection.prepare(
@@ -968,6 +1264,10 @@ export class AgentSessionStore {
           );
         if (changed.changes === 0) {
           throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
+        }
+        // A pending reply held back the automatic archive; retry now it settled.
+        if (input.commandStatus !== "delivering") {
+          autoArchiveFinishedDispatches(this.database, [session.dispatch_id], now);
         }
       }
     });

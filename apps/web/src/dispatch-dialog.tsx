@@ -5,6 +5,7 @@ import { CirclePause, LoaderCircle, Rocket, TriangleAlert } from "lucide-react";
 import { AGENT_KINDS, DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
+import { agentModels, effortLabelKey, effortOptions, reconcileChoice } from "./agent-model-options";
 import {
   ACTIVE_DISPATCHES_QUERY_KEY,
   ACTIVE_DISPATCHES_REFETCH_MS,
@@ -87,6 +88,10 @@ export function DispatchDialog({
   const [agentKind, setAgentKind] = useState<AgentKind>("claude_code");
   const [mode, setMode] = useState<string>(DEFAULT_MODE);
   const [nodeId, setNodeId] = useState("");
+  // Empty means "as configured on the Mac" (AND-130).
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
+  const [defaultsApplied, setDefaultsApplied] = useState(false);
   // Held here rather than read back from the selection: dispatching clears the
   // selection, and the confirmation has to keep saying what was sent.
   const [created, setCreated] = useState<Dispatch | null>(null);
@@ -96,6 +101,26 @@ export function DispatchDialog({
 
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
   const nodes = nodesQuery.data?.nodes ?? [];
+  const defaultsQuery = useQuery({ queryKey: ["dispatch-defaults"], queryFn: api.getDispatchDefaults });
+
+  // Start from the account's saved defaults once, before the person touches
+  // anything. What no longer fits -- a machine gone, a model retired -- is
+  // corrected by the effects below exactly as a manual pick would be.
+  useEffect(() => {
+    if (defaultsApplied || !defaultsQuery.isFetched) return;
+    setDefaultsApplied(true);
+    const defaults = defaultsQuery.data;
+    if (!defaults) return;
+    const kind = defaults.agentKind && SUPPORTED_AGENT_KINDS.includes(defaults.agentKind)
+      ? defaults.agentKind
+      : agentKind;
+    const saved = defaults.agents[kind] ?? {};
+    setAgentKind(kind);
+    if (saved.mode && DISPATCH_MODES_BY_AGENT[kind].includes(saved.mode)) setMode(saved.mode);
+    setModel(saved.model ?? "");
+    setEffort(saved.effort ?? "");
+    if (defaults.nodeId) setNodeId(defaults.nodeId);
+  }, [agentKind, defaultsApplied, defaultsQuery.data, defaultsQuery.isFetched]);
   const itemKeys = useMemo(() => items.map((item) => item.key), [items]);
   const productIds = useMemo(() => [...new Set(items.map((item) => item.productId))], [items]);
   const activeQuery = useQuery({
@@ -119,16 +144,33 @@ export function DispatchDialog({
   // Land on a machine that can actually take the batch. Changing the agent can
   // invalidate the current pick, so this runs on every change rather than once.
   useEffect(() => {
-    if (nodes.length === 0) return;
+    if (nodes.length === 0 || !defaultsApplied) return;
     if (nodes.some((node) => node.id === nodeId && !ineligibility.get(node.id))) return;
     const firstEligible = nodes.find((node) => !ineligibility.get(node.id));
     setNodeId(firstEligible?.id ?? nodes[0]!.id);
-  }, [ineligibility, nodeId, nodes]);
+  }, [defaultsApplied, ineligibility, nodeId, nodes]);
+
+  const models = agentModels(nodes.find((node) => node.id === nodeId), agentKind);
+  // Keep the choice valid for whichever machine and agent are selected now.
+  useEffect(() => {
+    if (!defaultsApplied || !nodesQuery.isFetched) return;
+    const next = reconcileChoice(models, { ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
+    if ((next.model ?? "") !== model) setModel(next.model ?? "");
+    if ((next.effort ?? "") !== effort) setEffort(next.effort ?? "");
+  }, [defaultsApplied, effort, model, models, nodesQuery.isFetched]);
 
   const mutation = useMutation({
     // `force` only ever follows the tick: without conflicts it is left off, so
     // a dispatch that raced another one is refused instead of silently doubled.
-    mutationFn: () => api.createDispatch({ nodeId, agentKind, mode, itemKeys, ...(redispatchConfirmed ? { force: true } : {}) }),
+    mutationFn: () => api.createDispatch({
+      nodeId,
+      agentKind,
+      mode,
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
+      itemKeys,
+      ...(redispatchConfirmed ? { force: true } : {}),
+    }),
     onSuccess: (dispatch) => {
       setCreated(dispatch);
       onDispatched(dispatch);
@@ -154,6 +196,10 @@ export function DispatchDialog({
     const key = dispatchModeLabelKey(value);
     return key ? t(key) : value;
   };
+  const effortLabel = (value: string) => {
+    const key = effortLabelKey(value);
+    return key ? t(key) : value;
+  };
   const nodeLabel = (node: DispatchNode) => {
     const reason = ineligibility.get(node.id);
     if (!reason) return node.name;
@@ -168,6 +214,8 @@ export function DispatchDialog({
         <div className="context-grid">
           <span><small>{t("dispatchAgent")}</small>{agentLabel(created.agentKind)}</span>
           <span><small>{t("dispatchMode")}</small>{modeLabel(created.mode)}</span>
+          <span><small>{t("dispatchModel")}</small>{created.model ?? t("dispatchModelLocal")}</span>
+          <span><small>{t("dispatchEffort")}</small>{created.effort ? effortLabel(created.effort) : t("dispatchModelLocal")}</span>
           <span><small>{t("status")}</small>{statusKey ? t(statusKey) : created.status}</span>
           <span><small>{t("dispatchItemsLabel")}</small>{created.itemKeys.join("、")}</span>
           {created.sessionName && <span><small>{t("dispatchSessionName")}</small>{created.sessionName}</span>}
@@ -262,9 +310,14 @@ export function DispatchDialog({
             value={agentKind}
             onChange={(event) => {
               const next = event.target.value as AgentKind;
+              const saved = defaultsQuery.data?.agents[next] ?? {};
               setAgentKind(next);
               // Each agent has its own modes; the one selected may not exist there.
-              setMode(DISPATCH_MODES_BY_AGENT[next].includes(mode) ? mode : DISPATCH_MODES_BY_AGENT[next][0] ?? "");
+              // Models are per agent too, so start from that agent's saved default.
+              const preferred = saved.mode ?? mode;
+              setMode(DISPATCH_MODES_BY_AGENT[next].includes(preferred) ? preferred : DISPATCH_MODES_BY_AGENT[next][0] ?? "");
+              setModel(saved.model ?? "");
+              setEffort(saved.effort ?? "");
             }}
           >
             {AGENT_KINDS.map((kind) => {
@@ -286,6 +339,25 @@ export function DispatchDialog({
         </label>
       </div>
       {modeHelp && <p className="dispatch-note">{t(modeHelp)}</p>}
+      <div className="field-row">
+        <label>{t("dispatchModel")}
+          <select value={model} onChange={(event) => setModel(event.target.value)} disabled={!models}>
+            <option value="">{t("dispatchModelLocal")}</option>
+            {(models ?? []).map((entry) => (
+              <option key={entry.id} value={entry.id}>{entry.label}</option>
+            ))}
+          </select>
+        </label>
+        <label>{t("dispatchEffort")}
+          <select value={effort} onChange={(event) => setEffort(event.target.value)} disabled={!models}>
+            <option value="">{t("dispatchModelLocal")}</option>
+            {effortOptions(models, model || undefined).map((value) => (
+              <option key={value} value={value}>{effortLabel(value)}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {nodeId && !models && nodesQuery.isFetched && <p className="dispatch-note">{t("dispatchModelUnsupported")}</p>}
       <p className="dispatch-note">{t("dispatchDoesNotClaim")}</p>
 
       {mutation.isError && (

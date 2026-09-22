@@ -8,7 +8,18 @@ public enum ClaudeHostArguments {
     /// other tool call that would need a person's approval. With it, each of
     /// those arrives at the host as a `can_use_tool` control request, which is
     /// what the Agent SDK does whenever it is given a `canUseTool` callback.
-    public static func claude(mode: String, sessionName: String, sessionRef: String, resuming: Bool) -> [String] {
+    ///
+    /// `--model` and `--effort` appear only when a dispatch or a person chose
+    /// them; without them Claude Code follows the user's own settings, which
+    /// is what "follow this machine's configuration" means.
+    public static func claude(
+        mode: String,
+        sessionName: String,
+        sessionRef: String,
+        resuming: Bool,
+        model: String? = nil,
+        effort: String? = nil
+    ) -> [String] {
         [
             "--output-format", "stream-json",
             "--verbose",
@@ -19,7 +30,10 @@ public enum ClaudeHostArguments {
             "--no-chrome",
             "--permission-mode", mode,
             "--name", sessionName,
-        ] + (resuming ? ["--resume", sessionRef] : ["--session-id", sessionRef])
+        ]
+            + (model.map { ["--model", $0] } ?? [])
+            + (effort.map { ["--effort", $0] } ?? [])
+            + (resuming ? ["--resume", sessionRef] : ["--session-id", sessionRef])
     }
 }
 

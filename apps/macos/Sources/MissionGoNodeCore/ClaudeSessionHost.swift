@@ -24,6 +24,12 @@ public enum ClaudeHostStore {
     public static func commandPath(root: String, sessionRef: String, commandId: String) -> String {
         "\(sessionDirectory(root: root, sessionRef: sessionRef))/commands/\(commandId).json"
     }
+
+    /// The models the last Claude Code session offered (see `ClaudeModelCatalog`).
+    /// Beside the session directories, never inside one: it outlives them all.
+    public static func modelsCachePath(root: String) -> String {
+        "\(root)/models.json"
+    }
 }
 
 public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
@@ -39,6 +45,16 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
     public let logPath: String
     public let idleTimeoutSeconds: TimeInterval
     public let stallWarningSeconds: TimeInterval
+    /// `--model` / `--effort`; nil leaves them to the user's Claude settings.
+    public let model: String?
+    public let effort: String?
+    /// Where the host saves the model list Claude Code answers `initialize`
+    /// with. nil in a configuration written before model selection.
+    public let modelsCachePath: String?
+    /// The desired-settings revision this configuration already carries. A
+    /// host started from it records the revision as applied: this is how a
+    /// change made while the session was suspended takes effect on resume.
+    public let settingsRevision: Int?
 
     public init(
         version: Int = 1,
@@ -52,7 +68,11 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
         commandsDirectory: String,
         logPath: String,
         idleTimeoutSeconds: TimeInterval = 2 * 60 * 60,
-        stallWarningSeconds: TimeInterval = 30 * 60
+        stallWarningSeconds: TimeInterval = 30 * 60,
+        model: String? = nil,
+        effort: String? = nil,
+        modelsCachePath: String? = nil,
+        settingsRevision: Int? = nil
     ) {
         self.version = version
         self.claudeExecutable = claudeExecutable
@@ -66,11 +86,29 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
         self.logPath = logPath
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.stallWarningSeconds = stallWarningSeconds
+        self.model = model
+        self.effort = effort
+        self.modelsCachePath = modelsCachePath
+        self.settingsRevision = settingsRevision
+    }
+
+    /// This configuration with a person's settings applied on top; a field the
+    /// settings leave out keeps its current value.
+    public func applying(_ settings: AgentSessionSettings) -> ClaudeHostConfiguration {
+        ClaudeHostConfiguration(
+            version: version, claudeExecutable: claudeExecutable, cwd: cwd,
+            mode: settings.mode ?? mode, sessionName: sessionName, sessionRef: sessionRef, prompt: prompt,
+            statePath: statePath, commandsDirectory: commandsDirectory, logPath: logPath,
+            idleTimeoutSeconds: idleTimeoutSeconds, stallWarningSeconds: stallWarningSeconds,
+            model: settings.model ?? model, effort: settings.effort ?? effort,
+            modelsCachePath: modelsCachePath, settingsRevision: settings.revision
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, claudeExecutable, cwd, mode, sessionName, sessionRef, prompt
         case statePath, commandsDirectory, logPath, idleTimeoutSeconds, stallWarningSeconds
+        case model, effort, modelsCachePath, settingsRevision
     }
 
     public init(from decoder: Decoder) throws {
@@ -87,6 +125,10 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
         logPath = try values.decode(String.self, forKey: .logPath)
         idleTimeoutSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .idleTimeoutSeconds) ?? 2 * 60 * 60
         stallWarningSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .stallWarningSeconds) ?? 30 * 60
+        model = try values.decodeIfPresent(String.self, forKey: .model)
+        effort = try values.decodeIfPresent(String.self, forKey: .effort)
+        modelsCachePath = try values.decodeIfPresent(String.self, forKey: .modelsCachePath)
+        settingsRevision = try values.decodeIfPresent(Int.self, forKey: .settingsRevision)
     }
 }
 
@@ -113,6 +155,19 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     public var error: String?
     public var idleSince: Date?
     public var lastProgressAt: Date
+    /// The model Claude Code reported in `system/init`, or the one last set.
+    public var model: String?
+    /// The effort the session was started with or last switched to; nil
+    /// when it follows the user's own Claude settings.
+    public var effort: String?
+    public var mode: String?
+    /// The last desired-settings revision applied, or failed (with `settingsError`).
+    public var settingsRevision: Int?
+    public var settingsError: String?
+    /// Written only by a host that understands `settings` commands. A host
+    /// from before them rewrites the state without this key, so MissionGo
+    /// never hands it a command it would mistake for a chat message.
+    public var acceptsSettings: Bool
 
     public init(
         status: String,
@@ -125,7 +180,8 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         commandResults: [String: ClaudeHostCommandResult] = [:],
         error: String? = nil,
         idleSince: Date? = nil,
-        lastProgressAt: Date = Date()
+        lastProgressAt: Date = Date(),
+        acceptsSettings: Bool = false
     ) {
         self.status = status
         self.sessionRef = sessionRef
@@ -138,11 +194,13 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         self.error = error
         self.idleSince = idleSince
         self.lastProgressAt = lastProgressAt
+        self.acceptsSettings = acceptsSettings
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, status, sessionRef, hostPid, sessionUrl, messages, activities, waitingForInput, commandResults, error
         case idleSince, lastProgressAt
+        case model, effort, mode, settingsRevision, settingsError, acceptsSettings
     }
 
     public init(from decoder: Decoder) throws {
@@ -159,20 +217,30 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         error = try values.decodeIfPresent(String.self, forKey: .error)
         idleSince = try values.decodeIfPresent(Date.self, forKey: .idleSince)
         lastProgressAt = try values.decodeIfPresent(Date.self, forKey: .lastProgressAt) ?? Date()
+        model = try values.decodeIfPresent(String.self, forKey: .model)
+        effort = try values.decodeIfPresent(String.self, forKey: .effort)
+        mode = try values.decodeIfPresent(String.self, forKey: .mode)
+        settingsRevision = try values.decodeIfPresent(Int.self, forKey: .settingsRevision)
+        settingsError = try values.decodeIfPresent(String.self, forKey: .settingsError)
+        acceptsSettings = try values.decodeIfPresent(Bool.self, forKey: .acceptsSettings) ?? false
     }
 }
 
 public struct ClaudeHostCommand: Codable, Equatable, Sendable {
     public let id: String
+    /// `message`, `interrupt` or `settings`.
     public let kind: String
     public let text: String
     public let createdAt: String?
+    /// Only for `settings`.
+    public let settings: AgentSessionSettings?
 
-    public init(id: String, kind: String, text: String, createdAt: String? = nil) {
+    public init(id: String, kind: String, text: String, createdAt: String? = nil, settings: AgentSessionSettings? = nil) {
         self.id = id
         self.kind = kind
         self.text = text
         self.createdAt = createdAt
+        self.settings = settings
     }
 }
 
@@ -220,6 +288,8 @@ public struct ClaudeStreamSnapshot: Sendable {
         guard let type = value["type"] as? String else { return }
         if type == "system", value["subtype"] as? String == "init" {
             initialized = true
+            // The resolved model id, e.g. what `--model sonnet` became.
+            if let model = value["model"] as? String, !model.isEmpty { state.model = model }
             return
         }
         if type == "user" {
@@ -400,6 +470,31 @@ public struct ClaudeStreamSnapshot: Sendable {
         state.error = "疑似卡住：连续 30 分钟没有输出且进程树 CPU 无进展；为避免误杀长时间测试，MissionGo 未自动终止。"
     }
 
+    /// What the host starts with: the mode, model and effort it passed to
+    /// the CLI. `system/init` later replaces the model with the resolved id.
+    /// A configuration carrying a newer settings revision (written while the
+    /// session was suspended) is that revision applied.
+    public mutating func adoptConfiguration(_ config: ClaudeHostConfiguration) {
+        state.acceptsSettings = true
+        state.mode = config.mode
+        state.effort = config.effort
+        if let model = config.model { state.model = model }
+        if let revision = config.settingsRevision, revision > (state.settingsRevision ?? 0) {
+            state.settingsRevision = revision
+            state.settingsError = nil
+        }
+    }
+
+    /// Records what a settings change managed to apply, and why the rest failed.
+    public mutating func finishSettings(_ change: ClaudeSettingsChange) {
+        let applied = change.appliedSettings
+        if let mode = applied.mode { state.mode = mode }
+        if let model = applied.model { state.model = model }
+        if let effort = applied.effort { state.effort = effort }
+        state.settingsRevision = change.revision
+        state.settingsError = change.errors.isEmpty ? nil : change.errors.joined(separator: "\n")
+    }
+
     public mutating func noteProgress(at now: Date = Date()) {
         state.lastProgressAt = now
         if state.status == "stalled" {
@@ -512,6 +607,149 @@ public struct ClaudeStreamSnapshot: Sendable {
                 options: ["批准并实施", "继续修改计划"]
             )
         }
+    }
+}
+
+/// The models Claude Code offers, for the heartbeat.
+///
+/// Listing them means starting `claude`, and starting it runs the user's
+/// SessionStart hooks; a heartbeat every 30 seconds must not do that. Every
+/// session's `initialize` answer already carries the list, so the host saves
+/// it and the heartbeat reads the saved copy.
+public enum ClaudeModelCatalog {
+    static let allEfforts = ["low", "medium", "high", "xhigh", "max"]
+
+    /// Until a session has run on this machine: the aliases Claude Code has
+    /// long accepted, so the console has something to offer on day one.
+    public static let fallback: [AgentModelOption] = [
+        AgentModelOption(id: "opus", label: "Opus", efforts: allEfforts),
+        AgentModelOption(id: "sonnet", label: "Sonnet", efforts: allEfforts),
+        AgentModelOption(id: "haiku", label: "Haiku"),
+    ]
+
+    /// The options in an `initialize` answer, nil when it carries no list.
+    /// `default` is left out: the console offers its own "follow this
+    /// machine's configuration", which is exactly what that entry means.
+    public static func options(fromInitialize response: [String: Any]) -> [AgentModelOption]? {
+        guard let models = response["models"] as? [[String: Any]] else { return nil }
+        return models.compactMap { model -> AgentModelOption? in
+            guard let value = model["value"] as? String, !value.isEmpty, value != "default" else { return nil }
+            let label = (model["displayName"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? value
+            return AgentModelOption(
+                id: value,
+                label: label,
+                efforts: model["supportedEffortLevels"] as? [String] ?? []
+            )
+        }
+    }
+
+    public static func save(_ options: [AgentModelOption], to path: String) throws {
+        try ClaudeHostFiles.write(options, to: path)
+    }
+
+    /// The saved list, or the fallback when no session has saved one yet.
+    public static func load(from path: String) -> [AgentModelOption] {
+        guard let data = FileManager.default.contents(atPath: path),
+              let options = try? JSONDecoder().decode([AgentModelOption].self, from: data)
+        else { return fallback }
+        return options
+    }
+}
+
+/// One desired-settings revision being applied to a running Claude Code
+/// session through its control channel.
+///
+/// Claude Code has no single "change settings" request: the permission mode,
+/// the model and the effort each have their own, and each can fail on its
+/// own. The revision is finished once every request has been answered; what
+/// succeeded is recorded even when another part failed.
+public struct ClaudeSettingsChange {
+    public enum Part: Equatable {
+        case mode(String)
+        case model(String)
+        case effort(String)
+    }
+
+    public let revision: Int
+    /// Sent in this order, each with its own request id.
+    public let requests: [(id: String, request: [String: Any])]
+    private var pending: [String: Part]
+    public private(set) var applied: [Part] = []
+    public private(set) var errors: [String] = []
+
+    public init(_ settings: AgentSessionSettings, makeRequestId: () -> String = { UUID().uuidString }) {
+        revision = settings.revision
+        var parts: [Part] = []
+        var errors: [String] = []
+        // Values arrive over the wire; refuse a malformed one here instead of
+        // letting the CLI interpret it.
+        if let mode = settings.mode {
+            if ClaudeCodeModes.isAllowed(mode) { parts.append(.mode(mode)) }
+            else { errors.append("不支持的 Claude Code 模式：\(JSONValues.quote(mode))") }
+        }
+        if let model = settings.model {
+            if AgentModelSettings.isValidModel(model) { parts.append(.model(model)) }
+            else { errors.append("不支持的模型名：\(JSONValues.quote(model))") }
+        }
+        if let effort = settings.effort {
+            if AgentModelSettings.isValidEffort(effort) { parts.append(.effort(effort)) }
+            else { errors.append("不支持的推理强度：\(JSONValues.quote(effort))") }
+        }
+        var requests: [(id: String, request: [String: Any])] = []
+        var pending: [String: Part] = [:]
+        for part in parts {
+            let id = makeRequestId()
+            requests.append((id, Self.request(for: part)))
+            pending[id] = part
+        }
+        self.requests = requests
+        self.pending = pending
+        self.errors = errors
+    }
+
+    /// The control request for one part. `set_effort` does not exist; the
+    /// effort goes through session-scoped flag settings, which leave the
+    /// user's own settings file alone.
+    public static func request(for part: Part) -> [String: Any] {
+        switch part {
+        case let .mode(mode): return ["subtype": "set_permission_mode", "mode": mode]
+        case let .model(model): return ["subtype": "set_model", "model": model]
+        case let .effort(effort): return ["subtype": "apply_flag_settings", "settings": ["effortLevel": effort]]
+        }
+    }
+
+    public var isComplete: Bool { pending.isEmpty }
+
+    /// Takes one `control_response`'s inner `response`; false when it
+    /// answers a request that is not part of this change.
+    public mutating func receive(requestId: String, response: [String: Any]) -> Bool {
+        guard let part = pending.removeValue(forKey: requestId) else { return false }
+        if response["subtype"] as? String == "success" {
+            applied.append(part)
+        } else {
+            let reason = (response["error"] as? String) ?? "未知错误"
+            switch part {
+            case .mode: errors.append("切换模式失败：\(reason)")
+            case .model: errors.append("切换模型失败：\(reason)")
+            case .effort: errors.append("切换推理强度失败：\(reason)")
+            }
+        }
+        return true
+    }
+
+    /// What was applied, as settings (fields that were not are nil).
+    public var appliedSettings: AgentSessionSettings {
+        var mode: String?
+        var model: String?
+        var effort: String?
+        for part in applied {
+            switch part {
+            case let .mode(value): mode = value
+            case let .model(value): model = value
+            case let .effort(value): effort = value
+            }
+        }
+        return AgentSessionSettings(revision: revision, mode: mode, model: model, effort: effort)
     }
 }
 
