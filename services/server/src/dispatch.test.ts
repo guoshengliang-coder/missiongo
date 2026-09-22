@@ -944,6 +944,37 @@ describe("Claiming a dispatch on the node", () => {
       .toMatchObject({ status: "launched", sessionUrl: "https://claude.ai/code/session_016Jhieb3iHbCW5ymeG2kns6" });
   });
 
+  it("leaves work queued when its agent is temporarily unavailable", async () => {
+    const { app, node, dispatchId } = await queuedDispatch();
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { availableAgentKinds: ["codex"] },
+    });
+    expect(blocked.statusCode).toBe(204);
+
+    const recovered = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { availableAgentKinds: ["claude_code"] },
+    });
+    expect(recovered.statusCode).toBe(200);
+    expect(recovered.json()).toMatchObject({ dispatchId, agentKind: "claude_code" });
+  });
+
+  it("rejects unknown locally available agent kinds", async () => {
+    const { app, node } = await queuedDispatch();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { availableAgentKinds: ["shell"] },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
   it("shares a ten-session execution cap across Claude and Codex", async () => {
     const { app, node, dispatchId } = await queuedDispatch();
     const now = new Date().toISOString();

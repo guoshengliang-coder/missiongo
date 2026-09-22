@@ -3,7 +3,7 @@ import Foundation
 /// The protocol calls the loop makes, so a test can stand in for the server.
 public protocol NodeAPI: Sendable {
     func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate]) async throws -> HeartbeatReply
-    func claimNext(waitMs: Int) async throws -> DispatchRequest?
+    func claimNext(waitMs: Int, availableAgentKinds: [String]?) async throws -> DispatchRequest?
     func reportResult(dispatchId: String, report: DispatchReport) async throws
     func listAgentSessions() async throws -> [NodeAgentSession]
     func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws
@@ -114,6 +114,10 @@ public final class NodeLoop: @unchecked Sendable {
         /// inside it waits this long — measured at 813ms of the delay when this was
         /// a full second.
         public var claimInterval: TimeInterval = 0.25
+        /// A locally unavailable agent cannot become claimable because the
+        /// server answered. Probe slowly instead of spawning a health command
+        /// four times a second while every adapter is paused.
+        public var agentUnavailableInterval: TimeInterval = 5
         /// Mirrored agent conversations are snapshots, not an event stream. This is
         /// short enough for a reply to feel immediate without keeping an
         /// app-server connection open and stealing approval requests.
@@ -156,6 +160,7 @@ public final class NodeLoop: @unchecked Sendable {
         var reservations: [String: Date] = [:]
     }
     private let capacity = Locked(CapacityState())
+    private let unavailableAgents = Locked<[String: String]>([:])
 
     public init(
         api: NodeAPI,
@@ -222,7 +227,11 @@ public final class NodeLoop: @unchecked Sendable {
         while !stop.isStopped {
             await shielded {
                 do {
-                    let agents = await self.detectAgents()
+                    let detectedAgents = await self.detectAgents()
+                    let availableKinds = Set(await self.availableAgentKinds())
+                    // Heartbeats drive the dispatch UI. Do not advertise an
+                    // installed-but-pressured adapter as a valid new target.
+                    let agents = detectedAgents.filter { availableKinds.contains($0.kind) }
                     // The app supplies an in-memory list of mapped repositories.
                     // Heartbeats must not probe historical project directories.
                     let candidates = self.detectRepoCandidates()
@@ -248,10 +257,21 @@ public final class NodeLoop: @unchecked Sendable {
 
     private func claimLoop(stop: StopSignal, fatal: Locked<APIError?>) async {
         while !stop.isStopped {
+            guard hasExecutionCapacity() else {
+                await stop.sleep(timing.claimInterval)
+                continue
+            }
+            let availableAgentKinds = await availableAgentKinds()
+            guard !availableAgentKinds.isEmpty else {
+                await stop.sleep(timing.agentUnavailableInterval)
+                continue
+            }
             await shielded {
                 do {
-                    guard self.hasExecutionCapacity() else { return }
-                    if let request = try await self.api.claimNext(waitMs: self.timing.claimWaitMs) {
+                    if let request = try await self.api.claimNext(
+                        waitMs: self.timing.claimWaitMs,
+                        availableAgentKinds: availableAgentKinds
+                    ) {
                         self.capacity.withLock { $0.reservations[request.dispatchId] = Date() }
                         self.update {
                             $0.connection = .online
@@ -326,6 +346,26 @@ public final class NodeLoop: @unchecked Sendable {
             let occupied = value.sessions.filter(\.occupiesExecutionSlot).count
             return occupied + value.reservations.count < Self.maximumExecutingSessions
         }
+    }
+
+    private func availableAgentKinds() async -> [String] {
+        var available: [String] = []
+        for adapter in adapters {
+            switch await adapter.dispatchAvailability() {
+            case .ready:
+                available.append(adapter.kind)
+                let recovered = unavailableAgents.withLock { $0.removeValue(forKey: adapter.kind) != nil }
+                if recovered { log("\(adapter.kind) 已恢复，继续领取派单。") }
+            case let .unavailable(reason):
+                let changed = unavailableAgents.withLock { previous -> Bool in
+                    if previous[adapter.kind] == reason { return false }
+                    previous[adapter.kind] = reason
+                    return true
+                }
+                if changed { log("暂停领取 \(adapter.kind) 派单：\(reason)") }
+            }
+        }
+        return available
     }
 
     private func reconcileCapacity(_ sessions: [NodeAgentSession], now: Date = Date()) {

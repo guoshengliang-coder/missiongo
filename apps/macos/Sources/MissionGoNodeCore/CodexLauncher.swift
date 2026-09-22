@@ -1,4 +1,138 @@
+import Darwin
 import Foundation
+
+public protocol CodexResourceChecking: Sendable {
+    /// Returns a reason only when pressure is positively identified. Probe
+    /// failures fail open: normal preflight still protects the actual launch.
+    func unavailableReason(socketPath: String) async -> String?
+}
+
+/// The app-server opens files, sockets and subprocess pipes for every active
+/// thread. macOS commonly gives GUI processes only 256 descriptors; keeping a
+/// reserve prevents the next MCP startup from crossing that hard boundary.
+public struct CodexFileDescriptorGuard: CodexResourceChecking {
+    public static let minimumReserve = 64
+    static let launchAgentLabel = "com.missiongo.codex-app-server-limits"
+
+    private let run: CommandRunner
+    private let softLimit: @Sendable (Int32) -> Int?
+    private let openFiles: @Sendable (Int32) -> Int?
+
+    public init(
+        environment: ShellEnvironment,
+        location: CodexLocation? = nil,
+        home: String = Paths.homeDirectory()
+    ) {
+        let resolvedLocation = location ?? CodexLocation(environment: environment, home: home)
+        let launchAgentPath = "\(home)/Library/LaunchAgents/\(Self.launchAgentLabel).plist"
+        let launchLogPath = "\(resolvedLocation.codexHome)/app-server-control/launch-agent.log"
+        self.init(
+            run: Commands.runner(environment: environment),
+            softLimit: { pid in
+                Self.verifiedSoftLimit(
+                    ownerPID: pid,
+                    launchAgentPath: launchAgentPath,
+                    launchLogPath: launchLogPath
+                )
+            },
+            openFiles: { Self.processOpenFileCount($0) }
+        )
+    }
+
+    init(
+        run: @escaping CommandRunner,
+        softLimit: @escaping @Sendable (Int32) -> Int?,
+        openFiles: @escaping @Sendable (Int32) -> Int?
+    ) {
+        self.run = run
+        self.softLimit = softLimit
+        self.openFiles = openFiles
+    }
+
+    public func unavailableReason(socketPath: String) async -> String? {
+        guard let pid = await ownerPID(socketPath: socketPath),
+              let used = openFiles(pid), let limit = softLimit(pid)
+        else { return nil }
+        return Self.unavailableReason(openFiles: used, softLimit: limit)
+    }
+
+    static func unavailableReason(openFiles: Int, softLimit: Int) -> String? {
+        guard softLimit > minimumReserve,
+              openFiles >= softLimit - minimumReserve else { return nil }
+        return "Codex 后台服务文件描述符余量不足（已用 \(openFiles)/\(softLimit)，需保留至少 \(minimumReserve) 个）。"
+            + "MissionGo 已将派单留在队列、不会启动失败；请先关闭不再使用的会话，"
+            + "或在确认没有任务运行后执行 codex app-server daemon restart；恢复后会自动继续领取。"
+    }
+
+    static func ownerPID(fromLsof output: String) -> Int32? {
+        for line in output.split(whereSeparator: \.isNewline) where line.first == "p" {
+            if let pid = Int32(line.dropFirst()) { return pid }
+        }
+        return nil
+    }
+
+    private func ownerPID(socketPath: String) async -> Int32? {
+        let result = await run("/usr/sbin/lsof", ["-n", "-a", "-U", "-Fpc", "--", socketPath])
+        guard result.code == 0 else { return nil }
+        return Self.ownerPID(fromLsof: result.stdout)
+    }
+
+    /// macOS does not expose another process's per-process `RLIMIT_NOFILE` to
+    /// an ordinary caller. Reading MissionGo's own limit would compare values
+    /// from two different processes and can falsely pause a healthy daemon.
+    /// Trust the configured limit only when the launch receipt proves that the
+    /// LaunchAgent started the exact PID currently owning the control socket.
+    static func verifiedSoftLimit(ownerPID: Int32, launchAgentPath: String, launchLogPath: String) -> Int? {
+        guard let log = tail(path: launchLogPath), lastStartedPID(fromLaunchLog: log) == ownerPID,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: launchAgentPath))
+        else { return nil }
+        return softLimit(fromLaunchAgentPlist: data)
+    }
+
+    static func softLimit(fromLaunchAgentPlist data: Data) -> Int? {
+        guard let root = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let dictionary = root as? [String: Any],
+              dictionary["Label"] as? String == launchAgentLabel,
+              let limits = dictionary["SoftResourceLimits"] as? [String: Any],
+              let number = limits["NumberOfFiles"] as? NSNumber
+        else { return nil }
+        let value = number.intValue
+        return value > minimumReserve ? value : nil
+    }
+
+    static func lastStartedPID(fromLaunchLog log: String) -> Int32? {
+        for line in log.split(whereSeparator: \.isNewline).reversed() {
+            guard let data = String(line).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  object["status"] as? String == "started",
+                  let number = object["pid"] as? NSNumber,
+                  number.int64Value > 0, number.int64Value <= Int64(Int32.max)
+            else { continue }
+            return Int32(number.int64Value)
+        }
+        return nil
+    }
+
+    private static func tail(path: String, maximumBytes: UInt64 = 64 * 1024) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        let offset = size > maximumBytes ? size - maximumBytes : 0
+        do {
+            try handle.seek(toOffset: offset)
+            return String(decoding: try handle.readToEnd() ?? Data(), as: UTF8.self)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func processOpenFileCount(_ pid: Int32) -> Int? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout.size(ofValue: info))
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return Int(info.pbi_nfiles)
+    }
+}
 
 /// Where Codex keeps its state on this machine, and how to reach it.
 public struct CodexLocation: Equatable, Sendable {
@@ -163,6 +297,7 @@ public struct CodexLauncher: AgentAdapter {
     let run: CommandRunner
     let location: CodexLocation
     let control: CodexControl
+    let resources: CodexResourceChecking
     /// The MissionGo server this machine is logged in to, for the MCP hint.
     let serverUrl: String?
     public init(
@@ -170,18 +305,28 @@ public struct CodexLauncher: AgentAdapter {
         serverUrl: String?,
         run: CommandRunner? = nil,
         location: CodexLocation? = nil,
-        control: CodexControl = CodexAppServerControl()
+        control: CodexControl = CodexAppServerControl(),
+        resources: CodexResourceChecking? = nil
     ) {
         self.environment = environment
         self.serverUrl = serverUrl
         self.run = run ?? Commands.runner(environment: environment)
-        self.location = location ?? CodexLocation(environment: environment)
+        let resolvedLocation = location ?? CodexLocation(environment: environment)
+        self.location = resolvedLocation
         self.control = control
+        self.resources = resources ?? CodexFileDescriptorGuard(environment: environment, location: resolvedLocation)
     }
 
     public func detect() async -> String? {
         guard let binary = CodexLocation.binary(environment: environment) else { return nil }
         return await CodexPreflight.version(binary: binary, run: run)
+    }
+
+    public func dispatchAvailability() async -> AgentDispatchAvailability {
+        if let reason = await resources.unavailableReason(socketPath: location.controlSocketPath) {
+            return .unavailable(reason: reason)
+        }
+        return .ready
     }
 
     public func launch(_ job: DispatchJob) async throws -> LaunchResult {
@@ -191,6 +336,9 @@ public struct CodexLauncher: AgentAdapter {
         if case let .failed(reason) = await CodexPreflight.check(
             repoPath: job.repoPath, environment: environment, location: location, serverUrl: serverUrl, run: run
         ) {
+            throw LaunchError(reason)
+        }
+        if case let .unavailable(reason) = await dispatchAvailability() {
             throw LaunchError(reason)
         }
 
@@ -216,7 +364,7 @@ public struct CodexLauncher: AgentAdapter {
                 skillVersion: skillVersion
             ))
         } catch {
-            throw LaunchError(error.localizedDescription)
+            throw LaunchError(CodexFailure.explain(error))
         }
         return LaunchResult(
             sessionName: sessionName,
@@ -330,5 +478,21 @@ public struct CodexLauncher: AgentAdapter {
             sourceArchived: false,
             activityAt: snapshot.activityAt
         )
+    }
+}
+
+enum CodexFailure {
+    static func explain(_ error: Error) -> String {
+        let message = error.localizedDescription
+        let lower = message.lowercased()
+        if lower.contains("too many open files") {
+            return "Codex 后台服务的文件描述符已经耗尽，任务尚未启动。请先关闭不再使用的会话，"
+                + "或在确认没有任务运行后执行 codex app-server daemon restart。"
+        }
+        if lower.contains("mcp startup") && lower.contains("timed out") {
+            return "Codex 的 MissionGo MCP 启动超时，任务尚未启动。请先运行 codex app-server daemon restart；"
+                + "若仍出现，请检查 ~/.codex/app-server-control/app-server.log 与 MCP 登录状态。"
+        }
+        return message
     }
 }

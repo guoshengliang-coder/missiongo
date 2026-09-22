@@ -23,8 +23,8 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
         return try heartbeatResult.current.get()
     }
 
-    func claimNext(waitMs: Int) async throws -> DispatchRequest? {
-        calls.withLock { $0.append("claim") }
+    func claimNext(waitMs: Int, availableAgentKinds: [String]?) async throws -> DispatchRequest? {
+        calls.withLock { $0.append("claim:\((availableAgentKinds ?? []).joined(separator: ","))") }
         let next = queue.withLock { $0.isEmpty ? nil : $0.removeFirst() }
         guard let next else {
             // An idle long poll: keep the loop from spinning.
@@ -79,10 +79,20 @@ private struct RecoveringAdapter: AgentAdapter {
     }
 }
 
+private struct UnavailableAdapter: AgentAdapter {
+    let kind: String
+    let reason: String
+
+    func detect() async -> String? { "1.0.0" }
+    func dispatchAvailability() async -> AgentDispatchAvailability { .unavailable(reason: reason) }
+    func launch(_ job: DispatchJob) async throws -> LaunchResult { throw LaunchError("not used") }
+}
+
 private func fastTiming() -> NodeLoop.Timing {
     var timing = NodeLoop.Timing()
     timing.heartbeatInterval = 0.05
     timing.claimInterval = 0.01
+    timing.agentUnavailableInterval = 0.01
     timing.resultRetryDelay = 0.01
     return timing
 }
@@ -150,6 +160,25 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertEqual(api.reports.current.first?.1, DispatchReport(status: .failed, error: "Claude Code 未登录（authMethod=none）"))
     }
 
+    func testUnavailableAgentIsExcludedBeforeTheServerHandsOverWork() async throws {
+        let api = FakeAPI(claims: [])
+        let ready = FakeAdapter(outcome: .failure(LaunchError("not used")))
+        let blocked = UnavailableAdapter(kind: "codex", reason: "资源余量不足")
+        let messages = Locked<[String]>([])
+        let loop = NodeLoop(
+            api: api, adapters: [ready, blocked], fallbackNodeName: "Mac mini",
+            timing: fastTiming(), log: { message in messages.withLock { $0.append(message) } }
+        )
+        let task = Task { try await loop.run() }
+        await waitUntil { api.calls.current.contains("claim:claude_code") }
+        task.cancel()
+        try await task.value
+
+        XCTAssertFalse(api.calls.current.contains { $0.contains("codex") })
+        XCTAssertFalse(api.calls.current.contains { $0.hasPrefix("heartbeat:") && $0.contains("1.0.0") })
+        XCTAssertTrue(messages.current.contains { $0.contains("暂停领取 codex 派单") && $0.contains("资源余量不足") })
+    }
+
     func testNamesTheSessionAfterTheNodeNameTheServerSent() async {
         let adapter = FakeAdapter(outcome: .success(LaunchResult(sessionName: "x", sessionUrl: nil, logPath: "/l")))
         let loop = NodeLoop(api: FakeAPI(claims: []), adapters: [adapter], fallbackNodeName: "Mac mini", log: { _ in })
@@ -181,15 +210,11 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertEqual(adapter.jobs.current.first?.reworkItemKeys, ["HG-49"])
     }
 
-    func testAnUnknownAgentIsReportedRatherThanDropped() async throws {
+    func testAnUnknownAgentIsReportedRatherThanDropped() async {
         let codex = DispatchRequest(dispatchId: "d2", itemKeys: ["AND-2"], repoPath: "/p", agentKind: "codex", mode: "x")
-        let api = FakeAPI(claims: [.success(codex)])
-        let loop = NodeLoop(api: api, adapters: [], fallbackNodeName: "Mac mini", detectRepoCandidates: { [] }, timing: fastTiming(), log: { _ in })
-        let task = Task { try await loop.run() }
-        await waitUntil { !api.reports.current.isEmpty }
-        task.cancel()
-        try await task.value
-        XCTAssertEqual(api.reports.current.first?.1, DispatchReport(status: .failed, error: "本机没有 codex 的适配器。"))
+        let loop = NodeLoop(api: FakeAPI(claims: []), adapters: [], fallbackNodeName: "Mac mini", log: { _ in })
+        let (report, _) = await loop.launchDispatch(codex)
+        XCTAssertEqual(report, DispatchReport(status: .failed, error: "本机没有 codex 的适配器。"))
     }
 
     func testNetworkErrorsKeepTheLoopRunning() async throws {

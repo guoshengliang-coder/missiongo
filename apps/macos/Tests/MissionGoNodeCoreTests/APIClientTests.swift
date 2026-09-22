@@ -70,10 +70,11 @@ final class APIClientTests: XCTestCase {
 
     func testClaimNextReads204AsAnEmptyQueueAndOutlastsTheLongPoll() async throws {
         StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
-        let request = try await client().claimNext(waitMs: 25_000)
+        let request = try await client().claimNext(waitMs: 25_000, availableAgentKinds: ["claude_code"])
         XCTAssertNil(request)
         let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
         XCTAssertEqual(jsonObject(sent.body)["waitMs"] as? Int, 25_000)
+        XCTAssertEqual(jsonObject(sent.body)["availableAgentKinds"] as? [String], ["claude_code"])
         // The server is asked to hold the poll 25s; aborting locally at 15s would
         // turn every idle poll into a network error.
         XCTAssertEqual(sent.request.timeoutInterval, 40)
