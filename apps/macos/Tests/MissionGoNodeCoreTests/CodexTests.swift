@@ -7,10 +7,36 @@ private func ok(_ stdout: String) -> CommandResult {
 
 private let mcpReady = #"[{"name":"missiongo","enabled":true,"disabled_reason":null,"transport":{"type":"streamable_http","url":"https://missiongo.test/mcp"},"auth_status":"o_auth"}]"#
 
-/// A `codex` that answers the three commands the preflight runs.
+/// Stands in for `codex app-server daemon start`: counts the calls and, when
+/// given a path, starts listening there the way the real daemon does.
+private final class FakeDaemon: @unchecked Sendable {
+    let starts = Locked(0)
+    private let listener = Locked<Int32?>(nil)
+    private let socketPath: String?
+
+    init(bringsUp socketPath: String? = nil) {
+        self.socketPath = socketPath
+    }
+
+    func start() -> CommandResult {
+        starts.withLock { $0 += 1 }
+        guard let socketPath else { return CommandResult(code: 1, stdout: "", stderr: "daemon refused to start\n") }
+        listener.withLock { current in
+            if current == nil { current = try? listeningSocket(at: socketPath) }
+        }
+        return ok(#"{"status":"started","backend":"pid"}"#)
+    }
+
+    deinit {
+        listener.current.map { _ = close($0) }
+    }
+}
+
+/// A `codex` that answers the commands the preflight runs.
 private func fakeCodex(
     login: CommandResult = CommandResult(code: 0, stdout: "", stderr: "Logged in using ChatGPT\n"),
-    mcp: CommandResult = ok(mcpReady)
+    mcp: CommandResult = ok(mcpReady),
+    daemon: FakeDaemon = FakeDaemon()
 ) -> CommandRunner {
     return { file, args in
         precondition(file.hasSuffix("codex"), "unexpected command: \(file)")
@@ -18,6 +44,9 @@ private func fakeCodex(
         case "--version": return ok("codex-cli 0.154.0\n")
         case "login": return login
         case "mcp": return mcp
+        case "app-server":
+            precondition(args == ["app-server", "daemon", "start"], "unexpected args: \(args)")
+            return daemon.start()
         default: preconditionFailure("unexpected args: \(args)")
         }
     }
@@ -613,8 +642,10 @@ final class CodexPreflightTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: "\(codexHome)/app-server-control", withIntermediateDirectories: true)
         let location = CodexLocation(codexHome: codexHome)
 
-        let down = await CodexStatus.check(environment: environment, location: location, run: fakeCodex())
+        let daemon = FakeDaemon()
+        let down = await CodexStatus.check(environment: environment, location: location, run: fakeCodex(daemon: daemon), daemonWait: 0.2)
         XCTAssertEqual(down, .daemonNotRunning(version: "0.154.0", path: location.controlSocketPath))
+        XCTAssertEqual(daemon.starts.current, 1, "the check tries the start itself before asking anybody")
         XCTAssertEqual(down.summary, "后台服务未运行")
         // The path is in the hint: without it there is nothing to go and look at.
         XCTAssertEqual(down.fixHint?.contains(location.controlSocketPath), true)
@@ -632,10 +663,40 @@ final class CodexPreflightTests: XCTestCase {
         let listener = try listeningSocket(at: location.controlSocketPath)
         defer { _ = close(listener) }
 
-        let ready = await CodexStatus.check(environment: environment, location: location, run: fakeCodex())
+        let daemon = FakeDaemon()
+        let ready = await CodexStatus.check(environment: environment, location: location, run: fakeCodex(daemon: daemon))
         XCTAssertEqual(ready, .ready(version: "0.154.0"))
         XCTAssertEqual(ready.summary, "0.154.0")
         XCTAssertFalse(ready.needsAttention)
+        XCTAssertEqual(daemon.starts.current, 0, "a daemon that answers is left alone")
+    }
+
+    func testTheMenuStartsAStoppedDaemonAndSaysReady() async throws {
+        // Nothing starts the daemon after a reboot; the check the operator asks
+        // for starts it instead of sending them to a terminal.
+        let environment = try codexOnPath()
+        let root = try shortTemporaryDirectory()
+        let codexHome = "\(root)/codex"
+        try FileManager.default.createDirectory(atPath: "\(codexHome)/app-server-control", withIntermediateDirectories: true)
+        let location = CodexLocation(codexHome: codexHome)
+        let daemon = FakeDaemon(bringsUp: location.controlSocketPath)
+
+        let status = await CodexStatus.check(environment: environment, location: location, run: fakeCodex(daemon: daemon))
+        XCTAssertEqual(status, .ready(version: "0.154.0"))
+        XCTAssertEqual(daemon.starts.current, 1)
+    }
+
+    func testAStartThatBringsNothingUpReportsWhatTheCommandSaid() async throws {
+        let root = try shortTemporaryDirectory()
+        let location = CodexLocation(codexHome: "\(root)/codex")
+        let daemon = FakeDaemon()
+        let started = Date()
+        let outcome = await CodexPreflight.ensureDaemon(
+            binary: "/usr/local/bin/codex", location: location, run: fakeCodex(daemon: daemon), wait: 0.3, pollInterval: 0.05
+        )
+        XCTAssertEqual(outcome, .failed(output: "退出码 1：daemon refused to start"))
+        XCTAssertEqual(daemon.starts.current, 1, "one start per check, not one per poll")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
     }
 
     func testFindsCodexHomeFromTheEnvironment() {
@@ -823,6 +884,23 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertTrue(sent.prompt.contains("返工"))
     }
 
+    func testADispatchStartsAStoppedDaemonAndGoesAhead() async throws {
+        // A dispatch arrives when nobody is at the machine: failing it with a
+        // command to run left every Codex dispatch failed until someone came by.
+        let machine = try machine(socket: false)
+        let daemon = FakeDaemon(bringsUp: machine.location.controlSocketPath)
+        let control = RecordingControl()
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: "https://missiongo.test",
+            run: fakeCodex(daemon: daemon), location: machine.location, control: control,
+            resources: FixedCodexResources(reason: nil)
+        )
+        _ = try await launcher.launch(job(repoPath: machine.repoPath))
+
+        XCTAssertEqual(daemon.starts.current, 1)
+        XCTAssertEqual(control.requests.current.count, 1)
+    }
+
     func testStartsAThreadInTheRepositoryAndReportsItsLink() async throws {
         let machine = try machine()
         defer { machine.listener.map { _ = close($0) } }
@@ -891,6 +969,7 @@ final class CodexLauncherTests: XCTestCase {
             // Nothing listening: the daemon is what provides that socket, so the
             // failure names the command that starts it.
             ("channel down", fakeCodex(), true, false, "codex app-server daemon start"),
+            ("channel down, start says why", fakeCodex(), true, false, "daemon refused to start"),
             ("no mcp", fakeCodex(mcp: ok("[]")), true, true, "codex mcp add missiongo --url https://missiongo.test/mcp"),
             ("mcp logged out", fakeCodex(mcp: ok(#"[{"name":"missiongo","enabled":true,"auth_status":"not_logged_in"}]"#)), true, true, "codex mcp login missiongo"),
             ("no skill", fakeCodex(), false, true, "missiongo Skill"),
@@ -901,7 +980,7 @@ final class CodexLauncherTests: XCTestCase {
             let control = RecordingControl()
             let launcher = CodexLauncher(
                 environment: environment, serverUrl: "https://missiongo.test",
-                run: run, location: machine.location, control: control
+                run: run, location: machine.location, control: control, daemonWait: 0.2
             )
             do {
                 _ = try await launcher.launch(job(repoPath: machine.repoPath))
