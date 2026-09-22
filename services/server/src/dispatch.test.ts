@@ -1743,8 +1743,14 @@ describe("Claiming a dispatch on the node", () => {
         status: "idle",
         activityAt: "2026-09-19T01:30:00.000Z",
         messages: [
-          { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
-          { sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "I found the cause." },
+          {
+            sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it.",
+            occurredAt: "2026-09-19T01:28:00.000Z",
+          },
+          {
+            sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "I found the cause.",
+            occurredAt: "2026-09-19T01:29:00.000Z",
+          },
         ],
       },
     });
@@ -1775,8 +1781,8 @@ describe("Claiming a dispatch on the node", () => {
     expect(webSession.json()).toMatchObject({
       status: "idle",
       messages: [
-        { sourceId: "u1", role: "user", text: "Please inspect it." },
-        { sourceId: "a1", role: "agent", text: "I found the cause." },
+        { sourceId: "u1", role: "user", text: "Please inspect it.", occurredAt: "2026-09-19T01:28:00.000Z" },
+        { sourceId: "a1", role: "agent", text: "I found the cause.", occurredAt: "2026-09-19T01:29:00.000Z" },
       ],
     });
 
@@ -1804,6 +1810,15 @@ describe("Claiming a dispatch on the node", () => {
     })).json<{ sessions: Array<{ updatedAt: string; activityAt: string }> }>().sessions[0]!;
     expect(unchanged.activityAt).toBe(fixedActivityAt);
     expect(unchanged.updatedAt).not.toBe(fixedActivityAt);
+    const unchangedDetail = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${launched.agentSessionId}`,
+      headers: { cookie },
+    })).json<{ messages: Array<{ sourceId: string; occurredAt: string }> }>();
+    expect(unchangedDetail.messages).toMatchObject([
+      { sourceId: "u1", occurredAt: "2026-09-19T01:28:00.000Z" },
+      { sourceId: "a1", occurredAt: "2026-09-19T01:29:00.000Z" },
+    ]);
 
     expect((await app.inject({
       method: "POST",

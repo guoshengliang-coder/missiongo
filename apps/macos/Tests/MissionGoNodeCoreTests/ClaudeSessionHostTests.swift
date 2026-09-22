@@ -8,6 +8,7 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         snapshot.consume([
             "type": "user",
             "uuid": "user-1",
+            "timestamp": "2026-09-22T01:02:03.000Z",
             "origin": ["kind": "human"],
             "parent_tool_use_id": NSNull(),
             "message": ["role": "user", "content": [["type": "text", "text": "Inspect this."]]],
@@ -15,6 +16,7 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         snapshot.consume([
             "type": "assistant",
             "uuid": "frame-1",
+            "timestamp": "2026-09-22T01:02:04.000Z",
             "user_message_uuid": "user-1",
             "parent_tool_use_id": NSNull(),
             "message": ["id": "message-1", "content": [["type": "text", "text": "First finding."]]],
@@ -22,6 +24,7 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         snapshot.consume([
             "type": "assistant",
             "uuid": "frame-2",
+            "timestamp": "2026-09-22T01:02:05.000Z",
             "user_message_uuid": "user-1",
             "parent_tool_use_id": NSNull(),
             "message": ["id": "message-1", "content": [["type": "text", "text": "Second finding."]]],
@@ -51,7 +54,9 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertNil(snapshot.state.error)
         XCTAssertEqual(snapshot.state.messages.count, 3)
         XCTAssertEqual(snapshot.state.messages[0].role, "user")
+        XCTAssertEqual(snapshot.state.messages[0].occurredAt, "2026-09-22T01:02:03.000Z")
         XCTAssertEqual(snapshot.state.messages[1].text, "First finding.\nSecond finding.")
+        XCTAssertEqual(snapshot.state.messages[1].occurredAt, "2026-09-22T01:02:04.000Z")
         XCTAssertEqual(snapshot.state.messages[1].turnId, "user-1")
         XCTAssertEqual(snapshot.state.messages[2].questions, [AgentSessionQuestion(title: "Ship it?", options: ["Yes", "No"])])
     }

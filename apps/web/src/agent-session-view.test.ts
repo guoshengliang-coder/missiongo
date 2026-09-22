@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   activityLabelKey,
   agentAttentionCounts,
+  agentSessionsRefetchInterval,
   archivableVisibleSessionIds,
   agentSessionMatches,
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
+  formatAgentMessageTime,
   isNearMessageBottom,
   messageLabelKey,
   outgoingReply,
@@ -20,6 +22,17 @@ import {
 import type { AgentSessionSummary } from "./types";
 
 describe("agent session message view", () => {
+  it("polls the open console quickly and the item page once a minute", () => {
+    expect(agentSessionsRefetchInterval(true)).toBe(5_000);
+    expect(agentSessionsRefetchInterval(false)).toBe(60_000);
+  });
+
+  it("formats a message occurrence time with both date and minute precision", () => {
+    const formatted = formatAgentMessageTime("2026-09-21T00:00:00.000Z", "zh-CN");
+    expect(formatted).toMatch(/9.*21/);
+    expect(formatted).toMatch(/\d{1,2}:00/);
+  });
+
   it("counts attention once globally and once per distinct product", () => {
     const sessions = [
       {
@@ -137,10 +150,12 @@ describe("agent session message view", () => {
   });
 
   it("keeps one optimistic reply bubble through queueing and failure", () => {
-    expect(outgoingReply(undefined, { text: "发布", status: "sending" })).toEqual({ text: "发布", status: "sending" });
+    expect(outgoingReply(undefined, {
+      text: "发布", occurredAt: "2026-09-21T00:00:00Z", status: "sending",
+    })).toEqual({ text: "发布", occurredAt: "2026-09-21T00:00:00Z", status: "sending" });
     expect(outgoingReply({
       id: "command-1", kind: "message", text: "发布", status: "queued", createdAt: "2026-09-21T00:00:00Z",
-    })).toMatchObject({ text: "发布", status: "queued", commandId: "command-1" });
+    })).toMatchObject({ text: "发布", occurredAt: "2026-09-21T00:00:00Z", status: "queued", commandId: "command-1" });
     expect(outgoingReply({
       id: "command-1", kind: "message", text: "发布", status: "failed", error: "offline", createdAt: "2026-09-21T00:00:00Z",
     })).toMatchObject({ status: "failed", error: "offline" });

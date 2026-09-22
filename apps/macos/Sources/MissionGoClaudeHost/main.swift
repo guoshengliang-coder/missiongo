@@ -242,7 +242,9 @@ private func run(configPath: String) throws {
             } else {
                 if let answered = permissions.answerHead(command.text) {
                     try write(controlResponse(id: answered.requestId, result: answered.result), to: writer)
-                    snapshot.recordUserMessage(id: command.id, text: command.text)
+                    snapshot.recordUserMessage(
+                        id: command.id, text: command.text, occurredAt: command.createdAt
+                    )
                 } else {
                     snapshot.makeUserMessageVisible(id: command.id)
                     try write(userMessage(id: command.id, text: command.text), to: writer)

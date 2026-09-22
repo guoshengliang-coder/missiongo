@@ -282,9 +282,12 @@ final class CodexProtocolTests: XCTestCase {
                 "turns": [[
                     "id": "turn-1",
                     "items": [
-                        ["id": "u1", "type": "userMessage", "content": [["type": "text", "text": "Please continue"]]],
+                        [
+                            "id": "u1", "type": "userMessage", "createdAt": "2026-09-22T01:02:03.000Z",
+                            "content": [["type": "text", "text": "Please continue"]],
+                        ],
                         ["id": "r1", "type": "reasoning", "summary": ["private reasoning"]],
-                        ["id": "p1", "type": "plan", "text": "1. Inspect\n2. Fix"],
+                        ["id": "p1", "type": "plan", "created_at": 1_797_808_201 as NSNumber, "text": "1. Inspect\n2. Fix"],
                         [
                             "id": "a1", "type": "agentMessage", "text": "Choose a scope", "phase": "commentary",
                             "questions": [["title": "Scope", "options": ["small", "complete"]]],
@@ -297,6 +300,8 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(snapshot.status, "idle")
         XCTAssertEqual(snapshot.messages.map(\.sourceId), ["u1", "p1", "a1"])
         XCTAssertEqual(snapshot.messages.map(\.role), ["user", "plan", "agent"])
+        XCTAssertEqual(snapshot.messages[0].occurredAt, "2026-09-22T01:02:03.000Z")
+        XCTAssertEqual(snapshot.messages[1].occurredAt, "2026-12-20T23:10:01.000Z")
         XCTAssertEqual(snapshot.messages.last?.questions, [AgentSessionQuestion(title: "Scope", options: ["small", "complete"])])
         XCTAssertEqual(snapshot.activityAt, "2026-12-20T23:10:00.123Z")
     }

@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./api";
-import { questionAnswerText, replyBlockedLabelKey } from "./agent-session-view";
+import { formatAgentMessageTime, questionAnswerText, replyBlockedLabelKey } from "./agent-session-view";
 import { useI18n } from "./i18n";
 import type { AgentSessionMessage, AgentSessionStatus } from "./types";
 
@@ -30,7 +30,7 @@ function errorText(error: unknown): string {
 }
 
 export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [reply, setReply] = useState("");
@@ -87,7 +87,10 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               <div className="agent-session-messages">
                 {session.data.messages.map((message) => (
                   <article key={message.id} className={`agent-session-message agent-session-message-${message.role}`}>
-                    <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
+                    <header className="agent-session-message-meta">
+                      <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
+                      <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
+                    </header>
                     <p>{message.text}</p>
                     {message.questions?.map((question) => (
                       <div key={question.title} className="agent-session-question">

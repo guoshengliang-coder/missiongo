@@ -39,7 +39,8 @@ describe("agent console responsive layout", () => {
   });
 
   it("uses one console topbar instead of a second list heading", () => {
-    expect(styles).toMatch(/\.topbar\.agent-console-topbar \{[^}]*grid-template-columns:/);
+    expect(styles).toMatch(/\.topbar\.agent-console-topbar \{[^}]*grid-template-columns: auto minmax\(156px, 360px\) minmax\(44px, 1fr\);/);
+    expect(styles).toMatch(/\.agent-console-topbar \.product-switcher-wrap \{[^}]*justify-self: start;/);
     expect(consoleSource).not.toContain('className="agent-console-list-head"');
   });
 
@@ -64,9 +65,17 @@ describe("agent console responsive layout", () => {
 
     expect(appSource).toContain('queryFn: () => api.listAgentSessions()');
     expect(appSource).toContain('className="agent-attention-badge"');
+    expect(appSource).toContain("agentSessionsQuery.data !== undefined && (");
+    expect(appSource).not.toContain('agentSessionsQuery.data === undefined ? "–"');
     expect(appSource).toContain(
       "attentionCounts={agentConsoleOpen && hasAnyAiPermission ? attentionCounts.byProduct : undefined}",
     );
     expect(appSource).not.toContain('queryKey: ["agent-sessions", selectedProductId]');
+  });
+
+  it("shows a semantic occurrence time on mirrored and outgoing messages", () => {
+    expect(consoleSource).toContain('<time dateTime={message.occurredAt}>');
+    expect(consoleSource).toContain('<time dateTime={outgoing.occurredAt}>');
+    expect(styles).toContain(".agent-console-message-meta time");
   });
 });
