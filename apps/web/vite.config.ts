@@ -195,6 +195,55 @@ function consoleChunkPreload(): Plugin {
   };
 }
 
+/**
+ * Link the light/dark boot script from <head> as a classic, synchronous script.
+ *
+ * It has to run before the first paint (see src/appearance-boot.js), which rules
+ * out the module bundle, and it cannot be inline because the deployed CSP is
+ * `script-src 'self'`. So the build emits it as a hashed asset -- nginx caches
+ * every .js for a week as immutable, so an unhashed name would pin old copies --
+ * and dev serves the source file directly.
+ *
+ * The build also refuses any inline <script> left in index.html. One slipped
+ * through once and production went without dark mode for as long as it existed,
+ * because nothing but the deployed CSP ever objected.
+ */
+function appearanceBootScript(): Plugin {
+  const sourcePath = resolve(repositoryRoot, "apps/web/src/appearance-boot.js");
+  const assetName = "appearance-boot.js";
+  let base = "/";
+  let isBuild = false;
+  return {
+    name: "missiongo-appearance-boot-script",
+    configResolved(config) {
+      base = config.base;
+      isBuild = config.command === "build";
+    },
+    buildStart() {
+      if (isBuild) this.emitFile({ type: "asset", name: assetName, source: readFileSync(sourcePath, "utf8") });
+    },
+    transformIndexHtml: {
+      order: "post",
+      handler(html, context) {
+        // Build only: in dev, plugin-react injects its own inline refresh
+        // preamble, and dev is not served under the production CSP anyway.
+        if (isBuild && /<script\b(?![^>]*\bsrc=)[^>]*>/i.test(html)) {
+          throw new Error("index.html has an inline <script>; the deployed CSP (script-src 'self') blocks it.");
+        }
+        let src = `${base}src/appearance-boot.js`;
+        if (context.bundle) {
+          const asset = Object.values(context.bundle).find(
+            (item) => item.type === "asset" && (item.names?.includes(assetName) || item.name === assetName),
+          );
+          if (!asset) throw new Error("missiongo-appearance-boot-script: the boot script was not emitted.");
+          src = `${base}${asset.fileName}`;
+        }
+        return [{ tag: "script", attrs: { src }, injectTo: "head-prepend" }];
+      },
+    },
+  };
+}
+
 function readPublicOrigin(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -224,6 +273,7 @@ export default defineConfig(({ mode }) => {
     envDir: repositoryRoot,
     plugins: [
       react(),
+      appearanceBootScript(),
       consoleChunkPreload(),
       androidDownloadHeaders(),
       macosDownload(),
