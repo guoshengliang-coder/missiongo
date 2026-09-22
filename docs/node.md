@@ -21,7 +21,9 @@
   `$CODEX_HOME/app-server-control/app-server-control.sock` 创建会话的，这个 socket 由
   `codex app-server daemon` 提供，用 `codex app-server daemon start` 启动，
   `codex app-server daemon bootstrap` 让它开机常驻。**ChatGPT App 开着不算**：App 和它自己的 app-server 走
-  stdio，不会创建这个 socket。客户端每次都实际连一次来判断通不通，连不上时提示里带着启动命令。
+  stdio，不会创建这个 socket。客户端每次都实际连一次来判断通不通；连不上时，派单和菜单里的「启用 / 重新检查」
+  会先自动运行一次 `codex app-server daemon start`（最多等 5 秒），仍连不上才失败，提示里带着该命令的输出。
+  后台心跳不会运行它；`bootstrap` 会安装开机常驻服务，也不会自动运行。
   另外终端里 `codex login status` 应显示已登录。
 - **Codex 配好了 missiongo MCP 并已登录**：
 
@@ -154,7 +156,7 @@ Claude Code 的原生启动流程保持不变，权限能力由会话首步调�
 | 派单失败，原因写着目录未信任 | 仓库没被 Claude Code 信任过 | 在该目录手动运行一次 `claude` 并确认信任 |
 | 显示离线 | 网络不通，或凭证被撤销 | 菜单里会写明原因；被撤销就重新登录 |
 | 会话起来了但没有链接 | 日志里还没出现会话地址，或 Remote Control 没连上 | 看 `~/Library/Logs/MissionGo/<派单 ID>.log` |
-| 菜单显示 Codex 后台服务未运行 | 控制通道没有应答，多半是 `codex app-server daemon` 没起来（它不随 ChatGPT App 启动，重启电脑后也不会自己回来） | 用菜单里复制出的 `codex app-server daemon start` 启动；要常驻就再跑一次 `codex app-server daemon bootstrap` |
+| 菜单显示 Codex 后台服务未运行 | 控制通道没有应答，而且客户端自动运行 `codex app-server daemon start` 后仍没有连上 | 在终端运行菜单里复制出的 `codex app-server daemon start`，看它报什么错；要常驻就再跑一次 `codex app-server daemon bootstrap` |
 | Codex 派单失败，提示 missiongo MCP 未配置或未登录 | Codex 连不上 MissionGo | 运行菜单里复制出的命令 |
 | 菜单里 missiongo Skill 一行显示失败 | 下载不到，或写不进 skills 目录 | 修复提示中的问题，再点击对应客户端「重新检查」；不会后台反复重试 |
 | 菜单显示集成未启用或已暂停 | 未授权本机集成、检查未完成或启动失败 | 在本机确认用途后启用/重新检查；不会自动替用户批准 macOS 权限 |

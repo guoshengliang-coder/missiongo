@@ -244,12 +244,53 @@ public enum CodexPreflight {
     /// What starts the app-server whose control socket a dispatch needs.
     public static let daemonStartCommand = "codex app-server daemon start"
 
+    public enum DaemonStart: Equatable, Sendable {
+        case alreadyUp
+        case started
+        /// Still nothing on the socket after the start command; what it said.
+        case failed(output: String)
+    }
+
+    /// Start the daemon when nothing answers on the control socket.
+    ///
+    /// Nothing starts it after a reboot, and a dispatch arrives when nobody is
+    /// at the machine to run the command, so a stopped daemon failed every
+    /// Codex dispatch until someone came along. `daemon start` is safe to run
+    /// here: it only starts a user process, answers `alreadyRunning` when there
+    /// is one, and installs nothing — `daemon bootstrap`, which does install a
+    /// launch agent, is left to the operator.
+    ///
+    /// Only callers that may already run `codex` call this: a dispatch, or a
+    /// check the operator asked for. Never a heartbeat.
+    public static func ensureDaemon(
+        binary: String,
+        location: CodexLocation,
+        run: CommandRunner,
+        wait: TimeInterval = 5,
+        pollInterval: TimeInterval = 0.2
+    ) async -> DaemonStart {
+        let path = location.controlSocketPath
+        if CodexLocation.controlChannelIsUp(path) { return .alreadyUp }
+        let result = await run(binary, ["app-server", "daemon", "start"])
+        // The command usually returns once the socket is up, but it is not
+        // documented to, so give the listener a moment either way.
+        let deadline = Date().addingTimeInterval(wait)
+        while true {
+            if CodexLocation.controlChannelIsUp(path) { return .started }
+            if Date() >= deadline { break }
+            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+        }
+        let output = (result.stdout + "\n" + result.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
+        return .failed(output: "退出码 \(result.code)" + (output.isEmpty ? "，没有输出" : "：\(String(output.prefix(500)))"))
+    }
+
     public static func check(
         repoPath: String,
         environment: ShellEnvironment,
         location: CodexLocation,
         serverUrl: String?,
-        run: CommandRunner
+        run: CommandRunner,
+        daemonWait: TimeInterval = 5
     ) async -> Preflight.Result {
         guard let binary = CodexLocation.binary(environment: environment),
               let version = await version(binary: binary, run: run)
@@ -264,8 +305,8 @@ public enum CodexPreflight {
         if let problem = Preflight.repositoryProblem(repoPath) {
             return .failed(reason: problem)
         }
-        guard CodexLocation.controlChannelIsUp(location.controlSocketPath) else {
-            return .failed(reason: "连不上 Codex 的控制通道（\(location.controlSocketPath)）：它由 codex app-server daemon 提供，在本机运行 \(daemonStartCommand) 后再派单。")
+        if case let .failed(output) = await ensureDaemon(binary: binary, location: location, run: run, wait: daemonWait) {
+            return .failed(reason: "连不上 Codex 的控制通道（\(location.controlSocketPath)）：它由 codex app-server daemon 提供，MissionGo 自动运行 \(daemonStartCommand) 后仍然没有连上（\(output)）。在本机终端运行这条命令查看原因。")
         }
         switch await mcpState(binary: binary, run: run) {
         case .ready: break
@@ -300,15 +341,19 @@ public struct CodexLauncher: AgentAdapter {
     let resources: CodexResourceChecking
     /// The MissionGo server this machine is logged in to, for the MCP hint.
     let serverUrl: String?
+    /// How long a dispatch waits for a daemon it just started.
+    let daemonWait: TimeInterval
     public init(
         environment: ShellEnvironment,
         serverUrl: String?,
         run: CommandRunner? = nil,
         location: CodexLocation? = nil,
         control: CodexControl = CodexAppServerControl(),
-        resources: CodexResourceChecking? = nil
+        resources: CodexResourceChecking? = nil,
+        daemonWait: TimeInterval = 5
     ) {
         self.environment = environment
+        self.daemonWait = daemonWait
         self.serverUrl = serverUrl
         self.run = run ?? Commands.runner(environment: environment)
         let resolvedLocation = location ?? CodexLocation(environment: environment)
@@ -334,7 +379,8 @@ public struct CodexLauncher: AgentAdapter {
             throw LaunchError("不支持的 Codex 模式：\(JSONValues.quote(job.mode))")
         }
         if case let .failed(reason) = await CodexPreflight.check(
-            repoPath: job.repoPath, environment: environment, location: location, serverUrl: serverUrl, run: run
+            repoPath: job.repoPath, environment: environment, location: location, serverUrl: serverUrl, run: run,
+            daemonWait: daemonWait
         ) {
             throw LaunchError(reason)
         }

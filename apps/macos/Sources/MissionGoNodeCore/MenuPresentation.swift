@@ -281,7 +281,8 @@ public enum CodexStatus: Equatable, Sendable {
     /// That socket belongs to `codex app-server daemon`, not to the ChatGPT
     /// app: the app talks to its own app-server over stdio and never creates
     /// one. So this says to start the daemon, and does not send anybody to look
-    /// at an app that is plainly already open.
+    /// at an app that is plainly already open. The check starts the daemon
+    /// itself, so this means that start did not bring the socket up.
     case daemonNotRunning(version: String, path: String)
     case mcpMissing(version: String)
     case mcpNotLoggedIn(version: String)
@@ -290,7 +291,8 @@ public enum CodexStatus: Equatable, Sendable {
     public static func check(
         environment: ShellEnvironment,
         location: CodexLocation,
-        run: CommandRunner
+        run: CommandRunner,
+        daemonWait: TimeInterval = 5
     ) async -> CodexStatus {
         guard let binary = CodexLocation.binary(environment: environment),
               let version = await CodexPreflight.version(binary: binary, run: run)
@@ -300,7 +302,7 @@ public enum CodexStatus: Equatable, Sendable {
         case false?: return .notLoggedIn(version: version)
         case nil: return .unreadable(version: version)
         }
-        guard CodexLocation.controlChannelIsUp(location.controlSocketPath) else {
+        if case .failed = await CodexPreflight.ensureDaemon(binary: binary, location: location, run: run, wait: daemonWait) {
             return .daemonNotRunning(version: version, path: location.controlSocketPath)
         }
         switch await CodexPreflight.mcpState(binary: binary, run: run) {
@@ -342,7 +344,7 @@ public enum CodexStatus: Equatable, Sendable {
         case .checking, .notInstalled, .ready: return nil
         case .notLoggedIn: return "在 ChatGPT App 里登录，或在终端运行 codex login"
         case .unreadable: return "在终端运行 codex login status 和 codex mcp list 查看"
-        case let .daemonNotRunning(_, path): return "Codex 派单要通过 app-server 的控制通道 \(path)，它由 codex app-server daemon 提供，现在没有在运行。在终端启动它；codex app-server daemon bootstrap 可以让它开机常驻。"
+        case let .daemonNotRunning(_, path): return "Codex 派单要通过 app-server 的控制通道 \(path)，它由 codex app-server daemon 提供。MissionGo 自动运行 codex app-server daemon start 后仍然没有连上：在终端运行它查看原因。派单时 MissionGo 也会自动尝试启动；codex app-server daemon bootstrap 可以让它开机常驻。"
         case .mcpMissing: return "在终端添加 missiongo MCP 并登录"
         case .mcpNotLoggedIn: return "在终端运行 codex mcp login missiongo"
         }
