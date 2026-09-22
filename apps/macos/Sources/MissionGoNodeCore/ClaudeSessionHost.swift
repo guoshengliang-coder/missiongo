@@ -316,6 +316,19 @@ public struct ClaudeStreamSnapshot: Sendable {
         noteProgress()
     }
 
+    /// An ordinary tool's approval has no `tool_use` question of its own, so
+    /// it is shown as one. Keyed by request so a re-show does not duplicate it.
+    public mutating func showPermissionRequest(_ request: ClaudePermissionRequest) {
+        guard !request.asksThroughToolUse else { return }
+        upsert(AgentSessionMessage(
+            sourceId: "permission-\(request.requestId)",
+            turnId: latestTurnId(),
+            role: "agent",
+            text: request.promptText,
+            questions: [request.question]
+        ))
+    }
+
     public mutating func setRemote(sessionUrl: String) {
         state.sessionUrl = sessionUrl
         if state.status == "suspended" { state.status = "idle" }
