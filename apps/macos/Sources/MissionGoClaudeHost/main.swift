@@ -52,48 +52,6 @@ private func controlResponse(id: String, result: [String: Any]) -> [String: Any]
     ]
 }
 
-private struct PendingInteraction {
-    let requestId: String
-    let toolName: String
-    let input: [String: Any]
-}
-
-private func interactionResult(_ interaction: PendingInteraction, answer: String) -> [String: Any] {
-    if interaction.toolName == "AskUserQuestion" {
-        let questions = interaction.input["questions"] as? [[String: Any]] ?? []
-        let lines = answer.split(separator: "\n").map(String.init)
-        var labelled: [String: String] = [:]
-        for line in lines {
-            let pieces = line.split(separator: ":", maxSplits: 1).map(String.init)
-            let fullWidth = line.split(separator: "：", maxSplits: 1).map(String.init)
-            let pair = pieces.count == 2 ? pieces : fullWidth
-            if pair.count == 2 {
-                labelled[pair[0].trimmingCharacters(in: .whitespacesAndNewlines)] =
-                    pair[1].trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-        }
-        var answers: [String: String] = [:]
-        for question in questions {
-            guard let text = question["question"] as? String else { continue }
-            let header = question["header"] as? String
-            if questions.count == 1 {
-                answers[text] = answer
-            } else if let selected = labelled[text] ?? header.flatMap({ labelled[$0] }) {
-                answers[text] = selected
-            }
-        }
-        var updated = interaction.input
-        updated["answers"] = answers
-        return ["behavior": "allow", "updatedInput": updated]
-    }
-    let normalized = answer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    let approvals = ["批准", "批准并实施", "approve", "approved", "yes", "proceed"]
-    if approvals.contains(normalized) {
-        return ["behavior": "allow", "updatedInput": interaction.input]
-    }
-    return ["behavior": "deny", "message": answer]
-}
-
 private func userMessage(id: String, text: String) -> [String: Any] {
     [
         "type": "user",
@@ -136,22 +94,12 @@ private func run(configPath: String) throws {
     let output = Pipe()
     let process = Process()
     process.executableURL = URL(fileURLWithPath: config.claudeExecutable)
-    var arguments = [
-        "--output-format", "stream-json",
-        "--verbose",
-        "--input-format", "stream-json",
-        "--replay-user-messages",
-        "--permission-prompts", "host",
-        "--no-chrome",
-        "--permission-mode", config.mode,
-        "--name", config.sessionName,
-    ]
-    if resuming {
-        arguments.append(contentsOf: ["--resume", config.sessionRef])
-    } else {
-        arguments.append(contentsOf: ["--session-id", config.sessionRef])
-    }
-    process.arguments = arguments
+    process.arguments = ClaudeHostArguments.claude(
+        mode: config.mode,
+        sessionName: config.sessionName,
+        sessionRef: config.sessionRef,
+        resuming: resuming
+    )
     process.currentDirectoryURL = URL(fileURLWithPath: config.cwd, isDirectory: true)
     var environment = ProcessInfo.processInfo.environment
     environment["CLAUDE_CODE_ENTRYPOINT"] = "sdk-ts"
@@ -170,7 +118,7 @@ private func run(configPath: String) throws {
     var remoteRequestId: String?
     var remoteReady = false
     var pendingControlCommands: [String: String] = [:]
-    var pendingInteraction: PendingInteraction?
+    var permissions = ClaudePermissionQueue()
     var shouldContinue = true
     var lastCpu = ClaudeProcessActivity.totalCpuNanoseconds(rootPid: process.processIdentifier)
     var lastCpuProgressAt = Date()
@@ -185,27 +133,31 @@ private func run(configPath: String) throws {
         try? ClaudeHostFiles.write(snapshot.state, to: config.statePath)
     }
 
+    func showNextPermission() {
+        if let next = permissions.head {
+            snapshot.showPermissionRequest(next)
+        } else {
+            snapshot.setWaitingForInput(false)
+        }
+    }
+
     func handleEvent(_ event: [String: Any]) throws {
-        if event["type"] as? String == "control_request",
-           let requestId = event["request_id"] as? String,
-           let request = event["request"] as? [String: Any],
-           request["subtype"] as? String == "can_use_tool",
-           let toolName = request["tool_name"] as? String,
-           toolName == "AskUserQuestion" || toolName == "ExitPlanMode" {
-            pendingInteraction = PendingInteraction(
-                requestId: requestId,
-                toolName: toolName,
-                input: request["input"] as? [String: Any] ?? [:]
-            )
+        if let request = ClaudePermissionRequest(event: event) {
+            // Every approval Claude Code asks for waits here for a person;
+            // none is answered on their behalf.
+            permissions.enqueue(request)
+            if permissions.head?.requestId == request.requestId {
+                snapshot.showPermissionRequest(request)
+            }
             snapshot.setWaitingForInput(true)
             persist()
             return
         }
         if event["type"] as? String == "control_cancel_request",
            let requestId = event["request_id"] as? String,
-           pendingInteraction?.requestId == requestId {
-            pendingInteraction = nil
-            snapshot.setWaitingForInput(false)
+           permissions.cancel(requestId: requestId) {
+            // Answered on the claude.ai page instead of in MissionGo.
+            showNextPermission()
             persist()
             return
         }
@@ -288,13 +240,8 @@ private func run(configPath: String) throws {
                 pendingControlCommands[requestId] = command.id
                 try write(controlRequest(id: requestId, request: ["subtype": "interrupt"]), to: writer)
             } else {
-                if let interaction = pendingInteraction {
-                    try write(controlResponse(
-                        id: interaction.requestId,
-                        result: interactionResult(interaction, answer: command.text)
-                    ), to: writer)
-                    pendingInteraction = nil
-                    snapshot.setWaitingForInput(false)
+                if let answered = permissions.answerHead(command.text) {
+                    try write(controlResponse(id: answered.requestId, result: answered.result), to: writer)
                     snapshot.recordUserMessage(
                         id: command.id, text: command.text, occurredAt: command.createdAt
                     )
@@ -304,6 +251,10 @@ private func run(configPath: String) throws {
                 }
                 snapshot.commandFinished(id: command.id, status: "delivered")
                 snapshot.markActive()
+                // A parallel tool call may still be waiting; the session then
+                // stays in "waiting for input" rather than "active".
+                showNextPermission()
+                if !permissions.isEmpty { snapshot.setWaitingForInput(true) }
                 persist()
             }
             try? FileManager.default.removeItem(atPath: path)
