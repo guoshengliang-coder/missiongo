@@ -120,6 +120,8 @@ export const VIEWPORTS = [
   { name: "phone", width: 375, height: 812, touch: true },
   { name: "phone-landscape", width: 812, height: 375, touch: true },
   { name: "tablet", width: 768, height: 1024, touch: true },
+  // An iPad on its side: wider than the compact shell, and still a finger (C3).
+  { name: "tablet-landscape", width: 1180, height: 820, touch: true },
   { name: "desktop", width: 1440, height: 900, touch: false },
 ];
 
