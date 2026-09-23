@@ -2114,6 +2114,48 @@ describe("Claiming a dispatch on the node", () => {
     });
   });
 
+  it("dispatches OpenCode plan work and records its shared-service session", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "opencode");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "opencode", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    expect(created.statusCode).toBe(201);
+    const dispatchId = created.json<{ id: string }>().id;
+    const claim = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(claim.json()).toMatchObject({ dispatchId, agentKind: "opencode", mode: "plan" });
+    const result = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionRef: "ses_opencode_test" },
+    });
+    expect(result.statusCode).toBe(204);
+    const sessions = await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(sessions.json()).toMatchObject({
+      sessions: [{ agentKind: "opencode", sessionRef: "ses_opencode_test" }],
+    });
+  });
+
   it("reports Mac heartbeat health and stops then restores a manually archived Claude session", async () => {
     const { app, cookie, databasePath, node, mission, dispatchId } = await queuedDispatch();
     await app.inject({

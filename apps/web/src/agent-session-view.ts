@@ -289,10 +289,10 @@ export function questionAnswerText(
 export function messageLabelKey(
   role: AgentSessionMessage["role"],
   agentKind: AgentKind = "codex",
-): "agentSessionPlan" | "agentSessionCodex" | "agentClaudeCode" | null {
+): "agentSessionPlan" | "agentSessionCodex" | "agentClaudeCode" | "agentOpenCode" | null {
   if (role === "user") return null;
   if (role === "plan") return "agentSessionPlan";
-  return agentKind === "claude_code" ? "agentClaudeCode" : "agentSessionCodex";
+  return agentKind === "claude_code" ? "agentClaudeCode" : agentKind === "opencode" ? "agentOpenCode" : "agentSessionCodex";
 }
 
 export function activityLabelKey(status: AgentSessionStatus, replyQueued = false):

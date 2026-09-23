@@ -152,6 +152,7 @@ private struct AgentsSection: View {
             WrappingCaption(text: "按需启用客户端；未启用时不会检查登录、运行命令或写入 Skill。升级后的首次使用也需要启用。")
             IntegrationRow(agent: .claudeCode)
             IntegrationRow(agent: .codex)
+            IntegrationRow(agent: .openCode)
             Button(model.importingPath ? "正在导入命令路径…" : "自定义安装：导入终端 PATH…") { model.importShellPath() }
                 .buttonStyle(.borderless)
                 .font(.caption)
@@ -267,7 +268,11 @@ private struct IntegrationRow: View {
     let agent: LocalAgent
 
     private var command: String? {
-        agent == .claudeCode ? model.claude.fixCommand : model.codex.fixCommand(serverUrl: model.credential?.serverUrl)
+        switch agent {
+        case .claudeCode: return model.claude.fixCommand
+        case .codex: return model.codex.fixCommand(serverUrl: model.credential?.serverUrl)
+        case .openCode: return nil
+        }
     }
 
     var body: some View {

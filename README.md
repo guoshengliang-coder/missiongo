@@ -49,9 +49,9 @@ Web / H5 ───────────────┐
 Android 管理 App ───────┼── REST API ── SQLite + 本地附件
 Android 反馈 SDK ───────┘
 
-Codex / Claude Code / 其他客户端 ── OAuth + MCP（读取 + 评论）
+Codex / Claude Code / OpenCode / 其他客户端 ── OAuth + MCP（读取 + 评论）
 
-macOS 客户端（设备）── OAuth 登录 + 长轮询拉取派单 ── 本机启动 Claude Code / Codex 会话
+macOS 客户端（设备）── OAuth 登录 + 长轮询拉取派单 ── 本机启动 Claude Code / Codex / OpenCode 会话
 ```
 
 | 目录 | 职责 |

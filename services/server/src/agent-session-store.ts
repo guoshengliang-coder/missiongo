@@ -60,7 +60,7 @@ export interface AgentSessionCommand {
 export interface AgentSessionSnapshot {
   readonly id: string;
   readonly dispatchId: string;
-  readonly agentKind: "codex" | "claude_code";
+  readonly agentKind: "codex" | "claude_code" | "opencode";
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly updatedAt: string;
@@ -136,7 +136,7 @@ export interface AgentSessionSettings {
 export interface NodeAgentSession {
   readonly id: string;
   readonly dispatchId: string;
-  readonly agentKind: "codex" | "claude_code";
+  readonly agentKind: "codex" | "claude_code" | "opencode";
   readonly sessionRef: string;
   readonly status: AgentSessionStatus;
   readonly lifecycle: "keep" | "close";
@@ -160,7 +160,7 @@ export interface NodeAgentSession {
 interface SessionRow {
   id: string;
   dispatch_id: string;
-  agent_kind: "codex" | "claude_code";
+  agent_kind: "codex" | "claude_code" | "opencode";
   agent_session_ref: string;
   status: AgentSessionStatus;
   last_error: string | null;
@@ -429,7 +429,7 @@ export class AgentSessionStore {
       .prepare("SELECT agent_kind FROM dispatches WHERE id = ? AND node_id = ?")
       .get(input.dispatchId, input.nodeId) as unknown as { agent_kind: string } | undefined;
     if (!dispatch) throw notFound("Dispatch");
-    if (dispatch.agent_kind !== "codex" && dispatch.agent_kind !== "claude_code") {
+    if (dispatch.agent_kind !== "codex" && dispatch.agent_kind !== "claude_code" && dispatch.agent_kind !== "opencode") {
       throw invalidInput("This agent does not support mirrored sessions.");
     }
     const sessionRef = requiredText(input.sessionRef, "sessionRef", 200);
