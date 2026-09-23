@@ -12,6 +12,9 @@
     <string name="choose_gallery">从图库选择图片或视频</string>
     <string name="choose_files">选择日志或其他文件</string>
     <string name="media_deleted">已从手机删除上传的截图</string>
+    <string name="webview_outdated_title">系统浏览器组件版本过低</string>
+    <string name="webview_outdated_message">MissionGo 需要 Android System WebView %2$d 或以上版本，这台手机目前是 %1$d。请更新后重新打开。</string>
+    <string name="update_webview">去更新</string>
 
     <!-- Home-screen widget (AND-149). Terms match the web console and item list. -->
     <string name="widget_label">Agent 控制台</string>

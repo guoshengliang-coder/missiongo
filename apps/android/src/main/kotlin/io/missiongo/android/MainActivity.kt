@@ -2,6 +2,7 @@ package io.missiongo.android
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
@@ -24,12 +25,16 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import io.missiongo.feedback.FeedbackOptions
 import io.missiongo.feedback.FeedbackPriority
 import io.missiongo.feedback.FeedbackResult
 import io.missiongo.feedback.FeedbackType
 import io.missiongo.feedback.MissionGo
 import io.missiongo.feedback.WebViewFilePicker
+import io.missiongo.feedback.WebViewSupport
 import io.missiongo.android.widget.WidgetRefresher
 import android.content.Context
 import android.widget.Toast
@@ -38,6 +43,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var loadingView: LinearLayout
     private lateinit var errorView: LinearLayout
+    private lateinit var outdatedView: LinearLayout
     // Registered in onCreate: activity results have to be registered before the
     // activity is started, and the labels need a context that only exists then.
     private lateinit var filePicker: WebViewFilePicker
@@ -70,7 +76,9 @@ class MainActivity : ComponentActivity() {
         // on the page it hosts. A release build is not debuggable, so this is off.
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
         filePicker = WebViewFilePicker(this, getString(R.string.choose_gallery), getString(R.string.choose_files))
-        setContentView(buildContent())
+        val content = buildContent()
+        setContentView(content)
+        fitInsideSystemBars(content)
         val backCallback = object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 // The page's own levels first, and only it can walk them --
@@ -103,6 +111,15 @@ class MainActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, backCallback)
         this.backCallback = backCallback
 
+        // Below the Chromium the pages are built for, loading them only shows a
+        // blank screen or a connection error that is not true. Say what is wrong
+        // and where to fix it instead (C5).
+        val installed = WebViewSupport.installedChromiumMajor(this)
+        if (installed != null && installed < WebViewSupport.MIN_CHROMIUM_MAJOR) {
+            showOutdatedWebView(installed)
+            return
+        }
+
         // A launch from the recents list replays the intent it started with, so a
         // widget tap from hours ago would otherwise navigate again.
         val fromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
@@ -117,14 +134,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // A widget tap cannot load a page this WebView is too old to run.
+        if (outdatedView.visibility == View.VISIBLE) return
         val widgetLink = widgetDeepLink(intent) ?: return
         openMissionGo(widgetLink)
     }
 
     /**
-     * The intent stays attached to the activity, and a rotation recreates it
-     * with the same one. Dropping the widget's extras once they are acted on
-     * keeps a rotation from loading the page again.
+     * The intent stays attached to the activity, and a recreation -- no longer
+     * a rotation, which the manifest now handles in place, but still a switch
+     * between light and dark -- replays it. Dropping the widget's extras once
+     * they are acted on keeps that from loading the page again.
      */
     private fun consumeWidgetExtras() {
         if (!intent.hasExtra(EXTRA_WIDGET_TARGET)) return
@@ -133,6 +153,32 @@ class MainActivity : ComponentActivity() {
             removeExtra(EXTRA_PRODUCT_ID)
             removeExtra(EXTRA_SESSION_ID)
             removeExtra(EXTRA_ATTENTION_ONLY)
+        }
+    }
+
+    /**
+     * From targetSdk 35 the window is edge-to-edge whether or not the app asks,
+     * so the page ran up under the status bar and down under the gesture handle
+     * (A8). The page's own `env(safe-area-inset-*)` cannot help: the WebView on
+     * the devices checked reports those as zero. So the native side keeps the
+     * WebView clear of the bars, the cutout and the keyboard -- which also does
+     * what adjustResize no longer does edge-to-edge -- and paints the strips
+     * behind the bars in the page's own background.
+     *
+     * The bars' icons follow the theme, because the platform default left them
+     * white on the light background: the clock and battery all but vanished.
+     */
+    private fun fitInsideSystemBars(content: View) {
+        ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
+            view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, keyboard.bottom))
+            WindowInsetsCompat.CONSUMED
+        }
+        val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        WindowCompat.getInsetsController(window, content).apply {
+            isAppearanceLightStatusBars = !night
+            isAppearanceLightNavigationBars = !night
         }
     }
 
@@ -147,6 +193,9 @@ class MainActivity : ComponentActivity() {
             settings.allowFileAccess = false
             settings.allowContentAccess = true
             settings.setSupportZoom(false)
+            // Pinch-zoom stays off -- the console is an app shell, not a page to
+            // pan around -- so the system font size is how someone enlarges text.
+            settings.textZoom = WebViewSupport.textZoomFor(resources.configuration.fontScale)
             settings.mediaPlaybackRequiresUserGesture = true
             settings.userAgentString = "${settings.userAgentString} MissionGoAndroid/${BuildConfig.VERSION_NAME}"
 
@@ -203,6 +252,26 @@ class MainActivity : ComponentActivity() {
         }
         addView(
             errorView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        outdatedView = centeredMessage().apply {
+            visibility = View.GONE
+            addView(messageText(getString(R.string.webview_outdated_title), 20f).apply { id = R.id.webview_outdated_title })
+            addView(messageText("", 14f).apply { id = R.id.webview_outdated_message })
+            addView(Button(this@MainActivity).apply {
+                text = getString(R.string.update_webview)
+                isAllCaps = false
+                setOnClickListener { WebViewSupport.openUpdate(this@MainActivity) }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(16)
+            })
+        }
+        addView(
+            outdatedView,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -330,6 +399,14 @@ class MainActivity : ComponentActivity() {
         webView.loadUrl(widgetLink ?: (BuildConfig.MISSIONGO_ENDPOINT.trimEnd('/') + "/"))
     }
 
+    private fun showOutdatedWebView(installed: Int) {
+        loadingView.visibility = View.GONE
+        errorView.visibility = View.GONE
+        outdatedView.findViewById<TextView>(R.id.webview_outdated_message).text =
+            getString(R.string.webview_outdated_message, installed, WebViewSupport.MIN_CHROMIUM_MAJOR)
+        outdatedView.visibility = View.VISIBLE
+    }
+
     private fun showLoadError() {
         loadingView.visibility = View.GONE
         errorView.visibility = View.VISIBLE
@@ -393,6 +470,17 @@ class MainActivity : ComponentActivity() {
                 showLoadError()
             }
         }
+    }
+
+    /**
+     * Rotating, folding and unfolding no longer recreate the activity (see the
+     * manifest): recreation reloaded the page, and whatever was on screen went
+     * with it. The WebView lays itself out again on its own; the font size is
+     * the one thing it has to be told.
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (::webView.isInitialized) webView.settings.textZoom = WebViewSupport.textZoomFor(newConfig.fontScale)
     }
 
     override fun onResume() {

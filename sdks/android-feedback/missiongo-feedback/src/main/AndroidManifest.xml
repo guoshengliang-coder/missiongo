@@ -3,6 +3,7 @@
     <application>
         <activity
             android:name="io.missiongo.feedback.MissionGoFeedbackActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|fontScale"
             android:exported="false"
             android:theme="@style/MissionGoFeedbackTheme" />
 

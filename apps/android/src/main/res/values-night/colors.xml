@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The dark theme's canvas and ink, matching the canvas and ink tokens under
+      data-appearance="dark" in apps/web/src/styles.css. Without them the window,
+      the loading screen and the WebView's own background stayed #FBFAF7, so a
+      dark-mode phone flashed a light screen before the dark page arrived (A8).
+    -->
+    <color name="missiongo_surface">#10161F</color>
+    <color name="missiongo_ink">#E8ECEF</color>
+</resources>
