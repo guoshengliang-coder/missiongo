@@ -12,4 +12,28 @@
     <string name="choose_gallery">从图库选择图片或视频</string>
     <string name="choose_files">选择日志或其他文件</string>
     <string name="media_deleted">已从手机删除上传的截图</string>
+
+    <!-- Home-screen widget (AND-149). Terms match the web console and item list. -->
+    <string name="widget_label">Agent 控制台</string>
+    <string name="widget_description">查看待我处理的 Agent 会话和待处理的条目</string>
+    <string name="widget_title">Agent 控制台</string>
+    <string name="widget_attention">待我处理</string>
+    <string name="widget_active_count">%1$d 运行中</string>
+    <string name="widget_failed_count">%1$d 异常</string>
+    <string name="widget_status_separator">·</string>
+    <string name="widget_items">条目</string>
+    <string name="widget_ready">待处理</string>
+    <string name="widget_no_value">—</string>
+    <string name="widget_refresh">刷新</string>
+    <string name="widget_refreshing">刷新中</string>
+    <!-- Short on purpose: next to the title a 2x2 widget has room for two
+         characters here, and the alert icon already says it failed. -->
+    <string name="widget_refresh_retry">重试</string>
+    <string name="widget_refresh_description">刷新，上次更新于 %1$s</string>
+    <string name="widget_refresh_retry_description">刷新失败，点按重试</string>
+    <string name="widget_stale">显示的是 %1$s 的数据</string>
+    <string name="widget_open_console">打开 Agent 控制台</string>
+    <string name="widget_open_ready_items">打开待处理的条目</string>
+    <string name="widget_signed_out_title">登录已过期</string>
+    <string name="widget_signed_out_hint">打开 App 重新登录</string>
 </resources>

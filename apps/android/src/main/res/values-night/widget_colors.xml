@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Home-screen widget (AND-149), dark. Copied from the
+      :root[data-appearance="dark"] block in apps/web/src/styles.css. Only the
+      widget follows the system theme; the app's own window stays light.
+    -->
+    <color name="widget_surface">#1D2732</color>
+    <color name="widget_ink">#E8ECEF</color>
+    <color name="widget_muted">#9AA6B1</color>
+    <color name="widget_muted_soft">#838F9A</color>
+    <color name="widget_sunken">#151D26</color>
+    <color name="widget_badge_bg">#26313D</color>
+    <color name="widget_warn_bg">#33280F</color>
+    <color name="widget_warn_text">#F0C26E</color>
+    <color name="widget_danger">#F0888C</color>
+    <color name="widget_danger_bg">#2E191B</color>
+    <color name="widget_ready_fg">#A3B4FF</color>
+    <color name="widget_ready_bg">#1E2740</color>
+</resources>
