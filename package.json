@@ -33,9 +33,12 @@
     "lint": "oxlint .",
     "test": "npm run build:types && npm run test:scripts && npm run test --workspaces --if-present",
     "test:scripts": "node --test scripts/*.test.mjs",
+    "test:ui": "playwright test --project=audit",
+    "test:ui:visual": "playwright test --project=visual",
     "typecheck": "tsc -b --pretty false"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^26.4.1",
     "oxlint": "^1.81.0",
     "tsx": "^4.23.13",

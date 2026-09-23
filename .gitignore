@@ -46,3 +46,11 @@ apps/web/public/downloads/*.json
 # Locally published SDK Maven artifacts. Built on demand and shipped with the next
 # website deployment; the repository keeps no binaries.
 apps/web/public/maven/
+
+# Playwright's own output, and the baselines a developer's machine writes.
+# Only the Linux baselines CI compares against are tracked; see tests/ui/README.md.
+test-results/
+playwright-report/
+tests/ui/.auth/
+tests/ui/**/*-darwin.png
+tests/ui/**/*-win32.png
