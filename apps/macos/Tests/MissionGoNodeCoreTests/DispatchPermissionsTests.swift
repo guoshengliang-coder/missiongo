@@ -67,12 +67,13 @@ final class DispatchPermissionsTests: XCTestCase {
     }
 
     func testAllClaudeModesKeepTheirNativePermissionArgument() throws {
-        for mode in ["plan", "default", "acceptEdits", "auto"] {
+        for mode in ["bypassPermissions", "plan", "default", "acceptEdits", "auto"] {
             let command = try SessionLauncher.launchCommand(sessionName: "test", mode: mode, prompt: "test")
             let index = try XCTUnwrap(command.args.firstIndex(of: "--permission-mode"))
             XCTAssertEqual(command.args[index + 1], mode)
             XCTAssertFalse(command.args.contains("auto_review"))
             XCTAssertFalse(command.args.contains("--add-dir"))
+            XCTAssertTrue(command.args.contains("--disallowedTools"))
         }
     }
 

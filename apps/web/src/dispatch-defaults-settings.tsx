@@ -106,7 +106,7 @@ export function DispatchDefaultsSettings() {
               <legend>{label(agentLabelKey(kind), kind)}</legend>
               <div className="field-row">
                 <label>{t("dispatchMode")}
-                  <select value={current.mode ?? "plan"} onChange={(event) => updateAgent(kind, { mode: event.target.value })}>
+                  <select value={current.mode ?? (kind === "claude_code" ? "bypassPermissions" : "plan")} onChange={(event) => updateAgent(kind, { mode: event.target.value })}>
                     {DISPATCH_MODES_BY_AGENT[kind].map((value) => (
                       <option key={value} value={value}>{label(dispatchModeLabelKey(value), value)}</option>
                     ))}

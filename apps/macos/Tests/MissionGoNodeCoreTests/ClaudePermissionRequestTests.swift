@@ -10,6 +10,11 @@ final class ClaudePermissionRequestTests: XCTestCase {
         XCTAssertEqual(index.map { arguments[$0 + 1] }, "stdio")
         XCTAssertEqual(arguments.suffix(2), ["--session-id", "s-1"])
         XCTAssertTrue(arguments.contains("--permission-mode"))
+        let denied = try? XCTUnwrap(arguments.firstIndex(of: "--disallowedTools"))
+        XCTAssertEqual(
+            denied.map { arguments[$0 + 1] },
+            "Bash(git reflog expire:*),Bash(git gc --prune=now:*),Bash(git push --force:*),Bash(git push -f:*)"
+        )
 
         let resumed = ClaudeHostArguments.claude(mode: "plan", sessionName: "M4-AND-131", sessionRef: "s-1", resuming: true)
         XCTAssertEqual(resumed.suffix(2), ["--resume", "s-1"])

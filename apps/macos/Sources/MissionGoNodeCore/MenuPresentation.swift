@@ -495,6 +495,7 @@ public enum DispatchPresentation {
     /// it. Unknown modes are shown as they arrived, for the same reason.
     public static func modeLabel(_ mode: String) -> String {
         switch mode {
+        case "bypassPermissions": return "无需确认（保留硬拦截）"
         case "plan": return "计划"
         case "default": return "默认"
         case "acceptEdits": return "自动接受编辑"

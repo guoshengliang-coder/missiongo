@@ -5,6 +5,8 @@
 *.mjs text eol=lf
 *.ts text eol=lf
 *.tsx text eol=lf
+# A historical NUL in this TypeScript source must not hide normal diffs.
+apps/web/src/dispatch-eligibility.ts diff
 *.kt text eol=lf
 *.kts text eol=lf
 *.md text eol=lf

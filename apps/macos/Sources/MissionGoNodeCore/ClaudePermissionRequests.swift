@@ -2,6 +2,16 @@ import Foundation
 
 /// The CLI arguments the detached host starts Claude Code with.
 public enum ClaudeHostArguments {
+    /// These are the existing irreversible-operation stops for every MissionGo
+    /// Claude session. Claude Code honors them even in bypassPermissions mode;
+    /// the bypass removes approval prompts, not these hard denials.
+    public static let disallowedTools = [
+        "Bash(git reflog expire:*)",
+        "Bash(git gc --prune=now:*)",
+        "Bash(git push --force:*)",
+        "Bash(git push -f:*)",
+    ]
+
     /// `--permission-prompt-tool stdio` is load-bearing. Without it a
     /// non-interactive session has no approval surface: Claude Code hides
     /// `AskUserQuestion` and `ExitPlanMode` from the model and denies every
@@ -28,6 +38,7 @@ public enum ClaudeHostArguments {
             "--permission-prompt-tool", "stdio",
             "--permission-prompts", "host",
             "--no-chrome",
+            "--disallowedTools", disallowedTools.joined(separator: ","),
             "--permission-mode", mode,
             "--name", sessionName,
         ]

@@ -298,6 +298,8 @@ public struct SessionLauncher: AgentAdapter {
                 "--no-chrome",
                 "--remote-control",
                 sessionName,
+                "--disallowedTools",
+                ClaudeHostArguments.disallowedTools.joined(separator: ","),
                 "--permission-mode",
                 mode,
                 "-n",

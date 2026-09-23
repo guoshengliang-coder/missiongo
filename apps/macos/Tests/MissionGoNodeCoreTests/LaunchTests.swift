@@ -77,6 +77,7 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertEqual(command.args, [
             "-q", "/dev/null", "claude", "--no-chrome",
             "--remote-control", "Mac mini-AND-37+AND-38",
+            "--disallowedTools", "Bash(git reflog expire:*),Bash(git gc --prune=now:*),Bash(git push --force:*),Bash(git push -f:*)",
             "--permission-mode", "plan",
             "-n", "Mac mini-AND-37+AND-38",
             "使用 missiongo skill 处理这些工作条目：AND-37、AND-38。",
@@ -122,17 +123,15 @@ final class LaunchCommandTests: XCTestCase {
     }
 
     func testRefusesAModeTheConsoleIsNotAllowedToSend() {
-        // bypassPermissions and dontAsk are exactly the modes that remove the human
-        // from the loop, and a dispatched session has no human at the machine.
-        for mode in ["bypassPermissions", "dontAsk", "", "plan --dangerously-skip-permissions", "Plan"] {
+        for mode in ["dontAsk", "", "plan --dangerously-skip-permissions", "Plan"] {
             XCTAssertThrowsError(try SessionLauncher.launchCommand(sessionName: "Mac mini-AND-1", mode: mode, prompt: "x"), mode) {
                 XCTAssertTrue($0.localizedDescription.hasPrefix("不支持的 Claude Code 模式："))
             }
         }
     }
 
-    func testAcceptsTheFourSupportedModes() throws {
-        XCTAssertEqual(ClaudeCodeModes.allowed, ["plan", "default", "acceptEdits", "auto"])
+    func testAcceptsTheSupportedModes() throws {
+        XCTAssertEqual(ClaudeCodeModes.allowed, ["bypassPermissions", "plan", "default", "acceptEdits", "auto"])
         for mode in ClaudeCodeModes.allowed {
             XCTAssertTrue(try SessionLauncher.launchCommand(sessionName: "Mac mini-AND-1", mode: mode, prompt: "x").args.contains(mode))
         }
@@ -143,7 +142,7 @@ final class LaunchCommandTests: XCTestCase {
         let source = try String(contentsOfFile: #filePath.replacingOccurrences(
             of: "Tests/MissionGoNodeCoreTests/LaunchTests.swift", with: "Sources/MissionGoNodeCore/ClaudeCodeModes.swift"
         ))
-        XCTAssertTrue(source.contains(#"["plan", "default", "acceptEdits", "auto"]"#))
+        XCTAssertTrue(source.contains(#"["bypassPermissions", "plan", "default", "acceptEdits", "auto"]"#))
     }
 
     func testWritesTheProductPrefixOnceAndThenOnlyTheNumbers() {
@@ -287,7 +286,7 @@ final class SessionLauncherProcessTests: XCTestCase {
         // The temporary directory sits behind the /var → /private/var symlink.
         let resolvedRepo = String(cString: realpath(repoPath, nil))
         XCTAssertTrue(log.contains("cwd=\(repoPath)\n") || log.contains("cwd=\(resolvedRepo)\n"), log)
-        XCTAssertTrue(log.contains("arg=-q\narg=/dev/null\narg=claude\narg=--no-chrome\narg=--remote-control\narg=Mac mini-AND-1\narg=--permission-mode\narg=plan\narg=-n\narg=Mac mini-AND-1\narg=使用 missiongo skill"), log)
+        XCTAssertTrue(log.contains("arg=-q\narg=/dev/null\narg=claude\narg=--no-chrome\narg=--remote-control\narg=Mac mini-AND-1\narg=--disallowedTools\narg=Bash(git reflog expire:*),Bash(git gc --prune=now:*),Bash(git push --force:*),Bash(git push -f:*)\narg=--permission-mode\narg=plan\narg=-n\narg=Mac mini-AND-1\narg=使用 missiongo skill"), log)
     }
 
     func testReportsAProcessThatExitsBeforeAURLWithTheLogTail() async throws {

@@ -926,7 +926,7 @@ describe("Dispatching a batch", () => {
       payload: {
         nodeId: node.nodeId,
         agentKind: "claude_code",
-        mode: "bypassPermissions",
+        mode: "dontAsk",
         itemKeys: [mission.itemKey],
       },
     });
@@ -2832,7 +2832,7 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     const { app, cookie } = await signedInApp();
     const node = await registeredNode(app);
     expect((await app.inject({ method: "GET", url: "/api/v1/dispatch-defaults", headers: { cookie } })).json())
-      .toEqual({ agents: {} });
+      .toEqual({ agents: { claude_code: { mode: "bypassPermissions" } } });
     const saved = await app.inject({
       method: "PUT",
       url: "/api/v1/dispatch-defaults",

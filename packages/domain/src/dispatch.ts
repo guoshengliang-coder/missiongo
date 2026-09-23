@@ -7,11 +7,12 @@
 export const AGENT_KINDS = ["claude_code", "codex", "hermes"] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
-// Only the modes a session can be started in unattended. bypassPermissions and
-// dontAsk are deliberately absent: a dispatched session runs with nobody at the
-// machine, so the two modes that remove the human from the loop are exactly the
-// two that must not be reachable from a web form.
-export const CLAUDE_CODE_MODES = ["plan", "default", "acceptEdits", "auto"] as const;
+// MissionGo dispatches default to bypassPermissions at the account owner's
+// explicit choice. The node still passes its narrow irreversible-operation deny
+// list to Claude Code, so bypass never removes those hard stops.
+// `dontAsk` remains unavailable because it is not the configured MissionGo
+// operating mode and has no equivalent deny-list contract.
+export const CLAUDE_CODE_MODES = ["bypassPermissions", "plan", "default", "acceptEdits", "auto"] as const;
 export type ClaudeCodeMode = (typeof CLAUDE_CODE_MODES)[number];
 
 // Codex has no permission modes of its own to pass through; each of these is a
@@ -22,7 +23,8 @@ export type ClaudeCodeMode = (typeof CLAUDE_CODE_MODES)[number];
 // - default: sandbox escapes are approved by a person in the Codex app.
 // - auto: sandbox escapes go to Codex's own auto-review instead of a person.
 // The approval policy `never` and the `danger-full-access` sandbox are
-// deliberately unreachable, for the same reason as bypassPermissions above.
+// deliberately unreachable because MissionGo keeps Codex inside its managed
+// workspace-write sandbox with an approval path for sandbox escapes.
 export const CODEX_MODES = ["plan", "default", "auto"] as const;
 export type CodexMode = (typeof CODEX_MODES)[number];
 

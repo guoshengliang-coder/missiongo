@@ -30,11 +30,8 @@ import { SessionLink } from "./session-link";
 import { useI18n } from "./i18n";
 import type { Dispatch, DispatchNode, Product, WorkItem } from "./types";
 
-/**
- * The default mode. A dispatched session starts with nobody at the machine, so
- * it gets the one mode that stops and asks before it does anything.
- */
-const DEFAULT_MODE = "plan";
+/** The account owner chose unattended dispatch; hard deny rules remain on the Mac node. */
+const DEFAULT_MODE = "bypassPermissions";
 
 /**
  * Says why a machine cannot take this batch, in words that name the fix.

@@ -10,15 +10,13 @@ import {
 } from "./dispatch.js";
 
 describe("Dispatch modes", () => {
-  it("accepts the Claude Code modes a person can still supervise", () => {
+  it("accepts the Claude Code modes MissionGo can start", () => {
     expect(isSupportedDispatchMode("claude_code", "plan")).toBe(true);
     expect(isSupportedDispatchMode("claude_code", "acceptEdits")).toBe(true);
+    expect(isSupportedDispatchMode("claude_code", "bypassPermissions")).toBe(true);
   });
 
-  it("refuses the modes that remove the human from the loop", () => {
-    // A dispatched session runs with nobody at the machine, so these two must
-    // not be reachable from a web form.
-    expect(isSupportedDispatchMode("claude_code", "bypassPermissions")).toBe(false);
+  it("refuses unsupported modes", () => {
     expect(isSupportedDispatchMode("claude_code", "dontAsk")).toBe(false);
   });
 

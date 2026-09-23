@@ -130,6 +130,7 @@ Claude 配置。候选列表只来自这台节点已有的仓库映射，不再�
 | 默认 | default | 可写工作区沙箱；越出沙箱的操作由你在 App 里批准 |
 | 自动接受编辑 | acceptEdits | 不提供 |
 | 自动 | auto | 可写工作区沙箱；越出沙箱的操作交给 Codex 的自动审核 |
+| 无需确认（保留硬拦截） | bypassPermissions | 不提供 |
 
 计划模式下，先读条目并澄清问题，在会话中给出方案，停下等待批准。批准前不评论、不领取、不建分支或 worktree、不改代码。
 批准后先写已批准的计划评论，再领取、创建 worktree 并实施；Claude Code 须先退出原生 plan 模式。Codex 的计划等待依赖提示词和 Skill，自动权限审查不代表方案已被批准。
@@ -138,8 +139,9 @@ Claude 配置。候选列表只来自这台节点已有的仓库映射，不再�
 
 Claude Code 的权限能力由会话首步调用 `get_current_account` 核对，实施前需确认评论与领取能力；不把节点的登录当作 Claude Code 已授权。缺少授权时说明需要在哪个客户端完成授权，并停在实施之前。启动时优先尝试 Remote Control；若 CLI 明确不支持（包括自定义 API 地址），则保留同一会话的本机 MissionGo 控制，不重复启动第二个会话。
 
-两个 agent 都拿不到「绕过权限」类的模式：Claude Code 的 `bypassPermissions`、`dontAsk`，Codex 的
-审批策略 `never` 和沙箱 `danger-full-access`，服务端和客户端都会拒绝。
+Claude Code 的 `bypassPermissions` 仅按账户所有者明确配置后由 MissionGo 派单提供；节点仍通过
+`--disallowedTools` 硬性拒绝不可逆 Git 清理和强制推送。`dontAsk` 仍不可用。Codex 的审批策略
+`never` 和沙箱 `danger-full-access` 仍由服务端和客户端拒绝。
 
 ## 登录与凭证
 

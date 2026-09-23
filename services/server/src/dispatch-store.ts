@@ -1174,7 +1174,12 @@ export class DispatchStore {
     const row = this.database.connection
       .prepare("SELECT settings_json FROM account_dispatch_defaults WHERE account_id = ?")
       .get(accountId) as unknown as { settings_json: string } | undefined;
-    return row ? JSON.parse(row.settings_json) as DispatchDefaults : { agents: {} };
+    // New accounts start Claude Code dispatches in the explicitly chosen
+    // MissionGo-only bypass mode. Existing saved choices are intentionally
+    // preserved rather than silently changing a different account's policy.
+    return row
+      ? JSON.parse(row.settings_json) as DispatchDefaults
+      : { agents: { claude_code: { mode: "bypassPermissions" } } };
   }
 
   /**

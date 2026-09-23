@@ -276,7 +276,7 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
     }
 
     func testAMalformedSettingNeverReachesClaude() {
-        let change = ClaudeSettingsChange(AgentSessionSettings(revision: 2, mode: "bypassPermissions", model: "-x"))
+        let change = ClaudeSettingsChange(AgentSessionSettings(revision: 2, mode: "dontAsk", model: "-x"))
         XCTAssertTrue(change.requests.isEmpty)
         XCTAssertTrue(change.isComplete)
         XCTAssertEqual(change.errors.count, 2)
@@ -556,7 +556,7 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         // A malformed change is recorded as failed; the session resumes as it was.
         _ = try await launcher.synchronize(NodeAgentSession(
             id: "server-session", agentKind: "claude_code", sessionRef: sessionRef, status: "idle",
-            command: reply, desiredSettings: AgentSessionSettings(revision: 5, mode: "bypassPermissions"),
+            command: reply, desiredSettings: AgentSessionSettings(revision: 5, mode: "dontAsk"),
             appliedSettingsRevision: 4
         ))
         let state = try ClaudeHostFiles.readState(statePath)
