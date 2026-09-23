@@ -1,4 +1,4 @@
-import { attachmentThumbnailPath } from "./attachment-thumbnail";
+import { attachmentPreviewPath, attachmentThumbnailPath } from "./attachment-thumbnail";
 import type {
   ActiveDispatch,
   ItemDispatchSummary,
@@ -360,6 +360,13 @@ export const api = {
   // screenshots nobody has opened yet.
   downloadAttachmentThumbnail: async (itemKey: string, attachmentId: string, width: number, revision: string) => {
     const response = await attachmentRequest(attachmentThumbnailPath(itemKey, attachmentId, width, revision), {});
+    return response.blob();
+  },
+  // The whole image as something this browser can draw: the original, or for
+  // HEIC a JPEG the server decoded from it. Opening and annotating use this;
+  // downloading uses downloadAttachment and gets the original.
+  downloadAttachmentPreview: async (itemKey: string, attachmentId: string, revision: string) => {
+    const response = await attachmentRequest(attachmentPreviewPath(itemKey, attachmentId, revision), {});
     return response.blob();
   },
   // Annotating an image sends the result back over the same attachment, so the

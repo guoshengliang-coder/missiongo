@@ -131,7 +131,7 @@ import {
   eventAgentName,
 } from "./comment-summary";
 import { isAnnotatableImage } from "./image-annotation";
-import { LIST_THUMBNAIL_EDGE, previewThumbnailEdge } from "./attachment-thumbnail";
+import { LIST_THUMBNAIL_EDGE, drawableImageFile, drawsFromDecodedCopy, previewThumbnailEdge } from "./attachment-thumbnail";
 import { MarkdownText } from "./markdown-text";
 import {
   AGENT_CONSOLE_HISTORY_MARKER,
@@ -2214,8 +2214,10 @@ function ItemMediaThumbnail({
     staleTime: Infinity,
   });
   const contentQuery = useQuery({
-    queryKey: ["attachment-content", itemKey, attachment.id],
-    queryFn: () => api.downloadAttachment(itemKey, attachment.id),
+    queryKey: ["attachment-content", itemKey, attachment.id, attachment.revision, attachment.kind === "image" ? "drawable" : "original"],
+    queryFn: () => attachment.kind === "image"
+      ? api.downloadAttachmentPreview(itemKey, attachment.id, attachment.revision)
+      : api.downloadAttachment(itemKey, attachment.id),
     enabled: previewRequested,
     staleTime: Infinity,
   });
@@ -2245,7 +2247,7 @@ function ItemMediaThumbnail({
           {contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
           {contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
           {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
-          {attachment.kind === "video" && objectUrl && <video src={objectUrl} controls autoPlay playsInline preload="metadata" />}
+          {attachment.kind === "video" && objectUrl && <PlayableVideo src={objectUrl} autoPlay />}
         </MediaLightbox>
       )}
     </div>
@@ -3971,13 +3973,18 @@ function AttachmentCard({
   // worth fetching for a preview. A PDF is neither: it can only be downloaded.
   const readsAsText = attachment.kind === "log"
     || (attachment.kind === "document" && attachment.contentType !== "application/pdf");
+  // An image is opened and annotated from its drawable copy -- for HEIC a JPEG
+  // the server decoded, since only Safari can draw the original (C6).
+  const drawable = drawableImageFile(attachment.filename, attachment.contentType);
   const contentQuery = useQuery({
-    queryKey: ["attachment-content", itemKey, attachment.id, attachment.revision],
-    queryFn: () => api.downloadAttachment(
-      itemKey,
-      attachment.id,
-      readsAsText ? { start: 0, end: 65_535 } : undefined,
-    ),
+    queryKey: ["attachment-content", itemKey, attachment.id, attachment.revision, isImage ? "drawable" : "original"],
+    queryFn: () => isImage
+      ? api.downloadAttachmentPreview(itemKey, attachment.id, attachment.revision)
+      : api.downloadAttachment(
+        itemKey,
+        attachment.id,
+        readsAsText ? { start: 0, end: 65_535 } : undefined,
+      ),
     enabled: shouldLoad,
     staleTime: Infinity,
   });
@@ -4002,7 +4009,9 @@ function AttachmentCard({
   }, [contentQuery.data, readsAsText]);
 
   const download = async () => {
-    const blob = readsAsText
+    // A download is always the original: for HEIC the loaded copy is the
+    // decoded JPEG, which is not what was uploaded.
+    const blob = readsAsText || drawsFromDecodedCopy(attachment.contentType)
       ? await api.downloadAttachment(itemKey, attachment.id)
       : contentQuery.data ?? await api.downloadAttachment(itemKey, attachment.id);
     const url = URL.createObjectURL(blob);
@@ -4019,8 +4028,8 @@ function AttachmentCard({
   // identity across renders. A new File built inline would make that effect
   // re-run and revoke the URL the image is still loading from.
   const annotationSource = useMemo(
-    () => contentQuery.data ? new File([contentQuery.data], attachment.filename, { type: attachment.contentType }) : null,
-    [attachment.contentType, attachment.filename, contentQuery.data],
+    () => contentQuery.data ? new File([contentQuery.data], drawable.name, { type: drawable.type }) : null,
+    [drawable.name, drawable.type, contentQuery.data],
   );
 
   const openImage = () => {
@@ -4084,7 +4093,7 @@ function AttachmentCard({
         )}
         {attachment.kind === "video" && objectUrl && (
           <div className="attachment-video-preview">
-            <video src={objectUrl} controls preload="metadata" />
+            <PlayableVideo src={objectUrl} autoPlay={false} playsInline={false} onDownload={() => void download()} />
             <button type="button" onClick={() => setViewerOpen(true)} aria-label={t("previewAttachment", { filename: attachment.filename })} title={t("preview")}><Maximize2 size={16} /></button>
           </div>
         )}
@@ -4095,7 +4104,7 @@ function AttachmentCard({
         <span><strong>{referenceLabel ? `${referenceLabel} · ` : ""}{attachment.filename}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span>
         <span className="attachment-actions">
           <button type="button" onClick={() => void download()} aria-label={`${t("download")} ${attachment.filename}`} title={t("download")}><Download size={15} /></button>
-          {onReplaced && attachment.kind === "image" && isAnnotatableImage({ name: attachment.filename, type: attachment.contentType }) && (
+          {onReplaced && attachment.kind === "image" && isAnnotatableImage(drawable) && (
             <button
               type="button"
               disabled={replacing || (annotating && !annotationSource)}
@@ -4126,7 +4135,7 @@ function AttachmentCard({
           {isImage && contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
           {isImage && contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
           {isImage && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
-          {attachment.kind === "video" && objectUrl && <video src={objectUrl} controls autoPlay playsInline preload="metadata" />}
+          {attachment.kind === "video" && objectUrl && <PlayableVideo src={objectUrl} autoPlay onDownload={() => void download()} />}
         </MediaLightbox>
       )}
     </article>
@@ -4760,6 +4769,52 @@ function Modal({ title, subtitle, onClose, children, wide = false, scrolls = fal
         {children}
       </section>
     </dialog>
+  );
+}
+
+/**
+ * A video, or -- when this browser cannot decode it -- a plain statement that it
+ * cannot, with the way out. An iPhone records HEVC in a .mov, which Firefox and
+ * some Chrome builds on Windows cannot play; the <video> element then sat as an
+ * empty black box with a greyed-out play button and no explanation (C6).
+ */
+function PlayableVideo({
+  src,
+  autoPlay,
+  playsInline = true,
+  onDownload,
+}: {
+  src: string;
+  autoPlay: boolean;
+  playsInline?: boolean;
+  onDownload?: () => void;
+}) {
+  const { t } = useI18n();
+  const [unplayable, setUnplayable] = useState(false);
+  useEffect(() => setUnplayable(false), [src]);
+  if (unplayable) {
+    return (
+      <div className="video-unplayable" role="status">
+        <p>{t("videoUnplayable")}</p>
+        {onDownload && (
+          <button type="button" className="secondary-button" onClick={onDownload}>
+            <Download size={15} /> {t("download")}
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <video
+      src={src}
+      controls
+      autoPlay={autoPlay}
+      playsInline={playsInline}
+      preload="metadata"
+      // A format the browser has no decoder for fails here, on the element, and
+      // only here: the network request itself succeeded.
+      onError={() => setUnplayable(true)}
+    />
   );
 }
 

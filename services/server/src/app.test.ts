@@ -1,5 +1,5 @@
 import { createHash, scryptSync } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -1052,6 +1052,117 @@ describe("MissionGo REST API", () => {
     expect(outdated.headers["cache-control"]).toBe("private, no-cache");
 
     const notAnImage = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${log.id}/thumbnail` });
+    expect(notAnImage.statusCode).toBe(400);
+  });
+
+  it("draws an iPhone HEIC as a JPEG everywhere it is shown, and still downloads the original", async () => {
+    // sharp's prebuilt libvips cannot read HEIC, and no browser but Safari can
+    // draw it, so before this an iPhone screenshot was a broken tile on a PC and
+    // "could not decode" to the AI reading the item (C6).
+    const { app, attachmentsPath } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Mission GO", keyPrefix: "AND" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: {
+        productId: product.id,
+        type: "bug",
+        priority: "normal",
+        title: "Screenshot from an iPhone",
+        description: "Taken on iOS, viewed on Windows",
+        environment: { platform: "web" },
+      },
+    });
+    // 120x200, a dark band across the top 12% and light blue below: made with
+    // macOS `sips`, because nothing on the Linux CI can write HEIC.
+    const heic = await readFile(new URL("./test-fixtures/iphone-screenshot.heic", import.meta.url));
+    const uploaded = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/AND-1/attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": "image/heic",
+        "x-missiongo-filename": "IMG_0001.HEIC".toLowerCase(),
+      },
+      payload: heic,
+    });
+    expect(uploaded.statusCode).toBe(201);
+    const image = uploaded.json<{ id: string; revision: string }>();
+
+    const thumbnail = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/thumbnail?width=100` });
+    expect(thumbnail.statusCode).toBe(200);
+    expect(thumbnail.headers["content-type"]).toBe("image/jpeg");
+    expect((await sharp(thumbnail.rawPayload).metadata()).height).toBe(100);
+
+    const preview = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/preview?rev=${image.revision}` });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.headers["content-type"]).toBe("image/jpeg");
+    expect(preview.headers["cache-control"]).toBe("private, max-age=2592000, immutable");
+    const decoded = sharp(preview.rawPayload);
+    expect(await decoded.metadata()).toMatchObject({ width: 120, height: 200, format: "jpeg" });
+    // Real pixels, not a blank frame: the band at the top is dark, the body light.
+    const { data, info } = await decoded.raw().toBuffer({ resolveWithObject: true });
+    const at = (x: number, y: number) => data[(y * info.width + x) * info.channels]!;
+    expect(at(60, 5)).toBeLessThan(80);
+    expect(at(60, 150)).toBeGreaterThan(180);
+
+    // A download is the original, byte for byte.
+    const original = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/content` });
+    expect(original.headers["content-type"]).toBe("image/heic");
+    expect(original.rawPayload.equals(heic)).toBe(true);
+
+    // Decoded once and kept; the second request reads the cache.
+    const cached = await readdir(join(attachmentsPath, "decoded-previews"));
+    expect(cached).toHaveLength(1);
+
+    // Annotating replaces the bytes -- the annotator saves a PNG -- and the
+    // decoded copy of the old HEIC must not outlive them.
+    const annotated = await sharp({ create: { width: 120, height: 200, channels: 3, background: { r: 250, g: 20, b: 20 } } }).png().toBuffer();
+    const replaced = await app.inject({
+      method: "PUT",
+      url: `/api/v1/items/AND-1/attachments/${image.id}/content`,
+      headers: { "content-type": "application/octet-stream", "x-missiongo-content-type": "image/png", "x-missiongo-filename": "img_0001.png" },
+      payload: annotated,
+    });
+    expect(replaced.statusCode).toBe(200);
+    expect(await readdir(join(attachmentsPath, "decoded-previews"))).toEqual([]);
+    const afterEdit = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/preview` });
+    expect(afterEdit.headers["content-type"]).toBe("image/png");
+    expect(afterEdit.rawPayload.equals(annotated)).toBe(true);
+
+    // Deleting the attachment leaves no decoded copy behind either.
+    await app.inject({ method: "DELETE", url: `/api/v1/items/AND-1/attachments/${image.id}` });
+    expect(await readdir(join(attachmentsPath, "decoded-previews"))).toEqual([]);
+  });
+
+  it("previews an ordinary image as itself, and refuses a non-image", async () => {
+    const { app } = await testApp();
+    const product = (
+      await app.inject({ method: "POST", url: "/api/v1/products", payload: { name: "Mission GO", keyPrefix: "AND" } })
+    ).json<{ id: string }>();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      payload: { productId: product.id, type: "bug", priority: "normal", title: "PNG", description: "d", environment: { platform: "web" } },
+    });
+    const png = await sharp({ create: { width: 40, height: 30, channels: 3, background: { r: 1, g: 2, b: 3 } } }).png().toBuffer();
+    const upload = (filename: string, contentType: string, payload: Buffer | string) => app.inject({
+      method: "POST",
+      url: "/api/v1/items/AND-1/attachments",
+      headers: { "content-type": "application/octet-stream", "x-missiongo-content-type": contentType, "x-missiongo-filename": filename },
+      payload,
+    });
+    const image = (await upload("a.png", "image/png", png)).json<{ id: string }>();
+    const log = (await upload("run.log", "text/plain", "boot\n")).json<{ id: string }>();
+
+    const preview = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${image.id}/preview` });
+    expect(preview.headers["content-type"]).toBe("image/png");
+    expect(preview.rawPayload.equals(png)).toBe(true);
+    expect(preview.headers["cache-control"]).toBe("private, no-store");
+
+    const notAnImage = await app.inject({ method: "GET", url: `/api/v1/items/AND-1/attachments/${log.id}/preview` });
     expect(notAnImage.statusCode).toBe(400);
   });
 

@@ -399,7 +399,10 @@ export function createMissionGoMcpServer(
 
       if (attachment.kind === "image") {
         try {
-          const preview = await sharp(await readFile(path), { animated: false })
+          // readDrawableImage decodes HEIC, which sharp cannot: an iPhone
+          // screenshot used to come back as "could not decode" (C6).
+          const drawable = await attachmentStorage.readDrawableImage(attachment);
+          const preview = await sharp(drawable.bytes, { animated: false })
             .rotate()
             .resize({
               width: MAX_IMAGE_PREVIEW_EDGE,
