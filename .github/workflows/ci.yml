@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Regenerating the interface baselines is a deliberate act: run this workflow
+  # by hand, download the `ui-snapshots` artifact, and commit what changed.
+  workflow_dispatch:
+    inputs:
+      update_ui_snapshots:
+        description: Rewrite the UI screenshot baselines and upload them
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -19,6 +27,38 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci
+      # The headless shell only; the full browsers are 300MB this job never uses.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build:types
+      # Measured checks first: they say what is wrong, while a screenshot only
+      # says that something is.
+      - run: npm run test:ui
+      - name: Compare screenshots
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        run: npm run test:ui:visual
+      - name: Rewrite screenshot baselines
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_ui_snapshots }}
+        run: npm run test:ui:visual -- --update-snapshots
+      - uses: actions/upload-artifact@v5
+        if: ${{ always() }}
+        with:
+          name: ui-snapshots
+          path: |
+            tests/ui/visual.spec.ts-snapshots/
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: ignore
 
   android:
     runs-on: ubuntu-latest
