@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Home-screen widget (AND-149). Copied from the light token block in
+      apps/web/src/styles.css, name for name; values-night/widget_colors.xml
+      carries the dark block. Change them there first, then here.
+
+      Kept out of colors.xml because scripts/check-product-identity.mjs reads
+      every colour in that file as a launcher-icon colour.
+    -->
+    <color name="widget_surface">#FFFFFF</color>        <!-- surface-strong -->
+    <color name="widget_ink">#172033</color>            <!-- ink -->
+    <color name="widget_muted">#4A525F</color>          <!-- muted -->
+    <color name="widget_muted_soft">#5F6570</color>     <!-- muted-soft -->
+    <color name="widget_sunken">#F4F3EE</color>         <!-- surface-sunken -->
+    <color name="widget_badge_bg">#EEF1F4</color>       <!-- badge-bg -->
+    <color name="widget_warn_bg">#FFF0CF</color>        <!-- warn-bg -->
+    <color name="widget_warn_text">#744D0E</color>      <!-- warn-text -->
+    <color name="widget_danger">#A23B43</color>         <!-- danger -->
+    <color name="widget_danger_bg">#FDF2F2</color>      <!-- danger-bg -->
+    <color name="widget_ready_fg">#3E52B9</color>       <!-- status-ready-fg -->
+    <color name="widget_ready_bg">#E9EDFF</color>       <!-- status-ready-bg -->
+</resources>
