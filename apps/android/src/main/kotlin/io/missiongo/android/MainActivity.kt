@@ -35,6 +35,8 @@ import io.missiongo.feedback.FeedbackType
 import io.missiongo.feedback.MissionGo
 import io.missiongo.feedback.WebViewFilePicker
 import io.missiongo.feedback.WebViewSupport
+import io.missiongo.android.widget.WidgetRefresher
+import android.content.Context
 import android.widget.Toast
 
 class MainActivity : ComponentActivity() {
@@ -60,6 +62,13 @@ class MainActivity : ComponentActivity() {
      * would otherwise come back with it still disabled.
      */
     private var backCallback: OnBackPressedCallback? = null
+
+    /**
+     * Set when a widget tap loads a page. The page it replaces is not somewhere
+     * back should return to -- the person came from the home screen -- so its
+     * history goes once the new page has loaded.
+     */
+    private var clearHistoryOnLoad = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -111,10 +120,39 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        if (savedInstanceState == null) {
-            openMissionGo()
-        } else {
-            webView.restoreState(savedInstanceState)
+        // A launch from the recents list replays the intent it started with, so a
+        // widget tap from hours ago would otherwise navigate again.
+        val fromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        val widgetLink = if (fromHistory) null else widgetDeepLink(intent)
+        consumeWidgetExtras()
+        when {
+            widgetLink != null -> openMissionGo(widgetLink)
+            savedInstanceState == null -> openMissionGo()
+            else -> webView.restoreState(savedInstanceState)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // A widget tap cannot load a page this WebView is too old to run.
+        if (outdatedView.visibility == View.VISIBLE) return
+        val widgetLink = widgetDeepLink(intent) ?: return
+        openMissionGo(widgetLink)
+    }
+
+    /**
+     * The intent stays attached to the activity, and a recreation -- no longer
+     * a rotation, which the manifest now handles in place, but still a switch
+     * between light and dark -- replays it. Dropping the widget's extras once
+     * they are acted on keeps that from loading the page again.
+     */
+    private fun consumeWidgetExtras() {
+        if (!intent.hasExtra(EXTRA_WIDGET_TARGET)) return
+        intent = Intent(intent).apply {
+            removeExtra(EXTRA_WIDGET_TARGET)
+            removeExtra(EXTRA_PRODUCT_ID)
+            removeExtra(EXTRA_SESSION_ID)
+            removeExtra(EXTRA_ATTENTION_ONLY)
         }
     }
 
@@ -350,14 +388,15 @@ class MainActivity : ComponentActivity() {
         setPadding(0, dp(12), 0, 0)
     }
 
-    private fun openMissionGo() {
+    private fun openMissionGo(widgetLink: String? = null) {
         errorView.visibility = View.GONE
         loadingView.visibility = View.VISIBLE
         if (!MissionGoApplication.isConfiguredEndpoint(BuildConfig.MISSIONGO_ENDPOINT)) {
             showLoadError()
             return
         }
-        webView.loadUrl(BuildConfig.MISSIONGO_ENDPOINT.trimEnd('/') + "/")
+        clearHistoryOnLoad = widgetLink != null
+        webView.loadUrl(widgetLink ?: (BuildConfig.MISSIONGO_ENDPOINT.trimEnd('/') + "/"))
     }
 
     private fun showOutdatedWebView(installed: Int) {
@@ -409,6 +448,10 @@ class MainActivity : ComponentActivity() {
             // spinner cannot outlive the page.
             loadingView.visibility = View.GONE
             CookieManager.getInstance().flush()
+            if (clearHistoryOnLoad) {
+                clearHistoryOnLoad = false
+                view.clearHistory()
+            }
         }
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -447,6 +490,14 @@ class MainActivity : ComponentActivity() {
         backCallback?.isEnabled = true
     }
 
+    override fun onStop() {
+        super.onStop()
+        // Leaving the app is when the widget is most likely out of date: whatever
+        // was just handled here is still counted on it. Not on a rotation, which
+        // stops and starts the activity without the person going anywhere.
+        if (!isChangingConfigurations) WidgetRefresher.refreshInBackground(this)
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         webView.saveState(outState)
         super.onSaveInstanceState(outState)
@@ -465,7 +516,75 @@ class MainActivity : ComponentActivity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    private companion object {
-        const val TAG = "MissionGoAndroid"
+    /** Where a widget tap should land (AND-149). */
+    sealed interface WidgetTarget {
+        /**
+         * The Agent console, in [productId] because its views are per product.
+         * [sessionId] opens one conversation; [attentionOnly] opens the
+         * "needs attention" filter.
+         */
+        data class Console(val productId: String?, val sessionId: String?, val attentionOnly: Boolean) : WidgetTarget
+
+        /** The item list's "ready" view, in [productId]. */
+        data class ReadyItems(val productId: String?) : WidgetTarget
+    }
+
+    companion object {
+        private const val TAG = "MissionGoAndroid"
+
+        private const val EXTRA_WIDGET_TARGET = "io.missiongo.android.extra.WIDGET_TARGET"
+        private const val EXTRA_PRODUCT_ID = "io.missiongo.android.extra.PRODUCT_ID"
+        private const val EXTRA_SESSION_ID = "io.missiongo.android.extra.SESSION_ID"
+        private const val EXTRA_ATTENTION_ONLY = "io.missiongo.android.extra.ATTENTION_ONLY"
+        private const val TARGET_CONSOLE = "console"
+        private const val TARGET_READY_ITEMS = "ready_items"
+
+        /**
+         * The intent a widget tap starts. A null [target] opens the app as the
+         * launcher would. CLEAR_TOP with SINGLE_TOP hands it to the running
+         * activity through onNewIntent instead of stacking a second copy.
+         */
+        fun openFromWidget(context: Context, target: WidgetTarget?): Intent =
+            Intent(context, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                when (target) {
+                    is WidgetTarget.Console -> {
+                        putExtra(EXTRA_WIDGET_TARGET, TARGET_CONSOLE)
+                        target.productId?.let { putExtra(EXTRA_PRODUCT_ID, it) }
+                        target.sessionId?.let { putExtra(EXTRA_SESSION_ID, it) }
+                        putExtra(EXTRA_ATTENTION_ONLY, target.attentionOnly)
+                    }
+                    is WidgetTarget.ReadyItems -> {
+                        putExtra(EXTRA_WIDGET_TARGET, TARGET_READY_ITEMS)
+                        target.productId?.let { putExtra(EXTRA_PRODUCT_ID, it) }
+                    }
+                    null -> Unit
+                }
+            }
+
+        /**
+         * The page a widget tap opens, built here from the tap's parts rather than
+         * taken as a URL. The activity is exported, so any app can send it extras;
+         * building the address from named parameters on the configured origin is
+         * what keeps an intent from pointing the WebView anywhere else. The query
+         * parameters are the ones apps/web/src/navigation.ts reads.
+         */
+        private fun widgetDeepLink(intent: Intent): String? {
+            val target = intent.getStringExtra(EXTRA_WIDGET_TARGET) ?: return null
+            val builder = Uri.parse(BuildConfig.MISSIONGO_ENDPOINT.trimEnd('/') + "/").buildUpon().clearQuery()
+            intent.getStringExtra(EXTRA_PRODUCT_ID)?.let { builder.appendQueryParameter("product", it) }
+            when (target) {
+                TARGET_CONSOLE -> {
+                    builder.appendQueryParameter("console", "agent")
+                    if (intent.getBooleanExtra(EXTRA_ATTENTION_ONLY, false)) {
+                        builder.appendQueryParameter("consoleFilter", "attention")
+                    }
+                    intent.getStringExtra(EXTRA_SESSION_ID)?.let { builder.appendQueryParameter("session", it) }
+                }
+                TARGET_READY_ITEMS -> builder.appendQueryParameter("status", "ready")
+                else -> return null
+            }
+            return builder.build().toString()
+        }
     }
 }

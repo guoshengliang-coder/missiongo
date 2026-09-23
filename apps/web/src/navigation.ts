@@ -1,3 +1,4 @@
+import type { AgentSessionFilter } from "./agent-session-view";
 import { ITEM_STATUSES, ITEM_TYPES, type WorkItemStatus, type WorkItemType } from "./types";
 
 export const ITEM_HISTORY_MARKER = "missiongo:item-detail";
@@ -77,10 +78,25 @@ export function agentConsoleUrl(
   return `${next.pathname}${next.search}${next.hash}`;
 }
 
+const AGENT_CONSOLE_FILTERS: readonly AgentSessionFilter[] = ["attention", "active", "all", "failed", "archived"];
+
+/**
+ * A link can open the console on one of its filters: the Android widget opens
+ * it on "needs attention" (AND-149). It is read once, when the page loads; the
+ * exit URL drops it, so the entries the console pushes afterwards do not carry
+ * it and a later restore follows whatever filter the person moved to.
+ */
+export function agentConsoleFilterFromUrl(url: URL = new URL(window.location.href)): AgentSessionFilter | null {
+  if (!agentConsoleIsOpen(url)) return null;
+  const value = url.searchParams.get("consoleFilter");
+  return AGENT_CONSOLE_FILTERS.find((filter) => filter === value) ?? null;
+}
+
 export function agentConsoleExitUrl(url: URL = new URL(window.location.href)): string {
   const next = new URL(url);
   next.searchParams.delete("console");
   next.searchParams.delete("session");
+  next.searchParams.delete("consoleFilter");
   return `${next.pathname}${next.search}${next.hash}`;
 }
 

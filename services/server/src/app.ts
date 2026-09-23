@@ -60,6 +60,7 @@ import {
 import { MissionGoStore } from "./store.js";
 import { COMMENT_BODY_KINDS, COMPONENT_KINDS, type ComponentKind } from "./types.js";
 import type { FeedbackLogEntry, SdkPrincipal } from "./types.js";
+import { widgetSummary } from "./widget-summary.js";
 
 export interface BuildAppOptions {
   readonly databasePath?: string;
@@ -1761,6 +1762,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
     });
     return { sessions };
+  });
+
+  // AND-149: one small read for the Android home-screen widget, across every
+  // product the account can see. Unlike the list above it never schedules
+  // attention classification: the widget polls on a timer, and a timer must not
+  // be what spends AI calls.
+  app.get("/api/v1/widget/summary", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    const account = requireAccount(request);
+    const sessions = agentSessionStore.listForAccount(account.id)
+      .filter((session) => session.items.length > 0
+        && session.items.every((item) => accountStore.allows(account, item.productId, "view")));
+    const reachable = accountStore.reachableProductIds(account, "view");
+    const readyByProduct = new Map(
+      store.listProducts()
+        .filter((product) => reachable === "*" || reachable.includes(product.id))
+        .map((product) => [product.id, store.getWorkItemListSummary({ productId: product.id }).byStatus.ready]),
+    );
+    return widgetSummary(sessions, readyByProduct);
   });
 
   app.patch("/api/v1/agent-sessions/:sessionId", async (request) => {

@@ -142,6 +142,7 @@ import {
   OVERLAY_HISTORY_MARKER,
   SIDEBAR_HISTORY_MARKER,
   agentConsoleExitUrl,
+  agentConsoleFilterFromUrl,
   agentConsoleIsOpen,
   agentConsoleLayoutFromState,
   agentConsoleUrl,
@@ -430,6 +431,8 @@ export function App() {
   const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [agentSessionId, setAgentSessionId] = useState<string | null>(agentSessionIdFromUrl);
+  // Read before the deep-link handling below rewrites the URL without it.
+  const [agentConsoleLinkedFilter] = useState(agentConsoleFilterFromUrl);
   const [agentConversationOpen, setAgentConversationOpen] = useState(
     () => Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]),
   );
@@ -1553,6 +1556,7 @@ export function App() {
       {agentConsoleOpen && selectedProductId && (
         <AgentSessionConsole
           productId={selectedProductId}
+          initialFilter={agentConsoleLinkedFilter}
           allSessions={allAgentSessions}
           sessionsLoaded={agentSessionsQuery.data !== undefined}
           sessionsError={agentSessionsQuery.error}

@@ -20,17 +20,14 @@
         <!--
              androidx.work arrives through the feedback SDK, and its startup
              provider runs before Application.onCreate to bring up WorkManager and
-             open its Room database. This app never uses WorkManager: it reaches
-             the SDK only through MissionGo.openFeedback, which starts an Activity.
-             Only enqueueFeedback, cancelQueuedFeedback and retryQueuedFeedback
-             touch WorkManager, and nothing here calls them, so the work is paid
-             on every cold start for a feature the app does not have.
+             open its Room database, a cost paid on every cold start. The only
+             user here is the home-screen widget's periodic refresh (AND-149), so
+             MissionGoApplication implements Configuration.Provider and
+             WorkManager initialises on demand, the first time the widget asks.
 
              This removal applies to this app's merged manifest alone; a host app
              that integrates the SDK keeps its own initializer and its queued
-             submissions. If this app ever does call one of those three, restore
-             this provider or initialize WorkManager on demand; without it
-             WorkManager.getInstance throws.
+             submissions.
         -->
         <provider
             android:name="androidx.startup.InitializationProvider"
@@ -47,5 +44,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name="io.missiongo.android.widget.MissionGoWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/missiongo_widget_info" />
+        </receiver>
     </application>
 </manifest>

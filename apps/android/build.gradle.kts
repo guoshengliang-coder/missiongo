@@ -108,4 +108,7 @@ android {
 dependencies {
     implementation(project(":missiongo-feedback"))
     implementation("androidx.activity:activity-ktx:1.11.0")
+    // The widget's periodic refresh. Already in the APK through the feedback SDK;
+    // declared here because this module now calls it directly. Keep the versions equal.
+    implementation("androidx.work:work-runtime:2.11.2")
 }

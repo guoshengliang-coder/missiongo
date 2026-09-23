@@ -2841,3 +2841,87 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     expect(invalid.statusCode).toBe(400);
   });
 });
+
+describe("Widget summary (AND-149)", () => {
+  async function snapshot(app: FastifyInstance, token: string, sessionId: string, messages: unknown[]) {
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { status: "idle", messages },
+    });
+    expect(response.statusCode).toBe(204);
+  }
+
+  async function summary(app: FastifyInstance, cookie: string) {
+    const response = await app.inject({ method: "GET", url: "/api/v1/widget/summary", headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    return response.json<Record<string, Record<string, unknown>>>();
+  }
+
+  it("counts what the console and the ready list would show, across products", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    await snapshot(app, node.token, sessionId, [
+      { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
+      {
+        sourceId: "a1", turnId: "t1", role: "agent", text: "Pick a scope.",
+        questions: [{ title: "Scope", options: ["Small", "Full"] }],
+      },
+    ]);
+    const other = await readyItem(app, cookie, "Hermes GO", "HG");
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      headers: { cookie },
+      payload: {
+        productId: other.productId, status: "ready", type: "task", priority: "normal",
+        title: "HG second", description: "more", environment: { platform: "web" },
+      },
+    });
+
+    expect(await summary(app, cookie)).toMatchObject({
+      agent: {
+        attention: 1,
+        active: 0,
+        failed: 0,
+        attentionProductId: mission.productId,
+        attentionSessionId: sessionId,
+      },
+      items: { ready: 3, readyProductId: other.productId },
+    });
+  });
+
+  it("does not spend an AI call on a conversation still waiting to be classified", async () => {
+    const provider = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ needsAttention: false, kind: "none", reason: "Done." }) } }],
+    }), { status: 200 }));
+    const { app, cookie } = await signedInApp(adminAccount(), provider as typeof fetch);
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    // No key yet, so the snapshot leaves the reply pending instead of classifying it.
+    await snapshot(app, node.token, sessionId, [
+      { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
+      { sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "I shipped it." },
+    ]);
+    await app.inject({
+      method: "PUT",
+      url: "/api/v1/ai/title-settings",
+      headers: { cookie },
+      payload: { apiKey: "secret-deepseek-key" },
+    });
+
+    await summary(app, cookie);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(provider).not.toHaveBeenCalled();
+
+    // The console's own list still classifies, which is what keeps this test honest.
+    await app.inject({ method: "GET", url: `/api/v1/agent-sessions?productId=${mission.productId}`, headers: { cookie } });
+    await vi.waitFor(() => expect(provider).toHaveBeenCalledTimes(1));
+  });
+
+  it("asks for a signed-in account", async () => {
+    const { app } = await signedInApp();
+    expect((await app.inject({ method: "GET", url: "/api/v1/widget/summary" })).statusCode).toBe(401);
+  });
+});

@@ -155,6 +155,7 @@ function updatedTime(value: string, locale: string): string {
 
 export function AgentSessionConsole({
   productId,
+  initialFilter,
   allSessions,
   sessionsLoaded,
   sessionsError,
@@ -168,6 +169,7 @@ export function AgentSessionConsole({
   onOpenItem,
 }: {
   productId: string;
+  initialFilter: AgentSessionFilter | null;
   allSessions: readonly AgentSessionSummary[];
   sessionsLoaded: boolean;
   sessionsError: unknown;
@@ -182,7 +184,7 @@ export function AgentSessionConsole({
 }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
-  const [filter, setFilter] = useState<AgentSessionFilter>(DEFAULT_AGENT_SESSION_FILTER);
+  const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [search, setSearch] = useState("");
   const [reply, setReply] = useState("");
