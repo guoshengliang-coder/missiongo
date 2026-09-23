@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 
@@ -2896,8 +2896,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const width = Number.isFinite(requested)
       ? Math.min(Math.max(Math.round(requested), 32), MAX_THUMBNAIL_EDGE)
       : DEFAULT_THUMBNAIL_EDGE;
-    const path = attachmentStorage.resolveStoredFile(attachment.storageFilename);
-    const thumbnail = await sharp(await readFile(path), { animated: false })
+    const drawable = await attachmentStorage.readDrawableImage(attachment);
+    const thumbnail = await sharp(drawable.bytes, { animated: false })
       // Phone screenshots carry their orientation in EXIF; without this the
       // tile comes out on its side.
       .rotate()
@@ -2914,6 +2914,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .header("cache-control", pinned ? "private, max-age=2592000, immutable" : "private, no-cache")
       .header("x-content-type-options", "nosniff")
       .send(thumbnail);
+  });
+
+  // The full image, in a form any browser can draw. For most images that is the
+  // original itself; for HEIC it is a JPEG decoded from it (C6), which is also
+  // what the annotator edits. A download still goes to /content and gets the
+  // original bytes.
+  app.get("/api/v1/items/:itemKey/attachments/:attachmentId/preview", async (request, reply) => {
+    const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
+    const attachment = store.getAttachmentRecord(requireItemPermission(request, itemKey), attachmentId);
+    if (attachment.kind !== "image") throw invalidInput("Only image attachments have previews.");
+    const drawable = await attachmentStorage.readDrawableImage(attachment);
+    const query = request.query as { rev?: string };
+    const pinned = query.rev !== undefined && query.rev === attachment.revision;
+    return reply
+      .type(drawable.contentType)
+      .header("content-length", drawable.bytes.length)
+      .header("cache-control", pinned ? "private, max-age=2592000, immutable" : "private, no-store")
+      .header("x-content-type-options", "nosniff")
+      .send(drawable.bytes);
   });
 
   // Editing an image in the browser sends the result back here rather than

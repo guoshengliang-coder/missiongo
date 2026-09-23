@@ -14,6 +14,7 @@
 // Used by the Playwright global setup, and by hand against a throwaway local
 // server: `node scripts/seed-ui-fixture.mjs --base http://127.0.0.1:8799 --cookie <session>`
 
+import { readFileSync } from "node:fs";
 import { deflateSync } from "node:zlib";
 
 /** A solid-colour PNG, built here so the fixture needs no binary files in git. */
@@ -137,6 +138,12 @@ export async function seedFixture({ baseUrl, cookie, fetchImpl = fetch }) {
   keys.push(bug.key);
   await attach(bug.key, "screen-a.png", "image/png", solidPng(360, 780, [214, 226, 240]));
   await attach(bug.key, "screen-b.png", "image/png", solidPng(360, 780, [240, 224, 214]));
+  // An iPhone screenshot as the phone saves it. Only Safari can draw HEIC, so
+  // this is what proves the server's decoded copy reaches the page (C6).
+  await attach(bug.key, "iphone.heic", "image/heic", readFileSync(new URL("../services/server/src/test-fixtures/iphone-screenshot.heic", import.meta.url)));
+  // Bytes no browser can decode as video, standing in for the HEVC .mov an
+  // iPhone records and Windows browsers cannot play.
+  await attach(bug.key, "screen-recording.mov", "video/quicktime", Buffer.from("not a playable video stream"));
   await attach(bug.key, "app.log", "text/plain", Buffer.from(
     "2026-09-22 10:00:01 INFO boot\n2026-09-22 10:00:02 WARN slow network 3200ms\n2026-09-22 10:00:03 ERROR list request timed out\n",
   ));

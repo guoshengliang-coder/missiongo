@@ -1238,6 +1238,8 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .selected-media-lightbox header strong { overflow: hidden; font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .selected-media-lightbox header button { width: 34px; height: 34px; color: var(--primary-fg); }
 .selected-media-lightbox img, .selected-media-lightbox video { width: 100%; max-height: calc(100vh - 94px); max-height: calc(100dvh - 94px); display: block; object-fit: contain; background: var(--viewer-bg); }
+.video-unplayable { display: grid; justify-items: center; gap: 12px; padding: 24px 18px; color: var(--ink); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); text-align: center; }
+.video-unplayable p { margin: 0; font-size: var(--text-md); }
 .media-viewer-loading { min-height: 240px; display: flex; align-items: center; justify-content: center; gap: 8px; color: white; background: var(--viewer-bg); font-size: var(--text-xs); }
 .selected-log-preview { min-height: 260px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: var(--code-fg); }
 .selected-log-preview p { margin: 0; font-size: var(--text-sm); }

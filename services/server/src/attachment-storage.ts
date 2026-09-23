@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 
 import type { AttachmentKind } from "@missiongo/domain";
 
 import { invalidInput } from "./errors.js";
+import { BROWSER_UNREADABLE_IMAGE_TYPES, heicToJpeg } from "./image-decode.js";
 import type { MissionGoStore } from "./store.js";
 import type { AttachmentRecord, EventAttribution } from "./types.js";
 
@@ -187,6 +188,7 @@ export class AttachmentStorage {
     await unlink(this.resolveStoredFile(replaced.replacedStorageFilename)).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
+    await this.removeDecodedPreview(replaced.replacedStorageFilename);
     return replaced.attachment;
   }
 
@@ -196,7 +198,56 @@ export class AttachmentStorage {
     await unlink(path).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
+    await this.removeDecodedPreview(attachment.storageFilename);
     return store.deleteAttachmentMetadata(itemKey, attachmentId, attribution);
+  }
+
+  /**
+   * The bytes to draw an image from: the stored file, or -- for a format no
+   * browser but Safari can read -- a JPEG decoded from it.
+   *
+   * The JPEG is made on first request and kept beside the originals, so it
+   * covers everything uploaded before this existed and a list of iPhone
+   * screenshots decodes each one once, not once per thumbnail. It is keyed by
+   * the stored file's name, which a replacement always changes, so an
+   * annotated image can never be answered with its pre-edit preview. The
+   * original is never altered and remains what a download returns.
+   */
+  async readDrawableImage(attachment: Pick<AttachmentRecord, "storageFilename" | "contentType">): Promise<{ bytes: Buffer; contentType: string }> {
+    const original = this.resolveStoredFile(attachment.storageFilename);
+    if (!BROWSER_UNREADABLE_IMAGE_TYPES.has(attachment.contentType)) {
+      return { bytes: await readFile(original), contentType: attachment.contentType };
+    }
+    const cached = this.decodedPreviewPath(attachment.storageFilename);
+    try {
+      return { bytes: await readFile(cached), contentType: "image/jpeg" };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const jpeg = await heicToJpeg(await readFile(original));
+    await mkdir(this.decodedPreviewDirectory(), { recursive: true, mode: 0o700 });
+    // Written aside and renamed into place, so a request racing this one reads
+    // either nothing or a whole file, never a half-written JPEG.
+    const partial = `${cached}.${randomUUID()}.partial`;
+    await writeFile(partial, jpeg, { mode: 0o600 });
+    await rename(partial, cached);
+    return { bytes: jpeg, contentType: "image/jpeg" };
+  }
+
+  private decodedPreviewDirectory(): string {
+    return resolve(this.rootPath, "decoded-previews");
+  }
+
+  private decodedPreviewPath(storageFilename: string): string {
+    // resolveStoredFile validates the name; the preview borrows its UUID.
+    this.resolveStoredFile(storageFilename);
+    return resolve(this.decodedPreviewDirectory(), `${storageFilename.slice(0, 36)}.jpg`);
+  }
+
+  private async removeDecodedPreview(storageFilename: string): Promise<void> {
+    await unlink(this.decodedPreviewPath(storageFilename)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
   }
 
   resolveStoredFile(storageFilename: string): string {

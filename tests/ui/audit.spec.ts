@@ -196,3 +196,30 @@ test.describe("row checkbox on a touch screen", () => {
     expect(new URL(page.url()).searchParams.get("item"), "the row must not have opened").toBeNull();
   });
 });
+
+test.describe("attachments a browser cannot read natively", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("an iPhone HEIC is drawn from the server's decoded copy", async ({ page }) => {
+    await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
+    await page.waitForLoadState("networkidle");
+    const thumbnail = page.locator('.attachment-media-open img[alt="iphone.heic"]');
+    await thumbnail.scrollIntoViewIfNeeded();
+    await expect(thumbnail).toBeVisible();
+    // naturalWidth is 0 for an image the browser failed to decode -- which is
+    // what a raw HEIC is to Chromium.
+    await expect.poll(() => thumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  });
+
+  test("a video this browser cannot play says so and offers the file", async ({ page }) => {
+    await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
+    await page.waitForLoadState("networkidle");
+    const card = page.locator(".attachment-card", { hasText: "screen-recording.mov" });
+    await card.scrollIntoViewIfNeeded();
+    await card.locator(".attachment-load-button").click();
+    const notice = card.locator(".video-unplayable");
+    await expect(notice).toBeVisible();
+    await expect(notice.getByRole("button")).toBeVisible();
+  });
+});
+
