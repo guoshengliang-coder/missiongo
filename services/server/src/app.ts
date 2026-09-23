@@ -15,6 +15,7 @@ import {
   type AgentSkillSyncState,
   type DispatchFailureCode,
   type DispatchFailureStage,
+  type DispatchDiagnosticSnapshot,
   type WorkItemCreator,
   type WorkItemEnvironment,
   type WorkItemReport,
@@ -2199,7 +2200,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { dispatchId } = request.params as { dispatchId: string };
     const body = objectBody(request.body);
     const status = stringField(body, "status")!;
-    if (status !== "launched" && status !== "failed") throw invalidInput("status must be launched or failed.");
+    if (status !== "launched" && status !== "failed" && status !== "retry") {
+      throw invalidInput("status must be launched, failed or retry.");
+    }
+    const retryAfterSeconds = body.retryAfterSeconds === undefined ? undefined : Number(body.retryAfterSeconds);
+    if (retryAfterSeconds !== undefined && (!Number.isInteger(retryAfterSeconds) || retryAfterSeconds < 5 || retryAfterSeconds > 300)) {
+      throw invalidInput("retryAfterSeconds must be an integer from 5 to 300.");
+    }
+    const diagnosticSnapshot = body.diagnosticSnapshot;
+    if (diagnosticSnapshot !== undefined && (!diagnosticSnapshot || typeof diagnosticSnapshot !== "object" || Array.isArray(diagnosticSnapshot))) {
+      throw invalidInput("diagnosticSnapshot must be an object.");
+    }
     dispatchStore.recordDispatchResult({
       nodeId: node.nodeId,
       dispatchId,
@@ -2209,6 +2220,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
       ...(stringField(body, "failureCode", false) ? { failureCode: body.failureCode as DispatchFailureCode } : {}),
       ...(stringField(body, "failureStage", false) ? { failureStage: body.failureStage as DispatchFailureStage } : {}),
+      ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+      ...(diagnosticSnapshot === undefined ? {} : { diagnosticSnapshot: diagnosticSnapshot as DispatchDiagnosticSnapshot }),
     });
     const sessionRef = stringField(body, "sessionRef", false);
     if (status === "launched" && sessionRef) {

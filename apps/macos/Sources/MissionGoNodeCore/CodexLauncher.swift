@@ -241,6 +241,21 @@ public enum CodexPreflight {
     /// What starts the app-server whose control socket a dispatch needs.
     public static let daemonStartCommand = "codex app-server daemon start"
 
+    public static func restartDaemon(
+        binary: String, location: CodexLocation, run: CommandRunner,
+        wait: TimeInterval = 5, pollInterval: TimeInterval = 0.2
+    ) async -> DaemonStart {
+        let result = await run(binary, ["app-server", "daemon", "restart"])
+        let deadline = Date().addingTimeInterval(wait)
+        while true {
+            if CodexLocation.controlChannelIsUp(location.controlSocketPath) { return .started }
+            if Date() >= deadline { break }
+            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+        }
+        let output = (result.stdout + "\n" + result.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
+        return .failed(output: "退出码 \(result.code)" + (output.isEmpty ? "，没有输出" : "：\(String(output.prefix(500)))"))
+    }
+
     public enum DaemonStart: Equatable, Sendable {
         case alreadyUp
         case started
@@ -473,19 +488,50 @@ public struct CodexLauncher: AgentAdapter {
             client: .codex, worktreePath: worktreePath
         )
         let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
+        let request = CodexThreadRequest(
+            socketPath: location.controlSocketPath,
+            cwd: job.repoPath,
+            settings: settings,
+            name: sessionName,
+            prompt: prompt,
+            workspaceRoots: [job.repoPath, worktreePath],
+            skillVersion: skillVersion,
+            model: job.model,
+            effort: job.effort
+        )
         let threadId: String
         do {
-            threadId = try await control.startThread(CodexThreadRequest(
-                socketPath: location.controlSocketPath,
-                cwd: job.repoPath,
-                settings: settings,
-                name: sessionName,
-                prompt: prompt,
-                workspaceRoots: [job.repoPath, worktreePath],
-                skillVersion: skillVersion,
-                model: job.model,
-                effort: job.effort
-            ))
+            threadId = try await control.startThread(request)
+        } catch let error as CodexControlError {
+            guard case let .mcpStartup(diagnostic) = error else {
+                throw CodexFailure.launchError(error)
+            }
+            // A restart is destructive to every loaded conversation. If the
+            // app-server cannot prove there are none, return this same dispatch
+            // to the node queue and let the active work finish first.
+            let hasLoadedThreads = (try? await control.hasLoadedThreads(socketPath: location.controlSocketPath)) ?? true
+            if hasLoadedThreads {
+                throw CodexFailure.retryableMcpError(error, diagnostic: diagnostic)
+            }
+            guard let binary = CodexLocation.binary(environment: environment) else {
+                throw CodexFailure.retryableMcpError(error, diagnostic: diagnostic)
+            }
+            switch await CodexPreflight.restartDaemon(
+                binary: binary, location: location, run: run, wait: daemonWait
+            ) {
+            case .started, .alreadyUp:
+                do {
+                    threadId = try await control.startThread(request)
+                } catch {
+                    throw CodexFailure.launchError(error)
+                }
+            case let .failed(output):
+                throw LaunchError(
+                    "Codex 的 MissionGo MCP 启动异常；安全重启 daemon 失败（\(output)）。任务将稍后重试。",
+                    failureCode: "daemon_down", failureStage: "daemon", retryAfterSeconds: 30,
+                    diagnosticSnapshot: DispatchDiagnosticSnapshot(mcp: diagnostic)
+                )
+            }
         } catch {
             throw CodexFailure.launchError(error)
         }
@@ -686,12 +732,30 @@ public struct CodexLauncher: AgentAdapter {
 }
 
 enum CodexFailure {
+    static func retryableMcpError(
+        _ error: CodexControlError, diagnostic: DispatchMcpDiagnostic
+    ) -> LaunchError {
+        return LaunchError(
+            explain(error), failureCode: mcpFailureCode(diagnostic), failureStage: "mcp",
+            retryAfterSeconds: 30, diagnosticSnapshot: DispatchDiagnosticSnapshot(mcp: diagnostic)
+        )
+    }
+
+    private static func mcpFailureCode(_ diagnostic: DispatchMcpDiagnostic) -> String {
+        if diagnostic.failureReason == "reauthenticationRequired"
+            || diagnostic.runtimeStatus == "authenticationRequired"
+            || diagnostic.authStatus == "notLoggedIn" { return "mcp_auth" }
+        return "mcp_timeout"
+    }
+
     static func launchError(_ error: Error) -> LaunchError {
         let message = explain(error)
         guard let control = error as? CodexControlError else {
             return LaunchError(message, failureStage: "thread_start")
         }
         switch control {
+        case let .mcpStartup(diagnostic):
+            return retryableMcpError(control, diagnostic: diagnostic)
         case .skillStale:
             return LaunchError(message, failureCode: "skill_stale", failureStage: "readiness")
         case .mcpAuthorization:

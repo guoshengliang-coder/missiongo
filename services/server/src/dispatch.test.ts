@@ -516,6 +516,47 @@ describe("Dispatching the same item twice", () => {
     });
   });
 
+  it("requeues a transient node failure with backoff and preserves MCP diagnostics", async () => {
+    const { app, cookie, mission, mini } = await setup();
+    const dispatch = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
+    await app.inject({
+      method: "POST", url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${mini.token}` },
+    });
+    const reported = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatch.id}/result`,
+      headers: { authorization: `Bearer ${mini.token}` },
+      payload: {
+        status: "retry", retryAfterSeconds: 30, error: "MissionGo MCP startup timed out",
+        failureCode: "mcp_timeout", failureStage: "mcp",
+        diagnosticSnapshot: {
+          mcp: {
+            threadId: "thread-1", name: "missiongo", startupStatus: "failed",
+            runtimeStatus: "starting", error: "MCP client startup timed out",
+            observedAt: "2026-09-23T00:00:00Z",
+          },
+        },
+      },
+    });
+    expect(reported.statusCode).toBe(204);
+
+    // It is queued for the same node, but cannot hot-loop before the backoff.
+    const immediate = await app.inject({
+      method: "POST", url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${mini.token}` },
+    });
+    expect(immediate.statusCode).toBe(204);
+    const history = await app.inject({
+      method: "GET", url: `/api/v1/items/${mission.itemKey}/dispatches`, headers: { cookie },
+    });
+    expect(history.json()).toMatchObject({ dispatches: [{
+      id: dispatch.id, status: "queued", error: "MissionGo MCP startup timed out",
+      failureCode: "mcp_timeout", failureStage: "mcp",
+      diagnosticSnapshot: { mcp: { threadId: "thread-1", name: "missiongo", runtimeStatus: "starting" } },
+    }] });
+  });
+
   it("lists ready items with an unclaimed dispatch, and forgets them once claimed", async () => {
     const { app, cookie, mission, mini } = await setup();
     await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey]);

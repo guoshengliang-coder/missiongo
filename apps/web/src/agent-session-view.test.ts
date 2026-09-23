@@ -113,9 +113,12 @@ describe("agent session message view", () => {
     expect(shouldMarkRead(undefined, true, true)).toBe(false);
   });
 
-  it("keeps a restored conversation until the session list can confirm it", () => {
+  it("keeps a restored or filtered conversation until the full session list says it is gone", () => {
     expect(resolvedAgentSessionId("session-42", [], false)).toBe("session-42");
     expect(resolvedAgentSessionId("session-42", ["session-42", "session-41"], true)).toBe("session-42");
+    // The filtered rows may no longer include session-42 after a reply, but the
+    // full product session list still does, so the open conversation survives.
+    expect(resolvedAgentSessionId("session-42", ["session-42"], true)).toBe("session-42");
     expect(resolvedAgentSessionId("missing", ["session-41"], true)).toBeNull();
     expect(resolvedAgentSessionId(null, ["session-41"], true)).toBeNull();
   });

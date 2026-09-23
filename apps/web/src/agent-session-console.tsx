@@ -233,12 +233,12 @@ export function AgentSessionConsole({
   const allArchivableSelected = archivableIds.length > 0
     && archivableIds.every((sessionId) => selectedForArchive.has(sessionId));
   const bulkAvailable = filter !== "archived" && archivableIds.length > 0;
-  // Keep a restored URL selection while the list is still loading. Falling
-  // back to null here would immediately erase the session that survived an
-  // Android Activity recreation, before the request had a chance to confirm it.
+  // A reply resolves "needs attention" and removes this row from that filter.
+  // Keep the conversation the person is still reading; explicit filter and
+  // navigation handlers remain responsible for leaving it (AND-147).
   const selectedId = resolvedAgentSessionId(
     selectedSessionId,
-    visibleSessions.map((session) => session.id),
+    sessions.map((session) => session.id),
     sessionsLoaded,
   );
 
