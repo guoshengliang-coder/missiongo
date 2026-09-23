@@ -344,10 +344,40 @@ export interface Dispatch {
   readonly sessionUrl?: string;
   readonly agentSessionId?: string;
   readonly error?: string;
+  readonly failureCode?: string;
+  readonly failureStage?: string;
+  readonly diagnosticSnapshot?: {
+    readonly nodeClientVersion?: string;
+    readonly agentVersion?: string;
+    readonly skill?: { readonly localVersion?: string; readonly expectedVersion?: string; readonly syncState?: string };
+    readonly resource?: { readonly pid?: number; readonly openFiles?: number; readonly softLimit?: number; readonly status?: string; readonly reason?: string };
+  };
   readonly createdAt: string;
   readonly deliveredAt?: string;
   readonly completedAt?: string;
   readonly archivedAt?: string;
+}
+
+export interface DispatchHealthGroup {
+  readonly key: string;
+  readonly total: number;
+  readonly failed: number;
+  readonly failureRate: number;
+}
+
+export interface DispatchHealthSnapshot {
+  readonly windowDays: number;
+  readonly total: number;
+  readonly launched: number;
+  readonly failed: number;
+  readonly failureRate: number;
+  readonly groups: {
+    readonly nodes: readonly DispatchHealthGroup[];
+    readonly agents: readonly DispatchHealthGroup[];
+    readonly versions: readonly DispatchHealthGroup[];
+    readonly codes: readonly DispatchHealthGroup[];
+  };
+  readonly recentFailures: readonly Dispatch[];
 }
 
 export type AgentSessionStatus = "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";

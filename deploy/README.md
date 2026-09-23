@@ -1,5 +1,25 @@
 # MissionGo production deployment
 
+## Cloudflare 灰度入口（仅准备，不自动切流）
+
+`nginx-host-gray.example.conf` 是宿主机入口模板，真实域名、证书路径和回源地址只在部署机本地填写，不进入 Git。上线前从 Cloudflare 官方 IP 列表生成 `/etc/nginx/cloudflare-realip.conf`，每行写成 `set_real_ip_from <CIDR>;`；模板仅信任这些来源的 `CF-Connecting-IP`，直连客户端伪造该请求头不会覆盖源地址。
+
+灰度步骤：先在独立主机名启用模板并执行 `nginx -t`，再用少量 Cloudflare 权重或仅测试账号验证；观察 `missiongo-gray.access.log` 中的 `status`、`request_time`、`upstream_time`、`cf_ray`，确认错误率和 p95 无回归后才扩大流量。正式 DNS、Tunnel 或权重变更必须另行审批，本仓库脚本不会执行。
+
+公网探针只读访问健康端点并输出成功率、p50/p95 与 Cloudflare colo：
+
+```sh
+node scripts/probe-public-origin.mjs https://<GRAY_HOSTNAME> 20
+```
+
+任一请求失败时脚本以非零状态退出。回滚时先把灰度权重降为 0，再保留日志与探针输出用于对比；不要在回滚前删除入口配置或观测数据。
+
+## 派单就绪协议的发布顺序
+
+涉及节点 Skill/资源就绪字段时，先发布并确认 macOS 节点已经上报 `clientVersion`、`skill`、`resource` 与 `ready`，再发布服务端迁移和 Web 控制台。新服务端会对缺少或不满足预期 Skill 版本的节点关闭派单入口，这是有意的 fail-closed 行为；顺序颠倒会让旧节点暂时显示为不可派单，但不会丢失队列任务。
+
+验证顺序：节点心跳显示预期 Skill 为 `ready` → 创建一条测试派单并确认成功启动 → 在 Agent 控制台“异常”页核对节点、Agent、版本和失败码分组。回滚时先回滚服务端/Web，再回滚 macOS；新版客户端向旧服务端发送的附加字段会被忽略。
+
 This deployment runs two isolated containers:
 
 - `web` serves the single-page application and proxies same-origin API requests.

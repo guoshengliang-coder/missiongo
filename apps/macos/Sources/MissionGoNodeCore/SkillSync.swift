@@ -76,6 +76,11 @@ public enum SkillSync {
         return "\(directory)/skills/missiongo/SKILL.md"
     }
 
+    public static func localVersion(at target: String) -> String? {
+        guard let data = FileManager.default.contents(atPath: target) else { return nil }
+        return version(ofSkill: String(decoding: data, as: UTF8.self))
+    }
+
     static func isSymlink(_ path: String) -> Bool {
         var info = stat()
         guard lstat(path, &info) == 0 else { return false }

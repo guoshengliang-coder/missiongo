@@ -9,6 +9,43 @@ import Foundation
 
 // MARK: - Wire types
 
+public struct AgentSkillSnapshot: Codable, Equatable, Sendable {
+    public let localVersion: String?
+    public let expectedVersion: String?
+    public let syncState: String
+    public let checkedAt: String?
+
+    public init(localVersion: String? = nil, expectedVersion: String? = nil, syncState: String, checkedAt: String? = nil) {
+        self.localVersion = localVersion
+        self.expectedVersion = expectedVersion
+        self.syncState = syncState
+        self.checkedAt = checkedAt
+    }
+}
+
+public struct AgentResourceSnapshot: Codable, Equatable, Sendable {
+    public let pid: Int32?
+    public let openFiles: Int?
+    public let softLimit: Int?
+    public let source: String?
+    public let checkedAt: String?
+    public let status: String
+    public let reason: String?
+
+    public init(
+        pid: Int32? = nil, openFiles: Int? = nil, softLimit: Int? = nil, source: String? = nil,
+        checkedAt: String? = nil, status: String, reason: String? = nil
+    ) {
+        self.pid = pid
+        self.openFiles = openFiles
+        self.softLimit = softLimit
+        self.source = source
+        self.checkedAt = checkedAt
+        self.status = status
+        self.reason = reason
+    }
+}
+
 public struct DetectedAgent: Codable, Equatable, Sendable {
     public let kind: String
     public let version: String
@@ -17,11 +54,23 @@ public struct DetectedAgent: Codable, Equatable, Sendable {
     /// effort selection and runtime settings; nil leaves the key out, which
     /// an older server ignored anyway.
     public let models: [AgentModelOption]?
+    public let ready: Bool?
+    public let unavailableReason: String?
+    public let skill: AgentSkillSnapshot?
+    public let resource: AgentResourceSnapshot?
 
-    public init(kind: String, version: String, models: [AgentModelOption]? = nil) {
+    public init(
+        kind: String, version: String, models: [AgentModelOption]? = nil,
+        ready: Bool? = nil, unavailableReason: String? = nil,
+        skill: AgentSkillSnapshot? = nil, resource: AgentResourceSnapshot? = nil
+    ) {
         self.kind = kind
         self.version = version
         self.models = models
+        self.ready = ready
+        self.unavailableReason = unavailableReason
+        self.skill = skill
+        self.resource = resource
     }
 }
 
@@ -199,13 +248,21 @@ public struct DispatchReport: Codable, Equatable, Sendable {
     public let sessionUrl: String?
     public let sessionRef: String?
     public let error: String?
+    public let failureCode: String?
+    public let failureStage: String?
 
-    public init(status: Status, sessionName: String? = nil, sessionUrl: String? = nil, sessionRef: String? = nil, error: String? = nil) {
+    public init(
+        status: Status, sessionName: String? = nil, sessionUrl: String? = nil,
+        sessionRef: String? = nil, error: String? = nil,
+        failureCode: String? = nil, failureStage: String? = nil
+    ) {
         self.status = status
         self.sessionName = sessionName
         self.sessionUrl = sessionUrl
         self.sessionRef = sessionRef
         self.error = error
+        self.failureCode = failureCode
+        self.failureStage = failureStage
     }
 }
 
@@ -726,6 +783,7 @@ public struct APIClient: Sendable {
         struct Body: Encodable {
             let agents: [DetectedAgent]
             let repoCandidates: [RepoCandidate]
+            let clientVersion: String
         }
         struct Reply: Decodable {
             let repos: [RepoMapping]?
@@ -734,7 +792,11 @@ public struct APIClient: Sendable {
         }
         let response = try await send(
             "POST", "/api/v1/node/heartbeat",
-            body: Body(agents: agents, repoCandidates: repoCandidates),
+            body: Body(
+                agents: agents,
+                repoCandidates: repoCandidates,
+                clientVersion: AppUpdater.currentVersion() ?? "development"
+            ),
             bearer: try nodeToken()
         )
         try requireSuccess(response, operation: "heartbeat")

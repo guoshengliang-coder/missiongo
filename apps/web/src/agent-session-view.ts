@@ -14,18 +14,48 @@ export const DEFAULT_AGENT_KIND_FILTER = "all" as const;
 export const MESSAGE_BOTTOM_THRESHOLD_PX = 48;
 export const AGENT_SESSIONS_CONSOLE_REFETCH_MS = 5_000;
 export const AGENT_SESSIONS_BACKGROUND_REFETCH_MS = 60_000;
+export const AGENT_SESSION_DETAIL_REFETCH_MS = 2_000;
+export const AGENT_SESSION_MAX_BACKOFF_MS = 5 * 60_000;
 
-export function agentSessionsRefetchInterval(consoleOpen: boolean): number {
-  return consoleOpen ? AGENT_SESSIONS_CONSOLE_REFETCH_MS : AGENT_SESSIONS_BACKGROUND_REFETCH_MS;
+function backedOffInterval(base: number, failureCount: number): number {
+  return Math.min(base * (2 ** Math.min(Math.max(failureCount, 0), 8)), AGENT_SESSION_MAX_BACKOFF_MS);
 }
 
-export function formatAgentMessageTime(value: string, locale: string): string {
-  return new Intl.DateTimeFormat(locale, {
-    month: "numeric",
-    day: "numeric",
+export function agentSessionsRefetchInterval(
+  consoleOpen: boolean,
+  documentVisible = true,
+  failureCount = 0,
+): number | false {
+  if (!documentVisible) return false;
+  const base = consoleOpen ? AGENT_SESSIONS_CONSOLE_REFETCH_MS : AGENT_SESSIONS_BACKGROUND_REFETCH_MS;
+  return backedOffInterval(base, failureCount);
+}
+
+export function agentSessionDetailRefetchInterval(documentVisible: boolean, failureCount = 0): number | false {
+  if (!documentVisible) return false;
+  return backedOffInterval(AGENT_SESSION_DETAIL_REFETCH_MS, failureCount);
+}
+
+export function formatAgentMessageTime(value: string, locale: string, now = new Date()): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const time = new Intl.DateTimeFormat(locale, {
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(value));
+  }).format(date);
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dayDifference = Math.round((startOfToday.getTime() - startOfDate.getTime()) / 86_400_000);
+  if (dayDifference === 0) return time;
+  if (dayDifference === 1) {
+    const yesterday = new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(-1, "day");
+    return `${yesterday} ${time}`;
+  }
+  const calendarDate = new Intl.DateTimeFormat(locale, {
+    month: "numeric",
+    day: "numeric",
+  }).format(date);
+  return `${calendarDate} ${time}`;
 }
 
 export type AgentSessionFilter = "attention" | "active" | "all" | "failed" | "archived";
@@ -128,19 +158,21 @@ export function agentSessionMatches(
   ].some((value) => value.toLocaleLowerCase().includes(query));
 }
 
-/**
- * Unread conversations lead every list (AND-135); within each group the
- * server's newest-activity order is kept. There is no separate unread filter:
- * a conversation stops leading once it is opened.
- */
-export function unreadFirst<T extends Pick<AgentSessionSummary, "unread">>(sessions: readonly T[]): readonly T[] {
-  return [...sessions.filter((session) => session.unread), ...sessions.filter((session) => !session.unread)];
+/** Unread is a badge, never an ordering input. Activity is the only clock. */
+export function byLatestActivity<T extends Pick<AgentSessionSummary, "id" | "activityAt" | "updatedAt" | "createdAt">>(
+  sessions: readonly T[],
+): readonly T[] {
+  return [...sessions].sort((left, right) => {
+    const leftTime = Date.parse(left.activityAt ?? left.updatedAt ?? left.createdAt);
+    const rightTime = Date.parse(right.activityAt ?? right.updatedAt ?? right.createdAt);
+    const compared = (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+    return compared || left.id.localeCompare(right.id);
+  });
 }
 
 /**
  * Only a conversation the person opened is marked read, and only while the tab
- * is in front. Merely being first in the list -- and so selected and shown
- * automatically -- is not reading it.
+ * is in front. Merely being first in the list is not reading it.
  */
 export function shouldMarkRead(
   session: Pick<AgentSessionSummary, "unread" | "unreadAt"> | undefined,
@@ -211,7 +243,7 @@ export function resolvedAgentSessionId(
   loaded: boolean,
 ): string | null {
   if (requestedId && (!loaded || visibleIds.includes(requestedId))) return requestedId;
-  return visibleIds[0] ?? null;
+  return null;
 }
 
 /** Small rounding differences must not make a conversation stop following. */

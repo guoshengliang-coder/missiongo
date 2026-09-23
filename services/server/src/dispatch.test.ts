@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
 import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
 import { AgentSessionStore } from "./agent-session-store.js";
+import { MISSIONGO_SKILL_VERSION } from "@missiongo/contracts";
 
 const apps: FastifyInstance[] = [];
 const temporaryDirectories: string[] = [];
@@ -117,7 +118,16 @@ async function heartbeat(
     method: "POST",
     url: "/api/v1/node/heartbeat",
     headers: { authorization: `Bearer ${token}` },
-    payload: { agents: [{ kind, version: "2.1.232" }], repoCandidates },
+    payload: {
+      agents: [{
+        kind,
+        version: "2.1.232",
+        ready: true,
+        skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
+      }],
+      clientVersion: "1.2.3",
+      repoCandidates,
+    },
   });
 }
 
@@ -717,6 +727,38 @@ describe("Checkouts a node reports", () => {
 });
 
 describe("Dispatching a batch", () => {
+  it("keeps work queued until the node reports the expected Skill as ready", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/heartbeat",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        agents: [{
+          kind: "codex", version: "0.155.1", ready: false,
+          unavailableReason: "MissionGo Skill is not synchronized.",
+          skill: { localVersion: "5.9.0", expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "stale" },
+        }],
+      },
+    });
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const dispatched = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    expect(dispatched.statusCode).toBe(409);
+    expect(dispatched.json()).toMatchObject({ code: "agent_not_ready" });
+  });
+
   it("queues one session for the batch and records it on every item's timeline", async () => {
     const { app, cookie } = await signedInApp();
     const node = await registeredNode(app);
@@ -1344,7 +1386,35 @@ describe("Claiming a dispatch on the node", () => {
       method: "POST",
       url: `/api/v1/node/dispatches/${dispatchId}/result`,
       headers: { authorization: `Bearer ${node.token}` },
-      payload: { status: "failed", error: "Claude remote control did not start" },
+      payload: {
+        status: "failed",
+        error: "Claude remote control did not start",
+        failureCode: "mcp_timeout",
+        failureStage: "mcp",
+      },
+    });
+
+    const health = await app.inject({
+      method: "GET",
+      url: "/api/v1/dispatches/health?days=7",
+      headers: { cookie },
+    });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toMatchObject({
+      total: 1,
+      failed: 1,
+      failureRate: 1,
+      groups: {
+        nodes: [{ key: "Mac mini", total: 1, failed: 1 }],
+        agents: [{ key: "claude_code", total: 1, failed: 1 }],
+        codes: [{ key: "mcp_timeout", total: 1, failed: 1 }],
+      },
+      recentFailures: [{
+        id: dispatchId,
+        failureCode: "mcp_timeout",
+        failureStage: "mcp",
+        diagnosticSnapshot: { nodeClientVersion: "1.2.3", agentVersion: "2.1.232" },
+      }],
     });
 
     const listed = await app.inject({
@@ -1985,7 +2055,7 @@ describe("Claiming a dispatch on the node", () => {
     });
   });
 
-  it("reports Mac heartbeat health and locally archives a session without changing its source", async () => {
+  it("reports Mac heartbeat health and stops then restores a manually archived Claude session", async () => {
     const { app, cookie, databasePath, node, mission, dispatchId } = await queuedDispatch();
     await app.inject({
       method: "POST",
@@ -2095,6 +2165,17 @@ describe("Claiming a dispatch on the node", () => {
       method: "GET",
       url: "/api/v1/node/agent-sessions",
       headers: { authorization: `Bearer ${node.token}` },
+    })).json()).toMatchObject({ sessions: [{ id: sessionId, lifecycle: "close" }] });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "suspended", messages: [], sourceArchived: true },
+    })).statusCode).toBe(204);
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
     })).json()).toEqual({ sessions: [] });
     const replyWhileArchived = await app.inject({
       method: "POST",
@@ -2113,39 +2194,16 @@ describe("Claiming a dispatch on the node", () => {
     });
     expect(restored.statusCode).toBe(200);
     expect(restored.json<{ archivedAt?: string }>().archivedAt).toBeUndefined();
-
     expect((await app.inject({
-      method: "POST",
-      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
-      headers: { authorization: `Bearer ${node.token}` },
-      payload: { status: "unavailable", messages: [], sourceArchived: true },
-    })).statusCode).toBe(204);
-    const sourceArchived = await app.inject({
       method: "GET",
-      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
-      headers: { cookie },
-    });
-    expect(sourceArchived.json()).toMatchObject({
-      sessions: [{
-        archivedSource: "source",
-        canReply: false,
-        replyBlockedReason: "source_archived",
-        canStop: false,
-      }],
-    });
-    const cannotRestoreSource = await app.inject({
-      method: "PATCH",
-      url: `/api/v1/agent-sessions/${sessionId}`,
-      headers: { cookie },
-      payload: { archived: false },
-    });
-    expect(cannotRestoreSource.statusCode).toBe(409);
-    expect(cannotRestoreSource.json()).toMatchObject({ code: "agent_session_source_archived" });
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json()).toMatchObject({ sessions: [{ id: sessionId, lifecycle: "keep", restoreInSource: true }] });
     expect((await app.inject({
       method: "POST",
       url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
       headers: { authorization: `Bearer ${node.token}` },
-      payload: { status: "idle", messages: [], sourceArchived: false },
+      payload: { status: "active", messages: [], sourceRestored: true },
     })).statusCode).toBe(204);
 
     const queuedOffline = await app.inject({
@@ -2583,7 +2641,13 @@ describe("Model, effort and running-session settings (AND-130)", () => {
       method: "POST",
       url: "/api/v1/node/heartbeat",
       headers: { authorization: `Bearer ${token}` },
-      payload: { agents: [{ kind: "codex", version: "0.155.1", ...(models ? { models } : {}) }], repoCandidates: [] },
+      payload: {
+        agents: [{
+          kind: "codex", version: "0.155.1", ...(models ? { models } : {}), ready: true,
+          skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
+        }],
+        repoCandidates: [],
+      },
     });
     expect(response.statusCode).toBe(200);
   }

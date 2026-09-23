@@ -952,6 +952,8 @@ export class AgentSessionStore {
            -- Codex thread to archive at the source, a Claude process to close.
            OR (archive_source = 'missiongo' AND agent_kind = 'codex'
              AND source_archived_at IS NULL AND source_archive_error IS NULL)
+           OR (archive_source = 'missiongo' AND agent_kind = 'claude_code'
+             AND source_archived_at IS NULL AND source_archive_error IS NULL)
            OR (archive_reason = 'auto' AND agent_kind = 'claude_code' AND status NOT IN ('suspended', 'failed')))
          AND (
            status IN ('active', 'stalled', 'unavailable') OR EXISTS (
@@ -961,6 +963,8 @@ export class AgentSessionStore {
            OR s.source_restore_pending = 1
            -- A source archive still owed goes out now, not after the idle cool-down.
            OR (archived_at IS NOT NULL AND archive_source = 'missiongo' AND agent_kind = 'codex'
+             AND source_archived_at IS NULL AND source_archive_error IS NULL)
+           OR (archived_at IS NOT NULL AND archive_source = 'missiongo' AND agent_kind = 'claude_code'
              AND source_archived_at IS NULL AND source_archive_error IS NULL)
            OR s.updated_at <= ?
          )
@@ -976,7 +980,8 @@ export class AgentSessionStore {
         agentKind: row.agent_kind,
         sessionRef: row.agent_session_ref,
         status: row.status,
-        lifecycle: row.agent_kind === "claude_code" && (autoArchived || this.itemsCompleted(row.id)) ? "close" : "keep",
+        lifecycle: row.agent_kind === "claude_code" && !row.source_restore_pending
+          && (Boolean(row.archived_at) || autoArchived || this.itemsCompleted(row.id)) ? "close" : "keep",
         occupiesExecutionSlot: row.status === "active" || row.status === "stalled",
         ...(command ? { command: this.mapCommand(command) } : {}),
         ...(row.archive_source === "missiongo" && row.archived_at && row.agent_kind === "codex"

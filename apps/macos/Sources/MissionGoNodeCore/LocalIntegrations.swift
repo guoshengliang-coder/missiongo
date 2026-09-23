@@ -88,6 +88,23 @@ public struct ConsentedAgentAdapter: AgentAdapter {
 
     public func detect() async -> String? { access.state(for: agent)?.version }
 
+    public func dispatchAvailability() async -> AgentDispatchAvailability {
+        guard access.state(for: agent)?.version != nil else {
+            return .unavailable(reason: "\(agent.title) 集成未启用或已暂停。")
+        }
+        return await base.dispatchAvailability()
+    }
+
+    public func resourceSnapshot() async -> AgentResourceSnapshot? {
+        guard access.state(for: agent)?.version != nil else { return nil }
+        return await base.resourceSnapshot()
+    }
+
+    public func availableModels() async -> [AgentModelOption]? {
+        guard access.state(for: agent)?.version != nil else { return nil }
+        return await base.availableModels()
+    }
+
     public func launch(_ job: DispatchJob) async throws -> LaunchResult {
         guard let (attempt, version) = access.beginLaunch(agent) else {
             throw LaunchError("\(agent.title) 集成未启用或已暂停；请在 MissionGo 菜单中启用或重新检查，不会自动重试权限请求。")

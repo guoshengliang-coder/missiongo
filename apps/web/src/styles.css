@@ -537,6 +537,13 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-bulk-cancel { padding-inline: 9px; }
 .agent-console-bulk-submit { padding-inline: 12px; }
 .agent-console-bulk-result { margin: 0 12px 10px; padding: 8px 10px; color: var(--accent-text); background: var(--accent-bg); border-radius: var(--radius-md); font-size: var(--text-xs); line-height: 1.45; }
+.dispatch-health { max-height: 42vh; margin: 0 12px 10px; padding: 10px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+.dispatch-health header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--ink); font-size: var(--text-sm); }
+.dispatch-health header span { color: var(--muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.dispatch-health-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+.dispatch-health-filters select { min-width: 0; height: 32px; padding: 0 7px; color: var(--ink); background: var(--surface-field); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: var(--text-xs); }
+.dispatch-health-failure { display: grid; gap: 2px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); font-size: var(--text-xs); }
+.dispatch-health-failure span, .dispatch-health-failure small { color: var(--muted); overflow-wrap: anywhere; }
 .agent-console-session-list { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid var(--line-soft); }
 .agent-console-session-list > .inline-error { margin: 12px; }
 .agent-console-session-row { position: relative; display: flex; border-bottom: 1px solid var(--line-soft); transition: background 140ms ease, box-shadow 140ms ease; }

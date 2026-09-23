@@ -137,10 +137,6 @@ final class AppModel: ObservableObject {
     private var lastLoopRepos: [RepoMapping]?
     private var lastSeenLaunchId: String?
     private var updateTimer: Task<Void, Never>?
-    private var autoSkillSyncTask: Task<Void, Never>?
-    private var lastAutoSkillSyncVersion: String?
-    private var failedAutoSkillSyncVersion: String?
-    private var autoSkillRetryAfter: Date?
     private var lastPresentedUpdateVersion: String?
     private var menuTimer: Task<Void, Never>?
     private var lastOpenRefresh: Date?
@@ -239,8 +235,6 @@ final class AppModel: ObservableObject {
         refreshIntegrationStates()
         updateTimer?.cancel()
         updateTimer = nil
-        autoSkillSyncTask?.cancel()
-        autoSkillSyncTask = nil
         do {
             // The installation id stays: logging in again finds the same machine
             // with its mappings and history.
@@ -263,9 +257,6 @@ final class AppModel: ObservableObject {
         claude = .checking
         codex = .checking
         skillSync = nil
-        lastAutoSkillSyncVersion = nil
-        failedAutoSkillSyncVersion = nil
-        autoSkillRetryAfter = nil
         updateNotice = nil
         // The version is a property of this build, not of the session, so it
         // stays; anything in flight does not.
@@ -305,6 +296,8 @@ final class AppModel: ObservableObject {
         // again in the loop, otherwise disabling stays advertised for minutes.
         timing.agentDetectTTL = 0
         let snapshot = candidateSnapshot
+        let access = integrations
+        let codexHome = CodexLocation(environment: environment).codexHome
         let loop = NodeLoop(
             api: APIClient(serverUrl: credential.serverUrl, token: credential.token),
             adapters: [
@@ -313,7 +306,49 @@ final class AppModel: ObservableObject {
             ],
             fallbackNodeName: credential.name,
             detectRepoCandidates: { snapshot.candidates },
-            timing: timing
+            timing: timing,
+            skillReadiness: { agentKind, expectedVersion in
+                let checkedAt = ISO8601DateFormatter().string(from: Date())
+                guard let expectedVersion else {
+                    return AgentSkillSnapshot(syncState: "unknown", checkedAt: checkedAt)
+                }
+                let agent: LocalAgent = agentKind == "codex" ? .codex : .claudeCode
+                guard access.state(for: agent)?.version != nil else {
+                    return AgentSkillSnapshot(
+                        expectedVersion: expectedVersion, syncState: "missing", checkedAt: checkedAt
+                    )
+                }
+                let target = SkillSync.target(
+                    for: agent,
+                    home: Paths.homeDirectory(),
+                    codexHome: codexHome
+                )
+                if SkillSync.localVersion(at: target) == expectedVersion {
+                    return AgentSkillSnapshot(
+                        localVersion: expectedVersion, expectedVersion: expectedVersion,
+                        syncState: "ready", checkedAt: checkedAt
+                    )
+                }
+                do {
+                    let outcome = try await SkillSync.run(
+                        serverUrl: credential.serverUrl,
+                        targets: [target],
+                        expectedVersion: expectedVersion,
+                        shouldApply: { access.state(for: agent)?.version != nil }
+                    )
+                    let local = SkillSync.localVersion(at: target)
+                    let ready = outcome.failures.isEmpty && local == expectedVersion
+                    return AgentSkillSnapshot(
+                        localVersion: local, expectedVersion: expectedVersion,
+                        syncState: ready ? "ready" : "failed", checkedAt: checkedAt
+                    )
+                } catch {
+                    return AgentSkillSnapshot(
+                        localVersion: SkillSync.localVersion(at: target), expectedVersion: expectedVersion,
+                        syncState: "failed", checkedAt: checkedAt
+                    )
+                }
+            }
         )
         loopStatesTask = Task { [weak self] in
             for await state in loop.states {
@@ -358,9 +393,6 @@ final class AppModel: ObservableObject {
         // stands as it was.
         if let products = state.products, products != latestProducts {
             latestProducts = products
-        }
-        if let expectedVersion = state.expectedSkillVersion {
-            scheduleSkillSync(expectedVersion: expectedVersion)
         }
         if let launch = state.recentLaunches.first, launch.dispatchId != lastSeenLaunchId {
             lastSeenLaunchId = launch.dispatchId
@@ -512,10 +544,6 @@ final class AppModel: ObservableObject {
     func disableIntegration(_ agent: LocalAgent) {
         integrations.disable(agent)
         if checkingIntegrations.contains(agent) { skillSync = nil }
-        if LocalAgent.allCases.allSatisfy({ integrations.state(for: $0) == nil }) {
-            autoSkillSyncTask?.cancel()
-            autoSkillSyncTask = nil
-        }
         refreshIntegrationStates()
     }
 
@@ -524,8 +552,6 @@ final class AppModel: ObservableObject {
     /// invokes this permission/login flow. Each client is independent.
     func checkIntegration(_ agent: LocalAgent) {
         guard let credential, let environment, checkingIntegrations.isEmpty, !importingPath else { return }
-        autoSkillSyncTask?.cancel()
-        autoSkillSyncTask = nil
         if integrations.state(for: agent) == nil {
             let alert = NSAlert()
             if agent == .claudeCode {
@@ -601,60 +627,6 @@ final class AppModel: ObservableObject {
                 guard access.isCurrent(agent, attempt: attempt), self.credential == credential else { return }
                 skillSync = .failed(reason: error.localizedDescription)
                 access.finish(agent, attempt: attempt, version: nil, issue: error.localizedDescription)
-            }
-        }
-    }
-
-    /// A heartbeat only refreshes Skill files for integrations the person has
-    /// already enabled. It never probes or enables another client. Failures are
-    /// shown and retried after a bounded delay; a newer local Skill and symlinks
-    /// remain protected by SkillSync.apply.
-    private func scheduleSkillSync(expectedVersion: String) {
-        guard let credential, let environment,
-              SkillSync.version(ofSkill: "---\nname: missiongo\nversion: \(expectedVersion)\n---") != nil,
-              expectedVersion != lastAutoSkillSyncVersion,
-              autoSkillSyncTask == nil
-        else { return }
-        if failedAutoSkillSyncVersion == expectedVersion,
-           let retry = autoSkillRetryAfter, retry > Date() { return }
-        let enabled = LocalAgent.allCases.filter { integrations.state(for: $0) != nil }
-        guard !enabled.isEmpty else { return }
-        let targets = enabled.map {
-            SkillSync.target(
-                for: $0,
-                home: Paths.homeDirectory(),
-                codexHome: CodexLocation(environment: environment).codexHome
-            )
-        }
-        let access = integrations
-        skillSync = .syncing
-        autoSkillSyncTask = Task { [weak self] in
-            guard let self else { return }
-            defer { self.autoSkillSyncTask = nil }
-            do {
-                let outcome = try await SkillSync.run(
-                    serverUrl: credential.serverUrl,
-                    targets: targets,
-                    expectedVersion: expectedVersion,
-                    shouldApply: { enabled.allSatisfy { access.state(for: $0) != nil } }
-                )
-                guard self.credential == credential else { return }
-                self.skillSync = .outcome(outcome)
-                if outcome.failures.isEmpty {
-                    self.lastAutoSkillSyncVersion = expectedVersion
-                    self.failedAutoSkillSyncVersion = nil
-                    self.autoSkillRetryAfter = nil
-                } else {
-                    self.failedAutoSkillSyncVersion = expectedVersion
-                    self.autoSkillRetryAfter = Date().addingTimeInterval(5 * 60)
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                guard self.credential == credential else { return }
-                self.skillSync = .failed(reason: error.localizedDescription)
-                self.failedAutoSkillSyncVersion = expectedVersion
-                self.autoSkillRetryAfter = Date().addingTimeInterval(5 * 60)
             }
         }
     }

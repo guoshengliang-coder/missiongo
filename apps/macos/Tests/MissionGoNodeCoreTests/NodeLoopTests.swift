@@ -3,6 +3,7 @@ import XCTest
 
 private final class FakeAPI: NodeAPI, @unchecked Sendable {
     let calls = Locked<[String]>([])
+    let heartbeats = Locked<[[DetectedAgent]]>([])
     let reports = Locked<[(String, DispatchReport)]>([])
     let queue: Locked<[Result<DispatchRequest?, Error>]>
     let heartbeatResult: Locked<Result<HeartbeatReply, Error>>
@@ -20,6 +21,7 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
 
     func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate]) async throws -> HeartbeatReply {
         calls.withLock { $0.append("heartbeat:\(agents.map(\.version).joined(separator: ",")):\(repoCandidates.count)") }
+        heartbeats.withLock { $0.append(agents) }
         return try heartbeatResult.current.get()
     }
 
@@ -186,6 +188,38 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertEqual(loop.currentState.expectedSkillVersion, "5.10.0")
     }
 
+    func testSkillReadinessIsPublishedBeforeClaimsResume() async throws {
+        let api = FakeAPI(
+            claims: [.success(request)],
+            heartbeat: .success(HeartbeatReply(repos: [], expectedSkillVersion: "5.10.0"))
+        )
+        let adapter = FakeAdapter(outcome: .success(LaunchResult(
+            sessionName: "M-AND-1", sessionUrl: nil, sessionRef: "s1", logPath: nil
+        )))
+        let loop = NodeLoop(
+            api: api,
+            adapters: [adapter],
+            fallbackNodeName: "M",
+            timing: fastTiming(),
+            skillReadiness: { _, expected in
+                AgentSkillSnapshot(
+                    localVersion: expected == "5.10.0" ? "5.10.0" : "5.9.0",
+                    expectedVersion: expected,
+                    syncState: expected == "5.10.0" ? "ready" : "stale"
+                )
+            },
+            log: { _ in }
+        )
+        let task = Task { try await loop.run() }
+        await waitUntil { !api.reports.current.isEmpty && api.heartbeats.current.count >= 2 }
+        task.cancel()
+        try await task.value
+
+        XCTAssertEqual(api.heartbeats.current.first?.first?.ready, false)
+        XCTAssertEqual(api.heartbeats.current.dropFirst().first?.first?.ready, true)
+        XCTAssertEqual(api.reports.current.first?.1.status, .launched)
+    }
+
     func testMissingAgentIsDetectedAgainOnTheNextHeartbeat() async throws {
         let api = FakeAPI(claims: [])
         let adapter = RecoveringAdapter()
@@ -208,7 +242,10 @@ final class NodeLoopTests: XCTestCase {
         await waitUntil { !api.reports.current.isEmpty }
         task.cancel()
         try await task.value
-        XCTAssertEqual(api.reports.current.first?.1, DispatchReport(status: .failed, error: "Claude Code 未登录（authMethod=none）"))
+        XCTAssertEqual(api.reports.current.first?.1, DispatchReport(
+            status: .failed, error: "Claude Code 未登录（authMethod=none）",
+            failureCode: "unknown", failureStage: "unknown"
+        ))
     }
 
     func testUnavailableAgentIsExcludedBeforeTheServerHandsOverWork() async throws {
@@ -226,7 +263,7 @@ final class NodeLoopTests: XCTestCase {
         try await task.value
 
         XCTAssertFalse(api.calls.current.contains { $0.contains("codex") })
-        XCTAssertFalse(api.calls.current.contains { $0.hasPrefix("heartbeat:") && $0.contains("1.0.0") })
+        XCTAssertTrue(api.calls.current.contains { $0.hasPrefix("heartbeat:") && $0.contains("1.0.0") })
         XCTAssertTrue(messages.current.contains { $0.contains("暂停领取 codex 派单") && $0.contains("资源余量不足") })
     }
 
@@ -265,7 +302,10 @@ final class NodeLoopTests: XCTestCase {
         let codex = DispatchRequest(dispatchId: "d2", itemKeys: ["AND-2"], repoPath: "/p", agentKind: "codex", mode: "x")
         let loop = NodeLoop(api: FakeAPI(claims: []), adapters: [], fallbackNodeName: "Mac mini", log: { _ in })
         let (report, _) = await loop.launchDispatch(codex)
-        XCTAssertEqual(report, DispatchReport(status: .failed, error: "本机没有 codex 的适配器。"))
+        XCTAssertEqual(report, DispatchReport(
+            status: .failed, error: "本机没有 codex 的适配器。",
+            failureCode: "unknown", failureStage: "readiness"
+        ))
     }
 
     func testNetworkErrorsKeepTheLoopRunning() async throws {

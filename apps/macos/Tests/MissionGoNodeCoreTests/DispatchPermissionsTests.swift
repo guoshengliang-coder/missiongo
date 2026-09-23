@@ -62,6 +62,7 @@ final class DispatchPermissionsTests: XCTestCase {
             }
             server.waitUntilDone()
             XCTAssertFalse(server.methods.contains("turn/start"), mismatch)
+            XCTAssertTrue(server.methods.contains("thread/archive"), mismatch)
         }
     }
 
@@ -95,6 +96,7 @@ final class DispatchPermissionsTests: XCTestCase {
             server.waitUntilDone()
             XCTAssertTrue(server.methods.contains("mcpServer/tool/call"))
             XCTAssertFalse(server.methods.contains("turn/start"))
+            XCTAssertTrue(server.methods.contains("thread/archive"))
         }
     }
 

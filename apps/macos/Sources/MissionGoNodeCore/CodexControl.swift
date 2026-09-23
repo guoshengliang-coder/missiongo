@@ -177,6 +177,8 @@ public enum CodexControlError: Error, Equatable, LocalizedError {
     case closed(method: String)
     case rpc(method: String, message: String)
     case invalidResponse(method: String)
+    case mcpAuthorization
+    case skillStale
 
     public var errorDescription: String? {
         switch self {
@@ -192,6 +194,10 @@ public enum CodexControlError: Error, Equatable, LocalizedError {
             return "Codex 拒绝了 \(method)：\(message)"
         case let .invalidResponse(method):
             return "Codex 对 \(method) 的回应无法识别。"
+        case .mcpAuthorization:
+            return "Codex 的 MissionGo MCP 未确认评论与领取权限；尚未启动任务。请在该节点重新完成 MCP 授权。"
+        case .skillStale:
+            return "Codex 的 MissionGo Skill 版本与服务端不一致或无法核实；尚未启动任务。请等待 Skill 同步完成再派单。"
         }
     }
 }
@@ -264,12 +270,12 @@ public enum CodexProtocol {
               JSONValues.isTrue(capabilities["canComment"]),
               let writeTools = capabilities["writeTools"] as? [String],
               writeTools.contains("append_comment"), writeTools.contains("claim_item") else {
-            throw CodexControlError.rpc(method: "mcpServer/tool/call", message: "Codex 的 MissionGo MCP 未确认评论与领取权限；尚未启动任务。请在该节点运行 codex mcp login missiongo --scopes missiongo:read,missiongo:write 并完成授权，再派单。")
+            throw CodexControlError.mcpAuthorization
         }
         if let skillVersion {
             let expected = (account["skill"] as? [String: Any])?["expectedVersion"] as? String
             guard expected == skillVersion else {
-                throw CodexControlError.rpc(method: "mcpServer/tool/call", message: "Codex 的 MissionGo Skill 版本与服务端不一致或无法核实；尚未启动任务。请等待 Skill 同步完成再派单。")
+                throw CodexControlError.skillStale
             }
         }
     }
@@ -779,28 +785,35 @@ public struct CodexAppServerControl: CodexControl {
         guard let threadId = CodexProtocol.threadId(fromThreadStart: started) else {
             throw CodexControlError.invalidResponse(method: "thread/start")
         }
-        try CodexProtocol.validateStarted(started, request: request)
-        let accountParams: [String: Any] = [
-            "threadId": threadId, "server": "missiongo", "tool": "get_current_account", "arguments": [:],
-        ]
-        let account: [String: Any]
         do {
-            account = try connection.call("mcpServer/tool/call", accountParams)
-        } catch let error as CodexControlError where isMissionGoStartupTimeout(error) {
-            // A cold MCP process can miss Codex's first 30-second startup
-            // window. Retry this read-only permission probe once, but never
-            // retry another error and never start the work turn until it passes.
-            account = try connection.call("mcpServer/tool/call", accountParams)
+            try CodexProtocol.validateStarted(started, request: request)
+            let accountParams: [String: Any] = [
+                "threadId": threadId, "server": "missiongo", "tool": "get_current_account", "arguments": [:],
+            ]
+            let account: [String: Any]
+            do {
+                account = try connection.call("mcpServer/tool/call", accountParams)
+            } catch let error as CodexControlError where isMissionGoStartupTimeout(error) {
+                // A cold MCP process can miss Codex's first 30-second startup
+                // window. Retry this read-only permission probe once, but never
+                // retry another error and never start the work turn until it passes.
+                account = try connection.call("mcpServer/tool/call", accountParams)
+            }
+            try CodexProtocol.validateAccount(account, skillVersion: request.skillVersion)
+            // A thread that could not be named is still a working thread; failing the
+            // dispatch here would leave it running with nobody told about it.
+            _ = try? connection.call("thread/name/set", CodexProtocol.threadNameParams(threadId: threadId, name: request.name))
+            _ = try connection.call("turn/start", CodexProtocol.turnStartParams(
+                threadId: threadId,
+                prompt: request.prompt,
+                overrides: CodexTurnOverrides(model: request.model, effort: request.effort)
+            ))
+        } catch {
+            // Nothing reached turn/start successfully. Archive the empty shell
+            // immediately so a stale Skill or MCP grant does not litter Codex.
+            _ = try? connection.call("thread/archive", CodexProtocol.threadArchiveParams(threadId: threadId))
+            throw error
         }
-        try CodexProtocol.validateAccount(account, skillVersion: request.skillVersion)
-        // A thread that could not be named is still a working thread; failing the
-        // dispatch here would leave it running with nobody told about it.
-        _ = try? connection.call("thread/name/set", CodexProtocol.threadNameParams(threadId: threadId, name: request.name))
-        _ = try connection.call("turn/start", CodexProtocol.turnStartParams(
-            threadId: threadId,
-            prompt: request.prompt,
-            overrides: CodexTurnOverrides(model: request.model, effort: request.effort)
-        ))
         return threadId
     }
 

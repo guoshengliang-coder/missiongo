@@ -421,6 +421,7 @@ export function App() {
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
+  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [agentSessionId, setAgentSessionId] = useState<string | null>(agentSessionIdFromUrl);
   const [agentConversationOpen, setAgentConversationOpen] = useState(
     () => Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]),
@@ -452,6 +453,12 @@ export function App() {
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
   const previousAgentConsoleOpenRef = useRef(agentConsoleOpen);
+
+  useEffect(() => {
+    const update = () => setDocumentVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
   const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
   const agentConsoleSinglePane = useMediaQuery("(max-width: 520px)");
   const agentConsoleLayout = agentConsoleSinglePane ? "single" : "wide";
@@ -905,7 +912,11 @@ export function App() {
     queryKey: ["agent-sessions"],
     queryFn: () => api.listAgentSessions(),
     enabled: bootstrapQuery.isSuccess && hasAnyAiPermission,
-    refetchInterval: agentSessionsRefetchInterval(agentConsoleOpen),
+    refetchInterval: (query) => agentSessionsRefetchInterval(
+      agentConsoleOpen,
+      documentVisible,
+      query.state.fetchFailureCount,
+    ),
   });
   const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
   const attentionCounts = useMemo(() => agentAttentionCounts(allAgentSessions), [allAgentSessions]);

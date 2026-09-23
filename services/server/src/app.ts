@@ -12,6 +12,9 @@ import {
   WORK_ITEM_STATUSES,
   WORK_ITEM_TYPES,
   type AgentKind,
+  type AgentSkillSyncState,
+  type DispatchFailureCode,
+  type DispatchFailureStage,
   type WorkItemCreator,
   type WorkItemEnvironment,
   type WorkItemReport,
@@ -1601,6 +1604,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     latest: dispatchStore.listLatestDispatches(requireAccountId(request)),
   }));
 
+  app.get("/api/v1/dispatches/health", async (request) => {
+    const daysValue = (request.query as { days?: string }).days;
+    const days = daysValue === undefined ? 7 : Number(daysValue);
+    if (!Number.isInteger(days) || days < 1 || days > 30) throw invalidInput("days must be an integer from 1 to 30.");
+    const accountId = requireAccountId(request);
+    return dispatchStore.dispatchHealth(accountId, days, nodeProductScope(accountId));
+  });
+
   app.post("/api/v1/dispatches", async (request, reply) => {
     const body = objectBody(request.body);
     const accountId = requireAccountId(request);
@@ -2080,21 +2091,52 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const body = objectBody(request.body);
     const agents = Array.isArray(body.agents) ? body.agents : [];
     const repoCandidates = Array.isArray(body.repoCandidates) ? body.repoCandidates : [];
+    const expectedSkillVersion = skillVersionInfo(options.publicOrigin).expectedVersion;
+    const clientVersion = stringField(body, "clientVersion", false);
     return {
       // The client polls this every 30 seconds whether or not its menu is open,
       // so it is the one channel that can carry a new product to a machine
       // nobody is looking at.
       products: nodeProducts(node.accountId),
-      expectedSkillVersion: skillVersionInfo(options.publicOrigin).expectedVersion,
+      expectedSkillVersion,
       repos: dispatchStore.recordHeartbeat(
         node.nodeId,
         agents.map((entry) => {
           const agent = objectBody(entry);
           const models = parseAgentModels(agent.models);
+          const skillInput = agent.skill === undefined ? undefined : objectBody(agent.skill);
+          const resourceInput = agent.resource === undefined ? undefined : objectBody(agent.resource);
+          const resourceStatus = resourceInput ? stringField(resourceInput, "status")! : undefined;
+          if (resourceStatus && !["ready", "unavailable", "unknown"].includes(resourceStatus)) {
+            throw invalidInput("Unsupported agent resource status.");
+          }
           return {
             kind: stringField(agent, "kind")! as AgentKind,
             ...(stringField(agent, "version", false) ? { version: agent.version as string } : {}),
             ...(models ? { models } : {}),
+            ...(typeof agent.ready === "boolean" ? { ready: agent.ready } : {}),
+            ...(stringField(agent, "unavailableReason", false)
+              ? { unavailableReason: agent.unavailableReason as string }
+              : {}),
+            ...(skillInput ? {
+              skill: {
+                syncState: stringField(skillInput, "syncState")! as AgentSkillSyncState,
+                ...(stringField(skillInput, "localVersion", false) ? { localVersion: skillInput.localVersion as string } : {}),
+                ...(stringField(skillInput, "expectedVersion", false) ? { expectedVersion: skillInput.expectedVersion as string } : {}),
+                ...(stringField(skillInput, "checkedAt", false) ? { checkedAt: skillInput.checkedAt as string } : {}),
+              },
+            } : {}),
+            ...(resourceInput ? {
+              resource: {
+                status: resourceStatus as "ready" | "unavailable" | "unknown",
+                ...(typeof resourceInput.pid === "number" ? { pid: resourceInput.pid } : {}),
+                ...(typeof resourceInput.openFiles === "number" ? { openFiles: resourceInput.openFiles } : {}),
+                ...(typeof resourceInput.softLimit === "number" ? { softLimit: resourceInput.softLimit } : {}),
+                ...(stringField(resourceInput, "source", false) ? { source: resourceInput.source as string } : {}),
+                ...(stringField(resourceInput, "checkedAt", false) ? { checkedAt: resourceInput.checkedAt as string } : {}),
+                ...(stringField(resourceInput, "reason", false) ? { reason: resourceInput.reason as string } : {}),
+              },
+            } : {}),
           };
         }),
         repoCandidates.map((entry) => {
@@ -2106,6 +2148,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           };
         }),
         nodeProductScope(node.accountId),
+        { ...(clientVersion ? { clientVersion } : {}), expectedSkillVersion },
       ),
     };
   });
@@ -2164,6 +2207,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(stringField(body, "sessionName", false) ? { sessionName: body.sessionName as string } : {}),
       ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
       ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
+      ...(stringField(body, "failureCode", false) ? { failureCode: body.failureCode as DispatchFailureCode } : {}),
+      ...(stringField(body, "failureStage", false) ? { failureStage: body.failureStage as DispatchFailureStage } : {}),
     });
     const sessionRef = stringField(body, "sessionRef", false);
     if (status === "launched" && sessionRef) {

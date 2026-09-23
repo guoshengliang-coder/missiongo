@@ -791,6 +791,31 @@ public enum ClaudeHostProcess {
         // one signal therefore reaches the CLI and any tests/builds it spawned.
         if Darwin.kill(-pid, SIGTERM) != 0 { _ = Darwin.kill(pid, SIGTERM) }
     }
+
+    /// Stops the entire process group and proves that no descendant remains.
+    /// A manual archive must not report success merely because SIGTERM was sent.
+    public static func terminateGroupAndWait(_ pid: Int32, grace: TimeInterval = 2) async -> Bool {
+        guard isClaudeHost(pid) else { return false }
+        if Darwin.kill(-pid, SIGTERM) != 0 { _ = Darwin.kill(pid, SIGTERM) }
+        let deadline = Date().addingTimeInterval(max(0, grace))
+        while processGroupIsRunning(pid), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        if processGroupIsRunning(pid) {
+            if Darwin.kill(-pid, SIGKILL) != 0 { _ = Darwin.kill(pid, SIGKILL) }
+            let killDeadline = Date().addingTimeInterval(1)
+            while processGroupIsRunning(pid), Date() < killDeadline {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        return !processGroupIsRunning(pid)
+    }
+
+    private static func processGroupIsRunning(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        if Darwin.kill(-pid, 0) == 0 { return true }
+        return errno == EPERM
+    }
 }
 
 public enum ClaudeRuntimePolicy {

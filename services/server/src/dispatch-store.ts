@@ -1,6 +1,20 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
-import { AGENT_KINDS, isAcceptedSessionUrl, isNodeOnline, isSupportedDispatchMode, type AgentKind } from "@missiongo/domain";
+import {
+  AGENT_KINDS,
+  AGENT_SKILL_SYNC_STATES,
+  DISPATCH_FAILURE_CODES,
+  DISPATCH_FAILURE_STAGES,
+  isAcceptedSessionUrl,
+  isNodeOnline,
+  isSupportedDispatchMode,
+  type AgentKind,
+  type AgentResourceSnapshot,
+  type AgentSkillSnapshot,
+  type DispatchDiagnosticSnapshot,
+  type DispatchFailureCode,
+  type DispatchFailureStage,
+} from "@missiongo/domain";
 
 import { requireOfferedModel, type NodeAgentModel } from "./agent-settings.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
@@ -11,6 +25,10 @@ export interface NodeAgentReport {
   readonly version?: string;
   /** Models this agent offers on the machine (AND-130); absent from clients that cannot choose one. */
   readonly models?: readonly NodeAgentModel[];
+  readonly ready?: boolean;
+  readonly unavailableReason?: string;
+  readonly skill?: AgentSkillSnapshot;
+  readonly resource?: AgentResourceSnapshot;
 }
 
 /** A checkout the machine reported it can already work in. */
@@ -36,6 +54,8 @@ export interface NodeSnapshot {
   readonly deviceName: string;
   readonly nickname?: string;
   readonly hostname?: string;
+  readonly clientVersion?: string;
+  readonly expectedSkillVersion?: string;
   readonly agents: readonly NodeAgentReport[];
   readonly repos: readonly NodeRepoMapping[];
   readonly repoCandidates: readonly RepoCandidate[];
@@ -72,10 +92,35 @@ export interface DispatchSnapshot {
   readonly sessionUrl?: string;
   readonly agentSessionId?: string;
   readonly error?: string;
+  readonly failureCode?: DispatchFailureCode;
+  readonly failureStage?: DispatchFailureStage;
+  readonly diagnosticSnapshot?: DispatchDiagnosticSnapshot;
   readonly createdAt: string;
   readonly deliveredAt?: string;
   readonly completedAt?: string;
   readonly archivedAt?: string;
+}
+
+export interface DispatchHealthGroup {
+  readonly key: string;
+  readonly total: number;
+  readonly failed: number;
+  readonly failureRate: number;
+}
+
+export interface DispatchHealthSnapshot {
+  readonly windowDays: number;
+  readonly total: number;
+  readonly launched: number;
+  readonly failed: number;
+  readonly failureRate: number;
+  readonly groups: {
+    readonly nodes: readonly DispatchHealthGroup[];
+    readonly agents: readonly DispatchHealthGroup[];
+    readonly versions: readonly DispatchHealthGroup[];
+    readonly codes: readonly DispatchHealthGroup[];
+  };
+  readonly recentFailures: readonly DispatchSnapshot[];
 }
 
 export interface DispatchJob {
@@ -110,6 +155,8 @@ interface NodeRow {
   name: string;
   nickname: string | null;
   hostname: string | null;
+  client_version: string | null;
+  expected_skill_version: string | null;
   agents_json: string;
   repo_candidates_json: string | null;
   last_seen_at: string | null;
@@ -130,6 +177,9 @@ interface DispatchRow {
   session_url: string | null;
   agent_session_id: string | null;
   error: string | null;
+  failure_code: string | null;
+  failure_stage: string | null;
+  diagnostic_snapshot_json: string | null;
   created_at: string;
   delivered_at: string | null;
   completed_at: string | null;
@@ -330,7 +380,8 @@ export class DispatchStore {
       .prepare(
         `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.model, d.effort, d.status,
                 d.session_name, d.session_url, s.id AS agent_session_id,
-                d.error, d.created_at, d.delivered_at, d.completed_at, d.archived_at
+                d.error, d.failure_code, d.failure_stage, d.diagnostic_snapshot_json,
+                d.created_at, d.delivered_at, d.completed_at, d.archived_at
          FROM dispatches d JOIN nodes n ON n.id = d.node_id
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          WHERE d.node_id = ?
@@ -344,7 +395,8 @@ export class DispatchStore {
   private nodeRow(nodeId: string): NodeRow {
     const row = this.database.connection
       .prepare(
-        `SELECT id, account_id, name, nickname, hostname, agents_json, repo_candidates_json,
+        `SELECT id, account_id, name, nickname, hostname, client_version, expected_skill_version,
+                agents_json, repo_candidates_json,
                 last_seen_at, revoked_at, created_at
          FROM nodes WHERE id = ?`,
       )
@@ -366,10 +418,26 @@ export class DispatchStore {
     agents: readonly NodeAgentReport[],
     repoCandidates: readonly RepoCandidate[] = [],
     visibleProductIds: ProductScope = "*",
+    metadata: { readonly clientVersion?: string; readonly expectedSkillVersion?: string } = {},
   ): readonly NodeRepoMapping[] {
     for (const agent of agents) {
       if (!AGENT_KINDS.includes(agent.kind)) throw invalidInput(`Unsupported agent kind: ${String(agent.kind)}.`);
+      if (agent.skill && !AGENT_SKILL_SYNC_STATES.includes(agent.skill.syncState)) {
+        throw invalidInput(`Unsupported Skill sync state: ${String(agent.skill.syncState)}.`);
+      }
     }
+    const normalizedAgents = agents.map((agent) => {
+      const skillReady = !metadata.expectedSkillVersion
+        || (agent.skill?.syncState === "ready" && agent.skill.localVersion === metadata.expectedSkillVersion);
+      const ready = agent.ready !== false && skillReady && agent.resource?.status !== "unavailable";
+      return {
+        ...agent,
+        ready,
+        ...(!ready && !agent.unavailableReason
+          ? { unavailableReason: skillReady ? agent.resource?.reason ?? "Agent readiness could not be verified." : "MissionGo Skill is not synchronized." }
+          : {}),
+      };
+    });
     // The machine offers these so the console can present a list instead of a
     // path field. They are a convenience, not a permission: a mapping is still
     // only what a person saved, and a path outside this list can still be typed.
@@ -383,15 +451,24 @@ export class DispatchStore {
       }));
     const now = new Date().toISOString();
     this.database.connection
-      .prepare("UPDATE nodes SET agents_json = ?, repo_candidates_json = ?, last_seen_at = ?, updated_at = ? WHERE id = ?")
-      .run(JSON.stringify(agents), JSON.stringify(candidates), now, now, nodeId);
+      .prepare(
+        `UPDATE nodes SET agents_json = ?, repo_candidates_json = ?, client_version = ?, expected_skill_version = ?,
+                          last_seen_at = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(
+        JSON.stringify(normalizedAgents), JSON.stringify(candidates),
+        metadata.clientVersion?.slice(0, 100) || null,
+        metadata.expectedSkillVersion?.slice(0, 100) || null,
+        now, now, nodeId,
+      );
     return this.listRepos(nodeId, visibleProductIds);
   }
 
   listNodes(accountId: string, visibleProductIds: ProductScope = "*"): readonly NodeSnapshot[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT id, account_id, name, nickname, hostname, agents_json, repo_candidates_json,
+        `SELECT id, account_id, name, nickname, hostname, client_version, expected_skill_version,
+                agents_json, repo_candidates_json,
                 last_seen_at, revoked_at, created_at
          FROM nodes WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`,
       )
@@ -402,7 +479,8 @@ export class DispatchStore {
   getNode(accountId: string, nodeId: string): NodeSnapshot {
     const row = this.database.connection
       .prepare(
-        `SELECT id, account_id, name, nickname, hostname, agents_json, repo_candidates_json,
+        `SELECT id, account_id, name, nickname, hostname, client_version, expected_skill_version,
+                agents_json, repo_candidates_json,
                 last_seen_at, revoked_at, created_at
          FROM nodes WHERE id = ? AND account_id = ?`,
       )
@@ -536,6 +614,9 @@ export class DispatchStore {
       if (!agent) {
         throw conflict("agent_unavailable", "This node did not report that agent.");
       }
+      if (agent.ready === false) {
+        throw conflict("agent_not_ready", agent.unavailableReason ?? "This agent is not ready for dispatch.");
+      }
       requireOfferedModel(input.agentKind, agent.models, {
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
@@ -594,14 +675,21 @@ export class DispatchStore {
         for (const queuedId of queuedIds) cancel.run(now, "已被重新派单取代", queuedId);
       }
       const dispatchId = randomUUID();
+      const diagnosticSnapshot: DispatchDiagnosticSnapshot = {
+        ...(node.clientVersion ? { nodeClientVersion: node.clientVersion } : {}),
+        ...(agent.version ? { agentVersion: agent.version } : {}),
+        ...(agent.skill ? { skill: agent.skill } : {}),
+        ...(agent.resource ? { resource: agent.resource } : {}),
+      };
       this.database.connection
         .prepare(
-          `INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, model, effort, status, repo_path, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+          `INSERT INTO dispatches
+             (id, account_id, node_id, agent_kind, mode, model, effort, status, repo_path, diagnostic_snapshot_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
         )
         .run(
           dispatchId, input.accountId, node.id, input.agentKind, input.mode,
-          input.model ?? null, input.effort ?? null, repoPath, now,
+          input.model ?? null, input.effort ?? null, repoPath, JSON.stringify(diagnosticSnapshot), now,
         );
       const insertItem = this.database.connection.prepare(
         "INSERT INTO dispatch_items (dispatch_id, item_id, position) VALUES (?, ?, ?)",
@@ -809,6 +897,8 @@ export class DispatchStore {
     sessionName?: string;
     sessionUrl?: string;
     error?: string;
+    failureCode?: DispatchFailureCode;
+    failureStage?: DispatchFailureStage;
   }): void {
     const row = this.database.connection
       .prepare("SELECT id, status FROM dispatches WHERE id = ? AND node_id = ?")
@@ -820,13 +910,19 @@ export class DispatchStore {
     if (sessionUrl && !isAcceptedSessionUrl(sessionUrl)) {
       throw invalidInput("Session URL must be an https:// address or a codex://threads/<id> link.");
     }
+    if (input.failureCode && !DISPATCH_FAILURE_CODES.includes(input.failureCode)) {
+      throw invalidInput("Unsupported dispatch failure code.");
+    }
+    if (input.failureStage && !DISPATCH_FAILURE_STAGES.includes(input.failureStage)) {
+      throw invalidInput("Unsupported dispatch failure stage.");
+    }
     const now = new Date().toISOString();
     // A launch failure is something to come back for, so it moves the unread
     // clock (AND-135). A successful launch does not: the session's own first
     // message will.
     this.database.connection
       .prepare(
-        `UPDATE dispatches SET status = ?, session_name = ?, session_url = ?, error = ?, completed_at = ?,
+        `UPDATE dispatches SET status = ?, session_name = ?, session_url = ?, error = ?, failure_code = ?, failure_stage = ?, completed_at = ?,
                 unread_at = CASE WHEN ? = 'failed' THEN ? ELSE unread_at END
          WHERE id = ?`,
       )
@@ -835,6 +931,8 @@ export class DispatchStore {
         input.sessionName?.trim() || null,
         sessionUrl || null,
         input.error?.slice(0, 2_000) || null,
+        input.status === "failed" ? input.failureCode ?? "unknown" : null,
+        input.status === "failed" ? input.failureStage ?? "unknown" : null,
         now,
         input.status,
         now,
@@ -847,7 +945,8 @@ export class DispatchStore {
       .prepare(
         `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.model, d.effort, d.status,
                 d.session_name, d.session_url, s.id AS agent_session_id,
-                d.error, d.created_at, d.delivered_at, d.completed_at, d.archived_at
+                d.error, d.failure_code, d.failure_stage, d.diagnostic_snapshot_json,
+                d.created_at, d.delivered_at, d.completed_at, d.archived_at
          FROM dispatches d JOIN nodes n ON n.id = d.node_id
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          WHERE d.id = ? AND d.account_id = ?`,
@@ -908,7 +1007,8 @@ export class DispatchStore {
       .prepare(
         `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.model, d.effort, d.status,
                 d.session_name, d.session_url, s.id AS agent_session_id,
-                d.error, d.created_at, d.delivered_at, d.completed_at, d.archived_at
+                d.error, d.failure_code, d.failure_stage, d.diagnostic_snapshot_json,
+                d.created_at, d.delivered_at, d.completed_at, d.archived_at
          FROM dispatches d
          JOIN nodes n ON n.id = d.node_id
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
@@ -919,6 +1019,78 @@ export class DispatchStore {
       )
       .all(itemKey.toUpperCase(), accountId) as unknown as DispatchRow[];
     return rows.map((row) => this.mapDispatch(row));
+  }
+
+  dispatchHealth(accountId: string, windowDays = 7, visibleProductIds: ProductScope = "*"): DispatchHealthSnapshot {
+    const days = Math.min(Math.max(Math.trunc(windowDays), 1), 30);
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    const visible = visibleProductIds === "*" ? undefined : visibleProductIds;
+    const productClause = visible
+      ? `AND EXISTS (
+           SELECT 1 FROM dispatch_items scope_di JOIN work_items scope_w ON scope_w.id = scope_di.item_id
+           WHERE scope_di.dispatch_id = d.id AND scope_w.product_id IN (${visible.map(() => "?").join(", ")})
+         )`
+      : "";
+    if (visible?.length === 0) {
+      return {
+        windowDays: days, total: 0, launched: 0, failed: 0, failureRate: 0,
+        groups: { nodes: [], agents: [], versions: [], codes: [] }, recentFailures: [],
+      };
+    }
+    const rows = this.database.connection
+      .prepare(
+        `SELECT d.id, d.node_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.mode, d.model, d.effort, d.status,
+                d.session_name, d.session_url, s.id AS agent_session_id,
+                d.error, d.failure_code, d.failure_stage, d.diagnostic_snapshot_json,
+                d.created_at, d.delivered_at, d.completed_at, d.archived_at
+         FROM dispatches d JOIN nodes n ON n.id = d.node_id
+         LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
+         WHERE d.account_id = ? AND d.created_at >= ?
+         ${productClause}
+         ORDER BY d.created_at DESC`,
+      )
+      .all(accountId, since, ...(visible ?? [])) as unknown as DispatchRow[];
+    const completed = rows.filter((row) => row.status === "launched" || row.status === "failed");
+    const failed = completed.filter((row) => row.status === "failed");
+    const grouped = (keyFor: (row: DispatchRow) => string, source: readonly DispatchRow[] = completed): DispatchHealthGroup[] => {
+      const buckets = new Map<string, { total: number; failed: number }>();
+      for (const row of source) {
+        const key = keyFor(row) || "unknown";
+        const bucket = buckets.get(key) ?? { total: 0, failed: 0 };
+        bucket.total += 1;
+        if (row.status === "failed") bucket.failed += 1;
+        buckets.set(key, bucket);
+      }
+      return [...buckets].map(([key, value]) => ({
+        key,
+        ...value,
+        failureRate: value.total === 0 ? 0 : value.failed / value.total,
+      })).sort((left, right) => right.failed - left.failed || right.total - left.total || left.key.localeCompare(right.key));
+    };
+    const diagnostic = (row: DispatchRow): DispatchDiagnosticSnapshot => row.diagnostic_snapshot_json
+      ? JSON.parse(row.diagnostic_snapshot_json) as DispatchDiagnosticSnapshot
+      : {};
+    return {
+      windowDays: days,
+      total: completed.length,
+      launched: completed.length - failed.length,
+      failed: failed.length,
+      failureRate: completed.length === 0 ? 0 : failed.length / completed.length,
+      groups: {
+        nodes: grouped((row) => row.node_name),
+        agents: grouped((row) => row.agent_kind),
+        versions: grouped((row) => {
+          const snapshot = diagnostic(row);
+          return [
+            snapshot.nodeClientVersion && `client ${snapshot.nodeClientVersion}`,
+            snapshot.agentVersion && `agent ${snapshot.agentVersion}`,
+            snapshot.skill?.localVersion && `skill ${snapshot.skill.localVersion}`,
+          ].filter(Boolean).join(" / ") || "unknown";
+        }),
+        codes: grouped((row) => row.failure_code ?? "unknown", failed),
+      },
+      recentFailures: failed.slice(0, 20).map((row) => this.mapDispatch(row)),
+    };
   }
 
   listDispatchItemIds(dispatchId: string): readonly string[] {
@@ -945,6 +1117,8 @@ export class DispatchStore {
       deviceName: row.name,
       ...(row.nickname ? { nickname: row.nickname } : {}),
       ...(row.hostname ? { hostname: row.hostname } : {}),
+      ...(row.client_version ? { clientVersion: row.client_version } : {}),
+      ...(row.expected_skill_version ? { expectedSkillVersion: row.expected_skill_version } : {}),
       agents: JSON.parse(row.agents_json) as NodeAgentReport[],
       repos: this.listRepos(row.id, visibleProductIds),
       repoCandidates: row.repo_candidates_json
@@ -1023,6 +1197,11 @@ export class DispatchStore {
       ...(row.session_url ? { sessionUrl: row.session_url } : {}),
       ...(row.agent_session_id ? { agentSessionId: row.agent_session_id } : {}),
       ...(row.error ? { error: row.error } : {}),
+      ...(row.failure_code ? { failureCode: row.failure_code as DispatchFailureCode } : {}),
+      ...(row.failure_stage ? { failureStage: row.failure_stage as DispatchFailureStage } : {}),
+      ...(row.diagnostic_snapshot_json
+        ? { diagnosticSnapshot: JSON.parse(row.diagnostic_snapshot_json) as DispatchDiagnosticSnapshot }
+        : {}),
       createdAt: row.created_at,
       ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}),
       ...(row.completed_at ? { completedAt: row.completed_at } : {}),
