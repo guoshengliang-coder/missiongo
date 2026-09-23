@@ -106,7 +106,10 @@ export const AUDIT_SOURCE = String.raw`(() => {
       }
     }
     if (element.matches("button, a[href], input, select, textarea, summary, [role=button], [role=tab]")) {
-      const box = element.getBoundingClientRect();
+      // A checkbox or radio inside a <label> is pressed through the label, which
+      // is the target size that counts (WCAG 2.5.8).
+      const hit = element.matches("input") && element.closest("label") ? element.closest("label") : element;
+      const box = hit.getBoundingClientRect();
       targets.push({ where: describe(element), label: (element.getAttribute("aria-label") || element.textContent || "").trim().slice(0, 30), width: Math.round(box.width), height: Math.round(box.height) });
     }
   }

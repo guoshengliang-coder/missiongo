@@ -403,6 +403,13 @@ function useNearViewport<ElementType extends HTMLElement>(rootMargin = "160px"):
   return [ref, isNearViewport];
 }
 
+/**
+ * The search shortcut as this keyboard spells it. The handler already takes
+ * either modifier; only the hint was Mac-only, so Windows and Linux were told
+ * to press a key they do not have.
+ */
+const SEARCH_SHORTCUT = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent) ? "⌘ K" : "Ctrl K";
+
 export function App() {
   const queryClient = useQueryClient();
   const { statusLabel, t, typeLabel } = useI18n();
@@ -1251,6 +1258,7 @@ export function App() {
             type="button"
             className="ai-console-toggle"
             aria-pressed="false"
+            aria-label={t("agentConsoleOpen")}
             onClick={openAgentConsole}
           >
             <Sparkles size={16} />
@@ -1302,7 +1310,7 @@ export function App() {
                 }}
                 placeholder={t("searchItems")}
               />
-              <kbd>⌘ K</kbd>
+              <kbd>{SEARCH_SHORTCUT}</kbd>
               <button className="icon-button mobile-only mobile-search-close" onClick={() => setMobileSearchOpen(false)} aria-label={t("closeSearch")}><X size={18} /></button>
             </div>
             <button className="icon-button mobile-only mobile-search-trigger" onClick={() => setMobileSearchOpen(true)} aria-label={t("searchItems")}><Search size={19} /></button>
@@ -1798,7 +1806,7 @@ function ItemRow({
       aria-current={selected ? "true" : undefined}
       onClick={(event) => {
         const target = event.target;
-        if (target instanceof Element && target.closest("button, a, input, select, textarea, summary, details, video, [role='dialog']")) return;
+        if (target instanceof Element && target.closest("button, a, input, label, select, textarea, summary, details, video, [role='dialog']")) return;
         onOpen();
       }}
     >
@@ -1806,16 +1814,21 @@ function ItemRow({
         {/* Dispatching is a batch action, so the pick has to happen in the list.
             The click guard on the row above already exempts inputs, which is what
             keeps ticking a box from opening the detail pane. */}
+        {/* The label is the finger-sized target: on a touch screen it grows to
+            44px around a checkbox that stays small to look at. It is in the
+            guard's list too, so tapping its padding ticks rather than opens. */}
         {selectionVisible && (
-          <input
-            type="checkbox"
-            className="item-select"
-            checked={checked}
-            disabled={!selectable}
-            aria-label={t("selectForDispatch", { key: item.key })}
-            title={selectable ? undefined : t("onlyReadyDispatchable")}
-            onChange={onToggleChecked}
-          />
+          <label className="item-select-hit">
+            <input
+              type="checkbox"
+              className="item-select"
+              checked={checked}
+              disabled={!selectable}
+              aria-label={t("selectForDispatch", { key: item.key })}
+              title={selectable ? undefined : t("onlyReadyDispatchable")}
+              onChange={onToggleChecked}
+            />
+          </label>
         )}
         <button className="item-row-main" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
           <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={15} /></span>
