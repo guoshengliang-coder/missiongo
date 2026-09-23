@@ -28,6 +28,10 @@ services:
       # deploy passes it without the env file having to carry it.
       MISSIONGO_RELEASE: ${MISSIONGO_RELEASE:-unknown}
       TRUST_PROXY: ${TRUST_PROXY:-loopback,uniquelocal}
+      # AND-150: the Firebase service-account JSON as one line, for the Android
+      # widget's push signals. Optional; without it pushes stay off and the app
+      # falls back to its timed refreshes.
+      WIDGET_FCM_SERVICE_ACCOUNT: ${WIDGET_FCM_SERVICE_ACCOUNT:-}
     volumes:
       - ${MISSIONGO_DATA_PATH:?MISSIONGO_DATA_PATH is required}:/data
     healthcheck:

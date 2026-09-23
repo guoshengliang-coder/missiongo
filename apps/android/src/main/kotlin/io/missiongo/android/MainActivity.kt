@@ -1,10 +1,12 @@
 package io.missiongo.android
 
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
@@ -25,6 +27,8 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -35,6 +39,7 @@ import io.missiongo.feedback.FeedbackType
 import io.missiongo.feedback.MissionGo
 import io.missiongo.feedback.WebViewFilePicker
 import io.missiongo.feedback.WebViewSupport
+import io.missiongo.android.push.WidgetPushRegistrar
 import io.missiongo.android.widget.WidgetRefresher
 import android.content.Context
 import android.widget.Toast
@@ -47,6 +52,11 @@ class MainActivity : ComponentActivity() {
     // Registered in onCreate: activity results have to be registered before the
     // activity is started, and the labels need a context that only exists then.
     private lateinit var filePicker: WebViewFilePicker
+
+    // AND-150: the attention notifications need this on API 33+. The result is
+    // not tracked -- a denial costs notifications, nothing else.
+    private val notificationPermissionRequest =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     /**
      * How many of its own history entries the page says it can unwind. Written
@@ -76,6 +86,7 @@ class MainActivity : ComponentActivity() {
         // on the page it hosts. A release build is not debuggable, so this is off.
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
         filePicker = WebViewFilePicker(this, getString(R.string.choose_gallery), getString(R.string.choose_files))
+        requestNotificationPermissionOnce()
         val content = buildContent()
         setContentView(content)
         fitInsideSystemBars(content)
@@ -488,6 +499,10 @@ class MainActivity : ComponentActivity() {
         // Belt and braces for the latch above: whatever happened while the app
         // was away, back routes through the WebView again from here.
         backCallback?.isEnabled = true
+        // AND-150: bind this install's FCM token to whoever is signed in now.
+        // Frequent by design -- it is the retry path for a registration that
+        // failed offline and the rebind after a token rotation.
+        WidgetPushRegistrar.ensureRegistered(this)
     }
 
     override fun onStop() {
@@ -516,6 +531,19 @@ class MainActivity : ComponentActivity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
+    /**
+     * AND-150: asks once per install, on the first launch, and never nags after
+     * a denial -- the push signal still refreshes the widget without it.
+     */
+    private fun requestNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (NotificationManagerCompat.from(this).areNotificationsEnabled()) return
+        val prefs = getSharedPreferences(PUSH_PREFERENCES, MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_ASKED_NOTIFICATIONS, false)) return
+        prefs.edit().putBoolean(KEY_ASKED_NOTIFICATIONS, true).apply()
+        notificationPermissionRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
     /** Where a widget tap should land (AND-149). */
     sealed interface WidgetTarget {
         /**
@@ -531,6 +559,9 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "MissionGoAndroid"
+
+        private const val PUSH_PREFERENCES = "missiongo_push"
+        private const val KEY_ASKED_NOTIFICATIONS = "asked_notifications"
 
         private const val EXTRA_WIDGET_TARGET = "io.missiongo.android.extra.WIDGET_TARGET"
         private const val EXTRA_PRODUCT_ID = "io.missiongo.android.extra.PRODUCT_ID"

@@ -171,7 +171,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [generatedAt, agent, items]
+                required: [generatedAt, agent, items, attentionEntries]
                 properties:
                   generatedAt: { type: string, format: date-time }
                   agent:
@@ -195,6 +195,68 @@ paths:
                       readyProductId:
                         type: [string, "null"]
                         description: The product with the most ready items.
+                  attentionEntries:
+                    type: array
+                    description: >-
+                      The same conversations as agent.attention (AND-150), with
+                      what a push notification needs: the item keys, the
+                      attention kind, a one-line excerpt, and the revision a
+                      "无需处理" dismissal must carry.
+                    items:
+                      type: object
+                      required: [sessionId, itemKeys, productId, kind, excerpt, revision]
+                      properties:
+                        sessionId: { type: string }
+                        itemKeys: { type: array, items: { type: string } }
+                        productId:
+                          type: [string, "null"]
+                          description: Where a tap on this notification should land.
+                        kind:
+                          type: string
+                          enum: [answer, approval, action, instruction, uncertain]
+                        reason: { type: string }
+                        excerpt: { type: string }
+                        revision: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/widget/device:
+    put:
+      operationId: registerWidgetDevice
+      description: >-
+        AND-150: the Android app registers its FCM token with the WebView
+        sign-in's session cookie, so the server can push the widget a refresh
+        signal. Re-registering a token under another account rebinds it: FCM
+        mints one token per install, so a sign-in must rebind rather than keep
+        pushing the previous account's signals.
+      security:
+        - adminSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, maxLength: 4096 }
+      responses:
+        "200": { description: The token is registered. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      operationId: unregisterWidgetDevice
+      description: The app drops its token on sign-out, from the account that owns it.
+      security:
+        - adminSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, maxLength: 4096 }
+      responses:
+        "200": { description: The token is removed if it belonged to the caller. }
         "401": { $ref: "#/components/responses/Unauthorized" }
   /api/v1/auth/logout:
     post:

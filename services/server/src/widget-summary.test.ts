@@ -22,7 +22,55 @@ describe("widgetSummary (AND-149)", () => {
       generatedAt: "2026-09-23T04:00:00.000Z",
       agent: { attention: 1, active: 1, failed: 2, attentionProductId: "p1", attentionSessionId: "a" },
       items: { ready: 0, readyProductId: null },
+      attentionEntries: [
+        {
+          sessionId: "a",
+          itemKeys: [],
+          productId: "p1",
+          kind: "uncertain",
+          excerpt: "",
+          revision: "",
+        },
+      ],
     });
+  });
+
+  it("describes each waiting conversation for a notification (AND-150)", () => {
+    const summary = widgetSummary([
+      session("a", {
+        needsAttention: true,
+        items: [{ productId: "p2" }, { productId: "p1", key: "AND-7" }],
+        attention: { kind: "answer", reason: "AI 提出了需要回答的问题。", revision: "rev-a" },
+        latestMessageText: "汇总接口放在哪里？\n需要你定一下。",
+      }),
+      session("b", {
+        needsAttention: true,
+        attention: { revision: "rev-b" },
+        latestMessageText: "x".repeat(200),
+      }),
+      session("c", { needsAttention: false }),
+    ], new Map(), now);
+
+    expect(summary.attentionEntries).toEqual([
+      {
+        sessionId: "a",
+        itemKeys: ["AND-7"],
+        productId: "p2",
+        kind: "answer",
+        reason: "AI 提出了需要回答的问题。",
+        excerpt: "汇总接口放在哪里？ 需要你定一下。",
+        revision: "rev-a",
+      },
+      {
+        sessionId: "b",
+        itemKeys: [],
+        productId: "p1",
+        kind: "uncertain",
+        excerpt: `${"x".repeat(140)}…`,
+        revision: "rev-b",
+      },
+    ]);
+    expect(summary.attentionEntries).toHaveLength(summary.agent.attention);
   });
 
   it("names a conversation only when it is the single one that needs the person", () => {
