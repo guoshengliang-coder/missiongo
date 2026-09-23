@@ -87,10 +87,8 @@ public struct DispatchJob: Equatable, Sendable {
 
 public struct LaunchResult: Equatable, Sendable {
     public let sessionName: String
-    /// Absent only when the adapter has another positive acknowledgement that
-    /// the session exists but cannot turn its identifier into a link. Claude
-    /// Code has no such acknowledgement, so its launcher does not return until
-    /// it has scraped the remote-control URL.
+    /// Claude Code sessions without Anthropic Remote Control are controlled in
+    /// MissionGo through their session reference and have no external URL.
     public let sessionUrl: String?
     /// The agent-native identifier used for later reads and replies. It is not
     /// inferred from the human-facing URL.
@@ -136,9 +134,8 @@ public struct LaunchCommand: Equatable, Sendable {
     public let args: [String]
 }
 
-/// The Claude Code adapter: starts one remote-controllable session per dispatch
-/// and exchanges user-visible messages with its detached local host. The same
-/// session remains interactive on claude.ai and a phone; approvals stay there.
+/// The Claude Code adapter: starts one detached local host per dispatch and
+/// exchanges messages and approvals with it. Remote Control is optional.
 public struct SessionLauncher: AgentAdapter {
     /// A cold CLI may legitimately take more than a minute. Three minutes is
     /// the approved startup watchdog; the work prompt is not sent before this
@@ -361,20 +358,12 @@ public struct SessionLauncher: AgentAdapter {
         do {
             return try await launchHosted(job)
         } catch let error as HostedLaunchError {
-            switch error {
-            case .unsupported:
-                // Remote control was rejected before the work prompt was sent,
-                // so starting the established PTY launcher cannot duplicate work.
-                return try await launchLegacy(job)
-            case let .failed(message):
-                throw LaunchError(message)
-            }
+            throw LaunchError(error.message)
         }
     }
 
-    private enum HostedLaunchError: Error {
-        case unsupported(String)
-        case failed(String)
+    private struct HostedLaunchError: Error {
+        let message: String
     }
 
     private func startHost(configPath: String, logPath: String) throws -> Process {
@@ -450,43 +439,40 @@ public struct SessionLauncher: AgentAdapter {
         do {
             process = try startHost(configPath: configPath, logPath: logPath)
         } catch {
-            throw HostedLaunchError.failed("无法启动 Claude 会话宿主：\(error.localizedDescription)")
+            throw HostedLaunchError(message: "无法启动 Claude 会话宿主：\(error.localizedDescription)")
         }
 
         let deadline = Date().addingTimeInterval(sessionUrlTimeout)
         while Date() < deadline {
             if let state = try? ClaudeHostFiles.readState(statePath) {
-                if let url = state.sessionUrl {
+                if state.status == "failed" {
+                    throw HostedLaunchError(message: state.error ?? "Claude Code 会话启动失败。")
+                }
+                if state.launchReady && process.isRunning {
                     return LaunchResult(
                         sessionName: sessionName,
-                        sessionUrl: url,
+                        sessionUrl: state.sessionUrl,
                         sessionRef: sessionRef,
                         logPath: logPath
                     )
                 }
-                if state.status == "failed" {
-                    throw HostedLaunchError.unsupported(state.error ?? "Claude Code 无法建立受控 Remote Control 会话。")
-                }
             }
             if !process.isRunning {
-                throw HostedLaunchError.unsupported(
-                    "Claude 会话宿主已退出（code=\(process.terminationStatus)），会话没有启动。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))"
-                )
+                throw HostedLaunchError(message:
+                    "Claude 会话宿主已退出（code=\(process.terminationStatus)），会话没有启动。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))")
             }
             if Task.isCancelled { break }
             try? await Task.sleep(nanoseconds: SessionLauncher.sessionUrlPollInterval)
         }
         let seconds = max(0, Int(sessionUrlTimeout.rounded(.up)))
-        // The prompt is sent only after the URL is persisted. Check once more
-        // at the deadline before stopping a host that might have completed the
-        // handshake between the last poll and this branch.
-        if let state = try? ClaudeHostFiles.readState(statePath), let url = state.sessionUrl {
-            return LaunchResult(sessionName: sessionName, sessionUrl: url, sessionRef: sessionRef, logPath: logPath)
+        // Check once more at the deadline before stopping a host that may have
+        // accepted the prompt between the last poll and this branch.
+        if let state = try? ClaudeHostFiles.readState(statePath), state.launchReady, process.isRunning {
+            return LaunchResult(sessionName: sessionName, sessionUrl: state.sessionUrl, sessionRef: sessionRef, logPath: logPath)
         }
         if process.isRunning { ClaudeHostProcess.terminateGroup(process.processIdentifier) }
-        throw HostedLaunchError.failed(
-            "等待 Claude Code 建立受控远程会话超时（\(seconds) 秒），未启动第二个会话。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))"
-        )
+        throw HostedLaunchError(message:
+            "等待 Claude Code 接收派单提示词超时（\(seconds) 秒），未启动第二个会话。日志 \(logPath)：\n\(SessionLauncher.logTail(logPath))")
     }
 
     private func launchLegacy(_ job: DispatchJob) async throws -> LaunchResult {
@@ -568,7 +554,8 @@ public struct SessionLauncher: AgentAdapter {
             model: state.model,
             effort: state.effort,
             settingsRevision: state.settingsRevision,
-            settingsError: state.settingsError
+            settingsError: state.settingsError,
+            clearSessionUrl: state.launchReady && state.sessionUrl == nil ? true : nil
         )
     }
 
@@ -726,7 +713,9 @@ public struct SessionLauncher: AgentAdapter {
                 status: "unavailable",
                 messages: state.messages,
                 activities: state.activities,
-                error: "Claude Code 会话宿主已停止；请在外部 Remote Control 会话中继续，或重新派单。",
+                error: state.sessionUrl == nil
+                    ? "Claude Code 会话宿主已停止；本地控制暂不可用，请重新派单。"
+                    : "Claude Code 会话宿主已停止；请在外部 Remote Control 会话中继续，或重新派单。",
                 sessionUrl: state.sessionUrl,
                 activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )

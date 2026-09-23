@@ -52,7 +52,7 @@ final class APIClientTests: XCTestCase {
         let bare = try JSONSerialization.jsonObject(with: APIClient.encoder.encode(
             AgentSessionReport(status: "idle", messages: [])
         )) as? [String: Any]
-        for key in ["model", "effort", "settingsRevision", "settingsError"] {
+        for key in ["model", "effort", "settingsRevision", "settingsError", "clearSessionUrl"] {
             XCTAssertNil(bare?[key], key)
         }
         let full = try JSONSerialization.jsonObject(with: APIClient.encoder.encode(
@@ -64,6 +64,12 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(full?["settingsRevision"] as? Int, 4)
         XCTAssertEqual(full?["settingsError"] as? String, "切换模型失败：x")
         XCTAssertEqual(full?["error"] as? String, "e", "the rest of the report is kept")
+        let local = try JSONSerialization.jsonObject(with: APIClient.encoder.encode(
+            AgentSessionReport(status: "idle", messages: [])
+                .reportingSettings(model: nil, effort: nil, settingsRevision: nil, settingsError: nil, clearSessionUrl: true)
+        )) as? [String: Any]
+        XCTAssertEqual(local?["clearSessionUrl"] as? Bool, true)
+        XCTAssertNil(local?["sessionUrl"])
     }
 
     private let server = "http://127.0.0.1:8799/"

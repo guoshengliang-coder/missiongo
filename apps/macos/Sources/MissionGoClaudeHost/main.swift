@@ -126,7 +126,9 @@ private func run(configPath: String) throws {
     var buffer = Data()
     let initializeRequestId = UUID().uuidString
     var remoteRequestId: String?
-    var remoteReady = false
+    var controlReady = false
+    var promptSent = false
+    var promptId: String?
     var pendingControlCommands: [String: String] = [:]
     var settingsChange: ClaudeSettingsChange?
     var permissions = ClaudePermissionQueue()
@@ -136,8 +138,7 @@ private func run(configPath: String) throws {
     var nextCpuSampleAt = Date().addingTimeInterval(60)
 
     // The Agent SDK performs this handshake before exposing any other control
-    // method. Without it the CLI starts hooks but waits forever for its host,
-    // so no work prompt is sent until initialize and remote_control both pass.
+    // method. Without it the CLI starts hooks but waits forever for its host.
     try write(controlRequest(id: initializeRequestId, request: ["subtype": "initialize"]), to: writer)
 
     func persist() {
@@ -159,6 +160,20 @@ private func run(configPath: String) throws {
         } else {
             snapshot.setWaitingForInput(false)
         }
+    }
+
+    func startWork() throws {
+        controlReady = true
+        if resuming {
+            snapshot.markIdle()
+            snapshot.confirmLaunch()
+        } else {
+            let id = UUID().uuidString
+            try write(userMessage(id: id, text: config.prompt), to: writer)
+            promptId = id
+            promptSent = true
+        }
+        persist()
     }
 
     func handleEvent(_ event: [String: Any]) throws {
@@ -197,6 +212,12 @@ private func run(configPath: String) throws {
                    let options = ClaudeModelCatalog.options(fromInitialize: body) {
                     try? ClaudeModelCatalog.save(options, to: path)
                 }
+                let body = response["response"] as? [String: Any] ?? [:]
+                if body["remote_control_available"] as? Bool == false {
+                    snapshot.setMissionGoControl()
+                    try startWork()
+                    return
+                }
                 let requestId = UUID().uuidString
                 remoteRequestId = requestId
                 try write(controlRequest(id: requestId, request: [
@@ -212,19 +233,14 @@ private func run(configPath: String) throws {
                       let body = response["response"] as? [String: Any],
                       let sessionUrl = body["session_url"] as? String
                 else {
-                    snapshot.fail((response["error"] as? String) ?? "Claude Code 不支持受控 Remote Control 会话。")
-                    persist()
-                    shouldContinue = false
+                    // Remote Control is optional. Older CLIs may not advertise
+                    // availability during initialize but can still run locally.
+                    snapshot.setMissionGoControl()
+                    try startWork()
                     return
                 }
                 snapshot.setRemote(sessionUrl: sessionUrl)
-                remoteReady = true
-                if resuming {
-                    snapshot.markIdle()
-                } else {
-                    try write(userMessage(id: UUID().uuidString, text: config.prompt), to: writer)
-                }
-                persist()
+                try startWork()
                 return
             }
             if var change = settingsChange, change.receive(requestId: requestId, response: response) {
@@ -252,11 +268,17 @@ private func run(configPath: String) throws {
         }
 
         snapshot.consume(event)
+        if promptSent,
+           (event["type"] as? String == "system" && event["subtype"] as? String == "init"
+            || event["type"] as? String == "user" && event["uuid"] as? String == promptId) {
+            snapshot.confirmLaunch()
+            promptSent = false
+        }
         persist()
     }
 
     func handleCommands() throws {
-        guard remoteReady else { return }
+        guard controlReady else { return }
         for path in commandFiles(in: config.commandsDirectory) {
             let command: ClaudeHostCommand
             do {
@@ -376,8 +398,8 @@ private func run(configPath: String) throws {
     }
     process.waitUntilExit()
     _ = signal(SIGTERM, SIG_DFL)
-    if snapshot.state.sessionUrl == nil && snapshot.state.status != "failed" {
-        snapshot.fail("Claude Code 在 Remote Control 建立前退出（code=\(process.terminationStatus)）。")
+    if !snapshot.state.launchReady && snapshot.state.status != "failed" {
+        snapshot.fail("Claude Code 在接收派单提示词前退出（code=\(process.terminationStatus)）。")
     } else if snapshot.state.status == "active" || snapshot.state.status == "stalled" {
         snapshot.markUnavailable("Claude Code 宿主已退出（code=\(process.terminationStatus)）。")
     }

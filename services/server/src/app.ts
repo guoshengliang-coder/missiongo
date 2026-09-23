@@ -2101,6 +2101,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(settingsRevision !== undefined ? { settingsRevision } : {}),
       ...(stringField(body, "settingsError", false) ? { settingsError: body.settingsError as string } : {}),
       ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
+      ...(body.clearSessionUrl === true ? { clearSessionUrl: true } : {}),
       ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
     });
     scheduleAttentionClassification(sessionId);

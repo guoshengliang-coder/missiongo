@@ -480,6 +480,8 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     /// A resumed Claude session may receive a new Remote Control URL. The node
     /// reports the fresh, validated URL instead of leaving a dead link behind.
     public let sessionUrl: String?
+    /// Clears a stale Remote Control URL when the resumed session uses local control.
+    public let clearSessionUrl: Bool?
     /// Last activity timestamp from the source conversation, not this mirror poll.
     public let activityAt: String?
     /// The model and effort actually in use as far as this machine knows;
@@ -491,7 +493,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let settingsRevision: Int?
     public let settingsError: String?
 
-    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, activityAt: String? = nil, model: String? = nil, effort: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil) {
+    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, clearSessionUrl: Bool? = nil, activityAt: String? = nil, model: String? = nil, effort: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil) {
         self.status = status
         self.messages = messages
         self.activities = activities
@@ -503,6 +505,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         self.sourceArchiveError = sourceArchiveError
         self.sourceRestored = sourceRestored
         self.sessionUrl = sessionUrl
+        self.clearSessionUrl = clearSessionUrl
         self.activityAt = activityAt
         self.model = model
         self.effort = effort
@@ -512,12 +515,12 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
 
     /// The same report carrying the session's settings. Kept apart so every
     /// branch that decides status and commands need not repeat them.
-    public func reportingSettings(model: String?, effort: String?, settingsRevision: Int?, settingsError: String?) -> AgentSessionReport {
+    public func reportingSettings(model: String?, effort: String?, settingsRevision: Int?, settingsError: String?, clearSessionUrl: Bool? = nil) -> AgentSessionReport {
         AgentSessionReport(
             status: status, messages: messages, activities: activities, error: error,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
-            sessionUrl: sessionUrl, activityAt: activityAt,
+            sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
             model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
         )
     }

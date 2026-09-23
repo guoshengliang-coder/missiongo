@@ -97,12 +97,12 @@ Claude 配置。候选列表只来自这台节点已有的仓库映射，不再�
 
 ## 5. 派单之后
 
-- Claude Code 会话在后台运行，可以在 claude.ai/code 或手机上接管、批准计划。
+- Claude Code 会话在后台运行。使用官方订阅且 Claude Code 提供 Remote Control 时，可以在 claude.ai/code 或手机上接管、批准计划；使用自定义 API 地址（如 GLM）时，Claude Code 不提供 Remote Control，改在 MissionGo 会话里查看、回复和审批，Mac 节点需保持在线。
 - Codex 会话出现在 Codex App（包括远程控制这台 Mac 的另一台电脑）和 ChatGPT 手机 App 里，名字是
   「机器昵称-条目编号」，在那里查看、回复和批准。一次派多条时，同一产品的编号只写一次前缀，
   例如 `M4-HG-52,51,50,48,44,43`；名字太长才截断成「…等 N 条」。它的链接是 `codex://threads/<ID>`，只能在装了 Codex App
   的 Mac 上点开。
-- 客户端菜单的「最近派单」里能看到派给了哪个 agent、什么模式、状态和失败原因，点一下打开会话链接。
+- 客户端菜单的「最近派单」里能看到派给了哪个 agent、什么模式、状态和失败原因；有外部链接时可点开。没有 Remote Control 链接的 Claude Code 会话请在 MissionGo 控制台查看。
 - Claude Code 仍在仓库主目录启动（不带 `-w`），保持项目归属和 `/resume` 行为；批准后按仓库规则创建独立 worktree，权限由 Claude Code 自身管理。
 - Codex 同样在主目录启动，同时只为本次派单预留一个同级 `missiongo-<完整派单编号>` 路径，通过 `runtimeWorkspaceRoots` 配置写权限，不提前建目录或分支。已有同名目录或符号链接会使派单失败，不覆盖、不清理。如果仓库要求其他位置，会话须先申请该精确路径的权限；`cd` 本身不改变沙箱。
 - Codex 返回的实际 reviewer、审批策略、沙箱和工作区范围须与派单要求相符才发送首轮提示词。旧客户端忽略参数或组织策略不允许时明确报错，不静默改用人工审查。
@@ -136,7 +136,7 @@ Claude 配置。候选列表只来自这台节点已有的仓库映射，不再�
 
 节点登录与 AI 客户端 OAuth 是不同的授权，`mcp list` 显示已配置/已登录不能证明拥有写权限。Codex 在发送任务首轮之前通过该线程自己的 MCP 连接调用只读的 `get_current_account`，核对 `canComment`、`append_comment`、`claim_item` 以及本地/服务端 Skill 版本；能力缺失、版本不符或接口不支持时派单明确失败。节点不读取或借用客户端令牌。
 
-Claude Code 的原生启动流程保持不变，权限能力由会话首步调用 `get_current_account` 核对，实施前需确认评论与领取能力；不把节点的登录当作 Claude Code 已授权。缺少授权时说明需要在哪个客户端完成授权，并停在实施之前。
+Claude Code 的权限能力由会话首步调用 `get_current_account` 核对，实施前需确认评论与领取能力；不把节点的登录当作 Claude Code 已授权。缺少授权时说明需要在哪个客户端完成授权，并停在实施之前。启动时优先尝试 Remote Control；若 CLI 明确不支持（包括自定义 API 地址），则保留同一会话的本机 MissionGo 控制，不重复启动第二个会话。
 
 两个 agent 都拿不到「绕过权限」类的模式：Claude Code 的 `bypassPermissions`、`dontAsk`，Codex 的
 审批策略 `never` 和沙箱 `danger-full-access`，服务端和客户端都会拒绝。
@@ -159,7 +159,7 @@ Claude Code 的原生启动流程保持不变，权限能力由会话首步调�
 | 菜单显示 Claude Code 未登录 | CLI 登录过期 | 终端里运行 `claude auth login` |
 | 派单失败，原因写着目录未信任 | 仓库没被 Claude Code 信任过 | 在该目录手动运行一次 `claude` 并确认信任 |
 | 显示离线 | 网络不通，或凭证被撤销 | 菜单里会写明原因；被撤销就重新登录 |
-| 会话起来了但没有链接 | 日志里还没出现会话地址，或 Remote Control 没连上 | 看 `~/Library/Logs/MissionGo/<派单 ID>.log` |
+| Claude Code 会话没有远程链接 | 自定义 API 地址下 Remote Control 不可用，这是预期行为；会话仍可由 MissionGo 控制 | 在 MissionGo 会话内查看、回复和审批，保持 Mac 节点在线；如连会话消息都没有，再查看 `~/Library/Logs/MissionGo/<派单 ID>.log` |
 | 菜单显示 Codex 后台服务未运行 | 控制通道没有应答，而且客户端自动运行 `codex app-server daemon start` 后仍没有连上 | 在终端运行菜单里复制出的 `codex app-server daemon start`，看它报什么错；要常驻就再跑一次 `codex app-server daemon bootstrap` |
 | Codex 派单失败，提示 missiongo MCP 未配置或未登录 | Codex 连不上 MissionGo | 运行菜单里复制出的命令 |
 | 菜单里 missiongo Skill 一行显示失败 | 下载不到，或写不进 skills 目录 | 修复提示中的问题，再点击对应客户端「重新检查」；不会后台反复重试 |

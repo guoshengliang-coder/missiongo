@@ -328,6 +328,27 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertEqual(resumed.messages, [message])
         XCTAssertEqual(resumed.commandResults["c1"]?.status, "delivered")
         XCTAssertNil(resumed.error)
+        XCTAssertNil(resumed.sessionUrl)
+        XCTAssertFalse(resumed.launchReady)
+    }
+
+    func testLocalControlConfirmsLaunchWithoutRemoteUrl() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.setMissionGoControl()
+        XCTAssertFalse(snapshot.state.launchReady)
+        XCTAssertNil(snapshot.state.sessionUrl)
+        snapshot.confirmLaunch()
+        XCTAssertTrue(snapshot.state.launchReady)
+        XCTAssertNil(snapshot.state.sessionUrl)
+    }
+
+    func testSwitchingFromRemoteToLocalControlDropsUrl() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.setRemote(sessionUrl: "https://claude.ai/code/session_old")
+        snapshot.confirmLaunch()
+        snapshot.setMissionGoControl()
+        XCTAssertTrue(snapshot.state.launchReady)
+        XCTAssertNil(snapshot.state.sessionUrl)
     }
 
     func testUnattendedClaudeDisablesItsCompetingUpdater() {

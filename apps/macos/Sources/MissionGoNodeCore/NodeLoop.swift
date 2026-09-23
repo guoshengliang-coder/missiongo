@@ -550,10 +550,10 @@ public final class NodeLoop: @unchecked Sendable {
                     sessionRef: launched.sessionRef
                 ), launched.logPath)
             }
-            // Some adapters receive a positive start acknowledgement but cannot
-            // represent the resulting identifier as a link. Claude Code never
-            // reaches this path: its only acknowledgement is the URL itself.
-            log("会话已由 agent 确认启动，但没有可打开的会话地址。")
+            // A Claude Code session with a custom API endpoint has no
+            // claude.ai URL. Its session reference still supports MissionGo
+            // conversation, replies and approvals.
+            log("会话已由 agent 确认启动，可在 MissionGo 中控制。")
             return (DispatchReport(
                 status: .launched,
                 sessionName: launched.sessionName,
