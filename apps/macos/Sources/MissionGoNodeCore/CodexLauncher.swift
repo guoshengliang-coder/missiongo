@@ -103,9 +103,19 @@ public struct CodexFileDescriptorGuard: CodexResourceChecking {
     }
 
     private func ownerPID(socketPath: String) async -> Int32? {
+        if let pid = Self.socketOwnerPID(socketPath) { return pid }
+        // Keep lsof as a compatibility fallback. It is not the primary probe:
+        // resolving Codex's symlinked socket path can be denied from a GUI app
+        // even while the socket itself is reachable.
         let result = await run("/usr/sbin/lsof", ["-n", "-a", "-U", "-Fpc", "--", socketPath])
         guard result.code == 0 else { return nil }
         return Self.ownerPID(fromLsof: result.stdout)
+    }
+
+    static func socketOwnerPID(_ path: String) -> Int32? {
+        guard let socket = try? UnixSocket(path: path, timeout: 1) else { return nil }
+        defer { socket.close() }
+        return socket.peerPID()
     }
 
     static func verifiedManagedSoftLimit(ownerPID: Int32, stateData: Data) -> Int? {
