@@ -10,7 +10,7 @@ import Foundation
 /// The business workflow is shared; client-specific workspace and plan-mode
 /// instructions are supplied by each adapter.
 public enum LaunchPrompt {
-    public enum Client: Sendable { case claudeCode, codex }
+    public enum Client: Sendable { case claudeCode, codex, openCode }
     public enum ValidationError: Error, Equatable, LocalizedError {
         case emptyBatch
         case invalidItemKey(String)
@@ -102,8 +102,10 @@ public enum LaunchPrompt {
             ]
             if client == .claudeCode {
                 lines.append("Claude Code 必须先通过原生计划确认流程退出 plan 模式，再执行评论、领取和代码写入；保留客户端的权限控制。")
-            } else {
+            } else if client == .codex {
                 lines.append("Codex 的自动审查仅处理技术权限请求；仍须等待用户明确批准方案后才能实施。")
+            } else {
+                lines.append("OpenCode 在原生 plan agent 中不得写入；用户批准方案后先切换到 build agent，再执行评论、领取和代码写入。")
             }
         }
         return lines.joined(separator: "\n")

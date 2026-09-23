@@ -544,6 +544,7 @@ export function AgentSessionConsole({
             >
               <option value="all">{t("agentConsoleAllAgents")}</option>
               <option value="codex">{t("agentCodex")}</option>
+              <option value="opencode">{t("agentOpenCode")}</option>
               <option value="claude_code">{t("agentClaudeCode")}</option>
             </select>
           </label>

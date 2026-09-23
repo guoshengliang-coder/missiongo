@@ -828,6 +828,14 @@ final class CodexPreflightTests: XCTestCase {
 }
 
 final class CodexFileDescriptorGuardTests: XCTestCase {
+    func testReadsTheOwnerDirectlyFromAConnectedUnixSocket() throws {
+        let path = try shortTemporaryDirectory() + "/owner.sock"
+        let listener = try listeningSocket(at: path)
+        defer { _ = close(listener) }
+
+        XCTAssertEqual(CodexFileDescriptorGuard.socketOwnerPID(path), getpid())
+    }
+
     func testParsesTheProcessThatOwnsTheControlSocket() {
         XCTAssertEqual(CodexFileDescriptorGuard.ownerPID(fromLsof: "p2809\nccodex\nf12\n"), 2809)
         XCTAssertNil(CodexFileDescriptorGuard.ownerPID(fromLsof: "ccodex\nf12\n"))

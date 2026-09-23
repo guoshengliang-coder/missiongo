@@ -1,4 +1,4 @@
-import { AGENT_KINDS, CLAUDE_CODE_MODES, CODEX_MODES, DISPATCH_STATUSES, isCodexThreadLink, type AgentKind } from "@missiongo/domain";
+import { AGENT_KINDS, CLAUDE_CODE_MODES, CODEX_MODES, OPENCODE_MODES, DISPATCH_STATUSES, isCodexThreadLink, type AgentKind } from "@missiongo/domain";
 
 import type { MessageKey } from "./i18n";
 import type { DispatchNode, Product, WorkItemStatus } from "./types";
@@ -78,7 +78,7 @@ export function selectionScope(filters: {
   readonly type: string;
   readonly search: string;
 }): string {
-  return [filters.productId, filters.status, filters.type, filters.search.trim()].join("");
+  return [filters.productId, filters.status, filters.type, filters.search.trim()].join("\u0000");
 }
 
 export type NodeIneligibility =
@@ -122,13 +122,14 @@ export function nodeIneligibility(
 const AGENT_LABEL_KEYS: Readonly<Record<AgentKind, MessageKey>> = {
   claude_code: "agentClaudeCode",
   codex: "agentCodex",
+  opencode: "agentOpenCode",
   hermes: "agentHermes",
 };
 
 /** Hermes is listed so the choice is visible, and disabled. */
-export const SUPPORTED_AGENT_KINDS: readonly AgentKind[] = ["claude_code", "codex"];
+export const SUPPORTED_AGENT_KINDS: readonly AgentKind[] = ["claude_code", "codex", "opencode"];
 
-type DispatchModeName = (typeof CLAUDE_CODE_MODES)[number] | (typeof CODEX_MODES)[number];
+type DispatchModeName = (typeof CLAUDE_CODE_MODES)[number] | (typeof CODEX_MODES)[number] | (typeof OPENCODE_MODES)[number];
 
 // Codex borrows the Claude Code names for its three modes, so one label each is enough.
 const MODE_LABEL_KEYS: Readonly<Record<DispatchModeName, MessageKey>> = {
@@ -199,7 +200,9 @@ export function sessionLinkLabelKey(sessionUrl: string): MessageKey {
 /** Help under the mode picker, where the chosen mode does something worth explaining. */
 export function dispatchModeHelpKey(agentKind: AgentKind, mode: string): MessageKey | null {
   if (agentKind === "claude_code" && mode === "bypassPermissions") return "dispatchBypassPermissionsHelp";
-  if (mode === "plan") return agentKind === "codex" ? "dispatchCodexPlanHelp" : "dispatchPlanHelp";
+  if (mode === "plan") {
+    return agentKind === "codex" ? "dispatchCodexPlanHelp" : agentKind === "opencode" ? "dispatchOpenCodePlanHelp" : "dispatchPlanHelp";
+  }
   if (agentKind === "codex" && mode === "auto") return "dispatchCodexAutoHelp";
   return null;
 }

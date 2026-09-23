@@ -33,6 +33,8 @@ curl -fsSL "https://missiongo.example.com/downloads/missiongo-skill/SKILL.md" \
   -o ~/.codex/skills/missiongo/SKILL.md
 ```
 
+OpenCode 2 用户级目录是 `~/.config/opencode/skills/missiongo/SKILL.md`。使用 MissionGo macOS 节点派单时，在节点菜单启用 OpenCode 集成，客户端会把当前 Skill 同步到这个目录；只把 OpenCode 当作普通 MCP 客户端使用时，也可手动下载到此目录。
+
 也可以把仓库中的 [`skills/missiongo/SKILL.md`](../skills/missiongo/SKILL.md) 复制到 AI 客户端支持的 Skill 目录。不同客户端的目录和重载方式可能不同，应以该客户端当前文档为准；Skill 内容本身保持为一个可移植的 `SKILL.md`。
 
 安装或更新后，需要重新开始一次 AI 会话，让客户端重新发现 Skill。
@@ -95,6 +97,28 @@ codex mcp login missiongo --scopes "missiongo:read missiongo:write"
 
 浏览器会打开 MissionGo 登录页。登录成功后重新开始一次 AI 会话，让客户端重新发现连接和 Skill。
 
+### OpenCode 2
+
+在运行共享服务的 Mac 上，将远程 MCP 配置加入用户级 `~/.config/opencode/opencode.jsonc`。MacBook 和手机连接同一个共享服务时，使用的是这台 Mac 上的配置与授权：
+
+```jsonc
+{
+  "mcp": {
+    "servers": {
+      "missiongo": {
+        "type": "remote",
+        "url": "https://missiongo.example.com/mcp",
+        "codemode": false
+      }
+    }
+  }
+}
+```
+
+`codemode: false` 让 MissionGo 工具直接出现在 OpenCode 的工具列表中，便于 Skill 按名称调用 `get_current_account` 等工具。
+
+在 OpenCode 里打开 `/mcps`，选择 `missiongo` 并完成 OAuth。要让派单会话按 Skill 评论、领取和提交待验证，授权时需要相应写入权限；完成后确认 MCP 状态为 `connected`。接着在 Mac 上的 MissionGo 菜单启用 OpenCode 集成、同步 Skill，并把产品映射到该 Mac 的仓库路径。派单在这台 Mac 的 OpenCode 共享服务中创建会话，远程设备可在原来的 OpenCode 客户端查看。具体派单流程见 [Agent 与设备](node.md)。
+
 ### Claude Code 和其他 MCP 客户端
 
 选择支持 OAuth 的 Streamable HTTP 传输，并配置：
@@ -143,5 +167,5 @@ codex mcp login missiongo --scopes "missiongo:read missiongo:write"
 - 图片会由服务端转换成适合 AI 查看、最长边不超过 2048 像素的预览；原始文件的名称、类型和大小仍会保留。
 - 日志每次最多读取 64 KiB，Skill 会根据 `nextOffsetBytes` 自动翻页。
 - 视频内容暂不交给 AI，只提供编号、名称、格式、大小和时间；视频抽帧或理解放到后续阶段。
-- 不提供任意 SQL、任意字段修改、写回分析、任务领取、状态变更或自动扫描队列。
+- 不提供任意 SQL、任意字段修改或自动扫描队列；领取和提交待验证仅通过范围明确的 MCP 工具进行。
 - 列表、条目详情、时间线和附件都会执行同一套产品权限校验，不能通过猜测编号绕过。

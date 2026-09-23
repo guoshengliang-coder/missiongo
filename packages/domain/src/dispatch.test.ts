@@ -33,6 +33,12 @@ describe("Dispatch modes", () => {
   it("has no modes for the agents that are not wired up yet", () => {
     expect(isSupportedDispatchMode("hermes", "plan")).toBe(false);
   });
+
+  it("offers OpenCode interactive plan and build dispatches", () => {
+    expect(isSupportedDispatchMode("opencode", "plan")).toBe(true);
+    expect(isSupportedDispatchMode("opencode", "default")).toBe(true);
+    expect(isSupportedDispatchMode("opencode", "auto")).toBe(false);
+  });
 });
 
 describe("Session links", () => {

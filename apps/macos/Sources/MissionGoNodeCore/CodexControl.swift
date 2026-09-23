@@ -1150,6 +1150,20 @@ final class UnixSocket {
         close()
     }
 
+    /// The process on the other end of this connected Unix socket.
+    ///
+    /// Darwin exposes this directly. Prefer it over asking `lsof` to resolve a
+    /// socket path: the daemon's public control path is a symlink into its
+    /// private runtime directory, and path-based inspection may be denied even
+    /// though connecting to the socket is allowed.
+    func peerPID() -> Int32? {
+        var pid: Int32 = 0
+        var size = socklen_t(MemoryLayout.size(ofValue: pid))
+        guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &pid, &size) == 0,
+              size == MemoryLayout.size(ofValue: pid), pid > 0 else { return nil }
+        return pid
+    }
+
     func write(_ bytes: [UInt8]) throws {
         var sent = 0
         while sent < bytes.count {
