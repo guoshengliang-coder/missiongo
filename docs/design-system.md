@@ -63,11 +63,12 @@
 
 - 由 `index.html` 在首帧前把 `data-appearance` 写到 `<html>`：优先 `?appearance=` 参数（Android SDK 用），否则跟随 `prefers-color-scheme`。
 - 这段脚本必须以同源外部文件的形式同步加载，不能内联：部署的 CSP 是 `script-src 'self'`，内联脚本在生产环境会被拦截（见复盘 B12）。
+- 焦点环统一用 `--focus-ring`（取当前主题的 `--blue`），2px 实线，覆盖按钮、输入框、链接、`summary` 和可聚焦元素。
 - 深色块只重定义令牌。**组件样式里不允许出现 `rgba(255,255,255,…)`、`#fff` 这类只在一种主题下成立的值**；需要半透明时，新增令牌。
 
 ## 3. 字体与字号
 
-- 字体栈：`Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`；中文走系统字体回退。
+- 字体栈：`Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif`。项目不加载字体文件，Inter 只在本机装了时生效，其余机器用系统字体；中文字体显式列出，不交给各浏览器自己挑。
 - 字号阶梯（只能从这里取）：
 
 | 令牌 | 值 | 典型用途 |
@@ -125,7 +126,8 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 
 - 触控设备（`pointer: coarse`）上，可点击元素不小于 44×44，包括筛选胶囊和图标按钮；输入框字号不小于 16px。**这一条和宽度无关。**
 - 悬停效果写在 `@media (hover: hover)` 里。只在悬停时才出现的信息或操作，在触控设备上必须常驻显示。
-- 所有紧凑布局（≤1023px，包括横屏）下，表单的提交操作都要吸底，不能要求用户滚到表单末尾才能提交。
+- 任何宽度下，长表单的提交操作都要吸底，不能要求用户滚到表单末尾才能提交。
+- 包在 `<label>` 里的勾选框、单选框，以 label 的尺寸作为点击区域；这样的 label 必须加进外层可点击容器的点击豁免，点到 label 留白处只切换勾选。
 - 软键盘弹出后，吸底元素和聊天输入框必须仍然可见。
 
 ### 5.5 浏览器基线
@@ -161,9 +163,7 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 
 1. **间距阶梯**：`--space-1…8` = 4 / 6 / 8 / 12 / 16 / 20 / 24 / 32。现在代码里的 padding、gap 全是字面量。
 2. **断点令牌**：外壳只保留 3 个断点，`--bp-compact` 1023 / `--bp-wide` 1280 / `--bp-phone` 520（后者只给控制台用），其余组件内的适配一律改用容器查询。
-3. **焦点环令牌**：`--focus-ring`，浅色和深色分开定义，对相邻背景对比度不低于 3:1。现在两套主题共用 25% 透明度的蓝色，深色下几乎看不见。
-4. **层级令牌**：`--z-topbar / --z-drawer / --z-modal / --z-toast`，取代散落的整数。
-5. **动效令牌**：`--duration-fast` 120ms / `--duration-base` 200ms / `--ease-standard`，并统一遵守 `prefers-reduced-motion`。
-6. **指针分流**：所有 `:hover` 效果包在 `@media (hover: hover)` 里；触控设备上靠悬停才出现的操作必须有常驻入口。
-7. **跨端令牌导出**：由同一份令牌源生成 CSS 变量、Android `colors.xml`（含 `values-night`）以及 macOS 的 Asset Catalog 颜色，品牌色不再各写一份。
-8. **统一术语表**：状态、类型、派单阶段的中英文案由 `packages/domain` 导出，三端共用，禁止各端另写。
+3. **层级令牌**：`--z-topbar / --z-drawer / --z-modal / --z-toast`，取代散落的整数。
+4. **动效令牌**：`--duration-fast` 120ms / `--duration-base` 200ms / `--ease-standard`，并统一遵守 `prefers-reduced-motion`。
+5. **跨端令牌导出**：由同一份令牌源生成 CSS 变量、Android `colors.xml`（含 `values-night`）以及 macOS 的 Asset Catalog 颜色，品牌色不再各写一份。
+6. **统一术语表**：状态、类型、派单阶段的中英文案由 `packages/domain` 导出，三端共用，禁止各端另写。

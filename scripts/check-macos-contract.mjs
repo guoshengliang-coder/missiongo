@@ -4,7 +4,7 @@
 // modes a dispatch may use, for each agent the client can start.
 //
 // Each list exists twice, in two languages: the server refuses a mode outside
-// CLAUDE_CODE_MODES / CODEX_MODES, and the client refuses to start a session in a mode outside
+// CLAUDE_CODE_MODES / CODEX_MODES / OPENCODE_MODES, and the client refuses to start a session in a mode outside
 // its own copy before the mode reaches argv. If they drift, the console offers a
 // mode that every Mac then rejects, or — worse — a mode is added to the client
 // that the server never agreed to offer. Swift cannot import the TypeScript, so
@@ -30,6 +30,7 @@ const listIn = (source, pattern, label) => {
 const pairs = [
   ["Claude Code", "CLAUDE_CODE_MODES", "ClaudeCodeModes.swift"],
   ["Codex", "CODEX_MODES", "CodexModes.swift"],
+  ["OpenCode", "OPENCODE_MODES", "OpenCodeModes.swift"],
 ];
 
 const domain = read("packages/domain/src/dispatch.ts");

@@ -1185,6 +1185,57 @@ export class MissionGoDatabase {
           .run(202609230038, new Date().toISOString());
       });
     }
+    // OpenCode dispatches and conversations extend both CHECK constraints.
+    // Preserve every column and index added by earlier migrations.
+    const openCodeSessionMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609230957")
+      .get() as unknown as { version: number } | undefined;
+    if (!openCodeSessionMigration) {
+      const tables = [
+        { name: "dispatches", old: "agent_kind IN ('claude_code', 'codex', 'hermes')",
+          next: "agent_kind IN ('claude_code', 'codex', 'opencode', 'hermes')" },
+        { name: "agent_sessions", old: "agent_kind IN ('codex', 'claude_code')",
+          next: "agent_kind IN ('codex', 'claude_code', 'opencode')" },
+      ] as const;
+      const pending = tables.flatMap((table) => {
+        const row = this.connection.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+          .get(table.name) as unknown as { sql: string };
+        return row.sql.includes("'opencode'") ? [] : [{ ...table, sql: row.sql }];
+      });
+      if (pending.length > 0) {
+        this.connection.exec("PRAGMA foreign_keys = OFF;");
+        try {
+          this.transaction(() => {
+            for (const table of pending) {
+              const replacement = table.sql
+                .replace(new RegExp(`CREATE TABLE(?: IF NOT EXISTS)?\\s+"?${table.name}"?`, "i"), `CREATE TABLE ${table.name}_new`)
+                .replace(table.old, table.next);
+              if (replacement === table.sql || !replacement.includes(`CREATE TABLE ${table.name}_new`)
+                || !replacement.includes(table.next)) {
+                throw new Error(`Cannot extend the ${table.name} constraint for OpenCode.`);
+              }
+              const columns = (this.connection.prepare(`PRAGMA table_info(${table.name})`).all() as unknown as Array<{ name: string }>)
+                .map(({ name }) => `"${name.replaceAll('"', '""')}"`).join(", ");
+              const dependentSchema = (this.connection
+                .prepare("SELECT sql FROM sqlite_master WHERE type IN ('index', 'trigger') AND tbl_name = ? AND sql IS NOT NULL")
+                .all(table.name) as unknown as Array<{ sql: string }>).map(({ sql }) => sql);
+              this.connection.exec(replacement);
+              this.connection.exec(`INSERT INTO ${table.name}_new (${columns}) SELECT ${columns} FROM ${table.name};`);
+              this.connection.exec(`DROP TABLE ${table.name};`);
+              this.connection.exec(`ALTER TABLE ${table.name}_new RENAME TO ${table.name};`);
+              dependentSchema.forEach((sql) => this.connection.exec(sql));
+            }
+            if (this.connection.prepare("PRAGMA foreign_key_check").all().length > 0) {
+              throw new Error("Rebuilding OpenCode dispatches or sessions broke a foreign key.");
+            }
+          });
+        } finally {
+          this.connection.exec("PRAGMA foreign_keys = ON;");
+        }
+      }
+      this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+        .run(202609230957, new Date().toISOString());
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

@@ -60,7 +60,7 @@ export interface AgentSessionCommand {
 export interface AgentSessionSnapshot {
   readonly id: string;
   readonly dispatchId: string;
-  readonly agentKind: "codex" | "claude_code";
+  readonly agentKind: "codex" | "claude_code" | "opencode";
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly updatedAt: string;
@@ -136,7 +136,7 @@ export interface AgentSessionSettings {
 export interface NodeAgentSession {
   readonly id: string;
   readonly dispatchId: string;
-  readonly agentKind: "codex" | "claude_code";
+  readonly agentKind: "codex" | "claude_code" | "opencode";
   readonly sessionRef: string;
   readonly status: AgentSessionStatus;
   readonly lifecycle: "keep" | "close";
@@ -160,7 +160,7 @@ export interface NodeAgentSession {
 interface SessionRow {
   id: string;
   dispatch_id: string;
-  agent_kind: "codex" | "claude_code";
+  agent_kind: "codex" | "claude_code" | "opencode";
   agent_session_ref: string;
   status: AgentSessionStatus;
   last_error: string | null;
@@ -429,7 +429,7 @@ export class AgentSessionStore {
       .prepare("SELECT agent_kind FROM dispatches WHERE id = ? AND node_id = ?")
       .get(input.dispatchId, input.nodeId) as unknown as { agent_kind: string } | undefined;
     if (!dispatch) throw notFound("Dispatch");
-    if (dispatch.agent_kind !== "codex" && dispatch.agent_kind !== "claude_code") {
+    if (dispatch.agent_kind !== "codex" && dispatch.agent_kind !== "claude_code" && dispatch.agent_kind !== "opencode") {
       throw invalidInput("This agent does not support mirrored sessions.");
     }
     const sessionRef = requiredText(input.sessionRef, "sessionRef", 200);
@@ -1031,6 +1031,7 @@ export class AgentSessionStore {
     settingsRevision?: number;
     settingsError?: string;
     sessionUrl?: string;
+    clearSessionUrl?: boolean;
     activityAt?: string;
   }): void {
     if (input.messages.length > MAX_MESSAGES_PER_SNAPSHOT) {
@@ -1090,6 +1091,9 @@ export class AgentSessionStore {
     const sourceActivityAt = normalizedSourceTimestamp(input.activityAt, now, "activityAt");
     const error = input.error?.slice(0, 2_000) || null;
     const sessionUrl = input.sessionUrl?.trim();
+    if (sessionUrl && input.clearSessionUrl) {
+      throw invalidInput("Cannot set and clear session URL in one report.");
+    }
     if (sessionUrl && !isAcceptedSessionUrl(sessionUrl)) {
       throw invalidInput("Session URL must be an https:// address or a codex://threads/<id> link.");
     }
@@ -1207,11 +1211,11 @@ export class AgentSessionStore {
           .prepare("UPDATE agent_sessions SET source_archive_error = ? WHERE id = ?")
           .run(input.sourceArchiveError.slice(0, 2_000), input.sessionId);
       }
-      if (sessionUrl) {
+      if (sessionUrl || input.clearSessionUrl) {
         this.database.connection.prepare(
           `UPDATE dispatches SET session_url = ?
            WHERE id = (SELECT dispatch_id FROM agent_sessions WHERE id = ?)`,
-        ).run(sessionUrl, input.sessionId);
+        ).run(sessionUrl || null, input.sessionId);
       }
       const upsert = this.database.connection.prepare(
         `INSERT INTO agent_session_messages

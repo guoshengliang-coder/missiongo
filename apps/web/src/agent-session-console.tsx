@@ -110,7 +110,7 @@ function dispatchActivityLabel(session: AgentSessionSummary, t: ReturnType<typeo
   if (session.dispatchStatus === "cancelled") return t("agentConsoleDispatchCancelled");
   if (session.dispatchStatus === "failed") return t("agentConsoleDispatchFailed");
   return session.agentKind === "claude_code"
-    ? t("agentConsoleClaudeManaged")
+    ? t(session.sessionUrl ? "agentConsoleClaudeManaged" : "agentConsoleClaudeLocal")
     : t("agentConsoleDispatchLaunched");
 }
 
@@ -155,6 +155,7 @@ function updatedTime(value: string, locale: string): string {
 
 export function AgentSessionConsole({
   productId,
+  initialFilter,
   allSessions,
   sessionsLoaded,
   sessionsError,
@@ -168,6 +169,7 @@ export function AgentSessionConsole({
   onOpenItem,
 }: {
   productId: string;
+  initialFilter: AgentSessionFilter | null;
   allSessions: readonly AgentSessionSummary[];
   sessionsLoaded: boolean;
   sessionsError: unknown;
@@ -182,7 +184,7 @@ export function AgentSessionConsole({
 }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
-  const [filter, setFilter] = useState<AgentSessionFilter>(DEFAULT_AGENT_SESSION_FILTER);
+  const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [search, setSearch] = useState("");
   const [reply, setReply] = useState("");
@@ -542,6 +544,7 @@ export function AgentSessionConsole({
             >
               <option value="all">{t("agentConsoleAllAgents")}</option>
               <option value="codex">{t("agentCodex")}</option>
+              <option value="opencode">{t("agentOpenCode")}</option>
               <option value="claude_code">{t("agentClaudeCode")}</option>
             </select>
           </label>
@@ -709,6 +712,9 @@ export function AgentSessionConsole({
               </div>
               <span className={`status-pill agent-session-status-${sessionStatus}`}>{selected.archivedAt ? t("archived") : statusLabel(sessionStatus, t)}</span>
               {selected.sessionUrl && <SessionLink url={selected.sessionUrl} />}
+              {selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
+                <span className="agent-session-muted" title={t("agentConsoleClaudeLocal")}>{t("agentConsoleClaudeLocalBadge")}</span>
+              )}
               <div className="agent-console-actions">
                 {selected.canRetry && (
                   <button

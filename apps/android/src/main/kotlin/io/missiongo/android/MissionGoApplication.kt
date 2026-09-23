@@ -1,10 +1,20 @@
 package io.missiongo.android
 
 import android.app.Application
+import androidx.work.Configuration
 import io.missiongo.feedback.MissionGo
 import io.missiongo.feedback.MissionGoOptions
 
-class MissionGoApplication : Application() {
+/**
+ * Provides WorkManager's configuration so it starts on first use instead of at
+ * process start. The manifest removes the startup provider that would otherwise
+ * initialise it on every launch; only the home-screen widget's periodic refresh
+ * needs it (AND-149).
+ */
+class MissionGoApplication : Application(), Configuration.Provider {
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder().build()
+
     override fun onCreate() {
         super.onCreate()
         if (isConfiguredEndpoint(BuildConfig.MISSIONGO_ENDPOINT) && !isPlaceholderToken(BuildConfig.MISSIONGO_SDK_TOKEN)) {

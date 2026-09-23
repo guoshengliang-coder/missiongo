@@ -148,6 +148,54 @@ paths:
                         type: object
                         additionalProperties: { type: integer, minimum: 0 }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/widget/summary:
+    get:
+      operationId: getWidgetSummary
+      description: >-
+        What the Android home-screen widget shows (AND-149), across every
+        product the account can view: the Agent console's "needs attention",
+        "working" and "failed" counts, counted the way the console's filters
+        count them, and the number of ready items. Archived conversations count
+        for nothing. Unlike the conversation list it never schedules attention
+        classification, so polling it spends no AI calls. The product ids say
+        where a tap should land, since the web views are per product.
+      security:
+        - adminSessionCookie: []
+      responses:
+        "200":
+          description: The counts.
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [generatedAt, agent, items]
+                properties:
+                  generatedAt: { type: string, format: date-time }
+                  agent:
+                    type: object
+                    required: [attention, active, failed, attentionProductId]
+                    properties:
+                      attention: { type: integer, minimum: 0 }
+                      active: { type: integer, minimum: 0 }
+                      failed: { type: integer, minimum: 0 }
+                      attentionProductId:
+                        type: [string, "null"]
+                        description: The product with the most conversations that need attention.
+                      attentionSessionId:
+                        type: string
+                        description: Present only when exactly one conversation needs attention.
+                  items:
+                    type: object
+                    required: [ready, readyProductId]
+                    properties:
+                      ready: { type: integer, minimum: 0 }
+                      readyProductId:
+                        type: [string, "null"]
+                        description: The product with the most ready items.
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/v1/auth/logout:
     post:
       operationId: signOut

@@ -1,11 +1,11 @@
 # Agent 与设备（macOS 客户端）
 
-控制台里的「Agent 管理」列出你账号下的设备，以及每台设备上报的 agent（Claude Code、Codex）。
+控制台里的「Agent 管理」列出你账号下的设备，以及每台设备上报的 agent（Claude Code、Codex、OpenCode）。
 设备是一台你自己的 Mac。它运行 MissionGo 客户端，主动连到服务端拉取你在控制台派出的任务，然后在本机
-启动 Claude Code 或 Codex 会话处理这批条目。服务端不开放任何指向机器的端口，也不下发 Shell 命令——只下发
+启动 Claude Code、Codex 或 OpenCode 会话处理这批条目。服务端不开放任何指向机器的端口，也不下发 Shell 命令——只下发
 条目编号、agent、模式和仓库路径；启动提示词的业务流程相同，工作区和计划确认说明按客户端适配。
 
-目前支持 Claude Code 和 Codex，Hermes 暂不支持。
+目前支持 Claude Code、Codex 和 OpenCode，Hermes 暂不支持。
 
 ## 1. 机器上要先具备什么
 
@@ -33,9 +33,16 @@
 
   客户端检测到缺失时，菜单里有「复制命令」，复制出来的就是指向当前登录服务器的这条命令。
 
-**客户端集成需要在本机明确启用。** 首次安装或从旧版本升级后，Claude Code 与 Codex 都默认未启用。
+用 OpenCode 派单时：
+
+- **在运行 MissionGo macOS 客户端的 Mac 上启动 OpenCode 2 共享服务**。客户端读取 OpenCode 自己登记的服务信息，连接已有服务，不另起进程。当前接入使用 OpenCode 2 的 HTTP API；服务关闭、登记文件无效或版本太旧都会使该集成暂停。
+- **在同一个 OpenCode 服务里配置并授权 `missiongo` MCP**。建议按 [AI 客户端接入说明](ai-client-setup.md) 设置 `codemode: false`，让 Skill 直接调用 MissionGo 工具。客户端按派单仓库查询 MCP 状态，只有 `connected` 才发送提示词；显示 `needs_auth` 时，在 OpenCode 的 `/mcps` 中完成登录，再在 MissionGo 菜单点击 OpenCode「重新检查」。MissionGo 节点的登录不等于 OpenCode 的 MCP 授权。
+- **把 MissionGo Skill 同步到 OpenCode 的原生 Skill 目录**。启用 OpenCode 集成时客户端会下载到 `~/.config/opencode/skills/missiongo/SKILL.md`，不会覆盖更新的本地副本或符号链接。已有 `~/.claude/skills/missiongo/` 的机器仍按 OpenCode 自身的兼容读取方式处理，但不作为 MissionGo 的同步目标。
+- 对于 Mac mini 运行共享服务、MacBook 和手机连接它的部署，只在 **Mac mini** 的 MissionGo 节点启用 OpenCode 并把产品仓库映射到 Mac mini 上的真实路径。手机和 MacBook 作为 OpenCode 远程界面使用，不需要承担这次派单的仓库执行。
+
+**客户端集成需要在本机明确启用。** 首次安装或从旧版本升级后，各集成都默认未启用。
 在菜单中分别点击「启用…」，确认用途后才运行该客户端的登录检查，并下载 Skill 到它自己的
-`~/.claude/skills/missiongo/` 或 `$CODEX_HOME/skills/missiongo/`。不会同时访问另一个未启用的客户端。
+`~/.claude/skills/missiongo/`、`$CODEX_HOME/skills/missiongo/` 或 `~/.config/opencode/skills/missiongo/`。不会同时访问另一个未启用的客户端。
 本地版本更新、或者目标是符号链接时不覆盖。之后需要更新 Skill 或修复登录时，点击该客户端的「重新检查」。
 心跳、打开菜单和重启不再自动检查客户端登录或同步 Skill；安装新 CLI 后也需手动重新检查以更新上报版本。
 
@@ -97,12 +104,13 @@ Claude 配置。候选列表只来自这台节点已有的仓库映射，不再�
 
 ## 5. 派单之后
 
-- Claude Code 会话在后台运行，可以在 claude.ai/code 或手机上接管、批准计划。
+- Claude Code 会话在后台运行。使用官方订阅且 Claude Code 提供 Remote Control 时，可以在 claude.ai/code 或手机上接管、批准计划；使用自定义 API 地址（如 GLM）时，Claude Code 不提供 Remote Control，改在 MissionGo 会话里查看、回复和审批，Mac 节点需保持在线。
 - Codex 会话出现在 Codex App（包括远程控制这台 Mac 的另一台电脑）和 ChatGPT 手机 App 里，名字是
   「机器昵称-条目编号」，在那里查看、回复和批准。一次派多条时，同一产品的编号只写一次前缀，
   例如 `M4-HG-52,51,50,48,44,43`；名字太长才截断成「…等 N 条」。它的链接是 `codex://threads/<ID>`，只能在装了 Codex App
   的 Mac 上点开。
-- 客户端菜单的「最近派单」里能看到派给了哪个 agent、什么模式、状态和失败原因，点一下打开会话链接。
+- OpenCode 会话创建在该 Mac 已运行的共享服务中，同一服务的 MacBook 和手机客户端可以打开它。MissionGo 用设备昵称和条目编号命名会话，并在自己的会话页镜像可见的对话、接收回复与中断请求；当前不提供 OpenCode 深链。OpenCode 服务和 MissionGo 节点都要保持在线，MissionGo 内的回复才能送达。
+- 客户端菜单的「最近派单」里能看到派给了哪个 agent、什么模式、状态和失败原因；有外部链接时可点开。没有 Remote Control 链接的 Claude Code 会话请在 MissionGo 控制台查看。
 - Claude Code 仍在仓库主目录启动（不带 `-w`），保持项目归属和 `/resume` 行为；批准后按仓库规则创建独立 worktree，权限由 Claude Code 自身管理。
 - Codex 同样在主目录启动，同时只为本次派单预留一个同级 `missiongo-<完整派单编号>` 路径，通过 `runtimeWorkspaceRoots` 配置写权限，不提前建目录或分支。已有同名目录或符号链接会使派单失败，不覆盖、不清理。如果仓库要求其他位置，会话须先申请该精确路径的权限；`cd` 本身不改变沙箱。
 - Codex 返回的实际 reviewer、审批策略、沙箱和工作区范围须与派单要求相符才发送首轮提示词。旧客户端忽略参数或组织策略不允许时明确报错，不静默改用人工审查。
@@ -124,21 +132,21 @@ Claude 配置。候选列表只来自这台节点已有的仓库映射，不再�
 
 ## 模式
 
-| 模式 | Claude Code | Codex |
-|---|---|---|
-| 计划 | 原生 plan 模式，加计划提示词 | 提示词要求等待方案批准；技术权限请求由自动审查处理，保留可写工作区沙箱 |
-| 默认 | default | 可写工作区沙箱；越出沙箱的操作由你在 App 里批准 |
-| 自动接受编辑 | acceptEdits | 不提供 |
-| 自动 | auto | 可写工作区沙箱；越出沙箱的操作交给 Codex 的自动审核 |
+| 模式 | Claude Code | Codex | OpenCode |
+|---|---|---|---|
+| 计划 | 原生 plan 模式，加计划提示词 | 提示词要求等待方案批准；技术权限请求由自动审查处理，保留可写工作区沙箱 | 原生 plan agent；批准后手动切换到 build agent |
+| 默认 | default | 可写工作区沙箱；越出沙箱的操作由你在 App 里批准 | build agent，权限由 OpenCode 自身控制 |
+| 自动接受编辑 | acceptEdits | 不提供 | 不提供 |
+| 自动 | auto | 可写工作区沙箱；越出沙箱的操作交给 Codex 的自动审核 | 不提供 |
 
 计划模式下，先读条目并澄清问题，在会话中给出方案，停下等待批准。批准前不评论、不领取、不建分支或 worktree、不改代码。
 批准后先写已批准的计划评论，再领取、创建 worktree 并实施；Claude Code 须先退出原生 plan 模式。Codex 的计划等待依赖提示词和 Skill，自动权限审查不代表方案已被批准。
 
 节点登录与 AI 客户端 OAuth 是不同的授权，`mcp list` 显示已配置/已登录不能证明拥有写权限。Codex 在发送任务首轮之前通过该线程自己的 MCP 连接调用只读的 `get_current_account`，核对 `canComment`、`append_comment`、`claim_item` 以及本地/服务端 Skill 版本；能力缺失、版本不符或接口不支持时派单明确失败。节点不读取或借用客户端令牌。
 
-Claude Code 的原生启动流程保持不变，权限能力由会话首步调用 `get_current_account` 核对，实施前需确认评论与领取能力；不把节点的登录当作 Claude Code 已授权。缺少授权时说明需要在哪个客户端完成授权，并停在实施之前。
+Claude Code 的权限能力由会话首步调用 `get_current_account` 核对，实施前需确认评论与领取能力；不把节点的登录当作 Claude Code 已授权。缺少授权时说明需要在哪个客户端完成授权，并停在实施之前。启动时优先尝试 Remote Control；若 CLI 明确不支持（包括自定义 API 地址），则保留同一会话的本机 MissionGo 控制，不重复启动第二个会话。
 
-两个 agent 都拿不到「绕过权限」类的模式：Claude Code 的 `bypassPermissions`、`dontAsk`，Codex 的
+这些 agent 都拿不到「绕过权限」类的模式：Claude Code 的 `bypassPermissions`、`dontAsk`，Codex 的
 审批策略 `never` 和沙箱 `danger-full-access`，服务端和客户端都会拒绝。
 
 ## 登录与凭证
@@ -159,9 +167,11 @@ Claude Code 的原生启动流程保持不变，权限能力由会话首步调�
 | 菜单显示 Claude Code 未登录 | CLI 登录过期 | 终端里运行 `claude auth login` |
 | 派单失败，原因写着目录未信任 | 仓库没被 Claude Code 信任过 | 在该目录手动运行一次 `claude` 并确认信任 |
 | 显示离线 | 网络不通，或凭证被撤销 | 菜单里会写明原因；被撤销就重新登录 |
-| 会话起来了但没有链接 | 日志里还没出现会话地址，或 Remote Control 没连上 | 看 `~/Library/Logs/MissionGo/<派单 ID>.log` |
+| Claude Code 会话没有远程链接 | 自定义 API 地址下 Remote Control 不可用，这是预期行为；会话仍可由 MissionGo 控制 | 在 MissionGo 会话内查看、回复和审批，保持 Mac 节点在线；如连会话消息都没有，再查看 `~/Library/Logs/MissionGo/<派单 ID>.log` |
 | 菜单显示 Codex 后台服务未运行 | 控制通道没有应答，而且客户端自动运行 `codex app-server daemon start` 后仍没有连上 | 在终端运行菜单里复制出的 `codex app-server daemon start`，看它报什么错；要常驻就再跑一次 `codex app-server daemon bootstrap` |
 | Codex 派单失败，提示 missiongo MCP 未配置或未登录 | Codex 连不上 MissionGo | 运行菜单里复制出的命令 |
+| OpenCode 显示共享服务不可用 | OpenCode 2 服务未运行或登记文件无效 | 在这台 Mac 上启动 OpenCode 共享服务，然后点击「重新检查」 |
+| OpenCode 显示 missiongo MCP `needs_auth` | OpenCode 尚未完成 MissionGo 授权 | 在 OpenCode `/mcps` 中登录，再点击「重新检查」 |
 | 菜单里 missiongo Skill 一行显示失败 | 下载不到，或写不进 skills 目录 | 修复提示中的问题，再点击对应客户端「重新检查」；不会后台反复重试 |
 | 菜单显示集成未启用或已暂停 | 未授权本机集成、检查未完成或启动失败 | 在本机确认用途后启用/重新检查；不会自动替用户批准 macOS 权限 |
 | 启动时提示未自动读取登录凭据 | 钥匙串要求用户交互 | 点击登录，在前台处理系统授权；后台启动不弹钥匙串确认框 |

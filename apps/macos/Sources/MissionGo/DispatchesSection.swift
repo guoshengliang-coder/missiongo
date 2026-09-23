@@ -51,6 +51,11 @@ private struct DispatchRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                    if record.status == "launched" && record.agentKind == "claude_code" && record.sessionUrl == nil {
+                        Text("在 MissionGo 控制台查看和回复")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     if let error = DispatchPresentation.shortError(record.error) {
                         Text(error)
                             .font(.caption)
@@ -78,7 +83,16 @@ private struct DispatchRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help(record.error ?? (record.sessionUrl != nil ? "打开会话" : ""))
+        .help(rowHelp)
+    }
+
+    private var rowHelp: String {
+        if let error = record.error { return error }
+        if record.sessionUrl != nil { return "打开会话" }
+        if record.agentKind == "claude_code" && record.status == "launched" {
+            return "在 MissionGo 控制台查看和回复"
+        }
+        return ""
     }
 
     private var statusColor: Color {

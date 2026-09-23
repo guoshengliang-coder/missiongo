@@ -428,7 +428,7 @@ export interface AgentSessionCommand {
 export interface AgentSession {
   readonly id: string;
   readonly dispatchId: string;
-  readonly agentKind: "codex" | "claude_code";
+  readonly agentKind: "codex" | "claude_code" | "opencode";
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly updatedAt: string;

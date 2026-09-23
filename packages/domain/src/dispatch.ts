@@ -4,7 +4,7 @@
 // the item status still moves only through claim and submit, never through a
 // dispatch. Item status and execution status stay separate.
 
-export const AGENT_KINDS = ["claude_code", "codex", "hermes"] as const;
+export const AGENT_KINDS = ["claude_code", "codex", "opencode", "hermes"] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
 // Only the modes a session can be started in unattended. bypassPermissions and
@@ -26,9 +26,15 @@ export type ClaudeCodeMode = (typeof CLAUDE_CODE_MODES)[number];
 export const CODEX_MODES = ["plan", "default", "auto"] as const;
 export type CodexMode = (typeof CODEX_MODES)[number];
 
+// OpenCode V2 has native plan/build agents. Keep the first release in the
+// interactive modes; automatic permission replies need a separate review.
+export const OPENCODE_MODES = ["plan", "default"] as const;
+export type OpenCodeMode = (typeof OPENCODE_MODES)[number];
+
 export const DISPATCH_MODES_BY_AGENT: Readonly<Record<AgentKind, readonly string[]>> = {
   claude_code: CLAUDE_CODE_MODES,
   codex: CODEX_MODES,
+  opencode: OPENCODE_MODES,
   hermes: [],
 };
 

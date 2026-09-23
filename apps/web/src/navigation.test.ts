@@ -5,6 +5,7 @@ import {
   AGENT_CONSOLE_LAYOUT_KEY,
   AGENT_CONVERSATION_HISTORY_MARKER,
   agentConsoleExitUrl,
+  agentConsoleFilterFromUrl,
   agentConsoleIsOpen,
   agentConsoleLayoutFromState,
   agentConsoleUrl,
@@ -34,6 +35,14 @@ describe("Agent console navigation", () => {
     expect(agentSessionIdFromUrl(new URL(conversationUrl, items))).toBe("session-42");
     expect(agentConsoleExitUrl(new URL(conversationUrl, items)))
       .toBe("/?product=p1&status=all&q=return#latest");
+  });
+
+  it("opens the console on a linked filter once and drops it on the way out (AND-149)", () => {
+    const linked = new URL("https://example.test/?product=p1&console=agent&consoleFilter=attention&session=s1");
+    expect(agentConsoleFilterFromUrl(linked)).toBe("attention");
+    expect(agentConsoleExitUrl(linked)).toBe("/?product=p1");
+    expect(agentConsoleFilterFromUrl(new URL("https://example.test/?console=agent&consoleFilter=bogus"))).toBeNull();
+    expect(agentConsoleFilterFromUrl(new URL("https://example.test/?consoleFilter=attention"))).toBeNull();
   });
 
   it("ignores a session parameter outside the console", () => {

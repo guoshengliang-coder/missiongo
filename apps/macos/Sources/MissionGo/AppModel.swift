@@ -303,6 +303,7 @@ final class AppModel: ObservableObject {
             adapters: [
                 ConsentedAgentAdapter(agent: .claudeCode, base: SessionLauncher(environment: environment), access: integrations),
                 ConsentedAgentAdapter(agent: .codex, base: CodexLauncher(environment: environment, serverUrl: credential.serverUrl), access: integrations),
+                ConsentedAgentAdapter(agent: .openCode, base: OpenCodeLauncher(), access: integrations),
             ],
             fallbackNodeName: credential.name,
             detectRepoCandidates: { snapshot.candidates },
@@ -312,7 +313,9 @@ final class AppModel: ObservableObject {
                 guard let expectedVersion else {
                     return AgentSkillSnapshot(syncState: "unknown", checkedAt: checkedAt)
                 }
-                let agent: LocalAgent = agentKind == "codex" ? .codex : .claudeCode
+                guard let agent = LocalAgent(rawValue: agentKind) else {
+                    return AgentSkillSnapshot(expectedVersion: expectedVersion, syncState: "missing", checkedAt: checkedAt)
+                }
                 guard access.state(for: agent)?.version != nil else {
                     return AgentSkillSnapshot(
                         expectedVersion: expectedVersion, syncState: "missing", checkedAt: checkedAt
@@ -608,6 +611,18 @@ final class AppModel: ObservableObject {
                 codex = status
                 if case let .ready(value) = status { version = value; issue = nil }
                 else { version = ""; issue = status.summary + "。" + (status.fixHint ?? "") }
+            case .openCode:
+                do {
+                    let control = OpenCodeHTTPControl()
+                    let found = try await control.health()
+                    let mcp = try await control.missionGoMcpStatus()
+                    guard access.isCurrent(agent, attempt: attempt) else { return }
+                    version = found
+                    issue = mcp == "connected" ? nil : "OpenCode 的 missiongo MCP 未连接（\(mcp ?? "未配置")）；请在 OpenCode 的 /mcps 中完成授权。"
+                } catch {
+                    version = ""
+                    issue = error.localizedDescription
+                }
             }
             if let issue {
                 access.finish(agent, attempt: attempt, version: nil, issue: issue)

@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 
@@ -60,6 +60,7 @@ import {
 import { MissionGoStore } from "./store.js";
 import { COMMENT_BODY_KINDS, COMPONENT_KINDS, type ComponentKind } from "./types.js";
 import type { FeedbackLogEntry, SdkPrincipal } from "./types.js";
+import { widgetSummary } from "./widget-summary.js";
 
 export interface BuildAppOptions {
   readonly databasePath?: string;
@@ -1763,6 +1764,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { sessions };
   });
 
+  // AND-149: one small read for the Android home-screen widget, across every
+  // product the account can see. Unlike the list above it never schedules
+  // attention classification: the widget polls on a timer, and a timer must not
+  // be what spends AI calls.
+  app.get("/api/v1/widget/summary", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    const account = requireAccount(request);
+    const sessions = agentSessionStore.listForAccount(account.id)
+      .filter((session) => session.items.length > 0
+        && session.items.every((item) => accountStore.allows(account, item.productId, "view")));
+    const reachable = accountStore.reachableProductIds(account, "view");
+    const readyByProduct = new Map(
+      store.listProducts()
+        .filter((product) => reachable === "*" || reachable.includes(product.id))
+        .map((product) => [product.id, store.getWorkItemListSummary({ productId: product.id }).byStatus.ready]),
+    );
+    return widgetSummary(sessions, readyByProduct);
+  });
+
   app.patch("/api/v1/agent-sessions/:sessionId", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     authorizedAgentSession(request, sessionId, true);
@@ -2081,6 +2101,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(settingsRevision !== undefined ? { settingsRevision } : {}),
       ...(stringField(body, "settingsError", false) ? { settingsError: body.settingsError as string } : {}),
       ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
+      ...(body.clearSessionUrl === true ? { clearSessionUrl: true } : {}),
       ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
     });
     scheduleAttentionClassification(sessionId);
@@ -2896,8 +2917,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const width = Number.isFinite(requested)
       ? Math.min(Math.max(Math.round(requested), 32), MAX_THUMBNAIL_EDGE)
       : DEFAULT_THUMBNAIL_EDGE;
-    const path = attachmentStorage.resolveStoredFile(attachment.storageFilename);
-    const thumbnail = await sharp(await readFile(path), { animated: false })
+    const drawable = await attachmentStorage.readDrawableImage(attachment);
+    const thumbnail = await sharp(drawable.bytes, { animated: false })
       // Phone screenshots carry their orientation in EXIF; without this the
       // tile comes out on its side.
       .rotate()
@@ -2914,6 +2935,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .header("cache-control", pinned ? "private, max-age=2592000, immutable" : "private, no-cache")
       .header("x-content-type-options", "nosniff")
       .send(thumbnail);
+  });
+
+  // The full image, in a form any browser can draw. For most images that is the
+  // original itself; for HEIC it is a JPEG decoded from it (C6), which is also
+  // what the annotator edits. A download still goes to /content and gets the
+  // original bytes.
+  app.get("/api/v1/items/:itemKey/attachments/:attachmentId/preview", async (request, reply) => {
+    const { itemKey, attachmentId } = request.params as { itemKey: string; attachmentId: string };
+    const attachment = store.getAttachmentRecord(requireItemPermission(request, itemKey), attachmentId);
+    if (attachment.kind !== "image") throw invalidInput("Only image attachments have previews.");
+    const drawable = await attachmentStorage.readDrawableImage(attachment);
+    const query = request.query as { rev?: string };
+    const pinned = query.rev !== undefined && query.rev === attachment.revision;
+    return reply
+      .type(drawable.contentType)
+      .header("content-length", drawable.bytes.length)
+      .header("cache-control", pinned ? "private, max-age=2592000, immutable" : "private, no-store")
+      .header("x-content-type-options", "nosniff")
+      .send(drawable.bytes);
   });
 
   // Editing an image in the browser sends the result back here rather than

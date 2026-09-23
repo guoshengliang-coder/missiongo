@@ -69,14 +69,10 @@ const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.m
 };
 
 /**
- * The most small touch targets any one page still has, measured: the phone list
- * at 8. They are A2 in the review -- the refresh button at 36px wide, the
- * product switcher and the row menu at 38px, the select checkbox at 16px, the
- * row itself at 40px -- and fixing them is D2-4, which moves the 44px rule off
- * the width breakpoint and onto `(pointer: coarse)`. Until then the number may
- * only go down: a new one fails here.
+ * Small touch targets allowed on any one page. It was 8 -- the A2 backlog --
+ * until DC-2 moved the 44px rule onto `(pointer: coarse)`. Keep it at zero.
  */
-const SMALL_TARGET_ALLOWANCE = 8;
+const SMALL_TARGET_ALLOWANCE = 0;
 
 async function auditPage(page: Page, path: string, theme: string): Promise<AuditResult> {
   await page.emulateMedia({ colorScheme: theme as "light" | "dark" });
@@ -147,24 +143,83 @@ for (const viewport of VIEWPORTS) {
   }
 }
 
-test.describe("capture form", () => {
-  test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true, colorScheme: "dark" });
+// The submit bar stays in view while a long form scrolls: AND-30 fixed it for a
+// portrait phone only, and C1 found the same button 1437px down in landscape.
+for (const viewport of [
+  { name: "phone", width: 375, height: 812 },
+  { name: "phone-landscape", width: 812, height: 375 },
+  { name: "tablet", width: 768, height: 1024 },
+]) {
+  test.describe(`capture form on ${viewport.name}`, () => {
+    test.use({ viewport: { width: viewport.width, height: viewport.height }, hasTouch: true, isMobile: true, colorScheme: "dark" });
 
-  test("submits without hunting for the button", async ({ page }) => {
-    await page.emulateMedia({ colorScheme: "dark" });
+    test("submits without hunting for the button", async ({ page }) => {
+      await page.emulateMedia({ colorScheme: "dark" });
+      await page.goto(`/?product=${fixture.productId}&status=all`);
+      await page.waitForLoadState("networkidle");
+      await page.locator(".mobile-fab").click();
+      const dialog = page.locator("dialog[open]");
+      await expect(dialog).toBeVisible();
+
+      const result = (await page.evaluate(AUDIT_SOURCE)) as AuditResult;
+      expect(result.text.filter((item) => item.fontSize > 0 && item.fontSize < MIN_FONT_SIZE)).toEqual([]);
+      expect(result.text.filter((item) => item.contrast < MIN_CONTRAST && !LARGE_TEXT(item.fontSize, item.fontWeight))).toEqual([]);
+
+      const submit = dialog.locator(".capture-actions .primary-button");
+      await expect(submit).toBeInViewport();
+      // And still there after scrolling to the middle of the form.
+      await dialog.locator(".modal").evaluate((element) => { element.scrollTop = element.scrollHeight / 2; });
+      await expect(submit).toBeInViewport();
+    });
+  });
+}
+
+test.describe("row checkbox on a touch screen", () => {
+  test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+
+  test("tapping the edge of its target ticks the box and leaves the list", async ({ page }) => {
     await page.goto(`/?product=${fixture.productId}&status=all`);
     await page.waitForLoadState("networkidle");
-    await page.locator(".mobile-fab").click();
-    const dialog = page.locator("dialog[open]");
-    await expect(dialog).toBeVisible();
+    const hit = page.locator(".item-select-hit").first();
+    await expect(hit).toBeVisible();
+    const box = await hit.boundingBox();
+    expect(box?.width).toBeGreaterThanOrEqual(44);
+    expect(box?.height).toBeGreaterThanOrEqual(44);
 
-    const result = (await page.evaluate(AUDIT_SOURCE)) as AuditResult;
-    expect(result.text.filter((item) => item.fontSize > 0 && item.fontSize < MIN_FONT_SIZE)).toEqual([]);
-    expect(result.text.filter((item) => item.contrast < MIN_CONTRAST && !LARGE_TEXT(item.fontSize, item.fontWeight))).toEqual([]);
-
-    // The submit bar is sticky below 520px: it stays on screen while the form
-    // scrolls. AND-30 was this, and C1 is the same bar off-screen in landscape.
-    const submit = dialog.locator("button", { hasText: "提交" }).first();
-    await expect(submit).toBeInViewport();
+    // A corner of the label, well outside the 20px checkbox it wraps. A click,
+    // not a tap: Chromium's touch adjustment snaps a tap onto the checkbox
+    // itself, so only a click proves what a press on the label's padding does --
+    // which a touchscreen laptop, or a stylus, sends as exactly that.
+    await hit.click({ position: { x: 3, y: 3 } });
+    await expect(hit.locator("input")).toBeChecked();
+    await page.waitForTimeout(300);
+    expect(new URL(page.url()).searchParams.get("item"), "the row must not have opened").toBeNull();
   });
 });
+
+test.describe("attachments a browser cannot read natively", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("an iPhone HEIC is drawn from the server's decoded copy", async ({ page }) => {
+    await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
+    await page.waitForLoadState("networkidle");
+    const thumbnail = page.locator('.attachment-media-open img[alt="iphone.heic"]');
+    await thumbnail.scrollIntoViewIfNeeded();
+    await expect(thumbnail).toBeVisible();
+    // naturalWidth is 0 for an image the browser failed to decode -- which is
+    // what a raw HEIC is to Chromium.
+    await expect.poll(() => thumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  });
+
+  test("a video this browser cannot play says so and offers the file", async ({ page }) => {
+    await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
+    await page.waitForLoadState("networkidle");
+    const card = page.locator(".attachment-card", { hasText: "screen-recording.mov" });
+    await card.scrollIntoViewIfNeeded();
+    await card.locator(".attachment-load-button").click();
+    const notice = card.locator(".video-unplayable");
+    await expect(notice).toBeVisible();
+    await expect(notice.getByRole("button")).toBeVisible();
+  });
+});
+

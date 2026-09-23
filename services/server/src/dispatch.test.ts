@@ -1585,7 +1585,6 @@ describe("Claiming a dispatch on the node", () => {
       payload: {
         status: "launched",
         sessionName: `Mac mini-${mission.itemKey}`,
-        sessionUrl: "https://claude.ai/code/session_test",
         sessionRef,
       },
     })).statusCode).toBe(204);
@@ -1602,6 +1601,13 @@ describe("Claiming a dispatch on the node", () => {
         lifecycle: "keep", occupiesExecutionSlot: true,
       }],
     });
+    const initialDispatches = (await app.inject({
+      method: "GET",
+      url: `/api/v1/items/${mission.itemKey}/dispatches`,
+      headers: { cookie },
+    })).json<{ dispatches: Array<{ sessionUrl?: string; agentSessionId?: string }> }>().dispatches;
+    expect(initialDispatches[0]?.sessionUrl).toBeUndefined();
+    expect(initialDispatches[0]?.agentSessionId).toBe(mirrored.id);
     expect((await app.inject({
       method: "POST",
       url: `/api/v1/node/agent-sessions/${mirrored.id}/snapshot`,
@@ -1652,6 +1658,18 @@ describe("Claiming a dispatch on the node", () => {
     })).json()).toMatchObject({
       dispatches: [{ sessionUrl: "https://claude.ai/code/session_resumed" }],
     });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${mirrored.id}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", clearSessionUrl: true, messages: [] },
+    })).statusCode).toBe(204);
+    const localDispatches = (await app.inject({
+      method: "GET",
+      url: `/api/v1/items/${mission.itemKey}/dispatches`,
+      headers: { cookie },
+    })).json<{ dispatches: Array<{ sessionUrl?: string }> }>().dispatches;
+    expect(localDispatches[0]?.sessionUrl).toBeUndefined();
     const reply = await app.inject({
       method: "POST",
       url: `/api/v1/agent-sessions/${mirrored.id}/commands`,
@@ -2093,6 +2111,48 @@ describe("Claiming a dispatch on the node", () => {
     });
     expect(interruptPoll.json()).toMatchObject({
       sessions: [{ command: { id: interruptId, kind: "interrupt", turnId: "t1", status: "queued" } }],
+    });
+  });
+
+  it("dispatches OpenCode plan work and records its shared-service session", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "opencode");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "opencode", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    expect(created.statusCode).toBe(201);
+    const dispatchId = created.json<{ id: string }>().id;
+    const claim = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(claim.json()).toMatchObject({ dispatchId, agentKind: "opencode", mode: "plan" });
+    const result = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionRef: "ses_opencode_test" },
+    });
+    expect(result.statusCode).toBe(204);
+    const sessions = await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(sessions.json()).toMatchObject({
+      sessions: [{ agentKind: "opencode", sessionRef: "ses_opencode_test" }],
     });
   });
 
@@ -2839,5 +2899,89 @@ describe("Model, effort and running-session settings (AND-130)", () => {
       payload: { agents: { codex: { mode: "acceptEdits" } } },
     });
     expect(invalid.statusCode).toBe(400);
+  });
+});
+
+describe("Widget summary (AND-149)", () => {
+  async function snapshot(app: FastifyInstance, token: string, sessionId: string, messages: unknown[]) {
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { status: "idle", messages },
+    });
+    expect(response.statusCode).toBe(204);
+  }
+
+  async function summary(app: FastifyInstance, cookie: string) {
+    const response = await app.inject({ method: "GET", url: "/api/v1/widget/summary", headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    return response.json<Record<string, Record<string, unknown>>>();
+  }
+
+  it("counts what the console and the ready list would show, across products", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    await snapshot(app, node.token, sessionId, [
+      { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
+      {
+        sourceId: "a1", turnId: "t1", role: "agent", text: "Pick a scope.",
+        questions: [{ title: "Scope", options: ["Small", "Full"] }],
+      },
+    ]);
+    const other = await readyItem(app, cookie, "Hermes GO", "HG");
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      headers: { cookie },
+      payload: {
+        productId: other.productId, status: "ready", type: "task", priority: "normal",
+        title: "HG second", description: "more", environment: { platform: "web" },
+      },
+    });
+
+    expect(await summary(app, cookie)).toMatchObject({
+      agent: {
+        attention: 1,
+        active: 0,
+        failed: 0,
+        attentionProductId: mission.productId,
+        attentionSessionId: sessionId,
+      },
+      items: { ready: 3, readyProductId: other.productId },
+    });
+  });
+
+  it("does not spend an AI call on a conversation still waiting to be classified", async () => {
+    const provider = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ needsAttention: false, kind: "none", reason: "Done." }) } }],
+    }), { status: 200 }));
+    const { app, cookie } = await signedInApp(adminAccount(), provider as typeof fetch);
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    // No key yet, so the snapshot leaves the reply pending instead of classifying it.
+    await snapshot(app, node.token, sessionId, [
+      { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
+      { sourceId: "a1", turnId: "t1", role: "agent", phase: "final_answer", text: "I shipped it." },
+    ]);
+    await app.inject({
+      method: "PUT",
+      url: "/api/v1/ai/title-settings",
+      headers: { cookie },
+      payload: { apiKey: "secret-deepseek-key" },
+    });
+
+    await summary(app, cookie);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(provider).not.toHaveBeenCalled();
+
+    // The console's own list still classifies, which is what keeps this test honest.
+    await app.inject({ method: "GET", url: `/api/v1/agent-sessions?productId=${mission.productId}`, headers: { cookie } });
+    await vi.waitFor(() => expect(provider).toHaveBeenCalledTimes(1));
+  });
+
+  it("asks for a signed-in account", async () => {
+    const { app } = await signedInApp();
+    expect((await app.inject({ method: "GET", url: "/api/v1/widget/summary" })).statusCode).toBe(401);
   });
 });

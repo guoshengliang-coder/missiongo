@@ -148,6 +148,8 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     public var sessionRef: String
     public var hostPid: Int32?
     public var sessionUrl: String?
+    /// The first work prompt reached Claude. A control handshake alone is not a launch.
+    public var launchReady: Bool
     public var messages: [AgentSessionMessage]
     public var activities: [AgentSessionActivity]
     public var waitingForInput: Bool
@@ -174,6 +176,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         sessionRef: String,
         hostPid: Int32? = nil,
         sessionUrl: String? = nil,
+        launchReady: Bool = false,
         messages: [AgentSessionMessage] = [],
         activities: [AgentSessionActivity] = [],
         waitingForInput: Bool = false,
@@ -187,6 +190,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         self.sessionRef = sessionRef
         self.hostPid = hostPid
         self.sessionUrl = sessionUrl
+        self.launchReady = launchReady
         self.messages = messages
         self.activities = activities
         self.waitingForInput = waitingForInput
@@ -198,7 +202,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, status, sessionRef, hostPid, sessionUrl, messages, activities, waitingForInput, commandResults, error
+        case version, status, sessionRef, hostPid, sessionUrl, launchReady, messages, activities, waitingForInput, commandResults, error
         case idleSince, lastProgressAt
         case model, effort, mode, settingsRevision, settingsError, acceptsSettings
     }
@@ -210,6 +214,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         sessionRef = try values.decode(String.self, forKey: .sessionRef)
         hostPid = try values.decodeIfPresent(Int32.self, forKey: .hostPid)
         sessionUrl = try values.decodeIfPresent(String.self, forKey: .sessionUrl)
+        launchReady = try values.decodeIfPresent(Bool.self, forKey: .launchReady) ?? false
         messages = try values.decodeIfPresent([AgentSessionMessage].self, forKey: .messages) ?? []
         activities = try values.decodeIfPresent([AgentSessionActivity].self, forKey: .activities) ?? []
         waitingForInput = try values.decodeIfPresent(Bool.self, forKey: .waitingForInput) ?? false
@@ -276,6 +281,8 @@ public struct ClaudeStreamSnapshot: Sendable {
         var resumed = state
         resumed.hostPid = hostPid
         resumed.status = "suspended"
+        resumed.sessionUrl = nil
+        resumed.launchReady = false
         resumed.error = nil
         resumed.idleSince = nil
         resumed.lastProgressAt = Date()
@@ -414,6 +421,18 @@ public struct ClaudeStreamSnapshot: Sendable {
         if state.status == "suspended" { state.status = "idle" }
         if state.status == "idle", !state.waitingForInput { state.idleSince = Date() }
         state.error = nil
+        noteProgress()
+    }
+
+    public mutating func setMissionGoControl() {
+        state.sessionUrl = nil
+        if state.status == "suspended" { state.status = "idle" }
+        state.error = nil
+        noteProgress()
+    }
+
+    public mutating func confirmLaunch() {
+        state.launchReady = true
         noteProgress()
     }
 

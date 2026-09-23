@@ -40,3 +40,28 @@ export function attachmentThumbnailPath(itemKey: string, attachmentId: string, w
   const query = new URLSearchParams({ width: String(width), rev: revision });
   return `/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}/thumbnail?${query}`;
 }
+
+/**
+ * Image types only Safari can draw. The server serves these through /preview as
+ * a JPEG decoded from the original (C6), so viewing and annotating use that,
+ * while a download still fetches the original bytes.
+ */
+const BROWSER_UNREADABLE_IMAGE_TYPES: ReadonlySet<string> = new Set(["image/heic", "image/heif"]);
+
+export function drawsFromDecodedCopy(contentType: string): boolean {
+  return BROWSER_UNREADABLE_IMAGE_TYPES.has(contentType.split(";", 1)[0]!.trim().toLowerCase());
+}
+
+/** The name and type of what /preview returns for this attachment. */
+export function drawableImageFile(filename: string, contentType: string): { name: string; type: string } {
+  if (!drawsFromDecodedCopy(contentType)) return { name: filename, type: contentType };
+  const dot = filename.lastIndexOf(".");
+  return { name: `${dot <= 0 ? filename : filename.slice(0, dot)}.jpg`, type: "image/jpeg" };
+}
+
+/** The full image in a form any browser can draw, pinned to one revision. */
+export function attachmentPreviewPath(itemKey: string, attachmentId: string, revision: string): string {
+  const query = new URLSearchParams({ rev: revision });
+  return `/api/v1/items/${encodeURIComponent(itemKey)}/attachments/${encodeURIComponent(attachmentId)}/preview?${query}`;
+}
+
