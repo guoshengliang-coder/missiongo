@@ -849,13 +849,22 @@ final class CodexFileDescriptorGuardTests: XCTestCase {
         XCTAssertTrue(reason?.contains("daemon restart") == true)
     }
 
-    func testTrustsOnlyTheCurrentManagedDaemonIdentity() throws {
+    func testTrustsOnlyTheCurrentManagedDaemonState() throws {
         let data = Data(#"{"pid":68039,"processStartTime":"2026-09-22T12:00:00Z","executableIdentity":{"digest":[1,2,3]}}"#.utf8)
         XCTAssertEqual(CodexFileDescriptorGuard.verifiedManagedSoftLimit(ownerPID: 68039, stateData: data), 4096)
         XCTAssertNil(CodexFileDescriptorGuard.verifiedManagedSoftLimit(ownerPID: 68040, stateData: data))
+        // Codex CLI 0.154 writes this current state shape without an identity.
+        XCTAssertEqual(CodexFileDescriptorGuard.verifiedManagedSoftLimit(
+            ownerPID: 68039,
+            stateData: Data(#"{"pid":68039,"processStartTime":"Wed Sep 23 22:09:56 2026"}"#.utf8)
+        ), 4096)
         XCTAssertNil(CodexFileDescriptorGuard.verifiedManagedSoftLimit(
             ownerPID: 68039,
             stateData: Data(#"{"pid":68039,"processStartTime":"","executableIdentity":{"digest":[]}}"#.utf8)
+        ))
+        XCTAssertNil(CodexFileDescriptorGuard.verifiedManagedSoftLimit(
+            ownerPID: 68039,
+            stateData: Data(#"{"pid":68039,"processStartTime":"2026-09-22T12:00:00Z","executableIdentity":{"digest":[]}}"#.utf8)
         ))
     }
 

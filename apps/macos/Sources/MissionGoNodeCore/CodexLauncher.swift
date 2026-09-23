@@ -16,8 +16,9 @@ public extension CodexResourceChecking {
 public struct CodexFileDescriptorGuard: CodexResourceChecking {
     public static let minimumReserve = 64
     /// The official managed daemon raises RLIMIT_NOFILE before exec and records
-    /// the exact process identity in app-server.pid. Never apply this contract
-    /// to an unrelated process merely because it owns a similarly named socket.
+    /// its PID and startup time in app-server.pid. Some CLI releases also
+    /// include an executable digest. Never apply this contract to an unrelated
+    /// process merely because it owns a similarly named socket.
     static let managedDaemonSoftLimit = 4096
 
     private let run: CommandRunner
@@ -122,10 +123,17 @@ public struct CodexFileDescriptorGuard: CodexResourceChecking {
         guard let object = try? JSONSerialization.jsonObject(with: stateData) as? [String: Any],
               let number = object["pid"] as? NSNumber,
               number.int64Value == Int64(ownerPID),
-              let started = object["processStartTime"] as? String, !started.isEmpty,
-              let identity = object["executableIdentity"] as? [String: Any],
-              let digest = identity["digest"] as? [Any], !digest.isEmpty
+              let started = object["processStartTime"] as? String, !started.isEmpty
         else { return nil }
+
+        // Codex CLI 0.154 no longer writes executableIdentity. The matched PID
+        // still proves that this managed daemon owns the control socket. When
+        // an older daemon does provide an identity, reject a malformed one.
+        if let rawIdentity = object["executableIdentity"] {
+            guard let identity = rawIdentity as? [String: Any],
+                  let digest = identity["digest"] as? [Any], !digest.isEmpty
+            else { return nil }
+        }
         return managedDaemonSoftLimit
     }
 
