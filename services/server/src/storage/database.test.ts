@@ -14,6 +14,64 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("adds OpenCode sessions to an existing database without losing mirrored messages", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-opencode-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    seeded.connection.exec(`
+      INSERT INTO nodes (id, account_id, name, token_hash, created_at, updated_at)
+      VALUES ('node-1', 'account-1', 'Mac mini', 'hash', '2026-09-23T00:00:00Z', '2026-09-23T00:00:00Z');
+      INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+      VALUES ('dispatch-1', 'account-1', 'node-1', 'codex', 'plan', 'launched', '/repo', '2026-09-23T00:00:00Z');
+      INSERT INTO agent_sessions
+        (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at)
+      VALUES ('session-1', 'dispatch-1', 'node-1', 'codex', 'thread-1', 'idle',
+        '2026-09-23T00:00:00Z', '2026-09-23T00:00:00Z');
+      INSERT INTO agent_session_messages
+        (id, session_id, source_id, role, text, position, observed_at, occurred_at)
+      VALUES ('message-1', 'session-1', 'source-1', 'agent', 'Existing reply', 0,
+        '2026-09-23T00:00:00Z', '2026-09-23T00:00:00Z');
+    `);
+    seeded.close();
+
+    const legacy = new DatabaseSync(path);
+    legacy.exec("PRAGMA foreign_keys = OFF;");
+    for (const [name, current, old] of [
+      ["dispatches", "agent_kind IN ('claude_code', 'codex', 'opencode', 'hermes')", "agent_kind IN ('claude_code', 'codex', 'hermes')"],
+      ["agent_sessions", "agent_kind IN ('codex', 'claude_code', 'opencode')", "agent_kind IN ('codex', 'claude_code')"],
+    ]) {
+      const table = legacy.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(name) as { sql: string };
+      const columns = (legacy.prepare(`PRAGMA table_info(${name})`).all() as Array<{ name: string }>)
+        .map((column) => `"${column.name}"`).join(", ");
+      const oldSchema = table.sql
+        .replace(new RegExp(`CREATE TABLE(?: IF NOT EXISTS)?\\s+"?${name}"?`, "i"), `CREATE TABLE ${name}_legacy`)
+        .replace(current, old);
+      legacy.exec(oldSchema);
+      legacy.exec(`INSERT INTO ${name}_legacy (${columns}) SELECT ${columns} FROM ${name};`);
+      legacy.exec(`DROP TABLE ${name}; ALTER TABLE ${name}_legacy RENAME TO ${name};`);
+    }
+    legacy.exec("CREATE INDEX idx_agent_sessions_activity ON agent_sessions(activity_at DESC);");
+    legacy.exec("DELETE FROM schema_migrations WHERE version = 202609230957; PRAGMA foreign_keys = ON;");
+    legacy.close();
+
+    const migrated = new MissionGoDatabase(path);
+    expect(migrated.connection.prepare("SELECT text FROM agent_session_messages WHERE id = 'message-1'").get())
+      .toEqual({ text: "Existing reply" });
+    expect(migrated.connection.prepare("SELECT name FROM sqlite_master WHERE name = 'idx_agent_sessions_activity'").get())
+      .toEqual({ name: "idx_agent_sessions_activity" });
+    migrated.connection.exec(`
+      INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+      VALUES ('dispatch-2', 'account-1', 'node-1', 'opencode', 'default', 'launched', '/repo', '2026-09-23T00:00:00Z');
+      INSERT INTO agent_sessions
+        (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at)
+      VALUES ('session-2', 'dispatch-2', 'node-1', 'opencode', 'ses-2', 'idle',
+        '2026-09-23T00:00:00Z', '2026-09-23T00:00:00Z');
+    `);
+    expect(migrated.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    migrated.close();
+  });
+
   it("backfills stable Agent message occurrence times from the last legacy observation", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-message-time-migration-"));
     temporaryDirectories.push(directory);

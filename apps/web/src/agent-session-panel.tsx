@@ -10,12 +10,12 @@ import { AutoGrowTextarea } from "./auto-grow-textarea";
 
 function messageLabel(
   role: AgentSessionMessage["role"],
-  agentKind: "codex" | "claude_code",
+  agentKind: "codex" | "claude_code" | "opencode",
   t: ReturnType<typeof useI18n>["t"],
 ): string {
   if (role === "user") return t("agentSessionYou");
   if (role === "plan") return t("agentSessionPlan");
-  return t(agentKind === "claude_code" ? "agentClaudeCode" : "agentSessionCodex");
+  return t(agentKind === "claude_code" ? "agentClaudeCode" : agentKind === "opencode" ? "agentOpenCode" : "agentSessionCodex");
 }
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {

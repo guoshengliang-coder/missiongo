@@ -214,6 +214,7 @@ describe("wording for values that come from the server", () => {
 
   it("falls back rather than crashing on an agent kind it does not know", () => {
     expect(agentLabelKey("claude_code")).toBe("agentClaudeCode");
+    expect(agentLabelKey("opencode")).toBe("agentOpenCode");
     expect(agentLabelKey("gemini")).toBeNull();
   });
 
@@ -231,6 +232,7 @@ describe("wording for values that come from the server", () => {
 
   it("warns that Codex plan mode rests on the prompt alone", () => {
     expect(dispatchModeHelpKey("codex", "plan")).toBe("dispatchCodexPlanHelp");
+    expect(dispatchModeHelpKey("opencode", "plan")).toBe("dispatchOpenCodePlanHelp");
     expect(dispatchModeHelpKey("claude_code", "plan")).toBe("dispatchPlanHelp");
     expect(dispatchModeHelpKey("codex", "auto")).toBe("dispatchCodexAutoHelp");
     expect(dispatchModeHelpKey("claude_code", "default")).toBeNull();

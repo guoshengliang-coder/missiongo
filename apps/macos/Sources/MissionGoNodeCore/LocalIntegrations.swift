@@ -3,8 +3,15 @@ import Foundation
 public enum LocalAgent: String, CaseIterable, Sendable {
     case claudeCode = "claude_code"
     case codex
+    case openCode = "opencode"
 
-    public var title: String { self == .claudeCode ? "Claude Code" : "Codex" }
+    public var title: String {
+        switch self {
+        case .claudeCode: return "Claude Code"
+        case .codex: return "Codex"
+        case .openCode: return "OpenCode"
+        }
+    }
 }
 
 /// Local consent is separate from the server's dispatch settings and from TCC.

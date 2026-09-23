@@ -147,6 +147,7 @@ describe("agent session message view", () => {
     expect(messageLabelKey("user")).toBeNull();
     expect(messageLabelKey("agent")).toBe("agentSessionCodex");
     expect(messageLabelKey("agent", "claude_code")).toBe("agentClaudeCode");
+    expect(messageLabelKey("agent", "opencode")).toBe("agentOpenCode");
     expect(messageLabelKey("plan")).toBe("agentSessionPlan");
   });
 

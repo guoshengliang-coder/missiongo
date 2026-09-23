@@ -72,7 +72,12 @@ public enum SkillSync {
     /// Called only after the person enables this specific integration. Do not
     /// even stat the disabled client's home directory.
     public static func target(for agent: LocalAgent, home: String, codexHome: String) -> String {
-        let directory = agent == .claudeCode ? "\(home)/.claude" : codexHome
+        let directory: String
+        switch agent {
+        case .claudeCode: directory = "\(home)/.claude"
+        case .codex: directory = codexHome
+        case .openCode: directory = "\(home)/.config/opencode"
+        }
         return "\(directory)/skills/missiongo/SKILL.md"
     }
 
