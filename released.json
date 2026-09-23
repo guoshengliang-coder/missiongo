@@ -18,8 +18,8 @@
       ]
     },
     "androidSdk": {
-      "version": "0.2.6",
-      "commit": "bf55552c0e7a8997c6aa41077aff38a15cb04950",
+      "version": "0.2.7",
+      "commit": "11b658b4f106498fbbec1979f76539b75880fcb2",
       "versionFile": "sdks/android-feedback/gradle.properties",
       "versionProperty": "missiongoVersion",
       "paths": [
