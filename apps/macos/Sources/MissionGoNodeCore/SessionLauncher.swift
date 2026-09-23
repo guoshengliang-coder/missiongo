@@ -682,6 +682,38 @@ public struct SessionLauncher: AgentAdapter {
         // an explicit suspension or a known dead/wrong process is unavailable.
         let hostRunning = state.hostPid.map(ClaudeHostProcess.isClaudeHost) ?? (state.status != "suspended")
         if !hostRunning {
+            // A host that stopped without suspending — a crash, a kill, a Mac
+            // restart — used to leave a local-control conversation "unavailable"
+            // with no way forward: its dispatch is still launched, so the
+            // console shows no retry button, and the items stay claimed. The
+            // transcript is on disk, so fold the session into the "suspended"
+            // the idle release uses; the next reply then restarts the host.
+            // Remote Control conversations live outside MissionGo, and a
+            // recorded launch failure is terminal — both keep the advice below.
+            if state.sessionUrl == nil, state.status != "suspended", state.status != "failed" {
+                state.status = "suspended"
+                state.hostPid = nil
+                state.idleSince = nil
+                state.waitingForInput = false
+                state.activities = []
+                state.error = "Claude Code 会话宿主已停止；已转为挂起，下次回复时会恢复会话。"
+                try ClaudeHostFiles.write(state, to: statePath)
+            }
+            // Nothing runs, so there is nothing to interrupt. Answering the
+            // stop request here also unblocks later replies, which a pending
+            // command would refuse.
+            if let command = session.command, command.kind == "interrupt" {
+                return AgentSessionReport(
+                    status: state.status == "suspended" ? "suspended" : "unavailable",
+                    messages: state.messages,
+                    activities: state.activities,
+                    error: state.error,
+                    commandId: command.id,
+                    commandStatus: "delivered",
+                    sessionUrl: state.sessionUrl,
+                    activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
+                )
+            }
             if state.status == "suspended", let command = session.command, command.kind == "message" {
                 if command.status == "queued" {
                     return AgentSessionReport(
@@ -712,12 +744,14 @@ public struct SessionLauncher: AgentAdapter {
                 )
             }
             return AgentSessionReport(
-                status: "unavailable",
+                status: state.status == "suspended" ? "suspended" : "unavailable",
                 messages: state.messages,
                 activities: state.activities,
-                error: state.sessionUrl == nil
-                    ? "Claude Code 会话宿主已停止；本地控制暂不可用，请重新派单。"
-                    : "Claude Code 会话宿主已停止；请在外部 Remote Control 会话中继续，或重新派单。",
+                error: state.status == "suspended"
+                    ? state.error
+                    : state.sessionUrl == nil
+                        ? "Claude Code 会话宿主已停止；本地控制暂不可用，请重新派单。"
+                        : "Claude Code 会话宿主已停止；请在外部 Remote Control 会话中继续，或重新派单。",
                 sessionUrl: state.sessionUrl,
                 activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )

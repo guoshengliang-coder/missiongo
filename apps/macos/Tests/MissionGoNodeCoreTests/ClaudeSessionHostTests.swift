@@ -460,11 +460,44 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         XCTAssertEqual(reservation.commandStatus, "delivering")
     }
 
-    func testAStoppedDetachedHostBecomesUnavailable() async throws {
+    func testAStoppedDetachedHostFoldsToSuspendedAndKeepsTheTranscript() async throws {
+        let (launcher, root, sessionRef) = try fixture(status: "idle")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let message = AgentSessionMessage(sourceId: "m1", turnId: "m1", role: "agent", text: "进行中")
+        try ClaudeHostFiles.write(
+            ClaudeHostState(
+                status: "idle", sessionRef: sessionRef, hostPid: Int32.max, messages: [message],
+                activities: [AgentSessionActivity(id: "t1", title: "后台任务", detail: "运行中")],
+                waitingForInput: true
+            ),
+            to: ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "server-session",
+            agentKind: "claude_code",
+            sessionRef: sessionRef,
+            status: "idle"
+        ))
+        XCTAssertEqual(report.status, "suspended")
+        XCTAssertTrue(report.error?.contains("已转为挂起") == true)
+        XCTAssertEqual(report.messages, [message])
+        XCTAssertNotNil(report.activityAt)
+        let folded = try ClaudeHostFiles.readState(ClaudeHostStore.statePath(root: root, sessionRef: sessionRef))
+        XCTAssertEqual(folded.status, "suspended")
+        XCTAssertNil(folded.hostPid)
+        XCTAssertFalse(folded.waitingForInput)
+        XCTAssertTrue(folded.activities.isEmpty)
+        XCTAssertEqual(folded.messages, [message])
+    }
+
+    func testAStoppedRemoteControlHostStaysUnavailable() async throws {
         let (launcher, root, sessionRef) = try fixture(status: "idle")
         defer { try? FileManager.default.removeItem(atPath: root) }
         try ClaudeHostFiles.write(
-            ClaudeHostState(status: "idle", sessionRef: sessionRef, hostPid: Int32.max),
+            ClaudeHostState(
+                status: "idle", sessionRef: sessionRef, hostPid: Int32.max,
+                sessionUrl: "https://claude.ai/code/session_old"
+            ),
             to: ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
         )
         let report = try await launcher.synchronize(NodeAgentSession(
@@ -474,8 +507,85 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
             status: "idle"
         ))
         XCTAssertEqual(report.status, "unavailable")
-        XCTAssertTrue(report.error?.contains("宿主已停止") == true)
-        XCTAssertNotNil(report.activityAt)
+        XCTAssertTrue(report.error?.contains("Remote Control") == true)
+        XCTAssertEqual(report.sessionUrl, "https://claude.ai/code/session_old")
+    }
+
+    func testAStoppedFailedHostStaysUnavailable() async throws {
+        let (launcher, root, sessionRef) = try fixture(status: "failed")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try ClaudeHostFiles.write(
+            ClaudeHostState(status: "failed", sessionRef: sessionRef, hostPid: Int32.max, error: "启动失败"),
+            to: ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "server-session",
+            agentKind: "claude_code",
+            sessionRef: sessionRef,
+            status: "failed"
+        ))
+        XCTAssertEqual(report.status, "unavailable")
+        XCTAssertTrue(report.error?.contains("请重新派单") == true)
+        let unchanged = try ClaudeHostFiles.readState(ClaudeHostStore.statePath(root: root, sessionRef: sessionRef))
+        XCTAssertEqual(unchanged.status, "failed")
+    }
+
+    func testAStoppedHostAnswersAnInterruptWithNothingToStop() async throws {
+        let (launcher, root, sessionRef) = try fixture(status: "idle")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try ClaudeHostFiles.write(
+            ClaudeHostState(status: "active", sessionRef: sessionRef, hostPid: Int32.max),
+            to: ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "server-session",
+            agentKind: "claude_code",
+            sessionRef: sessionRef,
+            status: "active",
+            command: AgentSessionCommand(id: "stop-1", kind: "interrupt", text: "停止当前任务", turnId: "turn-1")
+        ))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        XCTAssertEqual(report.status, "suspended")
+    }
+
+    func testAReplyToAStoppedDetachedHostRestartsItAsASuspendedSession() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missiongo-claude-dead-resume-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let sessionRef = UUID().uuidString.lowercased()
+        let directory = ClaudeHostStore.sessionDirectory(root: root, sessionRef: sessionRef)
+        try FileManager.default.createDirectory(atPath: "\(directory)/commands", withIntermediateDirectories: true)
+        let statePath = ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        let configPath = ClaudeHostStore.configPath(root: root, sessionRef: sessionRef)
+        try ClaudeHostFiles.write(ClaudeHostState(
+            status: "idle", sessionRef: sessionRef, hostPid: Int32.max, waitingForInput: true
+        ), to: statePath)
+        try ClaudeHostFiles.write(ClaudeHostConfiguration(
+            claudeExecutable: "/c", cwd: "/r", mode: "plan", sessionName: "n", sessionRef: sessionRef, prompt: "p",
+            statePath: statePath, commandsDirectory: "\(directory)/commands", logPath: "\(root)/host.log"
+        ), to: configPath)
+        // A stand-in host that exits at once: this test is about the files.
+        let launcher = SessionLauncher(
+            environment: ShellEnvironment(path: "/usr/bin:/bin"), hostExecutable: "/usr/bin/true", sessionsDirectory: root
+        )
+        let queued = try await launcher.synchronize(NodeAgentSession(
+            id: "server-session", agentKind: "claude_code", sessionRef: sessionRef, status: "idle",
+            command: AgentSessionCommand(id: "command-1", kind: "message", text: "继续")
+        ))
+        XCTAssertEqual(queued.commandStatus, "delivering")
+        XCTAssertEqual(queued.status, "suspended")
+        // The fold persisted before the restart, so the new host resumes the
+        // conversation instead of re-sending the dispatch prompt.
+        let folded = try ClaudeHostFiles.readState(statePath)
+        XCTAssertEqual(folded.status, "suspended")
+        XCTAssertNil(folded.hostPid)
+        XCTAssertFalse(folded.waitingForInput)
+        let resumed = try await launcher.synchronize(NodeAgentSession(
+            id: "server-session", agentKind: "claude_code", sessionRef: sessionRef, status: "idle",
+            command: AgentSessionCommand(id: "command-1", kind: "message", text: "继续", status: "delivering")
+        ))
+        XCTAssertEqual(resumed.error, "正在恢复 Claude Code 会话…")
+        XCTAssertEqual(resumed.status, "suspended")
     }
 
     func testHandsADueSettingsChangeToARunningHostAndReportsTheOutcome() async throws {
