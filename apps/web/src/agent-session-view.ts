@@ -233,16 +233,18 @@ export function shouldResetMessageView(
 }
 
 /**
- * Keep a URL-restored conversation until the session list has actually loaded.
- * Before that response, absence from the empty array proves nothing and must
- * not erase the state that survived an Android Activity recreation.
+ * Keep the conversation a person is reading even when a live status update
+ * moves it out of the current list filter. The selection is cleared only when
+ * the session itself is gone, or by an explicit navigation/filter action.
+ * Before the first response, absence from the empty array proves nothing and
+ * must not erase state restored after an Android Activity recreation.
  */
 export function resolvedAgentSessionId(
   requestedId: string | null,
-  visibleIds: readonly string[],
+  availableIds: readonly string[],
   loaded: boolean,
 ): string | null {
-  if (requestedId && (!loaded || visibleIds.includes(requestedId))) return requestedId;
+  if (requestedId && (!loaded || availableIds.includes(requestedId))) return requestedId;
   return null;
 }
 

@@ -823,9 +823,11 @@ export class DispatchStore {
         .prepare(
           `SELECT d.id, d.agent_kind, d.mode, d.model, d.effort, d.repo_path, COALESCE(n.nickname, n.name) AS node_name
            FROM dispatches d JOIN nodes n ON n.id = d.node_id
-           WHERE d.node_id = ? AND d.status = 'queued'${agentFilter} ORDER BY d.created_at LIMIT 1`,
+           WHERE d.node_id = ? AND d.status = 'queued'
+             AND (d.retry_not_before IS NULL OR d.retry_not_before <= ?)${agentFilter}
+           ORDER BY d.created_at LIMIT 1`,
         )
-        .get(nodeId, ...(availableAgentKinds ?? [])) as unknown as
+        .get(nodeId, new Date().toISOString(), ...(availableAgentKinds ?? [])) as unknown as
           {
             id: string; agent_kind: string; mode: string; model: string | null; effort: string | null;
             repo_path: string; node_name: string;
@@ -893,16 +895,20 @@ export class DispatchStore {
   recordDispatchResult(input: {
     nodeId: string;
     dispatchId: string;
-    status: "launched" | "failed";
+    status: "launched" | "failed" | "retry";
     sessionName?: string;
     sessionUrl?: string;
     error?: string;
     failureCode?: DispatchFailureCode;
     failureStage?: DispatchFailureStage;
+    retryAfterSeconds?: number;
+    diagnosticSnapshot?: DispatchDiagnosticSnapshot;
   }): void {
     const row = this.database.connection
-      .prepare("SELECT id, status FROM dispatches WHERE id = ? AND node_id = ?")
-      .get(input.dispatchId, input.nodeId) as unknown as { id: string; status: string } | undefined;
+      .prepare("SELECT id, status, diagnostic_snapshot_json FROM dispatches WHERE id = ? AND node_id = ?")
+      .get(input.dispatchId, input.nodeId) as unknown as {
+        id: string; status: string; diagnostic_snapshot_json: string | null;
+      } | undefined;
     if (!row) throw notFound("Dispatch");
     const sessionUrl = input.sessionUrl?.trim();
     // The URL is shown to a person as a link, so only accept one that a click
@@ -917,12 +923,44 @@ export class DispatchStore {
       throw invalidInput("Unsupported dispatch failure stage.");
     }
     const now = new Date().toISOString();
+    const existingDiagnostic = row.diagnostic_snapshot_json
+      ? JSON.parse(row.diagnostic_snapshot_json) as DispatchDiagnosticSnapshot
+      : {};
+    const diagnosticSnapshot = input.diagnosticSnapshot
+      ? { ...existingDiagnostic, ...input.diagnosticSnapshot }
+      : undefined;
+    if (input.status === "retry") {
+      const retryAfterSeconds = Math.min(Math.max(input.retryAfterSeconds ?? 30, 5), 300);
+      const retryNotBefore = new Date(Date.now() + retryAfterSeconds * 1_000).toISOString();
+      this.database.connection
+        .prepare(
+          `UPDATE dispatches SET status = 'queued', delivered_at = NULL, completed_at = NULL,
+                  error = ?, failure_code = ?, failure_stage = ?, diagnostic_snapshot_json = ?,
+                  retry_not_before = ?, retry_count = retry_count + 1
+           WHERE id = ?`,
+        )
+        .run(
+          input.error?.slice(0, 2_000) || null,
+          input.failureCode ?? "mcp_timeout",
+          input.failureStage ?? "mcp",
+          diagnosticSnapshot ? JSON.stringify(diagnosticSnapshot) : row.diagnostic_snapshot_json,
+          retryNotBefore,
+          input.dispatchId,
+        );
+      // Keep an already-open long poll asleep until the row is actually
+      // claimable, then wake it on time. A process restart may forget this
+      // timer, but the poll's own deadline still makes the node ask again.
+      const timer = setTimeout(() => this.wake(input.nodeId), retryAfterSeconds * 1_000);
+      timer.unref?.();
+      return;
+    }
     // A launch failure is something to come back for, so it moves the unread
     // clock (AND-135). A successful launch does not: the session's own first
     // message will.
     this.database.connection
       .prepare(
-        `UPDATE dispatches SET status = ?, session_name = ?, session_url = ?, error = ?, failure_code = ?, failure_stage = ?, completed_at = ?,
+        `UPDATE dispatches SET status = ?, session_name = ?, session_url = ?, error = ?, failure_code = ?, failure_stage = ?, diagnostic_snapshot_json = COALESCE(?, diagnostic_snapshot_json), completed_at = ?,
+                retry_not_before = NULL,
                 unread_at = CASE WHEN ? = 'failed' THEN ? ELSE unread_at END
          WHERE id = ?`,
       )
@@ -933,6 +971,7 @@ export class DispatchStore {
         input.error?.slice(0, 2_000) || null,
         input.status === "failed" ? input.failureCode ?? "unknown" : null,
         input.status === "failed" ? input.failureStage ?? "unknown" : null,
+        diagnosticSnapshot ? JSON.stringify(diagnosticSnapshot) : null,
         now,
         input.status,
         now,

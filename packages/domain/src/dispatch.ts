@@ -110,6 +110,17 @@ export interface DispatchDiagnosticSnapshot {
   readonly agentVersion?: string;
   readonly skill?: AgentSkillSnapshot;
   readonly resource?: AgentResourceSnapshot;
+  /** App-server's thread-scoped view of the MissionGo MCP at launch time. */
+  readonly mcp?: {
+    readonly threadId?: string;
+    readonly name: string;
+    readonly startupStatus?: string;
+    readonly runtimeStatus?: string;
+    readonly authStatus?: string;
+    readonly error?: string;
+    readonly failureReason?: string;
+    readonly observedAt: string;
+  };
 }
 
 // A node that has not checked in for this long is treated as offline and cannot

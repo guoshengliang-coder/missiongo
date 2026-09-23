@@ -297,6 +297,8 @@ export const INITIAL_SCHEMA = `
     failure_code TEXT,
     failure_stage TEXT,
     diagnostic_snapshot_json TEXT,
+    retry_not_before TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     delivered_at TEXT,
     completed_at TEXT,

@@ -448,7 +448,10 @@ final class CodexAppServerControlTests: XCTestCase {
         server.waitUntilDone()
 
         XCTAssertEqual(threadId, "01a09f35-d6fa-7eb2-9d90-1352cf2fb661")
-        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/start", "mcpServer/tool/call", "thread/name/set", "turn/start"])
+        XCTAssertEqual(server.methods, [
+            "initialize", "initialized", "thread/start", "mcpServerStatus/list", "mcpServer/tool/call",
+            "thread/name/set", "turn/start", "thread/unsubscribe",
+        ])
         XCTAssertEqual(server.params(of: "mcpServer/tool/call")?["tool"] as? String, "get_current_account")
         XCTAssertEqual(server.params(of: "thread/start")?["cwd"] as? String, "/Users/dev/repo")
         XCTAssertEqual(server.params(of: "thread/name/set")?["name"] as? String, "Mac mini-AND-1")
@@ -477,32 +480,38 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertFalse(server.methods.contains("turn/start"))
     }
 
-    func testRetriesOneMissionGoStartupTimeoutBeforeStartingTheTurn() async throws {
+    func testStartupTimeoutIsDiagnosedWithoutBlindlyRetryingTheToolCall() async throws {
         let server = try FakeAppServer.happy(accountStartupFailures: 1)
-        let threadId = try await CodexAppServerControl(timeout: 5).startThread(request(socketPath: server.path))
+        do {
+            _ = try await CodexAppServerControl(timeout: 5).startThread(request(socketPath: server.path))
+            XCTFail("expected a failure")
+        } catch let CodexControlError.mcpStartup(diagnostic) {
+            XCTAssertEqual(diagnostic.name, "missiongo")
+            XCTAssertEqual(diagnostic.threadId, "01a09f35-d6fa-7eb2-9d90-1352cf2fb661")
+            XCTAssertTrue(diagnostic.error?.contains("startup timed out") == true)
+        }
         server.waitUntilDone()
 
-        XCTAssertEqual(threadId, "01a09f35-d6fa-7eb2-9d90-1352cf2fb661")
-        XCTAssertEqual(server.methods.filter { $0 == "mcpServer/tool/call" }.count, 2)
-        XCTAssertEqual(server.methods.filter { $0 == "turn/start" }.count, 1)
+        XCTAssertEqual(server.methods.filter { $0 == "mcpServer/tool/call" }.count, 1)
+        XCTAssertFalse(server.methods.contains("turn/start"))
+        XCTAssertTrue(server.methods.contains("thread/archive"))
+        XCTAssertTrue(server.methods.contains("thread/unsubscribe"))
     }
 
-    func testStopsAfterTheSecondMissionGoStartupTimeoutWithoutStartingTheTurn() async throws {
+    func testStartupTimeoutCarriesAStableMcpFailureInsteadOfASecondProbe() async throws {
         let server = try FakeAppServer.happy(accountStartupFailures: 2)
         do {
             _ = try await CodexAppServerControl(timeout: 5).startThread(request(socketPath: server.path))
             XCTFail("expected a failure")
         } catch {
-            XCTAssertEqual(
-                error as? CodexControlError,
-                .rpc(
-                    method: "mcpServer/tool/call",
-                    message: "failed to get client: MCP startup failed: MCP client startup timed out after 30s"
-                )
-            )
+            guard case let CodexControlError.mcpStartup(diagnostic) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(diagnostic.name, "missiongo")
+            XCTAssertTrue(diagnostic.error?.contains("startup timed out") == true)
         }
         server.waitUntilDone()
-        XCTAssertEqual(server.methods.filter { $0 == "mcpServer/tool/call" }.count, 2)
+        XCTAssertEqual(server.methods.filter { $0 == "mcpServer/tool/call" }.count, 1)
         XCTAssertFalse(server.methods.contains("turn/start"))
     }
 
@@ -892,6 +901,9 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     var applyResult = CodexAppliedSettings()
     let modelLists = Locked(0)
     var modelListResult: Result<[AgentModelOption], Error> = .success([])
+    let startupFailures = Locked(0)
+    var startupError: Error?
+    var loadedThreads = true
     let threadId: String
     var snapshot = CodexThreadSnapshot(status: "idle", messages: [])
 
@@ -901,8 +913,18 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
 
     func startThread(_ request: CodexThreadRequest) async throws -> String {
         requests.withLock { $0.append(request) }
+        if let startupError {
+            let shouldFail = startupFailures.withLock { remaining -> Bool in
+                guard remaining > 0 else { return false }
+                remaining -= 1
+                return true
+            }
+            if shouldFail { throw startupError }
+        }
         return threadId
     }
+
+    func hasLoadedThreads(socketPath: String) async throws -> Bool { loadedThreads }
 
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         return snapshot
@@ -1043,6 +1065,63 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(sent.prompt, try LaunchPrompt.build(
             itemKeys: ["AND-42"], dispatchId: "d-1", mode: "plan", client: .codex, worktreePath: path
         ))
+    }
+
+    func testMcpTimeoutWithLoadedThreadsRequeuesWithoutRestartingTheDaemon() async throws {
+        let machine = try machine()
+        defer { machine.listener.map { _ = close($0) } }
+        let control = RecordingControl()
+        let diagnostic = DispatchMcpDiagnostic(
+            threadId: "thread-empty", startupStatus: "failed", runtimeStatus: "starting",
+            error: "MCP client startup timed out"
+        )
+        control.startupError = CodexControlError.mcpStartup(diagnostic)
+        control.startupFailures.withLock { $0 = 1 }
+        control.loadedThreads = true
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: machine.location, control: control
+        )
+
+        do {
+            _ = try await launcher.launch(job(repoPath: machine.repoPath))
+            XCTFail("expected a retry")
+        } catch let error as LaunchError {
+            XCTAssertEqual(error.retryAfterSeconds, 30)
+            XCTAssertEqual(error.failureCode, "mcp_timeout")
+            XCTAssertEqual(error.diagnosticSnapshot?.mcp, diagnostic)
+        }
+        XCTAssertEqual(control.requests.current.count, 1)
+    }
+
+    func testMcpTimeoutRestartsOnceOnlyAfterTheDaemonIsProvenIdle() async throws {
+        let machine = try machine()
+        defer { machine.listener.map { _ = close($0) } }
+        let control = RecordingControl()
+        let diagnostic = DispatchMcpDiagnostic(
+            threadId: "thread-empty", startupStatus: "failed", error: "MCP client startup timed out"
+        )
+        control.startupError = CodexControlError.mcpStartup(diagnostic)
+        control.startupFailures.withLock { $0 = 1 }
+        control.loadedThreads = false
+        let restarts = Locked(0)
+        let base = fakeCodex()
+        let run: CommandRunner = { file, args in
+            if args == ["app-server", "daemon", "restart"] {
+                restarts.withLock { $0 += 1 }
+                return ok(#"{"status":"restarted"}"#)
+            }
+            return await base(file, args)
+        }
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: run,
+            location: machine.location, control: control
+        )
+
+        let result = try await launcher.launch(job(repoPath: machine.repoPath))
+        XCTAssertEqual(result.sessionRef, control.threadId)
+        XCTAssertEqual(control.requests.current.count, 2)
+        XCTAssertEqual(restarts.current, 1)
     }
 
     func testResourcePressureStopsBeforeCreatingAThread() async throws {

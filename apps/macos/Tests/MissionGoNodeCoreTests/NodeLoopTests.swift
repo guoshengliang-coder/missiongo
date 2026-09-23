@@ -248,6 +248,28 @@ final class NodeLoopTests: XCTestCase {
         ))
     }
 
+    func testATransientMcpFailureReturnsTheSameDispatchToTheQueueWithDiagnostics() async throws {
+        let api = FakeAPI(claims: [.success(request)])
+        let diagnostic = DispatchMcpDiagnostic(
+            threadId: "thread-1", startupStatus: "failed", runtimeStatus: "starting",
+            error: "MCP client startup timed out", observedAt: "2026-09-23T00:00:00Z"
+        )
+        let adapter = FakeAdapter(outcome: .failure(LaunchError(
+            "MissionGo MCP 启动超时", failureCode: "mcp_timeout", failureStage: "mcp",
+            retryAfterSeconds: 30, diagnosticSnapshot: DispatchDiagnosticSnapshot(mcp: diagnostic)
+        )))
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac mini", timing: fastTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { !api.reports.current.isEmpty }
+        task.cancel()
+        try await task.value
+
+        XCTAssertEqual(api.reports.current.first?.1, DispatchReport(
+            status: .retry, error: "MissionGo MCP 启动超时", failureCode: "mcp_timeout", failureStage: "mcp",
+            retryAfterSeconds: 30, diagnosticSnapshot: DispatchDiagnosticSnapshot(mcp: diagnostic)
+        ))
+    }
+
     func testUnavailableAgentIsExcludedBeforeTheServerHandsOverWork() async throws {
         let api = FakeAPI(claims: [])
         let ready = FakeAdapter(outcome: .failure(LaunchError("not used")))

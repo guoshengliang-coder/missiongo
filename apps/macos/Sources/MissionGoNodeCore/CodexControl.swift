@@ -29,6 +29,9 @@ public protocol CodexControl: Sendable {
     func applySettings(socketPath: String, threadId: String, overrides: CodexTurnOverrides) async throws -> CodexAppliedSettings
     /// The models this app-server offers, hidden ones left out.
     func listModels(socketPath: String) async throws -> [AgentModelOption]
+    /// Fail closed for daemon restart: every loaded thread is treated as work
+    /// that must not be interrupted, even when it is presently idle.
+    func hasLoadedThreads(socketPath: String) async throws -> Bool
 }
 
 public extension CodexControl {
@@ -63,6 +66,8 @@ public extension CodexControl {
     func listModels(socketPath: String) async throws -> [AgentModelOption] {
         throw CodexControlError.rpc(method: "model/list", message: "这个 Codex 控制器不支持列出模型。")
     }
+
+    func hasLoadedThreads(socketPath: String) async throws -> Bool { true }
 }
 
 /// Settings a person chose for a running thread, sent with `thread/resume`
@@ -179,6 +184,7 @@ public enum CodexControlError: Error, Equatable, LocalizedError {
     case invalidResponse(method: String)
     case mcpAuthorization
     case skillStale
+    case mcpStartup(DispatchMcpDiagnostic)
 
     public var errorDescription: String? {
         switch self {
@@ -198,6 +204,10 @@ public enum CodexControlError: Error, Equatable, LocalizedError {
             return "Codex 的 MissionGo MCP 未确认评论与领取权限；尚未启动任务。请在该节点重新完成 MCP 授权。"
         case .skillStale:
             return "Codex 的 MissionGo Skill 版本与服务端不一致或无法核实；尚未启动任务。请等待 Skill 同步完成再派单。"
+        case let .mcpStartup(diagnostic):
+            let state = diagnostic.startupStatus ?? diagnostic.runtimeStatus ?? "unknown"
+            let detail = diagnostic.error.map { "：\($0)" } ?? ""
+            return "Codex 的 MissionGo MCP 启动异常（\(state)）\(detail)"
         }
     }
 }
@@ -728,6 +738,25 @@ public struct CodexAppServerControl: CodexControl {
         }
     }
 
+    public func hasLoadedThreads(socketPath: String) async throws -> Bool {
+        let timeout = self.timeout
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result {
+                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                    defer { connection.close() }
+                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    try connection.notify("initialized")
+                    let result = try connection.call("thread/loaded/list", ["limit": 1])
+                    guard let ids = result["data"] as? [String] else {
+                        throw CodexControlError.invalidResponse(method: "thread/loaded/list")
+                    }
+                    return !ids.isEmpty
+                })
+            }
+        }
+    }
+
     public func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws {
         let timeout = self.timeout
         return try await withCheckedThrowingContinuation { continuation in
@@ -787,18 +816,14 @@ public struct CodexAppServerControl: CodexControl {
         }
         do {
             try CodexProtocol.validateStarted(started, request: request)
+            // Ask the app-server for the thread-scoped MCP state. Older app-
+            // servers may not expose this method, so the permission probe below
+            // remains the compatibility source of truth.
+            _ = try? connection.call("mcpServerStatus/list", ["threadId": threadId, "limit": 100])
             let accountParams: [String: Any] = [
                 "threadId": threadId, "server": "missiongo", "tool": "get_current_account", "arguments": [:],
             ]
-            let account: [String: Any]
-            do {
-                account = try connection.call("mcpServer/tool/call", accountParams)
-            } catch let error as CodexControlError where isMissionGoStartupTimeout(error) {
-                // A cold MCP process can miss Codex's first 30-second startup
-                // window. Retry this read-only permission probe once, but never
-                // retry another error and never start the work turn until it passes.
-                account = try connection.call("mcpServer/tool/call", accountParams)
-            }
+            let account = try connection.call("mcpServer/tool/call", accountParams)
             try CodexProtocol.validateAccount(account, skillVersion: request.skillVersion)
             // A thread that could not be named is still a working thread; failing the
             // dispatch here would leave it running with nobody told about it.
@@ -809,20 +834,46 @@ public struct CodexAppServerControl: CodexControl {
                 overrides: CodexTurnOverrides(model: request.model, effort: request.effort)
             ))
         } catch {
+            let diagnostic = missionGoDiagnostic(connection: connection, threadId: threadId, fallback: error)
             // Nothing reached turn/start successfully. Archive the empty shell
             // immediately so a stale Skill or MCP grant does not litter Codex.
             _ = try? connection.call("thread/archive", CodexProtocol.threadArchiveParams(threadId: threadId))
+            _ = try? connection.call("thread/unsubscribe", ["threadId": threadId])
+            if isMissionGoStartupFailure(error) { throw CodexControlError.mcpStartup(diagnostic) }
             throw error
         }
+        _ = try? connection.call("thread/unsubscribe", ["threadId": threadId])
         return threadId
     }
 
-    static func isMissionGoStartupTimeout(_ error: CodexControlError) -> Bool {
-        guard case let .rpc(method, message) = error, method == "mcpServer/tool/call" else { return false }
-        let normalized = message.lowercased()
-        return normalized.contains("mcp startup failed")
-            && normalized.contains("mcp client startup timed out")
+    static func missionGoDiagnostic(
+        connection: JSONRPCWebSocket, threadId: String, fallback error: Error
+    ) -> DispatchMcpDiagnostic {
+        let statusResult = try? connection.call("mcpServerStatus/list", ["threadId": threadId, "limit": 100])
+        let status = (statusResult?["data"] as? [[String: Any]])?.first { $0["name"] as? String == "missiongo" }
+        let event = connection.notifications.reversed().first { message in
+            guard message["method"] as? String == "mcpServer/startupStatus/updated",
+                  let params = message["params"] as? [String: Any] else { return false }
+            return params["name"] as? String == "missiongo"
+        }?["params"] as? [String: Any]
+        return DispatchMcpDiagnostic(
+            threadId: threadId,
+            startupStatus: event?["status"] as? String,
+            runtimeStatus: status?["runtimeStatus"] as? String,
+            authStatus: status?["authStatus"] as? String,
+            error: (event?["error"] as? String) ?? (status?["toolsError"] as? String) ?? error.localizedDescription,
+            failureReason: event?["failureReason"] as? String
+        )
     }
+
+    static func isMissionGoStartupFailure(_ error: Error) -> Bool {
+        guard let control = error as? CodexControlError else { return false }
+        if case let .timedOut(method) = control, method == "mcpServer/tool/call" { return true }
+        guard case let .rpc(method, message) = control, method == "mcpServer/tool/call" else { return false }
+        let normalized = message.lowercased()
+        return normalized.contains("mcp startup") || normalized.contains("mcp client startup")
+    }
+
 }
 
 // MARK: - JSON-RPC over WebSocket over a Unix socket
@@ -834,6 +885,7 @@ final class JSONRPCWebSocket {
     private let timeout: TimeInterval
     private var buffer: [UInt8] = []
     private var nextId = 1
+    private(set) var notifications: [[String: Any]] = []
 
     init(socketPath: String, timeout: TimeInterval) throws {
         socket = try UnixSocket(path: socketPath, timeout: timeout)
@@ -880,7 +932,10 @@ final class JSONRPCWebSocket {
             // A request from the server (an approval, say) carries a method. It is
             // left unanswered: once this client disconnects the app-server asks
             // the apps instead, which is where a person is.
-            if message["method"] != nil { continue }
+            if message["method"] != nil {
+                notifications.append(message)
+                continue
+            }
             guard let answered = JSONValues.number(message["id"]), Int(answered) == id else { continue }
             if let error = message["error"] as? [String: Any] {
                 throw CodexControlError.rpc(method: method, message: error["message"] as? String ?? "未知错误")

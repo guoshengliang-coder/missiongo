@@ -299,7 +299,7 @@ public final class NodeLoop: @unchecked Sendable {
                         }
                         let startedAt = Date()
                         let (report, logPath) = await self.launchDispatch(request)
-                        if report.status == .failed {
+                        if report.status != .launched {
                             _ = self.capacity.withLock { $0.reservations.removeValue(forKey: request.dispatchId) }
                         }
                         let record = { (reported: Bool) in
@@ -564,10 +564,12 @@ public final class NodeLoop: @unchecked Sendable {
             log("派单 \(request.dispatchId) 启动失败：\(reason)")
             let launchError = error as? LaunchError
             return (DispatchReport(
-                status: .failed,
+                status: launchError?.retryAfterSeconds == nil ? .failed : .retry,
                 error: reason,
                 failureCode: launchError?.failureCode ?? "unknown",
-                failureStage: launchError?.failureStage ?? "unknown"
+                failureStage: launchError?.failureStage ?? "unknown",
+                retryAfterSeconds: launchError?.retryAfterSeconds,
+                diagnosticSnapshot: launchError?.diagnosticSnapshot
             ), nil)
         }
     }

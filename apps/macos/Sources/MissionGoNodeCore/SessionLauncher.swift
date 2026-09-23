@@ -111,11 +111,19 @@ public struct LaunchError: Error, Equatable, LocalizedError {
     public let message: String
     public let failureCode: String
     public let failureStage: String
+    /// A transient failure may be returned to the same node queue after this delay.
+    public let retryAfterSeconds: Int?
+    public let diagnosticSnapshot: DispatchDiagnosticSnapshot?
 
-    public init(_ message: String, failureCode: String = "unknown", failureStage: String = "unknown") {
+    public init(
+        _ message: String, failureCode: String = "unknown", failureStage: String = "unknown",
+        retryAfterSeconds: Int? = nil, diagnosticSnapshot: DispatchDiagnosticSnapshot? = nil
+    ) {
         self.message = message
         self.failureCode = failureCode
         self.failureStage = failureStage
+        self.retryAfterSeconds = retryAfterSeconds
+        self.diagnosticSnapshot = diagnosticSnapshot
     }
 
     public var errorDescription: String? {

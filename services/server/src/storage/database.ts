@@ -1162,6 +1162,29 @@ export class MissionGoDatabase {
           .run(202609221610, new Date().toISOString());
       });
     }
+    // AND-148: a node can put the same dispatch back after a transient Codex
+    // MCP startup fault. The public lifecycle remains `queued`; these columns
+    // only prevent a hot claim/fail loop and retain the attempt count.
+    const dispatchRetryMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609230038")
+      .get() as unknown as { version: number } | undefined;
+    const existingDispatchColumns = this.connection
+      .prepare("PRAGMA table_info(dispatches)")
+      .all() as unknown as Array<{ name: string }>;
+    const missingDispatchRetryColumns = [
+      ["retry_not_before", "TEXT"],
+      ["retry_count", "INTEGER NOT NULL DEFAULT 0"],
+    ].filter(([name]) => !existingDispatchColumns.some((column) => column.name === name));
+    if (!dispatchRetryMigration || missingDispatchRetryColumns.length > 0) {
+      this.transaction(() => {
+        missingDispatchRetryColumns.forEach(([name, definition]) => {
+          this.connection.exec(`ALTER TABLE dispatches ADD COLUMN ${name} ${definition};`);
+        });
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609230038, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

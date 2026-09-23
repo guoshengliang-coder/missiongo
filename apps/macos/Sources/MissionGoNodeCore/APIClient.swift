@@ -241,6 +241,8 @@ public struct DispatchReport: Codable, Equatable, Sendable {
     public enum Status: String, Codable, Sendable {
         case launched
         case failed
+        /// The server returns this same dispatch to its queue after a bounded delay.
+        case retry
     }
 
     public let status: Status
@@ -250,11 +252,14 @@ public struct DispatchReport: Codable, Equatable, Sendable {
     public let error: String?
     public let failureCode: String?
     public let failureStage: String?
+    public let retryAfterSeconds: Int?
+    public let diagnosticSnapshot: DispatchDiagnosticSnapshot?
 
     public init(
         status: Status, sessionName: String? = nil, sessionUrl: String? = nil,
         sessionRef: String? = nil, error: String? = nil,
-        failureCode: String? = nil, failureStage: String? = nil
+        failureCode: String? = nil, failureStage: String? = nil,
+        retryAfterSeconds: Int? = nil, diagnosticSnapshot: DispatchDiagnosticSnapshot? = nil
     ) {
         self.status = status
         self.sessionName = sessionName
@@ -263,6 +268,42 @@ public struct DispatchReport: Codable, Equatable, Sendable {
         self.error = error
         self.failureCode = failureCode
         self.failureStage = failureStage
+        self.retryAfterSeconds = retryAfterSeconds
+        self.diagnosticSnapshot = diagnosticSnapshot
+    }
+}
+
+public struct DispatchMcpDiagnostic: Codable, Equatable, Sendable {
+    public let threadId: String?
+    public let name: String
+    public let startupStatus: String?
+    public let runtimeStatus: String?
+    public let authStatus: String?
+    public let error: String?
+    public let failureReason: String?
+    public let observedAt: String
+
+    public init(
+        threadId: String? = nil, name: String = "missiongo", startupStatus: String? = nil,
+        runtimeStatus: String? = nil, authStatus: String? = nil, error: String? = nil,
+        failureReason: String? = nil, observedAt: String = ISO8601DateFormatter().string(from: Date())
+    ) {
+        self.threadId = threadId
+        self.name = name
+        self.startupStatus = startupStatus
+        self.runtimeStatus = runtimeStatus
+        self.authStatus = authStatus
+        self.error = error
+        self.failureReason = failureReason
+        self.observedAt = observedAt
+    }
+}
+
+public struct DispatchDiagnosticSnapshot: Codable, Equatable, Sendable {
+    public let mcp: DispatchMcpDiagnostic?
+
+    public init(mcp: DispatchMcpDiagnostic? = nil) {
+        self.mcp = mcp
     }
 }
 
