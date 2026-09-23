@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The dark parent matters beyond the window colour. From targetSdk 33 a
+      WebView answers prefers-color-scheme from the app theme's isLightTheme,
+      not from the system setting, so while the only theme was Material.Light
+      the console inside the app stayed light even on a phone in dark mode.
+    -->
+    <style name="Theme.MissionGo" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/missiongo_surface</item>
+    </style>
+</resources>

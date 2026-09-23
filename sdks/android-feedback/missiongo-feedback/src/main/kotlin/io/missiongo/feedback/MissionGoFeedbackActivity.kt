@@ -2,6 +2,7 @@ package io.missiongo.feedback
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -66,6 +67,14 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
             showUnrecoverableError("这份反馈草稿已经失效，请重新打开反馈。")
             return
         }
+        // The form is a page built for Chromium 90 and later; on an older WebView
+        // it would not load, and the person would be offered a retry that can
+        // never work (C5). Say so, and point at the update.
+        val installed = WebViewSupport.installedChromiumMajor(this)
+        if (installed != null && installed < WebViewSupport.MIN_CHROMIUM_MAJOR) {
+            showOutdatedWebView(installed)
+            return
+        }
         startEditor()
     }
 
@@ -106,6 +115,9 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
             settings.allowContentAccess = true
             settings.setSupportMultipleWindows(false)
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            // A WebView ignores the system font size by itself; someone who had
+            // enlarged text everywhere else found the form at the default size.
+            settings.textZoom = WebViewSupport.textZoomFor(resources.configuration.fontScale)
             // The form is a page on the configured endpoint, and this is how it
             // offers to clear the gallery copies of what it just uploaded.
             addJavascriptInterface(MediaBridge(), "MissionGoAndroid")
@@ -272,6 +284,40 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
         "feedback_expired" -> "这份反馈草稿已经失效，请重新打开反馈。"
         "webview_load_failed" -> "反馈页面加载失败，请重试。"
         else -> "反馈页面打开失败，请重试。"
+    }
+
+    private fun showOutdatedWebView(installed: Int) {
+        val padding = (24 * resources.displayMetrics.density).toInt()
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+            setBackgroundColor(themeColor(android.R.attr.colorBackground))
+            addView(TextView(this@MissionGoFeedbackActivity).apply {
+                text = "系统浏览器组件版本过低，反馈页面无法打开。\n" +
+                    "需要 Android System WebView ${WebViewSupport.MIN_CHROMIUM_MAJOR} 或以上版本，这台手机目前是 $installed。"
+                textSize = 16f
+                setTextColor(themeColor(android.R.attr.textColorPrimary))
+            })
+            addView(Button(this@MissionGoFeedbackActivity).apply {
+                text = "去更新"
+                setOnClickListener { WebViewSupport.openUpdate(this@MissionGoFeedbackActivity) }
+            }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(Button(this@MissionGoFeedbackActivity).apply {
+                text = "关闭"
+                setOnClickListener { cancelAndFinish() }
+            }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        })
+    }
+
+    /**
+     * Rotation no longer recreates this activity (see the manifest). It used to,
+     * and onCreate opened a fresh editor every time, so turning the phone while
+     * describing a bug threw the description away (B11). The WebView lays itself
+     * out for the new size; only the font size has to be passed on.
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        webView?.settings?.textZoom = WebViewSupport.textZoomFor(newConfig.fontScale)
     }
 
     private fun showUnrecoverableError(message: String) {
