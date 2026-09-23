@@ -110,7 +110,7 @@ function dispatchActivityLabel(session: AgentSessionSummary, t: ReturnType<typeo
   if (session.dispatchStatus === "cancelled") return t("agentConsoleDispatchCancelled");
   if (session.dispatchStatus === "failed") return t("agentConsoleDispatchFailed");
   return session.agentKind === "claude_code"
-    ? t("agentConsoleClaudeManaged")
+    ? t(session.sessionUrl ? "agentConsoleClaudeManaged" : "agentConsoleClaudeLocal")
     : t("agentConsoleDispatchLaunched");
 }
 
@@ -711,6 +711,9 @@ export function AgentSessionConsole({
               </div>
               <span className={`status-pill agent-session-status-${sessionStatus}`}>{selected.archivedAt ? t("archived") : statusLabel(sessionStatus, t)}</span>
               {selected.sessionUrl && <SessionLink url={selected.sessionUrl} />}
+              {selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
+                <span className="agent-session-muted" title={t("agentConsoleClaudeLocal")}>{t("agentConsoleClaudeLocalBadge")}</span>
+              )}
               <div className="agent-console-actions">
                 {selected.canRetry && (
                   <button

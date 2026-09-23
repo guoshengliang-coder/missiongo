@@ -1585,7 +1585,6 @@ describe("Claiming a dispatch on the node", () => {
       payload: {
         status: "launched",
         sessionName: `Mac mini-${mission.itemKey}`,
-        sessionUrl: "https://claude.ai/code/session_test",
         sessionRef,
       },
     })).statusCode).toBe(204);
@@ -1602,6 +1601,13 @@ describe("Claiming a dispatch on the node", () => {
         lifecycle: "keep", occupiesExecutionSlot: true,
       }],
     });
+    const initialDispatches = (await app.inject({
+      method: "GET",
+      url: `/api/v1/items/${mission.itemKey}/dispatches`,
+      headers: { cookie },
+    })).json<{ dispatches: Array<{ sessionUrl?: string; agentSessionId?: string }> }>().dispatches;
+    expect(initialDispatches[0]?.sessionUrl).toBeUndefined();
+    expect(initialDispatches[0]?.agentSessionId).toBe(mirrored.id);
     expect((await app.inject({
       method: "POST",
       url: `/api/v1/node/agent-sessions/${mirrored.id}/snapshot`,
@@ -1652,6 +1658,18 @@ describe("Claiming a dispatch on the node", () => {
     })).json()).toMatchObject({
       dispatches: [{ sessionUrl: "https://claude.ai/code/session_resumed" }],
     });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${mirrored.id}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", clearSessionUrl: true, messages: [] },
+    })).statusCode).toBe(204);
+    const localDispatches = (await app.inject({
+      method: "GET",
+      url: `/api/v1/items/${mission.itemKey}/dispatches`,
+      headers: { cookie },
+    })).json<{ dispatches: Array<{ sessionUrl?: string }> }>().dispatches;
+    expect(localDispatches[0]?.sessionUrl).toBeUndefined();
     const reply = await app.inject({
       method: "POST",
       url: `/api/v1/agent-sessions/${mirrored.id}/commands`,
