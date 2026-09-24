@@ -817,6 +817,59 @@ export class DispatchStore {
   }
 
   /**
+   * For the console: in-progress items claimed through a dispatch, so the list
+   * and the detail can say which agent is on them. The claim event is the tie
+   * between the two -- a launch nobody claimed (the person started the work
+   * instead) must not read as that agent's.
+   */
+  listInProgressHandlers(accountId: string): Array<{
+    dispatchId: string;
+    itemKey: string;
+    nodeName: string;
+    agentKind: string;
+    createdAt: string;
+  }> {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT w.item_key, d.id AS dispatch_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.created_at
+         FROM work_items w
+         JOIN work_item_events claim ON claim.item_id = w.id
+           AND claim.to_status = 'in_progress'
+           AND claim.actor_kind = 'agent'
+           AND claim.created_at = (
+             SELECT MAX(latest.created_at) FROM work_item_events latest
+             WHERE latest.item_id = w.id AND latest.to_status = 'in_progress'
+           )
+         JOIN dispatch_items di ON di.item_id = w.id
+         JOIN dispatches d ON d.id = di.dispatch_id
+           AND d.status = 'launched' AND d.created_at <= claim.created_at
+         JOIN nodes n ON n.id = d.node_id
+         WHERE d.account_id = ? AND w.status = 'in_progress'
+         ORDER BY d.created_at DESC`,
+      )
+      .all(accountId) as unknown as Array<{
+        item_key: string;
+        dispatch_id: string;
+        node_name: string;
+        agent_kind: string;
+        created_at: string;
+      }>;
+    const byItem = new Map<string, { dispatchId: string; itemKey: string; nodeName: string; agentKind: string; createdAt: string }>();
+    for (const row of rows) {
+      if (!byItem.has(row.item_key)) {
+        byItem.set(row.item_key, {
+          dispatchId: row.dispatch_id,
+          itemKey: row.item_key,
+          nodeName: row.node_name,
+          agentKind: row.agent_kind,
+          createdAt: row.created_at,
+        });
+      }
+    }
+    return [...byItem.values()];
+  }
+
+  /**
    * Hand the oldest queued dispatch to the machine asking for it. Marking it
    * delivered inside the same transaction is what keeps two polls from starting
    * the same batch twice.
