@@ -378,4 +378,39 @@ final class NodeLoopTests: XCTestCase {
         try await task.value
         XCTAssertTrue(sawOnline)
     }
+
+    /// The reconnect button (AND-177): a wake runs the next heartbeat round at
+    /// once. The interval is a minute so a pass can only come from the wake —
+    /// waiting it out would blow the test timeout.
+    func testRetryNowRerunsTheHeartbeatWithoutWaitingOutTheInterval() async throws {
+        let api = FakeAPI(
+            claims: [],
+            heartbeat: .failure(APIError.network(NetworkFailure(host: "mg.test", error: URLError(.timedOut))))
+        )
+        var timing = fastTiming()
+        timing.heartbeatInterval = 60
+        let loop = NodeLoop(api: api, adapters: [], fallbackNodeName: "Mac mini", detectRepoCandidates: { [] }, timing: timing, log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { loop.currentState.lastError?.contains("上报心跳出错") == true }
+        // Let the loop reach its sleep before waking it; the failure is
+        // published a moment before the sleeper is registered.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        loop.retryNow()
+        await waitUntil { api.heartbeats.current.count >= 2 }
+        task.cancel()
+        try await task.value
+        XCTAssertGreaterThanOrEqual(api.heartbeats.current.count, 2)
+    }
+
+    /// A wake must not blunt the stop signal: cancelling still ends the loops.
+    func testStoppingStillWorksAfterAWake() async throws {
+        let api = FakeAPI(claims: [])
+        let loop = NodeLoop(api: api, adapters: [], fallbackNodeName: "Mac mini", detectRepoCandidates: { [] }, timing: fastTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { loop.currentState.lastHeartbeatAt != nil }
+        loop.retryNow()
+        task.cancel()
+        try await task.value
+        XCTAssertEqual(loop.currentState.connection, .stopped)
+    }
 }

@@ -39,6 +39,21 @@ private struct HeaderView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
+            // The retry story has to be visible, not inferred: the loops do
+            // retry on their own, but a person staring at a red "offline"
+            // cannot tell that from a hung app (AND-177). A revoked
+            // credential never gets the button — only logging in again fixes
+            // that, and a retry here would just fail the same way.
+            if model.loopState.connection == .offline {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    WrappingCaption(text: "每 30 秒自动重试，也可立即重试。")
+                    Button("重新连接") { model.reconnect() }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .help("立即重试连接服务器，并刷新资料和最近派单")
+                    Spacer(minLength: 0)
+                }
+            }
             // The version rides along with the server: both answer "what is
             // this Mac running against", and the top of the menu is where
             // somebody looks for that.

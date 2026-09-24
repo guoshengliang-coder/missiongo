@@ -81,6 +81,20 @@ final class StopSignal: @unchecked Sendable {
         sleepers.forEach { $0.resume() }
     }
 
+    /// Resumes every sleeper without stopping: the loops run their next round
+    /// at once instead of waiting out the interval. This is the reconnect
+    /// button (AND-177) — a person should not wait out the heartbeat interval
+    /// to learn whether the network came back. Safe when nothing sleeps, and a
+    /// no-op once the loop has stopped.
+    func wake() {
+        let sleepers = state.withLock { value -> [CheckedContinuation<Void, Never>] in
+            guard !value.stopped else { return [] }
+            defer { value.sleepers = [:] }
+            return Array(value.sleepers.values)
+        }
+        sleepers.forEach { $0.resume() }
+    }
+
     /// Sleeps for `seconds`, or until `stop()`, whichever comes first.
     func sleep(_ seconds: TimeInterval) async {
         let id = UUID()
@@ -157,6 +171,9 @@ public final class NodeLoop: @unchecked Sendable {
     /// Every state change, starting with the current one. Also delivered to
     /// `onState`; use whichever suits the caller.
     public let states: AsyncStream<NodeLoopState>
+    /// The signal the running loops sleep on. Held as an instance property so
+    /// `retryNow()` can wake them; created once because `run()` runs once.
+    private let stopSignal = StopSignal()
 
     private let agentCache = Locked<(agents: [DetectedAgent], at: Date)?>(nil)
     private let lastReposFingerprint = Locked<[RepoMapping]?>(nil)
@@ -196,6 +213,13 @@ public final class NodeLoop: @unchecked Sendable {
         return state.current
     }
 
+    /// Runs both loops' next round now instead of waiting out their intervals
+    /// (AND-177). A heartbeat or claim already under way is left to finish;
+    /// a loop that has ended ignores this.
+    public func retryNow() {
+        stopSignal.wake()
+    }
+
     /// Runs both loops until the calling task is cancelled or the credential is
     /// refused, in which case it throws `APIError.credentialRevoked`.
     ///
@@ -207,7 +231,7 @@ public final class NodeLoop: @unchecked Sendable {
     /// A loop runs once: `states` finishes when `run()` returns, so logging in
     /// again means creating a new `NodeLoop` with the new credential.
     public func run() async throws {
-        let stop = StopSignal()
+        let stop = stopSignal
         let fatal = Locked<APIError?>(nil)
         update { $0.connection = .connecting }
 
