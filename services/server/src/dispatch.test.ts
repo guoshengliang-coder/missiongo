@@ -2466,10 +2466,12 @@ describe("Account scoping", () => {
 });
 
 /** A launched Codex dispatch with a mirrored session, as the Mac reports one. */
-async function launchedCodexSession(app: FastifyInstance, cookie: string) {
+async function launchedCodexSession(
+  app: FastifyInstance, cookie: string, productName = "Mission GO", keyPrefix = "AND",
+) {
   const node = await registeredNode(app);
   await heartbeat(app, node.token, "codex");
-  const mission = await readyItem(app, cookie, "Mission GO", "AND");
+  const mission = await readyItem(app, cookie, productName, keyPrefix);
   await app.inject({
     method: "PUT",
     url: `/api/v1/nodes/${node.nodeId}/repos`,
@@ -2492,7 +2494,7 @@ async function launchedCodexSession(app: FastifyInstance, cookie: string) {
     method: "POST",
     url: `/api/v1/node/dispatches/${dispatchId}/result`,
     headers: { authorization: `Bearer ${node.token}` },
-    payload: { status: "launched", sessionRef: "01a09f35-d6fa-7eb2-9d90-1352cf2fb661" },
+    payload: { status: "launched", sessionRef: randomUUID() },
   });
   const sessionId = (await app.inject({
     method: "GET",
@@ -3061,6 +3063,44 @@ describe("Widget summary (AND-149)", () => {
       },
       items: { ready: 3, readyProductId: other.productId },
     });
+  });
+
+  it("gives every Mac the account's current cross-product attention count (AND-176)", async () => {
+    const { app, cookie } = await signedInApp();
+    const first = await launchedCodexSession(app, cookie);
+    const second = await launchedCodexSession(app, cookie, "Another GO", "OTH");
+    const count = (token: string) => app.inject({
+      method: "GET", url: "/api/v1/node/attention-summary",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect((await count(first.node.token)).json()).toEqual({ attention: 0 });
+
+    for (const entry of [first, second]) {
+      await snapshot(app, entry.node.token, entry.sessionId, [
+        { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
+        {
+          sourceId: "a1", turnId: "t1", role: "agent", text: "Pick a scope.",
+          questions: [{ title: "Scope", options: ["Small", "Full"] }],
+        },
+      ]);
+    }
+    const counted = await count(first.node.token);
+    expect(counted.statusCode).toBe(200);
+    expect(counted.headers["cache-control"]).toBe("no-store");
+    expect(counted.json()).toEqual({ attention: 2 });
+    expect((await count(second.node.token)).json()).toEqual({ attention: 2 });
+    expect((await summary(app, cookie)).agent.attention).toBe(2);
+
+    for (const [entry, remaining] of [[first, 1], [second, 0]] as const) {
+      const archived = await app.inject({
+        method: "PATCH", url: `/api/v1/agent-sessions/${entry.sessionId}`,
+        headers: { cookie }, payload: { archived: true },
+      });
+      expect(archived.statusCode).toBe(200);
+      expect((await count(first.node.token)).json()).toEqual({ attention: remaining });
+    }
+    expect((await app.inject({ method: "GET", url: "/api/v1/node/attention-summary", headers: { cookie } })).statusCode).toBe(401);
+    expect((await count(loginToken(app))).statusCode).toBe(401);
   });
 
   it("does not spend an AI call on a conversation still waiting to be classified", async () => {
