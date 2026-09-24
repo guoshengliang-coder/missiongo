@@ -60,6 +60,18 @@ public enum OpenCodeProtocol {
         return status["status"] as? String
     }
 
+    /// Integration setup checks the service's default location. A temporary
+    /// failure there must not disable dispatches whose repository location is
+    /// connected; launch checks the mapped repository before sending a prompt.
+    public static func integrationIssue(for status: String?) -> String? {
+        switch status {
+        case "connected", "failed", "pending": return nil
+        case "needs_auth": return "OpenCode 的 missiongo MCP 需要授权；请在 OpenCode 的 /mcps 中登录。"
+        case nil: return "OpenCode 未返回 missiongo MCP；请检查共享服务的 MCP 配置。"
+        default: return "OpenCode 的 missiongo MCP 状态无法识别；请在 OpenCode 的 /mcps 中检查。"
+        }
+    }
+
     public static func messages(_ response: [String: Any]) throws -> [AgentSessionMessage] {
         guard let entries = response["data"] as? [[String: Any]] else {
             throw LaunchError("OpenCode 的消息列表无法识别。")

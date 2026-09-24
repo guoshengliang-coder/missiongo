@@ -71,6 +71,14 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertEqual(messages.map(\.text), ["请处理", "方案"])
     }
 
+    func testIntegrationCheckOnlyPausesForMissingConfigurationOrAuthorization() {
+        XCTAssertNil(OpenCodeProtocol.integrationIssue(for: "connected"))
+        XCTAssertNil(OpenCodeProtocol.integrationIssue(for: "failed"))
+        XCTAssertNil(OpenCodeProtocol.integrationIssue(for: "pending"))
+        XCTAssertTrue(OpenCodeProtocol.integrationIssue(for: "needs_auth")?.contains("登录") == true)
+        XCTAssertTrue(OpenCodeProtocol.integrationIssue(for: nil)?.contains("配置") == true)
+    }
+
     func testRetriesTransientFailedMcpStatusBeforeDispatch() async throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }

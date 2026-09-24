@@ -618,7 +618,7 @@ final class AppModel: ObservableObject {
                     let mcp = try await control.missionGoMcpStatus()
                     guard access.isCurrent(agent, attempt: attempt) else { return }
                     version = found
-                    issue = mcp == "connected" ? nil : "OpenCode 的 missiongo MCP 未连接（\(mcp ?? "未配置")）；请在 OpenCode 的 /mcps 中完成授权。"
+                    issue = OpenCodeProtocol.integrationIssue(for: mcp)
                 } catch {
                     version = ""
                     issue = error.localizedDescription
