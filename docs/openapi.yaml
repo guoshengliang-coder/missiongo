@@ -241,23 +241,6 @@ paths:
       responses:
         "200": { description: The token is registered. }
         "401": { $ref: "#/components/responses/Unauthorized" }
-    delete:
-      operationId: unregisterWidgetDevice
-      description: The app drops its token on sign-out, from the account that owns it.
-      security:
-        - adminSessionCookie: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [token]
-              properties:
-                token: { type: string, maxLength: 4096 }
-      responses:
-        "200": { description: The token is removed if it belonged to the caller. }
-        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/v1/auth/logout:
     post:
       operationId: signOut

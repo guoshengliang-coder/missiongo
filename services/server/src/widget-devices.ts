@@ -27,14 +27,6 @@ export class WidgetDeviceStore {
       .run(token, accountId, now, now);
   }
 
-  unregister(accountId: string, tokenValue: string): boolean {
-    const token = typeof tokenValue === "string" ? tokenValue.trim() : "";
-    if (!token) throw invalidInput("token is required.");
-    return this.database.connection
-      .prepare("DELETE FROM widget_devices WHERE fcm_token = ? AND account_id = ?")
-      .run(token, accountId).changes > 0;
-  }
-
   listForAccount(accountId: string): readonly string[] {
     return (this.database.connection
       .prepare("SELECT fcm_token FROM widget_devices WHERE account_id = ?")

@@ -65,9 +65,6 @@ internal object WidgetSummaryClient {
     fun registerDeviceToken(endpoint: String, token: String): DeviceRegistration =
         write("/api/v1/widget/device", "PUT", endpoint, """{"token":${quote(token)}}""")
 
-    fun unregisterDeviceToken(endpoint: String, token: String): DeviceRegistration =
-        write("/api/v1/widget/device", "DELETE", endpoint, """{"token":${quote(token)}}""")
-
     /** The notification's "no action needed": the revision guards against dismissing a newer change. */
     fun dismissAttention(endpoint: String, sessionId: String, revision: String): Boolean =
         write(

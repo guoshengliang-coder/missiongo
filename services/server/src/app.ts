@@ -1854,12 +1854,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { registered: true };
   });
 
-  app.delete("/api/v1/widget/device", async (request) => {
-    const account = requireAccount(request);
-    widgetDevices.unregister(account.id, stringField(objectBody(request.body), "token")!);
-    return { registered: false };
-  });
-
   app.patch("/api/v1/agent-sessions/:sessionId", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     authorizedAgentSession(request, sessionId, true);
