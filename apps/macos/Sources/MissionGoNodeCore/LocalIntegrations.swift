@@ -121,6 +121,12 @@ public struct ConsentedAgentAdapter: AgentAdapter {
             access.finish(agent, attempt: attempt, version: version)
             return result
         } catch {
+            if let launchError = error as? LaunchError, launchError.retryAfterSeconds != nil {
+                // The server requeues this same dispatch. Keep the integration
+                // available so the node can claim it again after the backoff.
+                access.finish(agent, attempt: attempt, version: version)
+                throw error
+            }
             access.finish(agent, attempt: attempt, version: nil, issue: "启动失败，已暂停自动访问：\(error.localizedDescription)")
             throw error
         }
