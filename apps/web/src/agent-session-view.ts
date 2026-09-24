@@ -61,6 +61,10 @@ export function formatAgentMessageTime(value: string, locale: string, now = new 
 export type AgentSessionFilter = "attention" | "active" | "all" | "failed" | "archived";
 export type AgentKindFilter = "all" | AgentKind;
 
+export function isAbnormalAgentSession(session: Pick<AgentSessionSummary, "status" | "command">): boolean {
+  return session.status === "failed" || session.command?.status === "failed";
+}
+
 export function replyBlockedLabelKey(reason: AgentSessionReplyBlockedReason | undefined):
   | "agentSessionWorkFinishedReadOnly"
   | "agentSessionArchivedReadOnly"
@@ -147,7 +151,8 @@ export function agentSessionMatches(
   if (agentFilter !== "all" && session.agentKind !== agentFilter) return false;
   if (filter === "attention" && !session.needsAttention) return false;
   if (filter === "active" && session.status !== "active") return false;
-  if (filter === "failed" && session.status !== "failed" && session.command?.status !== "failed") return false;
+  if (filter === "failed" && !isAbnormalAgentSession(session)) return false;
+  if (filter === "all" && isAbnormalAgentSession(session)) return false;
   const query = search.trim().toLocaleLowerCase();
   if (!query) return true;
   return [
