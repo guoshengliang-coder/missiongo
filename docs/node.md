@@ -193,7 +193,8 @@ MISSIONGO_MACOS_NOTARY_PROFILE='<本机钥匙串中的公证配置名>'
 `build-macos-app.sh` 仍可生成临时签名开发包。默认发行版的自动更新先通过系统校验，不再删除隔离属性。
 签名流程通过不代表获得了任何隐私权限，也不保证旧版临时签名应用的既有授权能直接迁移；首次迁移可能仍需用户确认。
 
-继续无证书发行必须显式执行 `npm run publish:macos -- --allow-ad-hoc`。此模式不要求 Developer ID 或公证，
+用户未主动提供可用的 Developer ID 证书及公证凭据时，按仓库规则默认同意 ad-hoc 发行，不必逐次询问；
+发布命令仍必须显式执行 `npm run publish:macos -- --allow-ad-hoc`，不得静默降低签名等级。此模式不要求 Developer ID 或公证，
 但仍验证代码签名完整性、记录来源提交与 SHA-256，并在发布元数据记录 `signing_mode=adhoc`。
 只有这种显式构建的客户端允许安装通过完整性校验的后续临时签名更新；该许可写在本机应用中，下载清单不能开启它。
 Developer ID 发行版不会因此自动降级。两种模式都保留隔离属性和系统启动检查，不修改系统权限；
