@@ -675,21 +675,27 @@ export function AgentSessionConsole({
                     onSelectSession(session.id, true);
                   }}
                 >
-                  <span className={`agent-console-status-icon agent-console-status-${session.status} agent-console-node-${session.nodeConnectionState}`}>
+                  <span
+                    className={`agent-console-status-icon agent-console-status-${session.status} agent-console-node-${session.nodeConnectionState}`}
+                    role="img"
+                    aria-label={`${nodeConnectionLabel(session, t)} · ${session.archivedAt ? t("archived") : statusLabel(session.status, t)}`}
+                  >
                     {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={session.status} />}
                   </span>
                   <span className="agent-console-session-copy">
-                    <strong>{sessionTitle(session)}</strong>
-                    <small>{session.nodeName} · {nodeConnectionLabel(session, t)} · {agentLabel(session, t)} · {session.archivedAt ? t("archived") : statusLabel(session.status, t)}</small>
+                    <span className="agent-console-session-heading">
+                      <strong>{sessionTitle(session)}</strong>
+                      {session.unread && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
+                      <time>{updatedTime(session.activityAt ?? session.updatedAt, locale)}</time>
+                    </span>
+                    <small>{session.nodeName} · {agentLabel(session, t)}</small>
                     {attentionLabel(session, t) && (
                       <i className="agent-console-attention" title={session.attention.reason}>
                         {attentionLabel(session, t)}
                       </i>
                     )}
-                    <span>{session.latestMessage?.text ?? session.lastError ?? t("agentConsoleDispatchOnly")}</span>
+                    <span className="agent-console-session-summary">{session.latestMessage?.text ?? session.lastError ?? t("agentConsoleDispatchOnly")}</span>
                   </span>
-                  {session.unread && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
-                  <time>{updatedTime(session.activityAt ?? session.updatedAt, locale)}</time>
                 </button>
               </div>
             );

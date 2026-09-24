@@ -41,8 +41,8 @@ describe("agent console responsive layout", () => {
   });
 
   it("uses one console topbar instead of a second list heading", () => {
-    expect(styles).toMatch(/\.topbar\.agent-console-topbar \{[^}]*grid-template-columns: auto minmax\(156px, 360px\) minmax\(44px, 1fr\);/);
-    expect(styles).toMatch(/\.agent-console-topbar \.product-switcher-wrap \{[^}]*justify-self: start;/);
+    expect(styles).toMatch(/\.topbar\.agent-console-topbar \{[^}]*grid-template-columns: auto minmax\(0, 1fr\) auto;/);
+    expect(styles).toContain(".agent-console-projects .product-switcher { width: auto;");
     expect(consoleSource).not.toContain('className="agent-console-list-head"');
   });
 
@@ -54,13 +54,16 @@ describe("agent console responsive layout", () => {
     expect(consoleSource).not.toContain('{filter !== "archived" && archivableIds.length > 0 && (');
   });
 
-  it("uses rounded batch controls and preserves a compact phone topbar", () => {
+  it("keeps touch-sized actions and combines them on narrow phones", () => {
     const phone = mediaBlock(520);
 
-    expect(styles).toMatch(/\.agent-console-topbar-bulk \{[^}]*border-radius: 999px;/);
+    expect(styles).toMatch(/\.agent-console-topbar-bulk \{[^}]*width: 38px;/);
     expect(styles).toMatch(/\.agent-console-bulk-actions \{[^}]*border-radius: var\(--radius-lg\);/);
     expect(styles).toMatch(/\.agent-console-session-select input \{[^}]*border-radius: 6px;/);
-    expect(phone).toContain(".agent-console-topbar-bulk span { display: none; }");
+    expect(phone).toContain(".agent-console-topbar-refresh { width: 44px;");
+    expect(phone).toContain(".agent-console-topbar-actions.has-bulk > .agent-console-topbar-more { display: block; }");
+    expect(styles).toContain("@container agent-console-topbar (min-width: 421px)");
+    expect(appSource).toContain('aria-label={t("moreActions")}');
   });
 
   it("keeps replies below the textarea with the quick settings row (AND-158)", () => {
@@ -107,7 +110,15 @@ describe("agent console responsive layout", () => {
     expect(appSource).toContain(
       "attentionCounts={agentConsoleOpen && hasAnyAiPermission ? attentionCounts.byProduct : undefined}",
     );
+    expect(appSource).toContain('className="agent-console-total-attention agent-attention-badge"');
     expect(appSource).not.toContain('queryKey: ["agent-sessions", selectedProductId]');
+  });
+
+  it("keeps the session time beside a two-line title and removes redundant status copy", () => {
+    expect(consoleSource).toContain('className="agent-console-session-heading"');
+    expect(consoleSource).toContain('<small>{session.nodeName} · {agentLabel(session, t)}</small>');
+    expect(styles).toContain(".agent-console-session-heading strong { min-width: 0; flex: 1; display: -webkit-box;");
+    expect(styles).not.toContain("min-height: 104px;");
   });
 
   it("shows a semantic occurrence time on mirrored and outgoing messages", () => {

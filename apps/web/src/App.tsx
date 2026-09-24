@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Archive,
   ArrowRight,
+  BellRing,
   Bot,
   Bug,
   Camera,
@@ -29,6 +30,7 @@ import {
   Menu,
   MessageSquarePlus,
   MoreHorizontal,
+  MoreVertical,
   Paperclip,
   Plus,
   RefreshCw,
@@ -434,12 +436,13 @@ export function App() {
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [agentSessionId, setAgentSessionId] = useState<string | null>(agentSessionIdFromUrl);
   // Read before the deep-link handling below rewrites the URL without it.
-  const [agentConsoleLinkedFilter] = useState(agentConsoleFilterFromUrl);
+  const [agentConsoleLinkedFilter, setAgentConsoleLinkedFilter] = useState(agentConsoleFilterFromUrl);
   const [agentConversationOpen, setAgentConversationOpen] = useState(
     () => Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]),
   );
   const [agentConsoleBulkMode, setAgentConsoleBulkMode] = useState(false);
   const [agentConsoleBulkAvailable, setAgentConsoleBulkAvailable] = useState(false);
+  const agentConsoleMoreRef = useRef<HTMLDetailsElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // Below the two-pane breakpoint the sidebar is a drawer, and a closed drawer
   // is only moved off-screen: without inert, Tab still walked through every
@@ -503,6 +506,9 @@ export function App() {
   const syncBackDepth = () => reportAndroidBackDepth(backDepthFromState(history.state));
 
   const openAgentConsole = () => {
+    // A deep-link filter applies only to that visit; a later ordinary opening
+    // starts with the normal default even if this page first loaded from a link.
+    setAgentConsoleLinkedFilter(null);
     const current = typeof history.state === "object" && history.state
       ? history.state as Record<string, unknown>
       : {};
@@ -1230,22 +1236,32 @@ export function App() {
             <div className="topbar-divider" />
           </>
         )}
-        <ProductSwitcher
-          products={products}
-          selectedProductId={selectedProductId}
-          attentionCounts={agentConsoleOpen && hasAnyAiPermission ? attentionCounts.byProduct : undefined}
-          attentionCountsLoaded={agentSessionsQuery.data !== undefined}
-          onSelect={(productId) => {
-            setSelectedProductId(productId);
-            setAgentConsoleBulkMode(false);
-            // A filter chosen for one product says nothing about the next one,
-            // and the item asks for the default view "no matter what".
-            setStatusFilter(DEFAULT_STATUS);
-            setTypeFilter("all");
-            setSearch("");
-            clearItemPage();
-          }}
-        />
+        <div className={agentConsoleOpen ? "agent-console-projects" : "product-switcher-slot"}>
+          <ProductSwitcher
+            products={products}
+            selectedProductId={selectedProductId}
+            attentionCounts={agentConsoleOpen && hasAnyAiPermission ? attentionCounts.byProduct : undefined}
+            attentionCountsLoaded={agentSessionsQuery.data !== undefined}
+            onSelect={(productId) => {
+              agentConsoleMoreRef.current?.removeAttribute("open");
+              setSelectedProductId(productId);
+              setAgentConsoleBulkMode(false);
+              // A filter chosen for one product says nothing about the next one,
+              // and the item asks for the default view "no matter what".
+              setStatusFilter(DEFAULT_STATUS);
+              setTypeFilter("all");
+              setSearch("");
+              clearItemPage();
+            }}
+          />
+          {agentConsoleOpen && agentSessionsQuery.data !== undefined && (
+            <span
+              className="agent-console-total-attention agent-attention-badge"
+              aria-label={t("agentConsoleAttentionCount", { count: attentionCounts.total })}
+              title={t("agentConsoleAttentionCount", { count: attentionCounts.total })}
+            ><BellRing size={13} aria-hidden="true" />{attentionCounts.total}</span>
+          )}
+        </div>
         {hasAnyAiPermission && !agentConsoleOpen && (
           <button
             type="button"
@@ -1266,7 +1282,7 @@ export function App() {
           </button>
         )}
         {agentConsoleOpen && (
-          <div className="agent-console-topbar-actions">
+          <div className={`agent-console-topbar-actions ${agentConsoleBulkAvailable && !agentConversationOpen ? "has-bulk" : ""}`}>
             {agentConsoleBulkAvailable && !agentConversationOpen && (
               <button
                 type="button"
@@ -1277,17 +1293,32 @@ export function App() {
                 onClick={() => setAgentConsoleBulkMode((current) => !current)}
               >
                 <CheckCircle2 size={17} />
-                <span>{t(agentConsoleBulkMode ? "agentConsoleBulkDone" : "agentConsoleBulkMode")}</span>
               </button>
             )}
             <button
               type="button"
-              className="icon-button agent-console-topbar-refresh"
+              className="secondary-button agent-console-topbar-refresh"
+              title={t("refresh")}
               aria-label={t("refresh")}
               onClick={() => void refreshAgentConsole()}
             >
               <RefreshCw className={agentConsoleRefreshing ? "spin" : ""} size={18} />
             </button>
+            {agentConsoleBulkAvailable && !agentConversationOpen && (
+              <details className="agent-console-topbar-more" ref={agentConsoleMoreRef}>
+                <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreVertical size={18} /></summary>
+                <div className="agent-console-topbar-more-menu">
+                  <button type="button" onClick={() => {
+                    agentConsoleMoreRef.current?.removeAttribute("open");
+                    setAgentConsoleBulkMode((current) => !current);
+                  }}><CheckCircle2 size={16} />{t(agentConsoleBulkMode ? "agentConsoleBulkDone" : "agentConsoleBulkMode")}</button>
+                  <button type="button" onClick={() => {
+                    agentConsoleMoreRef.current?.removeAttribute("open");
+                    void refreshAgentConsole();
+                  }}><RefreshCw size={16} />{t("refresh")}</button>
+                </div>
+              </details>
+            )}
           </div>
         )}
         {!agentConsoleOpen && (
@@ -1938,7 +1969,8 @@ function ItemRow({
       </span>
       <ItemMediaStrip itemKey={item.key} attachments={item.attachments} preserveColumn={showAttachmentColumn} />
       <span className="item-context">
-        <strong>{contextPrimary}</strong>
+        <strong className={environment ? "item-context-primary-with-platform" : undefined}>{contextPrimary}</strong>
+        {environment && <strong className="item-context-platform">{platformName(environment.platform, t)}</strong>}
         {/* No placeholder when there is nothing to say: on a phone this row is
             one line shared with the platform, and "no version or device
             details" was taking enough of it to truncate "Android" to "Andr...".
@@ -2129,7 +2161,6 @@ function ProductSwitcher({
                   title={t("agentConsoleNeedsAttention")}
                 >{attentionCounts.get(product.id) ?? 0}</span>
               )}
-              {product.id === selectedProductId && <Check size={15} aria-hidden="true" />}
             </li>
           ))}
         </ul>
@@ -2373,7 +2404,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
     <>
     <details className="detail-more-menu row-more-menu" ref={moreActionsRef}>
       <summary className="secondary-button" aria-label={t("moreActionsFor", { key: item.key })} title={t("moreActions")}>
-        {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <MoreHorizontal size={18} />}
+        {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <MoreVertical size={16} />}
       </summary>
       <div className="detail-more-menu-popover">
         {primaryAction && (
