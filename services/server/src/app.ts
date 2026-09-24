@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 
 import {
   AGENT_KINDS,
@@ -42,7 +42,7 @@ import {
   type ProductCapability,
   type ProductPermission,
 } from "./accounts-store.js";
-import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
+import { AttachmentStorage, MAX_ATTACHMENT_BYTES, MEBIBYTE } from "./attachment-storage.js";
 import { AiTitleService } from "./ai-title.js";
 import { AgentSessionStore, type AgentMessageRole, type AgentSessionStatus } from "./agent-session-store.js";
 import { optionalName, parseAgentModels } from "./agent-settings.js";
@@ -229,6 +229,17 @@ function stringField(body: Record<string, unknown>, field: string, required = tr
 
 /** How many items one bulk transition may move (AND-66). */
 const BULK_TRANSITION_LIMIT = 50;
+
+/**
+ * AND-181: a session snapshot the store's contract accepts (2_000 messages of
+ * up to 100_000 characters) can easily exceed Fastify's 1 MiB default
+ * bodyLimit. The 413 it answered with is indistinguishable from a network blip
+ * to the node, so a large session silently stopped syncing. The route keeps a
+ * bound of its own -- far above any real mirrored conversation, well under the
+ * attachment precedent -- so a hostile request still cannot buffer unbounded
+ * memory.
+ */
+const MAX_SNAPSHOT_BODY_BYTES = 32 * MEBIBYTE;
 
 function stringArrayField(body: Record<string, unknown>, field: string): readonly string[] | undefined {
   const value = body[field];
@@ -727,10 +738,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
   });
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler<FastifyError>((error, _request, reply) => {
     if (error instanceof MissionGoError) {
       return reply.status(error.statusCode).send({
         type: `urn:missiongo:problem:${error.code}`,
+        title: error.message,
+        status: error.statusCode,
+        code: error.code,
+      });
+    }
+
+    // Fastify's own refusals -- a body over a route's limit, a malformed JSON
+    // payload -- arrive carrying the status they mean to answer with. Folding
+    // them into a 500 hides what actually happened; the 413 is the very signal
+    // an oversized snapshot produces (AND-181). Only 4xx passes through: an
+    // error claiming anything else is still a bug worth a 500 and a log line.
+    if (error.statusCode !== undefined && error.statusCode >= 400 && error.statusCode < 500) {
+      return reply.status(error.statusCode).send({
+        type: "urn:missiongo:problem:request_rejected",
         title: error.message,
         status: error.statusCode,
         code: error.code,
@@ -2092,97 +2117,101 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { sessions: agentSessionStore.listForNode(node.nodeId) };
   });
 
-  app.post("/api/v1/node/agent-sessions/:sessionId/snapshot", async (request, reply) => {
-    const node = requireNode(request);
-    const { sessionId } = request.params as { sessionId: string };
-    const body = objectBody(request.body);
-    const status = stringField(body, "status") as AgentSessionStatus;
-    if (!["active", "idle", "suspended", "stalled", "unavailable", "failed"].includes(status)) {
-      throw invalidInput("status must be active, idle, suspended, stalled, unavailable, or failed.");
-    }
-    if (!Array.isArray(body.messages)) throw invalidInput("messages must be an array.");
-    const messages = body.messages.map((entry) => {
-      const message = objectBody(entry);
-      const role = stringField(message, "role") as AgentMessageRole;
-      if (!["user", "agent", "plan"].includes(role)) {
-        throw invalidInput("message role must be user, agent, or plan.");
+  app.post(
+    "/api/v1/node/agent-sessions/:sessionId/snapshot",
+    { bodyLimit: MAX_SNAPSHOT_BODY_BYTES },
+    async (request, reply) => {
+      const node = requireNode(request);
+      const { sessionId } = request.params as { sessionId: string };
+      const body = objectBody(request.body);
+      const status = stringField(body, "status") as AgentSessionStatus;
+      if (!["active", "idle", "suspended", "stalled", "unavailable", "failed"].includes(status)) {
+        throw invalidInput("status must be active, idle, suspended, stalled, unavailable, or failed.");
       }
-      let questions: Array<{ header?: string; title: string; options?: string[]; multiSelect?: boolean }> | undefined;
-      if (message.questions !== undefined) {
-        if (!Array.isArray(message.questions)) throw invalidInput("questions must be an array.");
-        questions = message.questions.map((entry) => {
-          const question = objectBody(entry);
-          const options = stringArrayField(question, "options");
-          return {
-            ...(stringField(question, "header", false) ? { header: question.header as string } : {}),
-            title: stringField(question, "title")!,
-            ...(options ? { options: [...options] } : {}),
-            ...(typeof question.multiSelect === "boolean" ? { multiSelect: question.multiSelect } : {}),
-          };
-        });
+      if (!Array.isArray(body.messages)) throw invalidInput("messages must be an array.");
+      const messages = body.messages.map((entry) => {
+        const message = objectBody(entry);
+        const role = stringField(message, "role") as AgentMessageRole;
+        if (!["user", "agent", "plan"].includes(role)) {
+          throw invalidInput("message role must be user, agent, or plan.");
+        }
+        let questions: Array<{ header?: string; title: string; options?: string[]; multiSelect?: boolean }> | undefined;
+        if (message.questions !== undefined) {
+          if (!Array.isArray(message.questions)) throw invalidInput("questions must be an array.");
+          questions = message.questions.map((entry) => {
+            const question = objectBody(entry);
+            const options = stringArrayField(question, "options");
+            return {
+              ...(stringField(question, "header", false) ? { header: question.header as string } : {}),
+              title: stringField(question, "title")!,
+              ...(options ? { options: [...options] } : {}),
+              ...(typeof question.multiSelect === "boolean" ? { multiSelect: question.multiSelect } : {}),
+            };
+          });
+        }
+        return {
+          sourceId: stringField(message, "sourceId")!,
+          ...(stringField(message, "turnId", false) ? { turnId: message.turnId as string } : {}),
+          role,
+          ...(stringField(message, "phase", false) ? { phase: message.phase as string } : {}),
+          text: stringField(message, "text")!,
+          ...(stringField(message, "occurredAt", false) ? { occurredAt: message.occurredAt as string } : {}),
+          ...(questions ? { questions } : {}),
+        };
+      });
+      if (body.activities !== undefined && !Array.isArray(body.activities)) {
+        throw invalidInput("activities must be an array.");
       }
-      return {
-        sourceId: stringField(message, "sourceId")!,
-        ...(stringField(message, "turnId", false) ? { turnId: message.turnId as string } : {}),
-        role,
-        ...(stringField(message, "phase", false) ? { phase: message.phase as string } : {}),
-        text: stringField(message, "text")!,
-        ...(stringField(message, "occurredAt", false) ? { occurredAt: message.occurredAt as string } : {}),
-        ...(questions ? { questions } : {}),
-      };
-    });
-    if (body.activities !== undefined && !Array.isArray(body.activities)) {
-      throw invalidInput("activities must be an array.");
-    }
-    const activities = (Array.isArray(body.activities) ? body.activities : []).map((entry) => {
-      const activity = objectBody(entry);
-      return {
-        id: stringField(activity, "id")!,
-        title: stringField(activity, "title")!,
-        ...(stringField(activity, "detail", false) ? { detail: activity.detail as string } : {}),
-      };
-    });
-    const commandStatusValue = stringField(body, "commandStatus", false);
-    if (commandStatusValue && !["delivering", "delivered", "failed"].includes(commandStatusValue)) {
-      throw invalidInput("commandStatus must be delivering, delivered, or failed.");
-    }
-    const commandStatus = commandStatusValue as "delivering" | "delivered" | "failed" | undefined;
-    if (body.sourceArchived !== undefined && typeof body.sourceArchived !== "boolean") {
-      throw invalidInput("sourceArchived must be true or false.");
-    }
-    const settingsRevisionValue = body.settingsRevision ?? undefined;
-    if (settingsRevisionValue !== undefined
-      && (typeof settingsRevisionValue !== "number" || !Number.isInteger(settingsRevisionValue) || settingsRevisionValue < 0)) {
-      throw invalidInput("settingsRevision must be a non-negative integer.");
-    }
-    const settingsRevision = settingsRevisionValue as number | undefined;
-    agentSessionStore.recordSnapshot({
-      nodeId: node.nodeId,
-      sessionId,
-      status,
-      messages,
-      activities,
-      ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
-      ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),
-      ...(commandStatus ? { commandStatus } : {}),
-      ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
-      ...(typeof body.sourceArchived === "boolean" ? { sourceArchived: body.sourceArchived } : {}),
-      ...(body.sourceRestored === true ? { sourceRestored: true } : {}),
-      ...(stringField(body, "sourceArchiveError", false)
-        ? { sourceArchiveError: body.sourceArchiveError as string }
-        : {}),
-      ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
-      ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
-      ...(optionalName(body, "modelEndpoint") ? { modelEndpoint: optionalName(body, "modelEndpoint")! } : {}),
-      ...(settingsRevision !== undefined ? { settingsRevision } : {}),
-      ...(stringField(body, "settingsError", false) ? { settingsError: body.settingsError as string } : {}),
-      ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
-      ...(body.clearSessionUrl === true ? { clearSessionUrl: true } : {}),
-      ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
-    });
-    scheduleAttentionClassification(sessionId);
-    return reply.status(204).send();
-  });
+      const activities = (Array.isArray(body.activities) ? body.activities : []).map((entry) => {
+        const activity = objectBody(entry);
+        return {
+          id: stringField(activity, "id")!,
+          title: stringField(activity, "title")!,
+          ...(stringField(activity, "detail", false) ? { detail: activity.detail as string } : {}),
+        };
+      });
+      const commandStatusValue = stringField(body, "commandStatus", false);
+      if (commandStatusValue && !["delivering", "delivered", "failed"].includes(commandStatusValue)) {
+        throw invalidInput("commandStatus must be delivering, delivered, or failed.");
+      }
+      const commandStatus = commandStatusValue as "delivering" | "delivered" | "failed" | undefined;
+      if (body.sourceArchived !== undefined && typeof body.sourceArchived !== "boolean") {
+        throw invalidInput("sourceArchived must be true or false.");
+      }
+      const settingsRevisionValue = body.settingsRevision ?? undefined;
+      if (settingsRevisionValue !== undefined
+        && (typeof settingsRevisionValue !== "number" || !Number.isInteger(settingsRevisionValue) || settingsRevisionValue < 0)) {
+        throw invalidInput("settingsRevision must be a non-negative integer.");
+      }
+      const settingsRevision = settingsRevisionValue as number | undefined;
+      agentSessionStore.recordSnapshot({
+        nodeId: node.nodeId,
+        sessionId,
+        status,
+        messages,
+        activities,
+        ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
+        ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),
+        ...(commandStatus ? { commandStatus } : {}),
+        ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
+        ...(typeof body.sourceArchived === "boolean" ? { sourceArchived: body.sourceArchived } : {}),
+        ...(body.sourceRestored === true ? { sourceRestored: true } : {}),
+        ...(stringField(body, "sourceArchiveError", false)
+          ? { sourceArchiveError: body.sourceArchiveError as string }
+          : {}),
+        ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
+        ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
+        ...(optionalName(body, "modelEndpoint") ? { modelEndpoint: optionalName(body, "modelEndpoint")! } : {}),
+        ...(settingsRevision !== undefined ? { settingsRevision } : {}),
+        ...(stringField(body, "settingsError", false) ? { settingsError: body.settingsError as string } : {}),
+        ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
+        ...(body.clearSessionUrl === true ? { clearSessionUrl: true } : {}),
+        ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
+      });
+      scheduleAttentionClassification(sessionId);
+      return reply.status(204).send();
+    },
+  );
 
   app.post("/api/v1/node/heartbeat", async (request) => {
     const node = requireNode(request);
