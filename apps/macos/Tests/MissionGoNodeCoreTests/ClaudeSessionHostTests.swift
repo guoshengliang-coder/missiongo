@@ -688,7 +688,7 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
             environment: ShellEnvironment(path: "/usr/bin:/bin"),
             hostExecutable: nil,
             sessionsDirectory: root,
-            terminateHost: { $0 == 4242 }
+            terminateHost: { pid, _ in pid == 4242 }
         )
         let report = try await launcher.synchronize(NodeAgentSession(
             id: "server-session",
@@ -706,5 +706,62 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         )
         XCTAssertNil(state.hostPid)
         XCTAssertEqual(state.status, "suspended")
+    }
+}
+
+final class ClaudeHostProcessTests: XCTestCase {
+    func testKernelBlobParsingSkipsPaddingNULs() {
+        XCTAssertEqual(
+            ClaudeHostProcess.arguments(inKernelBlob: [UInt8]("/host\0\0\0\0/cfg\0".utf8)),
+            ["/host", "/cfg"]
+        )
+        XCTAssertEqual(ClaudeHostProcess.arguments(inKernelBlob: []), [])
+        XCTAssertEqual(ClaudeHostProcess.arguments(inKernelBlob: [0, 0, 0]), [])
+    }
+
+    /// The incident behind the dead-host banner: an app update replaced the
+    /// bundle and unlinked the host's executable, so `proc_pidpath` fails
+    /// forever and a surviving host was judged dead. The kernel's copy of the
+    /// argument vector still names the session's config, and that identifies
+    /// the host as surely as the path did.
+    func testAHostWhoseExecutableWasReplacedIsStillRecognizedByItsArguments() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missiongo-host-identity-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(atPath: directory.path, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let hostPath = directory.appendingPathComponent(ClaudeHostLocation.executableName)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: hostPath)
+        let configPath = directory.appendingPathComponent("config.json").path
+
+        let process = Process()
+        process.executableURL = hostPath
+        process.arguments = ["30", configPath]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer {
+            kill(process.processIdentifier, SIGKILL)
+            process.waitUntilExit()
+        }
+
+        XCTAssertTrue(ClaudeHostProcess.isClaudeHost(process.processIdentifier))
+        XCTAssertTrue(ClaudeHostProcess.isClaudeHost(process.processIdentifier, servingConfigPath: configPath))
+
+        // The app update: the executable is unlinked while the host keeps running.
+        try FileManager.default.removeItem(at: hostPath)
+
+        XCTAssertFalse(
+            ClaudeHostProcess.isClaudeHost(process.processIdentifier),
+            "the name check cannot work anymore; this reproduces the incident"
+        )
+        XCTAssertTrue(ClaudeHostProcess.isClaudeHost(process.processIdentifier, servingConfigPath: configPath))
+
+        // Another session's config path must not vouch for this host.
+        XCTAssertFalse(ClaudeHostProcess.isClaudeHost(
+            process.processIdentifier,
+            servingConfigPath: directory.appendingPathComponent("other-config.json").path
+        ))
     }
 }

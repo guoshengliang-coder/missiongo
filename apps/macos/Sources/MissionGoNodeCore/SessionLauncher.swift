@@ -158,7 +158,7 @@ public struct SessionLauncher: AgentAdapter {
     let sessionUrlTimeout: TimeInterval
     let hostExecutable: String?
     let sessionsDirectory: String
-    let terminateHost: @Sendable (Int32) async -> Bool
+    let terminateHost: @Sendable (Int32, String?) async -> Bool
 
     public init(
         environment: ShellEnvironment,
@@ -168,7 +168,9 @@ public struct SessionLauncher: AgentAdapter {
         sessionUrlTimeout: TimeInterval = SessionLauncher.sessionUrlTimeout,
         hostExecutable: String? = ClaudeHostLocation.executable(),
         sessionsDirectory: String? = nil,
-        terminateHost: @escaping @Sendable (Int32) async -> Bool = { await ClaudeHostProcess.terminateGroupAndWait($0) }
+        terminateHost: @escaping @Sendable (Int32, String?) async -> Bool = {
+            await ClaudeHostProcess.terminateGroupAndWait($0, configPath: $1)
+        }
     ) {
         self.environment = environment
         self.run = run ?? Commands.runner(environment: environment)
@@ -611,7 +613,13 @@ public struct SessionLauncher: AgentAdapter {
     private func synchronize(_ session: NodeAgentSession, state: ClaudeHostState, statePath: String) async throws -> AgentSessionReport {
         var state = state
         if session.restoreInSource {
-            if let hostPid = state.hostPid, ClaudeHostProcess.isClaudeHost(hostPid) {
+            if let hostPid = state.hostPid,
+               ClaudeHostProcess.isClaudeHost(
+                   hostPid,
+                   servingConfigPath: ClaudeHostStore.configPath(
+                       root: sessionsDirectory, sessionRef: session.sessionRef
+                   )
+               ) {
                 return AgentSessionReport(
                     status: state.status, messages: state.messages, activities: state.activities,
                     error: state.error, sourceRestored: true, sessionUrl: state.sessionUrl,
@@ -652,7 +660,10 @@ public struct SessionLauncher: AgentAdapter {
                     activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
                 )
             }
-            guard await terminateHost(hostPid) else {
+            guard await terminateHost(
+                hostPid,
+                ClaudeHostStore.configPath(root: sessionsDirectory, sessionRef: session.sessionRef)
+            ) else {
                 return AgentSessionReport(
                     status: state.status, messages: state.messages, activities: state.activities,
                     error: state.error,
@@ -680,7 +691,16 @@ public struct SessionLauncher: AgentAdapter {
         // Hosts created before lifecycle tracking did not persist a PID. Keep
         // those sessions replyable until they write a PID-bearing state; only
         // an explicit suspension or a known dead/wrong process is unavailable.
-        let hostRunning = state.hostPid.map(ClaudeHostProcess.isClaudeHost) ?? (state.status != "suspended")
+        // The config path in the check keeps a host that survived an app
+        // update (its executable replaced on disk) recognizable as alive.
+        let hostRunning = state.hostPid.map {
+            ClaudeHostProcess.isClaudeHost(
+                $0,
+                servingConfigPath: ClaudeHostStore.configPath(
+                    root: sessionsDirectory, sessionRef: session.sessionRef
+                )
+            )
+        } ?? (state.status != "suspended")
         if !hostRunning {
             // A host that stopped without suspending — a crash, a kill, a Mac
             // restart — used to leave a local-control conversation "unavailable"

@@ -799,13 +799,52 @@ public enum ClaudeHostProcess {
         return String(cString: buffer)
     }
 
-    public static func isClaudeHost(_ pid: Int32) -> Bool {
-        guard isRunning(pid), let path = executablePath(pid) else { return false }
-        return URL(fileURLWithPath: path).lastPathComponent == ClaudeHostLocation.executableName
+    public static func isClaudeHost(_ pid: Int32, servingConfigPath configPath: String? = nil) -> Bool {
+        guard isRunning(pid) else { return false }
+        if let path = executablePath(pid),
+           URL(fileURLWithPath: path).lastPathComponent == ClaudeHostLocation.executableName {
+            return true
+        }
+        // An app update replaces the bundle, unlinking the executable a
+        // surviving host still runs. `proc_pidpath` then fails with ENOENT
+        // forever (verified on a real machine), so identify the host by the
+        // session's config path in the argument vector the kernel still holds.
+        guard let configPath, let arguments = processArguments(pid) else { return false }
+        return arguments.contains(configPath)
     }
 
-    public static func terminateGroup(_ pid: Int32) {
-        guard isClaudeHost(pid) else { return }
+    /// The process's original argument vector, as the kernel still holds it.
+    /// Unlike the executable path this survives the binary being replaced on
+    /// disk. `nil` when the process is gone or its arguments are unreadable.
+    public static func processArguments(_ pid: Int32) -> [String]? {
+        guard pid > 0 else { return nil }
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return nil }
+        return arguments(inKernelBlob: Array(buffer.prefix(size)))
+    }
+
+    /// The NUL-separated strings of a KERN_PROCARGS reply: the executable path
+    /// first, then each argument. Padding NULs between them are skipped.
+    static func arguments(inKernelBlob blob: [UInt8]) -> [String] {
+        var strings: [String] = []
+        var current: [UInt8] = []
+        for byte in blob {
+            if byte == 0 {
+                if !current.isEmpty { strings.append(String(decoding: current, as: UTF8.self)) }
+                current = []
+            } else {
+                current.append(byte)
+            }
+        }
+        if !current.isEmpty { strings.append(String(decoding: current, as: UTF8.self)) }
+        return strings
+    }
+
+    public static func terminateGroup(_ pid: Int32, configPath: String? = nil) {
+        guard isClaudeHost(pid, servingConfigPath: configPath) else { return }
         // The host makes itself a process-group leader before starting Claude;
         // one signal therefore reaches the CLI and any tests/builds it spawned.
         if Darwin.kill(-pid, SIGTERM) != 0 { _ = Darwin.kill(pid, SIGTERM) }
@@ -813,8 +852,8 @@ public enum ClaudeHostProcess {
 
     /// Stops the entire process group and proves that no descendant remains.
     /// A manual archive must not report success merely because SIGTERM was sent.
-    public static func terminateGroupAndWait(_ pid: Int32, grace: TimeInterval = 2) async -> Bool {
-        guard isClaudeHost(pid) else { return false }
+    public static func terminateGroupAndWait(_ pid: Int32, grace: TimeInterval = 2, configPath: String? = nil) async -> Bool {
+        guard isClaudeHost(pid, servingConfigPath: configPath) else { return false }
         if Darwin.kill(-pid, SIGTERM) != 0 { _ = Darwin.kill(pid, SIGTERM) }
         let deadline = Date().addingTimeInterval(max(0, grace))
         while processGroupIsRunning(pid), Date() < deadline {

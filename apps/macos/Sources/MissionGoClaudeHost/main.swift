@@ -387,15 +387,28 @@ private func run(configPath: String) throws {
         usleep(100_000)
     }
 
-    if process.isRunning, snapshot.state.status == "suspended" {
-        // The host and Claude share this process group. Ignore the signal only
-        // in the already-persisted host so Claude and any test/build descendants
-        // are stopped together instead of becoming orphans.
+    if process.isRunning {
+        // Ignore SIGTERM only in this host: signals aimed at the CLI's group
+        // must not take the host down before it persists the final state and
+        // reaps the CLI.
         _ = signal(SIGTERM, SIG_IGN)
-        _ = kill(-getpid(), SIGTERM)
-    } else if process.isRunning {
+        // Foundation puts the CLI in a process group of its own, so a signal
+        // to the host's group never reaches it or the tests and builds it
+        // spawned (verified on a real machine). Stop the CLI directly, then
+        // whichever of the two groups holds its descendants — and never wait
+        // without a deadline.
         process.terminate()
+        _ = kill(-getpid(), SIGTERM)
+        _ = kill(-process.processIdentifier, SIGTERM)
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning, Date() < deadline { usleep(100_000) }
+        if process.isRunning {
+            _ = kill(process.processIdentifier, SIGKILL)
+            _ = kill(-process.processIdentifier, SIGKILL)
+        }
     }
+    // Closing the CLI's stdin is the last-resort stop: its SDK exits on EOF.
+    try? writer.close()
     process.waitUntilExit()
     _ = signal(SIGTERM, SIG_DFL)
     if !snapshot.state.launchReady && snapshot.state.status != "failed" {
