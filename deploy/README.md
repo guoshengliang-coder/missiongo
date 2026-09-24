@@ -162,13 +162,15 @@ JSON files outside the checkout. It then runs:
 node scripts/release-notices.mjs --receipt <receipt.json> --candidates <candidates.json>
 ```
 
-That command checks each candidate's PR against GitHub, the deployed commit
-range, and changed artifact paths. It prints proposed comments and stable
-idempotency keys, but never writes to MissionGo. The OAuth-connected AI reads
-each matched item fully before calling `append_comment`. A failed public check,
-unknown source commit, unrelated PR, or first release with no baseline produces
-no automatic success notice. Comments leave items in `pending_verification`;
-only a person decides whether verification passed.
+That command checks each candidate's merged PR, all artifact paths it affects,
+the public state of every required artifact, and the new release range. Separate
+release batches can satisfy different artifacts. It prints a proposed comment,
+verified versions and source commits, a receipt digest, and stable keys for the
+comment and status handoff; it never writes to MissionGo. The OAuth-connected
+AI reads each matched item fully, calls `append_comment`, then calls the narrow
+`submit_for_verification` tool. Unknown source commits, failed public checks,
+incomplete artifact sets and first releases without a baseline leave the item
+in `development_complete`. Only a person decides whether verification passed.
 
 #### Going back
 

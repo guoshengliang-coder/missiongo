@@ -30,6 +30,7 @@ import {
   COMPONENT_KINDS,
   type AttachmentRecord,
   type ClaimWorkItemInput,
+  type SubmitDevelopmentCompleteInput,
   type SubmitForVerificationInput,
   type CommentBody,
   type CommentBodyKind,
@@ -1332,23 +1333,21 @@ export class MissionGoStore {
     });
   }
 
-  /**
-   * Hand merged work over for verification. The pull request URL is required and
-   * lands as its own payload field rather than inside the free-text note, because
-   * the timeline renders it as a link and a person opens it to check the change.
-   *
-   * That the URL points at a *merged* pull request is not checked here and cannot
-   * be: the server has no view of GitHub. The Skill carries that obligation, and
-   * the rules say so rather than letting anyone read this as a guarantee.
-   */
-  submitForVerification(input: SubmitForVerificationInput): WorkItemSnapshot {
+  /** Record the merged PR and the complete set of release artifacts it touches. */
+  submitDevelopmentComplete(input: SubmitDevelopmentCompleteInput): WorkItemSnapshot {
     const pullRequestUrl = requiredText(input.pullRequestUrl, "Pull request URL");
     if (pullRequestUrl.length > 500) throw invalidInput("Pull request URL must be 500 characters or fewer.");
     if (!pullRequestUrl.startsWith("https://")) throw invalidInput("Pull request URL must be an https:// address.");
+    const allowedArtifacts = ["web", "androidApp", "androidSdk", "macosApp"];
+    if (input.requiredArtifacts.length === 0 || input.requiredArtifacts.length > allowedArtifacts.length
+      || new Set(input.requiredArtifacts).size !== input.requiredArtifacts.length
+      || input.requiredArtifacts.some((artifact) => !allowedArtifacts.includes(artifact))) {
+      throw invalidInput("Required release artifacts must be a nonempty unique list of known artifacts.");
+    }
     const summary = input.summary?.trim();
     if (summary && summary.length > 4_000) throw invalidInput("Summary must be 4,000 characters or fewer.");
     const idempotencyKey = this.validateIdempotencyKey(input.idempotencyKey);
-    const operation = `submit_for_verification:${input.itemKey.toUpperCase()}`;
+    const operation = `submit_development_complete:${input.itemKey.toUpperCase()}`;
 
     return this.database.transaction(() => {
       const repeated = this.getIdempotentResult<WorkItemSnapshot>(idempotencyKey, operation);
@@ -1357,19 +1356,58 @@ export class MissionGoStore {
       const item = this.getWorkItemRow(input.itemKey);
       if (!item) throw notFound("Work item");
       if (item.status !== "in_progress") {
-        throw conflict("item_not_ready_for_verification", "Only an in-progress work item can be handed over for verification.");
+        throw conflict("item_not_ready_for_development_complete", "Only an in-progress work item can be marked development complete.");
       }
       const now = new Date().toISOString();
       this.applyTransition(
         item,
-        "pending_verification",
+        "development_complete",
         "agent",
         "resolution_submitted",
         summary,
         now,
         input.attribution ?? {},
-        { pullRequestUrl },
+        { pullRequestUrl, requiredArtifacts: [...input.requiredArtifacts].sort() },
       );
+      const result = this.getWorkItem(item.item_key);
+      this.saveIdempotentResult(idempotencyKey, operation, result, now);
+      return result;
+    });
+  }
+
+  /** Accept a verified release only when every artifact recorded at merge is present. */
+  submitForVerification(input: SubmitForVerificationInput): WorkItemSnapshot {
+    const pullRequestUrl = requiredText(input.pullRequestUrl, "Pull request URL");
+    if (!pullRequestUrl.startsWith("https://") || pullRequestUrl.length > 500) throw invalidInput("Pull request URL must be an https:// address.");
+    if (!/^[0-9a-f]{40}$/.test(input.deployedCommit) || !/^[0-9a-f]{64}$/.test(input.receiptDigest)) {
+      throw invalidInput("A verified release needs a deployed commit and receipt digest.");
+    }
+    const idempotencyKey = this.validateIdempotencyKey(input.idempotencyKey);
+    const operation = `submit_for_verification:${input.itemKey.toUpperCase()}`;
+    return this.database.transaction(() => {
+      const repeated = this.getIdempotentResult<WorkItemSnapshot>(idempotencyKey, operation);
+      if (repeated) return repeated;
+      const item = this.getWorkItemRow(input.itemKey);
+      if (!item) throw notFound("Work item");
+      if (item.status !== "development_complete") {
+        throw conflict("item_not_ready_for_verification", "Only development-complete work can enter verification.");
+      }
+      const handover = [...this.getTimeline(item.item_key)].reverse()
+        .find((event) => event.eventType === "status_changed" && event.toStatus === "development_complete");
+      const required = handover?.payload.requiredArtifacts;
+      const releases = input.releases;
+      if (handover?.payload.pullRequestUrl !== pullRequestUrl || !Array.isArray(required)
+        || releases.length !== required.length
+        || new Set(releases.map((release) => release.artifact)).size !== releases.length
+        || releases.some((release) => !required.includes(release.artifact)
+          || !release.version.trim() || release.version.length > 100
+          || !/^[0-9a-f]{40}$/.test(release.sourceCommit))) {
+        throw invalidInput("Release evidence does not cover the recorded merged PR and every required artifact.");
+      }
+      const now = new Date().toISOString();
+      this.applyTransition(item, "pending_verification", "agent", "release_verified", undefined, now,
+        input.attribution ?? {}, { pullRequestUrl, releases, deployedCommit: input.deployedCommit,
+          receiptDigest: input.receiptDigest });
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
       return result;

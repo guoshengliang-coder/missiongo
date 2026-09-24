@@ -1,5 +1,7 @@
 # AI 写入规则
 
+> 历史决策记录（2026-09-06）。AND-175 后的现行状态流转以 [MCP 契约](mcp-contract.md) 和 [MissionGo Skill](../skills/missiongo/SKILL.md) 为准：PR 合并后进入“开发完成”，所有相关产物发布后才进入“待验证”。下文保留当时的设计背景，不再作为状态工具的操作说明。
+
 > 文档版本：v3.1
 > 状态：全部已实现并部署。写入档位 `MISSIONGO_WRITE_TOOLS=comments` 已开启
 > 日期：2026-09-06

@@ -177,6 +177,7 @@ const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
   inbox: Inbox,
   ready: CircleDot,
   in_progress: Rocket,
+  development_complete: CheckCircle2,
   on_hold: CirclePause,
   pending_verification: ClipboardCheck,
   done: CheckCircle2,
@@ -2510,7 +2511,8 @@ function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>[
   const keys = {
     inbox: "quickReady",
     ready: "quickStart",
-    in_progress: "quickVerify",
+    in_progress: "quickDevComplete",
+    development_complete: "quickVerify",
     on_hold: "quickResume",
     pending_verification: "quickComplete",
     done: "quickReopen",

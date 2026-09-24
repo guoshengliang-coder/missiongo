@@ -14,6 +14,50 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("adds development_complete to an existing work_items constraint without losing references", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-development-complete-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    seeded.connection.exec(`
+      INSERT INTO products (id, key_prefix, name, next_item_sequence, created_at, updated_at)
+      VALUES ('product-1', 'AND', 'Mission GO', 3, '2026-09-24T00:00:00Z', '2026-09-24T00:00:00Z');
+      INSERT INTO work_items (id, item_key, sequence, product_id, type, priority, status, title, description, created_at, updated_at)
+      VALUES ('item-1', 'AND-1', 1, 'product-1', 'task', 'normal', 'pending_verification', 'First', 'Before migration', '2026-09-24T00:00:00Z', '2026-09-24T00:00:00Z');
+      INSERT INTO work_items (id, item_key, sequence, product_id, type, priority, status, title, description, created_at, updated_at, derived_from_item_id)
+      VALUES ('item-2', 'AND-2', 2, 'product-1', 'task', 'normal', 'in_progress', 'Child', 'Linked', '2026-09-24T00:00:00Z', '2026-09-24T00:00:00Z', 'item-1');
+      INSERT INTO work_item_events (id, item_id, event_type, actor_kind, payload_json, created_at)
+      VALUES ('event-1', 'item-1', 'item_created', 'human', '{}', '2026-09-24T00:00:00Z');
+    `);
+    seeded.close();
+
+    const legacy = new DatabaseSync(path);
+    legacy.exec("PRAGMA foreign_keys = OFF;");
+    const row = legacy.prepare("SELECT sql FROM sqlite_master WHERE name = 'work_items'").get() as { sql: string };
+    const oldSchema = row.sql
+      .replace(/CREATE TABLE(?: IF NOT EXISTS)?\s+"?work_items"?/i, "CREATE TABLE work_items_legacy")
+      .replace("'in_progress', 'development_complete', 'on_hold'", "'in_progress', 'on_hold'");
+    const columns = (legacy.prepare("PRAGMA table_info(work_items)").all() as Array<{ name: string }>)
+      .map((column) => `"${column.name}"`).join(", ");
+    legacy.exec(oldSchema);
+    legacy.exec(`INSERT INTO work_items_legacy (${columns}) SELECT ${columns} FROM work_items;`);
+    legacy.exec("DROP TABLE work_items; ALTER TABLE work_items_legacy RENAME TO work_items;");
+    legacy.exec("DELETE FROM schema_migrations WHERE version = 202609241537; PRAGMA foreign_keys = ON;");
+    legacy.close();
+
+    const migrated = new MissionGoDatabase(path);
+    expect(migrated.connection.prepare("SELECT item_key, status, derived_from_item_id FROM work_items ORDER BY sequence").all())
+      .toEqual([
+        { item_key: "AND-1", status: "pending_verification", derived_from_item_id: null },
+        { item_key: "AND-2", status: "in_progress", derived_from_item_id: "item-1" },
+      ]);
+    expect(migrated.connection.prepare("SELECT item_id FROM work_item_events WHERE id = 'event-1'").get())
+      .toEqual({ item_id: "item-1" });
+    migrated.connection.exec("UPDATE work_items SET status = 'development_complete' WHERE id = 'item-2';");
+    expect(migrated.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    migrated.close();
+  });
+
   it("adds OpenCode sessions to an existing database without losing mirrored messages", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-opencode-migration-"));
     temporaryDirectories.push(directory);

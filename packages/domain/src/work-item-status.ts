@@ -9,6 +9,7 @@ export const TRANSITION_REASONS = [
   "request_human_input",
   "resume",
   "resolution_submitted",
+  "release_verified",
   "verification_passed",
   "verification_failed",
   "lease_expired",
@@ -65,11 +66,13 @@ const TRANSITIONS: Readonly<
   },
   in_progress: {
     on_hold: rule(["human"], ["request_human_input"]),
-    // The other agent edge: the change is merged, so the work is a person's to
-    // verify. An agent may say that much because a merged pull request is a fact
-    // it can check. What the change is worth, whether it shipped, and whether it
-    // should have been abandoned instead are judgements, and they stay below.
-    pending_verification: rule(["agent", "human"], ["resolution_submitted"]),
+    // A merged pull request proves integration, not publication.
+    development_complete: rule(["agent", "human"], ["resolution_submitted"]),
+    ready: rule(["human"], ["released"]),
+    cancelled: rule(["human"], ["cancelled"]),
+  },
+  development_complete: {
+    pending_verification: rule(["agent", "human"], ["release_verified"]),
     ready: rule(["human"], ["released"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
@@ -108,7 +111,7 @@ export const TRANSITION_NOTE_MAX_LENGTH = 2_000;
  * `inbox` is absent on purpose: triaging a draft into the queue is the first
  * pass, not a retreat from one.
  */
-const NOTE_REQUIRED_FROM = new Set<WorkItemStatus>(["in_progress", "pending_verification", "on_hold", "done"]);
+const NOTE_REQUIRED_FROM = new Set<WorkItemStatus>(["in_progress", "development_complete", "pending_verification", "on_hold", "done"]);
 
 /**
  * Whether this edge has to carry a note.

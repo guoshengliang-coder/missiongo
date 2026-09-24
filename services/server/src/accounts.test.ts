@@ -1766,7 +1766,7 @@ describe("Delegating product access to its creator (AND-58)", () => {
 
 describe("Closing verification in bulk (AND-66)", () => {
   async function toVerification(app: FastifyInstance, cookie: string, key: string) {
-    for (const [to, reason] of [["ready", "triaged"], ["in_progress", "claim"], ["pending_verification", "resolution_submitted"]]) {
+    for (const [to, reason] of [["ready", "triaged"], ["in_progress", "claim"], ["development_complete", "resolution_submitted"], ["pending_verification", "release_verified"]]) {
       const moved = await app.inject({ method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to, reason } });
       if (moved.statusCode !== 200) throw new Error(`move failed: ${moved.body}`);
     }

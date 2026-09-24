@@ -8,6 +8,7 @@ export const WORK_ITEM_STATUSES = [
   "inbox",
   "ready",
   "in_progress",
+  "development_complete",
   "on_hold",
   "pending_verification",
   "done",

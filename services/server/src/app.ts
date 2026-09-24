@@ -402,9 +402,9 @@ function oauthLoginPage(
   invalidCredentials = false,
 ): string {
   const writes = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools !== "none";
-  const writeGrant = "<strong>发表评论、把待处理的任务领为处理中、并在 PR 合并后推到待验证</strong>。"
-    + "只有这两个状态变更——验收、退回、搁置，以及做不了怎么办，都由你决定。"
-    + "<strong>在你于会话里确认内容后，从正在处理的条目拆出衍生条目</strong>。"
+  const writeGrant = "<strong>发表评论、领取待处理任务、在 PR 合并后标记开发完成，并在相关产物核实发布后推到待验证</strong>。"
+    + "只有这三种状态交接——验收、退回、搁置，以及做不了怎么办，都由你决定。"
+    + "<strong>在你于会话里确认完整内容后创建条目</strong>。"
     + "它不能修改你写的内容，不能删除条目，不能撤回评论。";
   const nodeGrant = "<strong>把这台 Mac 登记为你的设备</strong>：接收你在控制台派出的任务，并在本机启动 agent 会话处理。"
     + "随时可以在控制台「Agent 管理」里撤销。";
