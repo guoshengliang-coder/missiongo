@@ -5,6 +5,7 @@ import { isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeCon
 import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
 import { parseAgentModels, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
 import { autoArchiveFinishedDispatches } from "./auto-archive.js";
+import { deliveredDispatchTimedOut } from "./dispatch-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
@@ -568,7 +569,9 @@ export class AgentSessionStore {
         } | undefined
         : undefined;
       const command = row.session_id ? this.latestCommand(row.session_id) : undefined;
-      const inferredStatus: AgentSessionStatus = row.dispatch_status === "failed"
+      const deliveryTimedOut = !row.session_id && row.dispatch_status === "delivered"
+        && deliveredDispatchTimedOut(row.delivered_at);
+      const inferredStatus: AgentSessionStatus = row.dispatch_status === "failed" || deliveryTimedOut
         ? "failed"
         : row.dispatch_status === "cancelled"
           ? "unavailable"
@@ -583,7 +586,8 @@ export class AgentSessionStore {
         ?? row.completed_at ?? row.delivered_at ?? row.created_at;
       const archivedAt = row.session_archived_at ?? row.dispatch_archived_at;
       const archivedSource = row.session_archive_source ?? (row.dispatch_archived_at ? "missiongo" : null);
-      const lastError = row.session_last_error ?? row.dispatch_error;
+      const lastError = row.session_last_error ?? row.dispatch_error
+        ?? (deliveryTimedOut ? "Mac 领取派单后超过 10 分钟仍未报告启动结果。请确认来源会话不存在，再手动重新派单。" : null);
       const connectionState = row.node_revoked_at
         ? "offline"
         : nodeConnectionState(row.node_last_seen_at ?? undefined);
@@ -650,7 +654,7 @@ export class AgentSessionStore {
           ? JSON.parse(row.session_activities_json) as AgentSessionActivity[]
           : [],
         waitingForReply: needsAttention,
-        retryable: ["failed", "cancelled"].includes(row.dispatch_status)
+        retryable: (["failed", "cancelled"].includes(row.dispatch_status) || deliveryTimedOut)
           && itemRows.length > 0 && itemRows.every((item) => item.status === "ready"),
         stoppable: row.dispatch_status === "queued"
           || Boolean(row.session_id && (row.session_status === "active" || row.session_status === "stalled")),

@@ -39,6 +39,13 @@ export interface RepoCandidate {
 }
 
 export const MAX_REPO_CANDIDATES = 50;
+export const DISPATCH_START_TIMEOUT_MS = 10 * 60 * 1_000;
+
+export function deliveredDispatchTimedOut(deliveredAt: string | null | undefined, now = Date.now()): boolean {
+  if (!deliveredAt) return false;
+  const deliveredTime = Date.parse(deliveredAt);
+  return Number.isFinite(deliveredTime) && now - deliveredTime >= DISPATCH_START_TIMEOUT_MS;
+}
 
 export interface NodeRepoMapping {
   readonly productId: string;
@@ -598,7 +605,7 @@ export class DispatchStore {
     itemKeys: readonly string[];
     /** Dispatch again even though an earlier dispatch of these items was never claimed. */
     force?: boolean;
-  }): DispatchSnapshot {
+  }, alreadyInTransaction = false): DispatchSnapshot {
     if (!AGENT_KINDS.includes(input.agentKind)) throw invalidInput("Unsupported agent kind.");
     if (!isSupportedDispatchMode(input.agentKind, input.mode)) {
       throw invalidInput(`Unsupported mode for this agent: ${input.mode}.`);
@@ -606,7 +613,7 @@ export class DispatchStore {
     if (input.itemKeys.length === 0) throw invalidInput("Select at least one work item.");
     if (input.itemKeys.length > 20) throw invalidInput("A dispatch can carry at most 20 work items.");
 
-    return this.database.transaction(() => {
+    const create = () => {
       const node = this.getNode(input.accountId, input.nodeId);
       if (node.revokedAt) throw conflict("node_revoked", "This node was revoked.");
       if (!node.online) throw conflict("node_offline", "This node is not currently connected.");
@@ -700,7 +707,8 @@ export class DispatchStore {
       // well under a second rather than on its next scheduled ask.
       this.wake(node.id);
       return created;
-    });
+    };
+    return alreadyInTransaction ? create() : this.database.transaction(create);
   }
 
   /**
@@ -922,6 +930,9 @@ export class DispatchStore {
     if (input.failureStage && !DISPATCH_FAILURE_STAGES.includes(input.failureStage)) {
       throw invalidInput("Unsupported dispatch failure stage.");
     }
+    if (row.status !== "delivered" && !(row.status === "launched" && input.status === "launched")) {
+      throw conflict("dispatch_result_not_expected", "This dispatch no longer accepts a launch result.");
+    }
     const now = new Date().toISOString();
     const existingDiagnostic = row.diagnostic_snapshot_json
       ? JSON.parse(row.diagnostic_snapshot_json) as DispatchDiagnosticSnapshot
@@ -993,6 +1004,38 @@ export class DispatchStore {
       .get(dispatchId, accountId) as unknown as DispatchRow | undefined;
     if (!row) throw notFound("Dispatch");
     return this.mapDispatch(row);
+  }
+
+  /** A Mac claimed this dispatch but never reported whether a session started. */
+  retryDispatch(accountId: string, dispatchId: string): DispatchSnapshot {
+    return this.database.transaction(() => {
+      const original = this.getDispatch(accountId, dispatchId);
+      if (original.status === "delivered") {
+        if (original.agentSessionId || !deliveredDispatchTimedOut(original.deliveredAt)) {
+          throw conflict("dispatch_not_retryable", "This dispatch is still starting or already has a session.");
+        }
+        const now = new Date().toISOString();
+        const changed = this.database.connection.prepare(
+          `UPDATE dispatches SET status = 'failed', completed_at = ?, error = ?, failure_code = 'unknown',
+             failure_stage = 'thread_start', unread_at = ?
+           WHERE id = ? AND account_id = ? AND status = 'delivered'
+             AND NOT EXISTS (SELECT 1 FROM agent_sessions WHERE dispatch_id = ?)`,
+        ).run(now, "Mac 领取派单后未报告启动结果；已手动请求重新派单。", now,
+          dispatchId, accountId, dispatchId);
+        if (changed.changes !== 1) throw conflict("dispatch_changed", "The dispatch changed before it could be retried.");
+      } else if (original.status !== "failed" && original.status !== "cancelled") {
+        throw conflict("dispatch_not_retryable", "Only failed, cancelled, or timed-out deliveries can be sent again.");
+      }
+      return this.createDispatch({
+        accountId,
+        nodeId: original.nodeId,
+        agentKind: original.agentKind,
+        mode: original.mode,
+        ...(original.model ? { model: original.model } : {}),
+        ...(original.effort ? { effort: original.effort } : {}),
+        itemKeys: original.itemKeys,
+      }, true);
+    });
   }
 
   /**

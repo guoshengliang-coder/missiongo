@@ -13,6 +13,7 @@ import {
   DEFAULT_AGENT_SESSION_FILTER,
   formatAgentMessageTime,
   isNearMessageBottom,
+  isAbnormalAgentSession,
   messageLabelKey,
   outgoingReply,
   questionAnswerText,
@@ -92,6 +93,27 @@ describe("agent session message view", () => {
     expect(agentSessionMatches(session, "attention", "all", "")).toBe(true);
     expect(agentSessionMatches(session, "attention", "codex", "first")).toBe(true);
     expect(agentSessionMatches(session, "attention", "claude_code", "")).toBe(false);
+  });
+
+  it("keeps abnormal conversations out of all while retaining them in failed", () => {
+    const base = {
+      id: "session-1", agentKind: "codex", needsAttention: false,
+      nodeName: "Mac mini", items: [{ key: "AND-1", title: "First item", productId: "product-1" }],
+    } as unknown as AgentSessionSummary;
+    for (const abnormal of [
+      { ...base, status: "failed" as const },
+      { ...base, status: "idle" as const, command: {
+        id: "command-1", kind: "message" as const, text: "reply", status: "failed" as const,
+        createdAt: "2026-09-24T00:00:00Z",
+      } },
+    ]) {
+      expect(isAbnormalAgentSession(abnormal)).toBe(true);
+      expect(agentSessionMatches(abnormal, "all", "all", "")).toBe(false);
+      expect(agentSessionMatches(abnormal, "failed", "all", "")).toBe(true);
+    }
+    const healthy = { ...base, status: "idle" as const };
+    expect(agentSessionMatches(healthy, "all", "all", "")).toBe(true);
+    expect(agentSessionMatches(healthy, "failed", "all", "")).toBe(false);
   });
 
   it("sorts only by activity and ignores unread state", () => {
