@@ -69,9 +69,10 @@ describe("picking items to dispatch", () => {
     expect([...selected]).toEqual(["AND-37"]);
   });
 
-  it("also takes items waiting for verification, for closing them in bulk (AND-66)", () => {
+  it("also takes items waiting for verification and items in progress, for their bulk actions (AND-66, AND-160)", () => {
     expect(isSelectable("pending_verification")).toBe(true);
-    for (const status of ["inbox", "in_progress", "on_hold", "done", "cancelled"] as const) {
+    expect(isSelectable("in_progress")).toBe(true);
+    for (const status of ["inbox", "on_hold", "done", "cancelled"] as const) {
       expect(isSelectable(status)).toBe(false);
     }
     const picked = toggleItemSelection(new Set(), item("AND-50", "pending_verification"));

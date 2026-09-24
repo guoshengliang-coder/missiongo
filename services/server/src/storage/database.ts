@@ -1236,6 +1236,24 @@ export class MissionGoDatabase {
       this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
         .run(202609230957, new Date().toISOString());
     }
+    // AND-161: a session's model name is what the CLI reports, which for an
+    // Anthropic-compatible proxy is still the official id. The endpoint host is
+    // what separates "the official API" from "a proxy answering as that model".
+    const modelEndpointMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609240534")
+      .get() as unknown as { version: number } | undefined;
+    const hasModelEndpoint = (this.connection.prepare("PRAGMA table_info(agent_sessions)").all() as unknown as Array<{ name: string }>)
+      .some((column) => column.name === "model_endpoint");
+    if (!modelEndpointMigration || !hasModelEndpoint) {
+      this.transaction(() => {
+        if (!hasModelEndpoint) {
+          this.connection.exec("ALTER TABLE agent_sessions ADD COLUMN model_endpoint TEXT;");
+        }
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609240534, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

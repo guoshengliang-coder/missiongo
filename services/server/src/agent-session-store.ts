@@ -122,6 +122,13 @@ export interface AgentSessionSettings {
   /** What the agent reported using; absent until it says. */
   readonly model?: string;
   readonly effort?: string;
+  /**
+   * Host of the custom endpoint the agent's requests actually go to (AND-161).
+   * A third-party Anthropic-compatible proxy serves the official model ids, so
+   * `model` alone cannot say where the answers come from; absent means the
+   * machine reported no custom endpoint configured.
+   */
+  readonly modelEndpoint?: string;
   /** What the dispatch asked for; absent means the Mac's own configuration. */
   readonly requestedModel?: string;
   readonly requestedEffort?: string;
@@ -185,6 +192,7 @@ interface SessionSettingsColumns {
   dispatch_effort: string | null;
   session_mode: string | null;
   session_model: string | null;
+  session_model_endpoint: string | null;
   session_effort: string | null;
   desired_settings_json: string | null;
   settings_revision: number | null;
@@ -207,6 +215,7 @@ function sessionSettings(row: SessionSettingsColumns, open: boolean): AgentSessi
   return {
     mode: row.session_mode ?? row.dispatch_mode,
     ...(row.session_model ? { model: row.session_model } : {}),
+    ...(row.session_model_endpoint ? { modelEndpoint: row.session_model_endpoint } : {}),
     ...(row.session_effort ? { effort: row.session_effort } : {}),
     ...(row.dispatch_model ? { requestedModel: row.dispatch_model } : {}),
     ...(row.dispatch_effort ? { requestedEffort: row.dispatch_effort } : {}),
@@ -519,7 +528,8 @@ export class AgentSessionStore {
                 d.created_at, d.delivered_at, d.completed_at, d.archived_at AS dispatch_archived_at,
                 d.unread_at, d.read_at,
                 d.mode AS dispatch_mode, d.model AS dispatch_model, d.effort AS dispatch_effort,
-                s.mode AS session_mode, s.model AS session_model, s.effort AS session_effort,
+                s.mode AS session_mode, s.model AS session_model,
+                s.model_endpoint AS session_model_endpoint, s.effort AS session_effort,
                 s.desired_settings_json, s.settings_revision, s.applied_settings_revision,
                 s.settings_error, s.settings_error_revision, n.agents_json AS node_agents_json
          FROM dispatches d
@@ -727,7 +737,8 @@ export class AgentSessionStore {
     const row = this.database.connection
       .prepare(
         `SELECT s.agent_kind, d.mode AS dispatch_mode, d.model AS dispatch_model, d.effort AS dispatch_effort,
-                s.mode AS session_mode, s.model AS session_model, s.effort AS session_effort,
+                s.mode AS session_mode, s.model AS session_model,
+                s.model_endpoint AS session_model_endpoint, s.effort AS session_effort,
                 s.desired_settings_json, s.settings_revision, s.applied_settings_revision,
                 s.settings_error, s.settings_error_revision, n.agents_json AS node_agents_json,
                 s.archived_at
@@ -1027,6 +1038,8 @@ export class AgentSessionStore {
     /** Model and effort the agent reports using (AND-130). */
     model?: string;
     effort?: string;
+    /** Host of the custom endpoint the agent's requests go to (AND-161). */
+    modelEndpoint?: string;
     /** The settings revision now applied -- or, with settingsError, the one that failed. */
     settingsRevision?: number;
     settingsError?: string;
@@ -1176,10 +1189,17 @@ export class AgentSessionStore {
           )
           .run(input.sessionId);
       }
-      if (input.model || input.effort) {
+      if (input.model || input.effort || input.modelEndpoint) {
         this.database.connection
-          .prepare("UPDATE agent_sessions SET model = COALESCE(?, model), effort = COALESCE(?, effort) WHERE id = ?")
-          .run(input.model?.slice(0, 200) || null, input.effort?.slice(0, 200) || null, input.sessionId);
+          .prepare(
+            "UPDATE agent_sessions SET model = COALESCE(?, model), effort = COALESCE(?, effort), model_endpoint = COALESCE(?, model_endpoint) WHERE id = ?",
+          )
+          .run(
+            input.model?.slice(0, 200) || null,
+            input.effort?.slice(0, 200) || null,
+            input.modelEndpoint?.slice(0, 200) || null,
+            input.sessionId,
+          );
       }
       if (input.settingsRevision !== undefined) {
         if (input.settingsError) {

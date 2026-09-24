@@ -38,6 +38,7 @@ import {
   Settings2,
   Sparkles,
   Trash2,
+  Undo2,
   Video,
   WifiOff,
   X,
@@ -114,7 +115,7 @@ import { AccountSettings, ProductAccessSettings } from "./account-settings";
 import { mayAdministerProduct } from "./product-permissions";
 import { DispatchDefaultsSettings } from "./dispatch-defaults-settings";
 import { NodeSettings } from "./node-settings";
-import { parseFeedbackLog, transitionRequiresNote } from "@missiongo/domain";
+import { parseFeedbackLog, transitionRequiresNote, TRANSITION_NOTE_MAX_LENGTH } from "@missiongo/domain";
 import { statusChangeNote, dispatchedEvent, groupTimeline } from "./timeline";
 import { TransitionNoteDialog, transitionNoteCopy } from "./transition-note-dialog";
 import { VerificationReturnBadge, VerificationReturnCallout, VerificationReturnSummary } from "./verification-return";
@@ -458,6 +459,7 @@ export function App() {
    */
   const [dispatchBatch, setDispatchBatch] = useState<readonly WorkItem[] | null>(null);
   const [verifyBatch, setVerifyBatch] = useState<readonly WorkItem[] | null>(null);
+  const [releaseBatch, setReleaseBatch] = useState<readonly WorkItem[] | null>(null);
   const [startWorkItem, setStartWorkItem] = useState<WorkItem | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
@@ -606,23 +608,6 @@ export function App() {
       window.scrollTo({ top: 0 });
     });
   }, [selectedItemKey]);
-
-  const openItemFromAgentConsole = (itemKey: string) => {
-    const current = typeof history.state === "object" && history.state
-      ? history.state as Record<string, unknown>
-      : {};
-    const {
-      [AGENT_CONSOLE_HISTORY_MARKER]: _console,
-      [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
-      [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
-      ...state
-    } = current;
-    history.replaceState(state, "", agentConsoleExitUrl());
-    setAgentConsoleOpen(false);
-    setAgentSessionId(null);
-    setAgentConversationOpen(false);
-    openItemPage(itemKey);
-  };
 
   const closeItemPage = () => {
     setDetailOpenInEdit(false);
@@ -1459,11 +1444,14 @@ export function App() {
             </div>
           )}
 
-          {selectedItemKeys.size > 0 && (selectionStatus === "pending_verification" || selectedProductCanUseAi) && (
+          {selectedItemKeys.size > 0
+            && (selectionStatus === "pending_verification" || selectionStatus === "in_progress" || selectedProductCanUseAi) && (
             <div className="bulk-bar" role="status">
               {selectionStatus === "pending_verification"
                 ? <ClipboardCheck size={15} aria-hidden="true" />
-                : <Rocket size={15} aria-hidden="true" />}
+                : selectionStatus === "in_progress"
+                  ? <Undo2 size={15} aria-hidden="true" />
+                  : <Rocket size={15} aria-hidden="true" />}
               <span className="bulk-bar-count">{t("selectedForDispatch", { count: selectedItemKeys.size })}</span>
               <button type="button" className="text-button bulk-bar-clear" onClick={() => setSelectedItemKeys(new Set())}>
                 {t("clearSelection")}
@@ -1475,6 +1463,17 @@ export function App() {
                   onClick={() => setVerifyBatch(selectedItems.filter((item) => item.status === "pending_verification"))}
                 >
                   <CheckCircle2 size={16} /> {t("verifySelected", { count: selectedItems.length })}
+                </button>
+              ) : selectionStatus === "in_progress" ? (
+                // A wrong or stale dispatch is undone on many items at once
+                // (AND-160); the domain's note travels with the whole batch.
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={selectedItems.length === 0}
+                  onClick={() => setReleaseBatch(selectedItems.filter((item) => item.status === "in_progress"))}
+                >
+                  <Undo2 size={16} /> {t("releaseSelected", { count: selectedItems.length })}
                 </button>
               ) : (
                 <button
@@ -1515,7 +1514,9 @@ export function App() {
                   item={item}
                   selected={item.key === selectedItemKey}
                   checked={selectedItemKeys.has(item.key)}
-                  selectionVisible={item.status === "pending_verification" || (selectedProductCanUseAi && isDispatchable(item.status))}
+                  selectionVisible={item.status === "pending_verification"
+                    || item.status === "in_progress"
+                    || (selectedProductCanUseAi && isDispatchable(item.status))}
                   selectable={selectedItemKeys.has(item.key) || canJoinSelection(item.status, selectionStatus)}
                   dispatchSummary={latestDispatches.get(item.key)}
                   onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item, selectionStatus))}
@@ -1567,7 +1568,6 @@ export function App() {
           onBulkAvailabilityChange={setAgentConsoleBulkAvailable}
           onSelectSession={selectAgentSession}
           onBackToSessions={closeAgentConversation}
-          onOpenItem={openItemFromAgentConsole}
         />
       )}
 
@@ -1615,6 +1615,35 @@ export function App() {
             onOpenAgents={() => {
               setStartWorkItem(null);
               setAgentsOpen(true);
+            }}
+          />
+        </Modal>
+      )}
+      {releaseBatch && (
+        <Modal
+          title={t("releaseSelectedTitle")}
+          subtitle={t("releaseSelectedSubtitle", { count: releaseBatch.length })}
+          onClose={() => setReleaseBatch(null)}
+        >
+          <BulkReleaseDialog
+            items={releaseBatch}
+            onClose={() => setReleaseBatch(null)}
+            onDone={(results) => {
+              setReleaseBatch(null);
+              const failed = results.filter((result) => !result.ok);
+              setSelectedItemKeys(new Set(failed.map((result) => result.itemKey)));
+              setNotice(failed.length === 0
+                ? t("releasedAll", { count: results.length })
+                : t("releasedSome", {
+                  ok: results.length - failed.length,
+                  failed: failed.length,
+                  keys: failed.map((result) => result.itemKey).join("、"),
+                }));
+              void queryClient.invalidateQueries({ queryKey: ["items"] });
+              for (const result of results) {
+                void queryClient.invalidateQueries({ queryKey: ["item", result.itemKey] });
+                void queryClient.invalidateQueries({ queryKey: ["timeline", result.itemKey] });
+              }
             }}
           />
         </Modal>
@@ -1828,8 +1857,8 @@ function ItemRow({
               className="item-select"
               checked={checked}
               disabled={!selectable}
-              aria-label={t("selectForDispatch", { key: item.key })}
-              title={selectable ? undefined : t("onlyReadyDispatchable")}
+              aria-label={t("selectForBatch", { key: item.key })}
+              title={selectable ? undefined : t("onlySameStatusSelectable")}
               onChange={onToggleChecked}
             />
           </label>
@@ -4727,6 +4756,64 @@ function BulkVerifyDialog({ items, onClose, onDone }: {
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Returning a batch of in-progress work to ready (AND-160). The domain demands
+ * a note on that edge; one note explains the undo, so it is asked once and
+ * stamped on every item in the batch.
+ */
+function BulkReleaseDialog({ items, onClose, onDone }: {
+  readonly items: readonly WorkItem[];
+  readonly onClose: () => void;
+  readonly onDone: (results: readonly BulkTransitionResult[]) => void;
+}) {
+  const { t } = useI18n();
+  const [note, setNote] = useState("");
+  const mutation = useMutation({
+    mutationFn: () => api.releaseItems(items.map((item) => item.key), note.trim()),
+    onSuccess: (response) => onDone(response.results),
+  });
+  return (
+    <form
+      className="bulk-verify"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (note.trim()) mutation.mutate();
+      }}
+    >
+      <p className="dispatch-note">{t("releaseSelectedHelp")}</p>
+      <ul className="bulk-verify-list">
+        {items.map((item) => <li key={item.key}><code>{item.key}</code> {item.title}</li>)}
+      </ul>
+      <label>
+        {t("releaseNoteLabel")}
+        <textarea
+          data-initial-focus
+          rows={3}
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          placeholder={t("releaseNotePlaceholder")}
+          maxLength={TRANSITION_NOTE_MAX_LENGTH}
+          required
+        />
+      </label>
+      {mutation.isError && (
+        <div className="inline-error"><CirclePause size={16} /><span>{errorMessage(mutation.error, t("somethingWentWrong"))}</span></div>
+      )}
+      <div className="form-footer">
+        <button type="button" className="secondary-button" onClick={onClose}>{t("cancel")}</button>
+        <button
+          type="submit"
+          className="primary-button"
+          disabled={!note.trim() || mutation.isPending || items.length === 0}
+        >
+          {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Undo2 size={16} />}
+          {t("releaseSelected", { count: items.length })}
+        </button>
+      </div>
+    </form>
   );
 }
 
