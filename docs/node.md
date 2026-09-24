@@ -36,7 +36,7 @@
 用 OpenCode 派单时：
 
 - **在运行 MissionGo macOS 客户端的 Mac 上启动 OpenCode 2 共享服务**。客户端读取 OpenCode 自己登记的服务信息，连接已有服务，不另起进程。当前接入使用 OpenCode 2 的 HTTP API；服务关闭、登记文件无效或版本太旧都会使该集成暂停。
-- **在同一个 OpenCode 服务里配置并授权 `missiongo` MCP**。建议按 [AI 客户端接入说明](ai-client-setup.md) 设置 `codemode: false`，让 Skill 直接调用 MissionGo 工具。客户端按派单仓库查询 MCP 状态，只有 `connected` 才发送提示词；显示 `needs_auth` 时，在 OpenCode 的 `/mcps` 中完成登录，再在 MissionGo 菜单点击 OpenCode「重新检查」。MissionGo 节点的登录不等于 OpenCode 的 MCP 授权。
+- **在同一个 OpenCode 服务里配置并授权 `missiongo` MCP**。建议按 [AI 客户端接入说明](ai-client-setup.md) 设置 `codemode: false`，让 Skill 直接调用 MissionGo 工具。客户端按派单仓库查询 MCP 状态，只有 `connected` 才发送提示词；显示 `needs_auth` 时，在 OpenCode 的 `/mcps` 中完成登录，再在 MissionGo 菜单点击 OpenCode「重新检查」。暂时的 `failed`、`pending` 或空状态会短暂重查；仍无法确认时，派单自动延后重试，不会误报为需要登录。MissionGo 节点的登录不等于 OpenCode 的 MCP 授权。
 - **把 MissionGo Skill 同步到 OpenCode 的原生 Skill 目录**。启用 OpenCode 集成时客户端会下载到 `~/.config/opencode/skills/missiongo/SKILL.md`，不会覆盖更新的本地副本或符号链接。已有 `~/.claude/skills/missiongo/` 的机器仍按 OpenCode 自身的兼容读取方式处理，但不作为 MissionGo 的同步目标。
 - 对于 Mac mini 运行共享服务、MacBook 和手机连接它的部署，只在 **Mac mini** 的 MissionGo 节点启用 OpenCode 并把产品仓库映射到 Mac mini 上的真实路径。手机和 MacBook 作为 OpenCode 远程界面使用，不需要承担这次派单的仓库执行。
 
@@ -175,6 +175,7 @@ Claude Code 的 `bypassPermissions` 仅按账户所有者明确配置后由 Miss
 | Codex 派单失败，提示 missiongo MCP 未配置或未登录 | Codex 连不上 MissionGo | 运行菜单里复制出的命令 |
 | OpenCode 显示共享服务不可用 | OpenCode 2 服务未运行或登记文件无效 | 在这台 Mac 上启动 OpenCode 共享服务，然后点击「重新检查」 |
 | OpenCode 显示 missiongo MCP `needs_auth` | OpenCode 尚未完成 MissionGo 授权 | 在 OpenCode `/mcps` 中登录，再点击「重新检查」 |
+| OpenCode 派单提示暂时无法确认 missiongo MCP 连接 | OpenCode 的 MCP 查询超时或状态尚未就绪 | 派单会自动重试；若持续出现，在 OpenCode `/mcps` 查看该连接状态 |
 | 菜单里 missiongo Skill 一行显示失败 | 下载不到，或写不进 skills 目录 | 修复提示中的问题，再点击对应客户端「重新检查」；不会后台反复重试 |
 | 菜单显示集成未启用或已暂停 | 未授权本机集成、检查未完成或启动失败 | 在本机确认用途后启用/重新检查；不会自动替用户批准 macOS 权限 |
 | 启动时提示未自动读取登录凭据 | 钥匙串要求用户交互 | 点击登录，在前台处理系统授权；后台启动不弹钥匙串确认框 |

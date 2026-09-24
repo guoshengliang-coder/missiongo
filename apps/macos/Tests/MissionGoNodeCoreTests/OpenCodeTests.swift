@@ -71,6 +71,22 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertEqual(messages.map(\.text), ["请处理", "方案"])
     }
 
+    func testRetriesTransientFailedMcpStatusBeforeDispatch() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let registration = home.appendingPathComponent(".local/state/opencode/service.json")
+        try FileManager.default.createDirectory(at: registration.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"url":"http://127.0.0.1:9999","password":"test","version":"2.0.15"}"#.utf8).write(to: registration)
+        StubURLProtocol.install { _, _ in
+            let status = StubURLProtocol.recorded.count == 1 ? "failed" : "connected"
+            return .response(status: 200, body: #"{"data":[{"name":"missiongo","status":{"status":"\#(status)"}}]}"#)
+        }
+        let control = OpenCodeHTTPControl(home: home.path, session: StubURLProtocol.session())
+        let status = try await control.missionGoMcpStatus(directory: "/repo")
+        XCTAssertEqual(status, "connected")
+        XCTAssertEqual(StubURLProtocol.recorded.count, 2)
+    }
+
     func testNeedsMissionGoMcpBeforeCreatingSession() async throws {
         let repo = try temporaryRepo()
         defer { try? FileManager.default.removeItem(at: repo) }
@@ -83,6 +99,25 @@ final class OpenCodeTests: XCTestCase {
             XCTFail("Launch should wait for MCP authorization")
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("MCP"))
+        }
+        let created = await control.createdAgent
+        XCTAssertNil(created)
+    }
+
+    func testTransientMcpFailureIsRetryableAndDoesNotAskForLogin() async throws {
+        let repo = try temporaryRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let control = StubOpenCodeControl(mcpStatus: "failed")
+        let launcher = OpenCodeLauncher(control: control)
+        let job = DispatchJob(dispatchId: "dispatch-1", itemKeys: ["AND-1"], repoPath: repo.path,
+                              mode: "default", nodeName: "Mac mini")
+        do {
+            _ = try await launcher.launch(job)
+            XCTFail("Launch should wait for MCP recovery")
+        } catch let error as LaunchError {
+            XCTAssertEqual(error.failureCode, "mcp_timeout")
+            XCTAssertEqual(error.retryAfterSeconds, 30)
+            XCTAssertFalse(error.message.contains("登录"))
         }
         let created = await control.createdAgent
         XCTAssertNil(created)
