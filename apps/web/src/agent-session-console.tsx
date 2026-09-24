@@ -32,6 +32,7 @@ import {
   DEFAULT_AGENT_SESSION_FILTER,
   formatAgentMessageTime,
   isNearMessageBottom,
+  isAbnormalAgentSession,
   messageLabelKey,
   outgoingReply,
   questionAnswerText,
@@ -108,6 +109,7 @@ function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI1
 
 function dispatchActivityLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>["t"]): string {
   if (session.dispatchStatus === "queued") return t("agentConsoleDispatchQueued");
+  if (session.dispatchStatus === "delivered" && session.status === "failed") return t("agentConsoleDispatchTimedOut");
   if (session.dispatchStatus === "delivered") return t("agentConsoleDispatchLaunching");
   if (session.dispatchStatus === "cancelled") return t("agentConsoleDispatchCancelled");
   if (session.dispatchStatus === "failed") return t("agentConsoleDispatchFailed");
@@ -222,12 +224,11 @@ export function AgentSessionConsole({
     [agentFilter, sessions],
   );
   const counts = useMemo(() => ({
-    unread: agentSessions.filter((session) => !session.archivedAt && session.unread).length,
+    unread: agentSessions.filter((session) => !session.archivedAt && !isAbnormalAgentSession(session) && session.unread).length,
     attention: agentSessions.filter((session) => !session.archivedAt && session.needsAttention).length,
     active: agentSessions.filter((session) => !session.archivedAt && session.status === "active").length,
-    all: agentSessions.filter((session) => !session.archivedAt).length,
-    failed: agentSessions.filter((session) => !session.archivedAt
-      && (session.status === "failed" || session.command?.status === "failed")).length,
+    all: agentSessions.filter((session) => !session.archivedAt && !isAbnormalAgentSession(session)).length,
+    failed: agentSessions.filter((session) => !session.archivedAt && isAbnormalAgentSession(session)).length,
     archived: agentSessions.filter((session) => session.archivedAt).length,
   }), [agentSessions]);
   const visibleSessions = useMemo(
@@ -731,7 +732,9 @@ export function AgentSessionConsole({
                     className="secondary-button"
                     disabled={retryDispatch.isPending || stopDispatch.isPending}
                     onClick={() => {
-                      if (window.confirm(t("agentConsoleRetryConfirm"))) retryDispatch.mutate();
+                      const confirmation = selected.dispatchStatus === "delivered"
+                        ? t("agentConsoleRetryTimedOutConfirm") : t("agentConsoleRetryConfirm");
+                      if (window.confirm(confirmation)) retryDispatch.mutate();
                     }}
                   ><RotateCcw size={15} />{t("agentConsoleRetry")}</button>
                 )}
@@ -780,35 +783,6 @@ export function AgentSessionConsole({
                   }
                 }}
               >
-                {(selected.needsAttention || selected.attention.dismissed) && selected.attention.reason && (
-                  <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}`} role="status">
-                    <BellRing size={17} />
-                    <div>
-                      <strong>{selected.attention.dismissed
-                        ? t("agentAttentionDismissedTitle")
-                        : attentionLabel(selected, t)}</strong>
-                      <span>{selected.attention.reason}</span>
-                    </div>
-                    {selected.needsAttention
-                      && selected.status !== "stalled"
-                      && selected.agentSessionId
-                      && selected.attention.revision && (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={dismissAttention.isPending}
-                        onClick={() => dismissAttention.mutate({
-                          sessionId: selected.agentSessionId!,
-                          revision: selected.attention.revision!,
-                        })}
-                      >
-                        {dismissAttention.isPending && <LoaderCircle className="spin" size={14} />}
-                        {t("agentAttentionDismiss")}
-                      </button>
-                    )}
-                  </div>
-                )}
-                {dismissAttention.isError && <p className="inline-error">{localizedErrorText(dismissAttention.error, t)}</p>}
                 {selected.archivedAt && (
                   <div className="agent-console-connection-banner archived" role="status">
                     <Archive size={17} />
@@ -880,6 +854,35 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
+                {(selected.needsAttention || selected.attention.dismissed) && selected.attention.reason && (
+                  <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}`} role="status">
+                    <BellRing size={16} />
+                    <details>
+                      <summary>{selected.attention.dismissed
+                        ? t("agentAttentionDismissedTitle")
+                        : attentionLabel(selected, t)}</summary>
+                      <p>{selected.attention.reason}</p>
+                    </details>
+                    {selected.needsAttention
+                      && selected.status !== "stalled"
+                      && selected.agentSessionId
+                      && selected.attention.revision && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={dismissAttention.isPending}
+                        onClick={() => dismissAttention.mutate({
+                          sessionId: selected.agentSessionId!,
+                          revision: selected.attention.revision!,
+                        })}
+                      >
+                        {dismissAttention.isPending && <LoaderCircle className="spin" size={14} />}
+                        {t("agentAttentionDismiss")}
+                      </button>
+                    )}
+                  </div>
+                )}
+                {dismissAttention.isError && <p className="inline-error">{localizedErrorText(dismissAttention.error, t)}</p>}
                 {outgoing && (
                   <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
                     <header className="agent-console-message-meta">

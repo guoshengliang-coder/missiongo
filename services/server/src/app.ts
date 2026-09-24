@@ -1600,10 +1600,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   // `active` keeps its conflict-checking contract. `latest` is presentation:
   // it also includes a failed attempt, so a ready row can say that it failed
-  // without making that failure block a retry.
+  // without making that failure block a retry. `handlers` names the agent
+  // behind each in-progress item (AND-163).
   app.get("/api/v1/dispatches/active", async (request) => ({
     active: dispatchStore.listActiveDispatches(requireAccountId(request)),
     latest: dispatchStore.listLatestDispatches(requireAccountId(request)),
+    handlers: dispatchStore.listInProgressHandlers(requireAccountId(request)),
   }));
 
   app.get("/api/v1/dispatches/health", async (request) => {
@@ -1864,19 +1866,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.post("/api/v1/dispatches/:dispatchId/retry", async (request, reply) => {
     const { dispatchId } = request.params as { dispatchId: string };
-    const original = authorizedDispatch(request, dispatchId, true);
-    if (original.status !== "failed" && original.status !== "cancelled") {
-      throw conflict("dispatch_not_retryable", "Only failed or cancelled dispatches can be sent again.");
-    }
-    const dispatch = dispatchStore.createDispatch({
-      accountId: requireAccountId(request),
-      nodeId: original.nodeId,
-      agentKind: original.agentKind,
-      mode: original.mode,
-      ...(original.model ? { model: original.model } : {}),
-      ...(original.effort ? { effort: original.effort } : {}),
-      itemKeys: original.itemKeys,
-    });
+    authorizedDispatch(request, dispatchId, true);
+    const dispatch = dispatchStore.retryDispatch(requireAccountId(request), dispatchId);
     for (const itemId of dispatchStore.listDispatchItemIds(dispatch.id)) {
       store.appendSystemEvent(itemId, "dispatched", {
         dispatchId: dispatch.id,

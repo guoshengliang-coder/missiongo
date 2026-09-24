@@ -433,7 +433,7 @@ describe("Dispatching the same item twice", () => {
   }
 
   async function setup() {
-    const { app, cookie } = await signedInApp();
+    const { app, cookie, databasePath } = await signedInApp();
     const mission = await readyItem(app, cookie, "Mission GO", "AND");
     const mini = await mappedNode(app, cookie, "Mac mini");
     const laptop = await mappedNode(app, cookie, "MacBook");
@@ -445,7 +445,7 @@ describe("Dispatching the same item twice", () => {
         payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
       });
     }
-    return { app, cookie, mission, mini, laptop };
+    return { app, cookie, databasePath, mission, mini, laptop };
   }
 
   it("refuses an item already dispatched and not yet claimed, to any machine", async () => {
@@ -489,6 +489,43 @@ describe("Dispatching the same item twice", () => {
     const history = await app.inject({ method: "GET", url: `/api/v1/items/${mission.itemKey}/dispatches`, headers: { cookie } });
     const earlier = history.json<{ dispatches: Array<{ id: string; status: string }> }>().dispatches.find((d) => d.id === first.id);
     expect(earlier?.status).toBe("delivered");
+  });
+
+  it("shows a delivery without a launch result as abnormal and retries only after confirmation", async () => {
+    const { app, cookie, databasePath, mission, mini } = await setup();
+    const first = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${mini.token}` } });
+
+    const earlyRetry = await app.inject({ method: "POST", url: `/api/v1/dispatches/${first.id}/retry`, headers: { cookie } });
+    expect(earlyRetry.statusCode).toBe(409);
+    const database = new DatabaseSync(databasePath);
+    database.prepare("UPDATE dispatches SET delivered_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 11 * 60_000).toISOString(), first.id);
+    database.close();
+
+    const listed = await app.inject({ method: "GET", url: `/api/v1/agent-sessions?productId=${mission.productId}`, headers: { cookie } });
+    expect(listed.json()).toMatchObject({ sessions: [{ dispatchId: first.id, status: "failed", canRetry: true }] });
+    const retried = await app.inject({ method: "POST", url: `/api/v1/dispatches/${first.id}/retry`, headers: { cookie } });
+    expect(retried.statusCode).toBe(201);
+    expect(retried.json()).toMatchObject({ status: "queued", itemKeys: [mission.itemKey] });
+    const lateReport = await app.inject({
+      method: "POST", url: `/api/v1/node/dispatches/${first.id}/result`,
+      headers: { authorization: `Bearer ${mini.token}` },
+      payload: { status: "launched", sessionName: "late Codex session" },
+    });
+    expect(lateReport.statusCode).toBe(409);
+    const retryId = retried.json<{ id: string }>().id;
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${mini.token}` } });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const reported = await app.inject({
+        method: "POST", url: `/api/v1/node/dispatches/${retryId}/result`,
+        headers: { authorization: `Bearer ${mini.token}` },
+        payload: { status: "launched", sessionName: "new Codex session", sessionRef: "new-thread" },
+      });
+      expect(reported.statusCode).toBe(204);
+    }
+    const afterLaunch = await app.inject({ method: "GET", url: `/api/v1/agent-sessions?productId=${mission.productId}`, headers: { cookie } });
+    expect(afterLaunch.json<{ sessions: Array<{ agentSessionId?: string }> }>().sessions.filter((session) => session.agentSessionId)).toHaveLength(1);
   });
 
   it("does not block after a dispatch failed", async () => {
@@ -576,7 +613,54 @@ describe("Dispatching the same item twice", () => {
     });
     expect(claimed.json<{ status: string }>().status).toBe("in_progress");
     const after = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
-    expect(after.json()).toEqual({ active: [], latest: [] });
+    expect(after.json()).toEqual({ active: [], latest: [], handlers: [] });
+  });
+
+  it("names the agent behind an in-progress item once its session claims (AND-163)", async () => {
+    const { app, cookie, mission, mini } = await setup();
+    const dispatch = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${mini.token}` } });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatch.id}/result`,
+      headers: { authorization: `Bearer ${mini.token}` },
+      payload: { status: "launched" },
+    });
+    app.missionGoStore.claimWorkItem({
+      itemKey: mission.itemKey,
+      agentId: "claude-code@Macbook",
+      idempotencyKey: "claim-handler-1",
+    });
+
+    const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
+    expect(active.json()).toMatchObject({
+      active: [],
+      latest: [],
+      handlers: [{ itemKey: mission.itemKey, nodeName: "Mac mini", agentKind: "claude_code" }],
+    });
+  });
+
+  it("does not credit an agent when a person starts work on an unclaimed launch", async () => {
+    const { app, cookie, mission, mini } = await setup();
+    const dispatch = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${mini.token}` } });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatch.id}/result`,
+      headers: { authorization: `Bearer ${mini.token}` },
+      payload: { status: "launched" },
+    });
+    // The launch is still unclaimed when the person picks the item up themselves.
+    const started = await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${mission.itemKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "in_progress", reason: "claim" },
+    });
+    expect(started.json<{ status: string }>().status).toBe("in_progress");
+
+    const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
+    expect(active.json()).toMatchObject({ active: [], latest: [], handlers: [] });
   });
 
   it("dispatches an item sent back by a failed verification without force", async () => {
@@ -602,7 +686,7 @@ describe("Dispatching the same item twice", () => {
     }
 
     const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
-    expect(active.json()).toEqual({ active: [], latest: [] });
+    expect(active.json()).toEqual({ active: [], latest: [], handlers: [] });
     expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(201);
 
     // The machine hears that this is a second session, and on reworked work.

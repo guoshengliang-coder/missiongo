@@ -1,6 +1,7 @@
 import { attachmentPreviewPath, attachmentThumbnailPath } from "./attachment-thumbnail";
 import type {
   ActiveDispatch,
+  ItemDispatchHandler,
   ItemDispatchSummary,
   AgentSession,
   AgentSessionCommand,
@@ -453,7 +454,7 @@ export const api = {
     request<Dispatch>("/api/v1/dispatches", { method: "POST", body: JSON.stringify(input) }),
   // Ready items already sent to a machine and not yet claimed, so the list can
   // say so before somebody sends one again.
-  listActiveDispatches: () => request<{ active: ActiveDispatch[]; latest: ItemDispatchSummary[] }>("/api/v1/dispatches/active"),
+  listActiveDispatches: () => request<{ active: ActiveDispatch[]; latest: ItemDispatchSummary[]; handlers: ItemDispatchHandler[] }>("/api/v1/dispatches/active"),
   getDispatchHealth: (days = 7) => request<DispatchHealthSnapshot>(`/api/v1/dispatches/health?days=${days}`),
   listItemDispatches: (itemKey: string) =>
     request<{ dispatches: Dispatch[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/dispatches`),

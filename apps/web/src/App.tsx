@@ -74,6 +74,7 @@ import {
   type Component,
   type ComponentKind,
   type CreatedSdkToken,
+  type ItemDispatchHandler,
   type ItemDispatchSummary,
   type Dispatch,
   type TransitionAction,
@@ -1044,6 +1045,10 @@ export function App() {
     () => dispatchesByItem(activeDispatchesQuery.data?.latest ?? activeDispatchesQuery.data?.active ?? []),
     [activeDispatchesQuery.data],
   );
+  const inProgressHandlers = useMemo(
+    () => new Map((activeDispatchesQuery.data?.handlers ?? []).map((handler) => [handler.itemKey, handler])),
+    [activeDispatchesQuery.data],
+  );
   const agentConsoleListFetching = useIsFetching({ queryKey: ["agent-sessions"] });
   const agentConsoleConversationFetching = useIsFetching({ queryKey: ["agent-session"] });
   const agentConsoleRefreshing = agentConsoleListFetching + agentConsoleConversationFetching > 0;
@@ -1519,6 +1524,7 @@ export function App() {
                     || (selectedProductCanUseAi && isDispatchable(item.status))}
                   selectable={selectedItemKeys.has(item.key) || canJoinSelection(item.status, selectionStatus)}
                   dispatchSummary={latestDispatches.get(item.key)}
+                  handlerSummary={inProgressHandlers.get(item.key)}
                   onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item, selectionStatus))}
                   sourceComponent={item.sourceComponentId ? componentsById.get(item.sourceComponentId) : undefined}
                   showAttachmentColumn={showAttachmentColumn}
@@ -1549,7 +1555,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} />
+            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} handler={inProgressHandlers.get(selectedItemKey)} />
           </div>
         )}
       </main>
@@ -1791,6 +1797,7 @@ function ItemRow({
   selectionVisible,
   selectable,
   dispatchSummary,
+  handlerSummary,
   onToggleChecked,
   onOpen,
   onEdit,
@@ -1808,6 +1815,8 @@ function ItemRow({
   selectable: boolean;
   /** The latest dispatch attempt for this ready cycle, if there is one. */
   dispatchSummary: ItemDispatchSummary | undefined;
+  /** The agent behind the item's in-progress claim, when it came from a dispatch. */
+  handlerSummary: ItemDispatchHandler | undefined;
   onToggleChecked: () => void;
   onOpen: () => void;
   onEdit: () => void;
@@ -1828,6 +1837,7 @@ function ItemRow({
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
   const contextDetails = environmentSummary(environment, Boolean(sourceComponent), t);
   const creator = creatorLabel(item.createdBy, { human: actorLabel("human"), sdk: t("creatorSdk"), agent: actorLabel("agent") });
+  const handlerAgentKey = handlerSummary ? agentLabelKey(handlerSummary.agentKind) : null;
   const dispatchable = isDispatchable(item.status);
   // Only on a ready row: the list can refetch before the dispatch list does, and
   // an item a session has just claimed must not still read as waiting on a Mac.
@@ -1887,6 +1897,27 @@ function ItemRow({
                   })}
                 >
                   {t(latestDispatch.status === "failed" ? "failedDispatchBadge" : "activeDispatchBadge", { node: latestDispatch.nodeName })}
+                </small>
+              )}
+              {item.status === "in_progress" && handlerSummary && (
+                <small
+                  className="item-handler-badge"
+                  title={t("itemHandlerBadgeTitle", {
+                    agent: handlerAgentKey ? t(handlerAgentKey) : handlerSummary.agentKind,
+                    node: handlerSummary.nodeName,
+                    time: formatTime(handlerSummary.createdAt),
+                    at: new Date(handlerSummary.createdAt).toLocaleString(locale, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    }),
+                  })}
+                >
+                  {t("itemHandlerBadge", {
+                    agent: handlerAgentKey ? t(handlerAgentKey) : handlerSummary.agentKind,
+                    node: handlerSummary.nodeName,
+                  })}
                 </small>
               )}
               {item.derivedFrom && <small className="item-derived-badge" title={item.derivedFrom.title}>{t("derivedFromBadge", { key: item.derivedFrom.key })}</small>}
@@ -2465,6 +2496,7 @@ function DetailPane({
   onNotice,
   onOpenItem,
   onStartWork,
+  handler,
 }: {
   itemKey: string | null;
   openInEdit: boolean;
@@ -2473,9 +2505,11 @@ function DetailPane({
   onNotice: (message: string) => void;
   onOpenItem: (itemKey: string) => void;
   onStartWork: (item: WorkItem) => void;
+  /** The agent behind the item's in-progress claim, when it came from a dispatch. */
+  handler: ItemDispatchHandler | undefined;
 }) {
   const queryClient = useQueryClient();
-  const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
+  const { actorLabel, eventLabel, formatTime, locale, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
   const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey) });
   const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey) });
   const item = itemQuery.data;
@@ -2593,6 +2627,27 @@ function DetailPane({
         <button className="secondary-button detail-back-button" onClick={onClose} aria-label={t("backToList")}><ArrowLeft size={17} /> {t("backToList")}</button>
         <code>{item.key}</code>
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
+        {item.status === "in_progress" && handler && (
+          <small
+            className="item-handler-badge"
+            title={t("itemHandlerBadgeTitle", {
+              agent: agentLabelKey(handler.agentKind) ? t(agentLabelKey(handler.agentKind)!) : handler.agentKind,
+              node: handler.nodeName,
+              time: formatTime(handler.createdAt),
+              at: new Date(handler.createdAt).toLocaleString(locale, {
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              }),
+            })}
+          >
+            {t("itemHandlerBadge", {
+              agent: agentLabelKey(handler.agentKind) ? t(agentLabelKey(handler.agentKind)!) : handler.agentKind,
+              node: handler.nodeName,
+            })}
+          </small>
+        )}
         <span className="toolbar-spacer" />
         <div className="detail-toolbar-actions">
           {primaryAction && (

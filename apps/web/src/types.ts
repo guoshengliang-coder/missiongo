@@ -521,6 +521,15 @@ export interface ItemDispatchSummary {
   readonly createdAt: string;
 }
 
+/** An in-progress item's dispatch origin: the agent whose session claimed it. */
+export interface ItemDispatchHandler {
+  readonly dispatchId: string;
+  readonly itemKey: string;
+  readonly nodeName: string;
+  readonly agentKind: AgentKind;
+  readonly createdAt: string;
+}
+
 /** The subset that can still start or already represents an unclaimed session. */
 export interface ActiveDispatch extends Omit<ItemDispatchSummary, "status"> {
   readonly status: Extract<DispatchStatus, "queued" | "delivered" | "launched">;
