@@ -269,6 +269,8 @@ export interface AgentSessionSettings {
   readonly mode: string;
   readonly model?: string;
   readonly effort?: string;
+  /** Host of the custom endpoint the agent's requests go to; absent = official API (AND-161). */
+  readonly modelEndpoint?: string;
   readonly requestedModel?: string;
   readonly requestedEffort?: string;
   readonly pending?: { readonly revision: number; readonly mode?: string; readonly model?: string; readonly effort?: string };

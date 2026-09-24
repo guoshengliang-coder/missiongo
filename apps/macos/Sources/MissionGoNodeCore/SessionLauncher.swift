@@ -547,6 +547,20 @@ public struct SessionLauncher: AgentAdapter {
         )
     }
 
+    /// Host of the endpoint `ANTHROPIC_BASE_URL` routes this machine's requests
+    /// to (AND-161). An Anthropic-compatible proxy answers under the official
+    /// model ids, so the model name the CLI reports cannot say whether the
+    /// official API or the proxy produced it -- this can. nil when no custom
+    /// endpoint is configured.
+    public static func customModelEndpoint(_ environment: [String: String]) -> String? {
+        guard let raw = environment["ANTHROPIC_BASE_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty
+        else { return nil }
+        let withScheme = raw.contains("://") ? raw : "https://\(raw)"
+        guard let host = URL(string: withScheme)?.host, !host.isEmpty else { return nil }
+        return host
+    }
+
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         guard UUID(uuidString: session.sessionRef) != nil else {
             throw LaunchError("Claude 会话编号无效。")
@@ -557,6 +571,7 @@ public struct SessionLauncher: AgentAdapter {
         return report.reportingSettings(
             model: state.model,
             effort: state.effort,
+            modelEndpoint: SessionLauncher.customModelEndpoint(environment.environment),
             settingsRevision: state.settingsRevision,
             settingsError: state.settingsError,
             clearSessionUrl: state.launchReady && state.sessionUrl == nil ? true : nil

@@ -488,12 +488,17 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     /// nil when it does not know (an effort left to the agent's own default).
     public let model: String?
     public let effort: String?
+    /// Host of the custom endpoint the agent's requests are routed to (AND-161).
+    /// A proxy serving the official model ids leaves `model` looking official, so
+    /// the endpoint is what says where the answers really come from. nil when no
+    /// custom endpoint is configured.
+    public let modelEndpoint: String?
     /// The desired-settings revision now applied. With `settingsError` it is
     /// the revision whose application failed, so the server stops asking.
     public let settingsRevision: Int?
     public let settingsError: String?
 
-    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, clearSessionUrl: Bool? = nil, activityAt: String? = nil, model: String? = nil, effort: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil) {
+    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, clearSessionUrl: Bool? = nil, activityAt: String? = nil, model: String? = nil, effort: String? = nil, modelEndpoint: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil) {
         self.status = status
         self.messages = messages
         self.activities = activities
@@ -509,19 +514,20 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         self.activityAt = activityAt
         self.model = model
         self.effort = effort
+        self.modelEndpoint = modelEndpoint
         self.settingsRevision = settingsRevision
         self.settingsError = settingsError
     }
 
     /// The same report carrying the session's settings. Kept apart so every
     /// branch that decides status and commands need not repeat them.
-    public func reportingSettings(model: String?, effort: String?, settingsRevision: Int?, settingsError: String?, clearSessionUrl: Bool? = nil) -> AgentSessionReport {
+    public func reportingSettings(model: String?, effort: String?, modelEndpoint: String? = nil, settingsRevision: Int?, settingsError: String?, clearSessionUrl: Bool? = nil) -> AgentSessionReport {
         AgentSessionReport(
             status: status, messages: messages, activities: activities, error: error,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
-            model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
+            model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError
         )
     }
 }

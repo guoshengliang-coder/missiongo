@@ -63,11 +63,13 @@ describe("agent console responsive layout", () => {
     expect(phone).toContain(".agent-console-topbar-bulk span { display: none; }");
   });
 
-  it("keeps replies below the textarea with quick actions", () => {
+  it("keeps replies below the textarea with the quick settings row (AND-158)", () => {
     expect(styles).toContain(".agent-console-reply form { display: grid; gap: 9px; }");
     expect(styles).toContain(".agent-console-reply-actions { display: flex;");
-    expect(consoleSource).toContain('t("agentSessionQuickMergeRelease")');
-    expect(consoleSource).toContain('t("agentSessionQuickRelease")');
+    expect(consoleSource).toContain("<AgentSessionQuickSettings session={selected} />");
+    // The quick replies this row used to hold are gone by decision; their keys
+    // must not creep back in.
+    expect(consoleSource).not.toContain("agentSessionQuick");
   });
 
   it("starts both agent reply fields on one line and grows them to a bounded height", () => {

@@ -1746,7 +1746,7 @@ describe("Closing verification in bulk (AND-66)", () => {
     expect(events.at(-1)?.accountName).toBeDefined();
   });
 
-  it("does only the verification close, and only for a signed-in person", async () => {
+  it("does only the two bulk edges, and only for a signed-in person", async () => {
     const { app, memberCookie, shared } = await twoAccountWorkspace();
     const key = await createItem(app, memberCookie, shared.id, "Anything");
     const other = await app.inject({
@@ -1769,6 +1769,84 @@ describe("Closing verification in bulk (AND-66)", () => {
       payload: { itemKeys: [key], to: "done", reason: "verification_passed" },
     });
     expect(anonymous.statusCode).toBe(401);
+  });
+});
+
+describe("Returning work to ready in bulk (AND-160)", () => {
+  async function inProgress(app: FastifyInstance, cookie: string, key: string) {
+    for (const [to, reason] of [["ready", "triaged"], ["in_progress", "claim"]]) {
+      const moved = await app.inject({ method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to, reason } });
+      if (moved.statusCode !== 200) throw new Error(`move failed: ${moved.body}`);
+    }
+  }
+
+  it("returns each in-progress item it can, with the one note on every timeline", async () => {
+    const { app, adminCookie, memberCookie, shared, hidden } = await twoAccountWorkspace();
+    const first = await createItem(app, memberCookie, shared.id, "Wrong machine A");
+    const second = await createItem(app, memberCookie, shared.id, "Wrong machine B");
+    const stillDraft = await createItem(app, memberCookie, shared.id, "Never started");
+    const elsewhere = await createItem(app, adminCookie, hidden.id, "Not the member's");
+    await inProgress(app, memberCookie, first);
+    await inProgress(app, memberCookie, second);
+    await inProgress(app, adminCookie, elsewhere);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/transitions",
+      headers: { cookie: memberCookie },
+      payload: {
+        itemKeys: [first, second, stillDraft, elsewhere],
+        to: "ready",
+        reason: "released",
+        note: "Dispatched to the wrong machine; back to the queue.",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    const { results } = response.json<{ results: Array<{ itemKey: string; ok: boolean; code?: string }> }>();
+    expect(results).toEqual([
+      { itemKey: first, ok: true },
+      { itemKey: second, ok: true },
+      expect.objectContaining({ itemKey: stillDraft, ok: false, code: "invalid_state_transition" }),
+      expect.objectContaining({ itemKey: elsewhere, ok: false, code: "not_found" }),
+    ]);
+
+    const status = async (key: string) =>
+      (await app.inject({ method: "GET", url: `/api/v1/items/${key}`, headers: { cookie: adminCookie } })).json<{ status: string }>().status;
+    expect(await status(first)).toBe("ready");
+    expect(await status(second)).toBe("ready");
+    expect(await status(stillDraft)).toBe("inbox");
+    expect(await status(elsewhere)).toBe("in_progress");
+
+    // The shared note lands on each returned item's timeline, where the next
+    // taker — person or AI — reads why the work came back.
+    const events = (await app.inject({ method: "GET", url: `/api/v1/items/${first}/timeline`, headers: { cookie: adminCookie } }))
+      .json<{ events: Array<{ toStatus?: string; payload?: Record<string, unknown> }> }>().events;
+    expect(events.at(-1)).toMatchObject({
+      toStatus: "ready",
+      payload: { reason: "released", note: "Dispatched to the wrong machine; back to the queue." },
+    });
+  });
+
+  it("refuses the whole batch without a note", async () => {
+    const { app, memberCookie, shared } = await twoAccountWorkspace();
+    const key = await createItem(app, memberCookie, shared.id, "Anything");
+    await inProgress(app, memberCookie, key);
+    const missing = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/transitions",
+      headers: { cookie: memberCookie },
+      payload: { itemKeys: [key], to: "ready", reason: "released" },
+    });
+    expect(missing.statusCode).toBe(400);
+    const blank = await app.inject({
+      method: "POST",
+      url: "/api/v1/items/transitions",
+      headers: { cookie: memberCookie },
+      payload: { itemKeys: [key], to: "ready", reason: "released", note: "   " },
+    });
+    expect(blank.statusCode).toBe(400);
+    const status = (await app.inject({ method: "GET", url: `/api/v1/items/${key}`, headers: { cookie: memberCookie } })).json<{ status: string }>().status;
+    expect(status).toBe("in_progress");
   });
 });
 

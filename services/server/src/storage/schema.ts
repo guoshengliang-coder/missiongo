@@ -342,6 +342,7 @@ export const INITIAL_SCHEMA = `
     source_restore_pending INTEGER NOT NULL DEFAULT 0,
     model TEXT,
     effort TEXT,
+    model_endpoint TEXT,
     mode TEXT,
     desired_settings_json TEXT,
     settings_revision INTEGER NOT NULL DEFAULT 0,

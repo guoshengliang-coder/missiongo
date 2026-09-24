@@ -40,7 +40,7 @@ import {
   type AgentKindFilter,
   type AgentSessionFilter,
 } from "./agent-session-view";
-import { AgentSessionSettingsBar } from "./agent-session-settings";
+import { AgentSessionQuickSettings } from "./agent-session-settings";
 import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
@@ -166,7 +166,6 @@ export function AgentSessionConsole({
   onBulkAvailabilityChange,
   onSelectSession,
   onBackToSessions,
-  onOpenItem,
 }: {
   productId: string;
   initialFilter: AgentSessionFilter | null;
@@ -180,7 +179,6 @@ export function AgentSessionConsole({
   onBulkAvailabilityChange: (available: boolean) => void;
   onSelectSession: (sessionId: string | null, showConversation: boolean) => void;
   onBackToSessions: () => void;
-  onOpenItem: (itemKey: string) => void;
 }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
@@ -202,6 +200,9 @@ export function AgentSessionConsole({
   const [healthAgent, setHealthAgent] = useState("all");
   const [healthVersion, setHealthVersion] = useState("all");
   const [healthCode, setHealthCode] = useState("all");
+  // The item a dispatch chip opened a preview of (AND-159). A preview, not a
+  // page: reading what the session is working on must not walk away from it.
+  const [previewItemKey, setPreviewItemKey] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const observedSessionRef = useRef<string | null>(null);
   const conversationOpenRef = useRef(false);
@@ -708,7 +709,14 @@ export function AgentSessionConsole({
               <div>
                 <h2>{sessionTitle(selected)}</h2>
                 <p>{agentLabel(selected, t)}</p>
-                <AgentSessionSettingsBar session={selected} />
+                {/* The items this session is working on stay in the head, where
+                    scrolling the conversation cannot lose them (AND-159). */}
+                <div className="agent-console-dispatch agent-console-dispatch-head">
+                  <span>{t("agentConsoleDispatchScope")}</span>
+                  <div>{selected.items.map((item) => (
+                    <button key={item.key} type="button" onClick={() => setPreviewItemKey(item.key)}>{item.key}</button>
+                  ))}</div>
+                </div>
               </div>
               <span className={`status-pill agent-session-status-${sessionStatus}`}>{selected.archivedAt ? t("archived") : statusLabel(sessionStatus, t)}</span>
               {selected.sessionUrl && <SessionLink url={selected.sessionUrl} />}
@@ -828,10 +836,6 @@ export function AgentSessionConsole({
                     </div>
                   </div>
                 )}
-                <div className="agent-console-dispatch">
-                  <span>{t("agentConsoleDispatchScope")}</span>
-                  <div>{selected.items.map((item) => <button key={item.key} type="button" onClick={() => onOpenItem(item.key)}>{item.key}</button>)}</div>
-                </div>
                 {selected.agentSessionId && sessionQuery.isLoading && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
                 {sessionQuery.isError && <p className="inline-error">{localizedErrorText(sessionQuery.error, t)}</p>}
                 {sessionQuery.data?.messages.length === 0 && !outgoing && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
@@ -966,22 +970,6 @@ export function AgentSessionConsole({
                     disabled={pending || sendingSelected}
                   />
                   <div className="agent-console-reply-actions">
-                    <div className="agent-console-quick-replies" aria-label={t("agentSessionQuickReplies")}>
-                      {[t("agentSessionQuickMergeRelease"), t("agentSessionQuickRelease")].map((quickReply) => (
-                        <button
-                          key={quickReply}
-                          type="button"
-                          className="secondary-button"
-                          disabled={pending || sendingSelected}
-                          onClick={() => {
-                            setReply(quickReply);
-                            if (send.isError && send.variables?.sessionId === selected.agentSessionId) send.reset();
-                          }}
-                        >
-                          {quickReply}
-                        </button>
-                      ))}
-                    </div>
                     <button type="submit" className="primary-button" disabled={!reply.trim() || pending || sendingSelected}>
                       {sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}
                     </button>
@@ -994,11 +982,68 @@ export function AgentSessionConsole({
                     : t("agentConsoleNoInlineReply")}
                 </p>
               )}
+              {/* Mode, model and effort live under the reply box (AND-158): the
+                  knobs a person reaches for while steering the conversation. */}
+              <AgentSessionQuickSettings session={selected} />
               {cancel.isError && <p className="inline-error">{localizedErrorText(cancel.error, t)}</p>}
             </footer>
           </>
         )}
+        {previewItemKey && <ItemPreviewModal itemKey={previewItemKey} onClose={() => setPreviewItemKey(null)} />}
       </section>
     </main>
+  );
+}
+
+/**
+ * A dispatch item as a popup (AND-159): enough to recognise the work -- what it
+ * is, where it stands, what it says -- without walking away from the
+ * conversation. Closing it returns to exactly the spot the chip was clicked on.
+ * The card fits the window it opens in; a narrow one shows the same content
+ * compacted.
+ */
+function ItemPreviewModal({ itemKey, onClose }: {
+  readonly itemKey: string;
+  readonly onClose: () => void;
+}) {
+  const { t, typeLabel, statusLabel, priorityLabel } = useI18n();
+  const itemQuery = useQuery({
+    queryKey: ["item", itemKey],
+    queryFn: () => api.getItem(itemKey),
+  });
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+  const item = itemQuery.data;
+  const overview = item?.report?.overview ?? item?.description;
+  return (
+    <div
+      className="item-preview-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("itemPreviewTitle", { key: itemKey })}
+      onClick={onClose}
+    >
+      <div className="item-preview-card" onClick={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <h3><code>{itemKey}</code> {item ? item.title : ""}</h3>
+            {item && <p>{typeLabel(item.type)} · {statusLabel(item.status)} · {priorityLabel(item.priority)}</p>}
+          </div>
+          <button type="button" className="icon-button" aria-label={t("close")} onClick={onClose}><X size={17} /></button>
+        </header>
+        <div className="item-preview-body">
+          {itemQuery.isLoading && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
+          {itemQuery.isError && <p className="inline-error">{localizedErrorText(itemQuery.error, t)}</p>}
+          {item && (overview
+            ? <MarkdownText>{overview}</MarkdownText>
+            : <p className="agent-session-muted">{t("itemPreviewNoDescription")}</p>)}
+        </div>
+      </div>
+    </div>
   );
 }

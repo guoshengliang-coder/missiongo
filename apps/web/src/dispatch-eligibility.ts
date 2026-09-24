@@ -23,11 +23,12 @@ export function productAllowsAi(product: Product | undefined): boolean {
 }
 
 /**
- * Whether a row can be ticked at all. Two batch actions exist: dispatching
- * waiting work, and closing verification on several items at once (AND-66).
+ * Whether a row can be ticked at all. Three batch actions exist: dispatching
+ * waiting work, closing verification on several items at once (AND-66), and
+ * putting in-progress work back to ready (AND-160).
  */
 export function isSelectable(status: WorkItemStatus): boolean {
-  return isDispatchable(status) || status === "pending_verification";
+  return isDispatchable(status) || status === "pending_verification" || status === "in_progress";
 }
 
 /**

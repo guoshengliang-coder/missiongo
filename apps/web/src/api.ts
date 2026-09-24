@@ -400,6 +400,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ itemKeys, to: "done", reason: "verification_passed" }),
     }),
+  /** Return in-progress work to ready; the note is shared by the whole batch (AND-160). */
+  releaseItems: (itemKeys: readonly string[], note: string) =>
+    request<{ results: BulkTransitionResult[] }>("/api/v1/items/transitions", {
+      method: "POST",
+      body: JSON.stringify({ itemKeys, to: "ready", reason: "released", note }),
+    }),
   transitionItem: (itemKey: string, action: TransitionAction, note?: string) =>
     request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transitions`, {
       method: "POST",

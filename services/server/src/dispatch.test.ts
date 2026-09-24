@@ -2870,6 +2870,32 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     expect(refused.json()).toMatchObject({ code: "node_upgrade_required" });
   });
 
+  it("keeps the custom endpoint a snapshot reports beside the model name (AND-161)", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    const listSettings = async () => (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ settings: Record<string, unknown> }> }>().sessions[0]!.settings;
+    const report = (payload: Record<string, unknown>) => app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [], ...payload },
+    });
+
+    // A proxy answering under the official model ids leaves `model` looking
+    // official; the endpoint host is what says where the answers came from.
+    await report({ model: "claude-opus-4-5", modelEndpoint: "proxy.internal.example" });
+    expect(await listSettings()).toMatchObject({ model: "claude-opus-4-5", modelEndpoint: "proxy.internal.example" });
+
+    // A later snapshot without one keeps the last known endpoint, the same way
+    // it keeps the last known model.
+    await report({ model: "claude-opus-4-5" });
+    expect(await listSettings()).toMatchObject({ modelEndpoint: "proxy.internal.example" });
+  });
+
   it("keeps an account's dispatch defaults", async () => {
     const { app, cookie } = await signedInApp();
     const node = await registeredNode(app);

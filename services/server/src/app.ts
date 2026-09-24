@@ -2098,6 +2098,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         : {}),
       ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
       ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
+      ...(optionalName(body, "modelEndpoint") ? { modelEndpoint: optionalName(body, "modelEndpoint")! } : {}),
       ...(settingsRevision !== undefined ? { settingsRevision } : {}),
       ...(stringField(body, "settingsError", false) ? { settingsError: body.settingsError as string } : {}),
       ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
@@ -2702,16 +2703,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   /**
-   * Closing verification on several items at once (AND-66).
+   * The two edges a person repeats on many items at once (AND-66, AND-160):
+   * closing verification after checking a release, and putting in-progress work
+   * back to ready after a dispatch went to the wrong place or went stale. Every
+   * other move is a judgement about one item. Both stay a signed-in person's
+   * action, and MCP has no door to either.
    *
-   * Only the one edge, pending_verification -> done, because it is the one a
-   * person repeats in bulk after checking a release: every other move is either
-   * a judgement about one item or needs a note of its own. It stays a signed-in
-   * person's action -- "only a person closes verification" holds here exactly as
-   * it does on the single route, and MCP has no door to it.
+   * Returning work to ready needs a note on the domain's demand, and the note is
+   * one per batch: it explains this undo, not each item, so the dialog asks for
+   * it once and it is stamped on every item the batch moves.
    *
    * Each item stands alone. One that moved on in the meantime, or that this
-   * account cannot operate, is reported and skipped; the others still close,
+   * account cannot operate, is reported and skipped; the others still move,
    * because refusing a whole release's worth of checks over one stale row would
    * only send the person back to do them one by one.
    */
@@ -2725,8 +2728,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     const to = enumField(body, "to", WORK_ITEM_STATUSES)!;
     const reason = enumField(body, "reason", TRANSITION_REASONS)!;
-    if (to !== "done" || reason !== "verification_passed") {
-      throw invalidInput("Only closing verification (to done, verification_passed) can be done in bulk.");
+    const note = stringField(body, "note", false);
+    const bulkEdges: Record<string, string> = {
+      "done:verification_passed": "closing verification",
+      "ready:released": "returning work to ready",
+    };
+    const edge = bulkEdges[`${to}:${reason}`];
+    if (!edge) {
+      throw invalidInput("Only closing verification (to done, verification_passed) and returning work to ready (to ready, released) can be done in bulk.");
+    }
+    if (to === "ready" && !(note ?? "").trim()) {
+      throw invalidInput("Returning work to ready requires a note saying why.");
     }
     const uniqueKeys = [...new Set(itemKeys.map((key) => key.toUpperCase()))];
     const results = uniqueKeys.map((itemKey) => {
@@ -2736,6 +2748,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           to,
           actor: "human",
           reason,
+          ...(note !== undefined ? { note } : {}),
           attribution: { accountId },
         });
         return { itemKey, ok: true as const };
