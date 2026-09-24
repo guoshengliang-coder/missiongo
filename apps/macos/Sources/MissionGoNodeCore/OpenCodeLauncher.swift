@@ -60,6 +60,18 @@ public enum OpenCodeProtocol {
         return status["status"] as? String
     }
 
+    /// Integration setup checks the service's default location. A temporary
+    /// failure there must not disable dispatches whose repository location is
+    /// connected; launch checks the mapped repository before sending a prompt.
+    public static func integrationIssue(for status: String?) -> String? {
+        switch status {
+        case "connected", "failed", "pending": return nil
+        case "needs_auth": return "OpenCode 的 missiongo MCP 需要授权；请在 OpenCode 的 /mcps 中登录。"
+        case nil: return "OpenCode 未返回 missiongo MCP；请检查共享服务的 MCP 配置。"
+        default: return "OpenCode 的 missiongo MCP 状态无法识别；请在 OpenCode 的 /mcps 中检查。"
+        }
+    }
+
     public static func messages(_ response: [String: Any]) throws -> [AgentSessionMessage] {
         guard let entries = response["data"] as? [[String: Any]] else {
             throw LaunchError("OpenCode 的消息列表无法识别。")
@@ -153,14 +165,16 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
             query.queryItems = [URLQueryItem(name: "location[directory]", value: directory)]
             path += "?\(query.percentEncodedQuery ?? "")"
         }
-        // The first read of a new location can return an empty catalog while
-        // OpenCode loads its project config. Re-read that cold result briefly.
+        // A cold location may have no catalog yet, and an authenticated MCP
+        // can briefly report failed while its first request times out.
+        var lastStatus: String?
         for attempt in 0..<3 {
             let status = OpenCodeProtocol.missionGoMcpStatus(try await call("GET", path))
-            if status != nil && status != "pending" { return status }
+            lastStatus = status
+            if status != nil && status != "pending" && status != "failed" { return status }
             if attempt < 2 { try? await Task.sleep(nanoseconds: 250_000_000) }
         }
-        return nil
+        return lastStatus
     }
 
     public func createSession(directory: String, agent: String) async throws -> String {
@@ -252,9 +266,14 @@ public struct OpenCodeLauncher: AgentAdapter {
         }
         if let problem = Preflight.repositoryProblem(job.repoPath) { throw LaunchError(problem) }
         _ = try await control.health()
-        guard try await control.missionGoMcpStatus(directory: job.repoPath) == "connected" else {
-            throw LaunchError("OpenCode 的 missiongo MCP 尚未连接；请在 OpenCode 的 /mcps 中登录。",
+        switch try await control.missionGoMcpStatus(directory: job.repoPath) {
+        case "connected": break
+        case "needs_auth":
+            throw LaunchError("OpenCode 的 missiongo MCP 需要授权；请在 OpenCode 的 /mcps 中登录。",
                               failureCode: "mcp_auth", failureStage: "mcp")
+        default:
+            throw LaunchError("暂时无法确认 OpenCode 的 missiongo MCP 连接；派单将在 30 秒后自动重试。",
+                              failureCode: "mcp_timeout", failureStage: "mcp", retryAfterSeconds: 30)
         }
         let prompt = try LaunchPrompt.build(
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode,
