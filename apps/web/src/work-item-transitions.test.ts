@@ -12,7 +12,8 @@ import { ITEM_STATUSES, type WorkItemStatus } from "./types";
 const DOMAIN_HUMAN_TARGETS: Record<WorkItemStatus, readonly WorkItemStatus[]> = {
   inbox: ["ready", "on_hold", "cancelled"],
   ready: ["in_progress", "on_hold", "inbox", "cancelled"],
-  in_progress: ["on_hold", "pending_verification", "ready", "cancelled"],
+  in_progress: ["on_hold", "development_complete", "ready", "cancelled"],
+  development_complete: ["pending_verification", "ready", "cancelled"],
   on_hold: ["in_progress", "ready", "cancelled"],
   pending_verification: ["done", "ready", "cancelled"],
   done: ["ready"],
@@ -48,6 +49,8 @@ describe("web transition table", () => {
       ["ready", "cancelled"],
       ["in_progress", "released"],
       ["in_progress", "cancelled"],
+      ["development_complete", "released"],
+      ["development_complete", "cancelled"],
       ["on_hold", "reopened"],
       ["on_hold", "cancelled"],
       ["pending_verification", "verification_failed"],
@@ -74,7 +77,7 @@ describe("web transition table", () => {
 
   it("reaches cancelled from every status the domain allows it from", () => {
     const cancellable = ITEM_STATUSES.filter((status) => DOMAIN_HUMAN_TARGETS[status].includes("cancelled"));
-    expect(cancellable).toEqual(["inbox", "ready", "in_progress", "on_hold", "pending_verification"]);
+    expect(cancellable).toEqual(["inbox", "ready", "in_progress", "development_complete", "on_hold", "pending_verification"]);
     for (const from of cancellable) {
       const cancel = TRANSITIONS[from].find((action) => action.to === "cancelled");
       expect(cancel, `${from} has no way to cancel`).toBeDefined();

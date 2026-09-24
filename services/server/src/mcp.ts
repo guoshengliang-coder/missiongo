@@ -25,10 +25,10 @@ const MCP_READ_ONLY_INSTRUCTIONS =
   " This connection is read-only: never modify repositories, write to MissionGo, or change work-item status.";
 
 const MCP_COMMENT_INSTRUCTIONS =
-  " You may add comments with append_comment. You may make exactly two status changes: claim_item takes a ready item "
-  + "into progress, and submit_for_verification hands merged work over once its pull request is actually merged -- "
-  + "check that it is, and if you cannot, leave the item in progress and say so in a comment. "
-  + "Every other move out of in-progress is the user's: giving up, pausing, accepting, reopening. "
+  " You may add comments with append_comment. You may claim a ready item, mark an in-progress item development complete "
+  + "only after checking its PR is merged, and submit development-complete work for verification only after a "
+  + "verified release contains every required artifact. Unverified work stays in its current status. "
+  + "Giving up, pausing, accepting, and reopening are the user's decisions. "
   + "You may record an item with create_item: split off from an item the user named when it is related to that work, "
   + "or on its own in a product when you found an unrelated issue while working or the user asked you to create one. "
   + "Either way, only after showing the user exactly what will be created, including the product, and getting their "
@@ -96,7 +96,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["append_comment", "claim_item", "submit_for_verification", "create_item"],
+  comments: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item"],
 };
 
 /**
@@ -253,11 +253,10 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "list_release_candidates",
     {
-      title: "List work items awaiting a release notice",
+      title: "List development-complete work awaiting a verified release",
       description:
-        "For one authorized product, list pending-verification items whose latest handover records a pull request. "
-        + "Returns only the item key and pull request URL; a release client must independently verify the merged PR, "
-        + "the published artifact, and the item before adding a comment.",
+        "For one authorized product, list development-complete items whose handover records a pull request and "
+        + "required artifacts. The release client must verify all current public artifacts and the item before writing.",
       inputSchema: z.object({
         productId: z.string().min(1),
         limit: z.number().int().min(1).max(100).default(50),
@@ -269,16 +268,17 @@ export function createMissionGoMcpServer(
       requireProductAccess(ctx, productId);
       const items = store.listWorkItems({
         productId,
-        status: "pending_verification",
+        status: "development_complete",
         limit,
         ...(beforeSequence ? { beforeSequence } : {}),
       });
       const candidates = items.flatMap((item) => {
         const handover = [...store.getTimeline(item.key)].reverse()
-          .find((event) => event.toStatus === "pending_verification" && event.eventType === "status_changed");
+          .find((event) => event.toStatus === "development_complete" && event.eventType === "status_changed");
         const pullRequestUrl = handover?.payload.pullRequestUrl;
-        return typeof pullRequestUrl === "string" && pullRequestUrl.startsWith("https://")
-          ? [{ itemKey: item.key, pullRequestUrl }]
+        const requiredArtifacts = handover?.payload.requiredArtifacts;
+        return typeof pullRequestUrl === "string" && pullRequestUrl.startsWith("https://") && Array.isArray(requiredArtifacts)
+          ? [{ itemKey: item.key, pullRequestUrl, requiredArtifacts }]
           : [];
       });
       const lastKey = items.at(-1)?.key;
@@ -585,30 +585,29 @@ export function createMissionGoMcpServer(
   );
 
   server.registerTool(
-    "submit_for_verification",
+    "submit_development_complete",
     {
-      title: "Hand merged work over for verification",
+      title: "Record merged work as development complete",
       description:
-        "Move an in-progress item to pending verification once its pull request is merged. Check that it really is "
-        + "merged before calling this -- `gh pr view <url> --json state,mergedAt` -- and if you cannot check, do not "
-        + "call it: leave the item in progress and say in a comment that the code is done, where the pull request is, "
-        + "and that the merge was not confirmed. Missing one costs the user a click; sending one that was never merged "
-        + "costs them verifying a change that is not there. Write the completion comment before this, so the item "
-        + "carries its evidence when it reaches the queue. This does not mean the change is released.",
+        "Move an in-progress item to development complete only after checking the PR is merged with "
+        + "`gh pr view <url> --json state,mergedAt`, and enumerate every release artifact affected by its files. "
+        + "Write the completion comment first. This does not mean any artifact is published.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
         pullRequestUrl: z.string().min(1).max(500).startsWith("https://"),
+        requiredArtifacts: z.array(z.enum(["web", "androidApp", "androidSdk", "macosApp"])).min(1).max(4),
         summary: z.string().min(1).max(4_000).optional(),
         idempotencyKey: z.string().min(1).max(200),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, pullRequestUrl, summary, idempotencyKey }, ctx) => {
+    async ({ itemKey, pullRequestUrl, requiredArtifacts, summary, idempotencyKey }, ctx) => {
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
-      const item = store.submitForVerification({
+      const item = store.submitDevelopmentComplete({
         itemKey: requireItemAccess(ctx, store, itemKey),
         pullRequestUrl,
+        requiredArtifacts,
         ...(summary ? { summary } : {}),
         attribution: {
           accountId: access.accountId,
@@ -618,8 +617,39 @@ export function createMissionGoMcpServer(
       });
       return textResult(
         { item, statusChanged: true },
-        `${item.key} is waiting for the user to verify it. That is not the same as released.`,
+        `${item.key} is development complete and awaits a verified release.`,
       );
+    },
+  );
+
+  server.registerTool(
+    "submit_for_verification",
+    {
+      title: "Hand published work over for verification",
+      description: "Only after independently checking the merged PR, verified release receipt and every required public artifact, move a development-complete item to pending verification. Read the item fully and write a release comment first. The receipt digest and artifact versions are recorded for audit; the server cannot itself verify GitHub or public downloads.",
+      inputSchema: z.object({
+        itemKey: z.string().min(2).max(50),
+        pullRequestUrl: z.string().min(1).max(500).startsWith("https://"),
+        releases: z.array(z.object({
+          artifact: z.enum(["web", "androidApp", "androidSdk", "macosApp"]),
+          version: z.string().min(1).max(100),
+          sourceCommit: z.string().regex(/^[0-9a-f]{40}$/),
+        })).min(1).max(4),
+        deployedCommit: z.string().regex(/^[0-9a-f]{40}$/),
+        receiptDigest: z.string().regex(/^[0-9a-f]{64}$/),
+        idempotencyKey: z.string().min(1).max(200),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ itemKey, pullRequestUrl, releases, deployedCommit, receiptDigest, idempotencyKey }, ctx) => {
+      requireWriteScope(ctx);
+      const access = accountAccess(ctx);
+      const item = store.submitForVerification({
+        itemKey: requireItemAccess(ctx, store, itemKey), pullRequestUrl, releases, deployedCommit, receiptDigest,
+        attribution: { accountId: access.accountId, ...(access.clientId ? { clientId: access.clientId } : {}) },
+        idempotencyKey,
+      });
+      return textResult({ item, statusChanged: true }, `${item.key} is pending verification after a verified release.`);
     },
   );
 

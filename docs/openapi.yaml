@@ -1584,7 +1584,7 @@ components:
     WorkItemPriority:
       enum: [urgent, high, normal, low]
     WorkItemStatus:
-      enum: [inbox, ready, in_progress, on_hold, pending_verification, done, cancelled]
+      enum: [inbox, ready, in_progress, development_complete, on_hold, pending_verification, done, cancelled]
     WorkItemReport:
       type: object
       required: [overview]
@@ -1849,14 +1849,14 @@ components:
       properties:
         to: { $ref: "#/components/schemas/WorkItemStatus" }
         reason:
-          enum: [triaged, claim, request_human_input, resume, resolution_submitted, verification_passed, verification_failed, lease_expired, released, cancelled, reopened, restored, manual_override]
+          enum: [triaged, claim, request_human_input, resume, resolution_submitted, release_verified, verification_passed, verification_failed, lease_expired, released, cancelled, reopened, restored, manual_override]
         note:
           type: string
           maxLength: 2000
           description: >-
             Why the item is moving, stored on the status_changed event. Required
             when `to` is `ready` and the item is currently in_progress,
-            pending_verification, on_hold or done -- coming back from those means
+            development_complete, pending_verification, on_hold or done -- coming back from those means
             work was already done and did not hold, and whoever picks the item up
             next has nowhere else to learn why. A blank one does not count, and
             manual_override is not a way around it. Also required on every

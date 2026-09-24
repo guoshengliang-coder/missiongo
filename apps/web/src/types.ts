@@ -10,6 +10,7 @@ export const ITEM_STATUSES = [
   "inbox",
   "ready",
   "in_progress",
+  "development_complete",
   "on_hold",
   "pending_verification",
   "done",
@@ -214,6 +215,7 @@ export interface TransitionAction {
     | "request_human_input"
     | "resume"
     | "resolution_submitted"
+    | "release_verified"
     | "verification_passed"
     | "verification_failed"
     | "released"

@@ -855,6 +855,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .status-pill { display: inline-flex; align-items: center; padding: 5px 7px; border-radius: var(--radius-sm); color: var(--status-inbox-fg); background: var(--status-inbox-bg); font-size: var(--text-xs); font-weight: 750; white-space: nowrap; }
 .status-ready { color: var(--status-ready-fg); background: var(--status-ready-bg); }
 .status-in_progress { color: var(--status-progress-fg); background: var(--status-progress-bg); }
+.status-development_complete { color: var(--status-progress-fg); background: var(--status-progress-bg); }
 .status-on_hold { color: var(--status-hold-fg); background: var(--warn-bg); }
 .status-pending_verification { color: var(--status-verify-fg); background: var(--status-verify-bg); }
 .status-done { color: var(--status-done-fg); background: var(--status-done-bg); }

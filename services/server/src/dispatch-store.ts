@@ -744,7 +744,7 @@ export class DispatchStore {
            AND NOT EXISTS (
              SELECT 1 FROM work_item_events e
              WHERE e.item_id = di.item_id AND e.created_at >= d.created_at
-               AND e.to_status IN ('in_progress', 'pending_verification', 'done')
+               AND e.to_status IN ('in_progress', 'development_complete', 'pending_verification', 'done')
            )
          ORDER BY d.created_at DESC`,
       )
@@ -945,7 +945,7 @@ export class DispatchStore {
          WHERE di.dispatch_id = ? AND EXISTS (
            SELECT 1 FROM work_item_events e
            WHERE e.item_id = di.item_id AND e.to_status = 'ready'
-             AND e.from_status IN ('pending_verification', 'done')
+             AND e.from_status IN ('development_complete', 'pending_verification', 'done')
          )
          ORDER BY di.position`,
       )

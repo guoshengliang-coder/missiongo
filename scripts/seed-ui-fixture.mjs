@@ -183,7 +183,8 @@ export async function seedFixture({ baseUrl, cookie, fetchImpl = fetch }) {
   });
   keys.push(task.key);
   await move(task.key, "in_progress", "claim");
-  await move(task.key, "pending_verification", "resolution_submitted", "已合并，待验证");
+  await move(task.key, "development_complete", "resolution_submitted", "已合并，待发布");
+  await move(task.key, "pending_verification", "release_verified", "已发布，待验证");
 
   const note = await createItem({
     status: "ready",
@@ -195,7 +196,8 @@ export async function seedFixture({ baseUrl, cookie, fetchImpl = fetch }) {
   });
   keys.push(note.key);
   await move(note.key, "in_progress", "claim");
-  await move(note.key, "pending_verification", "resolution_submitted");
+  await move(note.key, "development_complete", "resolution_submitted");
+  await move(note.key, "pending_verification", "release_verified");
   await move(note.key, "done", "verification_passed");
 
   const cancelled = await createItem({

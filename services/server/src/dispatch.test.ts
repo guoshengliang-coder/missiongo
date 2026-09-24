@@ -675,7 +675,7 @@ describe("Dispatching the same item twice", () => {
       headers: { authorization: `Bearer ${mini.token}` },
       payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}` },
     });
-    for (const [to, reason] of [["in_progress", "claim"], ["pending_verification", "resolution_submitted"], ["ready", "verification_failed"]]) {
+    for (const [to, reason] of [["in_progress", "claim"], ["development_complete", "resolution_submitted"], ["pending_verification", "release_verified"], ["ready", "verification_failed"]]) {
       const moved = await app.inject({
         method: "POST",
         url: `/api/v1/items/${mission.itemKey}/transitions`,
@@ -1785,7 +1785,13 @@ describe("Claiming a dispatch on the node", () => {
       method: "POST",
       url: `/api/v1/items/${mission.itemKey}/transitions`,
       headers: { cookie },
-      payload: { to: "pending_verification", reason: "resolution_submitted" },
+      payload: { to: "development_complete", reason: "resolution_submitted" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${mission.itemKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "pending_verification", reason: "release_verified" },
     })).statusCode).toBe(200);
     expect((await app.inject({
       method: "POST",
@@ -1797,7 +1803,13 @@ describe("Claiming a dispatch on the node", () => {
       method: "POST",
       url: `/api/v1/items/${secondKey}/transitions`,
       headers: { cookie },
-      payload: { to: "pending_verification", reason: "resolution_submitted" },
+      payload: { to: "development_complete", reason: "resolution_submitted" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${secondKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "pending_verification", reason: "release_verified" },
     })).statusCode).toBe(200);
     expect((await app.inject({
       method: "POST",
@@ -2639,7 +2651,8 @@ describe("Archiving a finished hand-off (AND-129)", () => {
   }
   const toDone: Array<[string, string]> = [
     ["in_progress", "claim"],
-    ["pending_verification", "resolution_submitted"],
+    ["development_complete", "resolution_submitted"],
+    ["pending_verification", "release_verified"],
     ["done", "verification_passed"],
   ];
 

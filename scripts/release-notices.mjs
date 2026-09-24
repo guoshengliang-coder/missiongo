@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Match a verified release receipt to MissionGo's PR-backed candidates. This
-// prints proposed comments; the OAuth-connected AI client performs the final
-// full item read and append_comment calls. No credential is passed to a script.
+// Match a verified release receipt to development-complete PRs. Print proposed
+// comments and constrained status handoffs; the OAuth client reads each item
+// before writing. No MissionGo credential is passed to this script.
 
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -59,19 +59,39 @@ function pullRequestFacts(url, repository) {
   return { mergeCommit: view.mergeCommit.oid, files };
 }
 
-export function proposedComment(candidate, change) {
-  const name = ARTIFACT_NAMES[change.artifact];
-  const version = change.build ? `${change.version}（构建 ${change.build}）` : change.version;
+export function requiredArtifactsForFiles(files) {
+  return Object.keys(ARTIFACT_NAMES).filter((artifact) => files.some((path) => affectsArtifact(path, artifact))).sort();
+}
+
+function currentRelease(receipt, artifact) {
+  const current = receipt.current?.[artifact];
+  if (!current || receipt.publicEvidence?.checks?.web !== true
+    || receipt.publicEvidence?.checks?.[artifact] !== true) return null;
+  const sourceCommit = artifact === "web" ? current.commit : current.sourceCommit;
+  if (!/^[0-9a-f]{40}$/.test(sourceCommit ?? "")) return null;
+  if (artifact === "web" && (current.clean !== true || current.ciPassed !== true)) return null;
+  const version = current.version;
+  if (typeof version !== "string" || !version) return null;
+  return { artifact, version: current.build ? `${version}（构建 ${current.build}）` : version, sourceCommit };
+}
+
+export function proposedComment(candidate, releases, receipt) {
+  const version = releases.map((release) => `${ARTIFACT_NAMES[release.artifact]} ${release.version}`).join("、");
   const key = createHash("sha256")
-    .update(`${candidate.itemKey}\n${change.artifact}\n${change.version}\n${change.toCommit}`)
+    .update(`${candidate.itemKey}\n${candidate.pullRequestUrl}\n${JSON.stringify(releases)}`)
     .digest("hex");
+  const receiptDigest = createHash("sha256").update(JSON.stringify(receipt)).digest("hex");
   return {
     itemKey: candidate.itemKey,
     bodyKind: "free",
-    summary: `${name} ${version} 已正式发布，可开始验证`,
-    text: `${name} ${version} 已正式发布。来源提交：${change.toCommit}。关联 PR：${candidate.pullRequestUrl}。请在此版本中验证本条目的行为；这条通知不代表验收通过。`,
+    summary: `${version} 已正式发布，可开始验证`,
+    text: `${version} 已正式发布。关联 PR：${candidate.pullRequestUrl}。各产物来源提交：${releases.map((release) => `${ARTIFACT_NAMES[release.artifact]} ${release.sourceCommit}`).join("；")}。请在这些版本验证本条目；这条通知不代表验收通过。`,
     idempotencyKey: `release-notice:${key}`,
-    artifact: change.artifact,
+    transitionIdempotencyKey: `release-handoff:${key}`,
+    pullRequestUrl: candidate.pullRequestUrl,
+    releases,
+    deployedCommit: receipt.deployedCommit,
+    receiptDigest,
   };
 }
 
@@ -87,15 +107,28 @@ export function matchCandidates(receipt, candidates, resolvePr, ancestor = isAnc
     try { pr = resolvePr(candidate.pullRequestUrl); }
     catch (error) { skipped.push({ itemKey: candidate.itemKey, reason: `PR lookup failed: ${String(error)}` }); continue; }
     if (!pr) { skipped.push({ itemKey: candidate.itemKey, reason: "PR is not a verified merge in this repository" }); continue; }
-    let matched = false;
-    for (const change of receipt.changes ?? []) {
-      if (!change.eligibleForMatching) continue;
-      if (!inReleasedRange(pr.mergeCommit, change.fromCommit, change.toCommit, ancestor)) continue;
-      if (!pr.files.some((path) => affectsArtifact(path, change.artifact))) continue;
-      comments.push(proposedComment(candidate, change));
-      matched = true;
+    const required = requiredArtifactsForFiles(pr.files);
+    const recorded = Array.isArray(candidate.requiredArtifacts) ? candidate.requiredArtifacts : [];
+    if (required.length === 0 || recorded.some((artifact) => typeof artifact !== "string")
+      || JSON.stringify(required) !== JSON.stringify([...recorded].sort())) {
+      skipped.push({ itemKey: candidate.itemKey, reason: "required artifacts differ from the merged PR files" });
+      continue;
     }
-    if (!matched) skipped.push({ itemKey: candidate.itemKey, reason: "no verified published artifact contains this PR" });
+    const releases = required.map((artifact) => currentRelease(receipt, artifact));
+    if (releases.some((release) => !release)
+      || !/^[0-9a-f]{40}$/.test(receipt.deployedCommit ?? "")
+      || releases.some((release) => !ancestor(pr.mergeCommit, release.sourceCommit))) {
+      skipped.push({ itemKey: candidate.itemKey, reason: "not every required public artifact contains the PR" });
+      continue;
+    }
+    const newlyPublished = (receipt.changes ?? []).some((change) =>
+      required.includes(change.artifact) && change.eligibleForMatching
+      && inReleasedRange(pr.mergeCommit, change.fromCommit, change.toCommit, ancestor));
+    if (!newlyPublished) {
+      skipped.push({ itemKey: candidate.itemKey, reason: "no newly published required artifact contains this PR" });
+      continue;
+    }
+    comments.push(proposedComment(candidate, releases, receipt));
   }
   return { comments, skipped };
 }

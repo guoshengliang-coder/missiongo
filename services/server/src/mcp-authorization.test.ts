@@ -144,7 +144,7 @@ describe("MCP write-tool authorization", () => {
     // claiming, leases, and status transitions. Naming the members explicitly
     // means a new tool has to be placed on purpose rather than by where it
     // happened to be pasted.
-    expect(toolNamesInTier("comments")).toEqual(["append_comment", "claim_item", "submit_for_verification", "create_item"]);
+    expect(toolNamesInTier("comments")).toEqual(["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item"]);
   });
 });
 
@@ -181,6 +181,7 @@ describe("MCP write tiers", () => {
     expect(server.toolInputSchemaJson("get_item_context")).toBeDefined();
     expect(server.toolInputSchemaJson("append_comment")).toBeUndefined();
     expect(server.toolInputSchemaJson("claim_item")).toBeUndefined();
+    expect(server.toolInputSchemaJson("submit_development_complete")).toBeUndefined();
     expect(server.toolInputSchemaJson("submit_for_verification")).toBeUndefined();
     expect(server.toolInputSchemaJson("create_item")).toBeUndefined();
   });
@@ -189,6 +190,7 @@ describe("MCP write tiers", () => {
     const server = await serverForTier("comments");
     expect(server.toolInputSchemaJson("append_comment")).toBeDefined();
     expect(server.toolInputSchemaJson("claim_item")).toBeDefined();
+    expect(server.toolInputSchemaJson("submit_development_complete")).toBeDefined();
     expect(server.toolInputSchemaJson("submit_for_verification")).toBeDefined();
     expect(server.toolInputSchemaJson("create_item")).toBeDefined();
     // Accepting, reopening, pausing and giving up stay with the user, so there

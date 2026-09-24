@@ -26,7 +26,7 @@ MissionGo 是面向个人开发者的开源、自托管工作记录中心。它�
 - OAuth 保护的 MCP（读取，以及可选开启的评论与领取），以及可移植的 MissionGo Skill；
 - 浏览器原生 WebMCP 的条目列表、打开和创建入口。
 
-AI 接入负责按编号完整读取条目、时间线、日志和图片；在部署开启写入档位、且用户授予 `missiongo:write` 后，还可以发表评论、把「待处理」的条目领为「处理中」、在 PR 确实合并后推到「待验证」——只有这两个状态流转——以及在用户于会话里确认内容后，从正在处理的条目拆出衍生条目。不开放修改条目内容与字段、创建无来源的独立条目、删除条目、撤回评论，或决定任务是否通过验收。视频只提供元数据。详见 [AI 客户端接入说明](docs/ai-client-setup.md) 和 [MCP 契约](docs/mcp-contract.md)。
+AI 接入负责按编号完整读取条目、时间线、日志和图片；在部署开启写入档位、且用户授予 `missiongo:write` 后，还可以发表评论、领取待处理条目、在 PR 确实合并后标记「开发完成」、在相关产物核实发布后推到「待验证」，以及在用户于会话里确认内容后创建条目。不开放修改条目内容与字段、删除条目、撤回评论，或决定任务是否通过验收。视频只提供元数据。详见 [AI 客户端接入说明](docs/ai-client-setup.md) 和 [MCP 契约](docs/mcp-contract.md)。
 
 DeepSeek API Key 在服务端 SQLite 中加密保存，解密依赖部署的 `SESSION_SECRET`。更换该密钥后，管理员需要在「账户」中重新保存 DeepSeek API Key；任何 API 响应都不会回传已保存的 Key。
 
@@ -129,8 +129,8 @@ Web 应用没有自己的版本号，它的身份就是提交：`scripts/deploy.
 
 发布工作条目通知走独立的核对步骤：部署时加 `--notice-origin https://<public-host>`，
 脚本会在结束后输出部署前后的实际产物和公开校验结果。发布会话按
-[`skills/missiongo/SKILL.md`](skills/missiongo/SKILL.md) 的「发布后版本回写」流程，
-只为 PR 和版本范围都核实过的待验证条目追加评论；部署脚本本身不保存 MissionGo 凭据。
+[`skills/missiongo/SKILL.md`](skills/missiongo/SKILL.md) 的「发布后状态交接与版本回写」流程，
+只为 PR 与所有相关产物都核实过的开发完成条目追加评论并推到待验证；部署脚本本身不保存 MissionGo 凭据。
 
 ## 项目规范
 
