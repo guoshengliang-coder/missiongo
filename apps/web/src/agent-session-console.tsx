@@ -45,6 +45,7 @@ import {
   type AgentSessionFilter,
 } from "./agent-session-view";
 import { AgentSessionQuickSettings } from "./agent-session-settings";
+import { sessionTitle } from "./agent-session-title";
 import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
@@ -67,12 +68,6 @@ function SessionStatusIcon({ status }: { status: AgentSessionStatus }) {
   if (status === "idle") return <CircleCheck size={14} />;
   if (status === "failed" || status === "stalled") return <CircleAlert size={14} />;
   return <CircleDot size={14} />;
-}
-
-function sessionTitle(session: AgentSessionSummary): string {
-  const keys = session.items.map((item) => item.key).join("、");
-  const firstTitle = session.items[0]?.title;
-  return firstTitle ? `${keys} · ${firstTitle}` : session.sessionName ?? session.id;
 }
 
 function lastSeenAgo(value: string | undefined, locale: string): string | null {
