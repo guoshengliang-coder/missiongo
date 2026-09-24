@@ -11,15 +11,16 @@ import { useI18n } from "./i18n";
  * A Codex thread link hands off to the Codex app rather than a page, so it gets
  * no new tab.
  */
-export function SessionLink({ url }: { url: string }) {
+export function SessionLink({ url, compact = false }: { url: string; compact?: boolean }) {
   const { t } = useI18n();
   if (!isAcceptedSessionUrl(url)) return null;
   const labelKey = sessionLinkLabelKey(url);
+  const label = compact ? t("agentConsoleClientView") : t(labelKey);
   return (
     <p className="dispatch-session-link">
       {labelKey === "dispatchOpenSession"
-        ? <a href={url} target="_blank" rel="noopener noreferrer">{t(labelKey)}</a>
-        : <a href={url}>{t(labelKey)}</a>}
+        ? <a className={compact ? "secondary-button" : undefined} href={url} target="_blank" rel="noopener noreferrer" title={t(labelKey)}>{label}</a>
+        : <a className={compact ? "secondary-button" : undefined} href={url} title={t(labelKey)}>{label}</a>}
     </p>
   );
 }

@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LoaderCircle } from "lucide-react";
+import { LoaderCircle, MoreHorizontal } from "lucide-react";
 
 import { DISPATCH_MODES_BY_AGENT } from "@missiongo/domain";
 
@@ -18,6 +19,13 @@ import type { AgentSessionSummary } from "./types";
  */
 export function AgentSessionQuickSettings({ session }: { session: AgentSessionSummary }) {
   const { t } = useI18n();
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [showEffortNote, setShowEffortNote] = useState(false);
+  useEffect(() => {
+    if (!showEffortNote) return;
+    const timer = window.setTimeout(() => setShowEffortNote(false), 5000);
+    return () => window.clearTimeout(timer);
+  }, [showEffortNote]);
   const queryClient = useQueryClient();
   const settings = session.settings;
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, enabled: settings.adjustable && Boolean(session.agentSessionId) });
@@ -62,6 +70,17 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   const modeValue = settings.pending?.mode ?? settings.mode;
   const modelValue = settings.pending?.model ?? settings.model ?? "";
   const effortValue = settings.pending?.effort ?? settings.effort ?? "";
+  const changeMode = (mode: string) => {
+    if (mode !== modeValue) apply.mutate({ mode });
+    setMoreOpen(false);
+  };
+  const changeEffort = (effort: string) => {
+    if (effort && effort !== effortValue) {
+      apply.mutate({ effort });
+      if (session.agentKind === "codex") setShowEffortNote(true);
+    }
+    setMoreOpen(false);
+  };
 
   if (!settings.adjustable || !session.agentSessionId) {
     return (
@@ -79,19 +98,18 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
     <div className="agent-session-quick-settings">
       <div className="agent-session-quick-settings-row">
         <select
+          className="agent-settings-mode"
           aria-label={t("dispatchMode")}
           value={modeValue}
           disabled={apply.isPending}
-          onChange={(event) => {
-            const mode = event.target.value;
-            if (mode !== modeValue) apply.mutate({ mode });
-          }}
+          onChange={(event) => changeMode(event.target.value)}
         >
           {DISPATCH_MODES_BY_AGENT[session.agentKind].map((value) => (
             <option key={value} value={value}>{modeLabel(value)}</option>
           ))}
         </select>
         <select
+          className="agent-settings-model"
           aria-label={t("dispatchModel")}
           value={modelValue}
           title={`${shownModel}${endpointNote}`}
@@ -110,13 +128,11 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           ))}
         </select>
         <select
+          className="agent-settings-effort"
           aria-label={t("dispatchEffort")}
           value={effortValue}
           disabled={apply.isPending || !models}
-          onChange={(event) => {
-            const effort = event.target.value;
-            if (effort && effort !== effortValue) apply.mutate({ effort });
-          }}
+          onChange={(event) => changeEffort(event.target.value)}
         >
           {effortValue && <option value={effortValue}>{shownEffort}</option>}
           {!effortValue && <option value="">{shownEffort}</option>}
@@ -124,6 +140,23 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
             <option key={value} value={value}>{effortLabel(value)}</option>
           ))}
         </select>
+        <div className="agent-settings-more">
+          <button type="button" className="secondary-button" aria-label={t("moreActions")} aria-expanded={moreOpen} onClick={() => setMoreOpen((open) => !open)}><MoreHorizontal size={18} /></button>
+          {moreOpen && <div className="agent-settings-more-panel">
+            <label>{t("dispatchMode")}
+              <select value={modeValue} disabled={apply.isPending} onChange={(event) => changeMode(event.target.value)}>
+                {DISPATCH_MODES_BY_AGENT[session.agentKind].map((value) => <option key={value} value={value}>{modeLabel(value)}</option>)}
+              </select>
+            </label>
+            <label>{t("dispatchEffort")}
+              <select value={effortValue} disabled={apply.isPending || !models} onChange={(event) => changeEffort(event.target.value)}>
+                {effortValue && <option value={effortValue}>{shownEffort}</option>}
+                {!effortValue && <option value="">{shownEffort}</option>}
+                {effortOptions(models, modelValue).filter((value) => value !== effortValue).map((value) => <option key={value} value={value}>{effortLabel(value)}</option>)}
+              </select>
+            </label>
+          </div>}
+        </div>
         {apply.isPending && <LoaderCircle className="spin" size={13} aria-hidden="true" />}
       </div>
       {settings.pending && <p className="agent-session-settings-note">{t("agentSettingsPending", { change: pendingText })}</p>}
@@ -135,7 +168,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
             : apply.error instanceof Error ? apply.error.message : t("somethingWentWrong")}
         </p>
       )}
-      {session.agentKind === "codex" && <p className="agent-session-settings-note">{t("agentSettingsCodexEffortNote")}</p>}
+      {showEffortNote && <p className="agent-session-settings-note" role="status">{t("agentSettingsCodexEffortNote")}</p>}
     </div>
   );
 }
