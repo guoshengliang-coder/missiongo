@@ -287,6 +287,15 @@ const MAX_MESSAGES_PER_SNAPSHOT = 2_000;
 const MAX_ACTIVITIES_PER_SNAPSHOT = 100;
 const SOURCE_ARCHIVE_POLL_MS = 30_000;
 
+/**
+ * The largest snapshot body a node may upload, counted after gzip is unwrapped
+ * (AND-182). The framework's own default of 1 MiB used to cap a plain upload;
+ * compressed uploads should not inherit it as a cap on the wire bytes, so the
+ * route sets this explicitly and the limit keeps saying how much snapshot the
+ * server will read, not how much it will receive.
+ */
+export const MAX_SNAPSHOT_BODY_BYTES = 8 * 1024 * 1024;
+
 function requiredText(value: string, field: string, maximum: number): string {
   const text = value.trim();
   if (!text) throw invalidInput(`${field} is required.`);

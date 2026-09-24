@@ -416,4 +416,57 @@ final class APIClientTests: XCTestCase {
         XCTAssertFalse(isSuccess(301))
         XCTAssertFalse(isSuccess(199))
     }
+
+    // MARK: Snapshot upload gzip (AND-182)
+
+    private func largeReport() -> AgentSessionReport {
+        return AgentSessionReport(
+            status: "idle",
+            messages: [AgentSessionMessage(sourceId: "u1", turnId: "t1", role: "user", text: String(repeating: "x", count: 2_000))]
+        )
+    }
+
+    func testSnapshotUploadIsGzippedWhenLargeEnough() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
+        let report = largeReport()
+        try await client().reportAgentSession(sessionId: "s1", report: report)
+
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertEqual(sent.request.value(forHTTPHeaderField: "Content-Encoding"), "gzip")
+        XCTAssertTrue(Gzip.looksLikeGzip(sent.body), "a compressed upload must carry the gzip magic bytes")
+        let decoded = try XCTUnwrap(Gzip.decompress(sent.body), "the upload must decode back to the report")
+        XCTAssertEqual(decoded, try APIClient.encoder.encode(report))
+    }
+
+    func testSnapshotUploadStaysPlainWhenSmall() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
+        let report = AgentSessionReport(status: "idle", messages: [])
+        try await client().reportAgentSession(sessionId: "s1", report: report)
+
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertNil(sent.request.value(forHTTPHeaderField: "Content-Encoding"))
+        XCTAssertEqual(sent.body, try APIClient.encoder.encode(report))
+    }
+
+    func testGzipFallsBackToPlainJSONWhenTheServerRefusesIt() async throws {
+        // A server from before AND-182 parses the compressed bytes as JSON and
+        // answers 400; the client must retry the same body uncompressed.
+        StubURLProtocol.install { _, body in
+            Gzip.looksLikeGzip(body)
+                ? .response(status: 400, body: #"{"title":"unsupported"}"#)
+                : .response(status: 204, body: "")
+        }
+        let api = client()
+        try await api.reportAgentSession(sessionId: "s1", report: largeReport())
+        // The fallback holds for later uploads too: no third compressed try.
+        try await api.reportAgentSession(sessionId: "s1", report: largeReport())
+
+        let bodies = StubURLProtocol.recorded.map(\.body)
+        XCTAssertEqual(bodies.count, 3, "one compressed try, one plain retry, one plain upload")
+        XCTAssertTrue(Gzip.looksLikeGzip(bodies[0]))
+        XCTAssertFalse(Gzip.looksLikeGzip(bodies[1]))
+        XCTAssertFalse(Gzip.looksLikeGzip(bodies[2]))
+        XCTAssertEqual(bodies[1], try APIClient.encoder.encode(largeReport()))
+        XCTAssertNil(StubURLProtocol.recorded[1].request.value(forHTTPHeaderField: "Content-Encoding"))
+    }
 }
