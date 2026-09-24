@@ -76,6 +76,7 @@ final class AppModel: ObservableObject {
     /// login is what actually catches most of them.
     static let updateCheckInterval: TimeInterval = 6 * 60 * 60
     static let dispatchRefreshInterval: TimeInterval = 30
+    static let attentionRefreshInterval: TimeInterval = 60
     /// Opening and closing the menu quickly should not start a process each time.
     static let openRefreshThrottle: TimeInterval = 10
 
@@ -104,6 +105,11 @@ final class AppModel: ObservableObject {
     @Published private var latestProducts: [NodeProfile.Product]?
     @Published private(set) var dispatches: [DispatchRecord] = []
     @Published private(set) var dispatchesError: String?
+    @Published private(set) var attentionCount: Int? {
+        didSet {
+            NSApplication.shared.dockTile.badgeLabel = attentionCount.flatMap { $0 > 0 ? String($0) : nil }
+        }
+    }
     @Published private(set) var claude: ClaudeCodeStatus = .checking
     @Published private(set) var codex: CodexStatus = .checking
     /// The Skill row: nil until the first sync starts.
@@ -140,6 +146,7 @@ final class AppModel: ObservableObject {
     private var lastPresentedUpdateVersion: String?
     private var menuTimer: Task<Void, Never>?
     private var lastOpenRefresh: Date?
+    private var attentionTask: Task<Void, Never>?
 
     private init() {
         showsRevokedNotice = UserDefaults.standard.bool(forKey: DefaultsKey.revokedNotice)
@@ -222,6 +229,7 @@ final class AppModel: ObservableObject {
     private func enterSignedIn(_ credential: NodeCredential) {
         phase = .signedIn(credential)
         loginError = nil
+        startAttentionUpdates(credential)
         startLoop(credential)
         startUpdateTimer(credential)
         refreshProfile()
@@ -229,6 +237,9 @@ final class AppModel: ObservableObject {
     }
 
     private func leaveSignedIn(revoked: Bool) {
+        attentionTask?.cancel()
+        attentionTask = nil
+        attentionCount = nil
         stopLoop()
         for agent in checkingIntegrations { integrations.disable(agent) }
         checkingIntegrations.removeAll()
@@ -276,6 +287,28 @@ final class AppModel: ObservableObject {
             return true
         }
         return false
+    }
+
+    private func startAttentionUpdates(_ credential: NodeCredential) {
+        attentionTask?.cancel()
+        attentionCount = nil
+        attentionTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do {
+                    let count = try await APIClient(
+                        serverUrl: credential.serverUrl, token: credential.token
+                    ).attentionCount()
+                    guard !Task.isCancelled, self.credential == credential else { return }
+                    self.attentionCount = count
+                } catch {
+                    guard !Task.isCancelled, self.credential == credential else { return }
+                    self.attentionCount = nil
+                    if self.isRevoked(error) { return }
+                }
+                try? await Task.sleep(nanoseconds: UInt64(Self.attentionRefreshInterval * 1_000_000_000))
+            }
+        }
     }
 
     // MARK: Node loop

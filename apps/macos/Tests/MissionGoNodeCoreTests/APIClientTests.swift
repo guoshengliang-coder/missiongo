@@ -78,6 +78,27 @@ final class APIClientTests: XCTestCase {
         return APIClient(serverUrl: server, token: token, session: StubURLProtocol.session())
     }
 
+    func testAttentionCountUsesNodeCredentialAndReadsExactCount() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":123}"#) }
+        let count = try await client().attentionCount()
+        XCTAssertEqual(count, 123)
+
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertEqual(sent.request.url?.path, "/api/v1/node/attention-summary")
+        XCTAssertEqual(sent.request.httpMethod, "GET")
+        XCTAssertEqual(sent.request.value(forHTTPHeaderField: "Authorization"), "Bearer mgn_x")
+    }
+
+    func testAttentionCountRejectsAnInvalidNumber() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":-1}"#) }
+        do {
+            _ = try await client().attentionCount()
+            XCTFail("A negative attention count must not reach the badge")
+        } catch let error as APIError {
+            guard case .invalidResponse = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+    }
+
     // Every one of these was a real mismatch found by running the TypeScript
     // daemon against the server: the endpoints answer 201 and 204, and a
     // 200-only check turned a success into a reported failure.

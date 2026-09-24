@@ -148,6 +148,29 @@ paths:
                         type: object
                         additionalProperties: { type: integer, minimum: 0 }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/node/attention-summary:
+    get:
+      operationId: getNodeAttentionSummary
+      description: >-
+        The macOS menu-bar and Dock badge count (AND-176). Counts unarchived
+        Agent conversations needing attention across products the node owner's
+        account can currently view. Reading does not schedule AI classification.
+      security:
+        - nodeBearerAuth: []
+      responses:
+        "200":
+          description: The current count; zero hides the badge.
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attention]
+                properties:
+                  attention: { type: integer, minimum: 0 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/v1/widget/summary:
     get:
       operationId: getWidgetSummary
@@ -1315,6 +1338,10 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
+    nodeBearerAuth:
+      type: http
+      scheme: bearer
+      description: Revocable node credential held by the macOS client.
     sdkBearerAuth:
       type: http
       scheme: bearer

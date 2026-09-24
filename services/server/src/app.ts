@@ -454,10 +454,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // AND-149/150: the summary behind GET /api/v1/widget/summary, shared with the
   // push service so a device is told to refresh exactly what the route serves.
   const widgetDevices = new WidgetDeviceStore(store.database);
-  const widgetSummaryFor = (account: AccountSnapshot): WidgetSummary => {
-    const sessions = agentSessionStore.listForAccount(account.id)
+  const visibleAgentSessionsFor = (account: AccountSnapshot) =>
+    agentSessionStore.listForAccount(account.id)
       .filter((session) => session.items.length > 0
         && session.items.every((item) => accountStore.allows(account, item.productId, "view")));
+  const widgetSummaryFor = (account: AccountSnapshot): WidgetSummary => {
+    const sessions = visibleAgentSessionsFor(account);
     const reachable = accountStore.reachableProductIds(account, "view");
     const readyByProduct = new Map(
       store.listProducts()
@@ -2044,6 +2046,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/node/me", async (request) => {
     const node = requireNode(request);
     return dispatchStore.describeSelf(node.nodeId, nodeProducts(node.accountId));
+  });
+
+  // A Mac only holds its node credential. Give it the same all-product
+  // "needs attention" count as the console, scoped to its owner's current
+  // view permissions. Reading this never schedules AI classification.
+  app.get("/api/v1/node/attention-summary", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    const node = requireNode(request);
+    const account = accountStore.getAccount(node.accountId);
+    return {
+      attention: visibleAgentSessionsFor(account)
+        .filter((session) => !session.archivedAt && session.needsAttention).length,
+    };
   });
 
   app.put("/api/v1/node/repos", async (request) => {

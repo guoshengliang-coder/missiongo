@@ -5,6 +5,7 @@ import { scryptSync } from "node:crypto";
 
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
+import { MISSIONGO_SKILL_VERSION } from "@missiongo/contracts";
 
 import { buildApp } from "./app.js";
 import type { ProductAccessEntry } from "./accounts-store.js";
@@ -727,6 +728,71 @@ describe("Dispatch configuration per account (item 2.3)", () => {
       payload: { agents: [{ kind: "claude_code", version: "2.1.232" }], repoCandidates: [] },
     });
     expect(heartbeat.json<{ products: Array<{ id: string }> }>().products).toMatchObject([{ id: shared.id }]);
+  });
+
+  it("updates a Mac's attention count when its owner's view permission changes (AND-176)", async () => {
+    const { app, adminCookie, memberCookie, member, shared } = await twoAccountWorkspace();
+    const grant = (canView: boolean) => app.inject({
+      method: "PUT",
+      url: `/api/v1/accounts/${member.id}/products`,
+      headers: { cookie: adminCookie },
+      payload: { permissions: [{ productId: shared.id, canView, canOperate: canView, canUseAi: canView }] },
+    });
+    expect((await grant(true)).statusCode).toBe(200);
+    const node = await registerNode(app, member.id, "Member's Mac");
+    const authorization = { authorization: `Bearer ${node.token}` };
+    await app.inject({
+      method: "POST", url: "/api/v1/node/heartbeat", headers: authorization,
+      payload: {
+        agents: [{
+          kind: "codex", version: "1.0", ready: true,
+          skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
+        }],
+        repoCandidates: [],
+      },
+    });
+    expect((await app.inject({
+      method: "PUT", url: "/api/v1/node/repos", headers: authorization,
+      payload: { repos: [{ productId: shared.id, repoPath: "/Users/dev/shared" }] },
+    })).statusCode).toBe(200);
+    const created = await app.inject({
+      method: "POST", url: "/api/v1/items", headers: { cookie: memberCookie },
+      payload: {
+        productId: shared.id, status: "ready", type: "task", priority: "normal",
+        title: "Needs a reply", description: "test", environment: { platform: "macos" },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const itemKey = created.json<{ key: string }>().key;
+    const dispatched = await app.inject({
+      method: "POST", url: "/api/v1/dispatches", headers: { cookie: memberCookie },
+      payload: { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: [itemKey] },
+    });
+    expect(dispatched.statusCode, dispatched.body).toBe(201);
+    const dispatchId = dispatched.json<{ id: string }>().id;
+    expect((await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: authorization })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST", url: `/api/v1/node/dispatches/${dispatchId}/result`, headers: authorization,
+      payload: { status: "launched", sessionRef: "member-session" },
+    })).statusCode).toBe(204);
+    const sessions = await app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie: memberCookie } });
+    const sessionId = sessions.json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+    expect((await app.inject({
+      method: "POST", url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`, headers: authorization,
+      payload: {
+        status: "idle",
+        messages: [
+          { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
+          { sourceId: "a1", turnId: "t1", role: "agent", text: "Choose.", questions: [{ title: "Scope", options: ["A", "B"] }] },
+        ],
+      },
+    })).statusCode).toBe(204);
+    const count = async () => (await app.inject({
+      method: "GET", url: "/api/v1/node/attention-summary", headers: authorization,
+    })).json<{ attention: number }>().attention;
+    expect(await count()).toBe(1);
+    expect((await grant(false)).statusCode).toBe(200);
+    expect(await count()).toBe(0);
   });
 
   it("refuses to map a machine's checkout to a product its owner cannot reach", async () => {

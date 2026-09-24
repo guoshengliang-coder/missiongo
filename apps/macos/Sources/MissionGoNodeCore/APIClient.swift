@@ -923,6 +923,19 @@ public struct APIClient: Sendable {
         return try decode(response, operation: "读取本机信息")
     }
 
+    public func attentionCount() async throws -> Int {
+        struct Reply: Decodable { let attention: Int }
+        let response = try await send(
+            "GET", "/api/v1/node/attention-summary", body: Optional<String>.none, bearer: try nodeToken()
+        )
+        try requireSuccess(response, operation: "读取待我处理数量")
+        let reply: Reply = try decode(response, operation: "读取待我处理数量")
+        guard reply.attention >= 0 else {
+            throw APIError.invalidResponse("待我处理数量不能为负数。")
+        }
+        return reply.attention
+    }
+
     /// Sets this machine's nickname, or clears it with `nil`. The server answers
     /// with the same body as `me()`, so the caller gets the updated profile
     /// without asking again.
