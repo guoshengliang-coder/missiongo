@@ -1589,9 +1589,37 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 }
 
 @media (max-width: 760px) {
-  .agent-console-conversation-head { padding-inline: 12px; }
+  /* AND-174: on a phone the conversation head was three stacked rows -- title
+     and agent, then the dispatch items, then the status pill, then the action
+     buttons. The items and the buttons share one row now, the compact session
+     link is an icon like the buttons beside it, and the status pill is gone
+     because the conversation already shows it. The heading is `display:
+     contents` so its title, agent and item chips can be placed in the grid
+     alongside the buttons without moving them in the DOM -- the wide-screen
+     layout is untouched. */
+  .agent-console-conversation-head {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "avatar title title"
+      ".      agent agent"
+      "chips  chips actions";
+    column-gap: 10px;
+    row-gap: 4px;
+    align-items: center;
+    padding-inline: 12px;
+  }
+  .agent-console-heading { display: contents; }
+  .agent-console-avatar { grid-area: avatar; }
+  .agent-console-conversation-head h2 { grid-area: title; min-width: 0; }
+  .agent-console-conversation-head p { grid-area: agent; margin-top: 0; min-width: 0; }
+  .agent-console-dispatch-head { grid-area: chips; width: auto; max-width: none; min-width: 0; margin-top: 0; }
+  .agent-console-conversation-head .status-pill { display: none; }
+  .agent-console-actions { grid-area: actions; margin-left: 0; }
   .agent-console-actions button { width: 44px; min-height: 44px; padding: 0; justify-content: center; overflow: hidden; font-size: 0; }
   .agent-console-actions button svg { width: 16px; height: 16px; flex: 0 0 auto; }
+  .agent-console-actions .dispatch-session-link a { width: 44px; min-height: 44px; padding: 0; justify-content: center; overflow: hidden; font-size: 0; }
+  .agent-console-actions .dispatch-session-link-icon { display: inline; }
   .agent-console-messages { padding: 14px; }
   .agent-console-message { max-width: 96%; }
 }
@@ -1610,20 +1638,23 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .app-shell.agent-console-open.agent-conversation-open .agent-console-conversation-head {
     min-height: calc(64px + var(--safe-top));
     padding: calc(9px + var(--safe-top)) calc(12px + var(--safe-right)) 9px calc(12px + var(--safe-left));
-    grid-template-columns: 44px 32px minmax(0, 1fr);
   }
-  .agent-console-conversation-back { grid-column: 1; }
-  .agent-console-avatar { grid-column: 2; }
-  .agent-console-heading, .agent-console-conversation-head .status-pill { grid-column: 3; }
-  .agent-console-actions { grid-column: 1 / -1; justify-content: flex-end; }
+  /* Only at phone width is the back button shown, so only here does the head
+     grid gain its column (AND-174). */
+  .agent-console-conversation-head {
+    grid-template-columns: auto 32px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "back avatar title title"
+      ".    .      agent agent"
+      "chips chips chips actions";
+  }
   .agent-console-page { height: calc(100vh - 64px - var(--safe-top)); height: calc(100dvh - 64px - var(--safe-top)); min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
   .agent-console-list, .agent-console-conversation { min-height: 0; grid-column: 1; grid-row: 1; }
   .agent-console-list { max-height: none; border-right: 0; border-bottom: 0; }
   .agent-console-page.mobile-list-open .agent-console-conversation,
   .agent-console-page.mobile-conversation-open .agent-console-list { display: none; }
-  .agent-console-conversation-back { display: inline-flex; flex: 0 0 auto; }
+  .agent-console-conversation-back { display: inline-flex; flex: 0 0 auto; grid-area: back; }
   .agent-console-messages { min-height: 0; overflow-y: auto; }
-  .agent-console-conversation-head .status-pill { display: inline-flex; }
   .agent-console-reply-actions { align-items: flex-end; }
   .workspace-head h1 { font-size: 29px; }
   .workspace-stats { font-size: var(--text-xs); }
@@ -1847,6 +1878,8 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .dispatch-result .context-grid { margin-top: 0; }
 .dispatch-session-link { margin: 0; font-size: var(--text-md); }
 .dispatch-session-link a { color: var(--mint-dark); font-weight: 680; }
+/* The compact link is text on a wide screen and an icon on a phone (AND-174). */
+.dispatch-session-link-icon { display: none; }
 
 .dispatch-block { padding: 0 0 24px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
 .dispatch-block h3 { margin: 0 0 6px; font-size: 17px; }
