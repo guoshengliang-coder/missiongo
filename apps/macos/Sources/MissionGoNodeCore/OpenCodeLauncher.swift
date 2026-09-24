@@ -208,8 +208,12 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         var messages: [AgentSessionMessage] = []
         var cursor: String?
         for _ in 0..<20 {
-            var path = "/api/session/\(encoded(id))/message?order=asc&limit=100"
-            if let cursor { path += "&cursor=\(encoded(cursor))" }
+            // OpenCode 2 rejects `order` together with a cursor
+            // (InvalidCursorError: Cursor cannot be combined with order); the
+            // cursor already carries the order it was issued for. Ask for
+            // oldest-first only on the first page, then follow the cursor alone.
+            var path = "/api/session/\(encoded(id))/message?limit=100"
+            if let cursor { path += "&cursor=\(encoded(cursor))" } else { path += "&order=asc" }
             let page = try await call("GET", path)
             messages += try OpenCodeProtocol.messages(page)
             guard let next = OpenCodeProtocol.nextCursor(page), next != cursor else { break }
