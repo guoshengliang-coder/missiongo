@@ -9,7 +9,7 @@ import type {
   AgentSessionSummary,
 } from "./types";
 
-export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;
+export const DEFAULT_AGENT_SESSION_FILTER = "attention" as const;
 export const DEFAULT_AGENT_KIND_FILTER = "all" as const;
 export const MESSAGE_BOTTOM_THRESHOLD_PX = 48;
 export const AGENT_SESSIONS_CONSOLE_REFETCH_MS = 5_000;

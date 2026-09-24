@@ -67,8 +67,8 @@ describe("agent session message view", () => {
     ]);
   });
 
-  it("opens on all conversations by default", () => {
-    expect(DEFAULT_AGENT_SESSION_FILTER).toBe("all");
+  it("opens on conversations needing attention by default", () => {
+    expect(DEFAULT_AGENT_SESSION_FILTER).toBe("attention");
     expect(DEFAULT_AGENT_KIND_FILTER).toBe("all");
   });
 
