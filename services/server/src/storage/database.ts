@@ -1254,6 +1254,29 @@ export class MissionGoDatabase {
           .run(202609240534, new Date().toISOString());
       });
     }
+    // AND-150: FCM tokens for the Android widget's server-driven pushes. One row
+    // per device token; re-registering an existing token rebinds it to the
+    // account that just signed in, because a token outliving its account would
+    // otherwise keep receiving that account's signals.
+    const widgetDevicesMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609241232")
+      .get() as unknown as { version: number } | undefined;
+    if (!widgetDevicesMigration) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE widget_devices (
+            fcm_token TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          ) STRICT;
+          CREATE INDEX widget_devices_account ON widget_devices(account_id);
+        `);
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609241232, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

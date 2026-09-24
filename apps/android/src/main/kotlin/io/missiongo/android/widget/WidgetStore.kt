@@ -57,7 +57,9 @@ internal class WidgetStore(context: Context) {
 
     /**
      * Drops the numbers. They belong to a sign-in that no longer holds, and a
-     * stale 0 would read as "nothing needs you".
+     * stale 0 would read as "nothing needs you". The notification baseline goes
+     * with them: whatever waits after the next sign-in is a fresh start, not a
+     * change to announce against the previous account's conversations.
      */
     fun saveSignedOut() {
         prefs.edit()
@@ -65,6 +67,25 @@ internal class WidgetStore(context: Context) {
             .remove(KEY_UPDATED_AT)
             .putString(KEY_OUTCOME, Outcome.SIGNED_OUT.name)
             .remove(KEY_REFRESHING_SINCE)
+            .remove(KEY_ATTENTION_BASELINE)
+            .remove(KEY_ATTENTION_BASELINE_READY)
+            .commit()
+    }
+
+    /**
+     * The "sessionId:revision" pairs the person was last notified about, or null
+     * before the first push signal has established a baseline (AND-150). Null is
+     * a third state, distinct from an empty set: empty means "nothing waits",
+     * and a later waiting session is a change worth announcing.
+     */
+    fun readAttentionBaseline(): Set<String>? =
+        if (!prefs.getBoolean(KEY_ATTENTION_BASELINE_READY, false)) null
+        else prefs.getStringSet(KEY_ATTENTION_BASELINE, emptySet())?.toSet() ?: emptySet()
+
+    fun saveAttentionBaseline(entries: Set<String>) {
+        prefs.edit()
+            .putStringSet(KEY_ATTENTION_BASELINE, entries)
+            .putBoolean(KEY_ATTENTION_BASELINE_READY, true)
             .commit()
     }
 
@@ -74,5 +95,7 @@ internal class WidgetStore(context: Context) {
         const val KEY_UPDATED_AT = "updated_at"
         const val KEY_OUTCOME = "outcome"
         const val KEY_REFRESHING_SINCE = "refreshing_since"
+        const val KEY_ATTENTION_BASELINE = "attention_baseline"
+        const val KEY_ATTENTION_BASELINE_READY = "attention_baseline_ready"
     }
 }

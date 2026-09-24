@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { buildApp } from "./app.js";
 import { trustProxySetting } from "./config.js";
 import { MCP_WRITE_TIERS } from "./mcp.js";
+import { parseWidgetPushServiceAccount } from "./widget-push.js";
 
 try {
   loadEnvFile(fileURLToPath(new URL("../../../.env", import.meta.url)));
@@ -65,6 +66,10 @@ if (!["127.0.0.1", "::1", "localhost"].includes(host) && hasCompleteAdminAccount
   throw new Error("MISSIONGO_PUBLIC_ORIGIN is required for account-based AI login on a non-loopback address.");
 }
 
+// AND-150: the Firebase service-account JSON, inline so the env file stays the
+// one place deployment secrets live. Absent simply leaves widget pushes off.
+const widgetPushServiceAccount = parseWidgetPushServiceAccount(process.env.WIDGET_FCM_SERVICE_ACCOUNT);
+
 const app = buildApp({
   databasePath,
   attachmentsPath,
@@ -74,6 +79,7 @@ const app = buildApp({
   ...(adminToken ? { adminToken } : {}),
   writeTools,
   ...(release ? { release } : {}),
+  ...(widgetPushServiceAccount ? { widgetPushServiceAccount } : {}),
   ...(hasCompleteAdminAccount ? {
     adminAccount: {
       id: adminAccountId!,

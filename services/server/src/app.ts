@@ -60,7 +60,9 @@ import {
 import { MissionGoStore } from "./store.js";
 import { COMMENT_BODY_KINDS, COMPONENT_KINDS, type ComponentKind } from "./types.js";
 import type { FeedbackLogEntry, SdkPrincipal } from "./types.js";
-import { widgetSummary } from "./widget-summary.js";
+import { WidgetDeviceStore } from "./widget-devices.js";
+import { WidgetPushService, type WidgetPushServiceAccount } from "./widget-push.js";
+import { widgetSummary, type WidgetSummary, type WidgetSummarySession } from "./widget-summary.js";
 
 export interface BuildAppOptions {
   readonly databasePath?: string;
@@ -78,6 +80,12 @@ export interface BuildAppOptions {
   readonly release?: string;
   /** Replaced only by tests; production sends requests directly to DeepSeek. */
   readonly aiProviderFetch?: typeof fetch;
+  /** AND-150: FCM credentials for widget pushes. Absent means the push half stays off. */
+  readonly widgetPushServiceAccount?: WidgetPushServiceAccount;
+  /** Replaced only by tests; production talks to Google directly. */
+  readonly widgetPushFetch?: typeof fetch;
+  /** Replaced only by tests; production merges bursts over a few seconds. */
+  readonly widgetPushDebounceMs?: number;
 }
 
 type SdkRateLimitBucket = "draft_read" | "draft_write" | "finalize" | "web_session" | "attachment_upload" | "ai_title";
@@ -443,6 +451,48 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.adminAccount?.sessionSecret ?? options.adminToken ?? "local-development-only",
     options.aiProviderFetch,
   );
+  // AND-149/150: the summary behind GET /api/v1/widget/summary, shared with the
+  // push service so a device is told to refresh exactly what the route serves.
+  const widgetDevices = new WidgetDeviceStore(store.database);
+  const widgetSummaryFor = (account: AccountSnapshot): WidgetSummary => {
+    const sessions = agentSessionStore.listForAccount(account.id)
+      .filter((session) => session.items.length > 0
+        && session.items.every((item) => accountStore.allows(account, item.productId, "view")));
+    const reachable = accountStore.reachableProductIds(account, "view");
+    const readyByProduct = new Map(
+      store.listProducts()
+        .filter((product) => reachable === "*" || reachable.includes(product.id))
+        .map((product) => [product.id, store.getWorkItemListSummary({ productId: product.id }).byStatus.ready]),
+    );
+    const summarySession = (session: (typeof sessions)[number]): WidgetSummarySession => ({
+      id: session.id,
+      status: session.status,
+      needsAttention: session.needsAttention,
+      ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
+      ...(session.command ? { command: { status: session.command.status } } : {}),
+      items: session.items.map((item) => ({ productId: item.productId, key: item.key })),
+      attention: session.attention,
+      ...(session.latestMessage ? { latestMessageText: session.latestMessage.text } : {}),
+    });
+    return widgetSummary(sessions.map(summarySession), readyByProduct);
+  };
+  const widgetPush = new WidgetPushService({
+    devices: widgetDevices,
+    summaryFor: (accountId) => {
+      try {
+        const account = accountStore.getAccount(accountId);
+        return account.disabledAt ? undefined : widgetSummaryFor(account);
+      } catch {
+        // A deleted account's devices go with it (FK cascade); anything left
+        // simply stops hearing about summaries.
+        return undefined;
+      }
+    },
+    ...(options.widgetPushServiceAccount ? { serviceAccount: options.widgetPushServiceAccount } : {}),
+    ...(options.widgetPushFetch ? { fetchImpl: options.widgetPushFetch } : {}),
+    ...(options.widgetPushDebounceMs !== undefined ? { debounceMs: options.widgetPushDebounceMs } : {}),
+    log: app.log,
+  });
   const attentionClassifications = new Map<string, Promise<void>>();
   const scheduleAttentionClassification = (sessionId: string): void => {
     if (!aiTitle.attentionEnabled() || attentionClassifications.has(sessionId)) return;
@@ -450,13 +500,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!candidate) return;
     const task = aiTitle.classifyAttention(candidate.text)
       .then((classification) => {
-        agentSessionStore.completeAttention(sessionId, candidate.messageHash, classification);
+        if (agentSessionStore.completeAttention(sessionId, candidate.messageHash, classification)) {
+          // The verdict landed outside any request; the widget's push side still
+          // has to hear that "needs attention" may have changed.
+          widgetPush.noteChanged();
+        }
       })
       .catch(() => {
         // Missing credentials, provider failures and malformed model output all
         // fail safe: the person sees the session instead of silently missing a
         // request. Provider bodies and message text never reach logs.
-        agentSessionStore.failAttention(sessionId, candidate.messageHash);
+        if (agentSessionStore.failAttention(sessionId, candidate.messageHash)) {
+          widgetPush.noteChanged();
+        }
       });
     attentionClassifications.set(sessionId, task);
     void task.finally(() => attentionClassifications.delete(sessionId));
@@ -610,8 +666,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.decorate("missionGoAccounts", accountStore);
   app.addHook("onClose", async () => {
     await Promise.allSettled(attentionClassifications.values());
+    await widgetPush.close();
     await mcpHandler?.close();
     store.close();
+  });
+
+  // AND-150: every mutating API call may have changed what a widget shows. The
+  // net is wide on purpose -- the fingerprint comparison in WidgetPushService,
+  // not this hook, is what keeps devices quiet, so a new mutation endpoint is
+  // covered the day it ships. Heartbeats are the one exclusion: they arrive on
+  // a timer forever and change nothing a widget displays.
+  app.addHook("onResponse", async (request) => {
+    if (request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") return;
+    const path = request.url.split("?", 1)[0]!;
+    if (!path.startsWith("/api/v1/") || path === "/api/v1/node/heartbeat") return;
+    widgetPush.noteChanged();
   });
 
   // Baseline security headers, so they survive swapping the reverse proxy. CSP
@@ -1772,17 +1841,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // be what spends AI calls.
   app.get("/api/v1/widget/summary", async (request, reply) => {
     reply.header("cache-control", "no-store");
+    return widgetSummaryFor(requireAccount(request));
+  });
+
+  // AND-150: the app registers its FCM token with the session cookie it already
+  // holds from the WebView sign-in, and drops it on sign-out. A token seen again
+  // under a different account is that account's now: FCM mints one token per
+  // install, so a re-login must rebind rather than keep pushing the old account.
+  app.put("/api/v1/widget/device", async (request) => {
     const account = requireAccount(request);
-    const sessions = agentSessionStore.listForAccount(account.id)
-      .filter((session) => session.items.length > 0
-        && session.items.every((item) => accountStore.allows(account, item.productId, "view")));
-    const reachable = accountStore.reachableProductIds(account, "view");
-    const readyByProduct = new Map(
-      store.listProducts()
-        .filter((product) => reachable === "*" || reachable.includes(product.id))
-        .map((product) => [product.id, store.getWorkItemListSummary({ productId: product.id }).byStatus.ready]),
-    );
-    return widgetSummary(sessions, readyByProduct);
+    widgetDevices.register(account.id, stringField(objectBody(request.body), "token")!);
+    return { registered: true };
   });
 
   app.patch("/api/v1/agent-sessions/:sessionId", async (request) => {

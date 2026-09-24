@@ -45,6 +45,12 @@ TRUST_PROXY=
 # A client still needs the missiongo:write scope its user granted at sign-in, so opening
 # the surface and granting access stay two separate decisions.
 MISSIONGO_WRITE_TOOLS=
+# Optional (AND-150): the Firebase service-account JSON as one line, for the
+# Android widget's push signals. Generate it in the Firebase console
+# (Project settings > Service accounts > Generate new private key), then inline
+# the file's contents. Without it, push stays off and the app falls back to its
+# timed refreshes.
+WIDGET_FCM_SERVICE_ACCOUNT=
 ```
 
 Adding a variable here is not enough on its own: the environment file feeds compose

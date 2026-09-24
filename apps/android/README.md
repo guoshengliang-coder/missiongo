@@ -20,6 +20,16 @@
 - 点 Agent 区打开 Agent 控制台的「待我处理」筛选，只有一个会话待处理时直接打开该会话；点条目区打开「待处理」列表。网页视图按产品划分，所以会落在对应数量最多的那个产品。
 - 颜色取自 `apps/web/src/styles.css` 的令牌，放在 `values/widget_colors.xml` 与 `values-night/widget_colors.xml`。
 
+## 服务端推送（AND-150）
+
+服务端在会话状态、关注状态或条目状态变化后重算汇总，与上次推送指纹不同才向 FCM 发一条 data-only 消息——只带「该刷新了」信号，通知内容不经 Google。App 收到信号后自行拉取汇总、刷新小组件，并按需弹通知：
+
+- 通知规则：首个信号只建立基线不弹通知；之后仅当新出现「会话+版本」待处理对时提醒，恢复正常的会话静默更新基线。单个会话弹「条目号 关注类型」+ 摘要，带「打开会话」与「无需处理」（按版本号调 attention/dismiss，避免误关更新的变化）按钮；多个会话合并为「有 N 个会话待你处理」。
+- 设备 FCM token 在打开 App 时注册到 `PUT /api/v1/widget/device`，沿用 WebView 登录 Cookie；重新注册即重绑当前账号。
+- 三种旧刷新（周期任务、离开 App、手动胶囊）全部保留，作为推送关闭或失败时的兜底。
+
+构建注入：`google-services.json` 不入库（见 `.gitignore`），构建时从私密配置目录 `~/.config/missiongo/google-services.json` 拷入（模式同签名配置，可用 `MISSIONGO_ANDROID_GOOGLE_SERVICES` 环境变量覆盖路径）。没有该文件时 App 照常构建运行，Firebase 不初始化，推送整体关闭，退回定时刷新。服务端需配置 `WIDGET_FCM_SERVICE_ACCOUNT`，见[部署说明](../../deploy/README.md)。
+
 ## SDK 接入
 
 App 直接引用仓库内的 Android SDK 源码模块：
