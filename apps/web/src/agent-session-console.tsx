@@ -40,6 +40,7 @@ import {
   resolvedAgentSessionId,
   shouldMarkRead,
   shouldResetMessageView,
+  shouldScrollMessagesAfterChange,
   type AgentKindFilter,
   type AgentSessionFilter,
 } from "./agent-session-view";
@@ -467,7 +468,7 @@ export function AgentSessionConsole({
 
     const changedIds = changedMessageIds(previousMessages, messages);
     if (changedIds.length === 0 && !outgoingChanged) return;
-    if (followLatest) scrollToLatest();
+    if (shouldScrollMessagesAfterChange(outgoingChanged, followLatest)) scrollToLatest();
     else if (changedIds.length > 0) {
       changedIds.forEach((id) => unseenMessageIdsRef.current.add(id));
       setNewMessageCount(unseenMessageIdsRef.current.size);

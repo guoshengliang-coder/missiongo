@@ -21,6 +21,7 @@ import {
   resolvedAgentSessionId,
   shouldMarkRead,
   shouldResetMessageView,
+  shouldScrollMessagesAfterChange,
 } from "./agent-session-view";
 import type { AgentSessionSummary } from "./types";
 
@@ -148,6 +149,16 @@ describe("agent session message view", () => {
   it("keeps following within the bottom tolerance", () => {
     expect(isNearMessageBottom({ scrollHeight: 1_000, scrollTop: 452, clientHeight: 500 })).toBe(true);
     expect(isNearMessageBottom({ scrollHeight: 1_000, scrollTop: 451, clientHeight: 500 })).toBe(false);
+  });
+
+  it("scrolls to a just-sent reply even after scrolling up, while an arrival keeps the position", () => {
+    // Sending is the person's own action: the newest content must come into
+    // view whether or not they had scrolled up through history.
+    expect(shouldScrollMessagesAfterChange(true, false)).toBe(true);
+    expect(shouldScrollMessagesAfterChange(true, true)).toBe(true);
+    // A message arriving on its own only follows when the view already does.
+    expect(shouldScrollMessagesAfterChange(false, true)).toBe(true);
+    expect(shouldScrollMessagesAfterChange(false, false)).toBe(false);
   });
 
   it("resets when an already-selected one-pane conversation becomes visible", () => {

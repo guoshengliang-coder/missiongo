@@ -262,6 +262,16 @@ export function isNearMessageBottom(
 }
 
 /**
+ * A reply the person just sent is their own action, so the newest content must
+ * come into view even if they had scrolled up through history. Messages that
+ * merely arrive keep respecting the follow-latest position: scrolling up is a
+ * request to read something else, not an invitation to be pulled back down.
+ */
+export function shouldScrollMessagesAfterChange(outgoingChanged: boolean, followLatest: boolean): boolean {
+  return outgoingChanged || followLatest;
+}
+
+/**
  * A streamed answer keeps its id while its text grows. Treat that as one unseen
  * message, while a later snapshot of the same text changes nothing.
  */
