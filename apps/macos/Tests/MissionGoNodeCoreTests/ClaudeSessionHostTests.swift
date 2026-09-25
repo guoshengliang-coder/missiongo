@@ -61,6 +61,34 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.state.messages[2].questions, [AgentSessionQuestion(title: "Ship it?", options: ["Yes", "No"])])
     }
 
+    /// AND-210: a text block that is only whitespace used to mirror as a
+    /// newline message, which the server refuses ("message text is required"),
+    /// failing the whole snapshot and leaving the node offline on every retry.
+    func testWhitespaceOnlyTextBlocksNeverBecomeMessages() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.consume([
+            "type": "assistant",
+            "uuid": "frame-1",
+            "parent_tool_use_id": NSNull(),
+            "message": ["id": "message-1", "content": [["type": "text", "text": "First finding."]]],
+        ])
+        snapshot.consume([
+            "type": "assistant",
+            "uuid": "frame-2",
+            "user_message_uuid": "user-1",
+            "parent_tool_use_id": NSNull(),
+            "message": ["id": "message-1", "content": [["type": "text", "text": "\n "]]],
+        ])
+        snapshot.consume([
+            "type": "assistant",
+            "uuid": "frame-3",
+            "user_message_uuid": "user-1",
+            "parent_tool_use_id": NSNull(),
+            "message": ["id": "message-2", "content": [["type": "text", "text": "  \n"]]],
+        ])
+        XCTAssertEqual(snapshot.state.messages.map(\.text), ["First finding."])
+    }
+
     func testIgnoresToolResultsAndSubagentMessages() {
         var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
         snapshot.consume([
