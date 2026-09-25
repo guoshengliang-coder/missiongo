@@ -1,0 +1,6 @@
+{
+  "pullRequest": 163,
+  "items": [
+    { "key": "AND-205", "title": "控制台显示 OpenCode 提问的正文并可自定义回答" }
+  ]
+}
