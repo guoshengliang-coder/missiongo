@@ -174,18 +174,20 @@ function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof u
   }
   if (command.status === "queued") return t("agentSessionReplyQueued");
   if (command.status === "delivering") return t("agentSessionReplyDelivering");
+  if (command.status === "delivery_unknown") return t("agentSessionReplyDeliveryUnknown");
   if (command.status === "delivered") return t("agentSessionReplyDelivered");
   if (command.status === "failed") return t("agentSessionReplyFailed");
   return t("agentSessionReplyCancelled");
 }
 
 function outgoingReplyStatusLabel(
-  status: "sending" | "queued" | "delivering" | "failed",
+  status: "sending" | "queued" | "delivering" | "delivery_unknown" | "failed",
   t: ReturnType<typeof useI18n>["t"],
 ): string {
   if (status === "sending") return t("agentSessionSending");
   if (status === "queued") return t("agentSessionReplyQueued");
   if (status === "delivering") return t("agentSessionReplyDelivering");
+  if (status === "delivery_unknown") return t("agentSessionReplyDeliveryUnknown");
   return t("agentSessionReplyFailed");
 }
 
@@ -455,8 +457,24 @@ export function AgentSessionConsole({
       ]);
     },
   });
+  const resolveDelivery = useMutation({
+    mutationFn: ({ sessionId, commandId, outcome }: {
+      sessionId: string; commandId: string; outcome: "received" | "not_received"; text: string;
+    }) => api.resolveAgentSessionDelivery(sessionId, commandId, outcome),
+    onSuccess: async (_command, input) => {
+      if (input.outcome === "not_received") {
+        setReply(input.text);
+        setDismissedCommandId(input.commandId);
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
+      ]);
+    },
+  });
   const command = sessionQuery.data?.command;
-  const pending = command?.status === "queued" || command?.status === "delivering";
+  const pending = command?.status === "queued" || command?.status === "delivering"
+    || command?.status === "delivery_unknown";
   const sendingSelected = send.isPending && send.variables?.sessionId === selected?.agentSessionId;
   const failedRequest = send.isError && send.variables?.sessionId === selected?.agentSessionId
     ? { text: send.variables.text, occurredAt: send.variables.occurredAt, status: "failed" as const, error: localizedErrorText(send.error, t) }
@@ -962,7 +980,7 @@ export function AgentSessionConsole({
                       {send.variables.files.map((file, index) => <span key={`${file.name}-${index}`}>{file.name}</span>)}
                     </div> : null}
                     <footer className="agent-console-message-delivery" role="status">
-                      {outgoing.status === "failed"
+                      {outgoing.status === "failed" || outgoing.status === "delivery_unknown"
                         ? <CircleAlert size={14} />
                         : <LoaderCircle className="spin" size={14} />}
                       <span>{outgoingReplyStatusLabel(outgoing.status, t)}{outgoing.error ? `: ${outgoing.error}` : ""}</span>
@@ -975,6 +993,19 @@ export function AgentSessionConsole({
                         >
                           {cancel.isPending ? t("agentSessionCancelling") : t("agentSessionCancelAndEdit")}
                         </button>
+                      )}
+                      {outgoing.status === "delivery_unknown" && outgoing.commandId
+                        && sessionQuery.data?.canResolveDelivery && (
+                        <>
+                          <button type="button" className="text-button" disabled={resolveDelivery.isPending}
+                            onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "received", text: outgoing.text })}>
+                            {t("agentSessionReplyConfirmReceived")}
+                          </button>
+                          <button type="button" className="text-button" disabled={resolveDelivery.isPending}
+                            onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "not_received", text: outgoing.text })}>
+                            {t("agentSessionReplyConfirmNotReceived")}
+                          </button>
+                        </>
                       )}
                       {outgoing.status === "failed" && (
                         <button
@@ -992,6 +1023,7 @@ export function AgentSessionConsole({
                     </footer>
                   </article>
                 )}
+                {resolveDelivery.isError && <p className="inline-error">{localizedErrorText(resolveDelivery.error, t)}</p>}
                 {activities.length > 0 && (
                   <section className="agent-console-background" aria-label={t("agentSessionBackgroundTitle")}>
                     <header><LoaderCircle className="spin" size={15} /><strong>{t("agentSessionBackgroundCount", { count: activities.length })}</strong></header>

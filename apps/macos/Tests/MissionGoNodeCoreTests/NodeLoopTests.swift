@@ -115,6 +115,23 @@ private final class SnapshotAdapter: AgentAdapter {
     }
 }
 
+private final class CodexReplyAdapter: AgentAdapter {
+    let kind = "codex"
+    let attempts = Locked(0)
+    let fail: Bool
+
+    init(fail: Bool) { self.fail = fail }
+    func detect() async -> String? { "0.155.1" }
+    func launch(_ job: DispatchJob) async throws -> LaunchResult { throw LaunchError("not used") }
+    func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        attempts.withLock { $0 += 1 }
+        if fail { throw LaunchError("Codex connection closed") }
+        return AgentSessionReport(
+            status: "active", messages: [], commandId: session.command?.id, commandStatus: "delivered"
+        )
+    }
+}
+
 private struct RecoveringAdapter: AgentAdapter {
     let kind = "claude_code"
     let detections = Locked(0)
@@ -207,6 +224,48 @@ final class NodeLoopTests: XCTestCase {
         while !condition(), Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
+    }
+
+    func testAmbiguousCodexFailureIsReportedUnknownWithoutRetryingAfterUploadLoss() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionReportFailures.withLock { $0 = 1 }
+        api.sessionList.withLock { $0 = [NodeAgentSession(
+            id: "s1", agentKind: "codex", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "c1", text: "Approve", status: "delivering")
+        )] }
+        let adapter = CodexReplyAdapter(fail: true)
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac mini",
+                            timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { api.sessionReports.current.count >= 1 }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+        try await task.value
+
+        XCTAssertEqual(api.sessionUploadAttempts.current, 2)
+        XCTAssertEqual(api.sessionReports.current.first?.1.commandStatus, "delivery_unknown")
+        XCTAssertEqual(adapter.attempts.current, 1, "an unacknowledged result must be uploaded, not sent again")
+    }
+
+    func testSuccessfulCodexSendIsNotRepeatedWhenItsReportUploadFails() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionReportFailures.withLock { $0 = 1 }
+        api.sessionList.withLock { $0 = [NodeAgentSession(
+            id: "s1", agentKind: "codex", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "c1", text: "Approve", status: "delivering")
+        )] }
+        let adapter = CodexReplyAdapter(fail: false)
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac mini",
+                            timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { api.sessionReports.current.count >= 1 }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+        try await task.value
+
+        XCTAssertEqual(api.sessionUploadAttempts.current, 2)
+        XCTAssertEqual(api.sessionReports.current.first?.1.commandStatus, "delivered")
+        XCTAssertEqual(adapter.attempts.current, 1, "a lost HTTP response must not start another Codex turn")
     }
 
     func testLaunchesAClaimedDispatchAndReportsTheSession() async throws {

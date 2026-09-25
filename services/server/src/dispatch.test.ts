@@ -3412,7 +3412,7 @@ describe("Widget summary (AND-149)", () => {
   });
 });
 
-describe("Server-side command timeout and alerting (AND-184)", () => {
+describe("Server-side command timeout and alerting (AND-184, AND-203)", () => {
   type ListedSession = {
     id: string;
     command?: { status: string; error?: string; deliveredAt?: string };
@@ -3451,7 +3451,7 @@ describe("Server-side command timeout and alerting (AND-184)", () => {
     database.close();
   }
 
-  it("fails a delivery the Mac claimed and never settled, alerts, and frees the slot", async () => {
+  it("holds an unconfirmed Codex delivery until a person checks it", async () => {
     const { app, cookie, databasePath } = await signedInApp();
     const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
     const commandId = await enqueueReply(app, cookie, sessionId);
@@ -3465,15 +3465,28 @@ describe("Server-side command timeout and alerting (AND-184)", () => {
     backdate(databasePath, "delivering_at", commandId, 31 * 60_000);
 
     const session = await listedSession(app, cookie, mission.productId, sessionId);
-    expect(session.command).toMatchObject({ status: "failed" });
-    expect(session.command?.error).toContain("30 分钟");
+    expect(session.command).toMatchObject({ status: "delivery_unknown" });
+    expect(session.command?.error).toContain("无法确认");
     expect(session.command?.deliveredAt).toBeUndefined();
     expect(session.needsAttention).toBe(true);
     expect(session.attention).toMatchObject({ state: "needed", kind: "action" });
     // No revision: a condition that is still true must not be dismissable.
     expect(session.attention.revision).toBeUndefined();
 
-    // The pending slot is free again.
+    const blocked = await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie }, payload: { text: "Try again." } });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({ code: "agent_reply_pending" });
+    const nodePoll = await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` } });
+    expect(nodePoll.statusCode).toBe(200);
+    expect(nodePoll.json<{ sessions: Array<{ command?: unknown }> }>().sessions[0]?.command).toBeUndefined();
+
+    const confirmed = await app.inject({ method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands/${commandId}/resolve-delivery`,
+      headers: { cookie }, payload: { outcome: "not_received" } });
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json()).toMatchObject({ status: "cancelled", text: "Continue." });
     await enqueueReply(app, cookie, sessionId, "Try again.");
   });
 
@@ -3511,7 +3524,7 @@ describe("Server-side command timeout and alerting (AND-184)", () => {
     expect(session.attention.state).not.toBe("needed");
   });
 
-  it("ignores a late delivery claim after it gave up, but accepts a late result", async () => {
+  it("ignores a late claim after an unknown delivery but accepts a proven result", async () => {
     const { app, cookie, databasePath } = await signedInApp();
     const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
     const commandId = await enqueueReply(app, cookie, sessionId);
@@ -3523,7 +3536,7 @@ describe("Server-side command timeout and alerting (AND-184)", () => {
     });
     backdate(databasePath, "delivering_at", commandId, 31 * 60_000);
     // The read path reaps it.
-    expect((await listedSession(app, cookie, mission.productId, sessionId)).command?.status).toBe("failed");
+    expect((await listedSession(app, cookie, mission.productId, sessionId)).command?.status).toBe("delivery_unknown");
 
     // A reconnect that only now reports the claim must not 409 or resurrect it.
     const lateClaim = await app.inject({
@@ -3533,7 +3546,7 @@ describe("Server-side command timeout and alerting (AND-184)", () => {
       payload: { status: "active", messages: [], commandId, commandStatus: "delivering" },
     });
     expect(lateClaim.statusCode).toBe(204);
-    expect((await listedSession(app, cookie, mission.productId, sessionId)).command?.status).toBe("failed");
+    expect((await listedSession(app, cookie, mission.productId, sessionId)).command?.status).toBe("delivery_unknown");
 
     // Work the Mac really did finish is still recorded.
     const lateResult = await app.inject({
@@ -3546,5 +3559,29 @@ describe("Server-side command timeout and alerting (AND-184)", () => {
     const settled = await listedSession(app, cookie, mission.productId, sessionId);
     expect(settled.command).toMatchObject({ status: "delivered" });
     expect(settled.needsAttention).toBe(false);
+  });
+
+  it("accepts a node's uncertain result and records a human confirmation", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    const commandId = await enqueueReply(app, cookie, sessionId);
+    await app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [], commandId, commandStatus: "delivering" } });
+    const uncertain = await app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "unavailable", messages: [], commandId, commandStatus: "delivery_unknown" } });
+    expect(uncertain.statusCode).toBe(204);
+    expect((await listedSession(app, cookie, mission.productId, sessionId)).command?.status).toBe("delivery_unknown");
+    const confirmed = await app.inject({ method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands/${commandId}/resolve-delivery`,
+      headers: { cookie }, payload: { outcome: "received" } });
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json()).toMatchObject({ status: "delivered" });
+    const repeat = await app.inject({ method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands/${commandId}/resolve-delivery`,
+      headers: { cookie }, payload: { outcome: "not_received" } });
+    expect(repeat.statusCode).toBe(409);
+    await enqueueReply(app, cookie, sessionId, "Next message.");
   });
 });

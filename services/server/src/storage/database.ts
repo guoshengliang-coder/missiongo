@@ -1357,6 +1357,55 @@ export class MissionGoDatabase {
           .run(202609250630, new Date().toISOString());
       });
     }
+    // AND-203: an uncertain Codex delivery must retain the one-command slot
+    // until a person checks the source thread. SQLite CHECK constraints and
+    // partial indexes require a table rebuild on existing installations.
+    const deliveryUnknownMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609250822")
+      .get() as unknown as { version: number } | undefined;
+    if (!deliveryUnknownMigration) {
+      const commandSchema = this.connection.prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_session_commands'",
+      ).get() as unknown as { sql: string };
+      if (!commandSchema.sql.includes("'delivery_unknown'")) {
+        this.connection.exec("PRAGMA foreign_keys = OFF;");
+        try {
+          this.transaction(() => {
+            this.connection.exec(`
+              CREATE TABLE agent_session_commands_new (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+                account_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message', 'interrupt')),
+                text TEXT NOT NULL,
+                turn_id TEXT,
+                status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivery_unknown', 'delivered', 'failed', 'cancelled')),
+                error TEXT,
+                created_at TEXT NOT NULL,
+                delivered_at TEXT,
+                delivering_at TEXT,
+                cancelled_at TEXT
+              ) STRICT;
+              INSERT INTO agent_session_commands_new
+                (id, session_id, account_id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at)
+              SELECT id, session_id, account_id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at
+              FROM agent_session_commands;
+              DROP TABLE agent_session_commands;
+              ALTER TABLE agent_session_commands_new RENAME TO agent_session_commands;
+              CREATE UNIQUE INDEX idx_agent_session_one_queued_command
+                ON agent_session_commands(session_id) WHERE status IN ('queued', 'delivering', 'delivery_unknown');
+            `);
+            if (this.connection.prepare("PRAGMA foreign_key_check").all().length > 0) {
+              throw new Error("Rebuilding agent session commands broke a foreign key.");
+            }
+          });
+        } finally {
+          this.connection.exec("PRAGMA foreign_keys = ON;");
+        }
+      }
+      this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+        .run(202609250822, new Date().toISOString());
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

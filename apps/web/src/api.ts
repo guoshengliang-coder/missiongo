@@ -530,4 +530,9 @@ export const api = {
       `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}/cancel`,
       { method: "POST" },
     ),
+  resolveAgentSessionDelivery: (sessionId: string, commandId: string, outcome: "received" | "not_received") =>
+    request<AgentSessionCommand>(
+      `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}/resolve-delivery`,
+      { method: "POST", body: JSON.stringify({ outcome }) },
+    ),
 };
