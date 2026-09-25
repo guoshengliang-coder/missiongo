@@ -197,6 +197,24 @@ test.describe("row checkbox on a touch screen", () => {
   });
 });
 
+test.describe("the more button on a compact card", () => {
+  test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+
+  test("draws no surface of its own", async ({ page }) => {
+    await page.goto(`/?product=${fixture.productId}&status=all`);
+    await page.waitForLoadState("networkidle");
+    // The card is the only plate in the compact list, so this button cancels the
+    // surface and border .secondary-button brings. A screenshot cannot hold this:
+    // a 44px box on a 375x812 view is 0.6% of the image and toHaveScreenshot
+    // allows 1%, so the baseline sits unchanged either way (AND-194). The rule
+    // was lost once in a merge and nothing failed -- hence this.
+    const more = page.locator(".row-more-menu > summary").first();
+    await expect(more).toBeVisible();
+    await expect(more).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(more).toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
+  });
+});
+
 test.describe("attachments a browser cannot read natively", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 

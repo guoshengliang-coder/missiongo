@@ -1636,7 +1636,10 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
      column to spare for it. 6px down puts the button's centre 2px above the type
      icon's, matching the design. */
   .item-row-actions { position: absolute; top: 6px; right: 6px; align-self: start; }
-  .row-more-menu > summary { width: 44px; min-height: 44px; }
+  /* Bare, like the design draws it: the card is the only thing with a surface, so
+     the button behind it must not bring .secondary-button's own. Dropped once in
+     the card rework's merge -- the box came back and the card read as two plates. */
+  .row-more-menu > summary { width: 44px; min-height: 44px; color: var(--ink-2); background: transparent; border-color: transparent; }
   /* The page control is bare too, now that the panel behind it is. */
   .list-pagination {
     margin-top: 14px;
