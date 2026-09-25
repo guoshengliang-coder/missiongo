@@ -416,4 +416,65 @@ final class APIClientTests: XCTestCase {
         XCTAssertFalse(isSuccess(301))
         XCTAssertFalse(isSuccess(199))
     }
+
+    // AND-181: a snapshot the server would refuse (over-long message, too many
+    // messages, body over the route's limit) used to be uploaded as-is and fail
+    // with a 413/400 the sync loop treated as a generic offline blip.
+
+    func testSnapshotUploadCapsMessageTextToTheServerContract() throws {
+        let uploadable = try APIClient.uploadableSnapshot(AgentSessionReport(status: "idle", messages: [
+            AgentSessionMessage(sourceId: "m1", role: "user", text: String(repeating: "字", count: 100_050)),
+        ]))
+        XCTAssertEqual(uploadable.messages.count, 1)
+        // The cap is 100_000 UTF-16 code units, the unit the server's `.length` counts.
+        XCTAssertEqual(uploadable.messages[0].text.utf16.count, 100_000)
+        XCTAssertEqual(uploadable.messages[0].text, String(repeating: "字", count: 100_000))
+    }
+
+    func testSnapshotUploadCapCountsUTF16UnitsNotGraphemes() throws {
+        // One party popper is one grapheme cluster but two UTF-16 units.
+        let uploadable = try APIClient.uploadableSnapshot(AgentSessionReport(status: "idle", messages: [
+            AgentSessionMessage(sourceId: "m1", role: "agent", text: String(repeating: "🎉", count: 50_001)),
+        ]))
+        XCTAssertEqual(uploadable.messages[0].text.utf16.count, 100_000)
+        // The cut lands on a whole character, never inside a surrogate pair.
+        XCTAssertEqual(uploadable.messages[0].text.count, 50_000)
+    }
+
+    func testSnapshotUploadKeepsTheNewestMessagesWithinTheServerCountLimit() throws {
+        let messages = (0...2_000).map { index in
+            AgentSessionMessage(sourceId: "m\(index)", role: "user", text: "m\(index)")
+        }
+        let uploadable = try APIClient.uploadableSnapshot(
+            AgentSessionReport(status: "idle", messages: messages), budget: .max
+        )
+        XCTAssertEqual(uploadable.messages.count, 2_000)
+        XCTAssertEqual(uploadable.messages.first?.sourceId, "m1")
+        XCTAssertEqual(uploadable.messages.last?.sourceId, "m2000")
+    }
+
+    func testSnapshotUploadDropsTheOldestMessagesToStayInsideTheBudget() throws {
+        let messages = (0..<6).map { index in
+            AgentSessionMessage(sourceId: "m\(index)", role: "user", text: String(repeating: "a", count: 1_000))
+        }
+        let report = AgentSessionReport(status: "idle", messages: messages)
+        let budget = try APIClient.encoder.encode(report).count - 1_500
+        let uploadable = try APIClient.uploadableSnapshot(report, budget: budget)
+        XCTAssertFalse(uploadable.messages.contains { $0.sourceId == "m0" })
+        XCTAssertTrue(uploadable.messages.contains { $0.sourceId == "m5" })
+        XCTAssertLessThanOrEqual(try APIClient.encoder.encode(uploadable).count, budget)
+    }
+
+    func testReportAgentSessionSendsTheReportAsIsWhenItFits() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
+        try await client().reportAgentSession(sessionId: "s1", report: AgentSessionReport(
+            status: "idle",
+            messages: [AgentSessionMessage(sourceId: "u1", role: "user", text: "处理并发布。")]
+        ))
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertEqual(sent.request.url?.path, "/api/v1/node/agent-sessions/s1/snapshot")
+        let body = jsonObject(sent.body)
+        XCTAssertEqual((body["messages"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(body["status"] as? String, "idle")
+    }
 }
