@@ -759,14 +759,17 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 }
 .item-list { min-height: 250px; }
 .list-pagination { min-height: 62px; display: flex; align-items: center; justify-content: center; gap: 14px; padding: 10px 16px; color: var(--muted); background: var(--surface-sunken); border-top: 1px solid var(--line); font-size: var(--text-sm); }
+/* Sized by its content, not pinned to a height: the row holds three text lines
+   and a media tile, and a fixed 72px left the copy on the row's own edges with
+   nothing between them. The design gives the cell 16px top and bottom. */
 .item-row {
   width: 100%;
-  height: 72px;
+  min-height: 72px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 146px minmax(120px, 168px) 112px 118px 34px;
   align-items: center;
   gap: 14px;
-  padding: 0 16px;
+  padding: 14px 16px;
   background: transparent;
   border-bottom: 1px solid var(--line-soft);
   cursor: pointer;
@@ -826,7 +829,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .type-bug { color: var(--danger); background: var(--type-bug-bg); }
 .type-task { color: var(--type-task-fg); background: var(--type-task-bg); }
 .type-note { color: var(--type-note-fg); background: var(--type-note-bg); }
-.item-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.item-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 /* The icon is the first flex item of this line, not a column beside the text
    block. Centring only holds within a flex line, so a badge wrapping to a second
    line used to drag the icon onto the seam between the two -- 11px off the key.
@@ -936,20 +939,23 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
     height: auto;
     grid-template-columns: minmax(0, 1fr) auto auto;
     grid-template-rows: auto auto;
-    gap: 6px 10px;
-    padding: 11px 8px;
+    gap: 8px 12px;
+    padding: 14px 12px;
   }
-  .workspace.detail-open .item-row-lead { grid-column: 1 / 3; grid-row: 1; }
+  /* Narrower than the desk table, so the same columns fold onto two lines --
+     but the same columns, and the ones that sit together there still do: the
+     environment keeps the state pill beside it, and the creator and the time
+     keep the right-hand edge above them. The description stays under the title.
+     The pane is a reading of the list, not a second component with its own idea
+     of what a row holds. */
+  .workspace.detail-open .item-row-lead { grid-column: 1; grid-row: 1; }
   /* Beside the text rather than under it: with room to spare the row stays one
      item tall, and the tiles read as belonging to it. */
   .workspace.detail-open .item-media-strip { grid-column: 3; grid-row: 1 / -1; align-self: center; }
-  .workspace.detail-open .item-description { display: none; }
-  .workspace.detail-open .item-context { grid-column: 1; grid-row: 2; flex-direction: row; align-items: center; gap: 6px; }
-  .workspace.detail-open .item-context small::before { content: "·"; margin-right: 6px; }
+  .workspace.detail-open .item-updated { grid-column: 2; grid-row: 1; justify-self: end; align-items: flex-end; text-align: right; }
+  .workspace.detail-open .item-context { grid-column: 1; grid-row: 2; }
   .workspace.detail-open .item-state { grid-column: 2; grid-row: 2; justify-self: end; }
-  .workspace.detail-open .item-updated, .workspace.detail-open .item-row-actions { display: none; }
-  /* The creator column is hidden with the time, so the context line carries it. */
-  .workspace.detail-open .item-context-creator { display: inline; }
+  .workspace.detail-open .item-row-actions { display: none; }
   .workspace.detail-open .item-row.selected { background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--mint-dark); }
   .workspace.detail-open .list-pagination { background: transparent; }
   .workspace.detail-open .detail-page-shell { min-width: 0; height: 100%; }
@@ -972,17 +978,22 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
   .workspace.detail-open .item-row, .workspace.detail-open .list-surface.without-media .item-row {
     height: auto;
     grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: auto auto auto;
+    grid-template-rows: auto auto auto auto;
     gap: 8px 10px;
     padding: 12px 9px;
   }
+  /* The same columns as the desk table, stacked in the same order: text, tiles,
+     environment and state, then who filed it and when. Nothing is left out for
+     want of room -- a field that only exists at one width makes the pane a
+     different list from the one the row was clicked in. */
   .workspace.detail-open .item-row-lead { grid-column: 1 / -1; grid-row: 1; }
-  .workspace.detail-open .item-context { grid-column: 1; grid-row: 2; }
-  .workspace.detail-open .item-state { grid-column: 2; grid-row: 2; justify-self: end; }
   /* Full width under the text so the tiles are big enough to actually read. */
-  .workspace.detail-open .item-media-strip { grid-column: 1 / -1; grid-row: 3; gap: 8px; }
+  .workspace.detail-open .item-media-strip { grid-column: 1 / -1; grid-row: 2; gap: 8px; }
   .workspace.detail-open .item-media-strip.empty-slot { display: none; }
   .workspace.detail-open .item-media-thumb { width: 72px; height: 84px; }
+  .workspace.detail-open .item-context { grid-column: 1; grid-row: 3; }
+  .workspace.detail-open .item-state { grid-column: 2; grid-row: 3; justify-self: end; }
+  .workspace.detail-open .item-updated { grid-column: 1 / -1; grid-row: 4; justify-self: end; align-items: flex-end; text-align: right; }
 }
 .detail-pane { min-width: 0; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
 .detail-toolbar { z-index: 8; min-height: 62px; flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 9px 34px; background: var(--surface-strong); border-bottom: 1px solid var(--line); }
