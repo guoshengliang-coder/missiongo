@@ -5,6 +5,7 @@ import type {
   ItemDispatchSummary,
   AgentSession,
   AgentSessionCommand,
+  AgentSessionAttachment,
   AgentSessionSettings,
   AgentSessionSummary,
   Component,
@@ -464,11 +465,31 @@ export const api = {
     request<{ sessions: AgentSessionSummary[] }>(
       `/api/v1/agent-sessions${productId ? `?productId=${encodeURIComponent(productId)}` : ""}`,
     ),
-  sendAgentSessionCommand: (sessionId: string, text: string) =>
+  sendAgentSessionCommand: (sessionId: string, text: string, attachmentIds: readonly string[] = []) =>
     request<AgentSessionCommand>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands`, {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, ...(attachmentIds.length ? { attachmentIds } : {}) }),
     }),
+  uploadAgentSessionAttachment: async (sessionId: string, file: File) => {
+    const response = await attachmentRequest(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attachments`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-missiongo-content-type": file.type || "application/octet-stream",
+        "x-missiongo-filename": encodeURIComponent(file.name),
+      },
+      body: file,
+    });
+    return response.json() as Promise<AgentSessionAttachment>;
+  },
+  deleteAgentSessionAttachment: (sessionId: string, attachmentId: string) =>
+    requestNoContent(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`, {
+      method: "DELETE",
+    }),
+  agentSessionAttachmentUrl: (sessionId: string, attachmentId: string) =>
+    `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/content`,
+  agentSessionAttachmentPreviewUrl: (sessionId: string, attachmentId: string) =>
+    `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/preview`,
   setAgentSessionArchived: (sessionId: string, archived: boolean) =>
     request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}`, {
       method: "PATCH",
@@ -508,5 +529,10 @@ export const api = {
     request<AgentSessionCommand>(
       `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}/cancel`,
       { method: "POST" },
+    ),
+  resolveAgentSessionDelivery: (sessionId: string, commandId: string, outcome: "received" | "not_received") =>
+    request<AgentSessionCommand>(
+      `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}/resolve-delivery`,
+      { method: "POST", body: JSON.stringify({ outcome }) },
     ),
 };

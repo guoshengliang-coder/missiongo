@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
 import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
+import type { AgentSessionAttachment, AgentSessionAttachments } from "./agent-session-attachments.js";
 import { parseAgentModels, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
 import { autoArchiveFinishedDispatches } from "./auto-archive.js";
 import { deliveredDispatchTimedOut } from "./dispatch-store.js";
@@ -11,7 +12,7 @@ import type { MissionGoDatabase } from "./storage/database.js";
 
 export type AgentSessionStatus = "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
 export type AgentMessageRole = "user" | "agent" | "plan";
-export type AgentSessionCommandStatus = "queued" | "delivering" | "delivered" | "failed" | "cancelled";
+export type AgentSessionCommandStatus = "queued" | "delivering" | "delivery_unknown" | "delivered" | "failed" | "cancelled";
 export type AgentAttentionState = "pending" | "needed" | "not_needed";
 export type AgentAttentionKind = Exclude<ClassifiedAttentionKind, "none"> | "uncertain";
 
@@ -55,11 +56,13 @@ export interface AgentSessionCommand {
   readonly id: string;
   readonly kind: "message" | "interrupt";
   readonly text: string;
+  readonly attachments?: readonly AgentSessionAttachment[];
   readonly turnId?: string;
   readonly status: AgentSessionCommandStatus;
   readonly error?: string;
   readonly createdAt: string;
   readonly deliveredAt?: string;
+  readonly deliveringAt?: string;
   readonly cancelledAt?: string;
 }
 
@@ -73,6 +76,13 @@ export interface AgentSessionSnapshot {
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
   readonly messages: readonly (AgentSessionMessageInput & { readonly id: string })[];
+  readonly attachmentMessages?: readonly {
+    readonly commandId: string;
+    readonly text: string;
+    readonly createdAt: string;
+    readonly status: AgentSessionCommandStatus;
+    readonly attachments: readonly AgentSessionAttachment[];
+  }[];
   readonly activities: readonly AgentSessionActivity[];
   readonly command?: AgentSessionCommand;
   /** False once every linked item is done. */
@@ -272,6 +282,7 @@ interface CommandRow {
   error: string | null;
   created_at: string;
   delivered_at: string | null;
+  delivering_at: string | null;
   cancelled_at: string | null;
 }
 
@@ -405,6 +416,59 @@ function initialAttention(
     ?? (status === "idle" && message?.role === "agent" ? { state: "pending" } : { state: "not_needed" });
 }
 
+/**
+ * How long MissionGo waits for the Mac to settle a reply it has already claimed
+ * (AND-184). Before this, a command's whole life was driven by the node: a Mac
+ * that went away mid-delivery left the one pending slot occupied forever, and
+ * nothing in the server noticed.
+ */
+export const COMMAND_DELIVERING_TIMEOUT_MS = 30 * 60 * 1_000;
+/**
+ * How long a reply may wait behind a running turn before it is worth pointing
+ * out. Waiting behind a long turn is legitimate, so this never fails the
+ * command, it only surfaces it (AND-184).
+ */
+export const COMMAND_QUEUED_ALERT_MS = 180 * 60 * 1_000;
+/** Stamped on a delivery the server stopped waiting for; also its alert marker. */
+export const COMMAND_DELIVERY_TIMEOUT_ERROR =
+  "Mac 认领回复后 30 分钟没有报告投递结果，MissionGo 已自动标记失败。请重新发送或检查该 Mac。";
+export const COMMAND_DELIVERY_UNKNOWN_ERROR =
+  "无法确认 Codex 是否收到这条回复。请先在 Codex 会话中核实，再选择已收到或未收到；MissionGo 不会自动重发。";
+
+/**
+ * Why a pending reply deserves attention, or undefined when it does not. A
+ * command the server already failed for timeout keeps its alert until a new
+ * reply replaces it; a normal queue and a normal delivery stay quiet, so a long
+ * turn never looks like a fault (AND-184).
+ */
+export function stuckCommandReason(
+  command: {
+    status: AgentSessionCommandStatus;
+    error: string | null;
+    created_at: string;
+    delivering_at: string | null;
+  },
+  now = Date.now(),
+): string | undefined {
+  if (command.status === "delivering") {
+    const since = Date.parse(command.delivering_at ?? command.created_at);
+    return Number.isFinite(since) && now - since >= COMMAND_DELIVERING_TIMEOUT_MS
+      ? COMMAND_DELIVERY_TIMEOUT_ERROR
+      : undefined;
+  }
+  if (command.status === "delivery_unknown") return command.error || COMMAND_DELIVERY_UNKNOWN_ERROR;
+  if (command.status === "queued") {
+    const since = Date.parse(command.created_at);
+    return Number.isFinite(since) && now - since >= COMMAND_QUEUED_ALERT_MS
+      ? "回复已排队超过 3 小时，Mac 仍未取走。可能节点离线或会话卡住，可停止后重新发送。"
+      : undefined;
+  }
+  if (command.status === "failed" && command.error === COMMAND_DELIVERY_TIMEOUT_ERROR) {
+    return COMMAND_DELIVERY_TIMEOUT_ERROR;
+  }
+  return undefined;
+}
+
 function boundedAttentionText(text: string): string {
   if (text.length <= 20_000) return text;
   return `${text.slice(0, 2_000)}\n\n[中间内容已省略]\n\n${text.slice(-17_950)}`;
@@ -437,7 +501,7 @@ export function snapshotMakesUnread(
 }
 
 export class AgentSessionStore {
-  constructor(private readonly database: MissionGoDatabase) {}
+  constructor(private readonly database: MissionGoDatabase, private readonly attachments?: AgentSessionAttachments) {}
 
   createForDispatch(input: { dispatchId: string; nodeId: string; sessionRef: string }): string {
     const dispatch = this.database.connection
@@ -506,6 +570,7 @@ export class AgentSessionStore {
           ? { questions: JSON.parse(message.questions_json) as Array<{ title: string; options?: string[] }> }
           : {}),
       })),
+      ...(this.attachments ? { attachmentMessages: this.attachmentMessages(sessionId) } : {}),
       ...(command ? { command: this.mapCommand(command) } : {}),
       replyable: !this.itemsCompleted(sessionId),
     };
@@ -521,6 +586,10 @@ export class AgentSessionStore {
    * title or preview first.
    */
   listForAccount(accountId: string, limit = 100): readonly AgentSessionListItem[] {
+    // Read paths are where the server's own timeout check runs (AND-184): no
+    // resident timer, and the check happens exactly when somebody can see the
+    // freed slot.
+    this.failStuckDeliveringCommands();
     const rows = this.database.connection
       .prepare(
         `SELECT s.id AS session_id, d.id AS dispatch_id, d.agent_kind,
@@ -628,7 +697,15 @@ export class AgentSessionStore {
                       revision: contentHash,
                     }
                   : { ...initialAttention(status, message), revision: contentHash };
-      const needsAttention = attention.state === "needed";
+      // A reply the Mac claimed but never settled, or one queued far longer than
+      // a turn, is a fault the transcript cannot express (AND-184). Override the
+      // message-derived attention so the console shows it; deliberately without a
+      // revision, so nobody can dismiss a condition that is still true.
+      const stuckReason = command ? stuckCommandReason(command) : undefined;
+      const alertAttention: AgentSessionAttention = stuckReason
+        ? { state: "needed", kind: "action", reason: stuckReason }
+        : attention;
+      const needsAttention = alertAttention.state === "needed";
       return {
         id: row.session_id ?? `dispatch:${row.dispatch_id}`,
         ...(row.session_id ? { agentSessionId: row.session_id } : {}),
@@ -653,7 +730,7 @@ export class AgentSessionStore {
         items: itemRows.map((item) => ({ key: item.item_key, title: item.title, productId: item.product_id })),
         ...(message ? { latestMessage: { role: message.role, text: message.text } } : {}),
         ...(command ? { command: this.mapCommand(command) } : {}),
-        attention,
+        attention: alertAttention,
         needsAttention,
         activities: row.session_activities_json
           ? JSON.parse(row.session_activities_json) as AgentSessionActivity[]
@@ -824,8 +901,11 @@ export class AgentSessionStore {
     ).run(sessionId, messageHash, now, revision, now, accountId);
   }
 
-  enqueue(accountId: string, sessionId: string, textValue: string): AgentSessionCommand {
-    const text = requiredText(textValue, "text", MAX_COMMAND_LENGTH);
+  enqueue(accountId: string, sessionId: string, textValue: string, attachmentIds: readonly string[] = []): AgentSessionCommand {
+    const text = textValue.trim();
+    if (!text && attachmentIds.length === 0) throw invalidInput("text or attachments are required.");
+    if (text.length > MAX_COMMAND_LENGTH) throw invalidInput(`text must be ${MAX_COMMAND_LENGTH} characters or fewer.`);
+    if (attachmentIds.length && !this.attachments) throw invalidInput("Session attachments are unavailable.");
     const session = this.database.connection
       .prepare(
         `SELECT s.id, s.archived_at FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
@@ -838,37 +918,72 @@ export class AgentSessionStore {
     }
     if (session.archived_at) throw conflict("agent_session_archived", "Restore this session before replying.");
     if (this.pendingCommand(sessionId)) {
-      throw conflict("agent_reply_pending", "This session already has a pending reply.");
+      throw conflict("agent_reply_pending", "This session has a pending or unconfirmed reply.");
     }
     const id = randomUUID();
     const now = new Date().toISOString();
-    this.database.connection
-      .prepare(
-        `INSERT INTO agent_session_commands (id, session_id, account_id, text, status, created_at)
-         VALUES (?, ?, ?, ?, 'queued', ?)`,
-      )
-      .run(id, sessionId, accountId, text, now);
-    this.database.connection
-      .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
-      .run(now, now, sessionId);
-    this.database.connection
-      .prepare(
-        `UPDATE agent_session_attention
-         SET state = 'not_needed', kind = NULL, reason = NULL, model = NULL, updated_at = ?
-         WHERE session_id = ?`,
-      )
-      .run(now, sessionId);
-    return { id, kind: "message", text, status: "queued", createdAt: now };
+    this.database.transaction(() => {
+      this.database.connection
+        .prepare(
+          `INSERT INTO agent_session_commands (id, session_id, account_id, text, status, created_at)
+           VALUES (?, ?, ?, ?, 'queued', ?)`,
+        )
+        .run(id, sessionId, accountId, text, now);
+      this.attachments?.bind(sessionId, accountId, id, attachmentIds);
+      this.database.connection
+        .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
+        .run(now, now, sessionId);
+      this.database.connection
+        .prepare(
+          `UPDATE agent_session_attention
+           SET state = 'not_needed', kind = NULL, reason = NULL, model = NULL, updated_at = ?
+           WHERE session_id = ?`,
+        )
+        .run(now, sessionId);
+    });
+    return { id, kind: "message", text, status: "queued", createdAt: now,
+      ...(attachmentIds.length ? { attachments: this.attachments!.listForCommand(id) } : {}) };
+  }
+
+  belongsToNode(sessionId: string, nodeId: string): boolean {
+    return Boolean(this.database.connection.prepare(
+      "SELECT 1 FROM agent_sessions WHERE id = ? AND node_id = ?",
+    ).get(sessionId, nodeId));
+  }
+
+  supportsAttachments(sessionId: string): boolean {
+    const row = this.database.connection.prepare(
+      `SELECT n.supports_chat_attachments AS supported FROM agent_sessions s
+       JOIN nodes n ON n.id = s.node_id WHERE s.id = ?`,
+    ).get(sessionId) as unknown as { supported: number } | undefined;
+    return row?.supported === 1;
+  }
+
+  private attachmentMessages(sessionId: string): NonNullable<AgentSessionSnapshot["attachmentMessages"]> {
+    const byCommand = new Map<string, AgentSessionAttachment[]>();
+    for (const { commandId, ...attachment } of this.attachments!.listForSession(sessionId)) {
+      const group = byCommand.get(commandId) ?? [];
+      group.push(attachment);
+      byCommand.set(commandId, group);
+    }
+    const rows = this.database.connection.prepare(
+      "SELECT id, text, status, created_at FROM agent_session_commands WHERE session_id = ? AND kind = 'message' ORDER BY created_at, rowid",
+    ).all(sessionId) as unknown as Array<{ id: string; text: string; status: AgentSessionCommandStatus; created_at: string }>;
+    return rows.flatMap((row) => {
+      const attachments = byCommand.get(row.id) ?? [];
+      return attachments.length ? [{ commandId: row.id, text: row.text, status: row.status,
+        createdAt: row.created_at, attachments }] : [];
+    });
   }
 
   enqueueInterrupt(accountId: string, sessionId: string): AgentSessionCommand {
     const session = this.database.connection
       .prepare(
-        `SELECT s.id, s.status, s.archived_at FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
+        `SELECT s.id, s.status, s.archived_at, s.agent_kind FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
          WHERE s.id = ? AND d.account_id = ?`,
       )
       .get(sessionId, accountId) as unknown as {
-        id: string; status: AgentSessionStatus; archived_at: string | null;
+        id: string; status: AgentSessionStatus; archived_at: string | null; agent_kind: AgentKind;
       } | undefined;
     if (!session) throw notFound("Agent session");
     if (session.archived_at) throw conflict("agent_session_archived", "Restore this session before stopping it.");
@@ -882,14 +997,25 @@ export class AgentSessionStore {
     if (pending?.status === "delivering") {
       throw conflict("agent_reply_delivering", "A reply is already being delivered; try stopping again shortly.");
     }
-    const turn = this.database.connection
-      .prepare(
-        `SELECT turn_id FROM agent_session_messages
-         WHERE session_id = ? AND turn_id IS NOT NULL
-         ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
-      )
-      .get(sessionId) as unknown as { turn_id: string } | undefined;
-    if (!turn?.turn_id) throw conflict("agent_turn_unavailable", "The active agent turn is not visible yet.");
+    if (pending?.status === "delivery_unknown") {
+      throw conflict("agent_reply_delivery_unknown", "Confirm the earlier reply in Codex before stopping this session.");
+    }
+    // Claude Code and Codex interrupts name the exact turn they may cut off, so
+    // a stop needs a visible turn identifier first. OpenCode interrupts the
+    // session by reference and its host reports no turn identifiers at all;
+    // demanding one there made every stop fail with agent_turn_unavailable.
+    const turnId = session.agent_kind === "opencode"
+      ? null
+      : (this.database.connection
+          .prepare(
+            `SELECT turn_id FROM agent_session_messages
+             WHERE session_id = ? AND turn_id IS NOT NULL
+             ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
+          )
+          .get(sessionId) as unknown as { turn_id: string } | undefined)?.turn_id ?? null;
+    if (!turnId && session.agent_kind !== "opencode") {
+      throw conflict("agent_turn_unavailable", "The active agent turn is not visible yet.");
+    }
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.transaction(() => {
@@ -906,18 +1032,22 @@ export class AgentSessionStore {
           `INSERT INTO agent_session_commands (id, session_id, account_id, kind, text, turn_id, status, created_at)
            VALUES (?, ?, ?, 'interrupt', ?, ?, 'queued', ?)`,
         )
-        .run(id, sessionId, accountId, "停止当前任务", turn.turn_id, now);
+        .run(id, sessionId, accountId, "停止当前任务", turnId, now);
       this.database.connection
         .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
         .run(now, now, sessionId);
     });
-    return { id, kind: "interrupt", text: "停止当前任务", turnId: turn.turn_id, status: "queued", createdAt: now };
+    return {
+      id, kind: "interrupt", text: "停止当前任务",
+      ...(turnId ? { turnId } : {}),
+      status: "queued", createdAt: now,
+    };
   }
 
   cancel(accountId: string, sessionId: string, commandId: string): AgentSessionCommand {
     const command = this.database.connection
       .prepare(
-        `SELECT c.id, c.kind, c.text, c.turn_id, c.status, c.error, c.created_at, c.delivered_at, c.cancelled_at
+        `SELECT c.id, c.kind, c.text, c.turn_id, c.status, c.error, c.created_at, c.delivered_at, c.delivering_at, c.cancelled_at
          FROM agent_session_commands c
          JOIN agent_sessions s ON s.id = c.session_id
          JOIN dispatches d ON d.id = s.dispatch_id
@@ -958,7 +1088,47 @@ export class AgentSessionStore {
     return this.mapCommand({ ...command, status: "cancelled", cancelled_at: now });
   }
 
+  /** Release an uncertain reply only after the account holder checks Codex. */
+  resolveDeliveryUnknown(
+    accountId: string, sessionId: string, commandId: string, outcome: "received" | "not_received",
+  ): AgentSessionCommand {
+    const command = this.database.connection.prepare(
+      `SELECT c.id, c.kind, c.text, c.turn_id, c.status, c.error, c.created_at,
+              c.delivered_at, c.delivering_at, c.cancelled_at, s.dispatch_id
+       FROM agent_session_commands c
+       JOIN agent_sessions s ON s.id = c.session_id
+       JOIN dispatches d ON d.id = s.dispatch_id
+       WHERE c.id = ? AND c.session_id = ? AND d.account_id = ?`,
+    ).get(commandId, sessionId, accountId) as unknown as (CommandRow & { dispatch_id: string }) | undefined;
+    if (!command) throw notFound("Agent session command");
+    if (command.kind !== "message" || command.status !== "delivery_unknown") {
+      throw conflict("agent_reply_not_unconfirmed", "Only a reply awaiting delivery confirmation can be resolved.");
+    }
+    const now = new Date().toISOString();
+    const status = outcome === "received" ? "delivered" : "cancelled";
+    const error = outcome === "received"
+      ? "用户在 Codex 核实已收到这条回复。"
+      : "用户在 Codex 核实未收到；可手动重新发送。";
+    this.database.transaction(() => {
+      const changed = this.database.connection.prepare(
+        `UPDATE agent_session_commands
+         SET status = ?, error = ?, delivered_at = ?, cancelled_at = ?
+         WHERE id = ? AND session_id = ? AND status = 'delivery_unknown'`,
+      ).run(status, error, outcome === "received" ? now : null, outcome === "not_received" ? now : null,
+        commandId, sessionId);
+      if (changed.changes !== 1) throw conflict("agent_reply_changed", "The reply changed before it was confirmed.");
+      this.database.connection.prepare(
+        "UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?",
+      ).run(now, now, sessionId);
+      autoArchiveFinishedDispatches(this.database, [command.dispatch_id], now);
+    });
+    return this.mapCommand({ ...command, status, error,
+      delivered_at: outcome === "received" ? now : null,
+      cancelled_at: outcome === "not_received" ? now : null });
+  }
+
   listForNode(nodeId: string): readonly NodeAgentSession[] {
+    this.failStuckDeliveringCommands();
     const sourceArchiveBefore = new Date(Date.now() - SOURCE_ARCHIVE_POLL_MS).toISOString();
     const rows = this.database.connection
       .prepare(
@@ -978,7 +1148,7 @@ export class AgentSessionStore {
          AND (
            status IN ('active', 'stalled', 'unavailable') OR EXISTS (
              SELECT 1 FROM agent_session_commands c
-             WHERE c.session_id = s.id AND c.status IN ('queued', 'delivering')
+             WHERE c.session_id = s.id AND c.status IN ('queued', 'delivering', 'delivery_unknown')
            ) OR s.settings_revision > MAX(s.applied_settings_revision, s.settings_error_revision)
            OR s.source_restore_pending = 1
            -- A source archive still owed goes out now, not after the idle cool-down.
@@ -1003,7 +1173,7 @@ export class AgentSessionStore {
         lifecycle: row.agent_kind === "claude_code" && !row.source_restore_pending
           && (Boolean(row.archived_at) || autoArchived || this.itemsCompleted(row.id)) ? "close" : "keep",
         occupiesExecutionSlot: row.status === "active" || row.status === "stalled",
-        ...(command ? { command: this.mapCommand(command) } : {}),
+        ...(command && command.status !== "delivery_unknown" ? { command: this.mapCommand(command) } : {}),
         ...(row.archive_source === "missiongo" && row.archived_at && row.agent_kind === "codex"
           && !row.source_archived_at && !row.source_archive_error
           ? { archiveInSource: true as const }
@@ -1037,7 +1207,7 @@ export class AgentSessionStore {
     activities?: readonly AgentSessionActivity[];
     error?: string;
     commandId?: string;
-    commandStatus?: "delivering" | "delivered" | "failed";
+    commandStatus?: "delivering" | "delivery_unknown" | "delivered" | "failed";
     commandError?: string;
     sourceArchived?: boolean;
     /** The node tried to archive the source thread MissionGo asked it to and could not. */
@@ -1287,25 +1457,66 @@ export class AgentSessionStore {
         now,
       );
       if (input.commandId && input.commandStatus) {
-        const sourceStatus = input.commandStatus === "delivering" ? "status = 'queued'" : "status IN ('queued', 'delivering')";
-        const changed = this.database.connection
-          .prepare(
-            `UPDATE agent_session_commands SET status = ?, error = ?, delivered_at = ?
-             WHERE id = ? AND session_id = ? AND ${sourceStatus}`,
-          )
-          .run(
-            input.commandStatus,
-            input.commandError?.slice(0, 2_000) || null,
-            input.commandStatus === "delivered" ? now : null,
-            input.commandId,
-            input.sessionId,
-          );
-        if (changed.changes === 0) {
+        const current = this.database.connection
+          .prepare("SELECT status, error FROM agent_session_commands WHERE id = ? AND session_id = ?")
+          .get(input.commandId, input.sessionId) as unknown as
+            { status: AgentSessionCommandStatus; error: string | null } | undefined;
+        if (!current) {
           throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
         }
-        // A pending reply held back the automatic archive; retry now it settled.
-        if (input.commandStatus !== "delivering") {
-          autoArchiveFinishedDispatches(this.database, [session.dispatch_id], now);
+        // The server may have given up on this delivery while the Mac was away
+        // (AND-184). A late `delivering` for a command it already failed is
+        // moot -- resurrecting it would collide with a new reply's pending slot
+        // -- so it is ignored. A late settled report still overwrites the
+        // timeout failure, so work the Mac really did finish is not recorded as
+        // lost.
+        const reaped = current.status === "failed" && current.error === COMMAND_DELIVERY_TIMEOUT_ERROR;
+        if (input.commandStatus === "delivering") {
+          if (!reaped && !["delivery_unknown", "delivered", "cancelled"].includes(current.status)) {
+            const changed = this.database.connection
+              .prepare(
+                `UPDATE agent_session_commands
+                 SET status = 'delivering', error = ?, delivered_at = NULL, delivering_at = ?
+                 WHERE id = ? AND session_id = ? AND status = 'queued'`,
+              )
+              .run(
+                input.commandError?.slice(0, 2_000) || null,
+                now,
+                input.commandId,
+                input.sessionId,
+              );
+            if (changed.changes === 0) {
+              throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
+            }
+          }
+        } else if (current.status === "delivered" || current.status === "cancelled"
+          || (reaped && input.commandStatus === "delivery_unknown")) {
+          // A delayed report cannot reopen a person's resolution or turn an
+          // older timeout into a pending command after a replacement was sent.
+        } else {
+          const changed = this.database.connection
+            .prepare(
+              `UPDATE agent_session_commands SET status = ?, error = ?, delivered_at = ?
+               WHERE id = ? AND session_id = ?
+                 AND (status IN ('queued', 'delivering', 'delivery_unknown') OR (status = 'failed' AND error = ?))`,
+            )
+            .run(
+              input.commandStatus,
+              input.commandStatus === "delivery_unknown"
+                ? input.commandError?.slice(0, 2_000) || COMMAND_DELIVERY_UNKNOWN_ERROR
+                : input.commandError?.slice(0, 2_000) || null,
+              input.commandStatus === "delivered" ? now : null,
+              input.commandId,
+              input.sessionId,
+              COMMAND_DELIVERY_TIMEOUT_ERROR,
+            );
+          if (changed.changes === 0) {
+            throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
+          }
+          // A pending reply held back the automatic archive; retry now it settled.
+          if (input.commandStatus !== "delivery_unknown") {
+            autoArchiveFinishedDispatches(this.database, [session.dispatch_id], now);
+          }
         }
       }
     });
@@ -1373,12 +1584,39 @@ export class AgentSessionStore {
     return changed.changes === 1;
   }
 
+  /** Time out old claimed replies on read paths. Codex replies keep their slot
+   * for human verification; other agents retain AND-184's failed timeout. */
+  private failStuckDeliveringCommands(now = Date.now()): void {
+    const cutoff = new Date(now - COMMAND_DELIVERING_TIMEOUT_MS).toISOString();
+    const affected = this.database.connection
+      .prepare(
+        `SELECT DISTINCT s.dispatch_id AS dispatch_id
+         FROM agent_session_commands c JOIN agent_sessions s ON s.id = c.session_id
+         WHERE c.status = 'delivering' AND s.agent_kind != 'codex'
+           AND COALESCE(c.delivering_at, c.created_at) <= ?`,
+      )
+      .all(cutoff) as unknown as Array<{ dispatch_id: string }>;
+    this.database.connection.prepare(
+      `UPDATE agent_session_commands SET status = 'delivery_unknown', error = ?
+       WHERE status = 'delivering' AND COALESCE(delivering_at, created_at) <= ?
+         AND session_id IN (SELECT id FROM agent_sessions WHERE agent_kind = 'codex')`,
+    ).run(COMMAND_DELIVERY_UNKNOWN_ERROR, cutoff);
+    const changed = this.database.connection.prepare(
+      `UPDATE agent_session_commands SET status = 'failed', error = ?
+       WHERE status = 'delivering' AND COALESCE(delivering_at, created_at) <= ?`,
+    ).run(COMMAND_DELIVERY_TIMEOUT_ERROR, cutoff);
+    if (changed.changes > 0) {
+      // The reply settling is what lets an otherwise finished hand-off archive.
+      autoArchiveFinishedDispatches(this.database, affected.map((row) => row.dispatch_id));
+    }
+  }
+
   private pendingCommand(sessionId: string): CommandRow | undefined {
     return this.database.connection
       .prepare(
-        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, cancelled_at
+        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at
          FROM agent_session_commands
-         WHERE session_id = ? AND status IN ('queued', 'delivering')
+         WHERE session_id = ? AND status IN ('queued', 'delivering', 'delivery_unknown')
          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as CommandRow | undefined;
@@ -1397,22 +1635,25 @@ export class AgentSessionStore {
   private latestCommand(sessionId: string): CommandRow | undefined {
     return this.database.connection
       .prepare(
-        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, cancelled_at
+        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at
          FROM agent_session_commands WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as CommandRow | undefined;
   }
 
   private mapCommand(row: CommandRow): AgentSessionCommand {
+    const attachments = this.attachments?.listForCommand(row.id) ?? [];
     return {
       id: row.id,
       kind: row.kind,
       text: row.text,
+      ...(attachments.length ? { attachments } : {}),
       ...(row.turn_id ? { turnId: row.turn_id } : {}),
       status: row.status,
       ...(row.error ? { error: row.error } : {}),
       createdAt: row.created_at,
       ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}),
+      ...(row.delivering_at ? { deliveringAt: row.delivering_at } : {}),
       ...(row.cancelled_at ? { cancelledAt: row.cancelled_at } : {}),
     };
   }

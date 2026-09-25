@@ -1319,6 +1319,93 @@ export class MissionGoDatabase {
       this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
         .run(202609241537, new Date().toISOString());
     }
+    // AND-184: record the moment a reply enters `delivering` so the server can
+    // give up on a delivery the Mac claimed and never settled. A row that was
+    // already delivering before this migration falls back to its queued time,
+    // the earliest it could have started.
+    const commandDeliveringMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609250519")
+      .get() as unknown as { version: number } | undefined;
+    const hasDeliveringAt = (this.connection.prepare("PRAGMA table_info(agent_session_commands)").all() as unknown as Array<{ name: string }>)
+      .some((column) => column.name === "delivering_at");
+    if (!commandDeliveringMigration || !hasDeliveringAt) {
+      this.transaction(() => {
+        if (!hasDeliveringAt) {
+          this.connection.exec("ALTER TABLE agent_session_commands ADD COLUMN delivering_at TEXT;");
+          this.connection.exec(
+            "UPDATE agent_session_commands SET delivering_at = created_at WHERE status = 'delivering' AND delivering_at IS NULL;",
+          );
+        }
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609250519, new Date().toISOString());
+      });
+    }
+    // AND-202: old nodes must explicitly advertise binary chat delivery;
+    // otherwise a text-only node could acknowledge a file it never received.
+    const chatAttachmentMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609250630")
+      .get() as unknown as { version: number } | undefined;
+    const supportsChatAttachments = (this.connection.prepare("PRAGMA table_info(nodes)").all() as unknown as Array<{ name: string }>)
+      .some((column) => column.name === "supports_chat_attachments");
+    if (!chatAttachmentMigration || !supportsChatAttachments) {
+      this.transaction(() => {
+        if (!supportsChatAttachments) {
+          this.connection.exec("ALTER TABLE nodes ADD COLUMN supports_chat_attachments INTEGER NOT NULL DEFAULT 0 CHECK (supports_chat_attachments IN (0, 1));");
+        }
+        this.connection.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609250630, new Date().toISOString());
+      });
+    }
+    // AND-203: an uncertain Codex delivery must retain the one-command slot
+    // until a person checks the source thread. SQLite CHECK constraints and
+    // partial indexes require a table rebuild on existing installations.
+    const deliveryUnknownMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609250822")
+      .get() as unknown as { version: number } | undefined;
+    if (!deliveryUnknownMigration) {
+      const commandSchema = this.connection.prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_session_commands'",
+      ).get() as unknown as { sql: string };
+      if (!commandSchema.sql.includes("'delivery_unknown'")) {
+        this.connection.exec("PRAGMA foreign_keys = OFF;");
+        try {
+          this.transaction(() => {
+            this.connection.exec(`
+              CREATE TABLE agent_session_commands_new (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+                account_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message', 'interrupt')),
+                text TEXT NOT NULL,
+                turn_id TEXT,
+                status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivery_unknown', 'delivered', 'failed', 'cancelled')),
+                error TEXT,
+                created_at TEXT NOT NULL,
+                delivered_at TEXT,
+                delivering_at TEXT,
+                cancelled_at TEXT
+              ) STRICT;
+              INSERT INTO agent_session_commands_new
+                (id, session_id, account_id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at)
+              SELECT id, session_id, account_id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at
+              FROM agent_session_commands;
+              DROP TABLE agent_session_commands;
+              ALTER TABLE agent_session_commands_new RENAME TO agent_session_commands;
+              CREATE UNIQUE INDEX idx_agent_session_one_queued_command
+                ON agent_session_commands(session_id) WHERE status IN ('queued', 'delivering', 'delivery_unknown');
+            `);
+            if (this.connection.prepare("PRAGMA foreign_key_check").all().length > 0) {
+              throw new Error("Rebuilding agent session commands broke a foreign key.");
+            }
+          });
+        } finally {
+          this.connection.exec("PRAGMA foreign_keys = ON;");
+        }
+      }
+      this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+        .run(202609250822, new Date().toISOString());
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

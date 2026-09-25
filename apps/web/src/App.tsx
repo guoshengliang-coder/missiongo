@@ -70,7 +70,6 @@ import {
 import {
   COMPONENT_KINDS,
   ITEM_PRIORITIES,
-  ITEM_STATUSES,
   ITEM_TYPES,
   type Product,
   type Component,
@@ -125,6 +124,7 @@ import { VerificationReturnBadge, VerificationReturnCallout, VerificationReturnS
 import { StartWorkDialog } from "./start-work-dialog";
 import { cachedListSummary } from "./list-summary";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
+import { useForegroundSync } from "./use-foreground-sync";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import {
   creatorLabel,
@@ -144,6 +144,7 @@ import {
   AGENT_CONVERSATION_HISTORY_MARKER,
   DEFAULT_STATUS,
   ITEM_HISTORY_MARKER,
+  ITEM_STATUS_NAV_ORDER,
   OVERLAY_HISTORY_MARKER,
   SIDEBAR_HISTORY_MARKER,
   agentConsoleExitUrl,
@@ -170,7 +171,7 @@ import { productBadgeColor } from "./product-color";
 import { SessionLink } from "./session-link";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
-import { agentAttentionCounts, agentSessionsRefetchInterval } from "./agent-session-view";
+import { agentAttentionCounts, agentSessionDispatchFailed, agentSessionsRefetchInterval } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 
@@ -477,6 +478,9 @@ export function App() {
     document.addEventListener("visibilitychange", update);
     return () => document.removeEventListener("visibilitychange", update);
   }, []);
+  // Coming back to the page re-reads what is on screen if it has gone stale
+  // (AND-192); the spinner it returns drives the topbar indicator below.
+  const foregroundSyncing = useForegroundSync();
   const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
   const agentConsoleSinglePane = useMediaQuery("(max-width: 520px)");
   const agentConsoleLayout = agentConsoleSinglePane ? "single" : "wide";
@@ -1057,6 +1061,17 @@ export function App() {
     () => new Map((activeDispatchesQuery.data?.handlers ?? []).map((handler) => [handler.itemKey, handler])),
     [activeDispatchesQuery.data],
   );
+  // A dispatch that launched keeps reading "sent to {node}" for good, so a row
+  // whose session then died has to take the failure from the session behind it
+  // (AND-180). `null` is a failed session with no error text of its own.
+  const sessionFailures = useMemo(() => {
+    const byItem = new Map<string, string | null>();
+    for (const session of allAgentSessions) {
+      if (!agentSessionDispatchFailed(session)) continue;
+      for (const item of session.items) byItem.set(item.key, session.lastError ?? null);
+    }
+    return byItem;
+  }, [allAgentSessions]);
   const agentConsoleListFetching = useIsFetching({ queryKey: ["agent-sessions"] });
   const agentConsoleConversationFetching = useIsFetching({ queryKey: ["agent-session"] });
   const agentConsoleRefreshing = agentConsoleListFetching + agentConsoleConversationFetching > 0;
@@ -1345,6 +1360,11 @@ export function App() {
             </button>
           </>
         )}
+      {foregroundSyncing && (
+          <span className="sync-indicator" role="status" aria-label={t("syncing")} title={t("syncing")}>
+            <RefreshCw className="spin" size={15} aria-hidden="true" />
+          </span>
+        )}
       </header>
       {!isOnline && <div className="offline-banner" role="status"><WifiOff size={15} /> {t("offlineMode")}</div>}
 
@@ -1355,10 +1375,7 @@ export function App() {
         </div>
         <nav aria-label={t("workspace")}>
           <p className="sidebar-label">{t("workspace")}</p>
-          <StatusNavItem label={t("allItems")} count={shownCount(listedCount)} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
-            <ListTodo size={17} />
-          </StatusNavItem>
-          {ITEM_STATUSES.map((status) => {
+          {ITEM_STATUS_NAV_ORDER.map((status) => {
             const Icon = STATUS_ICONS[status];
             return (
               <StatusNavItem
@@ -1372,6 +1389,10 @@ export function App() {
               </StatusNavItem>
             );
           })}
+          {/* "All" is last (AND-197): it is the catch-all, not the default. */}
+          <StatusNavItem label={t("allItems")} count={shownCount(listedCount)} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
+            <ListTodo size={17} />
+          </StatusNavItem>
         </nav>
         <div className="sidebar-spacer" />
         {androidFeedbackBridge() && (
@@ -1423,12 +1444,7 @@ export function App() {
             list gives way to the detail, above it they sit side by side. */}
         <section className="list-page">
           <nav className="mobile-status-nav mobile-only" aria-label={t("workspace")}>
-            <button className={statusFilter === "all" ? "active" : ""} aria-pressed={statusFilter === "all"} onClick={() => selectStatus("all")}>
-              <ListTodo size={16} />
-              <span>{t("allItems")}</span>
-              <small>{shownCount(listedCount)}</small>
-            </button>
-            {ITEM_STATUSES.map((status) => {
+            {ITEM_STATUS_NAV_ORDER.map((status) => {
               const Icon = STATUS_ICONS[status];
               return (
                 <button key={status} className={statusFilter === status ? "active" : ""} aria-pressed={statusFilter === status} onClick={() => selectStatus(status)}>
@@ -1438,6 +1454,12 @@ export function App() {
                 </button>
               );
             })}
+            {/* "All" is last (AND-197): it is the catch-all, not the default. */}
+            <button className={statusFilter === "all" ? "active" : ""} aria-pressed={statusFilter === "all"} onClick={() => selectStatus("all")}>
+              <ListTodo size={16} />
+              <span>{t("allItems")}</span>
+              <small>{shownCount(listedCount)}</small>
+            </button>
           </nav>
           <section className="workspace-head">
             <div>
@@ -1557,6 +1579,7 @@ export function App() {
                     || (selectedProductCanUseAi && isDispatchable(item.status))}
                   selectable={selectedItemKeys.has(item.key) || canJoinSelection(item.status, selectionStatus)}
                   dispatchSummary={latestDispatches.get(item.key)}
+                  sessionFailure={sessionFailures.get(item.key)}
                   handlerSummary={inProgressHandlers.get(item.key)}
                   onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item, selectionStatus))}
                   sourceComponent={item.sourceComponentId ? componentsById.get(item.sourceComponentId) : undefined}
@@ -1830,6 +1853,7 @@ function ItemRow({
   selectionVisible,
   selectable,
   dispatchSummary,
+  sessionFailure,
   handlerSummary,
   onToggleChecked,
   onOpen,
@@ -1848,6 +1872,8 @@ function ItemRow({
   selectable: boolean;
   /** The latest dispatch attempt for this ready cycle, if there is one. */
   dispatchSummary: ItemDispatchSummary | undefined;
+  /** The error from the session behind that dispatch, when it died before claiming (AND-180). */
+  sessionFailure: string | null | undefined;
   /** The agent behind the item's in-progress claim, when it came from a dispatch. */
   handlerSummary: ItemDispatchHandler | undefined;
   onToggleChecked: () => void;
@@ -1878,6 +1904,11 @@ function ItemRow({
   // an item a session has just claimed must not still read as waiting on a Mac.
   const latestDispatch = dispatchable ? dispatchSummary : undefined;
   const pendingDispatchStatusKey = latestDispatch ? activeDispatchStatusKey(latestDispatch.status) : null;
+  // A launch that later fell over still carries `launched`, so the row calls it
+  // a failure when the session behind it did (AND-180).
+  const sessionFailed = sessionFailure !== undefined;
+  const dispatchFailed = latestDispatch !== undefined
+    && (latestDispatch.status === "failed" || sessionFailed);
   return (
     <article
       className={`item-row ${selected ? "selected" : ""} ${selectionVisible ? "has-select" : ""}`}
@@ -1924,20 +1955,28 @@ function ItemRow({
                   item needs attention. */}
               {latestDispatch && (
                 <small
-                  className={`item-dispatch-badge ${latestDispatch.status === "failed" ? "failed" : ""}`}
-                  title={t(latestDispatch.status === "failed" ? "failedDispatchBadgeTitle" : "activeDispatchBadgeTitle", {
-                    node: latestDispatch.nodeName,
-                    status: pendingDispatchStatusKey ? t(pendingDispatchStatusKey) : latestDispatch.status,
-                    time: formatTime(latestDispatch.createdAt),
-                    at: new Date(latestDispatch.createdAt).toLocaleString(locale, {
-                      month: "short",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    }),
-                  })}
+                  className={`item-dispatch-badge ${dispatchFailed ? "failed" : ""}`}
+                  title={t(
+                    dispatchFailed
+                      ? sessionFailed && sessionFailure
+                        ? "dispatchSessionFailedTitle"
+                        : "failedDispatchBadgeTitle"
+                      : "activeDispatchBadgeTitle",
+                    {
+                      node: latestDispatch.nodeName,
+                      status: pendingDispatchStatusKey ? t(pendingDispatchStatusKey) : latestDispatch.status,
+                      time: formatTime(latestDispatch.createdAt),
+                      at: new Date(latestDispatch.createdAt).toLocaleString(locale, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }),
+                      reason: sessionFailure ?? "",
+                    },
+                  )}
                 >
-                  {t(latestDispatch.status === "failed" ? "failedDispatchBadge" : "activeDispatchBadge", { node: latestDispatch.nodeName })}
+                  {t(dispatchFailed ? "failedDispatchBadge" : "activeDispatchBadge", { node: latestDispatch.nodeName })}
                 </small>
               )}
               {item.status === "in_progress" && handlerSummary && (

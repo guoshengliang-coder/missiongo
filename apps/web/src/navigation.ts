@@ -29,6 +29,16 @@ export const AGENT_CONSOLE_HISTORY_MARKER = "missiongo:agent-console";
  */
 export const AGENT_CONVERSATION_HISTORY_MARKER = "missiongo:agent-conversation";
 
+/**
+ * The quick-settings panel under the reply box, opened by the "more" button.
+ *
+ * It is a popup over the conversation, so back has to close it before it closes
+ * the conversation underneath. Without an entry of its own, the phone's back
+ * gesture walked out of both at once (AND-199). Separate from the capture
+ * sheet's marker because popstate has to know which overlay this entry closed.
+ */
+export const QUICK_SETTINGS_HISTORY_MARKER = "missiongo:quick-settings";
+
 /** Records the layout that produced the current console entry across a WebView recreation. */
 export const AGENT_CONSOLE_LAYOUT_KEY = "missiongo:agent-console-layout";
 
@@ -49,7 +59,8 @@ export function backDepthFromState(state: unknown): number {
     + (markers[OVERLAY_HISTORY_MARKER] ? 1 : 0)
     + (markers[SIDEBAR_HISTORY_MARKER] ? 1 : 0)
     + (markers[AGENT_CONSOLE_HISTORY_MARKER] ? 1 : 0)
-    + (markers[AGENT_CONVERSATION_HISTORY_MARKER] ? 1 : 0);
+    + (markers[AGENT_CONVERSATION_HISTORY_MARKER] ? 1 : 0)
+    + (markers[QUICK_SETTINGS_HISTORY_MARKER] ? 1 : 0);
 }
 
 export function agentConsoleIsOpen(url: URL = new URL(window.location.href)): boolean {
@@ -120,6 +131,23 @@ export interface ListFilters {
  * a status is the default view, not the unfiltered one.
  */
 export const DEFAULT_STATUS: WorkItemStatus = "ready";
+
+/**
+ * The order the status filters appear in, in both navigations (AND-197): work
+ * waiting on a person leads, "on hold" sits just before the catch-all, and
+ * "all" comes last. "All" is the escape hatch rather than the default view, so
+ * it must not be the first thing the eye lands on.
+ */
+export const ITEM_STATUS_NAV_ORDER: readonly WorkItemStatus[] = [
+  "inbox",
+  "ready",
+  "in_progress",
+  "development_complete",
+  "pending_verification",
+  "done",
+  "cancelled",
+  "on_hold",
+];
 
 export const EMPTY_FILTERS: ListFilters = { productId: "", status: "all", type: "all", search: "" };
 

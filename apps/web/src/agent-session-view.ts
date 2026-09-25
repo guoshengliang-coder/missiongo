@@ -1,6 +1,8 @@
 import type { AgentKind } from "@missiongo/domain";
 
 import type {
+  AgentSession,
+  AgentSessionAttachment,
   AgentSessionCommand,
   AgentSessionMessage,
   AgentSessionQuestion,
@@ -8,6 +10,25 @@ import type {
   AgentSessionStatus,
   AgentSessionSummary,
 } from "./types";
+
+export type AgentChatMessage = AgentSessionMessage & { readonly attachmentData?: readonly AgentSessionAttachment[] };
+
+/** Show the user's original text and files once, even when an agent mirrors the local-file prompt. */
+export function agentChatMessages(
+  messages: readonly AgentSessionMessage[],
+  attachmentMessages: NonNullable<AgentSession["attachmentMessages"]>,
+  outgoingCommandId?: string,
+): AgentChatMessage[] {
+  const hidden = new Set(attachmentMessages.map((message) => message.commandId));
+  return [
+    ...messages.filter((message) => message.role !== "user" || ![...hidden].some((id) =>
+      message.sourceId === id || message.text.includes(`[MissionGo attachment command ${id}]`))),
+    ...attachmentMessages.filter((message) => message.commandId !== outgoingCommandId)
+      .map((message) => ({ id: `attachment-${message.commandId}`, sourceId: message.commandId,
+        role: "user" as const, text: message.text, occurredAt: message.createdAt,
+        attachmentData: message.attachments })),
+  ].sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
+}
 
 export const DEFAULT_AGENT_SESSION_FILTER = "attention" as const;
 export const DEFAULT_AGENT_KIND_FILTER = "all" as const;
@@ -63,6 +84,42 @@ export type AgentKindFilter = "all" | AgentKind;
 
 export function isAbnormalAgentSession(session: Pick<AgentSessionSummary, "status" | "command">): boolean {
   return session.status === "failed" || session.command?.status === "failed";
+}
+
+/**
+ * Whether the session behind a dispatch never got going (AND-180).
+ *
+ * A dispatch that launched keeps status "sent to X" for good, so when the
+ * session then stops with an error the row still reads as work in flight. A
+ * session that failed, or that the machine reported unavailable with a reason,
+ * is that failure. `unavailable` on its own is not: a machine that has gone
+ * quiet reports no error, and the node's connection state already says so.
+ */
+export function agentSessionDispatchFailed(
+  session: Pick<AgentSessionSummary, "status" | "lastError">,
+): boolean {
+  if (session.status === "failed") return true;
+  return session.status === "unavailable" && Boolean(session.lastError);
+}
+
+/**
+ * The state to show while a reply is on its way (AND-195).
+ *
+ * The server keeps a session `idle` until the machine reports the new turn, so
+ * from the moment a reply is sent the console would otherwise keep saying the
+ * turn has ended -- right next to that reply, still being delivered. A reply
+ * that is queued or being delivered means the session is about to run, so it
+ * reads as `active`. Only `idle` is raised: a stalled, suspended, unavailable
+ * or failed session already says something a person has to read, and that
+ * wording wins.
+ */
+export function effectiveAgentSessionStatus(
+  status: AgentSessionStatus,
+  command: Pick<AgentSessionCommand, "status"> | undefined,
+  requestInFlight = false,
+): AgentSessionStatus {
+  const replyInFlight = requestInFlight || command?.status === "queued" || command?.status === "delivering";
+  return replyInFlight && status === "idle" ? "active" : status;
 }
 
 export function replyBlockedLabelKey(reason: AgentSessionReplyBlockedReason | undefined):
@@ -196,7 +253,7 @@ export interface ScrollMetrics {
 export interface OutgoingReply {
   readonly text: string;
   readonly occurredAt: string;
-  readonly status: "sending" | "queued" | "delivering" | "failed";
+  readonly status: "sending" | "queued" | "delivering" | "delivery_unknown" | "failed";
   readonly error?: string;
   readonly commandId?: string;
 }
@@ -213,7 +270,8 @@ export function outgoingReply(
 ): OutgoingReply | null {
   if (request) return request;
   if (!command || command.kind !== "message") return null;
-  if (command.status !== "queued" && command.status !== "delivering" && command.status !== "failed") return null;
+  if (command.status !== "queued" && command.status !== "delivering"
+    && command.status !== "delivery_unknown" && command.status !== "failed") return null;
   return {
     text: command.text,
     occurredAt: command.createdAt,

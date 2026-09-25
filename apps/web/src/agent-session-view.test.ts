@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   activityLabelKey,
+  agentChatMessages,
   agentAttentionCounts,
   agentSessionDetailRefetchInterval,
+  agentSessionDispatchFailed,
   agentSessionsRefetchInterval,
   archivableVisibleSessionIds,
   agentSessionMatches,
@@ -11,6 +13,7 @@ import {
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
+  effectiveAgentSessionStatus,
   formatAgentMessageTime,
   isNearMessageBottom,
   isAbnormalAgentSession,
@@ -30,6 +33,21 @@ import {
 import type { AgentSessionSummary } from "./types";
 
 describe("agent session message view", () => {
+  it("keeps attachment history in order without repeating a mirrored local-file prompt", () => {
+    const attachment = { id: "file-1", filename: "photo.png", kind: "image" as const,
+      contentType: "image/png", sizeBytes: 3, sha256: "abc", createdAt: "2026-09-25T01:00:00Z" };
+    const attached = [{ commandId: "command-1", text: "Look at this", createdAt: "2026-09-25T01:00:00Z",
+      status: "delivered" as const, attachments: [attachment] }];
+    const messages = [
+      { id: "source-1", sourceId: "source-1", role: "user" as const,
+        text: "Look at this\n[MissionGo attachment command command-1]\n/local/path", occurredAt: "2026-09-25T01:00:01Z" },
+      { id: "answer-1", sourceId: "answer-1", role: "agent" as const,
+        text: "I see it", occurredAt: "2026-09-25T01:00:02Z" },
+    ];
+    expect(agentChatMessages(messages, attached).map((message) => message.text)).toEqual(["Look at this", "I see it"]);
+    expect(agentChatMessages(messages, attached)[0]?.attachmentData).toEqual([attachment]);
+    expect(agentChatMessages(messages, attached, "command-1").map((message) => message.text)).toEqual(["I see it"]);
+  });
   it("pauses in a hidden page and backs off repeated polling failures", () => {
     expect(agentSessionsRefetchInterval(true)).toBe(5_000);
     expect(agentSessionsRefetchInterval(false)).toBe(60_000);
@@ -121,6 +139,18 @@ describe("agent session message view", () => {
     expect(agentSessionMatches(healthy, "failed", "all", "")).toBe(false);
   });
 
+  it("calls a dispatch failed when the session behind it never got going (AND-180)", () => {
+    expect(agentSessionDispatchFailed({ status: "failed", lastError: "boom" })).toBe(true);
+    expect(agentSessionDispatchFailed({ status: "failed" })).toBe(true);
+    expect(agentSessionDispatchFailed({ status: "unavailable", lastError: "OpenCode 请求失败（HTTP 400）" })).toBe(true);
+    // A machine that has gone quiet reports no error, so it is not a failed
+    // dispatch, and a state that is merely paused is not one either.
+    expect(agentSessionDispatchFailed({ status: "unavailable" })).toBe(false);
+    for (const status of ["active", "idle", "suspended", "stalled"] as const) {
+      expect(agentSessionDispatchFailed({ status })).toBe(false);
+    }
+  });
+
   it("sorts only by activity and ignores unread state", () => {
     const ordered = byLatestActivity([
       { id: "oldest-unread", unread: true, activityAt: "2026-09-20T00:00:00Z", updatedAt: "", createdAt: "" },
@@ -198,12 +228,32 @@ describe("agent session message view", () => {
     expect(outgoingReply({
       id: "command-1", kind: "message", text: "发布", status: "failed", error: "offline", createdAt: "2026-09-21T00:00:00Z",
     })).toMatchObject({ status: "failed", error: "offline" });
+    expect(outgoingReply({
+      id: "command-1", kind: "message", text: "发布", status: "delivery_unknown",
+      createdAt: "2026-09-21T00:00:00Z",
+    })).toMatchObject({ status: "delivery_unknown", commandId: "command-1" });
   });
 
   it("stops synthesizing a reply once it is delivered or cancelled", () => {
     const command = { id: "command-1", kind: "message", text: "发布", createdAt: "2026-09-21T00:00:00Z" } as const;
     expect(outgoingReply({ ...command, status: "delivered" })).toBeNull();
     expect(outgoingReply({ ...command, status: "cancelled" })).toBeNull();
+  });
+
+  it("reads a session as working while its reply is still on its way (AND-195)", () => {
+    const command = { id: "command-1", kind: "message", text: "继续", createdAt: "2026-09-25T00:00:00Z" } as const;
+    // Submitting, queueing and delivering all mean the turn is about to run.
+    expect(effectiveAgentSessionStatus("idle", undefined, true)).toBe("active");
+    expect(effectiveAgentSessionStatus("idle", { ...command, status: "queued" })).toBe("active");
+    expect(effectiveAgentSessionStatus("idle", { ...command, status: "delivering" })).toBe("active");
+    // Delivered is handed back to the machine's own state, and a failed command
+    // is not a running session.
+    expect(effectiveAgentSessionStatus("idle", { ...command, status: "delivered" })).toBe("idle");
+    expect(effectiveAgentSessionStatus("idle", { ...command, status: "failed" })).toBe("idle");
+    // A state that already says something a person has to read keeps its wording.
+    for (const status of ["active", "suspended", "stalled", "unavailable", "failed"] as const) {
+      expect(effectiveAgentSessionStatus(status, { ...command, status: "queued" })).toBe(status);
+    }
   });
 
   it("has a bottom-of-conversation label for every session state", () => {

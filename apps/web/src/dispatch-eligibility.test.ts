@@ -176,6 +176,26 @@ describe("which machine can take a batch", () => {
       .toEqual({ reason: "agent_unavailable" });
   });
 
+  it("refuses a machine whose agent says it is not ready, carrying the machine's own reason (AND-151)", () => {
+    expect(nodeIneligibility(node({
+      agents: [{ kind: "claude_code", ready: false, unavailableReason: "Codex managed daemon cannot be verified." }],
+      repos: [withRepo],
+    }), batch)).toEqual({
+      reason: "agent_not_ready",
+      unavailableReason: "Codex managed daemon cannot be verified.",
+    });
+    // No wording from the machine: the console has a fallback of its own.
+    expect(nodeIneligibility(node({
+      agents: [{ kind: "claude_code", ready: false }],
+      repos: [withRepo],
+    }), batch)).toEqual({ reason: "agent_not_ready" });
+  });
+
+  it("keeps a machine usable when its report predates the ready flag", () => {
+    expect(nodeIneligibility(node({ agents: [{ kind: "claude_code", version: "2.1.0" }], repos: [withRepo] }), batch))
+      .toBeNull();
+  });
+
   it("names the products it has no checkout for", () => {
     expect(nodeIneligibility(node({ repos: [withRepo] }), { productIds: ["p1", "p2"], agentKind: "claude_code" }))
       .toEqual({ reason: "repo_unmapped", productIds: ["p2"] });
@@ -265,10 +285,20 @@ describe("whether start work can offer an AI (AND-68)", () => {
     expect(aiAvailability(product, [node({ online: false, ...mapped })])).toEqual({ kind: "not_configured", reason: "offline" });
     expect(aiAvailability(product, [node({ agents: [{ kind: "hermes" }], ...mapped })]))
       .toEqual({ kind: "not_configured", reason: "agent_unavailable" });
+    expect(aiAvailability(product, [node({ agents: [{ kind: "claude_code", ready: false }], ...mapped })]))
+      .toEqual({ kind: "not_configured", reason: "agent_not_ready" });
   });
 
   it("offers it once one machine can take the item", () => {
     expect(aiAvailability(product, [node({ online: false, ...mapped }), node({ id: "node-2", ...mapped })]))
+      .toEqual({ kind: "available" });
+    // One ready machine among paused ones is enough, and a report that predates
+    // the flag counts as ready.
+    expect(aiAvailability(product, [
+      node({ agents: [{ kind: "claude_code", ready: false }], ...mapped }),
+      node({ id: "node-2", ...mapped }),
+    ])).toEqual({ kind: "available" });
+    expect(aiAvailability(product, [node({ agents: [{ kind: "claude_code", version: "2.1.0" }], ...mapped })]))
       .toEqual({ kind: "available" });
     // A server that does not report access yet: offer it, the route still decides.
     expect(aiAvailability({ id: "p1" }, [node(mapped)])).toEqual({ kind: "available" });

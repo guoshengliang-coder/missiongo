@@ -6,6 +6,7 @@ import { AGENT_KINDS, DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo
 
 import { api, ApiError } from "./api";
 import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, reconcileChoice } from "./agent-model-options";
+import { NODE_LIST_REFETCH_MS } from "./node-install";
 import {
   ACTIVE_DISPATCHES_QUERY_KEY,
   ACTIVE_DISPATCHES_REFETCH_MS,
@@ -43,6 +44,11 @@ function ineligibilityText(
   t: ReturnType<typeof useI18n>["t"],
 ): string {
   if (reason.reason === "agent_unavailable") return t("nodeAgentMissing", { agent: input.agentLabel });
+  if (reason.reason === "agent_not_ready") {
+    return reason.unavailableReason
+      ? t("nodeAgentNotReadyReason", { agent: input.agentLabel, reason: reason.unavailableReason })
+      : t("nodeAgentNotReady", { agent: input.agentLabel });
+  }
   if (reason.reason === "repo_unmapped") {
     return t("nodeRepoUnmapped", { products: reason.productIds.map(input.productName).join("、") });
   }
@@ -50,10 +56,12 @@ function ineligibilityText(
 }
 
 /** The server's own title is kept for codes this build does not know about. */
-function dispatchErrorMessage(error: unknown, t: ReturnType<typeof useI18n>["t"]): string {
+function dispatchErrorMessage(error: unknown, t: ReturnType<typeof useI18n>["t"], agent: string): string {
   if (error instanceof ApiError) {
     const key = dispatchProblemKey(error.code);
-    return key ? t(key) : error.message;
+    // For a not-ready agent the server's title is the machine's own reason;
+    // keep it as the {reason} rather than dropping it (AND-151).
+    return key ? t(key, { agent, reason: error.message }) : error.message;
   }
   return error instanceof Error && error.message ? error.message : t("somethingWentWrong");
 }
@@ -96,7 +104,14 @@ export function DispatchDialog({
   // plain boolean: if a refetch turns up another one, that tick was not about it.
   const [acknowledgedConflicts, setAcknowledgedConflicts] = useState<string | null>(null);
 
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
+  const nodesQuery = useQuery({
+    queryKey: ["nodes"],
+    queryFn: api.listNodes,
+    // The dialog can wait out a machine that is momentarily not ready: readiness
+    // travels with the heartbeat, and 30 seconds matches the rest of the console
+    // (AND-151).
+    refetchInterval: NODE_LIST_REFETCH_MS,
+  });
   const nodes = nodesQuery.data?.nodes ?? [];
   const defaultsQuery = useQuery({ queryKey: ["dispatch-defaults"], queryFn: api.getDispatchDefaults });
 
@@ -180,6 +195,20 @@ export function DispatchDialog({
       }
     },
   });
+
+  // A dispatch error belongs to the choices that produced it. Changing the
+  // machine, agent, mode, model or effort -- including the automatic jump to an
+  // eligible machine -- makes it stale, so it must not outlive its cause
+  // (AND-151). The conflict tick is in the key because unticking it changes what
+  // would be submitted.
+  const submissionKey = `${nodeId}|${agentKind}|${mode}|${model}|${effort}|${redispatchConfirmed}`;
+  useEffect(() => {
+    if (!mutation.isError) return;
+    mutation.reset();
+    // Keyed on the values, not the error: resetting clears the error, and
+    // depending on it would run the effect again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [submissionKey]);
 
   const productName = (productId: string) =>
     products.find((product) => product.id === productId)?.name ?? productId;
@@ -368,7 +397,7 @@ export function DispatchDialog({
       <p className="dispatch-note">{t("dispatchDoesNotClaim")}</p>
 
       {mutation.isError && (
-        <div className="inline-error"><CirclePause size={16} /><span>{dispatchErrorMessage(mutation.error, t)}</span></div>
+        <div className="inline-error"><CirclePause size={16} /><span>{dispatchErrorMessage(mutation.error, t, agentLabel(agentKind))}</span></div>
       )}
 
       <div className="form-footer">

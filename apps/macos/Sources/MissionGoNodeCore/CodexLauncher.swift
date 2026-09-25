@@ -622,13 +622,17 @@ public struct CodexLauncher: AgentAdapter {
             )
         }
         if snapshot.archived {
+            let alreadySent = session.command.map { command in
+                command.kind != "interrupt"
+                    && snapshot.messages.contains(where: { $0.role == "user" && $0.sourceId == command.id })
+            } ?? false
             return AgentSessionReport(
                 status: "unavailable",
                 messages: snapshot.messages,
                 error: "Codex 会话已在来源端归档；请在 Codex 中恢复后继续。",
                 commandId: session.command?.id,
-                commandStatus: session.command == nil ? nil : "failed",
-                commandError: session.command == nil ? nil : "Codex 会话已归档，命令未发送。",
+                commandStatus: session.command == nil ? nil : alreadySent ? "delivered" : "failed",
+                commandError: session.command == nil || alreadySent ? nil : "Codex 会话已归档，命令未发送。",
                 sourceArchived: true,
                 activityAt: snapshot.activityAt
             )
@@ -636,6 +640,17 @@ public struct CodexLauncher: AgentAdapter {
         guard let command = session.command else {
             return AgentSessionReport(
                 status: snapshot.status, messages: snapshot.messages,
+                sourceArchived: false, activityAt: snapshot.activityAt
+            )
+        }
+        // Codex can accept a turn while the HTTP report back to MissionGo is
+        // lost. The stable client message id lets a restarted node recognize
+        // that reply in the source transcript instead of starting it twice.
+        if command.kind != "interrupt",
+           snapshot.messages.contains(where: { $0.role == "user" && $0.sourceId == command.id }) {
+            return AgentSessionReport(
+                status: snapshot.status, messages: snapshot.messages,
+                commandId: command.id, commandStatus: "delivered",
                 sourceArchived: false, activityAt: snapshot.activityAt
             )
         }
@@ -671,6 +686,14 @@ public struct CodexLauncher: AgentAdapter {
         let canDeliver = snapshot.status == "idle"
             || (snapshot.status == "active" && snapshot.activeTurnId != nil)
         guard canDeliver else {
+            if command.status == "delivering" && (snapshot.status == "unavailable" || snapshot.status == "failed") {
+                return AgentSessionReport(
+                    status: snapshot.status, messages: snapshot.messages,
+                    commandId: command.id, commandStatus: "delivery_unknown",
+                    commandError: "无法确认 Codex 是否收到回复，请在 Codex 会话核实后手动确认；不会自动重发。",
+                    sourceArchived: false, activityAt: snapshot.activityAt
+                )
+            }
             return AgentSessionReport(
                 status: snapshot.status, messages: snapshot.messages,
                 sourceArchived: false, activityAt: snapshot.activityAt
@@ -701,14 +724,14 @@ public struct CodexLauncher: AgentAdapter {
                 socketPath: location.controlSocketPath,
                 threadId: session.sessionRef,
                 turnId: activeTurnId,
-                text: command.text,
+                text: command.promptText,
                 clientUserMessageId: command.id
             )
         } else {
             try await control.sendMessage(
                 socketPath: location.controlSocketPath,
                 threadId: session.sessionRef,
-                text: command.text,
+                text: command.promptText,
                 clientUserMessageId: command.id,
                 overrides: turnOverrides(session)
             )

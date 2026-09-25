@@ -439,6 +439,57 @@ describe("database migrations", () => {
     migrated.close();
   });
 
+  it("widens existing command constraints without losing an in-flight reply", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-unknown-delivery-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    seeded.connection.exec(`
+      INSERT INTO nodes (id, account_id, name, token_hash, created_at, updated_at)
+      VALUES ('node-1', 'account-1', 'Mac mini', 'hash', '2026-09-25T00:00:00Z', '2026-09-25T00:00:00Z');
+      INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+      VALUES ('dispatch-1', 'account-1', 'node-1', 'codex', 'plan', 'launched', '/repo', '2026-09-25T00:00:00Z');
+      INSERT INTO agent_sessions (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at)
+      VALUES ('session-1', 'dispatch-1', 'node-1', 'codex', 'thread-1', 'idle', '2026-09-25T00:00:00Z', '2026-09-25T00:00:00Z');
+      INSERT INTO agent_session_commands (id, session_id, account_id, text, status, created_at, delivering_at)
+      VALUES ('command-1', 'session-1', 'account-1', 'Keep this reply', 'delivering',
+              '2026-09-25T00:00:00Z', '2026-09-25T00:01:00Z');
+    `);
+    seeded.close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = OFF;
+      DROP INDEX idx_agent_session_one_queued_command;
+      ALTER TABLE agent_session_commands RENAME TO agent_session_commands_current;
+      CREATE TABLE agent_session_commands (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+        account_id TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message', 'interrupt')),
+        text TEXT NOT NULL, turn_id TEXT,
+        status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivered', 'failed', 'cancelled')),
+        error TEXT, created_at TEXT NOT NULL, delivered_at TEXT, delivering_at TEXT, cancelled_at TEXT
+      ) STRICT;
+      INSERT INTO agent_session_commands
+        (id, session_id, account_id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at)
+      SELECT id, session_id, account_id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at
+      FROM agent_session_commands_current;
+      DROP TABLE agent_session_commands_current;
+      CREATE UNIQUE INDEX idx_agent_session_one_queued_command
+        ON agent_session_commands(session_id) WHERE status IN ('queued', 'delivering');
+      DELETE FROM schema_migrations WHERE version = 202609250822;
+      PRAGMA foreign_keys = ON;
+    `);
+    legacy.close();
+
+    const migrated = new MissionGoDatabase(path);
+    const row = migrated.connection.prepare(
+      "SELECT status, text, delivering_at FROM agent_session_commands WHERE id = 'command-1'",
+    ).get() as unknown as { status: string; text: string; delivering_at: string };
+    expect(row).toEqual({ status: "delivering", text: "Keep this reply", delivering_at: "2026-09-25T00:01:00Z" });
+    migrated.connection.prepare("UPDATE agent_session_commands SET status = 'delivery_unknown' WHERE id = 'command-1'").run();
+    expect(migrated.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    migrated.close();
+  });
+
   it("backfills historical launched Codex dispatches for source archive synchronization", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-codex-session-backfill-"));
     temporaryDirectories.push(directory);

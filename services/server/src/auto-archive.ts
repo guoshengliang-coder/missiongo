@@ -14,7 +14,7 @@ const FINISHED_DISPATCHES_SQL = `
 const NO_PENDING_COMMAND_SQL = `
   NOT EXISTS (
     SELECT 1 FROM agent_session_commands c
-    WHERE c.session_id = agent_sessions.id AND c.status IN ('queued', 'delivering')
+    WHERE c.session_id = agent_sessions.id AND c.status IN ('queued', 'delivering', 'delivery_unknown')
   )`;
 
 /**

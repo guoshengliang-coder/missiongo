@@ -54,9 +54,18 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
       await queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
     },
   });
+  const resolveDelivery = useMutation({
+    mutationFn: ({ commandId, outcome }: { commandId: string; outcome: "received" | "not_received" }) =>
+      api.resolveAgentSessionDelivery(sessionId, commandId, outcome),
+    onSuccess: async (command, input) => {
+      if (input.outcome === "not_received") setReply(command.text);
+      await queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
+    },
+  });
   const command = session.data?.command;
   const canReply = session.data?.canReply === true;
-  const pending = command?.status === "queued" || command?.status === "delivering";
+  const pending = command?.status === "queued" || command?.status === "delivering"
+    || command?.status === "delivery_unknown";
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = reply.trim();
@@ -116,6 +125,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                   <span>
                     {command.status === "queued" && t("agentSessionReplyQueued")}
                     {command.status === "delivering" && t("agentSessionReplyDelivering")}
+                    {command.status === "delivery_unknown" && t("agentSessionReplyDeliveryUnknown")}
                     {command.status === "delivered" && t("agentSessionReplyDelivered")}
                     {command.status === "failed" && t("agentSessionReplyFailed")}
                     {command.status === "cancelled" && t("agentSessionReplyCancelled")}
@@ -130,6 +140,18 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                     >
                       {cancel.isPending ? t("agentSessionCancelling") : t("agentSessionCancelAndEdit")}
                     </button>
+                  )}
+                  {command.status === "delivery_unknown" && session.data.canResolveDelivery && (
+                    <>
+                      <button type="button" className="text-button" disabled={resolveDelivery.isPending}
+                        onClick={() => resolveDelivery.mutate({ commandId: command.id, outcome: "received" })}>
+                        {t("agentSessionReplyConfirmReceived")}
+                      </button>
+                      <button type="button" className="text-button" disabled={resolveDelivery.isPending}
+                        onClick={() => resolveDelivery.mutate({ commandId: command.id, outcome: "not_received" })}>
+                        {t("agentSessionReplyConfirmNotReceived")}
+                      </button>
+                    </>
                   )}
                 </div>
               )}
@@ -152,6 +174,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                   </form>
                   {send.isError && <p className="inline-error">{localizedErrorText(send.error, t)}</p>}
                   {cancel.isError && <p className="inline-error">{localizedErrorText(cancel.error, t)}</p>}
+                  {resolveDelivery.isError && <p className="inline-error">{localizedErrorText(resolveDelivery.error, t)}</p>}
                 </>
               ) : (
                 <p className="agent-session-muted" role="note">

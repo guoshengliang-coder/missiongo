@@ -137,6 +137,67 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
+describe("Agent chat attachments", () => {
+  const nodeHeaders = (token: string) => ({ authorization: `Bearer ${token}` });
+  it("gates old nodes, binds original files to an attachment-only command, and scopes downloads", async () => {
+    const { app, cookie } = await signedInApp();
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    const node = await registeredNode(app);
+    const otherNode = await registeredNode(app, "Other Mac");
+    await heartbeat(app, node.token);
+    await app.inject({ method: "PUT", url: "/api/v1/node/repos", headers: nodeHeaders(node.token),
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] } });
+    const dispatch = await app.inject({ method: "POST", url: "/api/v1/dispatches", headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [mission.itemKey] } });
+    expect(dispatch.statusCode).toBe(201);
+    const dispatchId = dispatch.json<{ id: string }>().id;
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: nodeHeaders(node.token) });
+    expect((await app.inject({ method: "POST", url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: nodeHeaders(node.token), payload: { status: "launched", sessionName: "Agent", sessionRef: randomUUID() } })).statusCode).toBe(204);
+    const sessionId = (await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: nodeHeaders(node.token) }))
+      .json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+    const uploadUrl = `/api/v1/agent-sessions/${sessionId}/attachments`;
+    const payload = Buffer.from("photo bytes");
+    const upload = () => app.inject({ method: "POST", url: uploadUrl, headers: { cookie,
+      "content-type": "application/octet-stream", "x-missiongo-content-type": "image/png", "x-missiongo-filename": "photo.png" }, payload });
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } }))
+      .json<{ canAttach: boolean }>().canAttach).toBe(false);
+    expect((await upload()).statusCode).toBe(409);
+    await app.inject({ method: "POST", url: "/api/v1/node/heartbeat", headers: nodeHeaders(node.token),
+      payload: { agents: [{ kind: "claude_code", version: "2.1.232", ready: true,
+        skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" } }],
+        supportsChatAttachments: true } });
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } }))
+      .json<{ canAttach: boolean }>().canAttach).toBe(true);
+    const saved = await upload();
+    expect(saved.statusCode).toBe(201);
+    const attachment = saved.json<{ id: string; sha256: string }>();
+    expect(attachment.sha256).toBe(createHash("sha256").update(payload).digest("hex"));
+    expect((await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie }, payload: { text: "", attachmentIds: [attachment.id, attachment.id] } })).statusCode).toBe(400);
+    const command = await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie }, payload: { text: "", attachmentIds: [attachment.id] } });
+    expect(command.statusCode).toBe(201);
+    expect(command.json()).toMatchObject({ text: "", attachments: [{ id: attachment.id, filename: "photo.png" }] });
+    const oldPoll = (await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: nodeHeaders(node.token) }))
+      .json<{ sessions: Array<{ command?: unknown }> }>().sessions[0]!;
+    expect(oldPoll.command).toBeUndefined();
+    const nodeSession = (await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions",
+      headers: { ...nodeHeaders(node.token), "x-missiongo-chat-attachments": "1" } }))
+      .json<{ sessions: Array<{ command?: { attachments?: Array<{ id: string }> } }> }>().sessions[0]!;
+    expect(nodeSession.command?.attachments).toMatchObject([{ id: attachment.id }]);
+    const contentPath = `/api/v1/node/agent-sessions/${sessionId}/attachments/${attachment.id}/content`;
+    expect((await app.inject({ method: "GET", url: contentPath, headers: nodeHeaders(node.token) })).body).toBe(payload.toString());
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}/attachments/${attachment.id}/content`,
+      headers: { cookie } })).body).toBe(payload.toString());
+    expect((await app.inject({ method: "GET", url: contentPath, headers: nodeHeaders(otherNode.token) })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: contentPath, headers: { cookie } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } }))
+      .json<{ attachmentMessages: Array<{ attachments: Array<{ id: string }> }> }>().attachmentMessages[0]?.attachments)
+      .toMatchObject([{ id: attachment.id }]);
+  });
+});
+
 describe("Registering a Mac by signing in", () => {
   it("trades a login carrying the node scope for a machine credential", async () => {
     const { app } = await signedInApp();
@@ -2311,6 +2372,124 @@ describe("Claiming a dispatch on the node", () => {
     });
   });
 
+  it("stops a running OpenCode session even though its messages carry no turn ids", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "opencode");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "opencode", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    const dispatchId = created.json<{ id: string }>().id;
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionRef: "ses_opencode_stop" },
+    })).statusCode).toBe(204);
+    const mirrored = (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!;
+    // OpenCode's host reports messages without turn ids; that is exactly the
+    // situation that used to make every stop fail with agent_turn_unavailable.
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${mirrored.id}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "active",
+        messages: [{ sourceId: "m1", role: "agent", text: "Working on it." }],
+      },
+    })).statusCode).toBe(204);
+
+    const stop = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/stop`,
+      headers: { cookie },
+    });
+    expect(stop.statusCode).toBe(202);
+    const command = stop.json<{ command: { kind: string; status: string; turnId?: string } }>().command;
+    expect(command).toMatchObject({ kind: "interrupt", status: "queued" });
+    expect(command.turnId).toBeUndefined();
+    const interruptId = stop.json<{ command: { id: string } }>().command.id;
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json()).toMatchObject({
+      sessions: [{ command: { id: interruptId, kind: "interrupt", status: "queued" } }],
+    });
+  });
+
+  it("still refuses to stop a Claude Code session when no turn is visible", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "claude_code");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    const dispatchId = created.json<{ id: string }>().id;
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionRef: "ses_claude_no_turn" },
+    })).statusCode).toBe(204);
+    const mirrored = (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!;
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${mirrored.id}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "active",
+        messages: [{ sourceId: "m1", role: "agent", text: "Working without a reported turn." }],
+      },
+    })).statusCode).toBe(204);
+
+    const stop = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/stop`,
+      headers: { cookie },
+    });
+    expect(stop.statusCode).toBe(409);
+    expect(stop.json()).toMatchObject({ code: "agent_turn_unavailable" });
+  });
+
   it("reports Mac heartbeat health and stops then restores a manually archived Claude session", async () => {
     const { app, cookie, databasePath, node, mission, dispatchId } = await queuedDispatch();
     await app.inject({
@@ -3348,5 +3527,179 @@ describe("Widget summary (AND-149)", () => {
   it("asks for a signed-in account", async () => {
     const { app } = await signedInApp();
     expect((await app.inject({ method: "GET", url: "/api/v1/widget/summary" })).statusCode).toBe(401);
+  });
+});
+
+describe("Server-side command timeout and alerting (AND-184, AND-203)", () => {
+  type ListedSession = {
+    id: string;
+    command?: { status: string; error?: string; deliveredAt?: string };
+    attention: { state: string; kind?: string; reason?: string; revision?: string };
+    needsAttention: boolean;
+  };
+
+  async function listedSession(app: FastifyInstance, cookie: string, productId: string, sessionId: string) {
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${productId}`,
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const found = response.json<{ sessions: ListedSession[] }>().sessions
+      .find((session) => session.id === sessionId);
+    expect(found).toBeTruthy();
+    return found!;
+  }
+
+  async function enqueueReply(app: FastifyInstance, cookie: string, sessionId: string, text = "Continue.") {
+    const reply = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie },
+      payload: { text },
+    });
+    expect(reply.statusCode).toBe(201);
+    return reply.json<{ id: string }>().id;
+  }
+
+  function backdate(databasePath: string, column: "created_at" | "delivering_at", commandId: string, ageMs: number) {
+    const database = new DatabaseSync(databasePath);
+    database.prepare(`UPDATE agent_session_commands SET ${column} = ? WHERE id = ?`)
+      .run(new Date(Date.now() - ageMs).toISOString(), commandId);
+    database.close();
+  }
+
+  it("holds an unconfirmed Codex delivery until a person checks it", async () => {
+    const { app, cookie, databasePath } = await signedInApp();
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    const commandId = await enqueueReply(app, cookie, sessionId);
+    const claimed = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: [], commandId, commandStatus: "delivering" },
+    });
+    expect(claimed.statusCode).toBe(204);
+    backdate(databasePath, "delivering_at", commandId, 31 * 60_000);
+
+    const session = await listedSession(app, cookie, mission.productId, sessionId);
+    expect(session.command).toMatchObject({ status: "delivery_unknown" });
+    expect(session.command?.error).toContain("无法确认");
+    expect(session.command?.deliveredAt).toBeUndefined();
+    expect(session.needsAttention).toBe(true);
+    expect(session.attention).toMatchObject({ state: "needed", kind: "action" });
+    // No revision: a condition that is still true must not be dismissable.
+    expect(session.attention.revision).toBeUndefined();
+
+    const blocked = await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie }, payload: { text: "Try again." } });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({ code: "agent_reply_pending" });
+    const nodePoll = await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` } });
+    expect(nodePoll.statusCode).toBe(200);
+    expect(nodePoll.json<{ sessions: Array<{ command?: unknown }> }>().sessions[0]?.command).toBeUndefined();
+
+    const confirmed = await app.inject({ method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands/${commandId}/resolve-delivery`,
+      headers: { cookie }, payload: { outcome: "not_received" } });
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json()).toMatchObject({ status: "cancelled", text: "Continue." });
+    await enqueueReply(app, cookie, sessionId, "Try again.");
+  });
+
+  it("points out a reply queued far longer than a turn without failing it", async () => {
+    const { app, cookie, databasePath } = await signedInApp();
+    const { mission, sessionId } = await launchedCodexSession(app, cookie);
+    const commandId = await enqueueReply(app, cookie, sessionId);
+    backdate(databasePath, "created_at", commandId, 4 * 60 * 60_000);
+
+    const session = await listedSession(app, cookie, mission.productId, sessionId);
+    expect(session.command).toMatchObject({ status: "queued" });
+    expect(session.needsAttention).toBe(true);
+    expect(session.attention).toMatchObject({ state: "needed", kind: "action" });
+    expect(session.attention.reason).toContain("3 小时");
+
+    // Not failed: the slot is still occupied and a second reply is refused.
+    const duplicate = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie },
+      payload: { text: "Second reply." },
+    });
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json()).toMatchObject({ code: "agent_reply_pending" });
+  });
+
+  it("keeps a normally pending reply quiet", async () => {
+    const { app, cookie } = await signedInApp();
+    const { mission, sessionId } = await launchedCodexSession(app, cookie);
+    await enqueueReply(app, cookie, sessionId);
+
+    const session = await listedSession(app, cookie, mission.productId, sessionId);
+    expect(session.command).toMatchObject({ status: "queued" });
+    expect(session.needsAttention).toBe(false);
+    expect(session.attention.state).not.toBe("needed");
+  });
+
+  it("ignores a late claim after an unknown delivery but accepts a proven result", async () => {
+    const { app, cookie, databasePath } = await signedInApp();
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    const commandId = await enqueueReply(app, cookie, sessionId);
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: [], commandId, commandStatus: "delivering" },
+    });
+    backdate(databasePath, "delivering_at", commandId, 31 * 60_000);
+    // The read path reaps it.
+    expect((await listedSession(app, cookie, mission.productId, sessionId)).command?.status).toBe("delivery_unknown");
+
+    // A reconnect that only now reports the claim must not 409 or resurrect it.
+    const lateClaim = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: [], commandId, commandStatus: "delivering" },
+    });
+    expect(lateClaim.statusCode).toBe(204);
+    expect((await listedSession(app, cookie, mission.productId, sessionId)).command?.status).toBe("delivery_unknown");
+
+    // Work the Mac really did finish is still recorded.
+    const lateResult = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: [], commandId, commandStatus: "delivered" },
+    });
+    expect(lateResult.statusCode).toBe(204);
+    const settled = await listedSession(app, cookie, mission.productId, sessionId);
+    expect(settled.command).toMatchObject({ status: "delivered" });
+    expect(settled.needsAttention).toBe(false);
+  });
+
+  it("accepts a node's uncertain result and records a human confirmation", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    const commandId = await enqueueReply(app, cookie, sessionId);
+    await app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [], commandId, commandStatus: "delivering" } });
+    const uncertain = await app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "unavailable", messages: [], commandId, commandStatus: "delivery_unknown" } });
+    expect(uncertain.statusCode).toBe(204);
+    expect((await listedSession(app, cookie, mission.productId, sessionId)).command?.status).toBe("delivery_unknown");
+    const confirmed = await app.inject({ method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands/${commandId}/resolve-delivery`,
+      headers: { cookie }, payload: { outcome: "received" } });
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json()).toMatchObject({ status: "delivered" });
+    const repeat = await app.inject({ method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands/${commandId}/resolve-delivery`,
+      headers: { cookie }, payload: { outcome: "not_received" } });
+    expect(repeat.statusCode).toBe(409);
+    await enqueueReply(app, cookie, sessionId, "Next message.");
   });
 });
