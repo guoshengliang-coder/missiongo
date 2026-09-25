@@ -507,9 +507,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // Leaving the app is when the widget is most likely out of date: whatever
-        // was just handled here is still counted on it. Not on a rotation, which
-        // stops and starts the activity without the person going anywhere.
+        // Leaving the app is when the widget and the launcher badge (AND-185)
+        // are most likely out of date: whatever was just handled here is still
+        // counted on them. Not on a rotation, which stops and starts the
+        // activity without the person going anywhere.
         if (!isChangingConfigurations) WidgetRefresher.refreshInBackground(this)
     }
 
