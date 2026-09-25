@@ -144,6 +144,67 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertNil(prompt)
     }
 
+    /// AND-205: OpenCode's question tool files its ask as a form titled
+    /// "Questions", with the real question in each field's description and free
+    /// text allowed. The console must show the ask itself, not just the short
+    /// header, and a typed answer must reach the form endpoint.
+    func testQuestionToolFormShowsTheAskAndRoutesATypedAnswer() async throws {
+        let entry: [String: Any] = [
+            "id": "frm_q", "sessionID": "ses_test", "title": "Questions",
+            "metadata": ["kind": "question", "tool": ["messageID": "msg_1", "id": "call_1"]],
+            "fields": [[
+                "key": "q0", "title": "确认操作", "description": "是否继续执行后续操作？",
+                "type": "string", "custom": true,
+                "options": [["value": "继续", "label": "继续"], ["value": "停止", "label": "停止"]],
+            ]],
+        ]
+        let choice = try XCTUnwrap(OpenCodeProtocol.formChoice(entry))
+        // The tool's placeholder title is not what a person needs to read.
+        XCTAssertEqual(choice.message.text, "OpenCode 想请你确认以下问题。")
+        let question = try XCTUnwrap(choice.message.questions?.first)
+        XCTAssertEqual(question.title, "确认操作")
+        XCTAssertEqual(question.detail, "是否继续执行后续操作？")
+        XCTAssertEqual(question.custom, true)
+        XCTAssertEqual(question.options, ["继续", "停止"])
+
+        let control = StubOpenCodeControl(mcpStatus: "connected", choices: [choice])
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "active",
+            command: AgentSessionCommand(
+                id: "c1", kind: "message", text: "q0: 先只改 web，别动服务端", status: "delivering"
+            )
+        ))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        let replied = await control.repliedForm
+        XCTAssertEqual(replied?.formID, "frm_q")
+        XCTAssertEqual(replied?.answer["q0"], .text("先只改 web，别动服务端"))
+        let prompt = await control.lastPrompt
+        XCTAssertNil(prompt)
+    }
+
+    /// A form field that is not open must not swallow an unrelated reply as its
+    /// answer: text outside the options stays an ordinary prompt.
+    func testAClosedFormFieldDoesNotSwallowAnUnrelatedReply() async throws {
+        let entry: [String: Any] = [
+            "id": "frm_1", "sessionID": "ses_test", "title": "选择范围",
+            "fields": [[
+                "key": "scope", "title": "范围", "type": "string",
+                "options": [["value": "small", "label": "小"], ["value": "full", "label": "完整"]],
+            ]],
+        ]
+        let choice = try XCTUnwrap(OpenCodeProtocol.formChoice(entry))
+        XCTAssertNil(try XCTUnwrap(choice.message.questions?.first).custom)
+        let control = StubOpenCodeControl(mcpStatus: "connected", choices: [choice])
+        _ = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "继续处理 AND-205", status: "delivering")
+        ))
+        let replied = await control.repliedForm
+        XCTAssertNil(replied)
+        let prompt = await control.lastPrompt
+        XCTAssertEqual(prompt, "继续处理 AND-205")
+    }
+
     /// AND-190: a permission request carries OpenCode's three decisions, and a
     /// picked one is sent as that decision rather than as prompt text.
     func testPermissionChoiceRoutesTheDecisionNotAPrompt() async throws {

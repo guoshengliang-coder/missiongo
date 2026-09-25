@@ -2294,8 +2294,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           throw invalidInput("message role must be user, agent, or plan.");
         }
         let questions: Array<{
-          header?: string; title: string; options?: string[]; multiSelect?: boolean;
-          key?: string; kind?: "text" | "number" | "boolean"; placeholder?: string;
+          header?: string; title: string; detail?: string; options?: string[]; multiSelect?: boolean;
+          key?: string; kind?: "text" | "number" | "boolean"; placeholder?: string; custom?: boolean;
         }> | undefined;
         if (message.questions !== undefined) {
           if (!Array.isArray(message.questions)) throw invalidInput("questions must be an array.");
@@ -2309,11 +2309,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             return {
               ...(stringField(question, "header", false) ? { header: question.header as string } : {}),
               title: stringField(question, "title")!,
+              ...(stringField(question, "detail", false) ? { detail: question.detail as string } : {}),
               ...(options ? { options: [...options] } : {}),
               ...(typeof question.multiSelect === "boolean" ? { multiSelect: question.multiSelect } : {}),
               ...(stringField(question, "key", false) ? { key: question.key as string } : {}),
               ...(kind ? { kind: kind as "text" | "number" | "boolean" } : {}),
               ...(stringField(question, "placeholder", false) ? { placeholder: question.placeholder as string } : {}),
+              ...(typeof question.custom === "boolean" ? { custom: question.custom } : {}),
             };
           });
         }

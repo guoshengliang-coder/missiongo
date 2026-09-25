@@ -1765,7 +1765,7 @@ describe("Claiming a dispatch on the node", () => {
           { sourceId: "u1", turnId: "turn-1", role: "user", text: "Inspect this." },
           {
             sourceId: "a1", turnId: "turn-1", role: "agent", text: "Working on it.",
-            questions: [{ header: "Scope", title: "Which scope?", options: ["Small", "Complete"], multiSelect: false }],
+            questions: [{ header: "Scope", title: "Which scope?", detail: "Pick the scope before I continue.", options: ["Small", "Complete"], multiSelect: false, custom: true }],
           },
         ],
         activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中" }],
@@ -1794,7 +1794,7 @@ describe("Claiming a dispatch on the node", () => {
       activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中" }],
       messages: [{ sourceId: "u1" }, {
         sourceId: "a1",
-        questions: [{ header: "Scope", title: "Which scope?", options: ["Small", "Complete"], multiSelect: false }],
+        questions: [{ header: "Scope", title: "Which scope?", detail: "Pick the scope before I continue.", options: ["Small", "Complete"], multiSelect: false, custom: true }],
       }],
     });
     expect((await app.inject({
