@@ -594,7 +594,6 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-session-heading time { flex: 0 0 auto; margin-left: auto; padding-top: 1px; }
 .agent-console-attention { display: inline-block; margin-top: 6px; padding: 2px 6px; color: var(--warn-text); background: var(--warn-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-style: normal; font-weight: 700; }
 .agent-console-session-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-console-session-summary { display: -webkit-box; overflow: hidden; margin-top: 7px; color: var(--ink-2); font-size: var(--text-sm); line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .agent-console-session-copy strong { font-size: var(--text-md); font-weight: 700; }
 .agent-console-session-copy small { margin-top: 5px; color: var(--muted); font-size: var(--text-xs); }
 .agent-console-session time { color: var(--muted-soft); font-size: var(--text-xs); white-space: nowrap; }

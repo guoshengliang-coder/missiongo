@@ -690,7 +690,6 @@ export function AgentSessionConsole({
                         {attentionLabel(session, t)}
                       </i>
                     )}
-                    <span className="agent-console-session-summary">{session.latestMessage?.text ?? session.lastError ?? t("agentConsoleDispatchOnly")}</span>
                   </span>
                 </button>
               </div>
