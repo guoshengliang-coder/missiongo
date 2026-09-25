@@ -262,6 +262,16 @@ The zip is git-ignored. A checkout that carries none gets the live release's
 copy carried into the new snapshot after the push, the same way `/maven` is, so
 a deploy for an unrelated reason never turns the download into a 404.
 
+That carry-over is the same path as "no new client intended", so a deploy run
+from another checkout keeps the live client while `released.json` already names
+the new version, and the deploy still ends in `==> Done`. The client ships only
+when its zip is present in the directory being deployed: build it with
+`npm run publish:macos`, commit and merge `released.json`, then
+`git merge --ff-only origin/main` in that same worktree and deploy from there.
+The zip does not travel between worktrees. `deploy.sh` prints the version
+`released.json` records when it carries the live client over, so this is not
+left to be noticed by hand.
+
 ### Restricting the origin to a CDN
 
 A CDN protects nothing if the origin also answers on its own address. Anyone who
