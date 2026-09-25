@@ -518,6 +518,32 @@ final class APIClientTests: XCTestCase {
         XCTAssertLessThanOrEqual(try APIClient.encoder.encode(uploadable).count, budget)
     }
 
+    // AND-210: a blank message text used to fail the whole snapshot — the server
+    // answers "message text is required" (HTTP 400) and the sync loop retried
+    // the same blank message every 30 seconds, showing the node as offline.
+
+    func testSnapshotUploadDropsBlankTextMessages() throws {
+        let uploadable = try APIClient.uploadableSnapshot(AgentSessionReport(status: "idle", messages: [
+            AgentSessionMessage(sourceId: "m1", role: "user", text: "正常消息"),
+            AgentSessionMessage(sourceId: "m2", role: "agent", text: " \n "),
+            AgentSessionMessage(sourceId: "m3", role: "agent", text: "结尾"),
+        ]))
+        XCTAssertEqual(uploadable.messages.map(\.sourceId), ["m1", "m3"])
+    }
+
+    func testSnapshotUploadKeepsAQuestionOnlyMessageBehindAPlaceholder() throws {
+        let question = AgentSessionQuestion(title: "允许执行?", options: ["允许", "拒绝"])
+        let uploadable = try APIClient.uploadableSnapshot(AgentSessionReport(status: "idle", messages: [
+            AgentSessionMessage(sourceId: "m1", role: "agent", text: "\n", questions: [question]),
+        ]))
+        XCTAssertEqual(uploadable.messages.count, 1)
+        XCTAssertEqual(uploadable.messages[0].questions, [question])
+        XCTAssertFalse(
+            uploadable.messages[0].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            "the placeholder keeps the server from refusing the snapshot"
+        )
+    }
+
     func testReportAgentSessionSendsTheReportAsIsWhenItFits() async throws {
         StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
         try await client().reportAgentSession(sessionId: "s1", report: AgentSessionReport(

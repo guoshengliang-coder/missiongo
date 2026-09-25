@@ -976,6 +976,11 @@ public struct APIClient: Sendable {
     static let snapshotMessageTextLimit = 100_000
     /// The server refuses a snapshot carrying more than 2_000 messages.
     static let snapshotMessageCountLimit = 2_000
+    /// AND-210: the server also refuses a message whose text is blank ("message
+    /// text is required"), which used to fail the whole snapshot and leave the
+    /// node offline on every 30-second retry. A message kept only for its
+    /// questions shows this line where its text would go.
+    static let questionOnlyMessagePlaceholder = "等待你的选择。"
 
     public let serverUrl: String
     /// The node credential (`mgn_`). Only `register` runs without it.
@@ -1147,13 +1152,21 @@ public struct APIClient: Sendable {
     ) throws -> AgentSessionReport {
         var messages = report.messages
             .suffix(APIClient.snapshotMessageCountLimit)
-            .map { message in
-                AgentSessionMessage(
+            .compactMap { message -> AgentSessionMessage? in
+                let text = APIClient.cappedText(message.text, limit: APIClient.snapshotMessageTextLimit)
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || !(message.questions?.isEmpty ?? true) else { return nil }
+                return AgentSessionMessage(
                     sourceId: message.sourceId,
                     turnId: message.turnId,
                     role: message.role,
                     phase: message.phase,
-                    text: APIClient.cappedText(message.text, limit: APIClient.snapshotMessageTextLimit),
+                    // The server refuses blank text, and one blank message used to
+                    // fail the whole snapshot (AND-210). A message that carries
+                    // only questions still shows them behind a placeholder line.
+                    text: text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? APIClient.questionOnlyMessagePlaceholder
+                        : text,
                     occurredAt: message.occurredAt,
                     questions: message.questions
                 )

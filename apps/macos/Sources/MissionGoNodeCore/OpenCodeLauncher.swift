@@ -314,14 +314,17 @@ public enum OpenCodeProtocol {
             guard let id = entry["id"] as? String, let type = entry["type"] as? String else { return nil }
             let created = (entry["time"] as? [String: Any])?["created"] as? NSNumber
             let occurredAt = created.map { ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: $0.doubleValue / 1000)) }
-            if type == "user", let text = entry["text"] as? String, !text.isEmpty {
+            // The server refuses a message whose text is blank (AND-210), so
+            // whitespace-only text never becomes a mirrored message.
+            if type == "user", let text = entry["text"] as? String,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return AgentSessionMessage(sourceId: id, role: "user", text: text, occurredAt: occurredAt)
             }
             guard type == "assistant", let content = entry["content"] as? [[String: Any]] else { return nil }
             let text = content.compactMap { part -> String? in
                 guard part["type"] as? String == "text" else { return nil }
                 return part["text"] as? String
-            }.joined(separator: "\n\n")
+            }.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
             let role = entry["agent"] as? String == "plan" ? "plan" : "agent"
             return AgentSessionMessage(sourceId: id, role: role, text: text, occurredAt: occurredAt)

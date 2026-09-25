@@ -344,11 +344,20 @@ public struct ClaudeStreamSnapshot: Sendable {
             let text = content.compactMap { block -> String? in
                 guard block["type"] as? String == "text" else { return nil }
                 return block["text"] as? String
-            }.filter { !$0.isEmpty }.joined(separator: "\n")
+            }.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             let questions = Self.questions(content)
             if !text.isEmpty || !questions.isEmpty {
                 let previous = state.messages.first(where: { $0.sourceId == sourceId })
-                let combinedText = [previous?.text, text].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
+                // The server refuses a message whose text is blank (AND-210), so
+                // blocks that are only whitespace join into nothing here rather
+                // than into a newline that poisons the whole snapshot.
+                let combinedText = [previous?.text, text]
+                    .compactMap { $0 }
+                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                    .joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 upsert(AgentSessionMessage(
                     sourceId: sourceId,
                     turnId: turnId,
