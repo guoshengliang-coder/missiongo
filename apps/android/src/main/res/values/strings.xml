@@ -53,4 +53,11 @@
     <string name="push_attention_dismiss">无需处理</string>
     <string name="push_attention_many_title">有 %1$d 个会话待你处理</string>
     <string name="push_attention_many_body">%1$s 等 %2$d 个</string>
+
+    <!-- Launcher badge (AND-185). The carrier notification exists only to hold the
+         number launchers draw on the icon; it is silent, and disappears at zero. -->
+    <string name="badge_channel_name">图标角标</string>
+    <string name="badge_channel_description">在桌面图标上显示待我处理数量</string>
+    <string name="badge_carrier_title">%1$d 项待我处理</string>
+    <string name="badge_carrier_text">点按查看待你处理的会话</string>
 </resources>

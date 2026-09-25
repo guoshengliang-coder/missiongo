@@ -8,6 +8,11 @@
          asks at the moment the offer is accepted, never on launch. -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <!-- AND-185: Huawei and HONOR launchers take the icon count through their own
+         badge provider, which requires its permission. Unknown to every other
+         ROM, where an undeclared-but-unused permission is simply ignored. -->
+    <uses-permission android:name="com.hihonor.android.launcher.permission.CHANGE_BADGE" />
+    <uses-permission android:name="com.huawei.android.launcher.permission.CHANGE_BADGE" />
 
     <application
         android:name="io.missiongo.android.MissionGoApplication"
