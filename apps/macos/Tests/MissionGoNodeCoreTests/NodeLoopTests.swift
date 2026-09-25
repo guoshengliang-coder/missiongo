@@ -491,6 +491,39 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertEqual(api.sessionReports.current.count, 1)
     }
 
+    /// The server hands a plain idle session back on its ~30s cool-down line,
+    /// so the session leaves and rejoins the list while its report stays the
+    /// same. Dropping the fingerprint during the gap turned every return into
+    /// a re-upload — the last 30-second send loop seen on production after
+    /// AND-182 shipped. The fingerprint must outlive the absence.
+    func testASessionReturningFromTheCoolDownIsNotReUploadedUnchanged() async throws {
+        let api = FakeAPI(claims: [])
+        let session = snapshotSession()
+        api.sessionList.withLock { $0 = [session] }
+        let adapter = SnapshotAdapter(reports: [
+            AgentSessionReport(
+                status: "idle",
+                messages: [AgentSessionMessage(sourceId: "u1", turnId: "t1", role: "user", text: "处理这一批。")]
+            ),
+        ])
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac mini", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+
+        await waitUntil { api.sessionUploadAttempts.current >= 1 }
+        // The session leaves the list (cool-down window), long enough for a
+        // cleanup keyed on the live set to have run many times.
+        api.sessionList.withLock { $0 = [] }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(api.sessionUploadAttempts.current, 1, "nothing to upload while the session is off the list")
+
+        // The cool-down line expires and the server hands the session back.
+        api.sessionList.withLock { $0 = [session] }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        task.cancel()
+        try await task.value
+        XCTAssertEqual(api.sessionUploadAttempts.current, 1, "an unchanged report must not be re-uploaded on return")
+    }
+
     /// The reconnect button (AND-177): a wake runs the next heartbeat round at
     /// once. The interval is a minute so a pass can only come from the wake —
     /// waiting it out would blow the test timeout.

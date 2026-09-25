@@ -364,14 +364,20 @@ public final class NodeLoop: @unchecked Sendable {
         /// server reads — status, a delivered reply's command status, settings
         /// revisions — still goes out the moment it changes. It is recorded only
         /// after a report succeeded, so a failed upload is retried.
+        ///
+        /// Fingerprints of sessions that left the list are kept on purpose. The
+        /// server hands an idle session back roughly every 30 seconds (its
+        /// cool-down line), and dropping the fingerprint in between turned that
+        /// return into a guaranteed re-upload — measured on production as the
+        /// last 30-second re-send loop after AND-182 shipped. A retired entry
+        /// costs a session id plus 32 bytes until the app restarts, and the
+        /// list itself is capped at a hundred sessions per node.
         var reported: [String: Data] = [:]
         while !stop.isStopped {
             await shielded {
                 do {
                     let sessions = try await self.api.listAgentSessions()
                     self.reconcileCapacity(sessions)
-                    let live = Set(sessions.map(\.id))
-                    reported.keys.forEach { if !live.contains($0) { reported.removeValue(forKey: $0) } }
                     for session in sessions {
                         guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else { continue }
                         let report: AgentSessionReport
