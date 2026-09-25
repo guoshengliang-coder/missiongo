@@ -12,13 +12,16 @@ import { PAGES, THEMES, VIEWPORTS } from "./fixture.mjs";
  * (B1), a button that disappears into its background (B3) -- are obvious in a
  * picture and invisible to a unit test.
  *
- * Baselines belong to the platform that produced them: the same CSS lays out
- * differently against Linux and macOS font stacks. So this project does not run
- * in CI. Generate on the machine you develop on:
+ * Baselines are Linux's: CI records the `*-visual-linux.png` set and compares
+ * against it on ubuntu. Regenerate them deliberately -- the workflow_dispatch
+ * input `update_ui_snapshots` writes them, and the `ui-snapshots` artifact
+ * carries what changed -- while a developer's own darwin files stay untracked.
  *
- *     npm run test:ui:visual -- --update-snapshots
- *
- * and read the diff it prints when something moves.
+ * The product badge is masked. Its colour is hashed from the fixture product's
+ * random id, so it differs every run and once pushed a stale baseline over the
+ * diff threshold by luck. Masking keeps the comparison deterministic, and
+ * because the mask follows the badge's box, a badge that moves or resizes
+ * still shows up as differing pixels around it.
  */
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as {
@@ -44,7 +47,10 @@ for (const viewport of VIEWPORTS) {
           await page.waitForLoadState("networkidle");
           await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; animation: none !important; }" });
           await page.waitForTimeout(200);
-          await expect(page).toHaveScreenshot(`${pageUnderTest.name}-${viewport.name}-${theme}.png`, { fullPage: false });
+          await expect(page).toHaveScreenshot(`${pageUnderTest.name}-${viewport.name}-${theme}.png`, {
+            fullPage: false,
+            mask: [page.locator(".product-badge")],
+          });
         });
       }
     });
