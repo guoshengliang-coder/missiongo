@@ -2372,6 +2372,124 @@ describe("Claiming a dispatch on the node", () => {
     });
   });
 
+  it("stops a running OpenCode session even though its messages carry no turn ids", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "opencode");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "opencode", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    const dispatchId = created.json<{ id: string }>().id;
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionRef: "ses_opencode_stop" },
+    })).statusCode).toBe(204);
+    const mirrored = (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!;
+    // OpenCode's host reports messages without turn ids; that is exactly the
+    // situation that used to make every stop fail with agent_turn_unavailable.
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${mirrored.id}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "active",
+        messages: [{ sourceId: "m1", role: "agent", text: "Working on it." }],
+      },
+    })).statusCode).toBe(204);
+
+    const stop = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/stop`,
+      headers: { cookie },
+    });
+    expect(stop.statusCode).toBe(202);
+    const command = stop.json<{ command: { kind: string; status: string; turnId?: string } }>().command;
+    expect(command).toMatchObject({ kind: "interrupt", status: "queued" });
+    expect(command.turnId).toBeUndefined();
+    const interruptId = stop.json<{ command: { id: string } }>().command.id;
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json()).toMatchObject({
+      sessions: [{ command: { id: interruptId, kind: "interrupt", status: "queued" } }],
+    });
+  });
+
+  it("still refuses to stop a Claude Code session when no turn is visible", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "claude_code");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    const dispatchId = created.json<{ id: string }>().id;
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionRef: "ses_claude_no_turn" },
+    })).statusCode).toBe(204);
+    const mirrored = (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!;
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${mirrored.id}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "active",
+        messages: [{ sourceId: "m1", role: "agent", text: "Working without a reported turn." }],
+      },
+    })).statusCode).toBe(204);
+
+    const stop = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/stop`,
+      headers: { cookie },
+    });
+    expect(stop.statusCode).toBe(409);
+    expect(stop.json()).toMatchObject({ code: "agent_turn_unavailable" });
+  });
+
   it("reports Mac heartbeat health and stops then restores a manually archived Claude session", async () => {
     const { app, cookie, databasePath, node, mission, dispatchId } = await queuedDispatch();
     await app.inject({
