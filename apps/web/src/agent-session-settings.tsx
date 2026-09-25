@@ -1,13 +1,15 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, MoreHorizontal } from "lucide-react";
 
 import { DISPATCH_MODES_BY_AGENT } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
+import { reportAndroidBackDepth } from "./android-bridge";
 import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider } from "./agent-model-options";
 import { dispatchModeLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
+import { backDepthFromState, QUICK_SETTINGS_HISTORY_MARKER } from "./navigation";
 import type { AgentSessionSummary } from "./types";
 
 /**
@@ -26,6 +28,56 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
     const timer = window.setTimeout(() => setShowEffortNote(false), 5000);
     return () => window.clearTimeout(timer);
   }, [showEffortNote]);
+
+  /**
+   * The panel is a popup over the conversation, so back has to close it before
+   * it closes the conversation under it (AND-199). It gets its own history
+   * entry, the same shape the capture sheet uses: the phone's back gesture is
+   * history, and only an entry of its own gives it something to unwind.
+   * Choosing an option goes through closeMore too, so a pick cannot leave the
+   * entry behind for a later back press to spend on nothing.
+   */
+  const openMore = () => {
+    if (moreOpen) return;
+    const current = typeof history.state === "object" && history.state
+      ? history.state as Record<string, unknown>
+      : {};
+    history.pushState({ ...current, [QUICK_SETTINGS_HISTORY_MARKER]: true }, "");
+    reportAndroidBackDepth(backDepthFromState(history.state));
+    setMoreOpen(true);
+  };
+  const closeMore = useCallback(() => {
+    if (history.state?.[QUICK_SETTINGS_HISTORY_MARKER]) {
+      history.back();
+      return;
+    }
+    setMoreOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const handlePopState = () => {
+      if (!history.state?.[QUICK_SETTINGS_HISTORY_MARKER]) setMoreOpen(false);
+    };
+    // Escape closes it like any other dialog on this page.
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMore();
+    };
+    window.addEventListener("popstate", handlePopState);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [moreOpen, closeMore]);
+
+  // Leaving the conversation with the panel open must not leave its entry on
+  // the stack: the next back press would spend itself on nothing visible.
+  const moreOpenRef = useRef(false);
+  moreOpenRef.current = moreOpen;
+  useEffect(() => () => {
+    if (moreOpenRef.current && history.state?.[QUICK_SETTINGS_HISTORY_MARKER]) history.back();
+  }, []);
   const queryClient = useQueryClient();
   const settings = session.settings;
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, enabled: settings.adjustable && Boolean(session.agentSessionId) });
@@ -72,14 +124,14 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   const effortValue = settings.pending?.effort ?? settings.effort ?? "";
   const changeMode = (mode: string) => {
     if (mode !== modeValue) apply.mutate({ mode });
-    setMoreOpen(false);
+    closeMore();
   };
   const changeEffort = (effort: string) => {
     if (effort && effort !== effortValue) {
       apply.mutate({ effort });
       if (session.agentKind === "codex") setShowEffortNote(true);
     }
-    setMoreOpen(false);
+    closeMore();
   };
 
   if (!settings.adjustable || !session.agentSessionId) {
@@ -151,7 +203,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           ))}
         </select>
         <div className="agent-settings-more">
-          <button type="button" className="secondary-button" aria-label={t("moreActions")} aria-expanded={moreOpen} onClick={() => setMoreOpen((open) => !open)}><MoreHorizontal size={18} /></button>
+          <button type="button" className="secondary-button" aria-label={t("moreActions")} aria-expanded={moreOpen} onClick={() => (moreOpen ? closeMore() : openMore())}><MoreHorizontal size={18} /></button>
           {moreOpen && <div className="agent-settings-more-panel">
             <label>{t("dispatchMode")}
               <select value={modeValue} disabled={apply.isPending} onChange={(event) => changeMode(event.target.value)}>

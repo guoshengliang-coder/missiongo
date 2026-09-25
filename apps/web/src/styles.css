@@ -1710,15 +1710,15 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
      buttons. The items and the buttons share one row now, the compact session
      link is an icon like the buttons beside it, and the status pill is gone
      because the conversation already shows it. The heading is `display:
-     contents` so its title, agent and item chips can be placed in the grid
+     contents` so its title and item chips can be placed in the grid
      alongside the buttons without moving them in the DOM -- the wide-screen
-     layout is untouched. */
+     layout is untouched. The agent's name line is gone too (AND-198): the
+     avatar carries that agent's own mark instead. */
   .agent-console-conversation-head {
     display: grid;
     grid-template-columns: 32px minmax(0, 1fr) auto;
     grid-template-areas:
       "avatar title title"
-      ".      agent agent"
       "chips  chips actions";
     column-gap: 10px;
     row-gap: 4px;
@@ -1728,7 +1728,6 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .agent-console-heading { display: contents; }
   .agent-console-avatar { grid-area: avatar; }
   .agent-console-conversation-head h2 { grid-area: title; min-width: 0; }
-  .agent-console-conversation-head p { grid-area: agent; margin-top: 0; min-width: 0; }
   .agent-console-dispatch-head { grid-area: chips; width: auto; max-width: none; min-width: 0; margin-top: 0; }
   .agent-console-conversation-head .status-pill { display: none; }
   .agent-console-actions { grid-area: actions; margin-left: 0; }

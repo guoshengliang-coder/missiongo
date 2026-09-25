@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 
 import { api } from "./api";
+import { AgentIcon } from "./agent-icons";
 import {
   activityLabelKey,
   agentSessionDetailRefetchInterval,
@@ -146,11 +147,6 @@ function outgoingReplyStatusLabel(
   if (status === "queued") return t("agentSessionReplyQueued");
   if (status === "delivering") return t("agentSessionReplyDelivering");
   return t("agentSessionReplyFailed");
-}
-
-function updatedTime(value: string, locale: string): string {
-  return new Intl.DateTimeFormat(locale, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
-    .format(new Date(value));
 }
 
 export function AgentSessionConsole({
@@ -682,7 +678,7 @@ export function AgentSessionConsole({
                     <span className="agent-console-session-heading">
                       <strong>{sessionTitle(session)}</strong>
                       {session.unread && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
-                      <time>{updatedTime(session.activityAt ?? session.updatedAt, locale)}</time>
+                      <time>{formatAgentMessageTime(session.activityAt ?? session.updatedAt, locale)}</time>
                     </span>
                     <small>{session.nodeName} · {agentLabel(session, t)}</small>
                     {attentionLabel(session, t) && (
@@ -709,10 +705,9 @@ export function AgentSessionConsole({
                 aria-label={t("agentConsoleBackToSessions")}
                 onClick={onBackToSessions}
               ><ArrowLeft size={19} /></button>
-              <span className="agent-console-avatar"><Bot size={17} /></span>
+              <span className="agent-console-avatar"><AgentIcon kind={selected.agentKind} size={18} /></span>
               <div className="agent-console-heading">
                 <h2>{sessionTitle(selected)}</h2>
-                <p>{agentLabel(selected, t)}</p>
                 {/* The items this session is working on stay in the head, where
                     scrolling the conversation cannot lose them (AND-159). */}
                 <div className="agent-console-dispatch agent-console-dispatch-head">

@@ -70,7 +70,6 @@ import {
 import {
   COMPONENT_KINDS,
   ITEM_PRIORITIES,
-  ITEM_STATUSES,
   ITEM_TYPES,
   type Product,
   type Component,
@@ -144,6 +143,7 @@ import {
   AGENT_CONVERSATION_HISTORY_MARKER,
   DEFAULT_STATUS,
   ITEM_HISTORY_MARKER,
+  ITEM_STATUS_NAV_ORDER,
   OVERLAY_HISTORY_MARKER,
   SIDEBAR_HISTORY_MARKER,
   agentConsoleExitUrl,
@@ -1355,10 +1355,7 @@ export function App() {
         </div>
         <nav aria-label={t("workspace")}>
           <p className="sidebar-label">{t("workspace")}</p>
-          <StatusNavItem label={t("allItems")} count={shownCount(listedCount)} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
-            <ListTodo size={17} />
-          </StatusNavItem>
-          {ITEM_STATUSES.map((status) => {
+          {ITEM_STATUS_NAV_ORDER.map((status) => {
             const Icon = STATUS_ICONS[status];
             return (
               <StatusNavItem
@@ -1372,6 +1369,10 @@ export function App() {
               </StatusNavItem>
             );
           })}
+          {/* "All" is last (AND-197): it is the catch-all, not the default. */}
+          <StatusNavItem label={t("allItems")} count={shownCount(listedCount)} active={statusFilter === "all"} onClick={() => selectStatus("all")}>
+            <ListTodo size={17} />
+          </StatusNavItem>
         </nav>
         <div className="sidebar-spacer" />
         {androidFeedbackBridge() && (
@@ -1423,12 +1424,7 @@ export function App() {
             list gives way to the detail, above it they sit side by side. */}
         <section className="list-page">
           <nav className="mobile-status-nav mobile-only" aria-label={t("workspace")}>
-            <button className={statusFilter === "all" ? "active" : ""} aria-pressed={statusFilter === "all"} onClick={() => selectStatus("all")}>
-              <ListTodo size={16} />
-              <span>{t("allItems")}</span>
-              <small>{shownCount(listedCount)}</small>
-            </button>
-            {ITEM_STATUSES.map((status) => {
+            {ITEM_STATUS_NAV_ORDER.map((status) => {
               const Icon = STATUS_ICONS[status];
               return (
                 <button key={status} className={statusFilter === status ? "active" : ""} aria-pressed={statusFilter === status} onClick={() => selectStatus(status)}>
@@ -1438,6 +1434,12 @@ export function App() {
                 </button>
               );
             })}
+            {/* "All" is last (AND-197): it is the catch-all, not the default. */}
+            <button className={statusFilter === "all" ? "active" : ""} aria-pressed={statusFilter === "all"} onClick={() => selectStatus("all")}>
+              <ListTodo size={16} />
+              <span>{t("allItems")}</span>
+              <small>{shownCount(listedCount)}</small>
+            </button>
           </nav>
           <section className="workspace-head">
             <div>
