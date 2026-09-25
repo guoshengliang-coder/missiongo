@@ -996,6 +996,13 @@ export class AgentSessionStore {
     }
     const pending = this.pendingCommand(sessionId);
     if (pending?.kind === "interrupt") {
+      // AND-213: pressing stop again while the queued request waits for the
+      // Mac is a harmless confirmation, so return that command instead of a
+      // 409 the consoles would print as an English error bar. A stop whose
+      // delivery outcome is unknown stays rejected: nobody knows whether the
+      // Mac already acted on it, and session snapshots hide such commands,
+      // so echoing one back would only confuse the console.
+      if (pending.status !== "delivery_unknown") return this.mapCommand(pending);
       throw conflict("agent_stop_pending", "This session already has a queued stop request.");
     }
     if (pending?.status === "delivering") {

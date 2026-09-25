@@ -2428,6 +2428,15 @@ describe("Claiming a dispatch on the node", () => {
     expect(command).toMatchObject({ kind: "interrupt", status: "queued" });
     expect(command.turnId).toBeUndefined();
     const interruptId = stop.json<{ command: { id: string } }>().command.id;
+    // AND-213: the node has not polled the interrupt yet, so pressing stop
+    // again must confirm the same queued command instead of a 409.
+    const stopAgain = await app.inject({
+      method: "POST",
+      url: `/api/v1/dispatches/${dispatchId}/stop`,
+      headers: { cookie },
+    });
+    expect(stopAgain.statusCode).toBe(202);
+    expect(stopAgain.json()).toMatchObject({ command: { id: interruptId, kind: "interrupt", status: "queued" } });
     expect((await app.inject({
       method: "GET",
       url: "/api/v1/node/agent-sessions",
