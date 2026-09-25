@@ -145,9 +145,9 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         // "active" for display; only the flag may decide whether a reply can
         // be handed over (AND-183).
         XCTAssertFalse(snapshot.state.turnActive)
-        XCTAssertEqual(snapshot.state.activities, [
-            AgentSessionActivity(id: "task-1", title: "Inspect the synchronization path", detail: "运行中"),
-        ])
+        XCTAssertEqual(snapshot.state.activities.first?.title, "Inspect the synchronization path")
+        XCTAssertNotNil(snapshot.state.activities.first?.startedAt)
+        XCTAssertNil(snapshot.state.turnStartedAt)
 
         snapshot.consume([
             "type": "system", "subtype": "background_tasks_changed", "tasks": [],
@@ -156,6 +156,29 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.state.status, "idle")
         XCTAssertFalse(snapshot.state.turnActive)
         XCTAssertTrue(snapshot.state.activities.isEmpty)
+    }
+
+    func testTurnTelemetrySurvivesStateEncodingAndClearsAtResult() throws {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.recordUserMessage(id: "user-1", text: "Investigate")
+        XCTAssertNotNil(snapshot.state.turnStartedAt)
+        snapshot.consume(["type": "system", "subtype": "thinking_tokens", "thinking_tokens": 12])
+        snapshot.consume(["type": "system", "subtype": "thinking_tokens", "thinking_tokens": 5])
+        XCTAssertEqual(snapshot.state.thinkingTokens, 17)
+        XCTAssertNotNil(snapshot.state.thinkingStartedAt)
+        let decoded = try JSONDecoder().decode(ClaudeHostState.self, from: JSONEncoder().encode(snapshot.state))
+        XCTAssertEqual(decoded.thinkingTokens, 17)
+        let report = AgentSessionReport(status: "active", messages: []).reportingTurn(decoded)
+        XCTAssertEqual(report.turnActive, true)
+        XCTAssertEqual(report.thinkingTokens, 17)
+        XCTAssertEqual(report.thinkingDurationSeconds, 0)
+        snapshot.consume(["type": "result", "subtype": "success"])
+        XCTAssertFalse(snapshot.state.turnActive)
+        XCTAssertNil(snapshot.state.turnStartedAt)
+        XCTAssertNil(snapshot.state.thinkingStartedAt)
+        snapshot.setWaitingForInput(true)
+        let waiting = AgentSessionReport(status: snapshot.state.status, messages: []).reportingTurn(snapshot.state)
+        XCTAssertEqual(waiting.waitingForInput, true)
     }
 
     func testATurnMarksItselfRunningAgainWhenWorkStarts() {
@@ -511,6 +534,7 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         )
         let reservation = try await launcher.synchronize(queued)
         XCTAssertEqual(reservation.commandStatus, "delivering")
+        XCTAssertEqual(reservation.waitingForInput, true)
     }
 
     func testDeliversAReplyWhenOnlyBackgroundWorkKeepsTheSessionActive() async throws {

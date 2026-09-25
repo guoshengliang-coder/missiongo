@@ -422,6 +422,17 @@ export interface AgentSessionActivity {
   readonly id: string;
   readonly title: string;
   readonly detail?: string;
+  readonly startedAt?: string;
+}
+
+export interface AgentSessionTurnState {
+  readonly turnActive?: boolean;
+  readonly waitingForInput?: boolean;
+  readonly turnStartedAt?: string;
+  readonly lastOutputAt?: string;
+  readonly thinkingStartedAt?: string;
+  readonly thinkingTokens?: number;
+  readonly thinkingDurationSeconds?: number;
 }
 
 export interface AgentSessionMessage {
@@ -476,6 +487,7 @@ export interface AgentSession {
     readonly attachments: readonly AgentSessionAttachment[];
   }[];
   readonly activities: readonly AgentSessionActivity[];
+  readonly turnState?: AgentSessionTurnState;
   readonly command?: AgentSessionCommand;
   readonly canReply: boolean;
   readonly canResolveDelivery: boolean;
@@ -512,6 +524,7 @@ export interface AgentSessionSummary {
   readonly latestMessage?: Pick<AgentSessionMessage, "role" | "text">;
   readonly command?: AgentSessionCommand;
   readonly activities: readonly AgentSessionActivity[];
+  readonly turnState?: AgentSessionTurnState;
   readonly canReply: boolean;
   readonly replyBlockedReason?: AgentSessionReplyBlockedReason;
   readonly attention: {

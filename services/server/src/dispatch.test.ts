@@ -1760,6 +1760,9 @@ describe("Claiming a dispatch on the node", () => {
       headers: { authorization: `Bearer ${node.token}` },
       payload: {
         status: "stalled",
+        turnActive: false,
+        waitingForInput: false,
+        lastOutputAt: "2026-09-25T00:00:00.000Z",
         sessionUrl: "https://claude.ai/code/session_resumed",
         messages: [
           { sourceId: "u1", turnId: "turn-1", role: "user", text: "Inspect this." },
@@ -1768,7 +1771,7 @@ describe("Claiming a dispatch on the node", () => {
             questions: [{ header: "Scope", title: "Which scope?", detail: "Pick the scope before I continue.", options: ["Small", "Complete"], multiSelect: false, custom: true }],
           },
         ],
-        activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中" }],
+        activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中", startedAt: "2026-09-25T00:00:00.000Z" }],
       },
     })).statusCode).toBe(204);
 
@@ -1781,6 +1784,7 @@ describe("Claiming a dispatch on the node", () => {
       sessions: [{
         agentKind: "claude_code", canReply: true, canStop: true,
         activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中" }],
+        turnState: { turnActive: false, waitingForInput: false },
       }],
     });
     const detail = await app.inject({
@@ -1792,6 +1796,7 @@ describe("Claiming a dispatch on the node", () => {
       status: "stalled",
       canReply: true,
       activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中" }],
+      turnState: { turnActive: false, waitingForInput: false },
       messages: [{ sourceId: "u1" }, {
         sourceId: "a1",
         questions: [{ header: "Scope", title: "Which scope?", detail: "Pick the scope before I continue.", options: ["Small", "Complete"], multiSelect: false, custom: true }],

@@ -10,6 +10,7 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     let sessionReports = Locked<[(String, AgentSessionReport)]>([])
     let sessionUploadAttempts = Locked(0)
     let sessionReportFailures = Locked(0)
+    let rejectedSessionId = Locked<String?>(nil)
     let attachmentData = Locked<[String: Data]>([:])
     let queue: Locked<[Result<DispatchRequest?, Error>]>
     let heartbeatResult: Locked<Result<HeartbeatReply, Error>>
@@ -63,6 +64,9 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
 
     func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {
         sessionUploadAttempts.withLock { $0 += 1 }
+        if rejectedSessionId.current == sessionId {
+            throw APIError.http(operation: "上报会话", status: 400, detail: "Invalid snapshot")
+        }
         let fail = sessionReportFailures.withLock { remaining -> Bool in
             guard remaining > 0 else { return false }
             remaining -= 1
@@ -582,6 +586,25 @@ final class NodeLoopTests: XCTestCase {
         try await task.value
         XCTAssertEqual(api.sessionUploadAttempts.current, 2, "one failed attempt, one retried upload")
         XCTAssertEqual(api.sessionReports.current.count, 1)
+    }
+
+    func testRejectedSnapshotDoesNotBlockTheFollowingSession() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [
+            NodeAgentSession(id: "bad", agentKind: "claude_code", sessionRef: "bad", status: "active"),
+            NodeAgentSession(id: "good", agentKind: "claude_code", sessionRef: "good", status: "active"),
+        ] }
+        api.rejectedSessionId.withLock { $0 = "bad" }
+        let adapter = SnapshotAdapter(reports: [AgentSessionReport(status: "idle", messages: [])])
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac mini", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+
+        await waitUntil { api.sessionReports.current.contains { $0.0 == "good" } }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        task.cancel()
+        try await task.value
+        XCTAssertEqual(api.sessionReports.current.map(\.0), ["good"])
+        XCTAssertEqual(api.sessionUploadAttempts.current, 2, "the rejected session backs off")
     }
 
     /// The server hands a plain idle session back on its ~30s cool-down line,

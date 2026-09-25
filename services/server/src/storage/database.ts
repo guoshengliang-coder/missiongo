@@ -1406,6 +1406,22 @@ export class MissionGoDatabase {
       this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
         .run(202609250822, new Date().toISOString());
     }
+    // Keep this after all historical agent_sessions table rebuilds.
+    const turnStateColumns = this.connection
+      .prepare("PRAGMA table_info(agent_sessions)")
+      .all() as unknown as Array<{ name: string }>;
+    const turnStateMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609251604")
+      .get() as unknown as { version: number } | undefined;
+    if (!turnStateMigration || !turnStateColumns.some((column) => column.name === "turn_state_json")) {
+      this.transaction(() => {
+        if (!turnStateColumns.some((column) => column.name === "turn_state_json")) {
+          this.connection.exec("ALTER TABLE agent_sessions ADD COLUMN turn_state_json TEXT NOT NULL DEFAULT '{}';");
+        }
+        this.connection.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609251604, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }
