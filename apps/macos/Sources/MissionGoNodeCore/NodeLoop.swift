@@ -415,7 +415,9 @@ public final class NodeLoop: @unchecked Sendable {
                             awaitingReport.withLock { $0[session.id] = (commandId, report) }
                         }
                         try await self.api.reportAgentSession(sessionId: session.id, report: report)
-                        _ = awaitingReport.withLock { $0.removeValue(forKey: session.id) }
+                        // Keep the result until a node poll no longer offers
+                        // this command. Even after a 204, a stale poll must
+                        // not call Codex a second time.
                         if let fingerprint { reported.withLock { $0[session.id] = fingerprint } }
                     }
                 } catch {

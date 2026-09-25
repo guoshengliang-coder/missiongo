@@ -204,6 +204,7 @@ final class NodeLoopTests: XCTestCase {
                             timing: snapshotTiming(), log: { _ in })
         let task = Task { try await loop.run() }
         await waitUntil { api.sessionReports.current.count >= 1 }
+        try? await Task.sleep(nanoseconds: 100_000_000)
         task.cancel()
         try await task.value
 
@@ -224,6 +225,7 @@ final class NodeLoopTests: XCTestCase {
                             timing: snapshotTiming(), log: { _ in })
         let task = Task { try await loop.run() }
         await waitUntil { api.sessionReports.current.count >= 1 }
+        try? await Task.sleep(nanoseconds: 100_000_000)
         task.cancel()
         try await task.value
 
