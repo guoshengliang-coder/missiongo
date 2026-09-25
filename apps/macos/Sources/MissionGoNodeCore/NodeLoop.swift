@@ -372,6 +372,14 @@ public final class NodeLoop: @unchecked Sendable {
         /// server reads — status, a delivered reply's command status, settings
         /// revisions — still goes out the moment it changes. It is recorded only
         /// after a report succeeded, so a failed upload is retried.
+        ///
+        /// Fingerprints of sessions that left the list are kept on purpose. The
+        /// server hands an idle session back roughly every 30 seconds (its
+        /// cool-down line), and dropping the fingerprint in between turned that
+        /// return into a guaranteed re-upload — measured on production as the
+        /// last 30-second re-send loop after AND-182 shipped. A retired entry
+        /// costs a session id plus 32 bytes until the app restarts, and the
+        /// list itself is capped at a hundred sessions per node.
         let reported = Locked<[String: Data]>([:])
         // Re-send an unacknowledged result report, never the Codex command
         // itself. A lost snapshot HTTP response must not start another turn.
@@ -382,7 +390,6 @@ public final class NodeLoop: @unchecked Sendable {
                     let sessions = try await self.api.listAgentSessions()
                     self.reconcileCapacity(sessions)
                     let live = Set(sessions.map(\.id))
-                    reported.withLock { value in value = value.filter { live.contains($0.key) } }
                     awaitingReport.withLock { value in value = value.filter { live.contains($0.key) } }
                     for session in sessions {
                         guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else { continue }
