@@ -10,11 +10,11 @@ import { WEB_ORIGIN, WEB_PORT, SERVER_PORT } from "./tests/ui/fixture.mjs";
  *   - `audit` measures the rendered page -- text size, contrast, touch targets,
  *     horizontal overflow -- and the answer is a number, the same on any
  *     machine. It runs in CI.
- *   - `visual` compares screenshots against committed baselines, which are
- *     specific to the platform that rendered them: Linux and macOS lay out the
- *     same CSS with different fonts. It runs where the baselines were made
- *     (`npm run test:ui:visual`), and the PR template asks for the screenshots
- *     it produces.
+ *   - `visual` compares screenshots against committed baselines. CI records and
+ *     compares the Linux set (`*-visual-linux.png`) on ubuntu; a developer's
+ *     own darwin files stay untracked. Regenerate them deliberately with the
+ *     workflow_dispatch input `update_ui_snapshots`, then commit the
+ *     `ui-snapshots` artifact it uploads.
  *
  * The server and the console both come up from tests/ui/fixture.mjs against a
  * throwaway database; nothing here touches a developer's own data.
@@ -29,8 +29,12 @@ export default defineConfig({
   timeout: 60_000,
   expect: {
     toHaveScreenshot: {
-      // Antialiasing differs run to run; a layout change never does.
-      maxDiffPixelRatio: 0.01,
+      // Antialiasing differs run to run; a layout change never does. One
+      // percent was loose enough to hide a real one: AND-197's status reorder
+      // moved only ~0.9% of a page's pixels, so a stale baseline passed until
+      // a random product-badge colour nudged it over. The badge is masked in
+      // visual.spec.ts, leaving only sub-pixel noise, so the gate can be tight.
+      maxDiffPixelRatio: 0.001,
       animations: "disabled",
       caret: "hide",
     },
