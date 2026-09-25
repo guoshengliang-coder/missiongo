@@ -5,7 +5,7 @@ import { LoaderCircle, MoreHorizontal } from "lucide-react";
 import { DISPATCH_MODES_BY_AGENT } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
-import { agentModels, effortLabelKey, effortOptions } from "./agent-model-options";
+import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider } from "./agent-model-options";
 import { dispatchModeLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import type { AgentSessionSummary } from "./types";
@@ -40,7 +40,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   });
 
   const modeLabel = (value: string) => {
-    const key = dispatchModeLabelKey(value);
+    const key = dispatchModeLabelKey(session.agentKind, value);
     return key ? t(key) : value;
   };
   const effortLabel = (value: string) => {
@@ -123,8 +123,18 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
               (the resolved id the agent reported) never blanks the select. */}
           {modelValue && <option value={modelValue}>{shownModel}{endpointNote}</option>}
           {!modelValue && <option value="">{shownModel}{endpointNote}</option>}
-          {(models ?? []).filter((entry) => entry.id !== modelValue).map((entry) => (
-            <option key={entry.id} value={entry.id}>{entry.label}</option>
+          {groupModelsByProvider((models ?? []).filter((entry) => entry.id !== modelValue)).map((group) => (
+            group.provider === null
+              ? group.models.map((entry) => (
+                <option key={entry.id} value={entry.id}>{entry.label}</option>
+              ))
+              : (
+                <optgroup key={group.provider} label={group.provider}>
+                  {group.models.map((entry) => (
+                    <option key={entry.id} value={entry.id}>{entry.label}</option>
+                  ))}
+                </optgroup>
+              )
           ))}
         </select>
         <select

@@ -3069,6 +3069,39 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     expect((await dispatch(app, cookie, base)).statusCode).toBe(201);
   });
 
+  it("keeps the vendor a Mac groups its models under, so the console can group them (AND-189)", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await modelHeartbeat(app, node.token, [
+      { id: "zai-coding-plan/glm-5.3", label: "GLM-5.3", provider: "Z.AI Coding Plan", efforts: [] },
+      { id: "deepseek/deepseek-v4", label: "DeepSeek V4", provider: "DeepSeek", efforts: [] },
+      { id: "gpt-5.5", label: "GPT-5.5", efforts: [] },
+    ]);
+    const nodes = await app.inject({ method: "GET", url: "/api/v1/nodes", headers: { cookie } });
+    const models = nodes.json<{ nodes: Array<{ agents: Array<{ kind: string; models: unknown[] }> }> }>()
+      .nodes[0]!.agents.find((agent) => agent.kind === "codex")!.models as Array<Record<string, unknown>>;
+    expect(models).toEqual([
+      { id: "zai-coding-plan/glm-5.3", label: "GLM-5.3", provider: "Z.AI Coding Plan", efforts: [] },
+      { id: "deepseek/deepseek-v4", label: "DeepSeek V4", provider: "DeepSeek", efforts: [] },
+      { id: "gpt-5.5", label: "GPT-5.5", efforts: [] },
+    ]);
+    // A provider that is not a name is a bad heartbeat, not a silent guess.
+    const bad = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/heartbeat",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        agents: [{
+          kind: "codex", version: "0.155.1", ready: true,
+          models: [{ id: "m", label: "M", provider: 7, efforts: [] }],
+          skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
+        }],
+        repoCandidates: [],
+      },
+    });
+    expect(bad.statusCode).toBe(400);
+  });
+
   it("reports what the agent uses and carries a running change to the Mac once", async () => {
     const { app, cookie } = await signedInApp();
     const { node, mission, sessionId } = await launchedCodexSession(app, cookie);

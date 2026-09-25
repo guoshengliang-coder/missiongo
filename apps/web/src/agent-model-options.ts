@@ -51,6 +51,38 @@ export function modelsAcrossNodes(nodes: readonly DispatchNode[], agentKind: Age
   return [...byId.values()];
 }
 
+/** One slice of the model list: a vendor's models, or the ones with no vendor said. */
+export interface ModelGroup {
+  readonly provider: string | null;
+  readonly models: readonly NodeAgentModel[];
+}
+
+/**
+ * Models grouped by the vendor the agent listed them under (AND-189: OpenCode
+ * reports one group per provider). Ungrouped agents -- Claude Code, Codex --
+ * get a single group with `provider: null`, so a picker renders one
+ * `<optgroup>` or one flat list by the same code.
+ */
+export function groupModelsByProvider(models: readonly NodeAgentModel[]): readonly ModelGroup[] {
+  const groups: ModelGroup[] = [];
+  const index = new Map<string, ModelGroup>();
+  for (const model of models) {
+    const provider = model.provider ?? null;
+    const key = provider ?? "";
+    const found = index.get(key);
+    if (found) {
+      index.set(key, { provider, models: [...found.models, model] });
+    } else {
+      const group = { provider, models: [model] };
+      index.set(key, group);
+      groups.push(group);
+    }
+  }
+  // The map only tracks grouping; the array is rebuilt so later additions to a
+  // group replace it in place rather than appending a second group.
+  return groups.map((group) => index.get(group.provider ?? "") ?? group);
+}
+
 const EFFORT_LABEL_KEYS = {
   none: "effortNone",
   minimal: "effortMinimal",

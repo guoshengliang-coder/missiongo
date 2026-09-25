@@ -39,6 +39,29 @@ public extension AgentAdapter {
     }
 }
 
+/// The last model list an agent gave, so a heartbeat every 30 seconds does not
+/// ask its daemon each time, and a failed ask still has an answer. Shared by
+/// every adapter that lists models (Codex, OpenCode).
+final class ModelListCache: @unchecked Sendable {
+    private let entry = Locked<(models: [AgentModelOption], at: Date)?>(nil)
+    let ttl: TimeInterval
+
+    init(ttl: TimeInterval = 10 * 60) {
+        self.ttl = ttl
+    }
+
+    func fresh(now: Date = Date()) -> [AgentModelOption]? {
+        guard let cached = entry.current, now.timeIntervalSince(cached.at) < ttl else { return nil }
+        return cached.models
+    }
+
+    var last: [AgentModelOption]? { entry.current?.models }
+
+    func store(_ models: [AgentModelOption], now: Date = Date()) {
+        entry.withLock { $0 = (models, now) }
+    }
+}
+
 public enum AgentDispatchAvailability: Equatable, Sendable {
     case ready
     case unavailable(reason: String)

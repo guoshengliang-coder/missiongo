@@ -5,7 +5,7 @@ import { Check, CirclePause, LoaderCircle } from "lucide-react";
 import { DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo/domain";
 
 import { api } from "./api";
-import { effortLabelKey, effortOptions, modelsAcrossNodes } from "./agent-model-options";
+import { effortLabelKey, effortOptions, groupModelsByProvider, modelsAcrossNodes } from "./agent-model-options";
 import { SUPPORTED_AGENT_KINDS, agentLabelKey, dispatchModeLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import type { DispatchDefaults } from "./types";
@@ -108,7 +108,7 @@ export function DispatchDefaultsSettings() {
                 <label>{t("dispatchMode")}
                   <select value={current.mode ?? (kind === "claude_code" ? "bypassPermissions" : "plan")} onChange={(event) => updateAgent(kind, { mode: event.target.value })}>
                     {DISPATCH_MODES_BY_AGENT[kind].map((value) => (
-                      <option key={value} value={value}>{label(dispatchModeLabelKey(value), value)}</option>
+                      <option key={value} value={value}>{label(dispatchModeLabelKey(kind, value), value)}</option>
                     ))}
                   </select>
                 </label>
@@ -118,7 +118,19 @@ export function DispatchDefaultsSettings() {
                     onChange={(event) => updateAgent(kind, { model: event.target.value, effort: "" })}
                   >
                     <option value="">{t("dispatchModelLocal")}</option>
-                    {models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+                    {groupModelsByProvider(models).map((group) => (
+                      group.provider === null
+                        ? group.models.map((model) => (
+                          <option key={model.id} value={model.id}>{model.label}</option>
+                        ))
+                        : (
+                          <optgroup key={group.provider} label={group.provider}>
+                            {group.models.map((model) => (
+                              <option key={model.id} value={model.id}>{model.label}</option>
+                            ))}
+                          </optgroup>
+                        )
+                    ))}
                     {current.model && !models.some((model) => model.id === current.model) && (
                       <option value={current.model}>{current.model}</option>
                     )}
