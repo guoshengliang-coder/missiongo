@@ -321,6 +321,18 @@ if [ -s "$local_macos_zip" ]; then
 else
   echo "Note: this checkout carries no macOS client under apps/web/public/downloads/." >&2
   echo "      Carrying the live one over, so the download keeps working." >&2
+  # The zip is a git-ignored build artifact: it lives only in the working tree
+  # that ran publish:macos. Deploying from a different checkout therefore ships
+  # the live client unchanged however new released.json looks, because this
+  # carry-over is the same path as "no new client intended". Name the version
+  # that is waiting so the silence above cannot be read as a client release.
+  recorded_macos_version="$(grep -A3 '"macosApp"' released.json | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  if [ -n "$recorded_macos_version" ]; then
+    echo "      released.json records macOS ${recorded_macos_version}, but a client ships" >&2
+    echo "      only from the working tree that built it: merge main into that worktree" >&2
+    echo "      and deploy there, or copy the zip and its .release/.json beside it into" >&2
+    echo "      apps/web/public/downloads/." >&2
+  fi
   echo "      Run npm run publish:macos to ship a new one." >&2
 fi
 
