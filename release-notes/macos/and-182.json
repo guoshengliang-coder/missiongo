@@ -1,0 +1,6 @@
+{
+  "pullRequest": 154,
+  "items": [
+    { "key": "AND-182", "title": "Agent 控制台：快照上传压缩与变化检测（含空闲会话去重）" }
+  ]
+}
