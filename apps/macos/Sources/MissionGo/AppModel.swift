@@ -795,11 +795,14 @@ final class AppModel: ObservableObject {
         if let published = update.manifest.publishedAtLabel {
             details += "\n发布时间：\(published)"
         }
-        details += "\n\n\(update.manifest.releaseNotesText)"
         if Bundle.main.object(forInfoDictionaryKey: "MissionGoAllowsAdHocUpdates") as? Bool == true {
             details += "\n\n此安装使用 ad-hoc 签名；更新后 macOS 可能要求重新授予权限。"
         }
         alert.informativeText = details
+        // The notes live in a bounded, scrolling box: release after release they
+        // are the only unbounded part of this alert, and a long one must never
+        // push the buttons out of reach.
+        alert.accessoryView = UpdateNotesView.make(text: update.manifest.releaseNotesText)
         alert.addButton(withTitle: "同意更新")
         alert.addButton(withTitle: "稍后")
         NSApp.activate(ignoringOtherApps: true)

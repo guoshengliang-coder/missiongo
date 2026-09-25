@@ -62,7 +62,11 @@ final class AppUpdaterManifestTests: XCTestCase {
         XCTAssertEqual(manifest.buildTimestamp, "20260915033846")
         XCTAssertEqual(manifest.releaseNotes?.first?.pullRequestNumber, 94)
         XCTAssertEqual(manifest.releaseNotes?.first?.items.first?.key, "AND-122")
+        XCTAssertTrue(manifest.releaseNotesText.contains("PR #94"))
         XCTAssertTrue(manifest.releaseNotesText.contains("AND-122 · 批量操作体验"))
+        // The PR title is a git subject, often English; only declared Chinese
+        // titles may reach the alert.
+        XCTAssertFalse(manifest.releaseNotesText.contains("Improve batch UX"))
     }
 
     /// The console's index.html is what a misconfigured server actually returns.

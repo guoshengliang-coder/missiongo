@@ -272,6 +272,17 @@ The zip does not travel between worktrees. `deploy.sh` prints the version
 `released.json` records when it carries the live client over, so this is not
 left to be noticed by hand.
 
+The update manifest's `releaseNotes` is built by `scripts/macos-release-notes.mjs`
+over the range `released.json` records to `HEAD`. Only PRs that declare
+themselves under `release-notes/macos/` are published, so the alert shows the
+Chinese titles a person wrote instead of the English PR subject. A declaration
+is an `items` array of `{ key, title }` (`title` in Chinese); an empty `items`
+array is how a PR says it is internal and must not be listed. A merged PR that
+changed `apps/macos/` without a declaration makes the script fail and name it, so
+a release cannot silently drop an update -- fill the note in afterwards with a
+`pullRequest` field naming the PR it belongs to. A version-only release commit
+needs no declaration.
+
 ### Restricting the origin to a CDN
 
 A CDN protects nothing if the origin also answers on its own address. Anyone who
