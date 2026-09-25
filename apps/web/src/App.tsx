@@ -125,6 +125,7 @@ import { VerificationReturnBadge, VerificationReturnCallout, VerificationReturnS
 import { StartWorkDialog } from "./start-work-dialog";
 import { cachedListSummary } from "./list-summary";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
+import { useForegroundSync } from "./use-foreground-sync";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import {
   creatorLabel,
@@ -477,6 +478,9 @@ export function App() {
     document.addEventListener("visibilitychange", update);
     return () => document.removeEventListener("visibilitychange", update);
   }, []);
+  // Coming back to the page re-reads what is on screen if it has gone stale
+  // (AND-192); the spinner it returns drives the topbar indicator below.
+  const foregroundSyncing = useForegroundSync();
   const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
   const agentConsoleSinglePane = useMediaQuery("(max-width: 520px)");
   const agentConsoleLayout = agentConsoleSinglePane ? "single" : "wide";
@@ -1344,6 +1348,11 @@ export function App() {
               <Plus size={18} /> <span>{t("capture")}</span>
             </button>
           </>
+        )}
+      {foregroundSyncing && (
+          <span className="sync-indicator" role="status" aria-label={t("syncing")} title={t("syncing")}>
+            <RefreshCw className="spin" size={15} aria-hidden="true" />
+          </span>
         )}
       </header>
       {!isOnline && <div className="offline-banner" role="status"><WifiOff size={15} /> {t("offlineMode")}</div>}

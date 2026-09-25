@@ -731,6 +731,8 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .workspace-head h1 { margin: 0; font-size: clamp(27px, 3vw, 38px); letter-spacing: -0.045em; line-height: 1; }
 .workspace-head-side { display: flex; align-items: center; gap: 22px; }
 .refresh-button { width: 36px; padding: 0; display: inline-grid; place-items: center; flex: 0 0 auto; }
+/* A background re-read on return to the foreground; small and out of the way. */
+.sync-indicator { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--muted); }
 .workspace-stats { display: flex; gap: 22px; color: var(--muted); font-size: var(--text-sm); }
 .workspace-stats strong { margin-right: 4px; color: var(--ink); font-size: 17px; }
 

@@ -60,6 +60,7 @@ export interface AgentSessionCommand {
   readonly error?: string;
   readonly createdAt: string;
   readonly deliveredAt?: string;
+  readonly deliveringAt?: string;
   readonly cancelledAt?: string;
 }
 
@@ -272,6 +273,7 @@ interface CommandRow {
   error: string | null;
   created_at: string;
   delivered_at: string | null;
+  delivering_at: string | null;
   cancelled_at: string | null;
 }
 
@@ -405,6 +407,56 @@ function initialAttention(
     ?? (status === "idle" && message?.role === "agent" ? { state: "pending" } : { state: "not_needed" });
 }
 
+/**
+ * How long MissionGo waits for the Mac to settle a reply it has already claimed
+ * (AND-184). Before this, a command's whole life was driven by the node: a Mac
+ * that went away mid-delivery left the one pending slot occupied forever, and
+ * nothing in the server noticed.
+ */
+export const COMMAND_DELIVERING_TIMEOUT_MS = 30 * 60 * 1_000;
+/**
+ * How long a reply may wait behind a running turn before it is worth pointing
+ * out. Waiting behind a long turn is legitimate, so this never fails the
+ * command, it only surfaces it (AND-184).
+ */
+export const COMMAND_QUEUED_ALERT_MS = 180 * 60 * 1_000;
+/** Stamped on a delivery the server stopped waiting for; also its alert marker. */
+export const COMMAND_DELIVERY_TIMEOUT_ERROR =
+  "Mac 认领回复后 30 分钟没有报告投递结果，MissionGo 已自动标记失败。请重新发送或检查该 Mac。";
+
+/**
+ * Why a pending reply deserves attention, or undefined when it does not. A
+ * command the server already failed for timeout keeps its alert until a new
+ * reply replaces it; a normal queue and a normal delivery stay quiet, so a long
+ * turn never looks like a fault (AND-184).
+ */
+export function stuckCommandReason(
+  command: {
+    status: AgentSessionCommandStatus;
+    error: string | null;
+    created_at: string;
+    delivering_at: string | null;
+  },
+  now = Date.now(),
+): string | undefined {
+  if (command.status === "delivering") {
+    const since = Date.parse(command.delivering_at ?? command.created_at);
+    return Number.isFinite(since) && now - since >= COMMAND_DELIVERING_TIMEOUT_MS
+      ? COMMAND_DELIVERY_TIMEOUT_ERROR
+      : undefined;
+  }
+  if (command.status === "queued") {
+    const since = Date.parse(command.created_at);
+    return Number.isFinite(since) && now - since >= COMMAND_QUEUED_ALERT_MS
+      ? "回复已排队超过 3 小时，Mac 仍未取走。可能节点离线或会话卡住，可停止后重新发送。"
+      : undefined;
+  }
+  if (command.status === "failed" && command.error === COMMAND_DELIVERY_TIMEOUT_ERROR) {
+    return COMMAND_DELIVERY_TIMEOUT_ERROR;
+  }
+  return undefined;
+}
+
 function boundedAttentionText(text: string): string {
   if (text.length <= 20_000) return text;
   return `${text.slice(0, 2_000)}\n\n[中间内容已省略]\n\n${text.slice(-17_950)}`;
@@ -521,6 +573,10 @@ export class AgentSessionStore {
    * title or preview first.
    */
   listForAccount(accountId: string, limit = 100): readonly AgentSessionListItem[] {
+    // Read paths are where the server's own timeout check runs (AND-184): no
+    // resident timer, and the check happens exactly when somebody can see the
+    // freed slot.
+    this.failStuckDeliveringCommands();
     const rows = this.database.connection
       .prepare(
         `SELECT s.id AS session_id, d.id AS dispatch_id, d.agent_kind,
@@ -628,7 +684,15 @@ export class AgentSessionStore {
                       revision: contentHash,
                     }
                   : { ...initialAttention(status, message), revision: contentHash };
-      const needsAttention = attention.state === "needed";
+      // A reply the Mac claimed but never settled, or one queued far longer than
+      // a turn, is a fault the transcript cannot express (AND-184). Override the
+      // message-derived attention so the console shows it; deliberately without a
+      // revision, so nobody can dismiss a condition that is still true.
+      const stuckReason = command ? stuckCommandReason(command) : undefined;
+      const alertAttention: AgentSessionAttention = stuckReason
+        ? { state: "needed", kind: "action", reason: stuckReason }
+        : attention;
+      const needsAttention = alertAttention.state === "needed";
       return {
         id: row.session_id ?? `dispatch:${row.dispatch_id}`,
         ...(row.session_id ? { agentSessionId: row.session_id } : {}),
@@ -653,7 +717,7 @@ export class AgentSessionStore {
         items: itemRows.map((item) => ({ key: item.item_key, title: item.title, productId: item.product_id })),
         ...(message ? { latestMessage: { role: message.role, text: message.text } } : {}),
         ...(command ? { command: this.mapCommand(command) } : {}),
-        attention,
+        attention: alertAttention,
         needsAttention,
         activities: row.session_activities_json
           ? JSON.parse(row.session_activities_json) as AgentSessionActivity[]
@@ -917,7 +981,7 @@ export class AgentSessionStore {
   cancel(accountId: string, sessionId: string, commandId: string): AgentSessionCommand {
     const command = this.database.connection
       .prepare(
-        `SELECT c.id, c.kind, c.text, c.turn_id, c.status, c.error, c.created_at, c.delivered_at, c.cancelled_at
+        `SELECT c.id, c.kind, c.text, c.turn_id, c.status, c.error, c.created_at, c.delivered_at, c.delivering_at, c.cancelled_at
          FROM agent_session_commands c
          JOIN agent_sessions s ON s.id = c.session_id
          JOIN dispatches d ON d.id = s.dispatch_id
@@ -959,6 +1023,7 @@ export class AgentSessionStore {
   }
 
   listForNode(nodeId: string): readonly NodeAgentSession[] {
+    this.failStuckDeliveringCommands();
     const sourceArchiveBefore = new Date(Date.now() - SOURCE_ARCHIVE_POLL_MS).toISOString();
     const rows = this.database.connection
       .prepare(
@@ -1287,24 +1352,57 @@ export class AgentSessionStore {
         now,
       );
       if (input.commandId && input.commandStatus) {
-        const sourceStatus = input.commandStatus === "delivering" ? "status = 'queued'" : "status IN ('queued', 'delivering')";
-        const changed = this.database.connection
-          .prepare(
-            `UPDATE agent_session_commands SET status = ?, error = ?, delivered_at = ?
-             WHERE id = ? AND session_id = ? AND ${sourceStatus}`,
-          )
-          .run(
-            input.commandStatus,
-            input.commandError?.slice(0, 2_000) || null,
-            input.commandStatus === "delivered" ? now : null,
-            input.commandId,
-            input.sessionId,
-          );
-        if (changed.changes === 0) {
+        const current = this.database.connection
+          .prepare("SELECT status, error FROM agent_session_commands WHERE id = ? AND session_id = ?")
+          .get(input.commandId, input.sessionId) as unknown as
+            { status: AgentSessionCommandStatus; error: string | null } | undefined;
+        if (!current) {
           throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
         }
-        // A pending reply held back the automatic archive; retry now it settled.
-        if (input.commandStatus !== "delivering") {
+        // The server may have given up on this delivery while the Mac was away
+        // (AND-184). A late `delivering` for a command it already failed is
+        // moot -- resurrecting it would collide with a new reply's pending slot
+        // -- so it is ignored. A late settled report still overwrites the
+        // timeout failure, so work the Mac really did finish is not recorded as
+        // lost.
+        const reaped = current.status === "failed" && current.error === COMMAND_DELIVERY_TIMEOUT_ERROR;
+        if (input.commandStatus === "delivering") {
+          if (!reaped) {
+            const changed = this.database.connection
+              .prepare(
+                `UPDATE agent_session_commands
+                 SET status = 'delivering', error = ?, delivered_at = NULL, delivering_at = ?
+                 WHERE id = ? AND session_id = ? AND status = 'queued'`,
+              )
+              .run(
+                input.commandError?.slice(0, 2_000) || null,
+                now,
+                input.commandId,
+                input.sessionId,
+              );
+            if (changed.changes === 0) {
+              throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
+            }
+          }
+        } else {
+          const changed = this.database.connection
+            .prepare(
+              `UPDATE agent_session_commands SET status = ?, error = ?, delivered_at = ?
+               WHERE id = ? AND session_id = ?
+                 AND (status IN ('queued', 'delivering') OR (status = 'failed' AND error = ?))`,
+            )
+            .run(
+              input.commandStatus,
+              input.commandError?.slice(0, 2_000) || null,
+              input.commandStatus === "delivered" ? now : null,
+              input.commandId,
+              input.sessionId,
+              COMMAND_DELIVERY_TIMEOUT_ERROR,
+            );
+          if (changed.changes === 0) {
+            throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
+          }
+          // A pending reply held back the automatic archive; retry now it settled.
           autoArchiveFinishedDispatches(this.database, [session.dispatch_id], now);
         }
       }
@@ -1373,10 +1471,40 @@ export class AgentSessionStore {
     return changed.changes === 1;
   }
 
+  /**
+   * Give up on deliveries the Mac claimed and never settled (AND-184). Called
+   * from read paths instead of a resident timer: the only process that could
+   * still settle the command reports through the same node paths, and a browser
+   * read is where a person needs to see the freed slot. Queued replies are left
+   * running -- waiting behind a long turn is normal -- and only surface through
+   * `stuckCommandReason`.
+   */
+  private failStuckDeliveringCommands(now = Date.now()): void {
+    const cutoff = new Date(now - COMMAND_DELIVERING_TIMEOUT_MS).toISOString();
+    const affected = this.database.connection
+      .prepare(
+        `SELECT DISTINCT s.dispatch_id AS dispatch_id
+         FROM agent_session_commands c JOIN agent_sessions s ON s.id = c.session_id
+         WHERE c.status = 'delivering' AND COALESCE(c.delivering_at, c.created_at) <= ?`,
+      )
+      .all(cutoff) as unknown as Array<{ dispatch_id: string }>;
+    if (affected.length === 0) return;
+    const changed = this.database.connection
+      .prepare(
+        `UPDATE agent_session_commands SET status = 'failed', error = ?
+         WHERE status = 'delivering' AND COALESCE(delivering_at, created_at) <= ?`,
+      )
+      .run(COMMAND_DELIVERY_TIMEOUT_ERROR, cutoff);
+    if (changed.changes > 0) {
+      // The reply settling is what lets an otherwise finished hand-off archive.
+      autoArchiveFinishedDispatches(this.database, affected.map((row) => row.dispatch_id));
+    }
+  }
+
   private pendingCommand(sessionId: string): CommandRow | undefined {
     return this.database.connection
       .prepare(
-        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, cancelled_at
+        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at
          FROM agent_session_commands
          WHERE session_id = ? AND status IN ('queued', 'delivering')
          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
@@ -1397,7 +1525,7 @@ export class AgentSessionStore {
   private latestCommand(sessionId: string): CommandRow | undefined {
     return this.database.connection
       .prepare(
-        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, cancelled_at
+        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at
          FROM agent_session_commands WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as CommandRow | undefined;
@@ -1413,6 +1541,7 @@ export class AgentSessionStore {
       ...(row.error ? { error: row.error } : {}),
       createdAt: row.created_at,
       ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}),
+      ...(row.delivering_at ? { deliveringAt: row.delivering_at } : {}),
       ...(row.cancelled_at ? { cancelledAt: row.cancelled_at } : {}),
     };
   }

@@ -1319,6 +1319,28 @@ export class MissionGoDatabase {
       this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
         .run(202609241537, new Date().toISOString());
     }
+    // AND-184: record the moment a reply enters `delivering` so the server can
+    // give up on a delivery the Mac claimed and never settled. A row that was
+    // already delivering before this migration falls back to its queued time,
+    // the earliest it could have started.
+    const commandDeliveringMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609250519")
+      .get() as unknown as { version: number } | undefined;
+    const hasDeliveringAt = (this.connection.prepare("PRAGMA table_info(agent_session_commands)").all() as unknown as Array<{ name: string }>)
+      .some((column) => column.name === "delivering_at");
+    if (!commandDeliveringMigration || !hasDeliveringAt) {
+      this.transaction(() => {
+        if (!hasDeliveringAt) {
+          this.connection.exec("ALTER TABLE agent_session_commands ADD COLUMN delivering_at TEXT;");
+          this.connection.exec(
+            "UPDATE agent_session_commands SET delivering_at = created_at WHERE status = 'delivering' AND delivering_at IS NULL;",
+          );
+        }
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609250519, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }
