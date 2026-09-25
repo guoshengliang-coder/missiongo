@@ -738,11 +738,46 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 /* The checkbox and the row's own button share the first cell rather than taking a
    column of their own: the list's grid is repeated at four breakpoints, and a new
    column would have to be threaded through every one of them. */
-.item-row-lead { min-width: 0; display: flex; align-items: center; gap: 11px; }
-.item-select-hit { flex: 0 0 auto; display: inline-grid; place-items: center; cursor: pointer; }
-.item-select { flex: 0 0 auto; width: 16px; height: 16px; margin: 0; accent-color: var(--mint-dark); cursor: pointer; }
+.item-row-lead { min-width: 0; display: flex; align-items: center; gap: 10px; }
+/* The box is what you look at, the label is what you hit. The box keeps the
+   layout width and the finger-sized area is a pseudo-element spread around it,
+   so a 44px target never widens the row's first column. */
+.item-select-hit { flex: 0 0 auto; position: relative; display: inline-grid; place-items: center; cursor: pointer; }
+.item-select-hit::before { content: ""; position: absolute; inset: -8px -12px; }
+/* Drawn rather than left to the UA: the list's multi-select is its own control.
+   `padding: 0` is load-bearing -- the blanket `input { padding: 0 12px }` above
+   outranks `width` under border-box, and a 20px box rendered 28px wide. */
+.item-select {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: var(--surface-strong);
+  border: 2px solid var(--line-dark);
+  border-radius: var(--radius-xs);
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.item-select:checked, .item-select:indeterminate { background: var(--mint-dark); border-color: var(--mint-dark); }
+.item-select:checked::after {
+  content: "";
+  width: 9px;
+  height: 5px;
+  margin-top: -2px;
+  border-left: 2px solid var(--primary-fg);
+  border-bottom: 2px solid var(--primary-fg);
+  transform: rotate(-45deg);
+}
+.item-select:indeterminate::after { content: ""; width: 9px; height: 0; border-top: 2px solid var(--primary-fg); }
 .item-select:disabled { cursor: default; opacity: 0.38; }
-.item-row-main { flex: 1; min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 12px; padding: 0; color: inherit; background: transparent; border: 0; text-align: left; cursor: pointer; }
+/* One column, not two. The type icon lives in the meta line now, so the old
+   28px column beside the text had nothing left to hold and squeezed the whole
+   text block into it -- on both shells, since this is the base rule. */
+.item-row-main { flex: 1; min-width: 0; display: block; padding: 0; color: inherit; background: transparent; border: 0; text-align: left; cursor: pointer; }
 .type-icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--radius-md); }
 .type-icon.large { width: 40px; height: 40px; border-radius: var(--radius-lg); }
 .type-idea { color: var(--type-idea-fg); background: var(--type-idea-bg); }
@@ -751,11 +786,17 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .type-task { color: var(--type-task-fg); background: var(--type-task-bg); }
 .type-note { color: var(--type-note-fg); background: var(--type-note-bg); }
 .item-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.item-title-line { min-width: 0; display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: var(--text-xs); font-weight: 700; }
-.item-title-line code, .detail-toolbar code { color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-xs); font-weight: 750; }
-/* The key is one token. Left shrinkable it broke at its own hyphen, so a narrow
-   row showed "HG-" above "24". See AND-27. */
-.item-title-line code { flex: 0 0 auto; white-space: nowrap; }
+/* The icon is the first flex item of this line, not a column beside the text
+   block. Centring only holds within a flex line, so a badge wrapping to a second
+   line used to drag the icon onto the seam between the two -- 11px off the key.
+   Inside the line it can only ever centre on the key's own line. */
+.item-meta { min-width: 0; display: flex; align-items: center; gap: 4px 8px; }
+.detail-toolbar code { color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-xs); font-weight: 750; }
+/* The key is an address, not a heading: a step lighter and a step larger than it
+   was, so it reads as one token without competing with the title. It is also one
+   token -- left shrinkable it broke at its own hyphen and a narrow row showed
+   "HG-" above "24". See AND-27. */
+.item-meta code { flex: 0 0 auto; color: var(--muted-soft); font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-sm); font-weight: 600; white-space: nowrap; }
 .item-title { min-width: 0; overflow: hidden; color: var(--ink); font-size: var(--text-base); font-weight: 680; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
 .item-description { overflow: hidden; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .item-description.muted { color: var(--muted-soft); font-style: italic; }
@@ -767,23 +808,29 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
    the overflow painted straight over the row's more-menu. The title is what
    identifies the row, so it is the part that keeps its space. See AND-27. */
 .item-evidence-summary { flex: 0 1 auto; min-width: 0; display: flex; overflow: hidden; gap: 4px; }
-.item-evidence-summary small { padding: 2px 6px; color: var(--muted); background: var(--badge-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 700; white-space: nowrap; }
+.item-evidence-summary small { padding: 2px 8px; color: var(--muted); background: var(--badge-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 700; line-height: 1.5; white-space: nowrap; }
 .item-evidence-summary small.evidence-strong { color: var(--danger); background: var(--type-bug-bg); }
 /* Dispatched, not claimed yet. Shrinks with an ellipsis like the evidence
    badges, but has a floor so the machine's name is never cut to nothing, and
    stays on phones where those badges are hidden: it is the one that decides
    whether ticking this row is a mistake. */
-.item-derived-badge { flex: 0 0 auto; padding: 2px 6px; color: var(--muted); background: var(--tile-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 700; white-space: nowrap; }
-.item-dispatch-badge { flex: 0 1 auto; min-width: 5em; max-width: 12em; overflow: hidden; padding: 2px 6px; color: var(--warn-text); background: var(--warn-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.item-derived-badge { flex: 0 0 auto; padding: 2px 8px; color: var(--muted); background: var(--tile-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 700; line-height: 1.5; white-space: nowrap; }
+.item-dispatch-badge { flex: 0 1 auto; min-width: 5em; max-width: 12em; overflow: hidden; padding: 2px 8px; color: var(--warn-text); background: var(--warn-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 700; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
 .item-dispatch-badge.failed { color: var(--danger); background: var(--danger-bg-strong); }
 /* Who is working on it now — the accent pair, so it reads as activity rather
    than the warning the dispatch badge above carries. */
-.item-handler-badge { flex: 0 1 auto; min-width: 5em; max-width: 20em; overflow: hidden; padding: 2px 6px; color: var(--accent-text); background: var(--accent-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.item-handler-badge { flex: 0 1 auto; min-width: 5em; max-width: 20em; overflow: hidden; padding: 2px 8px; color: var(--accent-text); background: var(--accent-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 700; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
 .item-updated { min-width: 0; display: flex; flex-direction: column; gap: 3px; overflow: hidden; color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-xs); white-space: nowrap; }
 .item-updated > span { overflow: hidden; text-overflow: ellipsis; }
 .item-creator { color: var(--ink-2); font-family: inherit; font-weight: 650; }
 .item-context-creator { display: none; }
 .item-context { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+/* One footer for both shells. Above the compact breakpoint the wrapper dissolves
+   and the state cluster keeps the grid column it always had; the compact block
+   below turns it into the card's own line. The trace is compact-only -- the desk
+   table already has the creator and the time in columns of their own. */
+.item-footer { display: contents; }
+.item-trace { display: none; }
 .item-state { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .item-context strong { max-width: 100%; font-weight: 620; overflow: hidden; font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .item-context small, .item-state small { max-width: 100%; overflow: hidden; color: var(--muted); font-size: var(--text-xs); line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
@@ -804,7 +851,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .media-file-tile { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .media-file-tile small { max-width: 48px; overflow: hidden; font-size: var(--text-xs); font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
 .media-overflow { position: absolute; right: 0; bottom: 0; z-index: 2; padding: 2px 6px; color: white; background: rgba(11, 16, 27, .78); border-radius: var(--radius-sm) 0 var(--radius-sm) 0; font-size: var(--text-xs); font-weight: 800; line-height: 1.4; }
-.priority-dot { width: 7px; height: 7px; border-radius: 50%; }
+.priority-dot { width: 6px; height: 6px; border-radius: 50%; }
 .priority-urgent { background: var(--red); box-shadow: 0 0 0 3px rgba(219,91,96,0.12); }
 .priority-high { background: var(--amber); }
 .priority-normal { background: var(--blue); }
@@ -1446,24 +1493,47 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .workspace-stats { gap: 12px; }
   .workspace-stats span { display: flex; flex-direction: column; }
   .list-columns { display: none; }
-  .list-surface { border-radius: var(--radius-lg); }
-  .item-list { min-height: 420px; }
+  /* Each row is its own card on the canvas: the panel it used to sit in goes
+     transparent, and the 14px between cards is what separates them now. */
+  .list-surface { background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+  .item-list { min-height: 420px; display: flex; flex-direction: column; gap: 14px; }
   .item-row, .list-surface.without-media .item-row {
     height: auto;
-    grid-template-columns: minmax(0, 1fr) auto auto 44px;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto auto;
-    gap: 8px 10px;
-    padding: 14px 13px;
+    gap: 0;
+    padding: 16px;
+    position: relative;
+    background: var(--surface-strong);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-soft);
   }
-  .item-row-lead { grid-column: 1 / 4; grid-row: 1; }
+  /* The row's bottom rule and its rounded last-child corner belong to a table
+     that ends; a card is bordered all the way round. */
+  .item-row:last-child { border-bottom: 1px solid var(--line-soft); border-radius: var(--radius-lg); }
+  .item-row-lead { grid-column: 1; grid-row: 1; align-items: flex-start; }
+  /* flex-start keeps the box off the tall copy block below it, but that leaves
+     its top on the 28px icon's top rather than its middle. 4px is the half of
+     the difference, and the target still reaches 44px tall and across the gap
+     to the copy -- a tap on the padding ticks the box, it never opens it. */
+  .item-select-hit { margin-top: 4px; }
+  .item-select-hit::before { inset: -12px -10px; }
+  /* Wrapping is allowed here, and it is safe now: the icon and the key are on the
+     first flex line together, so a badge that wraps takes the second line alone.
+     min-height holds the line at the icon's height either way. */
+  .item-meta { flex-wrap: wrap; gap: 4px 10px; min-height: 28px; }
+  .item-copy { gap: 6px; }
   /* The title gets the width here rather than a single clipped line: on a phone
      "记录界面点击拍照并没..." stopped exactly where the useful part started. The
      badges go with it -- they are triage detail, and the counts are still on the
      item itself. See AND-32 and AND-27. */
-  .item-title-line { align-items: flex-start; }
   .item-title {
     display: -webkit-box;
-    line-height: 1.35;
+    margin-top: 4px;
+    font-size: var(--text-lg);
+    font-weight: 700;
+    line-height: 1.375;
     white-space: normal;
     text-overflow: clip;
     -webkit-box-orient: vertical;
@@ -1476,20 +1546,62 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
     display: -webkit-box;
     overflow: hidden;
     white-space: normal;
-    line-height: 1.55;
+    line-height: 1.625;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
   }
-  .item-context { grid-column: 1; grid-row: 2; flex-direction: row; align-items: center; gap: 6px; }
-  .item-context small::before { content: "·"; margin-right: 6px; }
-  .item-state { grid-column: 2; grid-row: 2; }
-  .item-updated { grid-column: 3; grid-row: 2; justify-self: end; }
-  /* Full width under the text so the tiles can be big enough to read. */
-  .item-media-strip { grid-column: 1 / 4; grid-row: 3; gap: 8px; }
+  /* The tiles sit above the footer, and both are indented to the type icon's
+     axis -- 30px is the checkbox's 20px plus the lead's 10px gap. Only a
+     selectable row draws that box, so on the rest the icon sits on the card's
+     own padding edge and the indent would push these two off its axis. */
+  .item-media-strip { grid-column: 1; grid-row: 2; gap: 10px; margin-top: 12px; }
   .item-media-strip.empty-slot { display: none; }
   .item-media-thumb { width: 84px; height: 96px; }
-  .item-row-actions { grid-column: 4; grid-row: 1 / -1; align-self: start; }
+  /* The card's last line: where it came from and when, then how it stands.
+     Nothing in the trace may shrink. A byline cut to `AI · OpenCo...` names
+     nobody and a time cut to `3 小时...` says nothing at all, so a line that
+     cannot fit wraps the state cluster onto its own row instead of mangling
+     both -- which costs one line on the rare long byline and no line here. */
+  .item-footer {
+    grid-column: 1;
+    grid-row: 3;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px 10px;
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .item-row.has-select .item-media-strip,
+  .item-row.has-select .item-footer { margin-left: 30px; }
+  .item-trace { display: flex; align-items: center; gap: 6px; min-width: 0; margin-right: auto; color: var(--muted); font-size: var(--text-xs); white-space: nowrap; }
+  .item-trace strong { flex: 0 0 auto; font-size: var(--text-xs); font-weight: 500; }
+  .item-trace .sep { flex: 0 0 auto; color: var(--muted-soft); font-style: normal; }
+  .item-trace .item-creator, .item-trace .item-stamp { flex: 0 0 auto; white-space: nowrap; }
+  /* Never shrinks: how the item stands is what the card is scanned for. The pill
+     is scoped to the list -- the design measured it here, and the detail page
+     keeps the app's own pill. */
+  .item-state { flex: 0 0 auto; }
+  .item-row .status-pill { padding: 2px 8px; border-radius: var(--radius-xs); line-height: 1.5; font-weight: 700; }
+  /* The platform line and the desk table's two columns are folded into the trace
+     above, so they must not also be drawn here. */
+  .item-context, .item-updated { display: none; }
+  /* Absolutely placed so the 44px target costs the text no width: the card has no
+     column to spare for it. 6px down puts the button's centre 2px above the type
+     icon's, matching the design. */
+  .item-row-actions { position: absolute; top: 6px; right: 6px; align-self: start; }
   .row-more-menu > summary { width: 44px; min-height: 44px; }
+  /* The page control is bare too, now that the panel behind it is. */
+  .list-pagination {
+    margin-top: 14px;
+    color: var(--muted);
+    background: var(--surface-strong);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-soft);
+  }
   .detail-page-shell { width: 100%; height: 100%; }
   .detail-pane { height: 100%; min-height: 0; }
   /* One row, like the desktop. The three actions need about 200px and even a
@@ -1537,9 +1649,6 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .product-switcher { height: 44px; }
   .row-more-menu > summary, .detail-more-menu > summary { width: 44px; min-height: 44px; }
   .item-row-main { min-height: 44px; }
-  /* The checkbox stays small to look at; the label around it is the target. */
-  .item-select { width: 20px; height: 20px; }
-  .item-select-hit { width: 44px; height: 44px; }
   .agent-console-mobile-filters button, .agent-console-filter { min-height: 44px; }
   input, textarea, select { font-size: 16px; }
   input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select { min-height: 44px; }
@@ -1583,14 +1692,6 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .item-row .status-pill { display: inline-flex; }
   .node-summary .status-pill { display: inline-flex; }
   .node-summary-repos { margin-left: 26px; }
-  .item-row, .list-surface.without-media .item-row { grid-template-columns: minmax(0, 1fr) auto 44px; }
-  .item-row-lead { grid-column: 1 / 3; }
-  .item-context { grid-column: 1; }
-  .item-state { grid-column: 2; justify-self: end; }
-  .item-updated { display: none; }
-  .item-context-creator { display: inline; }
-  .item-media-strip { grid-column: 1 / 3; }
-  .item-row-actions { grid-column: 3; }
   .detail-back-button { width: 44px; padding: 0; font-size: 0; }
   .detail-toolbar code { display: none; }
   .field-row, .classification-row, .context-grid, .report-field-grid, .report-detail-grid, .diagnostic-context-grid { grid-template-columns: 1fr; }

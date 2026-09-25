@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { commentAuthor, commentPlainText, creatorLabel, deriveSummary } from "./comment-summary";
+import { commentAuthor, commentPlainText, creatorLabel, creatorShort, deriveSummary } from "./comment-summary";
 
 describe("who wrote a comment", () => {
   it("names the machine and the program", () => {
@@ -121,5 +121,21 @@ describe("who created an item (AND-67)", () => {
 
   it("says nothing when nobody was recorded", () => {
     expect(creatorLabel(undefined, labels)).toBeUndefined();
+  });
+});
+
+describe("the creator a phone footer can hold", () => {
+  it("keeps a two-segment byline whole", () => {
+    expect(creatorShort("AI · Claude Code")).toBe("AI · Claude Code");
+    expect(creatorShort("SDK · Search debug")).toBe("SDK · Search debug");
+    expect(creatorShort("人工")).toBe("人工");
+  });
+
+  it("drops the model from a compound AI byline rather than cutting it mid-name", () => {
+    expect(creatorShort("AI · OpenCode · DeepSeek V4.1 Flash")).toBe("AI · OpenCode");
+  });
+
+  it("says nothing when nobody was recorded", () => {
+    expect(creatorShort(undefined)).toBeUndefined();
   });
 });

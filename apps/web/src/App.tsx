@@ -29,6 +29,7 @@ import {
   Menu,
   MessageSquarePlus,
   MoreHorizontal,
+  MoreVertical,
   Paperclip,
   Plus,
   RefreshCw,
@@ -126,6 +127,7 @@ import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
 import {
   creatorLabel,
+  creatorShort,
   COMMENT_COLLAPSE_THRESHOLD,
   commentAuthor,
   commentPlainText,
@@ -1837,6 +1839,8 @@ function ItemRow({
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
   const contextDetails = environmentSummary(environment, Boolean(sourceComponent), t);
   const creator = creatorLabel(item.createdBy, { human: actorLabel("human"), sdk: t("creatorSdk"), agent: actorLabel("agent") });
+  // The list answers "who is moving this", and the client alone answers it.
+  const shortCreator = creatorShort(creator);
   const handlerAgentKey = handlerSummary ? agentLabelKey(handlerSummary.agentKind) : null;
   const dispatchable = isDispatchable(item.status);
   // Only on a ready row: the list can refetch before the dispatch list does, and
@@ -1845,7 +1849,7 @@ function ItemRow({
   const pendingDispatchStatusKey = latestDispatch ? activeDispatchStatusKey(latestDispatch.status) : null;
   return (
     <article
-      className={`item-row ${selected ? "selected" : ""}`}
+      className={`item-row ${selected ? "selected" : ""} ${selectionVisible ? "has-select" : ""}`}
       aria-current={selected ? "true" : undefined}
       onClick={(event) => {
         const target = event.target;
@@ -1857,9 +1861,10 @@ function ItemRow({
         {/* Dispatching is a batch action, so the pick has to happen in the list.
             The click guard on the row above already exempts inputs, which is what
             keeps ticking a box from opening the detail pane. */}
-        {/* The label is the finger-sized target: on a touch screen it grows to
-            44px around a checkbox that stays small to look at. It is in the
-            guard's list too, so tapping its padding ticks rather than opens. */}
+        {/* The label is the finger-sized target: the box stays 20px to look at,
+            and a pseudo-element spreads the hit area to 44px around it without
+            taking part in the layout. It is in the guard's list too, so tapping
+            its padding ticks rather than opens. */}
         {selectionVisible && (
           <label className="item-select-hit">
             <input
@@ -1874,13 +1879,18 @@ function ItemRow({
           </label>
         )}
         <button className="item-row-main" onClick={onOpen} aria-label={t("openItem", { key: item.key })}>
-          <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={15} /></span>
           <span className="item-copy">
-            <span className="item-title-line">
+            {/* The icon is a flex item of this line, not a sibling column beside
+                it, so it centres on the key's own line even when a badge wraps to
+                a second one -- and the key can never be separated from its icon.
+                A nested title line allowed both. */}
+            <span className="item-meta">
+              <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={16} /></span>
               <code>{item.key}</code>
-              {/* Before the title so the current dispatch result is never the
-                  part cut off. Active attempts guard against a second session;
-                  failed ones call out that the item needs attention. */}
+              {/* First of the badges, so the current dispatch result is the one
+                  that keeps its width when the line runs out. Active attempts
+                  guard against a second session; failed ones call out that the
+                  item needs attention. */}
               {latestDispatch && (
                 <small
                   className={`item-dispatch-badge ${latestDispatch.status === "failed" ? "failed" : ""}`}
@@ -1922,7 +1932,6 @@ function ItemRow({
               )}
               {item.derivedFrom && <small className="item-derived-badge" title={item.derivedFrom.title}>{t("derivedFromBadge", { key: item.derivedFrom.key })}</small>}
               {item.verificationReturn && <VerificationReturnBadge />}
-              <span className="item-title">{item.title}</span>
               <span className="item-evidence-summary">
                 {item.type === "bug" && item.report?.reproductionSteps && <small className="evidence-strong">{t("hasReproduction")}</small>}
                 {logCount > 0 && <small>{t("logCount", { count: logCount })}</small>}
@@ -1930,6 +1939,9 @@ function ItemRow({
                 {(item.diagnosticSummary?.contextEntryCount ?? 0) > 0 && <small>{t("contextCount", { count: item.diagnosticSummary.contextEntryCount })}</small>}
               </span>
             </span>
+            {/* Out of the meta line, so the title gets the whole column on a
+                phone instead of losing the key's width and its gap. See AND-32. */}
+            <span className="item-title">{item.title}</span>
             {item.verificationReturn
               ? <VerificationReturnSummary info={item.verificationReturn} />
               : <span className={`item-description ${overview ? "" : "muted"}`}>{overview || t("noDescription")}</span>}
@@ -1947,9 +1959,27 @@ function ItemRow({
         {/* Only drawn in the compact layouts, which hide the creator column. */}
         {creator && <small className="item-context-creator">{creator}</small>}
       </span>
-      <span className="item-state">
-        <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
-        <small><i className={`priority-dot priority-${item.priority}`} /> {priorityLabel(item.priority)}</small>
+      {/* One line at the foot of the card: where it came from and when, then how
+          it stands. The wrapper is `display: contents` above the compact shell so
+          the two halves keep their own grid columns there; on a phone it is a
+          flex line with the divider in its border. */}
+      <span className="item-footer">
+        {/* Nothing in the trace shrinks. A byline cut to `AI · OpenCo…` names
+            nobody, and a time cut to `3 小时…` says nothing at all -- so when the
+            line cannot fit, the footer wraps and the state cluster drops to its
+            own line instead. That costs one line on the rare long byline and
+            mangles none. */}
+        <span className="item-trace">
+          <strong>{contextPrimary}</strong>
+          {shortCreator && <i className="sep">·</i>}
+          {shortCreator && <span className="item-creator" title={creator}>{shortCreator}</span>}
+          <i className="sep">·</i>
+          <span className="item-stamp">{formatTime(item.updatedAt)}</span>
+        </span>
+        <span className="item-state">
+          <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
+          <small><i className={`priority-dot priority-${item.priority}`} /> {priorityLabel(item.priority)}</small>
+        </span>
       </span>
       <span className="item-updated">
         {creator && <span className="item-creator" title={creator}>{creator}</span>}
@@ -2373,7 +2403,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
     <>
     <details className="detail-more-menu row-more-menu" ref={moreActionsRef}>
       <summary className="secondary-button" aria-label={t("moreActionsFor", { key: item.key })} title={t("moreActions")}>
-        {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <MoreHorizontal size={18} />}
+        {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <MoreVertical size={16} />}
       </summary>
       <div className="detail-more-menu-popover">
         {primaryAction && (

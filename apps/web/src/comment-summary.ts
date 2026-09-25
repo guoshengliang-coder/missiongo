@@ -108,3 +108,17 @@ export function creatorLabel(
   const client = creator.clientName?.trim() || creator.agentName?.trim();
   return client ? `${labels.agent} · ${client}` : labels.agent;
 }
+
+/**
+ * The creator as a phone card's footer can hold it.
+ *
+ * An AI byline is compound -- `AI · OpenCode · DeepSeek V4.1 Flash` measures
+ * 204px, two thirds of the 375px footer, and there is no room to keep it whole
+ * beside the state cluster. Cutting it is worse than shortening it: `AI ·
+ * OpenCo…` names nobody. Two segments keep the maker and the client, which is
+ * what the list answers "who is moving this" with. Callers keep the full string
+ * in the element's `title`, and the detail page never shortens it.
+ */
+export function creatorShort(creator: string | undefined): string | undefined {
+  return creator?.split(" · ").slice(0, 2).join(" · ");
+}
