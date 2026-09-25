@@ -86,6 +86,7 @@ export type NodeIneligibility =
   | { readonly reason: "revoked" }
   | { readonly reason: "offline" }
   | { readonly reason: "agent_unavailable" }
+  | { readonly reason: "agent_not_ready"; readonly unavailableReason?: string }
   | { readonly reason: "repo_unmapped"; readonly productIds: readonly string[] }
   | { readonly reason: "repo_conflict"; readonly repoPaths: readonly string[] };
 
@@ -103,7 +104,17 @@ export function nodeIneligibility(
 ): NodeIneligibility | null {
   if (node.revokedAt) return { reason: "revoked" };
   if (!node.online) return { reason: "offline" };
-  if (!node.agents.some((agent) => agent.kind === batch.agentKind)) return { reason: "agent_unavailable" };
+  const agent = node.agents.find((candidate) => candidate.kind === batch.agentKind);
+  if (!agent) return { reason: "agent_unavailable" };
+  // `ready` is absent from an older client and the server's own gate is
+  // `ready !== false`, so absent means ready here too. The machine's wording for
+  // why it paused travels with the report and names what to fix on that Mac, so
+  // it is kept rather than replaced.
+  if (agent.ready === false) {
+    return agent.unavailableReason
+      ? { reason: "agent_not_ready", unavailableReason: agent.unavailableReason }
+      : { reason: "agent_not_ready" };
+  }
 
   const unmapped: string[] = [];
   const repoPaths = new Set<string>();
@@ -153,6 +164,9 @@ export const NODE_INELIGIBILITY_KEYS: Readonly<Record<NodeIneligibility["reason"
   revoked: "nodeRevoked",
   offline: "nodeOffline",
   agent_unavailable: "nodeAgentMissing",
+  // The fallback when the report carried no wording of its own; the machine's
+  // reason is shown next to it whenever there is one.
+  agent_not_ready: "nodeAgentNotReady",
   repo_unmapped: "nodeRepoUnmapped",
   repo_conflict: "nodeRepoConflict",
 };
@@ -166,6 +180,9 @@ const DISPATCH_PROBLEM_KEYS: Readonly<Record<string, MessageKey>> = {
   node_offline: "dispatchNodeOffline",
   node_revoked: "dispatchNodeRevoked",
   agent_unavailable: "dispatchAgentUnavailable",
+  // The dialog could not know yet (AND-151); the server's title carries the
+  // machine's own reason, which this wording keeps as the {reason}.
+  agent_not_ready: "dispatchAgentNotReady",
   repo_unmapped: "dispatchRepoUnmapped",
   repo_conflict: "dispatchRepoConflict",
   item_not_dispatchable: "dispatchItemNotDispatchable",
@@ -235,8 +252,9 @@ export function dispatchProblemKey(code: string): MessageKey | null {
  *   administrator (or the product's creator) can change that.
  * - `not_configured`: the permission is there, but no machine can take the item
  *   yet -- none connected, none with this product's repository mapped, none
- *   online, or none running a supported agent. The account holder fixes this in
- *   Agent management.
+ *   online, none running a supported agent, or none whose agent is ready. The
+ *   account holder fixes the first four in Agent management; readiness heals
+ *   itself once the machine's agent recovers.
  *
  * `access` absent means a server from before this field; the dispatch route
  * still refuses, so the choice is offered rather than hidden on a guess.
@@ -247,7 +265,7 @@ export type AiAvailability =
   | { readonly kind: "no_permission" }
   | {
     readonly kind: "not_configured";
-    readonly reason: "no_nodes" | "repo_unmapped" | "offline" | "agent_unavailable";
+    readonly reason: "no_nodes" | "repo_unmapped" | "offline" | "agent_unavailable" | "agent_not_ready";
   };
 
 export function aiAvailability(
@@ -262,8 +280,16 @@ export function aiAvailability(
   if (mapped.length === 0) return { kind: "not_configured", reason: "repo_unmapped" };
   const online = mapped.filter((node) => node.online);
   if (online.length === 0) return { kind: "not_configured", reason: "offline" };
-  if (!online.some((node) => node.agents.some((agent) => SUPPORTED_AGENT_KINDS.includes(agent.kind)))) {
-    return { kind: "not_configured", reason: "agent_unavailable" };
+  const reporting = online.filter((node) =>
+    node.agents.some((agent) => SUPPORTED_AGENT_KINDS.includes(agent.kind)));
+  if (reporting.length === 0) return { kind: "not_configured", reason: "agent_unavailable" };
+  // A reported agent that is not ready is a different situation from a missing
+  // one: the machine is there and the fix is on it, so it gets its own wording
+  // instead of being told to install something it already has (AND-151).
+  // `ready` absent is an older client, which the server treats as ready too.
+  if (!reporting.some((node) =>
+    node.agents.some((agent) => SUPPORTED_AGENT_KINDS.includes(agent.kind) && agent.ready !== false))) {
+    return { kind: "not_configured", reason: "agent_not_ready" };
   }
   return { kind: "available" };
 }

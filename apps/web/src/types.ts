@@ -259,6 +259,13 @@ export interface NodeAgentReport {
   readonly version?: string;
   /** Absent: this Mac's client cannot choose a model or change a running session. */
   readonly models?: readonly NodeAgentModel[];
+  /**
+   * Whether the machine says this agent can take work (AND-151). Absent from an
+   * older client, which the server treats as ready.
+   */
+  readonly ready?: boolean;
+  /** The machine's own wording for why it is paused; only present with `ready: false`. */
+  readonly unavailableReason?: string;
 }
 
 /** Where the dispatch dialog starts for this account (AND-130). */

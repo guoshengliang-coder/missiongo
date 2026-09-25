@@ -13,6 +13,7 @@ const UNAVAILABLE_KEYS: Readonly<Record<Extract<AiAvailability, { kind: "not_con
   repo_unmapped: "startWorkAiRepoUnmapped",
   offline: "startWorkAiOffline",
   agent_unavailable: "startWorkAiAgentMissing",
+  agent_not_ready: "startWorkAiAgentNotReady",
 };
 
 /**

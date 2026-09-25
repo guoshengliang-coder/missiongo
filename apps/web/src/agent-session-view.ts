@@ -65,6 +65,42 @@ export function isAbnormalAgentSession(session: Pick<AgentSessionSummary, "statu
   return session.status === "failed" || session.command?.status === "failed";
 }
 
+/**
+ * Whether the session behind a dispatch never got going (AND-180).
+ *
+ * A dispatch that launched keeps status "sent to X" for good, so when the
+ * session then stops with an error the row still reads as work in flight. A
+ * session that failed, or that the machine reported unavailable with a reason,
+ * is that failure. `unavailable` on its own is not: a machine that has gone
+ * quiet reports no error, and the node's connection state already says so.
+ */
+export function agentSessionDispatchFailed(
+  session: Pick<AgentSessionSummary, "status" | "lastError">,
+): boolean {
+  if (session.status === "failed") return true;
+  return session.status === "unavailable" && Boolean(session.lastError);
+}
+
+/**
+ * The state to show while a reply is on its way (AND-195).
+ *
+ * The server keeps a session `idle` until the machine reports the new turn, so
+ * from the moment a reply is sent the console would otherwise keep saying the
+ * turn has ended -- right next to that reply, still being delivered. A reply
+ * that is queued or being delivered means the session is about to run, so it
+ * reads as `active`. Only `idle` is raised: a stalled, suspended, unavailable
+ * or failed session already says something a person has to read, and that
+ * wording wins.
+ */
+export function effectiveAgentSessionStatus(
+  status: AgentSessionStatus,
+  command: Pick<AgentSessionCommand, "status"> | undefined,
+  requestInFlight = false,
+): AgentSessionStatus {
+  const replyInFlight = requestInFlight || command?.status === "queued" || command?.status === "delivering";
+  return replyInFlight && status === "idle" ? "active" : status;
+}
+
 export function replyBlockedLabelKey(reason: AgentSessionReplyBlockedReason | undefined):
   | "agentSessionWorkFinishedReadOnly"
   | "agentSessionArchivedReadOnly"

@@ -30,6 +30,7 @@ import {
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
+  effectiveAgentSessionStatus,
   formatAgentMessageTime,
   isNearMessageBottom,
   isAbnormalAgentSession,
@@ -410,7 +411,11 @@ export function AgentSessionConsole({
   const outgoingCandidate = outgoingReply(command, sendingRequest);
   const outgoing = outgoingCandidate?.commandId === dismissedCommandId ? null : outgoingCandidate;
   const outgoingSignature = outgoing ? `${selectedId}:${outgoing.commandId ?? "request"}:${outgoing.status}:${outgoing.text}` : "";
-  const sessionStatus = sessionQuery.data?.status ?? selected?.status ?? "unavailable";
+  const sessionStatus = effectiveAgentSessionStatus(
+    sessionQuery.data?.status ?? selected?.status ?? "unavailable",
+    command,
+    sendingSelected,
+  );
   const messages = sessionQuery.data?.messages ?? [];
   const activities = sessionQuery.data?.activities ?? [];
 
@@ -632,6 +637,10 @@ export function AgentSessionConsole({
           {visibleSessions.map((session) => {
             const selectable = archivableIds.includes(session.id);
             const checked = selectedForArchive.has(session.id);
+            // A row whose reply is still on its way reads as working, so the
+            // list does not say "ended" beside a session that is about to run
+            // (AND-195).
+            const rowStatus = effectiveAgentSessionStatus(session.status, session.command);
             return (
               <div
                 key={session.id}
@@ -672,11 +681,11 @@ export function AgentSessionConsole({
                   }}
                 >
                   <span
-                    className={`agent-console-status-icon agent-console-status-${session.status} agent-console-node-${session.nodeConnectionState}`}
+                    className={`agent-console-status-icon agent-console-status-${rowStatus} agent-console-node-${session.nodeConnectionState}`}
                     role="img"
-                    aria-label={`${nodeConnectionLabel(session, t)} · ${session.archivedAt ? t("archived") : statusLabel(session.status, t)}`}
+                    aria-label={`${nodeConnectionLabel(session, t)} · ${session.archivedAt ? t("archived") : statusLabel(rowStatus, t)}`}
                   >
-                    {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={session.status} />}
+                    {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={rowStatus} />}
                   </span>
                   <span className="agent-console-session-copy">
                     <span className="agent-console-session-heading">
