@@ -11,6 +11,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CircleDot,
   CirclePause,
@@ -2316,6 +2317,7 @@ function ItemMediaStrip({
   const mediaAttachments = attachments.filter(
     (attachment): attachment is WorkItemAttachment & { readonly kind: "image" | "video" } => isMediaAttachment(attachment),
   );
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
   // Three thumbnails, then a count on the last rather than shrinking every
   // tile. This used to be two on a wide viewport and three on a phone, but the
   // card row is now chosen by the pane's width, which no JS media query can
@@ -2323,16 +2325,20 @@ function ItemMediaStrip({
   const visible = mediaAttachments.slice(0, 3);
   if (visible.length === 0) return preserveColumn ? <div className="item-media-strip empty-slot" aria-hidden="true" /> : null;
   return (
-    <div className="item-media-strip" aria-label={t("mediaCount", { count: mediaAttachments.length })}>
-      {visible.map((attachment, index) => (
-        <ItemMediaThumbnail
-          key={attachment.id}
-          itemKey={itemKey}
-          attachment={attachment}
-          overflowCount={index === visible.length - 1 ? mediaAttachments.length - visible.length : 0}
-        />
-      ))}
-    </div>
+    <>
+      <div className="item-media-strip" aria-label={t("mediaCount", { count: mediaAttachments.length })}>
+        {visible.map((attachment, index) => (
+          <ItemMediaThumbnail
+            key={attachment.id}
+            itemKey={itemKey}
+            attachment={attachment}
+            overflowCount={index === visible.length - 1 ? mediaAttachments.length - visible.length : 0}
+            onOpen={() => setActiveIndex(index)}
+          />
+        ))}
+      </div>
+      {activeIndex !== null && <ItemMediaGallery itemKey={itemKey} attachments={mediaAttachments} activeIndex={activeIndex} onIndexChange={setActiveIndex} onClose={() => setActiveIndex(null)} />}
+    </>
   );
 }
 /** Holds a blob URL for the life of the blob and revokes it on the way out. */
@@ -2354,16 +2360,15 @@ function ItemMediaThumbnail({
   itemKey,
   attachment,
   overflowCount,
+  onOpen,
 }: {
   itemKey: string;
   attachment: WorkItemAttachment & { readonly kind: "image" | "video" };
   overflowCount: number;
+  onOpen: () => void;
 }) {
   const { t } = useI18n();
-  const referenceLabel = mediaNumberLabel(attachment.kind, attachment.displayNumber, t);
   const [thumbnailRef, isNearViewport] = useNearViewport<HTMLButtonElement>("80px");
-  const [previewRequested, setPreviewRequested] = useState(false);
-  const [viewerOpen, setViewerOpen] = useState(false);
   // Two separate fetches on purpose. The tile needs a few kilobytes and is
   // fetched as soon as the row nears the viewport; the original is worth
   // megabytes and is only worth fetching once someone actually opens it.
@@ -2373,16 +2378,7 @@ function ItemMediaThumbnail({
     enabled: attachment.kind === "image" && isNearViewport,
     staleTime: Infinity,
   });
-  const contentQuery = useQuery({
-    queryKey: ["attachment-content", itemKey, attachment.id, attachment.revision, attachment.kind === "image" ? "drawable" : "original"],
-    queryFn: () => attachment.kind === "image"
-      ? api.downloadAttachmentPreview(itemKey, attachment.id, attachment.revision)
-      : api.downloadAttachment(itemKey, attachment.id),
-    enabled: previewRequested,
-    staleTime: Infinity,
-  });
   const thumbnailUrl = useObjectUrl(thumbnailQuery.data);
-  const objectUrl = useObjectUrl(contentQuery.data);
 
   const Icon = attachment.kind === "video" ? Video : ImageIcon;
   return (
@@ -2392,8 +2388,7 @@ function ItemMediaThumbnail({
         className={`item-media-thumb media-${attachment.kind}`}
         onClick={(event) => {
           event.stopPropagation();
-          setPreviewRequested(true);
-          setViewerOpen(true);
+          onOpen();
         }}
         title={attachment.filename}
         aria-label={t("previewAttachment", { filename: attachment.filename })}
@@ -2402,15 +2397,52 @@ function ItemMediaThumbnail({
         {!thumbnailUrl && <span className="media-file-tile">{thumbnailQuery.isLoading ? <LoaderCircle className="spin" size={18} /> : <Icon size={18} />}<small>{attachment.filename.split(".").pop()?.toUpperCase()}</small></span>}
         {overflowCount > 0 && <span className="media-overflow">+{overflowCount}</span>}
       </button>
-      {viewerOpen && (
-        <MediaLightbox title={`${referenceLabel} · ${attachment.filename}`} onClose={() => setViewerOpen(false)}>
-          {contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
-          {contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
-          {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
-          {attachment.kind === "video" && objectUrl && <PlayableVideo src={objectUrl} autoPlay />}
-        </MediaLightbox>
-      )}
     </div>
+  );
+}
+
+type MediaAttachment = WorkItemAttachment & { readonly kind: "image" | "video" };
+
+function ItemMediaGallery({ itemKey, attachments, activeIndex, onIndexChange, onClose }: {
+  itemKey: string;
+  attachments: readonly MediaAttachment[];
+  activeIndex: number;
+  onIndexChange: (index: number) => void;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const active = attachments[activeIndex];
+  if (!active) return null;
+  return (
+    <MediaLightbox
+      title={`${mediaNumberLabel(active.kind, active.displayNumber, t)} · ${active.filename} (${activeIndex + 1}/${attachments.length})`}
+      onClose={onClose}
+      onPrevious={activeIndex > 0 ? () => onIndexChange(activeIndex - 1) : undefined}
+      onNext={activeIndex < attachments.length - 1 ? () => onIndexChange(activeIndex + 1) : undefined}
+      showNavigation={attachments.length > 1}
+    >
+      <ActiveMediaPreview key={active.id} itemKey={itemKey} attachment={active} />
+    </MediaLightbox>
+  );
+}
+
+function ActiveMediaPreview({ itemKey, attachment }: { itemKey: string; attachment: MediaAttachment }) {
+  const { t } = useI18n();
+  const contentQuery = useQuery({
+    queryKey: ["attachment-content", itemKey, attachment.id, attachment.revision, attachment.kind === "image" ? "drawable" : "original"],
+    queryFn: () => attachment.kind === "image"
+      ? api.downloadAttachmentPreview(itemKey, attachment.id, attachment.revision)
+      : api.downloadAttachment(itemKey, attachment.id),
+    staleTime: Infinity,
+  });
+  const objectUrl = useObjectUrl(contentQuery.data);
+  return (
+    <>
+      {contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
+      {contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
+      {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
+      {attachment.kind === "video" && objectUrl && <PlayableVideo src={objectUrl} autoPlay />}
+    </>
   );
 }
 
@@ -4099,6 +4131,14 @@ function AttachmentSection({
   emptyMessage?: string;
 }) {
   const { t } = useI18n();
+  const mediaAttachments = attachments.filter(
+    (attachment): attachment is MediaAttachment => isMediaAttachment(attachment),
+  );
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const openMedia = (attachmentId: string) => {
+    const index = mediaAttachments.findIndex((attachment) => attachment.id === attachmentId);
+    if (index >= 0) setActiveIndex(index);
+  };
   return (
     <section className="attachment-block">
       <header>
@@ -4108,9 +4148,10 @@ function AttachmentSection({
       </header>
       {attachments.length === 0 ? <p className="section-empty">{emptyMessage ?? t("noAttachments")}</p> : (
         <div className="attachment-grid">
-          {attachments.map((attachment) => <AttachmentCard key={attachment.id} itemKey={itemKey} attachment={attachment} />)}
+          {attachments.map((attachment) => <AttachmentCard key={attachment.id} itemKey={itemKey} attachment={attachment} onOpenMedia={openMedia} />)}
         </div>
       )}
+      {activeIndex !== null && <ItemMediaGallery itemKey={itemKey} attachments={mediaAttachments} activeIndex={activeIndex} onIndexChange={setActiveIndex} onClose={() => setActiveIndex(null)} />}
     </section>
   );
 }
@@ -4120,12 +4161,14 @@ function AttachmentCard({
   attachment,
   onDelete,
   onReplaced,
+  onOpenMedia,
   deleting = false,
 }: {
   itemKey: string;
   attachment: WorkItemAttachment;
   onDelete?: ((attachmentId: string) => void) | undefined;
   onReplaced?: (() => void | Promise<void>) | undefined;
+  onOpenMedia?: ((attachmentId: string) => void) | undefined;
   deleting?: boolean;
 }) {
   const { t } = useI18n();
@@ -4218,6 +4261,10 @@ function AttachmentCard({
   );
 
   const openImage = () => {
+    if (onOpenMedia) {
+      onOpenMedia(attachment.id);
+      return;
+    }
     setPreviewRequested(true);
     setViewerOpen(true);
   };
@@ -4279,7 +4326,7 @@ function AttachmentCard({
         {attachment.kind === "video" && objectUrl && (
           <div className="attachment-video-preview">
             <PlayableVideo src={objectUrl} autoPlay={false} playsInline={false} onDownload={() => void download()} />
-            <button type="button" onClick={() => setViewerOpen(true)} aria-label={t("previewAttachment", { filename: attachment.filename })} title={t("preview")}><Maximize2 size={16} /></button>
+            <button type="button" onClick={() => onOpenMedia ? onOpenMedia(attachment.id) : setViewerOpen(true)} aria-label={t("previewAttachment", { filename: attachment.filename })} title={t("preview")}><Maximize2 size={16} /></button>
           </div>
         )}
         {readsAsText && logText && <pre>{logText}</pre>}
@@ -5064,14 +5111,21 @@ function PlayableVideo({
 function MediaLightbox({
   title,
   onClose,
+  onPrevious,
+  onNext,
+  showNavigation = false,
   children,
 }: {
   title: string;
   onClose: () => void;
+  onPrevious?: (() => void) | undefined;
+  onNext?: (() => void) | undefined;
+  showNavigation?: boolean;
   children: ReactNode;
 }) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
   useEffect(() => {
     const dialog = dialogRef.current;
     dialog?.showModal();
@@ -5091,13 +5145,40 @@ function MediaLightbox({
         if (event.target === event.currentTarget) onClose();
       }}
       onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (!showNavigation || event.target instanceof HTMLVideoElement) return;
+        const navigate = event.key === "ArrowLeft" ? onPrevious : event.key === "ArrowRight" ? onNext : undefined;
+        if (navigate) {
+          event.preventDefault();
+          navigate();
+        }
+      }}
+      onTouchStart={(event) => {
+        if (!showNavigation || event.touches.length !== 1) return;
+        touchStart.current = { x: event.touches[0]!.clientX, y: event.touches[0]!.clientY };
+      }}
+      onTouchEnd={(event) => {
+        const start = touchStart.current;
+        touchStart.current = null;
+        if (!start || !showNavigation || event.changedTouches.length !== 1) return;
+        const dx = event.changedTouches[0]!.clientX - start.x;
+        const dy = event.changedTouches[0]!.clientY - start.y;
+        if (Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+        (dx > 0 ? onPrevious : onNext)?.();
+      }}
     >
       <section>
         <header>
           <strong>{title}</strong>
           <button type="button" onClick={onClose} aria-label={t("closePreview")}><X size={20} /></button>
         </header>
-        {children}
+        {showNavigation ? (
+          <div className="media-gallery-stage">
+            {children}
+            <button type="button" className="media-gallery-nav previous" disabled={!onPrevious} onClick={onPrevious} aria-label={t("previousMedia")}><ChevronLeft size={24} /></button>
+            <button type="button" className="media-gallery-nav next" disabled={!onNext} onClick={onNext} aria-label={t("nextMedia")}><ChevronRight size={24} /></button>
+          </div>
+        ) : children}
       </section>
     </dialog>
   );

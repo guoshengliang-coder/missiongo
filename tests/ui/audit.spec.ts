@@ -241,3 +241,60 @@ test.describe("attachments a browser cannot read natively", () => {
   });
 });
 
+test.describe("item media gallery", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("opens from a list thumbnail and reaches hidden media, including video", async ({ page }) => {
+    await page.goto(`/?product=${fixture.productId}&status=all`);
+    const row = page.locator(".item-row", { has: page.getByText(fixture.detailKey, { exact: true }) });
+    await row.locator(".item-media-thumb").first().click();
+    const gallery = page.locator(".selected-media-lightbox[open]");
+    await expect(gallery).toHaveAttribute("aria-label", /screen-a\.png \(1\/4\)/);
+    await gallery.getByRole("button", { name: "下一个附件" }).click();
+    await expect(gallery).toHaveAttribute("aria-label", /screen-b\.png \(2\/4\)/);
+    await gallery.press("ArrowRight");
+    await expect(gallery).toHaveAttribute("aria-label", /iphone\.heic \(3\/4\)/);
+    await gallery.press("ArrowRight");
+    await expect(gallery).toHaveAttribute("aria-label", /screen-recording\.mov \(4\/4\)/);
+    await expect(gallery.getByRole("button", { name: "下一个附件" })).toBeHidden();
+  });
+
+  test("opens the detail gallery at the selected image", async ({ page }) => {
+    await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
+    await page.locator('.attachment-media-open img[alt="screen-b.png"]').click();
+    const gallery = page.locator(".selected-media-lightbox[open]");
+    await expect(gallery).toHaveAttribute("aria-label", /screen-b\.png \(2\/4\)/);
+    await gallery.getByRole("button", { name: "上一个附件" }).click();
+    await expect(gallery).toHaveAttribute("aria-label", /screen-a\.png \(1\/4\)/);
+  });
+});
+
+test.describe("item media gallery on touch", () => {
+  test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+
+  test("a left swipe opens the next attachment", async ({ page }) => {
+    await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
+    await page.locator('.attachment-media-open img[alt="screen-a.png"]').click();
+    const gallery = page.locator(".selected-media-lightbox[open]");
+    const bounds = await gallery.locator(".media-gallery-stage").boundingBox();
+    expect(bounds).not.toBeNull();
+    const y = bounds!.y + bounds!.height / 2;
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: bounds!.x + bounds!.width * .75, y }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: bounds!.x + bounds!.width * .25, y }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await expect(gallery).toHaveAttribute("aria-label", /screen-b\.png \(2\/4\)/);
+  });
+});
+
+test("cancellation quick reasons replace text without submitting", async ({ page }) => {
+  await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
+  await page.locator('summary[aria-label="更多操作"]').click();
+  await page.locator('summary[aria-label="更多操作"] + .detail-more-menu-popover .danger').click();
+  const dialog = page.locator("dialog[open]", { has: page.getByText("为什么要取消？") });
+  const note = dialog.locator("textarea");
+  await note.fill("已有文字");
+  await dialog.getByRole("button", { name: "重复了" }).click();
+  await expect(note).toHaveValue("重复了");
+  await expect(dialog).toBeVisible();
+});
