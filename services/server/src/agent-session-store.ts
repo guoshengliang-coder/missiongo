@@ -36,6 +36,8 @@ export interface AgentSessionMessageInput {
   readonly questions?: readonly {
     readonly header?: string;
     readonly title: string;
+    /** The full ask behind a short title, e.g. an OpenCode form description. */
+    readonly detail?: string;
     readonly options?: readonly string[];
     readonly multiSelect?: boolean;
     /** Reply key for a field whose title is not what a reply is matched on. */
@@ -43,6 +45,8 @@ export interface AgentSessionMessageInput {
     /** Non-choice input control; absent means a choice built from `options`. */
     readonly kind?: "text" | "number" | "boolean";
     readonly placeholder?: string;
+    /** The question also takes an answer outside its options. */
+    readonly custom?: boolean;
   }[];
 }
 

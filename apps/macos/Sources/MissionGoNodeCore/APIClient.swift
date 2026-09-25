@@ -467,6 +467,10 @@ public struct AgentSessionQuestion: Codable, Equatable, Sendable {
 
     public let header: String?
     public let title: String
+    /// The full question behind a short `title`. OpenCode's question tool keeps
+    /// the real ask in a form field's description and only the header in its
+    /// title; without this the console would show "确认" and no question.
+    public let detail: String?
     public let options: [String]?
     public let multiSelect: Bool?
     /// The key a person's answer is matched on when it differs from `title`.
@@ -474,23 +478,30 @@ public struct AgentSessionQuestion: Codable, Equatable, Sendable {
     public let key: String?
     public let kind: Kind?
     public let placeholder: String?
+    /// A form field that also takes free text: OpenCode's question tool adds a
+    /// "type your own answer" choice on top of the listed options.
+    public let custom: Bool?
 
     public init(
         header: String? = nil,
         title: String,
+        detail: String? = nil,
         options: [String]? = nil,
         multiSelect: Bool? = nil,
         key: String? = nil,
         kind: Kind? = nil,
-        placeholder: String? = nil
+        placeholder: String? = nil,
+        custom: Bool? = nil
     ) {
         self.header = header
         self.title = title
+        self.detail = detail
         self.options = options
         self.multiSelect = multiSelect
         self.key = key
         self.kind = kind
         self.placeholder = placeholder
+        self.custom = custom
     }
 }
 

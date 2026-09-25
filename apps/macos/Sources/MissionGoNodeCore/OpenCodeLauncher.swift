@@ -121,24 +121,29 @@ public struct OpenCodeFormOption: Equatable, Sendable {
 public struct OpenCodeFormField: Equatable, Sendable {
     public let key: String
     public let title: String
+    public let detail: String?
     public let kind: AgentSessionQuestion.Kind?
     public let options: [OpenCodeFormOption]
     public let multiSelect: Bool
     public let placeholder: String?
     public let required: Bool
+    /// The field also accepts a value outside its options.
+    public let custom: Bool
 
     public init(
-        key: String, title: String, kind: AgentSessionQuestion.Kind? = nil,
+        key: String, title: String, detail: String? = nil, kind: AgentSessionQuestion.Kind? = nil,
         options: [OpenCodeFormOption] = [], multiSelect: Bool = false,
-        placeholder: String? = nil, required: Bool = false
+        placeholder: String? = nil, required: Bool = false, custom: Bool = false
     ) {
         self.key = key
         self.title = title
+        self.detail = detail
         self.kind = kind
         self.options = options
         self.multiSelect = multiSelect
         self.placeholder = placeholder
         self.required = required
+        self.custom = custom
     }
 
     /// The question the console renders for this field. The key becomes the
@@ -146,11 +151,13 @@ public struct OpenCodeFormField: Equatable, Sendable {
     public var question: AgentSessionQuestion {
         AgentSessionQuestion(
             title: title,
+            detail: detail,
             options: options.isEmpty ? nil : options.map(\.label),
             multiSelect: multiSelect ? true : nil,
             key: key,
             kind: kind,
-            placeholder: placeholder
+            placeholder: placeholder,
+            custom: custom ? true : nil
         )
     }
 
@@ -174,8 +181,12 @@ public struct OpenCodeFormField: Equatable, Sendable {
             let values = parts.compactMap { part in
                 options.first(where: { $0.label == part || $0.value == part })?.value
             }
-            guard !values.isEmpty else { return nil }
-            return multiSelect ? .multiple(values) : .text(values[0])
+            if !values.isEmpty { return multiSelect ? .multiple(values) : .text(values[0]) }
+            // A question field is usually open as well: an answer that is not
+            // one of the listed options is the person's own wording, and
+            // OpenCode takes it as the field value rather than a prompt.
+            guard custom else { return nil }
+            return multiSelect ? (parts.isEmpty ? nil : .multiple(parts)) : (value.isEmpty ? nil : .text(value))
         }
         return value.isEmpty ? nil : .text(value)
     }
@@ -328,10 +339,15 @@ public enum OpenCodeProtocol {
         else { return nil }
         let fields = rawFields.compactMap(formField)
         guard !fields.isEmpty else { return nil }
+        // OpenCode's question tool files its ask as a form whose only title is
+        // the placeholder "Questions"; the fields are the content. Lead with a
+        // sentence instead of repeating that placeholder back at the person.
+        let isQuestionTool = ((entry["metadata"] as? [String: Any])?["kind"] as? String) == "question"
         return OpenCodeChoice(
             reply: .form(id: id, fields: fields),
             message: AgentSessionMessage(
-                sourceId: "form-\(id)", role: "agent", text: title,
+                sourceId: "form-\(id)", role: "agent",
+                text: isQuestionTool ? "OpenCode 想请你确认以下问题。" : title,
                 questions: fields.map(\.question)
             )
         )
@@ -370,8 +386,10 @@ public enum OpenCodeProtocol {
               (entry["hidden"] as? Bool) != true
         else { return nil }
         let title = (entry["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? key
+        let detail = (entry["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let placeholder = entry["placeholder"] as? String
         let required = (entry["required"] as? Bool) ?? false
+        let custom = (entry["custom"] as? Bool) ?? false
         let options = (entry["options"] as? [[String: Any]] ?? []).compactMap { option -> OpenCodeFormOption? in
             guard let value = option["value"] as? String, !value.isEmpty else { return nil }
             let label = (option["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? value
@@ -379,8 +397,9 @@ public enum OpenCodeProtocol {
         }
         let field = { (kind: AgentSessionQuestion.Kind?, multi: Bool) in
             OpenCodeFormField(
-                key: key, title: title, kind: kind, options: multi || !options.isEmpty ? options : [],
-                multiSelect: multi, placeholder: placeholder, required: required
+                key: key, title: title, detail: detail.flatMap { $0.isEmpty ? nil : $0 }, kind: kind,
+                options: multi || !options.isEmpty ? options : [],
+                multiSelect: multi, placeholder: placeholder, required: required, custom: custom
             )
         }
         switch type {
