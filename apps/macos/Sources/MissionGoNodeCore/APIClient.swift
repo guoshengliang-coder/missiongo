@@ -428,16 +428,38 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
 }
 
 public struct AgentSessionQuestion: Codable, Equatable, Sendable {
+    /// A non-choice control for a form field. Absent means the question either
+    /// offers `options` or is display-only, which is what Claude and Codex send.
+    public enum Kind: String, Codable, Equatable, Sendable {
+        case text, number, boolean
+    }
+
     public let header: String?
     public let title: String
     public let options: [String]?
     public let multiSelect: Bool?
+    /// The key a person's answer is matched on when it differs from `title`.
+    /// OpenCode form fields reply by key; Claude and Codex reply by title.
+    public let key: String?
+    public let kind: Kind?
+    public let placeholder: String?
 
-    public init(header: String? = nil, title: String, options: [String]? = nil, multiSelect: Bool? = nil) {
+    public init(
+        header: String? = nil,
+        title: String,
+        options: [String]? = nil,
+        multiSelect: Bool? = nil,
+        key: String? = nil,
+        kind: Kind? = nil,
+        placeholder: String? = nil
+    ) {
         self.header = header
         self.title = title
         self.options = options
         self.multiSelect = multiSelect
+        self.key = key
+        self.kind = kind
+        self.placeholder = placeholder
     }
 }
 

@@ -16,7 +16,11 @@ import {
   isAbnormalAgentSession,
   messageLabelKey,
   outgoingReply,
+  questionAnswerLabel,
   questionAnswerText,
+  questionAnswerValue,
+  questionAnswerValues,
+  toggleQuestionOption,
   replyBlockedLabelKey,
   resolvedAgentSessionId,
   shouldMarkRead,
@@ -233,5 +237,27 @@ describe("agent session message view", () => {
       .toBe("Scope: Complete\nRisk: No");
     expect(questionAnswerText(first, { header: "Scope", title: "Which scope?" }, "Small", 2))
       .toBe("Scope: Small");
+  });
+
+  it("answers a keyed OpenCode field under its key, not its title", () => {
+    const field = { title: "范围", key: "scope" };
+    expect(questionAnswerLabel(field)).toBe("scope");
+    expect(questionAnswerText("", field, "小", 1)).toBe("scope: 小");
+  });
+
+  it("toggles a multi-select field without dropping its other values", () => {
+    const field = { title: "标签", key: "tags", multiSelect: true };
+    const first = toggleQuestionOption("", field, "甲", 2);
+    expect(first).toBe("tags: 甲");
+    const second = toggleQuestionOption(first, field, "乙", 2);
+    expect(second).toBe("tags: 甲、乙");
+    expect(toggleQuestionOption(second, field, "甲", 2)).toBe("tags: 乙");
+    expect(toggleQuestionOption("tags: 甲", field, "甲", 2)).toBe("");
+  });
+
+  it("reads one keyed field's value without splitting it on the separator", () => {
+    const field = { title: "备注", key: "note" };
+    expect(questionAnswerValue("note: 今天、明天", field)).toBe("今天、明天");
+    expect(questionAnswerValues("note: 今天、明天", field)).toEqual(["今天", "明天"]);
   });
 });

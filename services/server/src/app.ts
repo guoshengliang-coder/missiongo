@@ -2191,17 +2191,27 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (!["user", "agent", "plan"].includes(role)) {
           throw invalidInput("message role must be user, agent, or plan.");
         }
-        let questions: Array<{ header?: string; title: string; options?: string[]; multiSelect?: boolean }> | undefined;
+        let questions: Array<{
+          header?: string; title: string; options?: string[]; multiSelect?: boolean;
+          key?: string; kind?: "text" | "number" | "boolean"; placeholder?: string;
+        }> | undefined;
         if (message.questions !== undefined) {
           if (!Array.isArray(message.questions)) throw invalidInput("questions must be an array.");
           questions = message.questions.map((entry) => {
             const question = objectBody(entry);
             const options = stringArrayField(question, "options");
+            const kind = stringField(question, "kind", false);
+            if (kind !== undefined && !["text", "number", "boolean"].includes(kind)) {
+              throw invalidInput("question kind must be text, number, or boolean.");
+            }
             return {
               ...(stringField(question, "header", false) ? { header: question.header as string } : {}),
               title: stringField(question, "title")!,
               ...(options ? { options: [...options] } : {}),
               ...(typeof question.multiSelect === "boolean" ? { multiSelect: question.multiSelect } : {}),
+              ...(stringField(question, "key", false) ? { key: question.key as string } : {}),
+              ...(kind ? { kind: kind as "text" | "number" | "boolean" } : {}),
+              ...(stringField(question, "placeholder", false) ? { placeholder: question.placeholder as string } : {}),
             };
           });
         }

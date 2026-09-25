@@ -400,6 +400,11 @@ export interface AgentSessionQuestion {
   readonly title: string;
   readonly options?: readonly string[];
   readonly multiSelect?: boolean;
+  /** Reply key when a field's answer is matched on something other than its title. */
+  readonly key?: string;
+  /** Non-choice control; absent means a choice built from `options`. */
+  readonly kind?: "text" | "number" | "boolean";
+  readonly placeholder?: string;
 }
 
 export interface AgentSessionActivity {

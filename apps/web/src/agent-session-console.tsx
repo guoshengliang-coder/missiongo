@@ -35,7 +35,6 @@ import {
   isAbnormalAgentSession,
   messageLabelKey,
   outgoingReply,
-  questionAnswerText,
   replyBlockedLabelKey,
   resolvedAgentSessionId,
   shouldMarkRead,
@@ -44,6 +43,7 @@ import {
   type AgentKindFilter,
   type AgentSessionFilter,
 } from "./agent-session-view";
+import { AgentSessionQuestions } from "./agent-session-questions";
 import { AgentSessionQuickSettings } from "./agent-session-settings";
 import { sessionTitle } from "./agent-session-title";
 import { agentLabelKey } from "./dispatch-eligibility";
@@ -831,27 +831,14 @@ export function AgentSessionConsole({
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
                       <MarkdownText>{message.text}</MarkdownText>
-                      {message.questions?.map((question) => (
-                        <div key={question.title} className="agent-session-question">
-                          {question.header && <small>{question.header}</small>}
-                          <strong>{question.title}</strong>
-                          {question.options && <div className="agent-session-options">
-                            {question.options.map((option) => (
-                              <button
-                                key={option}
-                                type="button"
-                                disabled={!selected.canReply}
-                                onClick={() => setReply((current) => questionAnswerText(
-                                  current,
-                                  question,
-                                  option,
-                                  message.questions?.length ?? 1,
-                                ))}
-                              >{option}</button>
-                            ))}
-                          </div>}
-                        </div>
-                      ))}
+                      {message.questions && (
+                        <AgentSessionQuestions
+                          questions={message.questions}
+                          reply={reply}
+                          canReply={selected.canReply}
+                          onChange={setReply}
+                        />
+                      )}
                     </article>
                   );
                 })}

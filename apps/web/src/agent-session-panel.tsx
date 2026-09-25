@@ -2,7 +2,8 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./api";
-import { formatAgentMessageTime, questionAnswerText, replyBlockedLabelKey } from "./agent-session-view";
+import { formatAgentMessageTime, replyBlockedLabelKey } from "./agent-session-view";
+import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
 import type { AgentSessionMessage, AgentSessionStatus } from "./types";
@@ -90,29 +91,14 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                       <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                     </header>
                     <p>{message.text}</p>
-                    {message.questions?.map((question) => (
-                      <div key={question.title} className="agent-session-question">
-                        {question.header && <small>{question.header}</small>}
-                        <strong>{question.title}</strong>
-                        {question.options && (
-                          <div className="agent-session-options">
-                            {question.options.map((option) => (
-                              <button
-                                key={option}
-                                type="button"
-                                disabled={!canReply}
-                                onClick={() => setReply((current) => questionAnswerText(
-                                  current,
-                                  question,
-                                  option,
-                                  message.questions?.length ?? 1,
-                                ))}
-                              >{option}</button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                    {message.questions && (
+                      <AgentSessionQuestions
+                        questions={message.questions}
+                        reply={reply}
+                        canReply={canReply}
+                        onChange={setReply}
+                      />
+                    )}
                   </article>
                 ))}
                 {session.data.activities.length > 0 && (
