@@ -475,7 +475,7 @@ describe("database migrations", () => {
       DROP TABLE agent_session_commands_current;
       CREATE UNIQUE INDEX idx_agent_session_one_queued_command
         ON agent_session_commands(session_id) WHERE status IN ('queued', 'delivering');
-      DELETE FROM schema_migrations WHERE version = 202609250630;
+      DELETE FROM schema_migrations WHERE version = 202609250822;
       PRAGMA foreign_keys = ON;
     `);
     legacy.close();

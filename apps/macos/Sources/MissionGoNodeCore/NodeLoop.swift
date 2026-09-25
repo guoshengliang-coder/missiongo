@@ -7,11 +7,15 @@ public protocol NodeAPI: Sendable {
     func claimNext(waitMs: Int, availableAgentKinds: [String]?) async throws -> DispatchRequest?
     func reportResult(dispatchId: String, report: DispatchReport) async throws
     func listAgentSessions() async throws -> [NodeAgentSession]
+    func downloadAgentSessionAttachment(sessionId: String, attachmentId: String) async throws -> Data
     func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws
 }
 
 public extension NodeAPI {
     func listAgentSessions() async throws -> [NodeAgentSession] { [] }
+    func downloadAgentSessionAttachment(sessionId: String, attachmentId: String) async throws -> Data {
+        throw CocoaError(.fileNoSuchFile)
+    }
     func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {}
 }
 
@@ -166,6 +170,7 @@ public final class NodeLoop: @unchecked Sendable {
     let log: @Sendable (String) -> Void
     let onState: @Sendable (NodeLoopState) -> Void
     let skillReadiness: SkillReadiness?
+    let attachmentCacheRoot: URL
 
     private let state = Locked(NodeLoopState())
     private let stateContinuation: AsyncStream<NodeLoopState>.Continuation
@@ -193,6 +198,7 @@ public final class NodeLoop: @unchecked Sendable {
         detectRepoCandidates: @escaping @Sendable () -> [RepoCandidate] = { [] },
         timing: Timing = Timing(),
         skillReadiness: SkillReadiness? = nil,
+        attachmentCacheRoot: URL? = nil,
         log: @escaping @Sendable (String) -> Void = { NSLog("%@", $0) },
         onState: @escaping @Sendable (NodeLoopState) -> Void = { _ in }
     ) {
@@ -202,6 +208,8 @@ public final class NodeLoop: @unchecked Sendable {
         self.detectRepoCandidates = detectRepoCandidates
         self.timing = timing
         self.skillReadiness = skillReadiness
+        self.attachmentCacheRoot = attachmentCacheRoot ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/MissionGo/ChatAttachments", isDirectory: true)
         self.log = log
         self.onState = onState
         let (stream, continuation) = AsyncStream.makeStream(of: NodeLoopState.self, bufferingPolicy: .bufferingNewest(1))
@@ -386,22 +394,44 @@ public final class NodeLoop: @unchecked Sendable {
                         } else {
                             _ = awaitingReport.withLock { $0.removeValue(forKey: session.id) }
                             do {
-                                report = try await adapter.synchronize(session)
+                                let prepared = try await self.prepareAttachments(session)
+                                do {
+                                    report = try await adapter.synchronize(prepared)
+                                } catch {
+                                    // After the command reached Codex, a transport
+                                    // error cannot prove whether turn/start took it.
+                                    let uncertain = session.agentKind == "codex"
+                                        && session.command?.status == "delivering"
+                                        && (session.command?.kind ?? "message") == "message"
+                                    if let command = session.command, command.status == "delivering",
+                                       command.attachments?.isEmpty == false, !uncertain {
+                                        report = AgentSessionReport(
+                                            status: session.status, messages: [], commandId: command.id,
+                                            commandStatus: "failed", commandError: "附件未能交付：\(error.localizedDescription)"
+                                        )
+                                    } else {
+                                        report = AgentSessionReport(
+                                            status: "unavailable", messages: [], error: error.localizedDescription,
+                                            commandId: uncertain ? session.command?.id : nil,
+                                            commandStatus: uncertain ? "delivery_unknown" : nil,
+                                            commandError: uncertain
+                                                ? "无法确认 Codex 是否收到回复，请在 Codex 会话核实后手动确认；不会自动重发。"
+                                                : nil
+                                        )
+                                    }
+                                }
                             } catch {
-                                // Once a Codex reply was reserved, a transport
-                                // error cannot prove whether turn/start took it.
-                                // Stop replaying until a person checks Codex.
-                                let uncertain = session.agentKind == "codex"
-                                    && session.command?.status == "delivering"
-                                    && (session.command?.kind ?? "message") == "message"
-                                report = AgentSessionReport(
-                                    status: "unavailable", messages: [], error: error.localizedDescription,
-                                    commandId: uncertain ? session.command?.id : nil,
-                                    commandStatus: uncertain ? "delivery_unknown" : nil,
-                                    commandError: uncertain
-                                        ? "无法确认 Codex 是否收到回复，请在 Codex 会话核实后手动确认；不会自动重发。"
-                                        : nil
-                                )
+                                if let command = session.command, command.status == "delivering",
+                                   command.attachments?.isEmpty == false {
+                                    report = AgentSessionReport(
+                                        status: session.status, messages: [], commandId: command.id,
+                                        commandStatus: "failed", commandError: "附件未能下载：\(error.localizedDescription)"
+                                    )
+                                } else {
+                                    report = AgentSessionReport(
+                                        status: "unavailable", messages: [], error: error.localizedDescription
+                                    )
+                                }
                             }
                         }
                         // No fingerprint means the report cannot be encoded at
@@ -426,6 +456,53 @@ public final class NodeLoop: @unchecked Sendable {
             }
             await stop.sleep(timing.sessionInterval)
         }
+    }
+
+    func prepareAttachments(_ session: NodeAgentSession) async throws -> NodeAgentSession {
+        guard let command = session.command, command.status == "delivering",
+              let attachments = command.attachments, !attachments.isEmpty else { return session }
+        guard UUID(uuidString: session.id) != nil else { throw CocoaError(.fileReadCorruptFile) }
+        let root = attachmentCacheRoot.appendingPathComponent(session.id, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        var prepared: [AgentSessionAttachment] = []
+        for attachment in attachments {
+            guard UUID(uuidString: attachment.id) != nil,
+                  attachment.sizeBytes > 0, attachment.sizeBytes <= 100 * 1024 * 1024,
+                  let suffix = attachment.filename.split(separator: ".").last,
+                  suffix.range(of: "^[a-z0-9]{2,5}$", options: [.regularExpression, .caseInsensitive]) != nil else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            let file = root.appendingPathComponent("\(attachment.id).\(suffix.lowercased())")
+            var bytes = try? Data(contentsOf: file)
+            let expected = attachment.sha256.lowercased()
+            if bytes?.count != attachment.sizeBytes || bytes.map({ SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }) != expected {
+                bytes = try await api.downloadAgentSessionAttachment(sessionId: session.id, attachmentId: attachment.id)
+                guard bytes?.count == attachment.sizeBytes,
+                      bytes.map({ SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }) == expected else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                try bytes!.write(to: file, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            }
+            prepared.append(AgentSessionAttachment(
+                id: attachment.id, filename: attachment.filename, kind: attachment.kind,
+                contentType: attachment.contentType, sizeBytes: attachment.sizeBytes,
+                sha256: attachment.sha256, localPath: file.path
+            ))
+        }
+        let readyCommand = AgentSessionCommand(
+            id: command.id, kind: command.kind, text: command.text, turnId: command.turnId,
+            status: command.status, error: command.error, createdAt: command.createdAt,
+            deliveredAt: command.deliveredAt, attachments: prepared
+        )
+        return NodeAgentSession(
+            id: session.id, dispatchId: session.dispatchId, agentKind: session.agentKind,
+            sessionRef: session.sessionRef, status: session.status, lifecycle: session.lifecycle,
+            occupiesExecutionSlot: session.occupiesExecutionSlot, command: readyCommand,
+            archiveInSource: session.archiveInSource, restoreInSource: session.restoreInSource,
+            desiredSettings: session.desiredSettings, appliedSettingsRevision: session.appliedSettingsRevision
+        )
     }
 
     /// A stable digest of everything a report says. `APIClient.encoder` sorts

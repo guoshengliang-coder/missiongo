@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
 import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
+import type { AgentSessionAttachment, AgentSessionAttachments } from "./agent-session-attachments.js";
 import { parseAgentModels, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
 import { autoArchiveFinishedDispatches } from "./auto-archive.js";
 import { deliveredDispatchTimedOut } from "./dispatch-store.js";
@@ -55,6 +56,7 @@ export interface AgentSessionCommand {
   readonly id: string;
   readonly kind: "message" | "interrupt";
   readonly text: string;
+  readonly attachments?: readonly AgentSessionAttachment[];
   readonly turnId?: string;
   readonly status: AgentSessionCommandStatus;
   readonly error?: string;
@@ -74,6 +76,13 @@ export interface AgentSessionSnapshot {
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
   readonly messages: readonly (AgentSessionMessageInput & { readonly id: string })[];
+  readonly attachmentMessages?: readonly {
+    readonly commandId: string;
+    readonly text: string;
+    readonly createdAt: string;
+    readonly status: AgentSessionCommandStatus;
+    readonly attachments: readonly AgentSessionAttachment[];
+  }[];
   readonly activities: readonly AgentSessionActivity[];
   readonly command?: AgentSessionCommand;
   /** False once every linked item is done. */
@@ -492,7 +501,7 @@ export function snapshotMakesUnread(
 }
 
 export class AgentSessionStore {
-  constructor(private readonly database: MissionGoDatabase) {}
+  constructor(private readonly database: MissionGoDatabase, private readonly attachments?: AgentSessionAttachments) {}
 
   createForDispatch(input: { dispatchId: string; nodeId: string; sessionRef: string }): string {
     const dispatch = this.database.connection
@@ -561,6 +570,7 @@ export class AgentSessionStore {
           ? { questions: JSON.parse(message.questions_json) as Array<{ title: string; options?: string[] }> }
           : {}),
       })),
+      ...(this.attachments ? { attachmentMessages: this.attachmentMessages(sessionId) } : {}),
       ...(command ? { command: this.mapCommand(command) } : {}),
       replyable: !this.itemsCompleted(sessionId),
     };
@@ -891,8 +901,11 @@ export class AgentSessionStore {
     ).run(sessionId, messageHash, now, revision, now, accountId);
   }
 
-  enqueue(accountId: string, sessionId: string, textValue: string): AgentSessionCommand {
-    const text = requiredText(textValue, "text", MAX_COMMAND_LENGTH);
+  enqueue(accountId: string, sessionId: string, textValue: string, attachmentIds: readonly string[] = []): AgentSessionCommand {
+    const text = textValue.trim();
+    if (!text && attachmentIds.length === 0) throw invalidInput("text or attachments are required.");
+    if (text.length > MAX_COMMAND_LENGTH) throw invalidInput(`text must be ${MAX_COMMAND_LENGTH} characters or fewer.`);
+    if (attachmentIds.length && !this.attachments) throw invalidInput("Session attachments are unavailable.");
     const session = this.database.connection
       .prepare(
         `SELECT s.id, s.archived_at FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
@@ -909,23 +922,58 @@ export class AgentSessionStore {
     }
     const id = randomUUID();
     const now = new Date().toISOString();
-    this.database.connection
-      .prepare(
-        `INSERT INTO agent_session_commands (id, session_id, account_id, text, status, created_at)
-         VALUES (?, ?, ?, ?, 'queued', ?)`,
-      )
-      .run(id, sessionId, accountId, text, now);
-    this.database.connection
-      .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
-      .run(now, now, sessionId);
-    this.database.connection
-      .prepare(
-        `UPDATE agent_session_attention
-         SET state = 'not_needed', kind = NULL, reason = NULL, model = NULL, updated_at = ?
-         WHERE session_id = ?`,
-      )
-      .run(now, sessionId);
-    return { id, kind: "message", text, status: "queued", createdAt: now };
+    this.database.transaction(() => {
+      this.database.connection
+        .prepare(
+          `INSERT INTO agent_session_commands (id, session_id, account_id, text, status, created_at)
+           VALUES (?, ?, ?, ?, 'queued', ?)`,
+        )
+        .run(id, sessionId, accountId, text, now);
+      this.attachments?.bind(sessionId, accountId, id, attachmentIds);
+      this.database.connection
+        .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
+        .run(now, now, sessionId);
+      this.database.connection
+        .prepare(
+          `UPDATE agent_session_attention
+           SET state = 'not_needed', kind = NULL, reason = NULL, model = NULL, updated_at = ?
+           WHERE session_id = ?`,
+        )
+        .run(now, sessionId);
+    });
+    return { id, kind: "message", text, status: "queued", createdAt: now,
+      ...(attachmentIds.length ? { attachments: this.attachments!.listForCommand(id) } : {}) };
+  }
+
+  belongsToNode(sessionId: string, nodeId: string): boolean {
+    return Boolean(this.database.connection.prepare(
+      "SELECT 1 FROM agent_sessions WHERE id = ? AND node_id = ?",
+    ).get(sessionId, nodeId));
+  }
+
+  supportsAttachments(sessionId: string): boolean {
+    const row = this.database.connection.prepare(
+      `SELECT n.supports_chat_attachments AS supported FROM agent_sessions s
+       JOIN nodes n ON n.id = s.node_id WHERE s.id = ?`,
+    ).get(sessionId) as unknown as { supported: number } | undefined;
+    return row?.supported === 1;
+  }
+
+  private attachmentMessages(sessionId: string): NonNullable<AgentSessionSnapshot["attachmentMessages"]> {
+    const byCommand = new Map<string, AgentSessionAttachment[]>();
+    for (const { commandId, ...attachment } of this.attachments!.listForSession(sessionId)) {
+      const group = byCommand.get(commandId) ?? [];
+      group.push(attachment);
+      byCommand.set(commandId, group);
+    }
+    const rows = this.database.connection.prepare(
+      "SELECT id, text, status, created_at FROM agent_session_commands WHERE session_id = ? AND kind = 'message' ORDER BY created_at, rowid",
+    ).all(sessionId) as unknown as Array<{ id: string; text: string; status: AgentSessionCommandStatus; created_at: string }>;
+    return rows.flatMap((row) => {
+      const attachments = byCommand.get(row.id) ?? [];
+      return attachments.length ? [{ commandId: row.id, text: row.text, status: row.status,
+        createdAt: row.created_at, attachments }] : [];
+    });
   }
 
   enqueueInterrupt(accountId: string, sessionId: string): AgentSessionCommand {
@@ -1582,10 +1630,12 @@ export class AgentSessionStore {
   }
 
   private mapCommand(row: CommandRow): AgentSessionCommand {
+    const attachments = this.attachments?.listForCommand(row.id) ?? [];
     return {
       id: row.id,
       kind: row.kind,
       text: row.text,
+      ...(attachments.length ? { attachments } : {}),
       ...(row.turn_id ? { turnId: row.turn_id } : {}),
       status: row.status,
       ...(row.error ? { error: row.error } : {}),

@@ -870,7 +870,7 @@ public struct OpenCodeLauncher: AgentAdapter {
         }
         if command.kind == "interrupt" {
             try await control.interrupt(id: session.sessionRef)
-        } else if let choice = choices.first, let answer = choice.answer(from: command.text) {
+        } else if command.attachments?.isEmpty != false, let choice = choices.first, let answer = choice.answer(from: command.text) {
             // The reply answers what OpenCode is blocked on; anything that does
             // not parse as that answer stays an ordinary prompt.
             switch (choice.reply, answer) {
@@ -879,10 +879,10 @@ public struct OpenCodeLauncher: AgentAdapter {
             case let (.form(formID, _), .form(values)):
                 try await control.replyForm(id: session.sessionRef, formID: formID, answer: values)
             default:
-                try await control.prompt(id: session.sessionRef, text: command.text)
+                try await control.prompt(id: session.sessionRef, text: command.promptText)
             }
         } else {
-            try await control.prompt(id: session.sessionRef, text: command.text)
+            try await control.prompt(id: session.sessionRef, text: command.promptText)
         }
         report = AgentSessionReport(status: snapshot.status, messages: messages,
                                     commandId: command.id, commandStatus: "delivered")

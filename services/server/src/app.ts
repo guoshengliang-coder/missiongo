@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { Transform } from "node:stream";
 import { createGunzip } from "node:zlib";
 
@@ -46,6 +46,8 @@ import {
   type ProductPermission,
 } from "./accounts-store.js";
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES, MEBIBYTE } from "./attachment-storage.js";
+import { AgentSessionAttachments, type AgentSessionAttachment } from "./agent-session-attachments.js";
+import { BROWSER_UNREADABLE_IMAGE_TYPES, heicToJpeg } from "./image-decode.js";
 import { AiTitleService } from "./ai-title.js";
 import {
   AgentSessionStore,
@@ -167,6 +169,31 @@ function requestedByteRange(value: string, size: number): { start: number; end: 
     return undefined;
   }
   return { start, end: Math.min(requestedEnd, size - 1) };
+}
+
+async function sendAgentSessionAttachment(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  attachment: AgentSessionAttachment,
+  path: string,
+) {
+  const details = await stat(path);
+  const rangeHeader = request.headers.range;
+  const range = rangeHeader ? requestedByteRange(rangeHeader, details.size) : undefined;
+  if (rangeHeader && !range) {
+    return reply.status(416).header("content-range", `bytes */${details.size}`)
+      .header("accept-ranges", "bytes").send();
+  }
+  const filename = encodeURIComponent(attachment.filename).replaceAll("'", "%27");
+  reply.status(range ? 206 : 200)
+    .type(attachment.contentType)
+    .header("content-length", range ? range.end - range.start + 1 : details.size)
+    .header("content-disposition", `inline; filename*=UTF-8''${filename}`)
+    .header("cache-control", "private, no-store")
+    .header("accept-ranges", "bytes")
+    .header("x-content-type-options", "nosniff");
+  if (range) reply.header("content-range", `bytes ${range.start}-${range.end}/${details.size}`);
+  return reply.send(createReadStream(path, range));
 }
 
 function booleanField(body: Record<string, unknown>, field: string): boolean {
@@ -462,7 +489,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? false, trustProxy: options.trustProxy ?? false });
   const store = new MissionGoStore(options.databasePath ?? ":memory:");
   const dispatchStore = new DispatchStore(store.database);
-  const agentSessionStore = new AgentSessionStore(store.database);
+  const agentSessionAttachments = new AgentSessionAttachments(store.database, options.attachmentsPath ?? "./data/attachments");
+  const agentSessionStore = new AgentSessionStore(store.database, agentSessionAttachments);
   const accountStore = new AccountStore(store.database);
   const aiTitle = new AiTitleService(
     store.database,
@@ -1869,6 +1897,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       canReply: replyBlockedReason === undefined,
       canResolveDelivery: productIds.every((productId) =>
         accountStore.allows(account, productId, "operate") && accountStore.allows(account, productId, "ai")),
+      canAttach: replyBlockedReason === undefined && agentSessionStore.supportsAttachments(session.id),
       ...(replyBlockedReason ? { replyBlockedReason } : {}),
     };
   };
@@ -2009,12 +2038,60 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.post("/api/v1/agent-sessions/:sessionId/commands", async (request, reply) => {
     const { sessionId } = request.params as { sessionId: string };
     authorizedAgentSession(request, sessionId, true);
+    const body = objectBody(request.body);
+    const attachmentIds = body.attachmentIds === undefined ? [] : body.attachmentIds;
+    if (!Array.isArray(attachmentIds) || attachmentIds.some((id) => typeof id !== "string")) {
+      throw invalidInput("attachmentIds must be an array of attachment IDs.");
+    }
+    if (attachmentIds.length && !agentSessionStore.supportsAttachments(sessionId)) {
+      throw conflict("agent_node_attachments_unsupported", "Update the MissionGo Mac app before sending attachments to this session.");
+    }
     const command = agentSessionStore.enqueue(
       requireAccountId(request),
       sessionId,
-      stringField(objectBody(request.body), "text")!,
+      stringField(body, "text", false) ?? "",
+      attachmentIds,
     );
     return reply.status(201).send(command);
+  });
+
+  app.post("/api/v1/agent-sessions/:sessionId/attachments", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    authorizedAgentSession(request, sessionId, true);
+    if (!agentSessionStore.supportsAttachments(sessionId)) {
+      throw conflict("agent_node_attachments_unsupported", "Update the MissionGo Mac app before sending attachments to this session.");
+    }
+    if (!Buffer.isBuffer(request.body)) throw invalidInput("Attachment body must be binary data.");
+    const filename = headerText(request.headers["x-missiongo-filename"], "X-MissionGo-Filename");
+    const contentType = headerText(request.headers["x-missiongo-content-type"], "X-MissionGo-Content-Type");
+    const attachment = await agentSessionAttachments.upload(sessionId, requireAccountId(request), filename, contentType, request.body);
+    return reply.status(201).send(attachment);
+  });
+
+  app.delete("/api/v1/agent-sessions/:sessionId/attachments/:attachmentId", async (request, reply) => {
+    const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
+    authorizedAgentSession(request, sessionId, true);
+    await agentSessionAttachments.removeDraft(sessionId, requireAccountId(request), attachmentId);
+    return reply.status(204).send();
+  });
+
+  app.get("/api/v1/agent-sessions/:sessionId/attachments/:attachmentId/content", async (request, reply) => {
+    const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
+    authorizedAgentSession(request, sessionId);
+    const { attachment, path } = agentSessionAttachments.get(sessionId, attachmentId);
+    return sendAgentSessionAttachment(request, reply, attachment, path);
+  });
+
+  app.get("/api/v1/agent-sessions/:sessionId/attachments/:attachmentId/preview", async (request, reply) => {
+    const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
+    authorizedAgentSession(request, sessionId);
+    const { attachment, path } = agentSessionAttachments.get(sessionId, attachmentId);
+    if (attachment.kind !== "image") throw notFound("Agent session image");
+    if (!BROWSER_UNREADABLE_IMAGE_TYPES.has(attachment.contentType)) {
+      return sendAgentSessionAttachment(request, reply, attachment, path);
+    }
+    reply.type("image/jpeg").header("cache-control", "private, no-store").header("x-content-type-options", "nosniff");
+    return reply.send(await heicToJpeg(await readFile(path)));
   });
 
   app.post("/api/v1/dispatches/:dispatchId/retry", async (request, reply) => {
@@ -2103,6 +2180,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return node;
   };
 
+  app.get("/api/v1/node/agent-sessions/:sessionId/attachments/:attachmentId/content", async (request, reply) => {
+    const node = requireNode(request);
+    const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
+    if (!agentSessionStore.belongsToNode(sessionId, node.nodeId)) throw notFound("Agent session attachment");
+    const { attachment, path, commandId } = agentSessionAttachments.get(sessionId, attachmentId);
+    if (!commandId) throw notFound("Agent session attachment");
+    return sendAgentSessionAttachment(request, reply, attachment, path);
+  });
+
   // The products a machine may be given a repository for. Every answer the
   // client gets carries the current list, so a product created in the console
   // reaches the menu without the client being restarted.
@@ -2181,7 +2267,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/node/agent-sessions", async (request) => {
     const node = requireNode(request);
-    return { sessions: agentSessionStore.listForNode(node.nodeId) };
+    const acceptsAttachments = request.headers["x-missiongo-chat-attachments"] === "1";
+    return { sessions: agentSessionStore.listForNode(node.nodeId).map((session) =>
+      !acceptsAttachments && session.command?.attachments?.length
+        ? { ...session, command: undefined }
+        : session) };
   });
 
   app.post(
@@ -2353,7 +2443,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           };
         }),
         nodeProductScope(node.accountId),
-        { ...(clientVersion ? { clientVersion } : {}), expectedSkillVersion },
+        { ...(clientVersion ? { clientVersion } : {}), expectedSkillVersion,
+          supportsChatAttachments: body.supportsChatAttachments === true },
       ),
     };
   });

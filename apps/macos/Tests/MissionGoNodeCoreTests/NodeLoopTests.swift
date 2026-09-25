@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import MissionGoNodeCore
 
 private final class FakeAPI: NodeAPI, @unchecked Sendable {
@@ -9,6 +10,7 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     let sessionReports = Locked<[(String, AgentSessionReport)]>([])
     let sessionUploadAttempts = Locked(0)
     let sessionReportFailures = Locked(0)
+    let attachmentData = Locked<[String: Data]>([:])
     let queue: Locked<[Result<DispatchRequest?, Error>]>
     let heartbeatResult: Locked<Result<HeartbeatReply, Error>>
     let reportFailuresBeforeSuccess: Locked<Int>
@@ -52,6 +54,11 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
 
     func listAgentSessions() async throws -> [NodeAgentSession] {
         return sessionList.current
+    }
+
+    func downloadAgentSessionAttachment(sessionId: String, attachmentId: String) async throws -> Data {
+        guard let data = attachmentData.current[attachmentId] else { throw CocoaError(.fileNoSuchFile) }
+        return data
     }
 
     func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {
@@ -178,6 +185,33 @@ private func snapshotTiming() -> NodeLoop.Timing {
     var timing = fastTiming()
     timing.sessionInterval = 0.02
     return timing
+}
+
+final class AgentChatAttachmentDeliveryTests: XCTestCase {
+    func testDownloadsVerifiedOriginalBeforeAnAdapterReceivesTheCommand() async throws {
+        let data = Data("original image bytes".utf8)
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let attachmentId = UUID().uuidString.lowercased()
+        let sessionId = UUID().uuidString.lowercased()
+        let attachment = AgentSessionAttachment(id: attachmentId, filename: "reference.png", kind: "image",
+                                                contentType: "image/png", sizeBytes: data.count, sha256: digest)
+        let command = AgentSessionCommand(id: UUID().uuidString.lowercased(), text: "Inspect this",
+                                          status: "delivering", attachments: [attachment])
+        let session = NodeAgentSession(id: sessionId, agentKind: "codex", sessionRef: "thread",
+                                       status: "idle", command: command)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("missiongo-chat-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let api = FakeAPI(claims: [])
+        api.attachmentData.withLock { $0[attachmentId] = data }
+        let loop = NodeLoop(api: api, adapters: [], fallbackNodeName: "Mac mini",
+                            attachmentCacheRoot: root, log: { _ in })
+        let ready = try await loop.prepareAttachments(session)
+        let path = try XCTUnwrap(ready.command?.attachments?.first?.localPath)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), data)
+        XCTAssertTrue(ready.command?.promptText.contains(path) == true)
+        XCTAssertTrue(ready.command?.promptText.contains(command.id) == true)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
 }
 
 private let request = DispatchRequest(

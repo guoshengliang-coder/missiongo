@@ -9,7 +9,7 @@ import { BROWSER_UNREADABLE_IMAGE_TYPES, heicToJpeg } from "./image-decode.js";
 import type { MissionGoStore } from "./store.js";
 import type { AttachmentRecord, EventAttribution } from "./types.js";
 
-interface AttachmentRule {
+export interface AttachmentRule {
   readonly kind: AttachmentKind;
   readonly contentType: string;
   readonly acceptedContentTypes: readonly string[];
@@ -53,7 +53,7 @@ function safeFilename(encodedFilename: string): string {
   return filename;
 }
 
-interface ValidatedUpload {
+export interface ValidatedUpload {
   readonly filename: string;
   readonly extension: string;
   readonly rule: AttachmentRule;
@@ -65,7 +65,7 @@ interface ValidatedUpload {
  * added or replacing an existing one. Keeping this in one place stops the two
  * paths drifting apart on limits or accepted types.
  */
-function validateUpload(encodedFilename: string, suppliedContentType: string, bytes: Buffer): ValidatedUpload {
+export function validateUpload(encodedFilename: string, suppliedContentType: string, bytes: Buffer): ValidatedUpload {
   const filename = safeFilename(encodedFilename);
   const extension = extname(filename).toLowerCase();
   const rule = RULES[extension];

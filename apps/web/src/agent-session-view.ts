@@ -1,6 +1,8 @@
 import type { AgentKind } from "@missiongo/domain";
 
 import type {
+  AgentSession,
+  AgentSessionAttachment,
   AgentSessionCommand,
   AgentSessionMessage,
   AgentSessionQuestion,
@@ -8,6 +10,25 @@ import type {
   AgentSessionStatus,
   AgentSessionSummary,
 } from "./types";
+
+export type AgentChatMessage = AgentSessionMessage & { readonly attachmentData?: readonly AgentSessionAttachment[] };
+
+/** Show the user's original text and files once, even when an agent mirrors the local-file prompt. */
+export function agentChatMessages(
+  messages: readonly AgentSessionMessage[],
+  attachmentMessages: NonNullable<AgentSession["attachmentMessages"]>,
+  outgoingCommandId?: string,
+): AgentChatMessage[] {
+  const hidden = new Set(attachmentMessages.map((message) => message.commandId));
+  return [
+    ...messages.filter((message) => message.role !== "user" || ![...hidden].some((id) =>
+      message.sourceId === id || message.text.includes(`[MissionGo attachment command ${id}]`))),
+    ...attachmentMessages.filter((message) => message.commandId !== outgoingCommandId)
+      .map((message) => ({ id: `attachment-${message.commandId}`, sourceId: message.commandId,
+        role: "user" as const, text: message.text, occurredAt: message.createdAt,
+        attachmentData: message.attachments })),
+  ].sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
+}
 
 export const DEFAULT_AGENT_SESSION_FILTER = "attention" as const;
 export const DEFAULT_AGENT_KIND_FILTER = "all" as const;

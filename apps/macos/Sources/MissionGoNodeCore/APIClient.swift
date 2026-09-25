@@ -316,26 +316,57 @@ public struct DispatchDiagnosticSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+public struct AgentSessionAttachment: Codable, Equatable, Sendable {
+    public let id: String
+    public let filename: String
+    public let kind: String
+    public let contentType: String
+    public let sizeBytes: Int
+    public let sha256: String
+    public let localPath: String?
+
+    public init(id: String, filename: String, kind: String, contentType: String,
+                sizeBytes: Int, sha256: String, localPath: String? = nil) {
+        self.id = id
+        self.filename = filename
+        self.kind = kind
+        self.contentType = contentType
+        self.sizeBytes = sizeBytes
+        self.sha256 = sha256
+        self.localPath = localPath
+    }
+}
+
 public struct AgentSessionCommand: Codable, Equatable, Sendable {
     public let id: String
     /// Absent when talking to a server from before interrupt commands.
     public let kind: String?
     public let text: String
+    public let attachments: [AgentSessionAttachment]?
     public let turnId: String?
     public let status: String
     public let error: String?
     public let createdAt: String
     public let deliveredAt: String?
 
-    public init(id: String, kind: String? = nil, text: String, turnId: String? = nil, status: String = "queued", error: String? = nil, createdAt: String = "", deliveredAt: String? = nil) {
+    public init(id: String, kind: String? = nil, text: String, turnId: String? = nil, status: String = "queued", error: String? = nil, createdAt: String = "", deliveredAt: String? = nil, attachments: [AgentSessionAttachment]? = nil) {
         self.id = id
         self.kind = kind
         self.text = text
+        self.attachments = attachments
         self.turnId = turnId
         self.status = status
         self.error = error
         self.createdAt = createdAt
         self.deliveredAt = deliveredAt
+    }
+
+    public var promptText: String {
+        guard let attachments, !attachments.isEmpty else { return text }
+        let lines = attachments.map { attachment in
+            "- \(attachment.filename.debugDescription) (\(attachment.kind), \(attachment.sizeBytes) bytes): \(attachment.localPath ?? "file unavailable")"
+        }
+        return "\(text)\n\n[MissionGo attachment command \(id)]\nThe user attached these original files. Read them from the local paths as needed:\n\(lines.joined(separator: "\n"))"
     }
 }
 
@@ -997,6 +1028,7 @@ public struct APIClient: Sendable {
             let agents: [DetectedAgent]
             let repoCandidates: [RepoCandidate]
             let clientVersion: String
+            let supportsChatAttachments: Bool
         }
         struct Reply: Decodable {
             let repos: [RepoMapping]?
@@ -1008,7 +1040,8 @@ public struct APIClient: Sendable {
             body: Body(
                 agents: agents,
                 repoCandidates: repoCandidates,
-                clientVersion: AppUpdater.currentVersion() ?? "development"
+                clientVersion: AppUpdater.currentVersion() ?? "development",
+                supportsChatAttachments: true
             ),
             bearer: try nodeToken()
         )
@@ -1063,7 +1096,8 @@ public struct APIClient: Sendable {
     public func listAgentSessions() async throws -> [NodeAgentSession] {
         struct Reply: Decodable { let sessions: [NodeAgentSession] }
         let response = try await send(
-            "GET", "/api/v1/node/agent-sessions", body: Optional<String>.none, bearer: try nodeToken()
+            "GET", "/api/v1/node/agent-sessions", body: Optional<String>.none, bearer: try nodeToken(),
+            extraHeaders: ["X-MissionGo-Chat-Attachments": "1"]
         )
         // During a rolling update the Mac can reach a server from before
         // mirrored sessions. Dispatching must keep working until that server is
@@ -1072,6 +1106,13 @@ public struct APIClient: Sendable {
         try requireSuccess(response, operation: "读取 Agent 会话")
         let reply: Reply = try decode(response, operation: "读取 Agent 会话")
         return reply.sessions
+    }
+
+    public func downloadAgentSessionAttachment(sessionId: String, attachmentId: String) async throws -> Data {
+        let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/attachments/\(APIClient.encodePathComponent(attachmentId))/content"
+        let response = try await send("GET", path, body: Optional<String>.none, bearer: try nodeToken(), timeout: 5 * 60)
+        try requireSuccess(response, operation: "下载聊天附件")
+        return response.body
     }
 
     public func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {
@@ -1212,7 +1253,8 @@ public struct APIClient: Sendable {
         body: Body?,
         bearer: String,
         timeout: TimeInterval = APIClient.requestTimeout,
-        gzipBody: Bool = false
+        gzipBody: Bool = false,
+        extraHeaders: [String: String] = [:]
     ) async throws -> HTTPResponse {
         guard let url = URL(string: "\(serverUrl)\(path)") else {
             throw APIError.invalidResponse("服务地址不是合法的 URL：\(serverUrl)")
@@ -1222,6 +1264,7 @@ public struct APIClient: Sendable {
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        for (name, value) in extraHeaders { request.setValue(value, forHTTPHeaderField: name) }
         var plain: Data?
         var compressed: Data?
         if let body {
