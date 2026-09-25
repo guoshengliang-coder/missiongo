@@ -728,13 +728,13 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-chat-icon-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 0; display: grid; place-items: center; }
 .agent-chat-draft-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .agent-chat-draft-files > span { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 5px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-inset); font-size: var(--text-xs); overflow-wrap: anywhere; }
-.agent-chat-draft-files button { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0; display: grid; place-items: center; }
+.agent-chat-draft-files button { width: 44px; height: 44px; flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0; display: grid; place-items: center; }
 .agent-chat-attachments { display: grid; gap: 7px; margin-top: 8px; }
 .agent-chat-attachment { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-strong); }
 .agent-chat-attachment > a:first-child { max-width: 180px; }
 .agent-chat-attachment img, .agent-chat-attachment video { display: block; max-width: 180px; max-height: 140px; object-fit: contain; }
 .agent-chat-attachment > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); }
-.agent-chat-attachment > a:not(:first-child), .agent-chat-attachment > button { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.agent-chat-attachment > a:not(:first-child), .agent-chat-attachment > button { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .agent-console-reply .agent-session-command { margin: 0 0 7px; }
 .agent-console-empty { min-height: 160px; display: grid; place-items: center; align-content: center; gap: 8px; padding: 20px; color: var(--muted); text-align: center; }
 .agent-console-empty p { margin: 0; font-size: var(--text-sm); }
