@@ -220,10 +220,18 @@ describe("wording for values that come from the server", () => {
   });
 
   it("labels every Codex mode, and nothing that only looks like a mode", () => {
-    for (const mode of ["plan", "default", "auto"]) expect(dispatchModeLabelKey(mode)).not.toBeNull();
-    expect(dispatchModeLabelKey("never")).toBeNull();
+    for (const mode of ["plan", "default", "auto"]) expect(dispatchModeLabelKey("codex", mode)).not.toBeNull();
+    expect(dispatchModeLabelKey("codex", "never")).toBeNull();
     // An inherited property name is not a mode.
-    expect(dispatchModeLabelKey("toString")).toBeNull();
+    expect(dispatchModeLabelKey("codex", "toString")).toBeNull();
+  });
+
+  it("labels OpenCode's default as Build, the agent it actually runs", () => {
+    expect(dispatchModeLabelKey("opencode", "plan")).toBe("dispatchModePlan");
+    expect(dispatchModeLabelKey("opencode", "default")).toBe("dispatchModeBuild");
+    // Other agents keep the shared wording for the same mode name.
+    expect(dispatchModeLabelKey("claude_code", "default")).toBe("dispatchModeDefault");
+    expect(dispatchModeLabelKey("codex", "default")).toBe("dispatchModeDefault");
   });
 
   it("does not promise a web page for a Codex thread", () => {

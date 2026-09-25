@@ -5,14 +5,28 @@ import XCTest
 private actor StubOpenCodeControl: OpenCodeControlling {
     let mcpStatus: String?
     var createdAgent: String?
+    var createdModel: OpenCodeModelRef?
     var lastPrompt: String?
+    var catalog: OpenCodeModelCatalog
+    var info: (agent: String?, model: OpenCodeModelRef?)
+    var appliedAgents: [String] = []
+    var appliedModels: [OpenCodeModelRef] = []
 
-    init(mcpStatus: String?) { self.mcpStatus = mcpStatus }
+    init(
+        mcpStatus: String?,
+        catalog: OpenCodeModelCatalog = OpenCodeModelCatalog(models: [], defaultRef: nil),
+        info: (agent: String?, model: OpenCodeModelRef?) = (nil, nil)
+    ) {
+        self.mcpStatus = mcpStatus
+        self.catalog = catalog
+        self.info = info
+    }
 
     func health() async throws -> String { "2.0.14" }
     func missionGoMcpStatus(directory: String?) async throws -> String? { mcpStatus }
-    func createSession(directory: String, agent: String) async throws -> String {
+    func createSession(directory: String, agent: String, model: OpenCodeModelRef?) async throws -> String {
         createdAgent = agent
+        createdModel = model
         return "ses_test"
     }
     func renameSession(id: String, title: String) async throws {}
@@ -22,6 +36,10 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     }
     func interrupt(id: String) async throws {}
     func deleteSession(id: String) async throws {}
+    func listModels() async throws -> OpenCodeModelCatalog { catalog }
+    func sessionInfo(id: String) async throws -> (agent: String?, model: OpenCodeModelRef?) { info }
+    func setModel(id: String, model: OpenCodeModelRef) async throws { appliedModels.append(model) }
+    func setAgent(id: String, agent: String) async throws { appliedAgents.append(agent) }
 }
 
 final class OpenCodeTests: XCTestCase {
@@ -191,6 +209,244 @@ final class OpenCodeTests: XCTestCase {
         let second = OpenCodeTests.query(of: pages[1].request.url)
         XCTAssertEqual(second["cursor"], "cursor-2")
         XCTAssertNil(second["order"])
+    }
+
+    /// AND-189: the model list is OpenCode's own catalog — same entries its
+    /// model manager shows, grouped by provider, with the reasoning tiers it
+    /// calls variants mapped to the efforts MissionGo speaks of.
+    func testModelCatalogDeduplicatesAcrossProvidersAndKeepsToolCapableModelsOnly() throws {
+        let glm: [String: Any] = [
+            "id": "glm-5.3", "modelID": "glm-5.3", "providerID": "zai-coding-plan", "name": "GLM-5.3",
+            "capabilities": ["tools": true],
+            "variants": [["id": "high"], ["id": "low"], ["id": "high"]],
+        ]
+        let chatOnly: [String: Any] = [
+            "id": "glm-air", "modelID": "glm-air", "providerID": "zai-coding-plan", "name": "GLM Air",
+            "capabilities": ["tools": false],
+        ]
+        let twin: [String: Any] = [
+            "id": "glm-5.3", "modelID": "glm-5.3", "providerID": "opencode", "name": "GLM-5.3 (OpenCode)",
+            "capabilities": ["tools": true], "variants": [],
+        ]
+        let listed = OpenCodeProtocol.modelCatalog(["data": [glm, chatOnly, twin, glm]])
+        XCTAssertEqual(listed.map(\.id), ["zai-coding-plan/glm-5.3", "opencode/glm-5.3"])
+        XCTAssertEqual(listed[0].efforts, ["high", "low"])
+        XCTAssertEqual(listed[0].label, "GLM-5.3")
+        XCTAssertEqual(listed[0].provider, "zai-coding-plan")
+
+        let providers = OpenCodeProtocol.providerNames(["data": [
+            ["id": "zai-coding-plan", "name": "Z.AI Coding Plan"],
+            ["id": "", "name": "Broken"],
+            ["id": "opencode", "name": ""],
+        ]])
+        XCTAssertEqual(providers, ["zai-coding-plan": "Z.AI Coding Plan"])
+
+        let defaultRef = OpenCodeProtocol.modelRef(["id": "glm-5.3", "providerID": "zai-coding-plan"])
+        XCTAssertEqual(defaultRef?.compoundId, "zai-coding-plan/glm-5.3")
+        XCTAssertNil(defaultRef?.variant)
+
+        let session = ["data": [
+            "agent": "build",
+            "model": ["id": "glm-5.3", "providerID": "zai-coding-plan", "variant": "high"],
+        ] as [String: Any]]
+        XCTAssertEqual(OpenCodeProtocol.sessionAgent(session), "build")
+        XCTAssertEqual(OpenCodeProtocol.sessionModel(session)?.variant, "high")
+        XCTAssertEqual(OpenCodeProtocol.sessionModel(session)?.compoundId, "zai-coding-plan/glm-5.3")
+
+        // What arrives from the wire is parsed, not trusted: an id without a
+        // provider names no model of this catalog.
+        XCTAssertNil(OpenCodeModelRef(parseCompoundId: "glm-5.3"))
+        XCTAssertNil(OpenCodeModelRef(parseCompoundId: "/glm-5.3"))
+        XCTAssertNil(OpenCodeModelRef(parseCompoundId: "zai/"))
+    }
+
+    func testAvailableModelsReportsTheCatalogWithProviderNames() async throws {
+        let catalog = OpenCodeModelCatalog(
+            models: [
+                AgentModelOption(id: "zai-coding-plan/glm-5.3", label: "GLM-5.3", provider: "zai-coding-plan",
+                                 efforts: ["low", "high"]),
+            ],
+            defaultRef: OpenCodeModelRef(modelId: "glm-5.3", providerId: "zai-coding-plan")
+        )
+        let control = StubOpenCodeControl(mcpStatus: nil, catalog: catalog)
+        let launcher = OpenCodeLauncher(control: control)
+        let models = await launcher.availableModels()
+        XCTAssertEqual(models, [
+            AgentModelOption(id: "zai-coding-plan/glm-5.3", label: "GLM-5.3", provider: "zai-coding-plan",
+                             efforts: ["low", "high"], isDefault: true),
+        ])
+    }
+
+    func testLaunchPassesTheChosenModelAndEffortAsOneReference() async throws {
+        let repo = try temporaryRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let catalog = OpenCodeModelCatalog(
+            models: [AgentModelOption(id: "zai-coding-plan/glm-5.3", label: "GLM-5.3",
+                                      provider: "zai-coding-plan", efforts: ["low", "high"])],
+            defaultRef: OpenCodeModelRef(modelId: "glm-5.3", providerId: "zai-coding-plan")
+        )
+        let control = StubOpenCodeControl(mcpStatus: "connected", catalog: catalog)
+        let launcher = OpenCodeLauncher(control: control)
+        let result = try await launcher.launch(DispatchJob(
+            dispatchId: "d", itemKeys: ["AND-1"], repoPath: repo.path, mode: "default", nodeName: "Mac mini",
+            model: "zai-coding-plan/glm-5.3", effort: "high"
+        ))
+        XCTAssertEqual(result.sessionRef, "ses_test")
+        let model = await control.createdModel
+        let agent = await control.createdAgent
+        XCTAssertEqual(model, OpenCodeModelRef(modelId: "glm-5.3", providerId: "zai-coding-plan", variant: "high"))
+        XCTAssertEqual(agent, "build")
+    }
+
+    /// A tier the model does not take is dropped, a model nobody can name is
+    /// not guessed, and an effort alone lands on the configured default model.
+    func testLaunchResolvesEffortAgainstTheModelsItAppliesTo() async throws {
+        let repo = try temporaryRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let catalog = OpenCodeModelCatalog(
+            models: [
+                AgentModelOption(id: "zai-coding-plan/glm-5.3", label: "GLM-5.3", efforts: ["low", "high"]),
+                AgentModelOption(id: "deepseek/deepseek-v4", label: "DeepSeek V4", efforts: []),
+            ],
+            defaultRef: OpenCodeModelRef(modelId: "deepseek-v4", providerId: "deepseek")
+        )
+        var control = StubOpenCodeControl(mcpStatus: "connected", catalog: catalog)
+        let launcher = OpenCodeLauncher(control: control)
+        // The model's own tiers decide: an effort it does not take is not sent.
+        _ = try await launcher.launch(DispatchJob(
+            dispatchId: "d", itemKeys: ["AND-1"], repoPath: repo.path, mode: "default", nodeName: "Mac mini",
+            model: "deepseek/deepseek-v4", effort: "high"
+        ))
+        var sent = await control.createdModel
+        XCTAssertEqual(sent, OpenCodeModelRef(modelId: "deepseek-v4", providerId: "deepseek"))
+        // An effort alone applies to the default model; this catalog's default
+        // takes no tiers, so the pick falls back to the Mac's configuration.
+        control = StubOpenCodeControl(mcpStatus: "connected", catalog: catalog)
+        _ = try await OpenCodeLauncher(control: control).launch(DispatchJob(
+            dispatchId: "d", itemKeys: ["AND-1"], repoPath: repo.path, mode: "plan", nodeName: "Mac mini",
+            effort: "low"
+        ))
+        sent = await control.createdModel
+        XCTAssertNil(sent)
+        // No catalog to ask: the pick is sent as chosen, for the service to judge.
+        control = StubOpenCodeControl(mcpStatus: "connected", catalog: OpenCodeModelCatalog(models: [], defaultRef: nil))
+        _ = try await OpenCodeLauncher(control: control).launch(DispatchJob(
+            dispatchId: "d", itemKeys: ["AND-1"], repoPath: repo.path, mode: "default", nodeName: "Mac mini",
+            model: "zai-coding-plan/glm-5.3", effort: "high"
+        ))
+        sent = await control.createdModel
+        XCTAssertEqual(sent, OpenCodeModelRef(modelId: "glm-5.3", providerId: "zai-coding-plan", variant: "high"))
+    }
+
+    /// A running session takes mode, model and effort changes the way OpenCode
+    /// applies them: mode moves it between the plan and build agents, a model
+    /// change re-points the session, and an effort alone keeps its model.
+    func testSynchronizeAppliesPendingSettingsAndReportsWhatRuns() async throws {
+        let catalog = OpenCodeModelCatalog(
+            models: [AgentModelOption(id: "zai-coding-plan/glm-5.3", label: "GLM-5.3", efforts: ["low", "high"])],
+            defaultRef: OpenCodeModelRef(modelId: "glm-5.3", providerId: "zai-coding-plan")
+        )
+        let control = StubOpenCodeControl(
+            mcpStatus: "connected", catalog: catalog,
+            info: ("build", OpenCodeModelRef(modelId: "glm-5.3", providerId: "zai-coding-plan", variant: "low"))
+        )
+        let launcher = OpenCodeLauncher(control: control)
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            desiredSettings: AgentSessionSettings(revision: 3, mode: "plan", model: "zai-coding-plan/glm-5.3",
+                                                  effort: "high"),
+            appliedSettingsRevision: 2
+        ))
+        XCTAssertEqual(report.settingsRevision, 3)
+        XCTAssertNil(report.settingsError)
+        let appliedAgents = await control.appliedAgents
+        let appliedModels = await control.appliedModels
+        XCTAssertEqual(appliedAgents, ["plan"])
+        XCTAssertEqual(appliedModels, [
+            OpenCodeModelRef(modelId: "glm-5.3", providerId: "zai-coding-plan", variant: "high"),
+        ])
+        XCTAssertEqual(report.model, "zai-coding-plan/glm-5.3")
+        XCTAssertEqual(report.effort, "high")
+    }
+
+    func testSynchronizeKeepsTheSessionsModelForAnEffortOnlyChange() async throws {
+        let catalog = OpenCodeModelCatalog(
+            models: [AgentModelOption(id: "deepseek/deepseek-v4", label: "DeepSeek V4", efforts: ["high"])],
+            defaultRef: OpenCodeModelRef(modelId: "glm-5.3", providerId: "zai-coding-plan")
+        )
+        let control = StubOpenCodeControl(
+            mcpStatus: "connected", catalog: catalog,
+            info: ("build", OpenCodeModelRef(modelId: "deepseek-v4", providerId: "deepseek"))
+        )
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            desiredSettings: AgentSessionSettings(revision: 1, effort: "high"),
+            appliedSettingsRevision: 0
+        ))
+        let effortOnlyAgents = await control.appliedAgents
+        let effortOnlyModels = await control.appliedModels
+        XCTAssertEqual(effortOnlyAgents, [])
+        XCTAssertEqual(effortOnlyModels, [
+            OpenCodeModelRef(modelId: "deepseek-v4", providerId: "deepseek", variant: "high"),
+        ])
+        XCTAssertEqual(report.model, "deepseek/deepseek-v4")
+        XCTAssertEqual(report.effort, "high")
+    }
+
+    /// A settings change waits for an idle session, and one that cannot be
+    /// applied is reported once instead of failing the whole sync.
+    func testSynchronizeDefersWhileRunningAndReportsAFailure() async throws {
+        actor SyncFailingControl: OpenCodeControlling {
+            let catalog: OpenCodeModelCatalog
+            var snapshotStatus: String
+            private(set) var agentAttempts: [String] = []
+
+            init(catalog: OpenCodeModelCatalog, snapshotStatus: String) {
+                self.catalog = catalog
+                self.snapshotStatus = snapshotStatus
+            }
+
+            func health() async throws -> String { "2.0.14" }
+            func missionGoMcpStatus(directory: String?) async throws -> String? { "connected" }
+            func createSession(directory: String, agent: String, model: OpenCodeModelRef?) async throws -> String { "ses_test" }
+            func renameSession(id: String, title: String) async throws {}
+            func prompt(id: String, text: String) async throws {}
+            func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage]) {
+                (snapshotStatus, [])
+            }
+            func interrupt(id: String) async throws {}
+            func deleteSession(id: String) async throws {}
+            func listModels() async throws -> OpenCodeModelCatalog { catalog }
+            func sessionInfo(id: String) async throws -> (agent: String?, model: OpenCodeModelRef?) { (nil, nil) }
+            func setModel(id: String, model: OpenCodeModelRef) async throws {}
+            func setAgent(id: String, agent: String) async throws {
+                agentAttempts.append(agent)
+                throw LaunchError("会话正忙")
+            }
+        }
+        let catalog = OpenCodeModelCatalog(models: [], defaultRef: nil)
+        // An active session: the change waits, nothing is applied.
+        let running = SyncFailingControl(catalog: catalog, snapshotStatus: "active")
+        var report = try await OpenCodeLauncher(control: running).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            desiredSettings: AgentSessionSettings(revision: 1, mode: "plan"),
+            appliedSettingsRevision: 0
+        ))
+        XCTAssertNil(report.settingsRevision)
+        let waitedAttempts = await running.agentAttempts
+        XCTAssertTrue(waitedAttempts.isEmpty)
+        // Idle, and the switch itself fails: the revision is reported with the
+        // error, so the console can show it rather than resend the change.
+        let idle = SyncFailingControl(catalog: catalog, snapshotStatus: "idle")
+        report = try await OpenCodeLauncher(control: idle).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            desiredSettings: AgentSessionSettings(revision: 1, mode: "plan"),
+            appliedSettingsRevision: 0
+        ))
+        XCTAssertEqual(report.settingsRevision, 1)
+        XCTAssertTrue(report.settingsError?.contains("未应用") == true)
+        let attempts = await idle.agentAttempts
+        XCTAssertEqual(attempts, ["plan"])
     }
 
     private static func query(of url: URL?) -> [String: String] {

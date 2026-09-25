@@ -80,27 +80,35 @@ public struct AgentModelOption: Codable, Equatable, Sendable {
     /// What goes back to the agent: `--model` for Claude Code, `model` for Codex.
     public let id: String
     public let label: String
+    /// The vendor the agent lists the model under (OpenCode reports one group
+    /// per provider). nil for agents without such a grouping.
+    public let provider: String?
     /// Reasoning efforts the model accepts; empty when it takes none.
     public let efforts: [String]
     public let defaultEffort: String?
     public let isDefault: Bool?
 
-    public init(id: String, label: String, efforts: [String] = [], defaultEffort: String? = nil, isDefault: Bool? = nil) {
+    public init(
+        id: String, label: String, provider: String? = nil, efforts: [String] = [], defaultEffort: String? = nil,
+        isDefault: Bool? = nil
+    ) {
         self.id = id
         self.label = label
+        self.provider = provider
         self.efforts = efforts
         self.defaultEffort = defaultEffort
         self.isDefault = isDefault
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, label, efforts, defaultEffort, isDefault
+        case id, label, provider, efforts, defaultEffort, isDefault
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
         label = try values.decodeIfPresent(String.self, forKey: .label) ?? id
+        provider = try values.decodeIfPresent(String.self, forKey: .provider)
         efforts = try values.decodeIfPresent([String].self, forKey: .efforts) ?? []
         defaultEffort = try values.decodeIfPresent(String.self, forKey: .defaultEffort)
         isDefault = try values.decodeIfPresent(Bool.self, forKey: .isDefault)

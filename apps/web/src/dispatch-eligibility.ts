@@ -186,8 +186,16 @@ export function agentLabelKey(agentKind: string): MessageKey | null {
     : null;
 }
 
-export function dispatchModeLabelKey(mode: string): MessageKey | null {
-  return Object.hasOwn(MODE_LABEL_KEYS, mode) ? MODE_LABEL_KEYS[mode as DispatchModeName] : null;
+/**
+ * One mode, said the way its agent says it. Agents borrow each other's mode
+ * names, except OpenCode: its `default` runs the native Build agent, and
+ * calling it "Default" in the console hid the one word OpenCode users know
+ * the mode by (AND-189), so that agent gets the Build label.
+ */
+export function dispatchModeLabelKey(agentKind: string, mode: string): MessageKey | null {
+  if (!Object.hasOwn(MODE_LABEL_KEYS, mode)) return null;
+  if (agentKind === "opencode" && mode === "default") return "dispatchModeBuild";
+  return MODE_LABEL_KEYS[mode as DispatchModeName];
 }
 
 /**

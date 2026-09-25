@@ -247,6 +247,8 @@ export interface CreatedSdkToken extends SdkToken {
 export interface NodeAgentModel {
   readonly id: string;
   readonly label: string;
+  /** The vendor the agent listed the model under; absent when it has no such grouping. */
+  readonly provider?: string;
   readonly efforts: readonly string[];
   readonly defaultEffort?: string;
   readonly isDefault?: boolean;

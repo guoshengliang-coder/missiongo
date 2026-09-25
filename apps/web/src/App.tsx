@@ -2976,7 +2976,7 @@ function DispatchHistory({ itemKey }: { itemKey: string }) {
 function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: string }) {
   const { formatTime, t } = useI18n();
   const agentKey = agentLabelKey(dispatch.agentKind);
-  const modeKey = dispatchModeLabelKey(dispatch.mode);
+  const modeKey = dispatchModeLabelKey(dispatch.agentKind, dispatch.mode);
   const statusKey = dispatchStatusLabelKey(dispatch.status);
   const batch = dispatch.itemKeys.filter((key) => key !== itemKey);
   return (
@@ -3036,7 +3036,7 @@ function DispatchedLine({ payload }: { payload: Readonly<Record<string, unknown>
   const summary = dispatchedEvent(payload);
   if (!summary) return null;
   const agentKey = agentLabelKey(summary.agentKind);
-  const modeKey = dispatchModeLabelKey(summary.mode);
+  const modeKey = dispatchModeLabelKey(summary.agentKind, summary.mode);
   return (
     <p className="timeline-dispatch">
       {t("dispatchedTo", {

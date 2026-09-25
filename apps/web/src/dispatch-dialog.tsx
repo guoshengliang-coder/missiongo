@@ -5,7 +5,7 @@ import { CirclePause, LoaderCircle, Rocket, TriangleAlert } from "lucide-react";
 import { AGENT_KINDS, DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
-import { agentModels, effortLabelKey, effortOptions, reconcileChoice } from "./agent-model-options";
+import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, reconcileChoice } from "./agent-model-options";
 import {
   ACTIVE_DISPATCHES_QUERY_KEY,
   ACTIVE_DISPATCHES_REFETCH_MS,
@@ -189,8 +189,8 @@ export function DispatchDialog({
   };
   // A mode the server offers that this build has no wording for is still shown,
   // as the value itself, rather than dropped from the list.
-  const modeLabel = (value: string) => {
-    const key = dispatchModeLabelKey(value);
+  const modeLabel = (kind: string, value: string) => {
+    const key = dispatchModeLabelKey(kind, value);
     return key ? t(key) : value;
   };
   const effortLabel = (value: string) => {
@@ -210,7 +210,7 @@ export function DispatchDialog({
         <p className="dispatch-result-headline"><Rocket size={16} /> {t("dispatchSent", { node: created.nodeName })}</p>
         <div className="context-grid">
           <span><small>{t("dispatchAgent")}</small>{agentLabel(created.agentKind)}</span>
-          <span><small>{t("dispatchMode")}</small>{modeLabel(created.mode)}</span>
+          <span><small>{t("dispatchMode")}</small>{modeLabel(created.agentKind, created.mode)}</span>
           <span><small>{t("dispatchModel")}</small>{created.model ?? t("dispatchModelLocal")}</span>
           <span><small>{t("dispatchEffort")}</small>{created.effort ? effortLabel(created.effort) : t("dispatchModelLocal")}</span>
           <span><small>{t("status")}</small>{statusKey ? t(statusKey) : created.status}</span>
@@ -330,7 +330,7 @@ export function DispatchDialog({
         <label>{t("dispatchMode")}
           <select value={mode} onChange={(event) => setMode(event.target.value)}>
             {modes.map((value) => (
-              <option key={value} value={value}>{modeLabel(value)}</option>
+              <option key={value} value={value}>{modeLabel(agentKind, value)}</option>
             ))}
           </select>
         </label>
@@ -340,8 +340,18 @@ export function DispatchDialog({
         <label>{t("dispatchModel")}
           <select value={model} onChange={(event) => setModel(event.target.value)} disabled={!models}>
             <option value="">{t("dispatchModelLocal")}</option>
-            {(models ?? []).map((entry) => (
-              <option key={entry.id} value={entry.id}>{entry.label}</option>
+            {groupModelsByProvider(models ?? []).map((group) => (
+              group.provider === null
+                ? group.models.map((entry) => (
+                  <option key={entry.id} value={entry.id}>{entry.label}</option>
+                ))
+                : (
+                  <optgroup key={group.provider} label={group.provider}>
+                    {group.models.map((entry) => (
+                      <option key={entry.id} value={entry.id}>{entry.label}</option>
+                    ))}
+                  </optgroup>
+                )
             ))}
           </select>
         </label>
