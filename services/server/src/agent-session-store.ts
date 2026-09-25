@@ -979,11 +979,11 @@ export class AgentSessionStore {
   enqueueInterrupt(accountId: string, sessionId: string): AgentSessionCommand {
     const session = this.database.connection
       .prepare(
-        `SELECT s.id, s.status, s.archived_at FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
+        `SELECT s.id, s.status, s.archived_at, s.agent_kind FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
          WHERE s.id = ? AND d.account_id = ?`,
       )
       .get(sessionId, accountId) as unknown as {
-        id: string; status: AgentSessionStatus; archived_at: string | null;
+        id: string; status: AgentSessionStatus; archived_at: string | null; agent_kind: AgentKind;
       } | undefined;
     if (!session) throw notFound("Agent session");
     if (session.archived_at) throw conflict("agent_session_archived", "Restore this session before stopping it.");
@@ -1000,14 +1000,22 @@ export class AgentSessionStore {
     if (pending?.status === "delivery_unknown") {
       throw conflict("agent_reply_delivery_unknown", "Confirm the earlier reply in Codex before stopping this session.");
     }
-    const turn = this.database.connection
-      .prepare(
-        `SELECT turn_id FROM agent_session_messages
-         WHERE session_id = ? AND turn_id IS NOT NULL
-         ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
-      )
-      .get(sessionId) as unknown as { turn_id: string } | undefined;
-    if (!turn?.turn_id) throw conflict("agent_turn_unavailable", "The active agent turn is not visible yet.");
+    // Claude Code and Codex interrupts name the exact turn they may cut off, so
+    // a stop needs a visible turn identifier first. OpenCode interrupts the
+    // session by reference and its host reports no turn identifiers at all;
+    // demanding one there made every stop fail with agent_turn_unavailable.
+    const turnId = session.agent_kind === "opencode"
+      ? null
+      : (this.database.connection
+          .prepare(
+            `SELECT turn_id FROM agent_session_messages
+             WHERE session_id = ? AND turn_id IS NOT NULL
+             ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
+          )
+          .get(sessionId) as unknown as { turn_id: string } | undefined)?.turn_id ?? null;
+    if (!turnId && session.agent_kind !== "opencode") {
+      throw conflict("agent_turn_unavailable", "The active agent turn is not visible yet.");
+    }
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.transaction(() => {
@@ -1024,12 +1032,16 @@ export class AgentSessionStore {
           `INSERT INTO agent_session_commands (id, session_id, account_id, kind, text, turn_id, status, created_at)
            VALUES (?, ?, ?, 'interrupt', ?, ?, 'queued', ?)`,
         )
-        .run(id, sessionId, accountId, "停止当前任务", turn.turn_id, now);
+        .run(id, sessionId, accountId, "停止当前任务", turnId, now);
       this.database.connection
         .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
         .run(now, now, sessionId);
     });
-    return { id, kind: "interrupt", text: "停止当前任务", turnId: turn.turn_id, status: "queued", createdAt: now };
+    return {
+      id, kind: "interrupt", text: "停止当前任务",
+      ...(turnId ? { turnId } : {}),
+      status: "queued", createdAt: now,
+    };
   }
 
   cancel(accountId: string, sessionId: string, commandId: string): AgentSessionCommand {
