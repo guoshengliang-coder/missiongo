@@ -364,31 +364,59 @@ public final class NodeLoop: @unchecked Sendable {
         /// server reads — status, a delivered reply's command status, settings
         /// revisions — still goes out the moment it changes. It is recorded only
         /// after a report succeeded, so a failed upload is retried.
-        var reported: [String: Data] = [:]
+        let reported = Locked<[String: Data]>([:])
+        // Re-send an unacknowledged result report, never the Codex command
+        // itself. A lost snapshot HTTP response must not start another turn.
+        let awaitingReport = Locked<[String: (commandId: String, report: AgentSessionReport)]>([:])
         while !stop.isStopped {
             await shielded {
                 do {
                     let sessions = try await self.api.listAgentSessions()
                     self.reconcileCapacity(sessions)
                     let live = Set(sessions.map(\.id))
-                    reported.keys.forEach { if !live.contains($0) { reported.removeValue(forKey: $0) } }
+                    reported.withLock { value in value = value.filter { live.contains($0.key) } }
+                    awaitingReport.withLock { value in value = value.filter { live.contains($0.key) } }
                     for session in sessions {
                         guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else { continue }
                         let report: AgentSessionReport
-                        do {
-                            report = try await adapter.synchronize(session)
-                        } catch {
-                            report = AgentSessionReport(
-                                status: "unavailable", messages: [], error: error.localizedDescription
-                            )
+                        if let waiting = awaitingReport.current[session.id],
+                           session.command?.id == waiting.commandId,
+                           session.command?.status == "delivering" {
+                            report = waiting.report
+                        } else {
+                            _ = awaitingReport.withLock { $0.removeValue(forKey: session.id) }
+                            do {
+                                report = try await adapter.synchronize(session)
+                            } catch {
+                                // Once a Codex reply was reserved, a transport
+                                // error cannot prove whether turn/start took it.
+                                // Stop replaying until a person checks Codex.
+                                let uncertain = session.agentKind == "codex"
+                                    && session.command?.status == "delivering"
+                                    && (session.command?.kind ?? "message") == "message"
+                                report = AgentSessionReport(
+                                    status: "unavailable", messages: [], error: error.localizedDescription,
+                                    commandId: uncertain ? session.command?.id : nil,
+                                    commandStatus: uncertain ? "delivery_unknown" : nil,
+                                    commandError: uncertain
+                                        ? "无法确认 Codex 是否收到回复，请在 Codex 会话核实后手动确认；不会自动重发。"
+                                        : nil
+                                )
+                            }
                         }
                         // No fingerprint means the report cannot be encoded at
                         // all; uploading it unconditionally errs on the side
                         // of the server hearing about the session.
                         let fingerprint = Self.fingerprint(of: report)
-                        if let fingerprint, reported[session.id] == fingerprint { continue }
+                        if let fingerprint, reported.current[session.id] == fingerprint { continue }
+                        if session.agentKind == "codex", session.command?.status == "delivering",
+                           let commandId = report.commandId,
+                           report.commandStatus == "delivered" || report.commandStatus == "delivery_unknown" {
+                            awaitingReport.withLock { $0[session.id] = (commandId, report) }
+                        }
                         try await self.api.reportAgentSession(sessionId: session.id, report: report)
-                        if let fingerprint { reported[session.id] = fingerprint }
+                        _ = awaitingReport.withLock { $0.removeValue(forKey: session.id) }
+                        if let fingerprint { reported.withLock { $0[session.id] = fingerprint } }
                     }
                 } catch {
                     self.handle(error, what: "同步 Agent 会话出错", stop: stop, fatal: fatal)

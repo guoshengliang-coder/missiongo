@@ -196,7 +196,7 @@ export interface ScrollMetrics {
 export interface OutgoingReply {
   readonly text: string;
   readonly occurredAt: string;
-  readonly status: "sending" | "queued" | "delivering" | "failed";
+  readonly status: "sending" | "queued" | "delivering" | "delivery_unknown" | "failed";
   readonly error?: string;
   readonly commandId?: string;
 }
@@ -213,7 +213,8 @@ export function outgoingReply(
 ): OutgoingReply | null {
   if (request) return request;
   if (!command || command.kind !== "message") return null;
-  if (command.status !== "queued" && command.status !== "delivering" && command.status !== "failed") return null;
+  if (command.status !== "queued" && command.status !== "delivering"
+    && command.status !== "delivery_unknown" && command.status !== "failed") return null;
   return {
     text: command.text,
     occurredAt: command.createdAt,

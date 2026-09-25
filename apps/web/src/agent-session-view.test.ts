@@ -198,6 +198,10 @@ describe("agent session message view", () => {
     expect(outgoingReply({
       id: "command-1", kind: "message", text: "发布", status: "failed", error: "offline", createdAt: "2026-09-21T00:00:00Z",
     })).toMatchObject({ status: "failed", error: "offline" });
+    expect(outgoingReply({
+      id: "command-1", kind: "message", text: "发布", status: "delivery_unknown",
+      createdAt: "2026-09-21T00:00:00Z",
+    })).toMatchObject({ status: "delivery_unknown", commandId: "command-1" });
   });
 
   it("stops synthesizing a reply once it is delivered or cancelled", () => {

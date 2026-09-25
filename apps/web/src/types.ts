@@ -429,7 +429,7 @@ export interface AgentSessionCommand {
   readonly kind: "message" | "interrupt";
   readonly text: string;
   readonly turnId?: string;
-  readonly status: "queued" | "delivering" | "delivered" | "failed" | "cancelled";
+  readonly status: "queued" | "delivering" | "delivery_unknown" | "delivered" | "failed" | "cancelled";
   readonly error?: string;
   readonly createdAt: string;
   readonly deliveredAt?: string;
@@ -449,6 +449,7 @@ export interface AgentSession {
   readonly activities: readonly AgentSessionActivity[];
   readonly command?: AgentSessionCommand;
   readonly canReply: boolean;
+  readonly canResolveDelivery: boolean;
   readonly replyBlockedReason?: AgentSessionReplyBlockedReason;
 }
 

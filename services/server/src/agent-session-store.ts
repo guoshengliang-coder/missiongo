@@ -11,7 +11,7 @@ import type { MissionGoDatabase } from "./storage/database.js";
 
 export type AgentSessionStatus = "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
 export type AgentMessageRole = "user" | "agent" | "plan";
-export type AgentSessionCommandStatus = "queued" | "delivering" | "delivered" | "failed" | "cancelled";
+export type AgentSessionCommandStatus = "queued" | "delivering" | "delivery_unknown" | "delivered" | "failed" | "cancelled";
 export type AgentAttentionState = "pending" | "needed" | "not_needed";
 export type AgentAttentionKind = Exclude<ClassifiedAttentionKind, "none"> | "uncertain";
 
@@ -423,6 +423,8 @@ export const COMMAND_QUEUED_ALERT_MS = 180 * 60 * 1_000;
 /** Stamped on a delivery the server stopped waiting for; also its alert marker. */
 export const COMMAND_DELIVERY_TIMEOUT_ERROR =
   "Mac 认领回复后 30 分钟没有报告投递结果，MissionGo 已自动标记失败。请重新发送或检查该 Mac。";
+export const COMMAND_DELIVERY_UNKNOWN_ERROR =
+  "无法确认 Codex 是否收到这条回复。请先在 Codex 会话中核实，再选择已收到或未收到；MissionGo 不会自动重发。";
 
 /**
  * Why a pending reply deserves attention, or undefined when it does not. A
@@ -445,6 +447,7 @@ export function stuckCommandReason(
       ? COMMAND_DELIVERY_TIMEOUT_ERROR
       : undefined;
   }
+  if (command.status === "delivery_unknown") return command.error || COMMAND_DELIVERY_UNKNOWN_ERROR;
   if (command.status === "queued") {
     const since = Date.parse(command.created_at);
     return Number.isFinite(since) && now - since >= COMMAND_QUEUED_ALERT_MS
@@ -902,7 +905,7 @@ export class AgentSessionStore {
     }
     if (session.archived_at) throw conflict("agent_session_archived", "Restore this session before replying.");
     if (this.pendingCommand(sessionId)) {
-      throw conflict("agent_reply_pending", "This session already has a pending reply.");
+      throw conflict("agent_reply_pending", "This session has a pending or unconfirmed reply.");
     }
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -945,6 +948,9 @@ export class AgentSessionStore {
     }
     if (pending?.status === "delivering") {
       throw conflict("agent_reply_delivering", "A reply is already being delivered; try stopping again shortly.");
+    }
+    if (pending?.status === "delivery_unknown") {
+      throw conflict("agent_reply_delivery_unknown", "Confirm the earlier reply in Codex before stopping this session.");
     }
     const turn = this.database.connection
       .prepare(
@@ -1022,6 +1028,45 @@ export class AgentSessionStore {
     return this.mapCommand({ ...command, status: "cancelled", cancelled_at: now });
   }
 
+  /** Release an uncertain reply only after the account holder checks Codex. */
+  resolveDeliveryUnknown(
+    accountId: string, sessionId: string, commandId: string, outcome: "received" | "not_received",
+  ): AgentSessionCommand {
+    const command = this.database.connection.prepare(
+      `SELECT c.id, c.kind, c.text, c.turn_id, c.status, c.error, c.created_at,
+              c.delivered_at, c.delivering_at, c.cancelled_at, s.dispatch_id
+       FROM agent_session_commands c
+       JOIN agent_sessions s ON s.id = c.session_id
+       JOIN dispatches d ON d.id = s.dispatch_id
+       WHERE c.id = ? AND c.session_id = ? AND d.account_id = ?`,
+    ).get(commandId, sessionId, accountId) as unknown as (CommandRow & { dispatch_id: string }) | undefined;
+    if (!command) throw notFound("Agent session command");
+    if (command.kind !== "message" || command.status !== "delivery_unknown") {
+      throw conflict("agent_reply_not_unconfirmed", "Only a reply awaiting delivery confirmation can be resolved.");
+    }
+    const now = new Date().toISOString();
+    const status = outcome === "received" ? "delivered" : "cancelled";
+    const error = outcome === "received"
+      ? "用户在 Codex 核实已收到这条回复。"
+      : "用户在 Codex 核实未收到；可手动重新发送。";
+    this.database.transaction(() => {
+      const changed = this.database.connection.prepare(
+        `UPDATE agent_session_commands
+         SET status = ?, error = ?, delivered_at = ?, cancelled_at = ?
+         WHERE id = ? AND session_id = ? AND status = 'delivery_unknown'`,
+      ).run(status, error, outcome === "received" ? now : null, outcome === "not_received" ? now : null,
+        commandId, sessionId);
+      if (changed.changes !== 1) throw conflict("agent_reply_changed", "The reply changed before it was confirmed.");
+      this.database.connection.prepare(
+        "UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?",
+      ).run(now, now, sessionId);
+      autoArchiveFinishedDispatches(this.database, [command.dispatch_id], now);
+    });
+    return this.mapCommand({ ...command, status, error,
+      delivered_at: outcome === "received" ? now : null,
+      cancelled_at: outcome === "not_received" ? now : null });
+  }
+
   listForNode(nodeId: string): readonly NodeAgentSession[] {
     this.failStuckDeliveringCommands();
     const sourceArchiveBefore = new Date(Date.now() - SOURCE_ARCHIVE_POLL_MS).toISOString();
@@ -1043,7 +1088,7 @@ export class AgentSessionStore {
          AND (
            status IN ('active', 'stalled', 'unavailable') OR EXISTS (
              SELECT 1 FROM agent_session_commands c
-             WHERE c.session_id = s.id AND c.status IN ('queued', 'delivering')
+             WHERE c.session_id = s.id AND c.status IN ('queued', 'delivering', 'delivery_unknown')
            ) OR s.settings_revision > MAX(s.applied_settings_revision, s.settings_error_revision)
            OR s.source_restore_pending = 1
            -- A source archive still owed goes out now, not after the idle cool-down.
@@ -1068,7 +1113,7 @@ export class AgentSessionStore {
         lifecycle: row.agent_kind === "claude_code" && !row.source_restore_pending
           && (Boolean(row.archived_at) || autoArchived || this.itemsCompleted(row.id)) ? "close" : "keep",
         occupiesExecutionSlot: row.status === "active" || row.status === "stalled",
-        ...(command ? { command: this.mapCommand(command) } : {}),
+        ...(command && command.status !== "delivery_unknown" ? { command: this.mapCommand(command) } : {}),
         ...(row.archive_source === "missiongo" && row.archived_at && row.agent_kind === "codex"
           && !row.source_archived_at && !row.source_archive_error
           ? { archiveInSource: true as const }
@@ -1102,7 +1147,7 @@ export class AgentSessionStore {
     activities?: readonly AgentSessionActivity[];
     error?: string;
     commandId?: string;
-    commandStatus?: "delivering" | "delivered" | "failed";
+    commandStatus?: "delivering" | "delivery_unknown" | "delivered" | "failed";
     commandError?: string;
     sourceArchived?: boolean;
     /** The node tried to archive the source thread MissionGo asked it to and could not. */
@@ -1367,7 +1412,7 @@ export class AgentSessionStore {
         // lost.
         const reaped = current.status === "failed" && current.error === COMMAND_DELIVERY_TIMEOUT_ERROR;
         if (input.commandStatus === "delivering") {
-          if (!reaped) {
+          if (!reaped && !["delivery_unknown", "delivered", "cancelled"].includes(current.status)) {
             const changed = this.database.connection
               .prepare(
                 `UPDATE agent_session_commands
@@ -1384,16 +1429,22 @@ export class AgentSessionStore {
               throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
             }
           }
+        } else if (current.status === "delivered" || current.status === "cancelled"
+          || (reaped && input.commandStatus === "delivery_unknown")) {
+          // A delayed report cannot reopen a person's resolution or turn an
+          // older timeout into a pending command after a replacement was sent.
         } else {
           const changed = this.database.connection
             .prepare(
               `UPDATE agent_session_commands SET status = ?, error = ?, delivered_at = ?
                WHERE id = ? AND session_id = ?
-                 AND (status IN ('queued', 'delivering') OR (status = 'failed' AND error = ?))`,
+                 AND (status IN ('queued', 'delivering', 'delivery_unknown') OR (status = 'failed' AND error = ?))`,
             )
             .run(
               input.commandStatus,
-              input.commandError?.slice(0, 2_000) || null,
+              input.commandStatus === "delivery_unknown"
+                ? input.commandError?.slice(0, 2_000) || COMMAND_DELIVERY_UNKNOWN_ERROR
+                : input.commandError?.slice(0, 2_000) || null,
               input.commandStatus === "delivered" ? now : null,
               input.commandId,
               input.sessionId,
@@ -1403,7 +1454,9 @@ export class AgentSessionStore {
             throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
           }
           // A pending reply held back the automatic archive; retry now it settled.
-          autoArchiveFinishedDispatches(this.database, [session.dispatch_id], now);
+          if (input.commandStatus !== "delivery_unknown") {
+            autoArchiveFinishedDispatches(this.database, [session.dispatch_id], now);
+          }
         }
       }
     });
@@ -1471,30 +1524,27 @@ export class AgentSessionStore {
     return changed.changes === 1;
   }
 
-  /**
-   * Give up on deliveries the Mac claimed and never settled (AND-184). Called
-   * from read paths instead of a resident timer: the only process that could
-   * still settle the command reports through the same node paths, and a browser
-   * read is where a person needs to see the freed slot. Queued replies are left
-   * running -- waiting behind a long turn is normal -- and only surface through
-   * `stuckCommandReason`.
-   */
+  /** Time out old claimed replies on read paths. Codex replies keep their slot
+   * for human verification; other agents retain AND-184's failed timeout. */
   private failStuckDeliveringCommands(now = Date.now()): void {
     const cutoff = new Date(now - COMMAND_DELIVERING_TIMEOUT_MS).toISOString();
     const affected = this.database.connection
       .prepare(
         `SELECT DISTINCT s.dispatch_id AS dispatch_id
          FROM agent_session_commands c JOIN agent_sessions s ON s.id = c.session_id
-         WHERE c.status = 'delivering' AND COALESCE(c.delivering_at, c.created_at) <= ?`,
+         WHERE c.status = 'delivering' AND s.agent_kind != 'codex'
+           AND COALESCE(c.delivering_at, c.created_at) <= ?`,
       )
       .all(cutoff) as unknown as Array<{ dispatch_id: string }>;
-    if (affected.length === 0) return;
-    const changed = this.database.connection
-      .prepare(
-        `UPDATE agent_session_commands SET status = 'failed', error = ?
-         WHERE status = 'delivering' AND COALESCE(delivering_at, created_at) <= ?`,
-      )
-      .run(COMMAND_DELIVERY_TIMEOUT_ERROR, cutoff);
+    this.database.connection.prepare(
+      `UPDATE agent_session_commands SET status = 'delivery_unknown', error = ?
+       WHERE status = 'delivering' AND COALESCE(delivering_at, created_at) <= ?
+         AND session_id IN (SELECT id FROM agent_sessions WHERE agent_kind = 'codex')`,
+    ).run(COMMAND_DELIVERY_UNKNOWN_ERROR, cutoff);
+    const changed = this.database.connection.prepare(
+      `UPDATE agent_session_commands SET status = 'failed', error = ?
+       WHERE status = 'delivering' AND COALESCE(delivering_at, created_at) <= ?`,
+    ).run(COMMAND_DELIVERY_TIMEOUT_ERROR, cutoff);
     if (changed.changes > 0) {
       // The reply settling is what lets an otherwise finished hand-off archive.
       autoArchiveFinishedDispatches(this.database, affected.map((row) => row.dispatch_id));
@@ -1506,7 +1556,7 @@ export class AgentSessionStore {
       .prepare(
         `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at
          FROM agent_session_commands
-         WHERE session_id = ? AND status IN ('queued', 'delivering')
+         WHERE session_id = ? AND status IN ('queued', 'delivering', 'delivery_unknown')
          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as CommandRow | undefined;

@@ -1867,6 +1867,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return {
       ...session,
       canReply: replyBlockedReason === undefined,
+      canResolveDelivery: productIds.every((productId) =>
+        accountStore.allows(account, productId, "operate") && accountStore.allows(account, productId, "ai")),
       ...(replyBlockedReason ? { replyBlockedReason } : {}),
     };
   };
@@ -2056,6 +2058,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return agentSessionStore.cancel(requireAccountId(request), sessionId, commandId);
   });
 
+  app.post("/api/v1/agent-sessions/:sessionId/commands/:commandId/resolve-delivery", async (request) => {
+    const { sessionId, commandId } = request.params as { sessionId: string; commandId: string };
+    authorizedAgentSession(request, sessionId, true);
+    const outcome = stringField(objectBody(request.body), "outcome");
+    if (outcome !== "received" && outcome !== "not_received") {
+      throw invalidInput("outcome must be received or not_received.");
+    }
+    return agentSessionStore.resolveDeliveryUnknown(requireAccountId(request), sessionId, commandId, outcome);
+  });
+
   // The macOS client signs in through the same OAuth flow as an AI client, with
   // the node scope, and trades that login for a machine credential here. The
   // login token is not accepted anywhere else on /api/v1 and the client drops it
@@ -2237,10 +2249,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         };
       });
       const commandStatusValue = stringField(body, "commandStatus", false);
-      if (commandStatusValue && !["delivering", "delivered", "failed"].includes(commandStatusValue)) {
-        throw invalidInput("commandStatus must be delivering, delivered, or failed.");
+      if (commandStatusValue && !["delivering", "delivery_unknown", "delivered", "failed"].includes(commandStatusValue)) {
+        throw invalidInput("commandStatus must be delivering, delivery_unknown, delivered, or failed.");
       }
-      const commandStatus = commandStatusValue as "delivering" | "delivered" | "failed" | undefined;
+      const commandStatus = commandStatusValue as "delivering" | "delivery_unknown" | "delivered" | "failed" | undefined;
       if (body.sourceArchived !== undefined && typeof body.sourceArchived !== "boolean") {
         throw invalidInput("sourceArchived must be true or false.");
       }

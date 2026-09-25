@@ -396,7 +396,7 @@ export const INITIAL_SCHEMA = `
     kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message', 'interrupt')),
     text TEXT NOT NULL,
     turn_id TEXT,
-    status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivered', 'failed', 'cancelled')),
+    status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivery_unknown', 'delivered', 'failed', 'cancelled')),
     error TEXT,
     created_at TEXT NOT NULL,
     delivered_at TEXT,
@@ -405,7 +405,7 @@ export const INITIAL_SCHEMA = `
   ) STRICT;
 
   CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_session_one_queued_command
-  ON agent_session_commands(session_id) WHERE status IN ('queued', 'delivering');
+  ON agent_session_commands(session_id) WHERE status IN ('queued', 'delivering', 'delivery_unknown');
 
   CREATE INDEX IF NOT EXISTS idx_agent_session_messages_order
   ON agent_session_messages(session_id, position, observed_at);

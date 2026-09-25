@@ -1254,6 +1254,38 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(report.activityAt, "2026-09-21T05:30:00.000Z")
     }
 
+    func testAnAlreadyMirroredCodexReplyIsAcknowledgedWithoutSendingAgain() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [
+            AgentSessionMessage(sourceId: "command-1", role: "user", text: "Continue")
+        ])
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "command-1", text: "Continue", status: "delivering")
+        ))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
+    func testAnUnavailableCodexThreadLeavesDeliveryForHumanConfirmation() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "unavailable", messages: [])
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "command-1", text: "Continue", status: "delivering")
+        ))
+        XCTAssertEqual(report.commandStatus, "delivery_unknown")
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
     func testAnActiveThreadReservesThenSteersTheQueuedWebReply() async throws {
         let control = RecordingControl(threadId: "thread-1")
         control.snapshot = CodexThreadSnapshot(status: "active", activeTurnId: "turn-9", messages: [])
