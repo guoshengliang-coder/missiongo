@@ -104,6 +104,159 @@ public struct OpenCodeModelCatalog: Sendable {
     }
 }
 
+/// One option of an OpenCode form field: the value the reply must carry and the
+/// label a person sees and picks.
+public struct OpenCodeFormOption: Equatable, Sendable {
+    public let value: String
+    public let label: String
+
+    public init(value: String, label: String) {
+        self.value = value
+        self.label = label
+    }
+}
+
+/// One field of an OpenCode form, carrying what the console renders (as a
+/// question) and what the answer must be encoded back as (a form value).
+public struct OpenCodeFormField: Equatable, Sendable {
+    public let key: String
+    public let title: String
+    public let kind: AgentSessionQuestion.Kind?
+    public let options: [OpenCodeFormOption]
+    public let multiSelect: Bool
+    public let placeholder: String?
+    public let required: Bool
+
+    public init(
+        key: String, title: String, kind: AgentSessionQuestion.Kind? = nil,
+        options: [OpenCodeFormOption] = [], multiSelect: Bool = false,
+        placeholder: String? = nil, required: Bool = false
+    ) {
+        self.key = key
+        self.title = title
+        self.kind = kind
+        self.options = options
+        self.multiSelect = multiSelect
+        self.placeholder = placeholder
+        self.required = required
+    }
+
+    /// The question the console renders for this field. The key becomes the
+    /// reply prefix so an answer routes back to the field, not to its title.
+    public var question: AgentSessionQuestion {
+        AgentSessionQuestion(
+            title: title,
+            options: options.isEmpty ? nil : options.map(\.label),
+            multiSelect: multiSelect ? true : nil,
+            key: key,
+            kind: kind,
+            placeholder: placeholder
+        )
+    }
+
+    /// One answer value, or nil when the text does not answer this field.
+    func answerValue(_ raw: String) -> OpenCodeAnswerValue? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if kind == .boolean {
+            switch value.lowercased() {
+            case "是", "yes", "true", "1": return .boolean(true)
+            case "否", "no", "false", "0": return .boolean(false)
+            default: return nil
+            }
+        }
+        if kind == .number {
+            return Double(value).map(OpenCodeAnswerValue.number)
+        }
+        if !options.isEmpty {
+            let parts = value.split(separator: "、")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            let values = parts.compactMap { part in
+                options.first(where: { $0.label == part || $0.value == part })?.value
+            }
+            guard !values.isEmpty else { return nil }
+            return multiSelect ? .multiple(values) : .text(values[0])
+        }
+        return value.isEmpty ? nil : .text(value)
+    }
+}
+
+/// One answer value OpenCode's form reply takes, kept off `Any` so the reply
+/// can stay `Sendable`.
+public enum OpenCodeAnswerValue: Equatable, Sendable {
+    case text(String)
+    case number(Double)
+    case boolean(Bool)
+    case multiple([String])
+
+    var jsonValue: Any {
+        switch self {
+        case .text(let value): return value
+        case .number(let value): return value
+        case .boolean(let value): return value
+        case .multiple(let value): return value
+        }
+    }
+}
+
+/// A choice OpenCode is blocked on — a form it asked or a permission it wants.
+/// Both are answered through their own reply endpoint, never a prompt, so each
+/// carries a synthetic message the console can render and the data that turns a
+/// reply text back into that endpoint's request.
+public struct OpenCodeChoice: Equatable, Sendable {
+    public enum Reply: Equatable, Sendable {
+        case form(id: String, fields: [OpenCodeFormField])
+        case permission(id: String)
+    }
+
+    public enum Answer: Equatable, Sendable {
+        case form([String: OpenCodeAnswerValue])
+        case permission(decision: String)
+    }
+
+    /// What a person picks for a permission request, in OpenCode's own terms.
+    public static let permissionOptions = ["允许一次", "始终允许", "拒绝"]
+
+    private static let permissionDecisions: [String: String] = [
+        "允许一次": "once", "once": "once", "批准": "once", "approve": "once", "yes": "once",
+        "始终允许": "always", "always": "always",
+        "拒绝": "reject", "reject": "reject", "deny": "reject",
+    ]
+
+    public let reply: Reply
+    /// The synthetic message the console draws this choice on.
+    public let message: AgentSessionMessage
+
+    /// The request an answer text maps to, or nil when the text does not answer
+    /// this choice — then it is an ordinary prompt for the agent.
+    public func answer(from text: String) -> Answer? {
+        switch reply {
+        case .permission:
+            let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let decision = Self.permissionDecisions[normalized] else { return nil }
+            return .permission(decision: decision)
+        case let .form(_, fields):
+            guard let answer = Self.formAnswer(text: text, fields: fields) else { return nil }
+            return .form(answer)
+        }
+    }
+
+    static func formAnswer(text: String, fields: [OpenCodeFormField]) -> [String: OpenCodeAnswerValue]? {
+        var answer: [String: OpenCodeAnswerValue] = [:]
+        for line in text.split(separator: "\n").map(String.init) {
+            guard let colon = line.firstIndex(where: { $0 == ":" || $0 == "：" }) else { continue }
+            let label = line[..<colon].trimmingCharacters(in: .whitespaces)
+            let raw = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            guard let field = fields.first(where: { $0.key == label || $0.title == label }),
+                  let value = field.answerValue(raw) else { continue }
+            answer[field.key] = value
+        }
+        guard !answer.isEmpty else { return nil }
+        for field in fields where field.required && answer[field.key] == nil { return nil }
+        return answer
+    }
+}
+
 public enum OpenCodeProtocol {
     static func object(_ value: Any?, field: String) throws -> [String: Any] {
         guard let object = value as? [String: Any] else { throw LaunchError("OpenCode 的 \(field) 响应无法识别。") }
@@ -161,6 +314,83 @@ public enum OpenCodeProtocol {
             guard !text.isEmpty else { return nil }
             let role = entry["agent"] as? String == "plan" ? "plan" : "agent"
             return AgentSessionMessage(sourceId: id, role: role, text: text, occurredAt: occurredAt)
+        }
+    }
+
+    /// One pending form as a console-renderable choice: its title is the
+    /// message, each visible field is a question whose options are the labels a
+    /// person picks (the reply still carries each option's value).
+    static func formChoice(_ entry: [String: Any]) -> OpenCodeChoice? {
+        guard let id = entry["id"] as? String, !id.isEmpty,
+              let title = (entry["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty,
+              let rawFields = entry["fields"] as? [[String: Any]]
+        else { return nil }
+        let fields = rawFields.compactMap(formField)
+        guard !fields.isEmpty else { return nil }
+        return OpenCodeChoice(
+            reply: .form(id: id, fields: fields),
+            message: AgentSessionMessage(
+                sourceId: "form-\(id)", role: "agent", text: title,
+                questions: fields.map(\.question)
+            )
+        )
+    }
+
+    /// One pending permission request as a choice: which action wants approval
+    /// and, when the service says, why. Answered with once/always/reject.
+    static func permissionChoice(_ entry: [String: Any]) -> OpenCodeChoice? {
+        guard let id = entry["id"] as? String, !id.isEmpty,
+              let action = (entry["action"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !action.isEmpty
+        else { return nil }
+        let message = (entry["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resources = (entry["resources"] as? [String]) ?? []
+        let detail = message.flatMap { $0.isEmpty ? nil : $0 }
+            ?? resources.prefix(3).joined(separator: "、")
+        let text = detail.isEmpty ? "OpenCode 需要你授权后才能继续。" : detail
+        let question = AgentSessionQuestion(
+            header: "授权请求",
+            title: "OpenCode 请求使用 \(action)",
+            options: OpenCodeChoice.permissionOptions
+        )
+        return OpenCodeChoice(
+            reply: .permission(id: id),
+            message: AgentSessionMessage(
+                sourceId: "permission-\(id)", role: "agent", text: text, questions: [question]
+            )
+        )
+    }
+
+    /// One form field, skipped when hidden or when its type carries no answer
+    /// the console can collect.
+    static func formField(_ entry: [String: Any]) -> OpenCodeFormField? {
+        guard let key = entry["key"] as? String, !key.isEmpty,
+              let type = entry["type"] as? String,
+              (entry["hidden"] as? Bool) != true
+        else { return nil }
+        let title = (entry["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? key
+        let placeholder = entry["placeholder"] as? String
+        let required = (entry["required"] as? Bool) ?? false
+        let options = (entry["options"] as? [[String: Any]] ?? []).compactMap { option -> OpenCodeFormOption? in
+            guard let value = option["value"] as? String, !value.isEmpty else { return nil }
+            let label = (option["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? value
+            return OpenCodeFormOption(value: value, label: label)
+        }
+        let field = { (kind: AgentSessionQuestion.Kind?, multi: Bool) in
+            OpenCodeFormField(
+                key: key, title: title, kind: kind, options: multi || !options.isEmpty ? options : [],
+                multiSelect: multi, placeholder: placeholder, required: required
+            )
+        }
+        switch type {
+        case "multiselect": return options.isEmpty ? nil : field(nil, true)
+        case "boolean": return field(.boolean, false)
+        case "number", "integer": return field(.number, false)
+        default:
+            // string and external: a closed set of options is a pick, an open
+            // one is typed.
+            return options.isEmpty ? field(.text, false) : field(nil, false)
         }
     }
 
@@ -258,6 +488,13 @@ public protocol OpenCodeControlling: Sendable {
     func setModel(id: String, model: OpenCodeModelRef) async throws
     /// Moves a session between the plan and build agents.
     func setAgent(id: String, agent: String) async throws
+    /// The forms and permission requests a session is blocked on, oldest first.
+    /// A service without these routes reports none rather than failing the sync.
+    func pendingChoices(id: String) async throws -> [OpenCodeChoice]
+    /// Submits a form's answer, which is the reply the form was waiting on.
+    func replyForm(id: String, formID: String, answer: [String: OpenCodeAnswerValue]) async throws
+    /// Answers a permission request with once, always or reject.
+    func replyPermission(id: String, requestID: String, decision: String) async throws
 }
 
 public struct OpenCodeHTTPControl: OpenCodeControlling {
@@ -419,6 +656,33 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         _ = try await call("POST", "/api/session/\(encoded(id))/agent", body: ["agent": agent])
     }
 
+    public func pendingChoices(id: String) async throws -> [OpenCodeChoice] {
+        var choices: [OpenCodeChoice] = []
+        // A build without these routes answers 404; a pending choice is then
+        // simply not collected instead of failing the whole mirror.
+        if let forms = try? await call("GET", "/api/session/\(encoded(id))/form"),
+           let entries = forms["data"] as? [[String: Any]] {
+            choices.append(contentsOf: entries.compactMap(OpenCodeProtocol.formChoice))
+        }
+        if let permissions = try? await call("GET", "/api/session/\(encoded(id))/permission"),
+           let entries = permissions["data"] as? [[String: Any]] {
+            choices.append(contentsOf: entries.compactMap(OpenCodeProtocol.permissionChoice))
+        }
+        return choices
+    }
+
+    public func replyForm(id: String, formID: String, answer: [String: OpenCodeAnswerValue]) async throws {
+        let body: [String: Any] = ["answer": answer.mapValues(\.jsonValue)]
+        _ = try await call("POST", "/api/session/\(encoded(id))/form/\(encoded(formID))/reply", body: body)
+    }
+
+    public func replyPermission(id: String, requestID: String, decision: String) async throws {
+        _ = try await call(
+            "POST", "/api/session/\(encoded(id))/permission/\(encoded(requestID))/reply",
+            body: ["decision": decision]
+        )
+    }
+
     private func encoded(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?&#"))) ?? ""
     }
@@ -533,6 +797,12 @@ public struct OpenCodeLauncher: AgentAdapter {
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         let snapshot = try await control.snapshot(id: session.sessionRef)
+        // A pending choice is not in the message log: OpenCode blocks on a form
+        // or a permission endpoint until it is answered there. Attach the
+        // pending ones so the console can show what is being asked, with the
+        // controls to answer it.
+        let choices = (try? await control.pendingChoices(id: session.sessionRef)) ?? []
+        let messages = snapshot.messages + choices.map(\.message)
         // The settings a person sees and changes: what the session runs with
         // now, and any change waiting for an idle moment. Failing to read the
         // info must not fail the sync — the report then just says nothing
@@ -579,31 +849,42 @@ public struct OpenCodeLauncher: AgentAdapter {
         }
         let report: AgentSessionReport
         guard let command = session.command else {
-            report = AgentSessionReport(status: snapshot.status, messages: snapshot.messages,
+            report = AgentSessionReport(status: snapshot.status, messages: messages,
                                         sourceRestored: session.restoreInSource ? true : nil)
             return report.reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
         if command.status == "queued" {
-            report = AgentSessionReport(status: snapshot.status, messages: snapshot.messages,
+            report = AgentSessionReport(status: snapshot.status, messages: messages,
                                         commandId: command.id, commandStatus: "delivering")
             return report.reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
         guard command.status == "delivering" else {
-            report = AgentSessionReport(status: snapshot.status, messages: snapshot.messages)
+            report = AgentSessionReport(status: snapshot.status, messages: messages)
             return report.reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
         if command.kind == "interrupt" {
             try await control.interrupt(id: session.sessionRef)
+        } else if let choice = choices.first, let answer = choice.answer(from: command.text) {
+            // The reply answers what OpenCode is blocked on; anything that does
+            // not parse as that answer stays an ordinary prompt.
+            switch (choice.reply, answer) {
+            case let (.permission(requestID), .permission(decision)):
+                try await control.replyPermission(id: session.sessionRef, requestID: requestID, decision: decision)
+            case let (.form(formID, _), .form(values)):
+                try await control.replyForm(id: session.sessionRef, formID: formID, answer: values)
+            default:
+                try await control.prompt(id: session.sessionRef, text: command.text)
+            }
         } else {
             try await control.prompt(id: session.sessionRef, text: command.text)
         }
-        report = AgentSessionReport(status: snapshot.status, messages: snapshot.messages,
+        report = AgentSessionReport(status: snapshot.status, messages: messages,
                                     commandId: command.id, commandStatus: "delivered")
         return report.reportingSettings(
             model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError

@@ -11,15 +11,23 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     var info: (agent: String?, model: OpenCodeModelRef?)
     var appliedAgents: [String] = []
     var appliedModels: [OpenCodeModelRef] = []
+    var snapshotMessages: [AgentSessionMessage] = []
+    var choices: [OpenCodeChoice] = []
+    var repliedForm: (formID: String, answer: [String: OpenCodeAnswerValue])?
+    var repliedPermission: (requestID: String, decision: String)?
 
     init(
         mcpStatus: String?,
         catalog: OpenCodeModelCatalog = OpenCodeModelCatalog(models: [], defaultRef: nil),
-        info: (agent: String?, model: OpenCodeModelRef?) = (nil, nil)
+        info: (agent: String?, model: OpenCodeModelRef?) = (nil, nil),
+        choices: [OpenCodeChoice] = [],
+        snapshotMessages: [AgentSessionMessage] = []
     ) {
         self.mcpStatus = mcpStatus
         self.catalog = catalog
         self.info = info
+        self.choices = choices
+        self.snapshotMessages = snapshotMessages
     }
 
     func health() async throws -> String { "2.0.14" }
@@ -32,7 +40,7 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     func renameSession(id: String, title: String) async throws {}
     func prompt(id: String, text: String) async throws { lastPrompt = text }
     func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage]) {
-        ("idle", [])
+        ("idle", snapshotMessages)
     }
     func interrupt(id: String) async throws {}
     func deleteSession(id: String) async throws {}
@@ -40,6 +48,13 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     func sessionInfo(id: String) async throws -> (agent: String?, model: OpenCodeModelRef?) { info }
     func setModel(id: String, model: OpenCodeModelRef) async throws { appliedModels.append(model) }
     func setAgent(id: String, agent: String) async throws { appliedAgents.append(agent) }
+    func pendingChoices(id: String) async throws -> [OpenCodeChoice] { choices }
+    func replyForm(id: String, formID: String, answer: [String: OpenCodeAnswerValue]) async throws {
+        repliedForm = (formID, answer)
+    }
+    func replyPermission(id: String, requestID: String, decision: String) async throws {
+        repliedPermission = (requestID, decision)
+    }
 }
 
 final class OpenCodeTests: XCTestCase {
@@ -87,6 +102,129 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertEqual(messages.map(\.sourceId), ["msg_1", "msg_2"])
         XCTAssertEqual(messages.map(\.role), ["user", "plan"])
         XCTAssertEqual(messages.map(\.text), ["请处理", "方案"])
+    }
+
+    /// AND-190: a form OpenCode is blocked on becomes one message carrying a
+    /// question per visible field, and an answer goes to the form endpoint —
+    /// never a prompt, which OpenCode would not treat as the reply.
+    func testFormChoiceRendersFieldsAndRoutesItsAnswerToTheFormEndpoint() async throws {
+        let entry: [String: Any] = [
+            "id": "frm_1", "sessionID": "ses_test", "title": "发布确认",
+            "fields": [
+                ["key": "scope", "title": "范围", "type": "string",
+                 "options": [["value": "small", "label": "小"], ["value": "full", "label": "完整"]]],
+                ["key": "note", "title": "备注", "type": "string", "required": true],
+                ["key": "confirm", "title": "确认", "type": "boolean", "required": true],
+            ],
+        ]
+        let choice = try XCTUnwrap(OpenCodeProtocol.formChoice(entry))
+        XCTAssertEqual(choice.message.sourceId, "form-frm_1")
+        XCTAssertEqual(choice.message.text, "发布确认")
+        let questions = try XCTUnwrap(choice.message.questions)
+        XCTAssertEqual(questions.map(\.key), ["scope", "note", "confirm"])
+        XCTAssertEqual(questions[0].options, ["小", "完整"])
+        XCTAssertEqual(questions[1].kind, .text)
+        XCTAssertEqual(questions[2].kind, .boolean)
+
+        let control = StubOpenCodeControl(mcpStatus: "connected", choices: [choice])
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(
+                id: "c1", kind: "message", text: "scope: 小\nnote: 今天发布\nconfirm: 是", status: "delivering"
+            )
+        ))
+        XCTAssertTrue(report.messages.contains { $0.sourceId == "form-frm_1" })
+        XCTAssertEqual(report.commandStatus, "delivered")
+        let replied = await control.repliedForm
+        XCTAssertEqual(replied?.formID, "frm_1")
+        XCTAssertEqual(replied?.answer["scope"], .text("small"))
+        XCTAssertEqual(replied?.answer["note"], .text("今天发布"))
+        XCTAssertEqual(replied?.answer["confirm"], .boolean(true))
+        let prompt = await control.lastPrompt
+        XCTAssertNil(prompt)
+    }
+
+    /// AND-190: a permission request carries OpenCode's three decisions, and a
+    /// picked one is sent as that decision rather than as prompt text.
+    func testPermissionChoiceRoutesTheDecisionNotAPrompt() async throws {
+        let entry: [String: Any] = [
+            "id": "per_1", "sessionID": "ses_test", "action": "bash",
+            "resources": ["rm -rf build"], "message": "需要删除构建目录",
+        ]
+        let choice = try XCTUnwrap(OpenCodeProtocol.permissionChoice(entry))
+        XCTAssertEqual(choice.message.sourceId, "permission-per_1")
+        XCTAssertEqual(choice.message.text, "需要删除构建目录")
+        let questions = try XCTUnwrap(choice.message.questions)
+        XCTAssertEqual(questions[0].options, ["允许一次", "始终允许", "拒绝"])
+
+        let control = StubOpenCodeControl(mcpStatus: "connected", choices: [choice])
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "始终允许", status: "delivering")
+        ))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        let replied = await control.repliedPermission
+        XCTAssertEqual(replied?.requestID, "per_1")
+        XCTAssertEqual(replied?.decision, "always")
+        let prompt = await control.lastPrompt
+        XCTAssertNil(prompt)
+    }
+
+    /// A reply that does not answer the pending choice is still an ordinary
+    /// prompt: the console must not swallow what a person actually typed.
+    func testAReplyThatDoesNotAnswerTheChoiceStaysAPrompt() async throws {
+        let entry: [String: Any] = ["id": "per_1", "action": "bash", "resources": []]
+        let choice = try XCTUnwrap(OpenCodeProtocol.permissionChoice(entry))
+        let control = StubOpenCodeControl(mcpStatus: "connected", choices: [choice])
+        _ = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "继续处理 AND-190", status: "delivering")
+        ))
+        let replied = await control.repliedPermission
+        XCTAssertNil(replied)
+        let prompt = await control.lastPrompt
+        XCTAssertEqual(prompt, "继续处理 AND-190")
+    }
+
+    /// Both replies have their own routes and bodies; neither uses `/prompt`.
+    func testChoiceRepliesUseTheirOwnEndpoints() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let registration = home.appendingPathComponent(".local/state/opencode/service.json")
+        try FileManager.default.createDirectory(at: registration.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"url":"http://127.0.0.1:9999","password":"test","version":"2.0.15"}"#.utf8).write(to: registration)
+        StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
+        let control = OpenCodeHTTPControl(home: home.path, session: StubURLProtocol.session())
+        try await control.replyForm(
+            id: "ses_test", formID: "frm_1",
+            answer: ["scope": .text("small"), "confirm": .boolean(true)]
+        )
+        try await control.replyPermission(id: "ses_test", requestID: "per_1", decision: "always")
+        let requests = StubURLProtocol.recorded
+        XCTAssertEqual(requests.map { $0.request.url?.path }, [
+            "/api/session/ses_test/form/frm_1/reply",
+            "/api/session/ses_test/permission/per_1/reply",
+        ])
+        let form = jsonObject(requests[0].body)
+        let answer = form["answer"] as? [String: Any]
+        XCTAssertEqual(answer?["scope"] as? String, "small")
+        XCTAssertEqual(answer?["confirm"] as? Bool, true)
+        let permission = jsonObject(requests[1].body)
+        XCTAssertEqual(permission["decision"] as? String, "always")
+    }
+
+    /// A service without the form or permission routes must not fail the sync:
+    /// it simply reports no pending choices.
+    func testPendingChoicesDegradeToNoneWhenTheRoutesAreMissing() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let registration = home.appendingPathComponent(".local/state/opencode/service.json")
+        try FileManager.default.createDirectory(at: registration.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"url":"http://127.0.0.1:9999","password":"test","version":"2.0.0"}"#.utf8).write(to: registration)
+        StubURLProtocol.install { _, _ in .response(status: 404, body: #"{"message":"not found"}"#) }
+        let control = OpenCodeHTTPControl(home: home.path, session: StubURLProtocol.session())
+        let choices = try await control.pendingChoices(id: "ses_test")
+        XCTAssertTrue(choices.isEmpty)
     }
 
     func testIntegrationCheckOnlyPausesForMissingConfigurationOrAuthorization() {
@@ -423,6 +561,9 @@ final class OpenCodeTests: XCTestCase {
                 agentAttempts.append(agent)
                 throw LaunchError("会话正忙")
             }
+            func pendingChoices(id: String) async throws -> [OpenCodeChoice] { [] }
+            func replyForm(id: String, formID: String, answer: [String: OpenCodeAnswerValue]) async throws {}
+            func replyPermission(id: String, requestID: String, decision: String) async throws {}
         }
         let catalog = OpenCodeModelCatalog(models: [], defaultRef: nil)
         // An active session: the change waits, nothing is applied.
