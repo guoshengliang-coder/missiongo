@@ -259,6 +259,7 @@ export const INITIAL_SCHEMA = `
     token_hash TEXT NOT NULL UNIQUE,
     client_version TEXT,
     expected_skill_version TEXT,
+    supports_chat_attachments INTEGER NOT NULL DEFAULT 0 CHECK (supports_chat_attachments IN (0, 1)),
     agents_json TEXT NOT NULL DEFAULT '[]',
     -- Checkouts the machine reported it can already work in, so the console can
     -- offer a list instead of asking someone to type an absolute path.
@@ -409,6 +410,22 @@ export const INITIAL_SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_agent_session_messages_order
   ON agent_session_messages(session_id, position, observed_at);
+
+  CREATE TABLE IF NOT EXISTS agent_session_attachments (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL,
+    command_id TEXT REFERENCES agent_session_commands(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    storage_filename TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'document', 'log')),
+    content_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS idx_agent_session_attachments_command
+  ON agent_session_attachments(command_id);
 
   CREATE TABLE IF NOT EXISTS access_tokens (
     id TEXT PRIMARY KEY,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activityLabelKey,
+  agentChatMessages,
   agentAttentionCounts,
   agentSessionDetailRefetchInterval,
   agentSessionsRefetchInterval,
@@ -30,6 +31,21 @@ import {
 import type { AgentSessionSummary } from "./types";
 
 describe("agent session message view", () => {
+  it("keeps attachment history in order without repeating a mirrored local-file prompt", () => {
+    const attachment = { id: "file-1", filename: "photo.png", kind: "image" as const,
+      contentType: "image/png", sizeBytes: 3, sha256: "abc", createdAt: "2026-09-25T01:00:00Z" };
+    const attached = [{ commandId: "command-1", text: "Look at this", createdAt: "2026-09-25T01:00:00Z",
+      status: "delivered" as const, attachments: [attachment] }];
+    const messages = [
+      { id: "source-1", sourceId: "source-1", role: "user" as const,
+        text: "Look at this\n[MissionGo attachment command command-1]\n/local/path", occurredAt: "2026-09-25T01:00:01Z" },
+      { id: "answer-1", sourceId: "answer-1", role: "agent" as const,
+        text: "I see it", occurredAt: "2026-09-25T01:00:02Z" },
+    ];
+    expect(agentChatMessages(messages, attached).map((message) => message.text)).toEqual(["Look at this", "I see it"]);
+    expect(agentChatMessages(messages, attached)[0]?.attachmentData).toEqual([attachment]);
+    expect(agentChatMessages(messages, attached, "command-1").map((message) => message.text)).toEqual(["I see it"]);
+  });
   it("pauses in a hidden page and backs off repeated polling failures", () => {
     expect(agentSessionsRefetchInterval(true)).toBe(5_000);
     expect(agentSessionsRefetchInterval(false)).toBe(60_000);

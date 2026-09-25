@@ -701,14 +701,14 @@ public struct CodexLauncher: AgentAdapter {
                 socketPath: location.controlSocketPath,
                 threadId: session.sessionRef,
                 turnId: activeTurnId,
-                text: command.text,
+                text: command.promptText,
                 clientUserMessageId: command.id
             )
         } else {
             try await control.sendMessage(
                 socketPath: location.controlSocketPath,
                 threadId: session.sessionRef,
-                text: command.text,
+                text: command.promptText,
                 clientUserMessageId: command.id,
                 overrides: turnOverrides(session)
             )

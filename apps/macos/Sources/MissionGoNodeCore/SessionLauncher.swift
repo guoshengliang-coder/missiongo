@@ -885,7 +885,7 @@ public struct SessionLauncher: AgentAdapter {
         if !FileManager.default.fileExists(atPath: path) {
             try ClaudeHostFiles.write(
                 ClaudeHostCommand(
-                    id: command.id, kind: command.kind ?? "message", text: command.text,
+                    id: command.id, kind: command.kind ?? "message", text: command.promptText,
                     createdAt: command.createdAt.isEmpty ? nil : command.createdAt
                 ),
                 to: path
