@@ -14,13 +14,16 @@ import {
   filtersFromUrl,
   filtersToUrl,
   ITEM_HISTORY_MARKER,
+  ITEM_STATUS_NAV_ORDER,
   itemDetailUrl,
   itemHistoryOp,
   itemKeyFromUrl,
   itemListUrl,
   OVERLAY_HISTORY_MARKER,
+  QUICK_SETTINGS_HISTORY_MARKER,
   SIDEBAR_HISTORY_MARKER,
 } from "./navigation";
+import { ITEM_STATUSES } from "./types";
 
 describe("Agent console navigation", () => {
   it("round-trips the console and selected session without dropping list filters", () => {
@@ -183,8 +186,26 @@ describe("android back depth", () => {
     })).toBe(3);
   });
 
+  it("counts the quick-settings panel as the level above the conversation (AND-199)", () => {
+    expect(backDepthFromState({ [QUICK_SETTINGS_HISTORY_MARKER]: true })).toBe(1);
+    expect(backDepthFromState({
+      [AGENT_CONSOLE_HISTORY_MARKER]: true,
+      [AGENT_CONVERSATION_HISTORY_MARKER]: true,
+      [QUICK_SETTINGS_HISTORY_MARKER]: true,
+    })).toBe(3);
+  });
+
   it("ignores a state that is not an object", () => {
     expect(backDepthFromState("deep")).toBe(0);
     expect(backDepthFromState(7)).toBe(0);
+  });
+});
+
+describe("status filter order (AND-197)", () => {
+  it("ends with on hold, then all, and keeps every status exactly once", () => {
+    // "All" is rendered after this list, so on hold is the second-to-last chip.
+    expect(ITEM_STATUS_NAV_ORDER.at(-1)).toBe("on_hold");
+    expect([...ITEM_STATUS_NAV_ORDER].sort()).toEqual([...ITEM_STATUSES].sort());
+    expect(new Set(ITEM_STATUS_NAV_ORDER).size).toBe(ITEM_STATUS_NAV_ORDER.length);
   });
 });

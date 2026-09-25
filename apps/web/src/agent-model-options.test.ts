@@ -45,6 +45,21 @@ describe("Model and effort choices (AND-130)", () => {
     ]);
   });
 
+  it("folds a model one Mac reports more than once into one option (AND-200)", () => {
+    const repeated = agentModels(node("a", [
+      models[0]!,
+      { ...models[0]!, efforts: ["xhigh"] },
+      models[1]!,
+      models[0]!,
+    ]), "codex");
+    expect(repeated?.map((model) => [model.id, model.efforts])).toEqual([
+      ["gpt-5.5", ["low", "medium", "high", "xhigh"]],
+      ["gpt-5.5-mini", ["low"]],
+    ]);
+    // A Mac that reported no list at all is still the older client.
+    expect(agentModels(node("old"), "codex")).toBeUndefined();
+  });
+
   it("names known efforts and leaves others as they are", () => {
     expect(effortLabelKey("xhigh")).toBe("effortXhigh");
     expect(effortLabelKey("turbo")).toBeNull();

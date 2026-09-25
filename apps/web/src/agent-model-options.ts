@@ -12,9 +12,23 @@ export interface ModelChoice {
  * The models this machine's agent offers (AND-130). `undefined` is a Mac whose
  * client predates model choice: the dialog then offers only the Mac's own
  * configuration instead of a list the server would refuse.
+ *
+ * An agent can report the same model more than once -- a Claude Code endpoint
+ * lists a model per context variant, and an initialize answer repeats entries
+ * (AND-200). The picker is a list of choices, not a log, so the same id is
+ * folded into one option and the efforts are merged rather than shown twice.
  */
 export function agentModels(node: DispatchNode | undefined, agentKind: AgentKind): readonly NodeAgentModel[] | undefined {
-  return node?.agents.find((agent) => agent.kind === agentKind)?.models;
+  const models = node?.agents.find((agent) => agent.kind === agentKind)?.models;
+  if (!models) return undefined;
+  const byId = new Map<string, NodeAgentModel>();
+  for (const model of models) {
+    const known = byId.get(model.id);
+    byId.set(model.id, known
+      ? { ...known, efforts: [...new Set([...known.efforts, ...model.efforts])] }
+      : model);
+  }
+  return [...byId.values()];
 }
 
 /** Efforts for the chosen model, or every effort some model offers when none is chosen. */
