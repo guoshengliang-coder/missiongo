@@ -1,6 +1,9 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
+import { Transform } from "node:stream";
+import { createGunzip } from "node:zlib";
+
 
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 
@@ -44,7 +47,11 @@ import {
 } from "./accounts-store.js";
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES, MEBIBYTE } from "./attachment-storage.js";
 import { AiTitleService } from "./ai-title.js";
-import { AgentSessionStore, type AgentMessageRole, type AgentSessionStatus } from "./agent-session-store.js";
+import {
+  AgentSessionStore,
+  type AgentMessageRole,
+  type AgentSessionStatus,
+} from "./agent-session-store.js";
 import { optionalName, parseAgentModels } from "./agent-settings.js";
 import { DispatchStore } from "./dispatch-store.js";
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
@@ -674,6 +681,54 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     { parseAs: "string", bodyLimit: 16 * 1024 },
     (_request, body, done) => done(null, body),
   );
+
+  // AND-182: the Mac node gzip-compresses snapshot uploads, because a mirrored
+  // transcript re-uploaded whole on every poll was most of its traffic. The
+  // hook unwraps the body before the parsers see it, so the route's bodyLimit
+  // counts decoded bytes: a compressed bomb still stops at the limit, and the
+  // limit says what it always said -- how much snapshot the server will read.
+  // The cap has to live here rather than in the framework's own accounting
+  // because that one detaches its listeners mid-stream without destroying the
+  // pipe, and the orphaned decompressor then surfaces as a 500; cutting the
+  // chain here keeps the failure a clean 413. A corrupt body surfaces through
+  // the same destroy as a plain stream error, which Fastify answers with 400.
+  app.addHook("preParsing", async (request, _reply, payload) => {
+    const encoding = Array.isArray(request.headers["content-encoding"])
+      ? request.headers["content-encoding"][0]
+      : request.headers["content-encoding"];
+    if (encoding?.trim().toLowerCase() !== "gzip") return payload;
+    if (typeof (payload as { pipe?: unknown }).pipe !== "function") return payload;
+    // The header still names the compressed wire size, which the decoded stream
+    // can never match (FST_ERR_CTP_INVALID_CONTENT_LENGTH); without it the
+    // parser counts the decoded bytes against bodyLimit alone.
+    delete request.headers["content-length"];
+    const limit = request.routeOptions.bodyLimit ?? 1024 * 1024;
+    const gunzip = createGunzip();
+    let decoded = 0;
+    const capped = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        decoded += chunk.length;
+        if (decoded > limit) {
+          callback(new MissionGoError(
+            "gzip_body_too_large",
+            `The decoded gzip request body exceeds the route's limit of ${limit} bytes.`,
+            413,
+          ));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    gunzip.on("error", (error) => {
+      // Both a corrupt body and the teardown after the cap tripped arrive
+      // here; past the cap the stream is already gone and there is nothing
+      // left to report.
+      if (!capped.destroyed) {
+        capped.destroy(invalidInput(`The gzip request body could not be decoded: ${error.message}`, "invalid_gzip_body"));
+      }
+    });
+    return (payload as NodeJS.ReadableStream).pipe(gunzip).pipe(capped);
+  });
 
   app.decorate("missionGoStore", store);
   app.decorate("missionGoAccounts", accountStore);
@@ -2119,6 +2174,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.post(
     "/api/v1/node/agent-sessions/:sessionId/snapshot",
+    // Counted after the gzip hook unwraps the body (see MAX_SNAPSHOT_BODY_BYTES).
     { bodyLimit: MAX_SNAPSHOT_BODY_BYTES },
     async (request, reply) => {
       const node = requireNode(request);

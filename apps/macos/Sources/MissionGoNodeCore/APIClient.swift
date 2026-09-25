@@ -1,4 +1,5 @@
 import Foundation
+import zlib
 
 /// The node side of the dispatch protocol.
 ///
@@ -705,6 +706,103 @@ public struct NetworkFailure: Equatable, Sendable, CustomStringConvertible {
     }
 }
 
+// MARK: - Upload gzip
+
+/// gzip for request bodies (AND-182). A mirrored transcript is re-uploaded
+/// whole on every poll, so an uncompressed snapshot was most of the node's
+/// traffic; the server answers with a matching decompressing hook. `windowBits`
+/// of 31 in both directions asks zlib for the gzip wrapper rather than raw
+/// deflate, so what goes over the wire is a standard gzip stream.
+enum Gzip {
+    /// Bodies below this stay plain: gzip would barely shrink them and costs a
+    /// header, a trailer and a decompression pass on the server.
+    static let minimumBodySize = 1024
+
+    static func compress(_ data: Data) -> Data? {
+        guard !data.isEmpty else { return nil }
+        var stream = z_stream()
+        guard deflateInit2_(
+            &stream,
+            6,
+            Z_DEFLATED,
+            31,
+            8,
+            Z_DEFAULT_STRATEGY,
+            ZLIB_VERSION,
+            Int32(MemoryLayout<z_stream>.size)
+        ) == Z_OK else { return nil }
+        defer { deflateEnd(&stream) }
+
+        var output = Data()
+        let chunkSize = 65_536
+        var chunk = [UInt8](repeating: 0, count: chunkSize)
+        let status = data.withUnsafeBytes { (input: UnsafeRawBufferPointer) -> Int32 in
+            stream.next_in = UnsafeMutablePointer(mutating: input.bindMemory(to: Bytef.self).baseAddress)
+            // uInt is 32-bit; a body that large cannot be built here, but be
+            // explicit rather than truncating silently.
+            stream.avail_in = uInt(truncatingIfNeeded: input.count)
+            return chunk.withUnsafeMutableBytes { (sink: UnsafeMutableRawBufferPointer) -> Int32 in
+                while true {
+                    stream.next_out = sink.baseAddress?.assumingMemoryBound(to: Bytef.self)
+                    stream.avail_out = uInt(sink.count)
+                    let deflateStatus = deflate(&stream, Z_FINISH)
+                    output.append(contentsOf: sink.prefix(chunkSize - Int(stream.avail_out)))
+                    if deflateStatus == Z_STREAM_END || deflateStatus != Z_OK { return deflateStatus }
+                }
+            }
+        }
+        guard status == Z_STREAM_END else { return nil }
+        return output
+    }
+
+    /// The inverse, for tests and for the fallback check: only used offline.
+    static func decompress(_ data: Data) -> Data? {
+        guard !data.isEmpty else { return nil }
+        var stream = z_stream()
+        guard inflateInit2_(&stream, 31, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else { return nil }
+        defer { inflateEnd(&stream) }
+
+        var output = Data()
+        let chunkSize = 65_536
+        var chunk = [UInt8](repeating: 0, count: chunkSize)
+        let status = data.withUnsafeBytes { (input: UnsafeRawBufferPointer) -> Int32 in
+            stream.next_in = UnsafeMutablePointer(mutating: input.bindMemory(to: Bytef.self).baseAddress)
+            stream.avail_in = uInt(truncatingIfNeeded: input.count)
+            return chunk.withUnsafeMutableBytes { (sink: UnsafeMutableRawBufferPointer) -> Int32 in
+                while true {
+                    stream.next_out = sink.baseAddress?.assumingMemoryBound(to: Bytef.self)
+                    stream.avail_out = uInt(sink.count)
+                    let inflateStatus = inflate(&stream, Z_NO_FLUSH)
+                    output.append(contentsOf: sink.prefix(chunkSize - Int(stream.avail_out)))
+                    if inflateStatus == Z_STREAM_END || inflateStatus != Z_OK { return inflateStatus }
+                    if stream.avail_in == 0 { return Z_OK }  // truncated input
+                }
+            }
+        }
+        guard status == Z_STREAM_END else { return nil }
+        return output
+    }
+
+    static func looksLikeGzip(_ data: Data) -> Bool {
+        return data.count >= 2 && data[data.startIndex] == 0x1f && data[data.index(after: data.startIndex)] == 0x8b
+    }
+}
+
+/// Whether uploads still go out compressed. `APIClient` is a value type shared
+/// by copy, so the flag lives behind a lock: a fallback decided through one
+/// copy (`withToken`) has to hold for the others too.
+final class UploadCompression: @unchecked Sendable {
+    private let disabled = Locked(false)
+
+    var isDisabled: Bool {
+        return disabled.current
+    }
+
+    func disable() {
+        disabled.withLock { $0 = true }
+    }
+}
+
 // MARK: - Transport
 
 /// Drop trailing slashes from a server URL.
@@ -811,15 +909,26 @@ public struct APIClient: Sendable {
     /// The node credential (`mgn_`). Only `register` runs without it.
     public let token: String?
     let transport: HTTPTransport
+    let uploadCompression: UploadCompression
 
     public init(serverUrl: String, token: String? = nil, session: URLSession = .shared) {
         self.serverUrl = normalizeServerUrl(serverUrl)
         self.token = token
         transport = HTTPTransport(session: session)
+        uploadCompression = UploadCompression()
+    }
+
+    /// Keeps the compression flag across the copy: a server that could not take
+    /// gzip uploads stays known as such after the credential changes.
+    init(serverUrl: String, token: String?, session: URLSession, uploadCompression: UploadCompression) {
+        self.serverUrl = normalizeServerUrl(serverUrl)
+        self.token = token
+        transport = HTTPTransport(session: session)
+        self.uploadCompression = uploadCompression
     }
 
     public func withToken(_ token: String) -> APIClient {
-        return APIClient(serverUrl: serverUrl, token: token, session: transport.session)
+        return APIClient(serverUrl: serverUrl, token: token, session: transport.session, uploadCompression: uploadCompression)
     }
 
     // MARK: Endpoints
@@ -937,7 +1046,9 @@ public struct APIClient: Sendable {
 
     public func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {
         let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/snapshot"
-        let response = try await send("POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken())
+        let response = try await send(
+            "POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true
+        )
         try requireSuccess(response, operation: "同步 Agent 会话")
     }
 
@@ -1070,7 +1181,8 @@ public struct APIClient: Sendable {
         _ path: String,
         body: Body?,
         bearer: String,
-        timeout: TimeInterval = APIClient.requestTimeout
+        timeout: TimeInterval = APIClient.requestTimeout,
+        gzipBody: Bool = false
     ) async throws -> HTTPResponse {
         guard let url = URL(string: "\(serverUrl)\(path)") else {
             throw APIError.invalidResponse("服务地址不是合法的 URL：\(serverUrl)")
@@ -1080,11 +1192,32 @@ public struct APIClient: Sendable {
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        var plain: Data?
+        var compressed: Data?
         if let body {
+            plain = try APIClient.encoder.encode(body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try APIClient.encoder.encode(body)
+            if gzipBody, !uploadCompression.isDisabled,
+               let encoded = plain, encoded.count >= Gzip.minimumBodySize,
+               let gzipped = Gzip.compress(encoded) {
+                compressed = gzipped
+            }
+            request.httpBody = compressed ?? plain
+            if compressed != nil {
+                request.setValue("gzip", forHTTPHeaderField: "Content-Encoding")
+            }
         }
-        let response = try await transport.send(request)
+        var response = try await transport.send(request)
+        if response.status == 400, compressed != nil, let plain {
+            // A server from before upload gzip (AND-182) parses the compressed
+            // bytes as JSON and refuses them. Retry the same body uncompressed
+            // and stop compressing uploads to this server for good; the worst
+            // case is one extra round trip once per client run.
+            uploadCompression.disable()
+            request.httpBody = plain
+            request.setValue(nil, forHTTPHeaderField: "Content-Encoding")
+            response = try await transport.send(request)
+        }
         if response.status == 401 || response.status == 403 {
             throw APIError.credentialRevoked(status: response.status, detail: HTTPTransport.problemTitle(response))
         }

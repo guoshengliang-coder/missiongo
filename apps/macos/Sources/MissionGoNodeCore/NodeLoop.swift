@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The protocol calls the loop makes, so a test can stand in for the server.
@@ -356,11 +357,21 @@ public final class NodeLoop: @unchecked Sendable {
     }
 
     private func sessionLoop(stop: StopSignal, fatal: Locked<APIError?>) async {
+        /// Reports the server has already accepted, by session id (AND-182). A
+        /// mirrored transcript re-reads unchanged for most of a long tool call,
+        /// and re-uploading it whole every poll was most of the node's traffic.
+        /// The fingerprint covers the entire encoded report, so anything the
+        /// server reads — status, a delivered reply's command status, settings
+        /// revisions — still goes out the moment it changes. It is recorded only
+        /// after a report succeeded, so a failed upload is retried.
+        var reported: [String: Data] = [:]
         while !stop.isStopped {
             await shielded {
                 do {
                     let sessions = try await self.api.listAgentSessions()
                     self.reconcileCapacity(sessions)
+                    let live = Set(sessions.map(\.id))
+                    reported.keys.forEach { if !live.contains($0) { reported.removeValue(forKey: $0) } }
                     for session in sessions {
                         guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else { continue }
                         let report: AgentSessionReport
@@ -371,7 +382,13 @@ public final class NodeLoop: @unchecked Sendable {
                                 status: "unavailable", messages: [], error: error.localizedDescription
                             )
                         }
+                        // No fingerprint means the report cannot be encoded at
+                        // all; uploading it unconditionally errs on the side
+                        // of the server hearing about the session.
+                        let fingerprint = Self.fingerprint(of: report)
+                        if let fingerprint, reported[session.id] == fingerprint { continue }
                         try await self.api.reportAgentSession(sessionId: session.id, report: report)
+                        if let fingerprint { reported[session.id] = fingerprint }
                     }
                 } catch {
                     self.handle(error, what: "同步 Agent 会话出错", stop: stop, fatal: fatal)
@@ -379,6 +396,12 @@ public final class NodeLoop: @unchecked Sendable {
             }
             await stop.sleep(timing.sessionInterval)
         }
+    }
+
+    /// A stable digest of everything a report says. `APIClient.encoder` sorts
+    /// keys, so the same report value always encodes to the same bytes.
+    private static func fingerprint(of report: AgentSessionReport) -> Data? {
+        return (try? APIClient.encoder.encode(report)).map { Data(SHA256.hash(data: $0)) }
     }
 
     private func hasExecutionCapacity(now: Date = Date()) -> Bool {

@@ -1,7 +1,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash, randomUUID, scryptSync } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 
 import type { FastifyInstance } from "fastify";
@@ -2511,6 +2512,116 @@ describe("Claiming a dispatch on the node", () => {
       payload: { status: "launched" },
     });
     expect(stolen.statusCode).toBe(404);
+  });
+
+
+  describe("Gzip snapshot uploads (AND-182)", () => {
+    /** A claimed, launched dispatch with one mirrored session to report into. */
+    async function launchedSession() {
+      const { app, cookie, node, mission, dispatchId } = await queuedDispatch();
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/node/dispatches/claim-next",
+        headers: { authorization: `Bearer ${node.token}` },
+      });
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/node/dispatches/${dispatchId}/result`,
+        headers: { authorization: `Bearer ${node.token}` },
+        payload: {
+          status: "launched",
+          sessionName: `Mac mini-${mission.itemKey}`,
+          sessionRef: "11111111-2222-4333-8444-555555555555",
+        },
+      });
+      const sessionId = (await app.inject({
+        method: "GET",
+        url: "/api/v1/node/agent-sessions",
+        headers: { authorization: `Bearer ${node.token}` },
+      })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+      return { app, cookie, node, sessionId };
+    }
+
+    function snapshotPayload(messageCount: number, messageSize: number): string {
+      return JSON.stringify({
+        status: "idle",
+        messages: Array.from({ length: messageCount }, (_, index) => ({
+          sourceId: `u${index}`,
+          turnId: "t1",
+          role: "user",
+          text: "x".repeat(messageSize),
+        })),
+      });
+    }
+
+    it("accepts a gzip-compressed snapshot and stores the decoded messages", async () => {
+      const { app, cookie, node, sessionId } = await launchedSession();
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+        headers: { authorization: `Bearer ${node.token}`, "content-encoding": "gzip", "content-type": "application/json" },
+        payload: gzipSync(Buffer.from(snapshotPayload(3, 20_000), "utf8")),
+      });
+      expect(response.statusCode).toBe(204);
+
+      const detail = (await app.inject({
+        method: "GET",
+        url: `/api/v1/agent-sessions/${sessionId}`,
+        headers: { cookie },
+      })).json<{ messages: Array<{ text: string }> }>();
+      expect(detail.messages).toHaveLength(3);
+      expect(detail.messages.every((message) => message.text.length === 20_000)).toBe(true);
+    });
+
+    it("refuses a corrupt gzip body", async () => {
+      const { app, node, sessionId } = await launchedSession();
+      // Random bytes, so the compressed stream really is a third of the body:
+      // repeated text would compress below the cut and still decode whole.
+      const whole = gzipSync(Buffer.from(JSON.stringify({
+        status: "idle",
+        messages: [0, 1].map((index) => ({
+          sourceId: `u${index}`, turnId: "t1", role: "user", text: randomBytes(30_000).toString("base64"),
+        })),
+      }), "utf8"));
+      const truncated = whole.subarray(0, Math.floor(whole.length / 3));
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+        headers: { authorization: `Bearer ${node.token}`, "content-encoding": "gzip", "content-type": "application/json" },
+        payload: truncated,
+      });
+      if (response.statusCode !== 400) console.log("DBGA", response.statusCode, response.body.slice(0, 600));
+      expect(response.statusCode).toBe(400);
+    });
+
+    it("carries a decoded body past the framework's default limit", async () => {
+      const { app, node, sessionId } = await launchedSession();
+      // ~2.1 MB decoded, over the 1 MiB default the route no longer inherits.
+      const payload = Buffer.from(snapshotPayload(30, 70_000), "utf8");
+      expect(payload.length).toBeGreaterThan(1024 * 1024);
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+        headers: { authorization: `Bearer ${node.token}`, "content-encoding": "gzip", "content-type": "application/json" },
+        payload: gzipSync(payload),
+      });
+      expect(response.statusCode).toBe(204);
+    });
+
+    it("still refuses a decoded body larger than the snapshot limit", async () => {
+      const { app, node, sessionId } = await launchedSession();
+      // ~32.3 MB decoded: over the route's 32 MiB bound even though the gzipped
+      // wire body stays small -- the limit counts decoded bytes.
+      const payload = Buffer.from(snapshotPayload(470, 72_000), "utf8");
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+        headers: { authorization: `Bearer ${node.token}`, "content-encoding": "gzip", "content-type": "application/json" },
+        payload: gzipSync(payload),
+      });
+      if (response.statusCode !== 413) console.log("DGBB", response.statusCode, response.body.slice(0, 600));
+      expect(response.statusCode).toBe(413);
+    });
   });
 });
 
