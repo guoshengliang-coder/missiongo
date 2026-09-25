@@ -824,7 +824,14 @@ public struct SessionLauncher: AgentAdapter {
                 activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )
         }
-        if command.kind == "message", ["active", "stalled"].contains(state.status), !state.waitingForInput {
+        // A running turn is not interrupted by a queued reply: the host only
+        // reads commands at a turn boundary anyway. But `status` alone cannot
+        // answer "is a turn running": a background task keeps it "active"
+        // after the turn's `result`. Waiting on that used to strand a reply
+        // for as long as the background task lived, so the decision reads the
+        // turn flag instead. A state from a host that predates it decodes as
+        // turnActive = true and keeps the old, conservative behaviour.
+        if command.kind == "message", ["active", "stalled"].contains(state.status), !state.waitingForInput, state.turnActive {
             return AgentSessionReport(
                 status: state.status, messages: state.messages, activities: state.activities,
                 error: state.error, sessionUrl: state.sessionUrl,
