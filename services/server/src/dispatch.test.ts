@@ -137,6 +137,67 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
+describe("Agent chat attachments", () => {
+  const nodeHeaders = (token: string) => ({ authorization: `Bearer ${token}` });
+  it("gates old nodes, binds original files to an attachment-only command, and scopes downloads", async () => {
+    const { app, cookie } = await signedInApp();
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    const node = await registeredNode(app);
+    const otherNode = await registeredNode(app, "Other Mac");
+    await heartbeat(app, node.token);
+    await app.inject({ method: "PUT", url: "/api/v1/node/repos", headers: nodeHeaders(node.token),
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] } });
+    const dispatch = await app.inject({ method: "POST", url: "/api/v1/dispatches", headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [mission.itemKey] } });
+    expect(dispatch.statusCode).toBe(201);
+    const dispatchId = dispatch.json<{ id: string }>().id;
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: nodeHeaders(node.token) });
+    expect((await app.inject({ method: "POST", url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: nodeHeaders(node.token), payload: { status: "launched", sessionName: "Agent", sessionRef: randomUUID() } })).statusCode).toBe(204);
+    const sessionId = (await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: nodeHeaders(node.token) }))
+      .json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+    const uploadUrl = `/api/v1/agent-sessions/${sessionId}/attachments`;
+    const payload = Buffer.from("photo bytes");
+    const upload = () => app.inject({ method: "POST", url: uploadUrl, headers: { cookie,
+      "content-type": "application/octet-stream", "x-missiongo-content-type": "image/png", "x-missiongo-filename": "photo.png" }, payload });
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } }))
+      .json<{ canAttach: boolean }>().canAttach).toBe(false);
+    expect((await upload()).statusCode).toBe(409);
+    await app.inject({ method: "POST", url: "/api/v1/node/heartbeat", headers: nodeHeaders(node.token),
+      payload: { agents: [{ kind: "claude_code", version: "2.1.232", ready: true,
+        skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" } }],
+        supportsChatAttachments: true } });
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } }))
+      .json<{ canAttach: boolean }>().canAttach).toBe(true);
+    const saved = await upload();
+    expect(saved.statusCode).toBe(201);
+    const attachment = saved.json<{ id: string; sha256: string }>();
+    expect(attachment.sha256).toBe(createHash("sha256").update(payload).digest("hex"));
+    expect((await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie }, payload: { text: "", attachmentIds: [attachment.id, attachment.id] } })).statusCode).toBe(400);
+    const command = await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie }, payload: { text: "", attachmentIds: [attachment.id] } });
+    expect(command.statusCode).toBe(201);
+    expect(command.json()).toMatchObject({ text: "", attachments: [{ id: attachment.id, filename: "photo.png" }] });
+    const oldPoll = (await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: nodeHeaders(node.token) }))
+      .json<{ sessions: Array<{ command?: unknown }> }>().sessions[0]!;
+    expect(oldPoll.command).toBeUndefined();
+    const nodeSession = (await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions",
+      headers: { ...nodeHeaders(node.token), "x-missiongo-chat-attachments": "1" } }))
+      .json<{ sessions: Array<{ command?: { attachments?: Array<{ id: string }> } }> }>().sessions[0]!;
+    expect(nodeSession.command?.attachments).toMatchObject([{ id: attachment.id }]);
+    const contentPath = `/api/v1/node/agent-sessions/${sessionId}/attachments/${attachment.id}/content`;
+    expect((await app.inject({ method: "GET", url: contentPath, headers: nodeHeaders(node.token) })).body).toBe(payload.toString());
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}/attachments/${attachment.id}/content`,
+      headers: { cookie } })).body).toBe(payload.toString());
+    expect((await app.inject({ method: "GET", url: contentPath, headers: nodeHeaders(otherNode.token) })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: contentPath, headers: { cookie } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } }))
+      .json<{ attachmentMessages: Array<{ attachments: Array<{ id: string }> }> }>().attachmentMessages[0]?.attachments)
+      .toMatchObject([{ id: attachment.id }]);
+  });
+});
+
 describe("Registering a Mac by signing in", () => {
   it("trades a login carrying the node scope for a machine credential", async () => {
     const { app } = await signedInApp();

@@ -1341,6 +1341,22 @@ export class MissionGoDatabase {
           .run(202609250519, new Date().toISOString());
       });
     }
+    // AND-202: old nodes must explicitly advertise binary chat delivery;
+    // otherwise a text-only node could acknowledge a file it never received.
+    const chatAttachmentMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609250630")
+      .get() as unknown as { version: number } | undefined;
+    const supportsChatAttachments = (this.connection.prepare("PRAGMA table_info(nodes)").all() as unknown as Array<{ name: string }>)
+      .some((column) => column.name === "supports_chat_attachments");
+    if (!chatAttachmentMigration || !supportsChatAttachments) {
+      this.transaction(() => {
+        if (!supportsChatAttachments) {
+          this.connection.exec("ALTER TABLE nodes ADD COLUMN supports_chat_attachments INTEGER NOT NULL DEFAULT 0 CHECK (supports_chat_attachments IN (0, 1));");
+        }
+        this.connection.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609250630, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

@@ -9,11 +9,15 @@ import {
   CircleAlert,
   CircleCheck,
   CircleDot,
+  Download,
+  FileText,
   Image as ImageIcon,
   LoaderCircle,
   MessageSquare,
+  Plus,
   RotateCcw,
   Search,
+  Send,
   Square,
   Video,
   WifiOff,
@@ -23,6 +27,7 @@ import {
 import { api } from "./api";
 import {
   activityLabelKey,
+  agentChatMessages,
   agentSessionDetailRefetchInterval,
   agentSessionMatches,
   archivableVisibleSessionIds,
@@ -51,8 +56,43 @@ import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
 import { MarkdownText } from "./markdown-text";
 import { SessionLink } from "./session-link";
-import type { AgentSession, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary, Dispatch, WorkItemAttachment } from "./types";
+import type { AgentSession, AgentSessionAttachment, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary, Dispatch, WorkItemAttachment } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
+import { validateAttachment } from "./attachment-validation";
+
+const CHAT_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf";
+
+function ChatAttachments({ sessionId, attachments }: { sessionId: string; attachments: readonly AgentSessionAttachment[] }) {
+  const { t } = useI18n();
+  const [error, setError] = useState<string | null>(null);
+  const download = async (attachment: AgentSessionAttachment) => {
+    try {
+      const response = await fetch(api.agentSessionAttachmentUrl(sessionId, attachment.id), { credentials: "same-origin" });
+      if (!response.ok) throw new Error("Download failed");
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = attachment.filename;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch { setError(t("attachmentFailed")); }
+  };
+  return <div className="agent-chat-attachments">
+    {attachments.map((attachment) => {
+      const src = api.agentSessionAttachmentUrl(sessionId, attachment.id);
+      const preview = api.agentSessionAttachmentPreviewUrl(sessionId, attachment.id);
+      return <div className="agent-chat-attachment" key={attachment.id}>
+        {attachment.kind === "image" && <a href={preview} target="_blank" rel="noreferrer"><img src={preview} alt={attachment.filename} loading="lazy" /></a>}
+        {attachment.kind === "video" && <video controls preload="metadata" src={src} aria-label={attachment.filename} />}
+        {(attachment.kind === "document" || attachment.kind === "log") && <FileText size={17} />}
+        <span title={attachment.filename}>{attachment.filename}</span>
+        <a href={attachment.kind === "image" ? preview : src} target="_blank" rel="noreferrer" aria-label={`${t("preview")} ${attachment.filename}`}><FileText size={16} /></a>
+        <button type="button" onClick={() => void download(attachment)} aria-label={`${t("download")} ${attachment.filename}`}><Download size={16} /></button>
+      </div>;
+    })}
+    {error && <p className="inline-error" role="alert">{error}</p>}
+  </div>;
+}
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "active") return t("agentSessionActive");
@@ -186,6 +226,9 @@ export function AgentSessionConsole({
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [search, setSearch] = useState("");
   const [reply, setReply] = useState("");
+  const [replyFiles, setReplyFiles] = useState<File[]>([]);
+  const [replyFileError, setReplyFileError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [dismissedCommandId, setDismissedCommandId] = useState<string | null>(null);
   const [followLatest, setFollowLatest] = useState(true);
   const [newMessageCount, setNewMessageCount] = useState(0);
@@ -278,6 +321,10 @@ export function AgentSessionConsole({
   }, [conversationOpen, onSelectSession, selectedId, selectedSessionId]);
 
   const selected = sessions.find((session) => session.id === selectedId);
+  useEffect(() => {
+    setReplyFiles([]);
+    setReplyFileError(null);
+  }, [selected?.agentSessionId]);
   const sessionQuery = useQuery({
     queryKey: ["agent-session", selected?.agentSessionId],
     queryFn: () => api.getAgentSession(selected!.agentSessionId!),
@@ -299,11 +346,20 @@ export function AgentSessionConsole({
     && (healthCode === "all" || (dispatch.failureCode ?? "unknown") === healthCode)
   )), [healthAgent, healthCode, healthNode, healthQuery.data?.recentFailures, healthVersion]);
   const send = useMutation({
-    mutationFn: ({ sessionId, text }: { sessionId: string; text: string; occurredAt: string }) => api.sendAgentSessionCommand(sessionId, text),
-    onMutate: () => {
-      setReply("");
+    mutationFn: async ({ sessionId, text, files }: { sessionId: string; text: string; files: readonly File[]; occurredAt: string }) => {
+      const uploaded: AgentSessionAttachment[] = [];
+      try {
+        for (const file of files) uploaded.push(await api.uploadAgentSessionAttachment(sessionId, file));
+        return await api.sendAgentSessionCommand(sessionId, text, uploaded.map((attachment) => attachment.id));
+      } catch (error) {
+        await Promise.allSettled(uploaded.map((attachment) => api.deleteAgentSessionAttachment(sessionId, attachment.id)));
+        throw error;
+      }
     },
     onSuccess: (created, input) => {
+      setReply("");
+      setReplyFiles([]);
+      setReplyFileError(null);
       queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current
         ? { ...current, command: created }
         : current);
@@ -312,8 +368,8 @@ export function AgentSessionConsole({
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
       ]);
     },
-    onError: (_error, input) => {
-      if (selected?.agentSessionId === input.sessionId) setReply((current) => current || input.text);
+    onError: () => {
+      if (selected?.agentSessionId) void queryClient.invalidateQueries({ queryKey: ["agent-session", selected.agentSessionId] });
     },
   });
   const retryDispatch = useMutation({
@@ -412,6 +468,8 @@ export function AgentSessionConsole({
   const outgoingSignature = outgoing ? `${selectedId}:${outgoing.commandId ?? "request"}:${outgoing.status}:${outgoing.text}` : "";
   const sessionStatus = sessionQuery.data?.status ?? selected?.status ?? "unavailable";
   const messages = sessionQuery.data?.messages ?? [];
+  const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
+  const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
   const activities = sessionQuery.data?.activities ?? [];
 
   const markRead = useMutation({
@@ -473,9 +531,20 @@ export function AgentSessionConsole({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = reply.trim();
-    if (selected?.canReply && selected.agentSessionId && text && !pending && !sendingSelected) {
-      send.mutate({ sessionId: selected.agentSessionId, text, occurredAt: new Date().toISOString() });
+    if (selected?.canReply && selected.agentSessionId && (text || replyFiles.length)
+      && (!replyFiles.length || sessionQuery.data?.canAttach) && !pending && !sendingSelected) {
+      send.mutate({ sessionId: selected.agentSessionId, text, files: replyFiles, occurredAt: new Date().toISOString() });
     }
+  };
+  const addFiles = (incoming: FileList | null) => {
+    if (!incoming) return;
+    const next = [...replyFiles, ...Array.from(incoming)];
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (next.length > 10) { setReplyFileError(t("agentChatTooManyFiles")); return; }
+    const invalid = next.find((file) => !validateAttachment(file).valid);
+    if (invalid) { setReplyFileError(t("agentChatInvalidFile", { filename: invalid.name })); return; }
+    setReplyFiles(next);
+    setReplyFileError(null);
   };
   const chooseFilter = (next: AgentSessionFilter) => {
     setFilter(next);
@@ -822,7 +891,7 @@ export function AgentSessionConsole({
                     {selected.sessionUrl && <p>{t("agentConsoleOpenExternalHelp")}</p>}
                   </div>
                 )}
-                {sessionQuery.data?.messages.map((message) => {
+                {visibleMessages.map((message) => {
                   const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (
                     <article key={message.id} className={`agent-console-message agent-console-message-${message.role}`}>
@@ -830,7 +899,8 @@ export function AgentSessionConsole({
                         {labelKey && <small>{t(labelKey)}</small>}
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
-                      <MarkdownText>{message.text}</MarkdownText>
+                      {message.text && <MarkdownText>{message.text}</MarkdownText>}
+                      {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} />}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}
@@ -877,6 +947,11 @@ export function AgentSessionConsole({
                       <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
                     </header>
                     <MarkdownText>{outgoing.text}</MarkdownText>
+                    {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
+                      && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} />}
+                    {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
+                      {send.variables.files.map((file, index) => <span key={`${file.name}-${index}`}>{file.name}</span>)}
+                    </div> : null}
                     <footer className="agent-console-message-delivery" role="status">
                       {outgoing.status === "failed"
                         ? <CircleAlert size={14} />
@@ -961,12 +1036,33 @@ export function AgentSessionConsole({
                     placeholder={t("agentSessionReplyPlaceholder", { agent: agentLabel(selected, t) })}
                     disabled={pending || sendingSelected}
                   />
+                  {replyFiles.length > 0 && <div className="agent-chat-draft-files">
+                    {replyFiles.map((file, index) => <span key={`${file.name}-${index}`}>
+                      {file.name}
+                      <button type="button" disabled={sendingSelected} aria-label={t("agentChatRemoveFile", { filename: file.name })}
+                        onClick={() => setReplyFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))}><X size={14} /></button>
+                    </span>)}
+                  </div>}
+                  {replyFileError && <p className="inline-error" role="alert">{replyFileError}</p>}
                   <div className="agent-console-reply-actions">
                     <AgentSessionQuickSettings session={selected} />
-                    <button type="submit" className="primary-button" disabled={!reply.trim() || pending || sendingSelected}>
-                      {sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}
-                    </button>
+                    <div className="agent-chat-send-actions">
+                      <input ref={fileInputRef} type="file" accept={CHAT_FILE_ACCEPT} multiple hidden
+                        onChange={(event) => addFiles(event.target.files)} />
+                      <button type="button" className="secondary-button agent-chat-icon-button"
+                        disabled={!sessionQuery.data?.canAttach || pending || sendingSelected || replyFiles.length >= 10}
+                        title={sessionQuery.data?.canAttach ? t("agentChatAddFile") : t("agentChatNodeUpdate")}
+                        aria-label={t("agentChatAddFile")}
+                        onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>
+                      <button type="submit" className="primary-button agent-chat-icon-button"
+                        disabled={(!reply.trim() && replyFiles.length === 0) || (replyFiles.length > 0 && !sessionQuery.data?.canAttach) || pending || sendingSelected}
+                        title={sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}
+                        aria-label={sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}>
+                        {sendingSelected ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
+                      </button>
+                    </div>
                   </div>
+                  {sessionQuery.data && !sessionQuery.data.canAttach && <p className="agent-session-muted" role="note">{t("agentChatNodeUpdate")}</p>}
                 </form>
               ) : (
                 <p className="agent-session-muted" role="note">

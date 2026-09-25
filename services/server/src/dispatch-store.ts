@@ -425,7 +425,7 @@ export class DispatchStore {
     agents: readonly NodeAgentReport[],
     repoCandidates: readonly RepoCandidate[] = [],
     visibleProductIds: ProductScope = "*",
-    metadata: { readonly clientVersion?: string; readonly expectedSkillVersion?: string } = {},
+    metadata: { readonly clientVersion?: string; readonly expectedSkillVersion?: string; readonly supportsChatAttachments?: boolean } = {},
   ): readonly NodeRepoMapping[] {
     for (const agent of agents) {
       if (!AGENT_KINDS.includes(agent.kind)) throw invalidInput(`Unsupported agent kind: ${String(agent.kind)}.`);
@@ -459,13 +459,14 @@ export class DispatchStore {
     const now = new Date().toISOString();
     this.database.connection
       .prepare(
-        `UPDATE nodes SET agents_json = ?, repo_candidates_json = ?, client_version = ?, expected_skill_version = ?,
+        `UPDATE nodes SET agents_json = ?, repo_candidates_json = ?, client_version = ?, expected_skill_version = ?, supports_chat_attachments = ?,
                           last_seen_at = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         JSON.stringify(normalizedAgents), JSON.stringify(candidates),
         metadata.clientVersion?.slice(0, 100) || null,
         metadata.expectedSkillVersion?.slice(0, 100) || null,
+        metadata.supportsChatAttachments ? 1 : 0,
         now, now, nodeId,
       );
     return this.listRepos(nodeId, visibleProductIds);

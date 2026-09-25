@@ -428,12 +428,23 @@ export interface AgentSessionCommand {
   readonly id: string;
   readonly kind: "message" | "interrupt";
   readonly text: string;
+  readonly attachments?: readonly AgentSessionAttachment[];
   readonly turnId?: string;
   readonly status: "queued" | "delivering" | "delivered" | "failed" | "cancelled";
   readonly error?: string;
   readonly createdAt: string;
   readonly deliveredAt?: string;
   readonly cancelledAt?: string;
+}
+
+export interface AgentSessionAttachment {
+  readonly id: string;
+  readonly filename: string;
+  readonly kind: "image" | "video" | "document" | "log";
+  readonly contentType: string;
+  readonly sizeBytes: number;
+  readonly sha256: string;
+  readonly createdAt: string;
 }
 
 export interface AgentSession {
@@ -446,9 +457,17 @@ export interface AgentSession {
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
   readonly messages: readonly AgentSessionMessage[];
+  readonly attachmentMessages?: readonly {
+    readonly commandId: string;
+    readonly text: string;
+    readonly createdAt: string;
+    readonly status: AgentSessionCommand["status"];
+    readonly attachments: readonly AgentSessionAttachment[];
+  }[];
   readonly activities: readonly AgentSessionActivity[];
   readonly command?: AgentSessionCommand;
   readonly canReply: boolean;
+  readonly canAttach?: boolean;
   readonly replyBlockedReason?: AgentSessionReplyBlockedReason;
 }
 
