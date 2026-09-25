@@ -61,14 +61,16 @@ public enum AppUpdater {
             return output.string(from: date)
         }
 
+        /// What the update alert shows: the declared items, one per line, under
+        /// the pull request that carried them. The PR title is a git subject and
+        /// stays out of it, so a build merged in English never puts English in
+        /// front of a person -- every declared title is written in Chinese.
         public var releaseNotesText: String {
             let notes = releaseNotes ?? []
             guard !notes.isEmpty else { return "本次发布未提供更新记录。" }
             return notes.map { note in
-                let items = note.items.map { "\($0.key) · \($0.title)" }.joined(separator: "；")
-                return items.isEmpty
-                    ? "PR #\(note.pullRequestNumber) · \(note.title)"
-                    : "PR #\(note.pullRequestNumber) · \(note.title)\n\(items)"
+                let lines = note.items.map { "\($0.key) · \($0.title)" }
+                return (["PR #\(note.pullRequestNumber)"] + lines).joined(separator: "\n")
             }.joined(separator: "\n\n")
         }
     }
