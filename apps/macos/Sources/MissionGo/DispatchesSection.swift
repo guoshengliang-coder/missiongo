@@ -8,7 +8,17 @@ struct DispatchesSection: View {
         VStack(alignment: .leading, spacing: 6) {
             SectionTitle(text: "最近派单")
             if let error = model.dispatchesError {
-                WrappingCaption(text: error, color: .red)
+                // The list refreshes on its own every 30 seconds while the
+                // menu is open, but the retry entry point stays visible next
+                // to the failure it retries (AND-177).
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    WrappingCaption(text: error, color: .red)
+                    Button("重试") { model.refreshDispatches() }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .help("立即重新拉取最近派单")
+                    Spacer(minLength: 0)
+                }
             }
             if model.recentDispatches.isEmpty {
                 if model.dispatchesError == nil {

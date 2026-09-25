@@ -676,7 +676,7 @@ describe("Dispatching the same item twice", () => {
       headers: { authorization: `Bearer ${mini.token}` },
       payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}` },
     });
-    for (const [to, reason] of [["in_progress", "claim"], ["pending_verification", "resolution_submitted"], ["ready", "verification_failed"]]) {
+    for (const [to, reason] of [["in_progress", "claim"], ["development_complete", "resolution_submitted"], ["pending_verification", "release_verified"], ["ready", "verification_failed"]]) {
       const moved = await app.inject({
         method: "POST",
         url: `/api/v1/items/${mission.itemKey}/transitions`,
@@ -1786,7 +1786,13 @@ describe("Claiming a dispatch on the node", () => {
       method: "POST",
       url: `/api/v1/items/${mission.itemKey}/transitions`,
       headers: { cookie },
-      payload: { to: "pending_verification", reason: "resolution_submitted" },
+      payload: { to: "development_complete", reason: "resolution_submitted" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${mission.itemKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "pending_verification", reason: "release_verified" },
     })).statusCode).toBe(200);
     expect((await app.inject({
       method: "POST",
@@ -1798,7 +1804,13 @@ describe("Claiming a dispatch on the node", () => {
       method: "POST",
       url: `/api/v1/items/${secondKey}/transitions`,
       headers: { cookie },
-      payload: { to: "pending_verification", reason: "resolution_submitted" },
+      payload: { to: "development_complete", reason: "resolution_submitted" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${secondKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "pending_verification", reason: "release_verified" },
     })).statusCode).toBe(200);
     expect((await app.inject({
       method: "POST",
@@ -1863,6 +1875,64 @@ describe("Claiming a dispatch on the node", () => {
       headers: { cookie },
       payload: { text: "Continue after completion." },
     })).statusCode).toBe(409);
+  });
+
+  it("accepts a contract-valid snapshot larger than Fastify's 1 MiB default (AND-181)", async () => {
+    const { app, cookie, node, mission, dispatchId } = await queuedDispatch();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "launched",
+        sessionName: `Mac mini-${mission.itemKey}`,
+        sessionRef: "31111111-2222-4333-8444-555555555555",
+      },
+    })).statusCode).toBe(204);
+    const sessionId = (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+
+    // Sixteen messages of the per-message maximum put the JSON body well past
+    // Fastify's 1 MiB default while staying inside the store's contract. The
+    // 413 the default used to answer is indistinguishable from a network blip
+    // to the node, so a large session silently stopped syncing.
+    const longConversation = Array.from({ length: 16 }, (_unused, index) => ({
+      sourceId: `u${index}`, turnId: `t${index}`, role: "user", text: "x".repeat(100_000),
+    }));
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: longConversation },
+    })).statusCode).toBe(204);
+    const mirroredDetail = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+    })).json<{ messages: Array<{ sourceId: string; text: string }> }>();
+    expect(mirroredDetail.messages).toHaveLength(16);
+    expect(mirroredDetail.messages[0]).toMatchObject({ sourceId: "u0" });
+    expect(mirroredDetail.messages[0]!.text).toHaveLength(100_000);
+
+    // Past the route's own bound the 413 stays, so a hostile node cannot make
+    // the server buffer an unbounded body.
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "idle",
+        messages: [{ sourceId: "hostile", turnId: "t", role: "user", text: "x".repeat(33 * 1_024 * 1_024) }],
+      },
+    })).statusCode).toBe(413);
   });
 
   it("ends an idle long poll with 204 rather than holding it open", async () => {
@@ -2540,9 +2610,9 @@ describe("Claiming a dispatch on the node", () => {
 
     it("still refuses a decoded body larger than the snapshot limit", async () => {
       const { app, node, sessionId } = await launchedSession();
-      // ~9.4 MB decoded: over MAX_SNAPSHOT_BODY_BYTES even though the gzipped
+      // ~32.3 MB decoded: over the route's 32 MiB bound even though the gzipped
       // wire body stays small -- the limit counts decoded bytes.
-      const payload = Buffer.from(snapshotPayload(130, 72_000), "utf8");
+      const payload = Buffer.from(snapshotPayload(470, 72_000), "utf8");
       const response = await app.inject({
         method: "POST",
         url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
@@ -2750,7 +2820,8 @@ describe("Archiving a finished hand-off (AND-129)", () => {
   }
   const toDone: Array<[string, string]> = [
     ["in_progress", "claim"],
-    ["pending_verification", "resolution_submitted"],
+    ["development_complete", "resolution_submitted"],
+    ["pending_verification", "release_verified"],
     ["done", "verification_passed"],
   ];
 

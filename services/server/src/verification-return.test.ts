@@ -24,7 +24,7 @@ async function seed() {
     productId: product.id, status: "ready", type: "requirement", priority: "normal",
     title: "Review this", description: "Verify and return if needed", environment: { platform: "web" },
   });
-  const move = (to: "ready" | "in_progress" | "pending_verification" | "inbox", reason: "claim" | "resolution_submitted" | "verification_failed" | "manual_override" | "reopened" | "triaged", note?: string) =>
+  const move = (to: "ready" | "in_progress" | "development_complete" | "pending_verification" | "inbox", reason: "claim" | "resolution_submitted" | "release_verified" | "verification_failed" | "manual_override" | "reopened" | "triaged", note?: string) =>
     store.transitionWorkItem({ itemKey: item.key, to, reason, actor: "human", ...(note ? { note } : {}) });
   return { store, product, item, move };
 }
@@ -34,7 +34,8 @@ describe("verification return summary", () => {
     const { store, product, item, move } = await seed();
     expect(item.verificationReturn).toBeUndefined();
     move("in_progress", "claim");
-    move("pending_verification", "resolution_submitted");
+    move("development_complete", "resolution_submitted");
+    move("pending_verification", "release_verified");
     expect(store.getWorkItem(item.key).verificationReturn).toBeUndefined();
     const returned = move("ready", "verification_failed", "The export is still blank.");
     expect(returned.verificationReturn).toMatchObject({ note: "The export is still blank." });
@@ -48,12 +49,14 @@ describe("verification return summary", () => {
   it("uses the latest entry into Ready, including a direct move, without carrying an old badge forward", async () => {
     const { store, item, move } = await seed();
     move("in_progress", "claim");
-    move("pending_verification", "resolution_submitted");
+    move("development_complete", "resolution_submitted");
+    move("pending_verification", "release_verified");
     expect(move("ready", "manual_override", "First return").verificationReturn?.note).toBe("First return");
     move("inbox", "reopened");
     expect(move("ready", "triaged").verificationReturn).toBeUndefined();
     move("in_progress", "claim");
-    move("pending_verification", "resolution_submitted");
+    move("development_complete", "resolution_submitted");
+    move("pending_verification", "release_verified");
     expect(move("ready", "verification_failed", "Second return").verificationReturn?.note).toBe("Second return");
     expect(store.getWorkItem(item.key).verificationReturn?.note).toBe("Second return");
   });

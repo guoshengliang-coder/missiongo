@@ -5,7 +5,7 @@ import { cachedListSummary, type CachedListQuery, type ListSummary } from "./lis
 const summary = (ready: number): ListSummary => ({
   total: ready + 2,
   productTotal: ready + 5,
-  byStatus: { inbox: 1, ready, in_progress: 1, on_hold: 0, pending_verification: 0, done: 0, cancelled: 0 },
+  byStatus: { inbox: 1, ready, in_progress: 1, development_complete: 0, on_hold: 0, pending_verification: 0, done: 0, cancelled: 0 },
 });
 
 const page = (value: ListSummary | undefined) => (value ? { pages: [{ items: [], summary: value }], pageParams: [null] } : undefined);

@@ -132,22 +132,23 @@ describe("work-item event attribution", () => {
     })).toThrowError(/Only a ready work item can be claimed/);
   });
 
-  it("hands merged work over for verification, naming the pull request", async () => {
+  it("records a merged PR before a verified release", async () => {
     const { store, item } = await seed();
     store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
     store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
 
-    const submitted = store.submitForVerification({
+    const submitted = store.submitDevelopmentComplete({
       itemKey: item.key,
       pullRequestUrl: "https://github.com/owner/repo/pull/42",
+      requiredArtifacts: ["web"],
       summary: "冷启动初始化 session",
       attribution: { accountId: "account-1", clientId: "client-9" },
       idempotencyKey: "submit-1",
     });
-    expect(submitted.status).toBe("pending_verification");
+    expect(submitted.status).toBe("development_complete");
 
     const moved = store.getTimeline(item.key)
-      .findLast((entry) => entry.eventType === "status_changed" && entry.toStatus === "pending_verification");
+      .findLast((entry) => entry.eventType === "status_changed" && entry.toStatus === "development_complete");
     expect(moved?.actorKind).toBe("agent");
     expect(moved?.accountId).toBe("account-1");
     // Its own field rather than buried in the note: the timeline renders it as a link.
@@ -155,7 +156,17 @@ describe("work-item event attribution", () => {
       reason: "resolution_submitted",
       note: "冷启动初始化 session",
       pullRequestUrl: "https://github.com/owner/repo/pull/42",
+      requiredArtifacts: ["web"],
     });
+    expect(() => store.submitForVerification({
+      itemKey: item.key, pullRequestUrl: "https://github.com/owner/repo/pull/42", releases: [],
+      deployedCommit: "a".repeat(40), receiptDigest: "b".repeat(64), idempotencyKey: "missing-release",
+    })).toThrowError(/every required artifact/);
+    expect(store.submitForVerification({
+      itemKey: item.key, pullRequestUrl: "https://github.com/owner/repo/pull/42",
+      releases: [{ artifact: "web", version: "abc", sourceCommit: "a".repeat(40) }],
+      deployedCommit: "a".repeat(40), receiptDigest: "b".repeat(64), idempotencyKey: "published",
+    }).status).toBe("pending_verification");
   });
 
   it("keeps the handover summary's own length limit, which is twice a transition note's", async () => {
@@ -167,17 +178,19 @@ describe("work-item event attribution", () => {
 
     const summary = "详细说明".repeat(750);
     expect(summary.length).toBeGreaterThan(2_000);
-    const submitted = store.submitForVerification({
+    const submitted = store.submitDevelopmentComplete({
       itemKey: item.key,
       pullRequestUrl: "https://github.com/owner/repo/pull/43",
+      requiredArtifacts: ["web"],
       summary,
       idempotencyKey: "submit-long",
     });
-    expect(submitted.status).toBe("pending_verification");
+    expect(submitted.status).toBe("development_complete");
 
-    expect(() => store.submitForVerification({
+    expect(() => store.submitDevelopmentComplete({
       itemKey: item.key,
       pullRequestUrl: "https://github.com/owner/repo/pull/44",
+      requiredArtifacts: ["web"],
       summary: "x".repeat(4_001),
       idempotencyKey: "submit-too-long",
     })).toThrowError(/4,000 characters or fewer/);
@@ -186,16 +199,17 @@ describe("work-item event attribution", () => {
   it("refuses a handover without an https pull request, or from the wrong status", async () => {
     const { store, item } = await seed();
     // The item is still in inbox, so there is nothing to hand over yet.
-    expect(() => store.submitForVerification({
+    expect(() => store.submitDevelopmentComplete({
       itemKey: item.key,
       pullRequestUrl: "https://github.com/owner/repo/pull/42",
+      requiredArtifacts: ["web"],
       idempotencyKey: "too-early",
     })).toThrowError(/Only an in-progress work item/);
 
     store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
     store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
     for (const pullRequestUrl of ["", "   ", "github.com/owner/repo/pull/42"]) {
-      expect(() => store.submitForVerification({ itemKey: item.key, pullRequestUrl, idempotencyKey: `bad-${pullRequestUrl}` }))
+      expect(() => store.submitDevelopmentComplete({ itemKey: item.key, pullRequestUrl, requiredArtifacts: ["web"], idempotencyKey: `bad-${pullRequestUrl}` }))
         .toThrowError(/Pull request URL/);
     }
     expect(store.getWorkItem(item.key).status).toBe("in_progress");

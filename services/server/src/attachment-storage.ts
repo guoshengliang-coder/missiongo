@@ -16,7 +16,7 @@ interface AttachmentRule {
   readonly maxBytes: number;
 }
 
-const MEBIBYTE = 1024 * 1024;
+export const MEBIBYTE = 1024 * 1024;
 export const MAX_ATTACHMENT_BYTES = 100 * MEBIBYTE;
 
 const RULES: Readonly<Record<string, AttachmentRule>> = {

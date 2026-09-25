@@ -147,6 +147,9 @@ final class AppModel: ObservableObject {
     private var menuTimer: Task<Void, Never>?
     private var lastOpenRefresh: Date?
     private var attentionTask: Task<Void, Never>?
+    /// The loop of the current session, kept so the reconnect button can wake
+    /// it. `nil` whenever no loop is running.
+    private var loop: NodeLoop?
 
     private init() {
         showsRevokedNotice = UserDefaults.standard.bool(forKey: DefaultsKey.revokedNotice)
@@ -400,6 +403,7 @@ final class AppModel: ObservableObject {
                 _ = self.isRevoked(error)
             }
         }
+        self.loop = loop
     }
 
     /// Cancelling ends the loop's sleeps at once; a claim or launch already
@@ -407,10 +411,22 @@ final class AppModel: ObservableObject {
     /// started are never touched.
     private func stopLoop() {
         loopGeneration += 1
+        loop = nil
         loopTask?.cancel()
         loopTask = nil
         loopStatesTask?.cancel()
         loopStatesTask = nil
+    }
+
+    /// The reconnect button (AND-177): retry everything the menu shows a
+    /// failure for now, rather than waiting out each refresh interval. The
+    /// loops' in-flight requests are left to finish; the wake takes effect on
+    /// their next sleep.
+    func reconnect() {
+        guard credential != nil else { return }
+        loop?.retryNow()
+        refreshProfile()
+        refreshDispatches()
     }
 
     private func apply(_ state: NodeLoopState) {

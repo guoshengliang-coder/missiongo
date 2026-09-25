@@ -20,15 +20,18 @@ describe("work item state machine", () => {
     ).toMatchObject({ allowed: true, code: "allowed" });
   });
 
-  it("lets an agent hand merged work over, and nothing else that leaves in_progress", () => {
-    // A merged pull request is a fact the agent can check, so it may say the work
-    // is ready to verify. Giving up, pausing and resuming are judgements about
-    // what the work is worth, and those stay with the person.
+  it("separates merged work from published work", () => {
     expect(evaluateWorkItemTransition({
       from: "in_progress",
-      to: "pending_verification",
+      to: "development_complete",
       actor: "agent",
       reason: "resolution_submitted",
+    })).toMatchObject({ allowed: true });
+    expect(evaluateWorkItemTransition({
+      from: "in_progress", to: "pending_verification", actor: "agent", reason: "release_verified",
+    })).toMatchObject({ allowed: false, code: "invalid_transition" });
+    expect(evaluateWorkItemTransition({
+      from: "development_complete", to: "pending_verification", actor: "agent", reason: "release_verified",
     })).toMatchObject({ allowed: true });
 
     for (const [to, reason] of [
@@ -65,7 +68,7 @@ describe("work item state machine", () => {
     ).toMatchObject({ allowed: true });
   });
 
-  it("leaves the agent exactly two paths through the whole table", () => {
+  it("leaves the agent exactly three paths through the whole table", () => {
     const edges: Array<[string, string, string]> = [];
     for (const from of WORK_ITEM_STATUSES) {
       for (const to of WORK_ITEM_STATUSES) {
@@ -81,7 +84,8 @@ describe("work item state machine", () => {
     // path nobody intended -- which is how `resume` used to reach this list.
     expect(edges).toEqual([
       ["ready", "in_progress", "claim"],
-      ["in_progress", "pending_verification", "resolution_submitted"],
+      ["in_progress", "development_complete", "resolution_submitted"],
+      ["development_complete", "pending_verification", "release_verified"],
     ]);
   });
 
@@ -137,6 +141,7 @@ describe("manual override", () => {
 describe("transition notes", () => {
   const RETREATS = [
     ["in_progress", "released"],
+    ["development_complete", "released"],
     ["pending_verification", "verification_failed"],
     ["on_hold", "reopened"],
     ["done", "reopened"],
@@ -197,7 +202,7 @@ describe("transition notes", () => {
   });
 
   it("asks for a note on every way into cancelled (AND-64)", () => {
-    for (const from of ["inbox", "ready", "in_progress", "on_hold", "pending_verification"] as const) {
+    for (const from of ["inbox", "ready", "in_progress", "development_complete", "on_hold", "pending_verification"] as const) {
       expect(transitionRequiresNote(from, "cancelled")).toBe(true);
       expect(evaluateWorkItemTransition({ from, to: "cancelled", actor: "human", reason: "cancelled" }))
         .toMatchObject({ allowed: false, code: "note_required" });

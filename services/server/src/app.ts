@@ -5,7 +5,7 @@ import { Transform } from "node:stream";
 import { createGunzip } from "node:zlib";
 
 
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 
 import {
   AGENT_KINDS,
@@ -45,11 +45,10 @@ import {
   type ProductCapability,
   type ProductPermission,
 } from "./accounts-store.js";
-import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
+import { AttachmentStorage, MAX_ATTACHMENT_BYTES, MEBIBYTE } from "./attachment-storage.js";
 import { AiTitleService } from "./ai-title.js";
 import {
   AgentSessionStore,
-  MAX_SNAPSHOT_BODY_BYTES,
   type AgentMessageRole,
   type AgentSessionStatus,
 } from "./agent-session-store.js";
@@ -238,6 +237,17 @@ function stringField(body: Record<string, unknown>, field: string, required = tr
 /** How many items one bulk transition may move (AND-66). */
 const BULK_TRANSITION_LIMIT = 50;
 
+/**
+ * AND-181: a session snapshot the store's contract accepts (2_000 messages of
+ * up to 100_000 characters) can easily exceed Fastify's 1 MiB default
+ * bodyLimit. The 413 it answered with is indistinguishable from a network blip
+ * to the node, so a large session silently stopped syncing. The route keeps a
+ * bound of its own -- far above any real mirrored conversation, well under the
+ * attachment precedent -- so a hostile request still cannot buffer unbounded
+ * memory.
+ */
+const MAX_SNAPSHOT_BODY_BYTES = 32 * MEBIBYTE;
+
 function stringArrayField(body: Record<string, unknown>, field: string): readonly string[] | undefined {
   const value = body[field];
   if (value === undefined) return undefined;
@@ -410,9 +420,9 @@ function oauthLoginPage(
   invalidCredentials = false,
 ): string {
   const writes = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools !== "none";
-  const writeGrant = "<strong>发表评论、把待处理的任务领为处理中、并在 PR 合并后推到待验证</strong>。"
-    + "只有这两个状态变更——验收、退回、搁置，以及做不了怎么办，都由你决定。"
-    + "<strong>在你于会话里确认内容后，从正在处理的条目拆出衍生条目</strong>。"
+  const writeGrant = "<strong>发表评论、领取待处理任务、在 PR 合并后标记开发完成，并在相关产物核实发布后推到待验证</strong>。"
+    + "只有这三种状态交接——验收、退回、搁置，以及做不了怎么办，都由你决定。"
+    + "<strong>在你于会话里确认完整内容后创建条目</strong>。"
     + "它不能修改你写的内容，不能删除条目，不能撤回评论。";
   const nodeGrant = "<strong>把这台 Mac 登记为你的设备</strong>：接收你在控制台派出的任务，并在本机启动 agent 会话处理。"
     + "随时可以在控制台「Agent 管理」里撤销。";
@@ -783,10 +793,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
   });
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler<FastifyError>((error, _request, reply) => {
     if (error instanceof MissionGoError) {
       return reply.status(error.statusCode).send({
         type: `urn:missiongo:problem:${error.code}`,
+        title: error.message,
+        status: error.statusCode,
+        code: error.code,
+      });
+    }
+
+    // Fastify's own refusals -- a body over a route's limit, a malformed JSON
+    // payload -- arrive carrying the status they mean to answer with. Folding
+    // them into a 500 hides what actually happened; the 413 is the very signal
+    // an oversized snapshot produces (AND-181). Only 4xx passes through: an
+    // error claiming anything else is still a bug worth a 500 and a log line.
+    if (error.statusCode !== undefined && error.statusCode >= 400 && error.statusCode < 500) {
+      return reply.status(error.statusCode).send({
+        type: "urn:missiongo:problem:request_rejected",
         title: error.message,
         status: error.statusCode,
         code: error.code,

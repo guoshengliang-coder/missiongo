@@ -153,6 +153,13 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     public var messages: [AgentSessionMessage]
     public var activities: [AgentSessionActivity]
     public var waitingForInput: Bool
+    /// Whether a Claude turn is actually in flight. `status` stays "active"
+    /// while a background task runs even after the turn's `result` arrived, so
+    /// it cannot decide whether a new reply may be handed over. Only a running
+    /// turn blocks delivery; this flag says whether one is running. A state
+    /// written before this field decodes as true: unknown hosts keep the old,
+    /// conservative behaviour.
+    public var turnActive: Bool
     public var commandResults: [String: ClaudeHostCommandResult]
     public var error: String?
     public var idleSince: Date?
@@ -180,6 +187,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         messages: [AgentSessionMessage] = [],
         activities: [AgentSessionActivity] = [],
         waitingForInput: Bool = false,
+        turnActive: Bool = true,
         commandResults: [String: ClaudeHostCommandResult] = [:],
         error: String? = nil,
         idleSince: Date? = nil,
@@ -194,6 +202,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         self.messages = messages
         self.activities = activities
         self.waitingForInput = waitingForInput
+        self.turnActive = turnActive
         self.commandResults = commandResults
         self.error = error
         self.idleSince = idleSince
@@ -204,7 +213,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case version, status, sessionRef, hostPid, sessionUrl, launchReady, messages, activities, waitingForInput, commandResults, error
         case idleSince, lastProgressAt
-        case model, effort, mode, settingsRevision, settingsError, acceptsSettings
+        case turnActive, model, effort, mode, settingsRevision, settingsError, acceptsSettings
     }
 
     public init(from decoder: Decoder) throws {
@@ -218,6 +227,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         messages = try values.decodeIfPresent([AgentSessionMessage].self, forKey: .messages) ?? []
         activities = try values.decodeIfPresent([AgentSessionActivity].self, forKey: .activities) ?? []
         waitingForInput = try values.decodeIfPresent(Bool.self, forKey: .waitingForInput) ?? false
+        turnActive = try values.decodeIfPresent(Bool.self, forKey: .turnActive) ?? true
         commandResults = try values.decodeIfPresent([String: ClaudeHostCommandResult].self, forKey: .commandResults) ?? [:]
         error = try values.decodeIfPresent(String.self, forKey: .error)
         idleSince = try values.decodeIfPresent(Date.self, forKey: .idleSince)
@@ -269,7 +279,6 @@ public struct ClaudeStreamSnapshot: Sendable {
     public private(set) var initialized = false
     private var visibleUserMessageIds = Set<String>()
     private var taskTitles: [String: String] = [:]
-    private var turnActive = true
 
     public init(sessionRef: String, hostPid: Int32? = nil) {
         state = ClaudeHostState(status: "active", sessionRef: sessionRef, hostPid: hostPid)
@@ -286,8 +295,8 @@ public struct ClaudeStreamSnapshot: Sendable {
         resumed.error = nil
         resumed.idleSince = nil
         resumed.lastProgressAt = Date()
+        resumed.turnActive = false
         self.state = resumed
-        turnActive = false
     }
 
     public mutating func consume(_ value: [String: Any]) {
@@ -317,7 +326,7 @@ public struct ClaudeStreamSnapshot: Sendable {
             ))
             state.status = "active"
             state.idleSince = nil
-            turnActive = true
+            state.turnActive = true
             state.error = nil
             return
         }
@@ -353,12 +362,12 @@ public struct ClaudeStreamSnapshot: Sendable {
             }
             state.status = "active"
             state.idleSince = nil
-            turnActive = true
+            state.turnActive = true
             state.error = nil
             return
         }
         if type == "result" {
-            turnActive = false
+            state.turnActive = false
             state.waitingForInput = false
             state.status = state.activities.isEmpty ? "idle" : "active"
             state.idleSince = state.status == "idle" ? Date() : nil
@@ -385,7 +394,7 @@ public struct ClaudeStreamSnapshot: Sendable {
         ))
         state.status = "active"
         state.idleSince = nil
-        turnActive = true
+        state.turnActive = true
         state.error = nil
     }
 
@@ -453,7 +462,7 @@ public struct ClaudeStreamSnapshot: Sendable {
     }
 
     public mutating func markActive() {
-        turnActive = true
+        state.turnActive = true
         state.status = "active"
         state.error = nil
         state.idleSince = nil
@@ -461,7 +470,7 @@ public struct ClaudeStreamSnapshot: Sendable {
     }
 
     public mutating func markIdle() {
-        turnActive = false
+        state.turnActive = false
         state.status = state.activities.isEmpty ? "idle" : "active"
         state.idleSince = state.status == "idle" && !state.waitingForInput ? Date() : nil
         noteProgress()
@@ -475,7 +484,7 @@ public struct ClaudeStreamSnapshot: Sendable {
     }
 
     public mutating func markSuspended(_ message: String = "Claude Code 会话已空闲 2 小时，进程已挂起；发送下一条消息时会恢复。") {
-        turnActive = false
+        state.turnActive = false
         state.status = "suspended"
         state.hostPid = nil
         state.error = message
@@ -578,7 +587,7 @@ public struct ClaudeStreamSnapshot: Sendable {
         state.activities = ids.sorted().map { id in
             AgentSessionActivity(id: id, title: taskTitles[id] ?? "后台任务", detail: "运行中")
         }
-        state.status = turnActive || !state.activities.isEmpty ? "active" : "idle"
+        state.status = state.turnActive || !state.activities.isEmpty ? "active" : "idle"
         state.idleSince = state.status == "idle" && !state.waitingForInput ? Date() : nil
     }
 

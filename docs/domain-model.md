@@ -96,15 +96,17 @@
 inbox
   -> ready
   -> in_progress
-  -> on_hold
+  -> development_complete
   -> pending_verification
   -> done
+
+ready / in_progress -> on_hold (人工)
 ```
 
 人工验收失败后，条目会回到 `ready`，并追加重新打开事件。`cancelled` 是由人工控制的旁路状态。
 
-**从 `in_progress`、`pending_verification`、`on_hold` 或 `done` 回到 `ready` 必须说明原因**，原因写进
-`status_changed` 事件的 `note`。从这四个状态退回，意味着已经做过的工作没有站住，而重新派单之后，
+**从 `in_progress`、`development_complete`、`pending_verification`、`on_hold` 或 `done` 回到 `ready` 必须说明原因**，原因写进
+`status_changed` 事件的 `note`。从这些状态退回，意味着已经做过的工作没有站住，而重新派单之后，
 下一个接手的人或 AI 只能从这里读到为什么。判定按「来源 + 目标」而不是按 reason：`reopened` 同时用于
 `on_hold → ready` 和 `ready → inbox`，只有前者是退回。`inbox → ready` 是首次定稿，不在其中；
 `manual_override` 同样不能绕过，否则就留下一条什么都不解释的回头路。

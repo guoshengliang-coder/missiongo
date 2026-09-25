@@ -531,6 +531,18 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
             model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError
         )
     }
+
+    /// The same report mirroring only `messages`, used when the upload budget
+    /// forces the oldest history out (AND-181).
+    public func replacingMessages(_ messages: [AgentSessionMessage]) -> AgentSessionReport {
+        AgentSessionReport(
+            status: status, messages: messages, activities: activities, error: error,
+            commandId: commandId, commandStatus: commandStatus, commandError: commandError,
+            sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
+            sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
+            model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError
+        )
+    }
 }
 
 public struct NodeProfile: Codable, Equatable, Sendable {
@@ -881,6 +893,18 @@ public struct APIClient: Sendable {
     public static let requestTimeout: TimeInterval = 15
     public static let defaultClaimWaitMs = 25_000
 
+    /// AND-181: the server's snapshot route caps a request body at 32 MiB, far
+    /// above any real mirrored conversation. The client stays under it with
+    /// room to spare so a large session uploads instead of being refused with a
+    /// 413 the sync loop treats as a generic offline blip.
+    static let snapshotUploadBudget = 30 * 1_024 * 1_024
+    /// The server refuses one message longer than 100_000 UTF-16 code units
+    /// (what its JavaScript `.length` counts), and the refusal rejects the
+    /// whole snapshot with a 400.
+    static let snapshotMessageTextLimit = 100_000
+    /// The server refuses a snapshot carrying more than 2_000 messages.
+    static let snapshotMessageCountLimit = 2_000
+
     public let serverUrl: String
     /// The node credential (`mgn_`). Only `register` runs without it.
     public let token: String?
@@ -1022,8 +1046,57 @@ public struct APIClient: Sendable {
 
     public func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {
         let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/snapshot"
-        let response = try await send("POST", path, body: report, bearer: try nodeToken(), gzipBody: true)
+        let response = try await send(
+            "POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true
+        )
         try requireSuccess(response, operation: "同步 Agent 会话")
+    }
+
+    /// The report as it can go on the wire: no message longer than the server's
+    /// per-message limit, no more messages than it accepts, and — when the
+    /// encoded body still exceeds the upload budget — the oldest messages
+    /// dropped until it fits. Every host funnels through here, so this one
+    /// chokepoint keeps a session of any size syncing (AND-181). Without it a
+    /// large session is refused with a 413 or 400 that the sync loop treats as
+    /// a generic offline blip, and its transcript silently stops updating.
+    static func uploadableSnapshot(
+        _ report: AgentSessionReport,
+        budget: Int = APIClient.snapshotUploadBudget
+    ) throws -> AgentSessionReport {
+        var messages = report.messages
+            .suffix(APIClient.snapshotMessageCountLimit)
+            .map { message in
+                AgentSessionMessage(
+                    sourceId: message.sourceId,
+                    turnId: message.turnId,
+                    role: message.role,
+                    phase: message.phase,
+                    text: APIClient.cappedText(message.text, limit: APIClient.snapshotMessageTextLimit),
+                    occurredAt: message.occurredAt,
+                    questions: message.questions
+                )
+            }
+        var uploadable = report.replacingMessages(messages)
+        while messages.count > 1, try APIClient.encoder.encode(uploadable).count > budget {
+            // Dropping a quarter at a time keeps a pathologically large session
+            // from re-encoding the full body hundreds of times on the way down.
+            messages.removeFirst(max(1, messages.count / 4))
+            uploadable = report.replacingMessages(messages)
+        }
+        return uploadable
+    }
+
+    /// Caps text at `limit` UTF-16 code units — the unit the server's JavaScript
+    /// `.length` counts. `prefix` counts grapheme clusters, each of which can
+    /// span several units, so emoji-heavy text may still be over afterwards and
+    /// sheds trailing characters until it fits.
+    private static func cappedText(_ text: String, limit: Int) -> String {
+        guard text.utf16.count > limit else { return text }
+        var prefix = text.prefix(limit)
+        while prefix.utf16.count > limit {
+            prefix = prefix.dropLast()
+        }
+        return String(prefix)
     }
 
     public func me() async throws -> NodeProfile {
