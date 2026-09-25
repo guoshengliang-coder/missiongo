@@ -1165,6 +1165,8 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
    what it is -- several lines of what failed, not a label. */
 .timeline-note { margin: 4px 0 0; color: var(--ink); font-size: var(--text-sm); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .transition-note-form textarea { width: 100%; resize: vertical; }
+.transition-note-quick-reasons { display: flex; flex-wrap: wrap; gap: 8px; }
+.transition-note-quick-reasons button { min-height: 44px; }
 .comment-body { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-top: 8px; }
 .comment-body > :first-child { flex: 1; min-width: 0; }
 .comment-withdraw { flex: none; padding: 2px 6px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: var(--text-xs); cursor: pointer; }
@@ -1379,6 +1381,11 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .selected-media-lightbox header strong { overflow: hidden; font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .selected-media-lightbox header button { width: 34px; height: 34px; color: var(--primary-fg); }
 .selected-media-lightbox img, .selected-media-lightbox video { width: 100%; max-height: calc(100vh - 94px); max-height: calc(100dvh - 94px); display: block; object-fit: contain; background: var(--viewer-bg); }
+.media-gallery-stage { position: relative; min-height: 240px; overflow: hidden; touch-action: pan-y; }
+.media-gallery-nav { position: absolute; top: 50%; z-index: 1; width: 44px; height: 44px; display: grid; place-items: center; transform: translateY(-50%); color: var(--code-fg); background: var(--code-bg); border: 0; border-radius: 50%; cursor: pointer; }
+.media-gallery-nav.previous { left: 12px; }
+.media-gallery-nav.next { right: 12px; }
+.media-gallery-nav:disabled { visibility: hidden; }
 .video-unplayable { display: grid; justify-items: center; gap: 12px; padding: 24px 18px; color: var(--ink); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); text-align: center; }
 .video-unplayable p { margin: 0; font-size: var(--text-md); }
 .media-viewer-loading { min-height: 240px; display: flex; align-items: center; justify-content: center; gap: 8px; color: white; background: var(--viewer-bg); font-size: var(--text-xs); }

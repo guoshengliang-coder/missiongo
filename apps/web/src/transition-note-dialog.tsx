@@ -47,6 +47,7 @@ export function TransitionNoteDialog({
   const [note, setNote] = useState("");
   const copy = transitionNoteCopy(action.to);
   const cancelling = action.to === "cancelled";
+  const quickReasons = ["cancelReasonSentByMistake", "cancelReasonDuplicate", "cancelReasonNoLongerNeeded"] as const;
 
   return (
     <form
@@ -68,6 +69,15 @@ export function TransitionNoteDialog({
           required
         />
       </label>
+      {cancelling && (
+        <div className="transition-note-quick-reasons" aria-label={t("cancelQuickReasons")}>
+          {quickReasons.map((reason) => (
+            <button key={reason} type="button" className="secondary-button" disabled={pending} onClick={() => setNote(t(reason))}>
+              {t(reason)}
+            </button>
+          ))}
+        </div>
+      )}
       <p className="dispatch-note">{t(copy.help)}</p>
 
       {/* A dialog sits in the top layer and covers the page's toast, so the
