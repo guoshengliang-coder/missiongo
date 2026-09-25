@@ -3350,3 +3350,140 @@ describe("Widget summary (AND-149)", () => {
     expect((await app.inject({ method: "GET", url: "/api/v1/widget/summary" })).statusCode).toBe(401);
   });
 });
+
+describe("Server-side command timeout and alerting (AND-184)", () => {
+  type ListedSession = {
+    id: string;
+    command?: { status: string; error?: string; deliveredAt?: string };
+    attention: { state: string; kind?: string; reason?: string; revision?: string };
+    needsAttention: boolean;
+  };
+
+  async function listedSession(app: FastifyInstance, cookie: string, productId: string, sessionId: string) {
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${productId}`,
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const found = response.json<{ sessions: ListedSession[] }>().sessions
+      .find((session) => session.id === sessionId);
+    expect(found).toBeTruthy();
+    return found!;
+  }
+
+  async function enqueueReply(app: FastifyInstance, cookie: string, sessionId: string, text = "Continue.") {
+    const reply = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie },
+      payload: { text },
+    });
+    expect(reply.statusCode).toBe(201);
+    return reply.json<{ id: string }>().id;
+  }
+
+  function backdate(databasePath: string, column: "created_at" | "delivering_at", commandId: string, ageMs: number) {
+    const database = new DatabaseSync(databasePath);
+    database.prepare(`UPDATE agent_session_commands SET ${column} = ? WHERE id = ?`)
+      .run(new Date(Date.now() - ageMs).toISOString(), commandId);
+    database.close();
+  }
+
+  it("fails a delivery the Mac claimed and never settled, alerts, and frees the slot", async () => {
+    const { app, cookie, databasePath } = await signedInApp();
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    const commandId = await enqueueReply(app, cookie, sessionId);
+    const claimed = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: [], commandId, commandStatus: "delivering" },
+    });
+    expect(claimed.statusCode).toBe(204);
+    backdate(databasePath, "delivering_at", commandId, 31 * 60_000);
+
+    const session = await listedSession(app, cookie, mission.productId, sessionId);
+    expect(session.command).toMatchObject({ status: "failed" });
+    expect(session.command?.error).toContain("30 分钟");
+    expect(session.command?.deliveredAt).toBeUndefined();
+    expect(session.needsAttention).toBe(true);
+    expect(session.attention).toMatchObject({ state: "needed", kind: "action" });
+    // No revision: a condition that is still true must not be dismissable.
+    expect(session.attention.revision).toBeUndefined();
+
+    // The pending slot is free again.
+    await enqueueReply(app, cookie, sessionId, "Try again.");
+  });
+
+  it("points out a reply queued far longer than a turn without failing it", async () => {
+    const { app, cookie, databasePath } = await signedInApp();
+    const { mission, sessionId } = await launchedCodexSession(app, cookie);
+    const commandId = await enqueueReply(app, cookie, sessionId);
+    backdate(databasePath, "created_at", commandId, 4 * 60 * 60_000);
+
+    const session = await listedSession(app, cookie, mission.productId, sessionId);
+    expect(session.command).toMatchObject({ status: "queued" });
+    expect(session.needsAttention).toBe(true);
+    expect(session.attention).toMatchObject({ state: "needed", kind: "action" });
+    expect(session.attention.reason).toContain("3 小时");
+
+    // Not failed: the slot is still occupied and a second reply is refused.
+    const duplicate = await app.inject({
+      method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands`,
+      headers: { cookie },
+      payload: { text: "Second reply." },
+    });
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json()).toMatchObject({ code: "agent_reply_pending" });
+  });
+
+  it("keeps a normally pending reply quiet", async () => {
+    const { app, cookie } = await signedInApp();
+    const { mission, sessionId } = await launchedCodexSession(app, cookie);
+    await enqueueReply(app, cookie, sessionId);
+
+    const session = await listedSession(app, cookie, mission.productId, sessionId);
+    expect(session.command).toMatchObject({ status: "queued" });
+    expect(session.needsAttention).toBe(false);
+    expect(session.attention.state).not.toBe("needed");
+  });
+
+  it("ignores a late delivery claim after it gave up, but accepts a late result", async () => {
+    const { app, cookie, databasePath } = await signedInApp();
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    const commandId = await enqueueReply(app, cookie, sessionId);
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: [], commandId, commandStatus: "delivering" },
+    });
+    backdate(databasePath, "delivering_at", commandId, 31 * 60_000);
+    // The read path reaps it.
+    expect((await listedSession(app, cookie, mission.productId, sessionId)).command?.status).toBe("failed");
+
+    // A reconnect that only now reports the claim must not 409 or resurrect it.
+    const lateClaim = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: [], commandId, commandStatus: "delivering" },
+    });
+    expect(lateClaim.statusCode).toBe(204);
+    expect((await listedSession(app, cookie, mission.productId, sessionId)).command?.status).toBe("failed");
+
+    // Work the Mac really did finish is still recorded.
+    const lateResult = await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: [], commandId, commandStatus: "delivered" },
+    });
+    expect(lateResult.statusCode).toBe(204);
+    const settled = await listedSession(app, cookie, mission.productId, sessionId);
+    expect(settled.command).toMatchObject({ status: "delivered" });
+    expect(settled.needsAttention).toBe(false);
+  });
+});

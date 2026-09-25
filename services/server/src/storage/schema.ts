@@ -400,6 +400,7 @@ export const INITIAL_SCHEMA = `
     error TEXT,
     created_at TEXT NOT NULL,
     delivered_at TEXT,
+    delivering_at TEXT,
     cancelled_at TEXT
   ) STRICT;
 
