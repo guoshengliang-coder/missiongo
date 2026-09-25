@@ -6,13 +6,14 @@ private struct AccessTestAdapter: AgentAdapter {
     let kind: String
     let calls = Locked<[String]>([])
     let fail: Bool
+    var retryable = false
     var onLaunch: @Sendable () async -> Void = {}
 
     func detect() async -> String? { calls.withLock { $0.append("detect") }; return "1.0" }
     func launch(_ job: DispatchJob) async throws -> LaunchResult {
         calls.withLock { $0.append("launch:\(job.mode)") }
         await onLaunch()
-        if fail { throw LaunchError("access denied") }
+        if fail { throw LaunchError("access denied", retryAfterSeconds: retryable ? 30 : nil) }
         return LaunchResult(sessionName: "test", sessionUrl: nil, logPath: nil)
     }
 }
@@ -74,6 +75,28 @@ final class LocalIntegrationsTests: XCTestCase {
             XCTAssertNil(restored.state(for: agent)?.version)
             XCTAssertTrue(restored.state(for: agent)?.issue?.contains("access denied") == true)
         }
+    }
+
+    func testRetryableFailureKeepsIntegrationAvailableForTheRequeuedDispatch() async {
+        let saved = defaults()
+        let access = LocalIntegrations(defaults: saved)
+        access.finish(.codex, attempt: access.begin(.codex), version: "1.0")
+        let base = AccessTestAdapter(kind: "codex", fail: true, retryable: true)
+        let adapter = ConsentedAgentAdapter(agent: .codex, base: base, access: access)
+        for _ in 0..<2 {
+            do { _ = try await adapter.launch(job); XCTFail("expected retry") } catch {}
+        }
+        XCTAssertEqual(base.calls.current, ["launch:plan", "launch:plan"])
+        XCTAssertEqual(LocalIntegrations(defaults: saved).state(for: .codex)?.version, "1.0")
+    }
+
+    func testDisablingDuringRetryableFailureStillWins() async {
+        let access = LocalIntegrations(defaults: defaults())
+        access.finish(.codex, attempt: access.begin(.codex), version: "1.0")
+        let base = AccessTestAdapter(kind: "codex", fail: true, retryable: true,
+                                     onLaunch: { access.disable(.codex) })
+        do { _ = try await ConsentedAgentAdapter(agent: .codex, base: base, access: access).launch(job) } catch {}
+        XCTAssertNil(access.state(for: .codex))
     }
 
     func testInterruptedCheckAndStaleCompletionRemainPaused() {

@@ -147,17 +147,18 @@ describe("Commenting over MCP", () => {
     });
 
     const handed = await call(writeToken, 2, "tools/call", {
-      name: "submit_for_verification",
+      name: "submit_development_complete",
       arguments: {
         itemKey: "HG-1",
         pullRequestUrl: "https://github.com/owner/repo/pull/42",
+        requiredArtifacts: ["web"],
         summary: "冷启动初始化 session",
         idempotencyKey: "verify-1",
       },
     });
     expect(handed.result?.structuredContent).toMatchObject({
       statusChanged: true,
-      item: { key: "HG-1", status: "pending_verification" },
+      item: { key: "HG-1", status: "development_complete" },
     });
 
     const events = (await app.inject({
@@ -165,11 +166,11 @@ describe("Commenting over MCP", () => {
       url: "/api/v1/items/HG-1/timeline",
       headers: { authorization: "Bearer management-test-token" },
     })).json<{ events: Array<{ toStatus?: string; payload: Record<string, unknown> }> }>().events;
-    const moved = events.find((event) => event.toStatus === "pending_verification");
-    expect(moved?.payload).toMatchObject({ pullRequestUrl: "https://github.com/owner/repo/pull/42" });
+    const moved = events.find((event) => event.toStatus === "development_complete");
+    expect(moved?.payload).toMatchObject({ pullRequestUrl: "https://github.com/owner/repo/pull/42", requiredArtifacts: ["web"] });
   });
 
-  it("lists only pending-verification items with a recorded pull request as release candidates", async () => {
+  it("lists only development-complete items with a recorded pull request as release candidates", async () => {
     const { app, call, readToken, writeToken, productId } = await commentingApp();
     const empty = await call(readToken, 1, "tools/call", {
       name: "list_release_candidates", arguments: { productId },
@@ -185,21 +186,32 @@ describe("Commenting over MCP", () => {
       name: "claim_item", arguments: { itemKey: "HG-1", agentId: "codex", idempotencyKey: "release-claim-1" },
     });
     await call(writeToken, 3, "tools/call", {
-      name: "submit_for_verification",
-      arguments: { itemKey: "HG-1", pullRequestUrl: "https://github.com/owner/repo/pull/42", idempotencyKey: "release-verify-1" },
+      name: "submit_development_complete",
+      arguments: { itemKey: "HG-1", pullRequestUrl: "https://github.com/owner/repo/pull/42", requiredArtifacts: ["web"], idempotencyKey: "release-verify-1" },
     });
     const candidates = await call(readToken, 4, "tools/call", {
       name: "list_release_candidates", arguments: { productId },
     });
     expect(candidates.result?.structuredContent).toMatchObject({
-      candidates: [{ itemKey: "HG-1", pullRequestUrl: "https://github.com/owner/repo/pull/42" }],
+      candidates: [{ itemKey: "HG-1", pullRequestUrl: "https://github.com/owner/repo/pull/42", requiredArtifacts: ["web"] }],
     });
+    const published = await call(writeToken, 5, "tools/call", {
+      name: "submit_for_verification",
+      arguments: {
+        itemKey: "HG-1", pullRequestUrl: "https://github.com/owner/repo/pull/42",
+        releases: [{ artifact: "web", version: "abc", sourceCommit: "a".repeat(40) }],
+        deployedCommit: "a".repeat(40), receiptDigest: "b".repeat(64), idempotencyKey: "release-published-1",
+      },
+    });
+    expect(published.result?.structuredContent).toMatchObject({ item: { status: "pending_verification" } });
+    const after = await call(readToken, 6, "tools/call", { name: "list_release_candidates", arguments: { productId } });
+    expect(after.result?.structuredContent).toMatchObject({ candidates: [] });
   });
 
   it("refuses a handover without an https pull request", async () => {
     const { call, writeToken } = await commentingApp();
     const rejected = await call(writeToken, 1, "tools/call", {
-      name: "submit_for_verification",
+      name: "submit_development_complete",
       arguments: { itemKey: "HG-1", pullRequestUrl: "github.com/owner/repo/pull/42", idempotencyKey: "verify-1" },
     });
     expect(JSON.stringify(rejected)).toMatch(/https/);
@@ -216,7 +228,7 @@ describe("Commenting over MCP", () => {
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
       capabilities: {
-        writeTools: ["append_comment", "claim_item", "submit_for_verification", "create_item"],
+        writeTools: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item"],
         canComment: true,
         canCreateItems: true,
       },
@@ -498,8 +510,8 @@ describe("The consent screen", () => {
 
   it("names both status changes, and what stays with the user", async () => {
     const page = await consentPage("comments");
-    expect(page).toContain("并在 PR 合并后推到待验证");
-    expect(page).toContain("只有这两个状态变更");
+    expect(page).toContain("在 PR 合并后标记开发完成，并在相关产物核实发布后推到待验证");
+    expect(page).toContain("只有这三种状态交接");
     // Accepting the work is the decision the screen must not appear to grant.
     expect(page).toContain("验收、退回、搁置");
     expect(page).toContain("限时读写授权");
@@ -1854,7 +1866,8 @@ describe("MissionGo REST API", () => {
     expect(released.payload).toMatchObject({ reason: "released", note: "Wrong branch got merged." });
 
     expect((await move("in_progress", "claim")).statusCode).toBe(200);
-    expect((await move("pending_verification", "resolution_submitted")).statusCode).toBe(200);
+    expect((await move("development_complete", "resolution_submitted")).statusCode).toBe(200);
+    expect((await move("pending_verification", "release_verified")).statusCode).toBe(200);
     expect((await move("ready", "verification_failed")).json()).toMatchObject({
       code: "transition_note_required",
     });

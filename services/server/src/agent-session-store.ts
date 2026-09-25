@@ -37,6 +37,11 @@ export interface AgentSessionMessageInput {
     readonly title: string;
     readonly options?: readonly string[];
     readonly multiSelect?: boolean;
+    /** Reply key for a field whose title is not what a reply is matched on. */
+    readonly key?: string;
+    /** Non-choice input control; absent means a choice built from `options`. */
+    readonly kind?: "text" | "number" | "boolean";
+    readonly placeholder?: string;
   }[];
 }
 

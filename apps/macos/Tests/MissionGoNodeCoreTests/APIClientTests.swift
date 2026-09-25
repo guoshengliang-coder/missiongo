@@ -78,6 +78,27 @@ final class APIClientTests: XCTestCase {
         return APIClient(serverUrl: server, token: token, session: StubURLProtocol.session())
     }
 
+    func testAttentionCountUsesNodeCredentialAndReadsExactCount() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":123}"#) }
+        let count = try await client().attentionCount()
+        XCTAssertEqual(count, 123)
+
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertEqual(sent.request.url?.path, "/api/v1/node/attention-summary")
+        XCTAssertEqual(sent.request.httpMethod, "GET")
+        XCTAssertEqual(sent.request.value(forHTTPHeaderField: "Authorization"), "Bearer mgn_x")
+    }
+
+    func testAttentionCountRejectsAnInvalidNumber() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":-1}"#) }
+        do {
+            _ = try await client().attentionCount()
+            XCTFail("A negative attention count must not reach the badge")
+        } catch let error as APIError {
+            guard case .invalidResponse = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+    }
+
     // Every one of these was a real mismatch found by running the TypeScript
     // daemon against the server: the endpoints answer 201 and 204, and a
     // 200-only check turned a success into a reported failure.
@@ -394,5 +415,119 @@ final class APIClientTests: XCTestCase {
         XCTAssertTrue(isSuccess(204))
         XCTAssertFalse(isSuccess(301))
         XCTAssertFalse(isSuccess(199))
+    }
+
+    // MARK: Snapshot upload gzip (AND-182)
+
+    private func largeReport() -> AgentSessionReport {
+        return AgentSessionReport(
+            status: "idle",
+            messages: [AgentSessionMessage(sourceId: "u1", turnId: "t1", role: "user", text: String(repeating: "x", count: 2_000))]
+        )
+    }
+
+    func testSnapshotUploadIsGzippedWhenLargeEnough() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
+        let report = largeReport()
+        try await client().reportAgentSession(sessionId: "s1", report: report)
+
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertEqual(sent.request.value(forHTTPHeaderField: "Content-Encoding"), "gzip")
+        XCTAssertTrue(Gzip.looksLikeGzip(sent.body), "a compressed upload must carry the gzip magic bytes")
+        let decoded = try XCTUnwrap(Gzip.decompress(sent.body), "the upload must decode back to the report")
+        XCTAssertEqual(decoded, try APIClient.encoder.encode(report))
+    }
+
+    func testSnapshotUploadStaysPlainWhenSmall() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
+        let report = AgentSessionReport(status: "idle", messages: [])
+        try await client().reportAgentSession(sessionId: "s1", report: report)
+
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertNil(sent.request.value(forHTTPHeaderField: "Content-Encoding"))
+        XCTAssertEqual(sent.body, try APIClient.encoder.encode(report))
+    }
+
+    func testGzipFallsBackToPlainJSONWhenTheServerRefusesIt() async throws {
+        // A server from before AND-182 parses the compressed bytes as JSON and
+        // answers 400; the client must retry the same body uncompressed.
+        StubURLProtocol.install { _, body in
+            Gzip.looksLikeGzip(body)
+                ? .response(status: 400, body: #"{"title":"unsupported"}"#)
+                : .response(status: 204, body: "")
+        }
+        let api = client()
+        try await api.reportAgentSession(sessionId: "s1", report: largeReport())
+        // The fallback holds for later uploads too: no third compressed try.
+        try await api.reportAgentSession(sessionId: "s1", report: largeReport())
+
+        let bodies = StubURLProtocol.recorded.map(\.body)
+        XCTAssertEqual(bodies.count, 3, "one compressed try, one plain retry, one plain upload")
+        XCTAssertTrue(Gzip.looksLikeGzip(bodies[0]))
+        XCTAssertFalse(Gzip.looksLikeGzip(bodies[1]))
+        XCTAssertFalse(Gzip.looksLikeGzip(bodies[2]))
+        XCTAssertEqual(bodies[1], try APIClient.encoder.encode(largeReport()))
+        XCTAssertNil(StubURLProtocol.recorded[1].request.value(forHTTPHeaderField: "Content-Encoding"))
+    }
+
+    // AND-181: a snapshot the server would refuse (over-long message, too many
+    // messages, body over the route's limit) used to be uploaded as-is and fail
+    // with a 413/400 the sync loop treated as a generic offline blip.
+
+    func testSnapshotUploadCapsMessageTextToTheServerContract() throws {
+        let uploadable = try APIClient.uploadableSnapshot(AgentSessionReport(status: "idle", messages: [
+            AgentSessionMessage(sourceId: "m1", role: "user", text: String(repeating: "字", count: 100_050)),
+        ]))
+        XCTAssertEqual(uploadable.messages.count, 1)
+        // The cap is 100_000 UTF-16 code units, the unit the server's `.length` counts.
+        XCTAssertEqual(uploadable.messages[0].text.utf16.count, 100_000)
+        XCTAssertEqual(uploadable.messages[0].text, String(repeating: "字", count: 100_000))
+    }
+
+    func testSnapshotUploadCapCountsUTF16UnitsNotGraphemes() throws {
+        // One party popper is one grapheme cluster but two UTF-16 units.
+        let uploadable = try APIClient.uploadableSnapshot(AgentSessionReport(status: "idle", messages: [
+            AgentSessionMessage(sourceId: "m1", role: "agent", text: String(repeating: "🎉", count: 50_001)),
+        ]))
+        XCTAssertEqual(uploadable.messages[0].text.utf16.count, 100_000)
+        // The cut lands on a whole character, never inside a surrogate pair.
+        XCTAssertEqual(uploadable.messages[0].text.count, 50_000)
+    }
+
+    func testSnapshotUploadKeepsTheNewestMessagesWithinTheServerCountLimit() throws {
+        let messages = (0...2_000).map { index in
+            AgentSessionMessage(sourceId: "m\(index)", role: "user", text: "m\(index)")
+        }
+        let uploadable = try APIClient.uploadableSnapshot(
+            AgentSessionReport(status: "idle", messages: messages), budget: .max
+        )
+        XCTAssertEqual(uploadable.messages.count, 2_000)
+        XCTAssertEqual(uploadable.messages.first?.sourceId, "m1")
+        XCTAssertEqual(uploadable.messages.last?.sourceId, "m2000")
+    }
+
+    func testSnapshotUploadDropsTheOldestMessagesToStayInsideTheBudget() throws {
+        let messages = (0..<6).map { index in
+            AgentSessionMessage(sourceId: "m\(index)", role: "user", text: String(repeating: "a", count: 1_000))
+        }
+        let report = AgentSessionReport(status: "idle", messages: messages)
+        let budget = try APIClient.encoder.encode(report).count - 1_500
+        let uploadable = try APIClient.uploadableSnapshot(report, budget: budget)
+        XCTAssertFalse(uploadable.messages.contains { $0.sourceId == "m0" })
+        XCTAssertTrue(uploadable.messages.contains { $0.sourceId == "m5" })
+        XCTAssertLessThanOrEqual(try APIClient.encoder.encode(uploadable).count, budget)
+    }
+
+    func testReportAgentSessionSendsTheReportAsIsWhenItFits() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
+        try await client().reportAgentSession(sessionId: "s1", report: AgentSessionReport(
+            status: "idle",
+            messages: [AgentSessionMessage(sourceId: "u1", role: "user", text: "处理并发布。")]
+        ))
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertEqual(sent.request.url?.path, "/api/v1/node/agent-sessions/s1/snapshot")
+        let body = jsonObject(sent.body)
+        XCTAssertEqual((body["messages"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(body["status"] as? String, "idle")
     }
 }

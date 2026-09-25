@@ -16,11 +16,16 @@ import {
   isAbnormalAgentSession,
   messageLabelKey,
   outgoingReply,
+  questionAnswerLabel,
   questionAnswerText,
+  questionAnswerValue,
+  questionAnswerValues,
+  toggleQuestionOption,
   replyBlockedLabelKey,
   resolvedAgentSessionId,
   shouldMarkRead,
   shouldResetMessageView,
+  shouldScrollMessagesAfterChange,
 } from "./agent-session-view";
 import type { AgentSessionSummary } from "./types";
 
@@ -67,8 +72,8 @@ describe("agent session message view", () => {
     ]);
   });
 
-  it("opens on all conversations by default", () => {
-    expect(DEFAULT_AGENT_SESSION_FILTER).toBe("all");
+  it("opens on conversations needing attention by default", () => {
+    expect(DEFAULT_AGENT_SESSION_FILTER).toBe("attention");
     expect(DEFAULT_AGENT_KIND_FILTER).toBe("all");
   });
 
@@ -150,6 +155,16 @@ describe("agent session message view", () => {
     expect(isNearMessageBottom({ scrollHeight: 1_000, scrollTop: 451, clientHeight: 500 })).toBe(false);
   });
 
+  it("scrolls to a just-sent reply even after scrolling up, while an arrival keeps the position", () => {
+    // Sending is the person's own action: the newest content must come into
+    // view whether or not they had scrolled up through history.
+    expect(shouldScrollMessagesAfterChange(true, false)).toBe(true);
+    expect(shouldScrollMessagesAfterChange(true, true)).toBe(true);
+    // A message arriving on its own only follows when the view already does.
+    expect(shouldScrollMessagesAfterChange(false, true)).toBe(true);
+    expect(shouldScrollMessagesAfterChange(false, false)).toBe(false);
+  });
+
   it("resets when an already-selected one-pane conversation becomes visible", () => {
     expect(shouldResetMessageView(false, false, true)).toBe(true);
     expect(shouldResetMessageView(false, true, true)).toBe(false);
@@ -222,5 +237,27 @@ describe("agent session message view", () => {
       .toBe("Scope: Complete\nRisk: No");
     expect(questionAnswerText(first, { header: "Scope", title: "Which scope?" }, "Small", 2))
       .toBe("Scope: Small");
+  });
+
+  it("answers a keyed OpenCode field under its key, not its title", () => {
+    const field = { title: "范围", key: "scope" };
+    expect(questionAnswerLabel(field)).toBe("scope");
+    expect(questionAnswerText("", field, "小", 1)).toBe("scope: 小");
+  });
+
+  it("toggles a multi-select field without dropping its other values", () => {
+    const field = { title: "标签", key: "tags", multiSelect: true };
+    const first = toggleQuestionOption("", field, "甲", 2);
+    expect(first).toBe("tags: 甲");
+    const second = toggleQuestionOption(first, field, "乙", 2);
+    expect(second).toBe("tags: 甲、乙");
+    expect(toggleQuestionOption(second, field, "甲", 2)).toBe("tags: 乙");
+    expect(toggleQuestionOption("tags: 甲", field, "甲", 2)).toBe("");
+  });
+
+  it("reads one keyed field's value without splitting it on the separator", () => {
+    const field = { title: "备注", key: "note" };
+    expect(questionAnswerValue("note: 今天、明天", field)).toBe("今天、明天");
+    expect(questionAnswerValues("note: 今天、明天", field)).toEqual(["今天", "明天"]);
   });
 });

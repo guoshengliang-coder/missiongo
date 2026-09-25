@@ -300,17 +300,24 @@ export interface ClaimWorkItemInput {
   readonly idempotencyKey: string;
 }
 
+export type ReleaseArtifact = "web" | "androidApp" | "androidSdk" | "macosApp";
+
+export interface SubmitDevelopmentCompleteInput {
+  readonly itemKey: string;
+  readonly pullRequestUrl: string;
+  /** Release paths touched by the merged PR, independently checked at release. */
+  readonly requiredArtifacts: readonly ReleaseArtifact[];
+  readonly summary?: string;
+  readonly attribution?: EventAttribution;
+  readonly idempotencyKey: string;
+}
+
 export interface SubmitForVerificationInput {
   readonly itemKey: string;
-  /**
-   * Where the merged change lives. Required, because an item arriving in the
-   * verification queue without a pointer to what to verify is the failure the
-   * version number was meant to prevent and could not: an agent cannot know
-   * which release will carry a change, but it does know which pull request
-   * carried it.
-   */
   readonly pullRequestUrl: string;
-  readonly summary?: string;
+  readonly releases: readonly { artifact: ReleaseArtifact; version: string; sourceCommit: string }[];
+  readonly deployedCommit: string;
+  readonly receiptDigest: string;
   readonly attribution?: EventAttribution;
   readonly idempotencyKey: string;
 }

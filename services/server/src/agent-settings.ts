@@ -11,6 +11,9 @@ import { conflict, invalidInput } from "./errors.js";
 export interface NodeAgentModel {
   readonly id: string;
   readonly label: string;
+  /// The vendor the agent listed the model under (OpenCode reports one catalog
+  /// per provider); absent when the agent has no such grouping (Codex, Claude Code).
+  readonly provider?: string;
   readonly efforts: readonly string[];
   readonly defaultEffort?: string;
   readonly isDefault?: boolean;
@@ -57,6 +60,9 @@ export function parseAgentModels(value: unknown): readonly NodeAgentModel[] | un
     return [{
       id,
       label: model.label === undefined ? id : boundedName(model.label, "model label"),
+      ...(model.provider !== undefined && model.provider !== null
+        ? { provider: boundedName(model.provider, "model provider") }
+        : {}),
       efforts: [...new Set(efforts.map((effort) => boundedName(effort, "effort")))],
       ...(model.defaultEffort !== undefined && model.defaultEffort !== null
         ? { defaultEffort: boundedName(model.defaultEffort, "defaultEffort") }

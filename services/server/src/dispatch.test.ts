@@ -1,7 +1,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash, randomUUID, scryptSync } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 
 import type { FastifyInstance } from "fastify";
@@ -675,7 +676,7 @@ describe("Dispatching the same item twice", () => {
       headers: { authorization: `Bearer ${mini.token}` },
       payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}` },
     });
-    for (const [to, reason] of [["in_progress", "claim"], ["pending_verification", "resolution_submitted"], ["ready", "verification_failed"]]) {
+    for (const [to, reason] of [["in_progress", "claim"], ["development_complete", "resolution_submitted"], ["pending_verification", "release_verified"], ["ready", "verification_failed"]]) {
       const moved = await app.inject({
         method: "POST",
         url: `/api/v1/items/${mission.itemKey}/transitions`,
@@ -1785,7 +1786,13 @@ describe("Claiming a dispatch on the node", () => {
       method: "POST",
       url: `/api/v1/items/${mission.itemKey}/transitions`,
       headers: { cookie },
-      payload: { to: "pending_verification", reason: "resolution_submitted" },
+      payload: { to: "development_complete", reason: "resolution_submitted" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${mission.itemKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "pending_verification", reason: "release_verified" },
     })).statusCode).toBe(200);
     expect((await app.inject({
       method: "POST",
@@ -1797,7 +1804,13 @@ describe("Claiming a dispatch on the node", () => {
       method: "POST",
       url: `/api/v1/items/${secondKey}/transitions`,
       headers: { cookie },
-      payload: { to: "pending_verification", reason: "resolution_submitted" },
+      payload: { to: "development_complete", reason: "resolution_submitted" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/items/${secondKey}/transitions`,
+      headers: { cookie },
+      payload: { to: "pending_verification", reason: "release_verified" },
     })).statusCode).toBe(200);
     expect((await app.inject({
       method: "POST",
@@ -1862,6 +1875,64 @@ describe("Claiming a dispatch on the node", () => {
       headers: { cookie },
       payload: { text: "Continue after completion." },
     })).statusCode).toBe(409);
+  });
+
+  it("accepts a contract-valid snapshot larger than Fastify's 1 MiB default (AND-181)", async () => {
+    const { app, cookie, node, mission, dispatchId } = await queuedDispatch();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "launched",
+        sessionName: `Mac mini-${mission.itemKey}`,
+        sessionRef: "31111111-2222-4333-8444-555555555555",
+      },
+    })).statusCode).toBe(204);
+    const sessionId = (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+
+    // Sixteen messages of the per-message maximum put the JSON body well past
+    // Fastify's 1 MiB default while staying inside the store's contract. The
+    // 413 the default used to answer is indistinguishable from a network blip
+    // to the node, so a large session silently stopped syncing.
+    const longConversation = Array.from({ length: 16 }, (_unused, index) => ({
+      sourceId: `u${index}`, turnId: `t${index}`, role: "user", text: "x".repeat(100_000),
+    }));
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: longConversation },
+    })).statusCode).toBe(204);
+    const mirroredDetail = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+    })).json<{ messages: Array<{ sourceId: string; text: string }> }>();
+    expect(mirroredDetail.messages).toHaveLength(16);
+    expect(mirroredDetail.messages[0]).toMatchObject({ sourceId: "u0" });
+    expect(mirroredDetail.messages[0]!.text).toHaveLength(100_000);
+
+    // Past the route's own bound the 413 stays, so a hostile node cannot make
+    // the server buffer an unbounded body.
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "idle",
+        messages: [{ sourceId: "hostile", turnId: "t", role: "user", text: "x".repeat(33 * 1_024 * 1_024) }],
+      },
+    })).statusCode).toBe(413);
   });
 
   it("ends an idle long poll with 204 rather than holding it open", async () => {
@@ -2442,6 +2513,116 @@ describe("Claiming a dispatch on the node", () => {
     });
     expect(stolen.statusCode).toBe(404);
   });
+
+
+  describe("Gzip snapshot uploads (AND-182)", () => {
+    /** A claimed, launched dispatch with one mirrored session to report into. */
+    async function launchedSession() {
+      const { app, cookie, node, mission, dispatchId } = await queuedDispatch();
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/node/dispatches/claim-next",
+        headers: { authorization: `Bearer ${node.token}` },
+      });
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/node/dispatches/${dispatchId}/result`,
+        headers: { authorization: `Bearer ${node.token}` },
+        payload: {
+          status: "launched",
+          sessionName: `Mac mini-${mission.itemKey}`,
+          sessionRef: "11111111-2222-4333-8444-555555555555",
+        },
+      });
+      const sessionId = (await app.inject({
+        method: "GET",
+        url: "/api/v1/node/agent-sessions",
+        headers: { authorization: `Bearer ${node.token}` },
+      })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+      return { app, cookie, node, sessionId };
+    }
+
+    function snapshotPayload(messageCount: number, messageSize: number): string {
+      return JSON.stringify({
+        status: "idle",
+        messages: Array.from({ length: messageCount }, (_, index) => ({
+          sourceId: `u${index}`,
+          turnId: "t1",
+          role: "user",
+          text: "x".repeat(messageSize),
+        })),
+      });
+    }
+
+    it("accepts a gzip-compressed snapshot and stores the decoded messages", async () => {
+      const { app, cookie, node, sessionId } = await launchedSession();
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+        headers: { authorization: `Bearer ${node.token}`, "content-encoding": "gzip", "content-type": "application/json" },
+        payload: gzipSync(Buffer.from(snapshotPayload(3, 20_000), "utf8")),
+      });
+      expect(response.statusCode).toBe(204);
+
+      const detail = (await app.inject({
+        method: "GET",
+        url: `/api/v1/agent-sessions/${sessionId}`,
+        headers: { cookie },
+      })).json<{ messages: Array<{ text: string }> }>();
+      expect(detail.messages).toHaveLength(3);
+      expect(detail.messages.every((message) => message.text.length === 20_000)).toBe(true);
+    });
+
+    it("refuses a corrupt gzip body", async () => {
+      const { app, node, sessionId } = await launchedSession();
+      // Random bytes, so the compressed stream really is a third of the body:
+      // repeated text would compress below the cut and still decode whole.
+      const whole = gzipSync(Buffer.from(JSON.stringify({
+        status: "idle",
+        messages: [0, 1].map((index) => ({
+          sourceId: `u${index}`, turnId: "t1", role: "user", text: randomBytes(30_000).toString("base64"),
+        })),
+      }), "utf8"));
+      const truncated = whole.subarray(0, Math.floor(whole.length / 3));
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+        headers: { authorization: `Bearer ${node.token}`, "content-encoding": "gzip", "content-type": "application/json" },
+        payload: truncated,
+      });
+      if (response.statusCode !== 400) console.log("DBGA", response.statusCode, response.body.slice(0, 600));
+      expect(response.statusCode).toBe(400);
+    });
+
+    it("carries a decoded body past the framework's default limit", async () => {
+      const { app, node, sessionId } = await launchedSession();
+      // ~2.1 MB decoded, over the 1 MiB default the route no longer inherits.
+      const payload = Buffer.from(snapshotPayload(30, 70_000), "utf8");
+      expect(payload.length).toBeGreaterThan(1024 * 1024);
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+        headers: { authorization: `Bearer ${node.token}`, "content-encoding": "gzip", "content-type": "application/json" },
+        payload: gzipSync(payload),
+      });
+      expect(response.statusCode).toBe(204);
+    });
+
+    it("still refuses a decoded body larger than the snapshot limit", async () => {
+      const { app, node, sessionId } = await launchedSession();
+      // ~32.3 MB decoded: over the route's 32 MiB bound even though the gzipped
+      // wire body stays small -- the limit counts decoded bytes.
+      const payload = Buffer.from(snapshotPayload(470, 72_000), "utf8");
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+        headers: { authorization: `Bearer ${node.token}`, "content-encoding": "gzip", "content-type": "application/json" },
+        payload: gzipSync(payload),
+      });
+      if (response.statusCode !== 413) console.log("DGBB", response.statusCode, response.body.slice(0, 600));
+      expect(response.statusCode).toBe(413);
+    });
+  });
 });
 
 describe("Account scoping", () => {
@@ -2466,10 +2647,12 @@ describe("Account scoping", () => {
 });
 
 /** A launched Codex dispatch with a mirrored session, as the Mac reports one. */
-async function launchedCodexSession(app: FastifyInstance, cookie: string) {
+async function launchedCodexSession(
+  app: FastifyInstance, cookie: string, productName = "Mission GO", keyPrefix = "AND",
+) {
   const node = await registeredNode(app);
   await heartbeat(app, node.token, "codex");
-  const mission = await readyItem(app, cookie, "Mission GO", "AND");
+  const mission = await readyItem(app, cookie, productName, keyPrefix);
   await app.inject({
     method: "PUT",
     url: `/api/v1/nodes/${node.nodeId}/repos`,
@@ -2492,7 +2675,7 @@ async function launchedCodexSession(app: FastifyInstance, cookie: string) {
     method: "POST",
     url: `/api/v1/node/dispatches/${dispatchId}/result`,
     headers: { authorization: `Bearer ${node.token}` },
-    payload: { status: "launched", sessionRef: "01a09f35-d6fa-7eb2-9d90-1352cf2fb661" },
+    payload: { status: "launched", sessionRef: randomUUID() },
   });
   const sessionId = (await app.inject({
     method: "GET",
@@ -2637,7 +2820,8 @@ describe("Archiving a finished hand-off (AND-129)", () => {
   }
   const toDone: Array<[string, string]> = [
     ["in_progress", "claim"],
-    ["pending_verification", "resolution_submitted"],
+    ["development_complete", "resolution_submitted"],
+    ["pending_verification", "release_verified"],
     ["done", "verification_passed"],
   ];
 
@@ -2885,6 +3069,39 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     expect((await dispatch(app, cookie, base)).statusCode).toBe(201);
   });
 
+  it("keeps the vendor a Mac groups its models under, so the console can group them (AND-189)", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await modelHeartbeat(app, node.token, [
+      { id: "zai-coding-plan/glm-5.3", label: "GLM-5.3", provider: "Z.AI Coding Plan", efforts: [] },
+      { id: "deepseek/deepseek-v4", label: "DeepSeek V4", provider: "DeepSeek", efforts: [] },
+      { id: "gpt-5.5", label: "GPT-5.5", efforts: [] },
+    ]);
+    const nodes = await app.inject({ method: "GET", url: "/api/v1/nodes", headers: { cookie } });
+    const models = nodes.json<{ nodes: Array<{ agents: Array<{ kind: string; models: unknown[] }> }> }>()
+      .nodes[0]!.agents.find((agent) => agent.kind === "codex")!.models as Array<Record<string, unknown>>;
+    expect(models).toEqual([
+      { id: "zai-coding-plan/glm-5.3", label: "GLM-5.3", provider: "Z.AI Coding Plan", efforts: [] },
+      { id: "deepseek/deepseek-v4", label: "DeepSeek V4", provider: "DeepSeek", efforts: [] },
+      { id: "gpt-5.5", label: "GPT-5.5", efforts: [] },
+    ]);
+    // A provider that is not a name is a bad heartbeat, not a silent guess.
+    const bad = await app.inject({
+      method: "POST",
+      url: "/api/v1/node/heartbeat",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        agents: [{
+          kind: "codex", version: "0.155.1", ready: true,
+          models: [{ id: "m", label: "M", provider: 7, efforts: [] }],
+          skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
+        }],
+        repoCandidates: [],
+      },
+    });
+    expect(bad.statusCode).toBe(400);
+  });
+
   it("reports what the agent uses and carries a running change to the Mac once", async () => {
     const { app, cookie } = await signedInApp();
     const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
@@ -3061,6 +3278,44 @@ describe("Widget summary (AND-149)", () => {
       },
       items: { ready: 3, readyProductId: other.productId },
     });
+  });
+
+  it("gives every Mac the account's current cross-product attention count (AND-176)", async () => {
+    const { app, cookie } = await signedInApp();
+    const first = await launchedCodexSession(app, cookie);
+    const second = await launchedCodexSession(app, cookie, "Another GO", "OTH");
+    const count = (token: string) => app.inject({
+      method: "GET", url: "/api/v1/node/attention-summary",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect((await count(first.node.token)).json()).toEqual({ attention: 0 });
+
+    for (const entry of [first, second]) {
+      await snapshot(app, entry.node.token, entry.sessionId, [
+        { sourceId: "u1", turnId: "t1", role: "user", text: "Please inspect it." },
+        {
+          sourceId: "a1", turnId: "t1", role: "agent", text: "Pick a scope.",
+          questions: [{ title: "Scope", options: ["Small", "Full"] }],
+        },
+      ]);
+    }
+    const counted = await count(first.node.token);
+    expect(counted.statusCode).toBe(200);
+    expect(counted.headers["cache-control"]).toBe("no-store");
+    expect(counted.json()).toEqual({ attention: 2 });
+    expect((await count(second.node.token)).json()).toEqual({ attention: 2 });
+    expect((await summary(app, cookie)).agent.attention).toBe(2);
+
+    for (const [entry, remaining] of [[first, 1], [second, 0]] as const) {
+      const archived = await app.inject({
+        method: "PATCH", url: `/api/v1/agent-sessions/${entry.sessionId}`,
+        headers: { cookie }, payload: { archived: true },
+      });
+      expect(archived.statusCode).toBe(200);
+      expect((await count(first.node.token)).json()).toEqual({ attention: remaining });
+    }
+    expect((await app.inject({ method: "GET", url: "/api/v1/node/attention-summary", headers: { cookie } })).statusCode).toBe(401);
+    expect((await count(loginToken(app))).statusCode).toBe(401);
   });
 
   it("does not spend an AI call on a conversation still waiting to be classified", async () => {

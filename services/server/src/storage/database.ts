@@ -1254,6 +1254,71 @@ export class MissionGoDatabase {
           .run(202609240534, new Date().toISOString());
       });
     }
+    // AND-150: FCM tokens for the Android widget's server-driven pushes. One row
+    // per device token; re-registering an existing token rebinds it to the
+    // account that just signed in, because a token outliving its account would
+    // otherwise keep receiving that account's signals.
+    const widgetDevicesMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609241232")
+      .get() as unknown as { version: number } | undefined;
+    if (!widgetDevicesMigration) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE widget_devices (
+            fcm_token TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          ) STRICT;
+          CREATE INDEX widget_devices_account ON widget_devices(account_id);
+        `);
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609241232, new Date().toISOString());
+      });
+    }
+    // SQLite cannot ALTER a CHECK constraint. Rebuild the parent table without
+    // deleting its dependent rows; both the migration and FK check are atomic.
+    const developmentCompleteMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609241537")
+      .get() as unknown as { version: number } | undefined;
+    if (!developmentCompleteMigration) {
+      const row = this.connection.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'work_items'")
+        .get() as unknown as { sql: string };
+      if (!row.sql.includes("'development_complete'")) {
+        this.connection.exec("PRAGMA foreign_keys = OFF;");
+        try {
+          this.transaction(() => {
+            const oldStatuses = "'inbox', 'ready', 'in_progress', 'on_hold', 'pending_verification', 'done', 'cancelled'";
+            const newStatuses = "'inbox', 'ready', 'in_progress', 'development_complete', 'on_hold', 'pending_verification', 'done', 'cancelled'";
+            const replacement = row.sql
+              .replace(/CREATE TABLE(?: IF NOT EXISTS)?\s+"?work_items"?/i, "CREATE TABLE work_items_new")
+              .replace(oldStatuses, newStatuses);
+            if (replacement === row.sql || !replacement.includes("CREATE TABLE work_items_new")
+              || !replacement.includes(newStatuses)) {
+              throw new Error("Cannot extend the work item status constraint.");
+            }
+            const columns = (this.connection.prepare("PRAGMA table_info(work_items)").all() as unknown as Array<{ name: string }>)
+              .map(({ name }) => `"${name.replaceAll('"', '""')}"`).join(", ");
+            const dependentSchema = (this.connection
+              .prepare("SELECT sql FROM sqlite_master WHERE type IN ('index', 'trigger') AND tbl_name = 'work_items' AND sql IS NOT NULL")
+              .all() as unknown as Array<{ sql: string }>).map(({ sql }) => sql);
+            this.connection.exec(replacement);
+            this.connection.exec(`INSERT INTO work_items_new (${columns}) SELECT ${columns} FROM work_items;`);
+            this.connection.exec("DROP TABLE work_items;");
+            this.connection.exec("ALTER TABLE work_items_new RENAME TO work_items;");
+            dependentSchema.forEach((sql) => this.connection.exec(sql));
+            if (this.connection.prepare("PRAGMA foreign_key_check").all().length > 0) {
+              throw new Error("Rebuilding work_items broke a foreign key.");
+            }
+          });
+        } finally {
+          this.connection.exec("PRAGMA foreign_keys = ON;");
+        }
+      }
+      this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+        .run(202609241537, new Date().toISOString());
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

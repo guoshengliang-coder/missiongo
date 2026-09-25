@@ -76,6 +76,7 @@ final class AppModel: ObservableObject {
     /// login is what actually catches most of them.
     static let updateCheckInterval: TimeInterval = 6 * 60 * 60
     static let dispatchRefreshInterval: TimeInterval = 30
+    static let attentionRefreshInterval: TimeInterval = 60
     /// Opening and closing the menu quickly should not start a process each time.
     static let openRefreshThrottle: TimeInterval = 10
 
@@ -104,6 +105,11 @@ final class AppModel: ObservableObject {
     @Published private var latestProducts: [NodeProfile.Product]?
     @Published private(set) var dispatches: [DispatchRecord] = []
     @Published private(set) var dispatchesError: String?
+    @Published private(set) var attentionCount: Int? {
+        didSet {
+            NSApplication.shared.dockTile.badgeLabel = attentionCount.flatMap { $0 > 0 ? String($0) : nil }
+        }
+    }
     @Published private(set) var claude: ClaudeCodeStatus = .checking
     @Published private(set) var codex: CodexStatus = .checking
     /// The Skill row: nil until the first sync starts.
@@ -140,6 +146,10 @@ final class AppModel: ObservableObject {
     private var lastPresentedUpdateVersion: String?
     private var menuTimer: Task<Void, Never>?
     private var lastOpenRefresh: Date?
+    private var attentionTask: Task<Void, Never>?
+    /// The loop of the current session, kept so the reconnect button can wake
+    /// it. `nil` whenever no loop is running.
+    private var loop: NodeLoop?
 
     private init() {
         showsRevokedNotice = UserDefaults.standard.bool(forKey: DefaultsKey.revokedNotice)
@@ -222,6 +232,7 @@ final class AppModel: ObservableObject {
     private func enterSignedIn(_ credential: NodeCredential) {
         phase = .signedIn(credential)
         loginError = nil
+        startAttentionUpdates(credential)
         startLoop(credential)
         startUpdateTimer(credential)
         refreshProfile()
@@ -229,6 +240,9 @@ final class AppModel: ObservableObject {
     }
 
     private func leaveSignedIn(revoked: Bool) {
+        attentionTask?.cancel()
+        attentionTask = nil
+        attentionCount = nil
         stopLoop()
         for agent in checkingIntegrations { integrations.disable(agent) }
         checkingIntegrations.removeAll()
@@ -276,6 +290,28 @@ final class AppModel: ObservableObject {
             return true
         }
         return false
+    }
+
+    private func startAttentionUpdates(_ credential: NodeCredential) {
+        attentionTask?.cancel()
+        attentionCount = nil
+        attentionTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do {
+                    let count = try await APIClient(
+                        serverUrl: credential.serverUrl, token: credential.token
+                    ).attentionCount()
+                    guard !Task.isCancelled, self.credential == credential else { return }
+                    self.attentionCount = count
+                } catch {
+                    guard !Task.isCancelled, self.credential == credential else { return }
+                    self.attentionCount = nil
+                    if self.isRevoked(error) { return }
+                }
+                try? await Task.sleep(nanoseconds: UInt64(Self.attentionRefreshInterval * 1_000_000_000))
+            }
+        }
     }
 
     // MARK: Node loop
@@ -367,6 +403,7 @@ final class AppModel: ObservableObject {
                 _ = self.isRevoked(error)
             }
         }
+        self.loop = loop
     }
 
     /// Cancelling ends the loop's sleeps at once; a claim or launch already
@@ -374,10 +411,22 @@ final class AppModel: ObservableObject {
     /// started are never touched.
     private func stopLoop() {
         loopGeneration += 1
+        loop = nil
         loopTask?.cancel()
         loopTask = nil
         loopStatesTask?.cancel()
         loopStatesTask = nil
+    }
+
+    /// The reconnect button (AND-177): retry everything the menu shows a
+    /// failure for now, rather than waiting out each refresh interval. The
+    /// loops' in-flight requests are left to finish; the wake takes effect on
+    /// their next sleep.
+    func reconnect() {
+        guard credential != nil else { return }
+        loop?.retryNow()
+        refreshProfile()
+        refreshDispatches()
     }
 
     private func apply(_ state: NodeLoopState) {
@@ -618,7 +667,7 @@ final class AppModel: ObservableObject {
                     let mcp = try await control.missionGoMcpStatus()
                     guard access.isCurrent(agent, attempt: attempt) else { return }
                     version = found
-                    issue = mcp == "connected" ? nil : "OpenCode 的 missiongo MCP 未连接（\(mcp ?? "未配置")）；请在 OpenCode 的 /mcps 中完成授权。"
+                    issue = OpenCodeProtocol.integrationIssue(for: mcp)
                 } catch {
                     version = ""
                     issue = error.localizedDescription

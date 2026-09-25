@@ -119,7 +119,7 @@ export const INITIAL_SCHEMA = `
     area_id TEXT,
     type TEXT NOT NULL CHECK (type IN ('idea', 'requirement', 'bug', 'task', 'note')),
     priority TEXT NOT NULL CHECK (priority IN ('urgent', 'high', 'normal', 'low')),
-    status TEXT NOT NULL CHECK (status IN ('inbox', 'ready', 'in_progress', 'on_hold', 'pending_verification', 'done', 'cancelled')),
+    status TEXT NOT NULL CHECK (status IN ('inbox', 'ready', 'in_progress', 'development_complete', 'on_hold', 'pending_verification', 'done', 'cancelled')),
     title TEXT NOT NULL,
     description TEXT NOT NULL,
     report_json TEXT,

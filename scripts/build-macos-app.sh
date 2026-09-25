@@ -76,8 +76,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
-  <!-- A menu-bar app: no Dock icon, no main window to close by accident. -->
-  <key>LSUIElement</key><true/>
+  <!-- The Dock icon stays visible so its attention badge remains readable. -->
+  <key>LSUIElement</key><false/>
   <key>NSHighResolutionCapable</key><true/>
   <key>MissionGoServerURL</key><string>${SERVER_URL}</string>
   <key>MissionGoAllowsAdHocUpdates</key><${ALLOW_AD_HOC_UPDATES}/>

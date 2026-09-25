@@ -9,11 +9,13 @@ import {
   CircleAlert,
   CircleCheck,
   CircleDot,
+  Image as ImageIcon,
   LoaderCircle,
   MessageSquare,
   RotateCcw,
   Search,
   Square,
+  Video,
   WifiOff,
   X,
 } from "lucide-react";
@@ -33,21 +35,23 @@ import {
   isAbnormalAgentSession,
   messageLabelKey,
   outgoingReply,
-  questionAnswerText,
   replyBlockedLabelKey,
   resolvedAgentSessionId,
   shouldMarkRead,
   shouldResetMessageView,
+  shouldScrollMessagesAfterChange,
   type AgentKindFilter,
   type AgentSessionFilter,
 } from "./agent-session-view";
+import { AgentSessionQuestions } from "./agent-session-questions";
 import { AgentSessionQuickSettings } from "./agent-session-settings";
+import { sessionTitle } from "./agent-session-title";
 import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
 import { MarkdownText } from "./markdown-text";
 import { SessionLink } from "./session-link";
-import type { AgentSession, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary, Dispatch } from "./types";
+import type { AgentSession, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary, Dispatch, WorkItemAttachment } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
@@ -64,12 +68,6 @@ function SessionStatusIcon({ status }: { status: AgentSessionStatus }) {
   if (status === "idle") return <CircleCheck size={14} />;
   if (status === "failed" || status === "stalled") return <CircleAlert size={14} />;
   return <CircleDot size={14} />;
-}
-
-function sessionTitle(session: AgentSessionSummary): string {
-  const keys = session.items.map((item) => item.key).join("、");
-  const firstTitle = session.items[0]?.title;
-  return firstTitle ? `${keys} · ${firstTitle}` : session.sessionName ?? session.id;
 }
 
 function lastSeenAgo(value: string | undefined, locale: string): string | null {
@@ -465,7 +463,7 @@ export function AgentSessionConsole({
 
     const changedIds = changedMessageIds(previousMessages, messages);
     if (changedIds.length === 0 && !outgoingChanged) return;
-    if (followLatest) scrollToLatest();
+    if (shouldScrollMessagesAfterChange(outgoingChanged, followLatest)) scrollToLatest();
     else if (changedIds.length > 0) {
       changedIds.forEach((id) => unseenMessageIdsRef.current.add(id));
       setNewMessageCount(unseenMessageIdsRef.current.size);
@@ -673,21 +671,26 @@ export function AgentSessionConsole({
                     onSelectSession(session.id, true);
                   }}
                 >
-                  <span className={`agent-console-status-icon agent-console-status-${session.status} agent-console-node-${session.nodeConnectionState}`}>
+                  <span
+                    className={`agent-console-status-icon agent-console-status-${session.status} agent-console-node-${session.nodeConnectionState}`}
+                    role="img"
+                    aria-label={`${nodeConnectionLabel(session, t)} · ${session.archivedAt ? t("archived") : statusLabel(session.status, t)}`}
+                  >
                     {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={session.status} />}
                   </span>
                   <span className="agent-console-session-copy">
-                    <strong>{sessionTitle(session)}</strong>
-                    <small>{session.nodeName} · {nodeConnectionLabel(session, t)} · {agentLabel(session, t)} · {session.archivedAt ? t("archived") : statusLabel(session.status, t)}</small>
+                    <span className="agent-console-session-heading">
+                      <strong>{sessionTitle(session)}</strong>
+                      {session.unread && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
+                      <time>{updatedTime(session.activityAt ?? session.updatedAt, locale)}</time>
+                    </span>
+                    <small>{session.nodeName} · {agentLabel(session, t)}</small>
                     {attentionLabel(session, t) && (
                       <i className="agent-console-attention" title={session.attention.reason}>
                         {attentionLabel(session, t)}
                       </i>
                     )}
-                    <span>{session.latestMessage?.text ?? session.lastError ?? t("agentConsoleDispatchOnly")}</span>
                   </span>
-                  {session.unread && <i className="agent-console-unread-dot" aria-label={t("agentConsoleUnreadOne")} />}
-                  <time>{updatedTime(session.activityAt ?? session.updatedAt, locale)}</time>
                 </button>
               </div>
             );
@@ -707,24 +710,23 @@ export function AgentSessionConsole({
                 onClick={onBackToSessions}
               ><ArrowLeft size={19} /></button>
               <span className="agent-console-avatar"><Bot size={17} /></span>
-              <div>
+              <div className="agent-console-heading">
                 <h2>{sessionTitle(selected)}</h2>
                 <p>{agentLabel(selected, t)}</p>
                 {/* The items this session is working on stay in the head, where
                     scrolling the conversation cannot lose them (AND-159). */}
                 <div className="agent-console-dispatch agent-console-dispatch-head">
-                  <span>{t("agentConsoleDispatchScope")}</span>
                   <div>{selected.items.map((item) => (
                     <button key={item.key} type="button" onClick={() => setPreviewItemKey(item.key)}>{item.key}</button>
                   ))}</div>
                 </div>
               </div>
               <span className={`status-pill agent-session-status-${sessionStatus}`}>{selected.archivedAt ? t("archived") : statusLabel(sessionStatus, t)}</span>
-              {selected.sessionUrl && <SessionLink url={selected.sessionUrl} />}
-              {selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
-                <span className="agent-session-muted" title={t("agentConsoleClaudeLocal")}>{t("agentConsoleClaudeLocalBadge")}</span>
-              )}
               <div className="agent-console-actions">
+                {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact />}
+                {selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
+                  <span className="agent-session-muted" title={t("agentConsoleClaudeLocal")}>{t("agentConsoleClaudeLocalBadge")}</span>
+                )}
                 {selected.canRetry && (
                   <button
                     type="button"
@@ -829,27 +831,14 @@ export function AgentSessionConsole({
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
                       <MarkdownText>{message.text}</MarkdownText>
-                      {message.questions?.map((question) => (
-                        <div key={question.title} className="agent-session-question">
-                          {question.header && <small>{question.header}</small>}
-                          <strong>{question.title}</strong>
-                          {question.options && <div className="agent-session-options">
-                            {question.options.map((option) => (
-                              <button
-                                key={option}
-                                type="button"
-                                disabled={!selected.canReply}
-                                onClick={() => setReply((current) => questionAnswerText(
-                                  current,
-                                  question,
-                                  option,
-                                  message.questions?.length ?? 1,
-                                ))}
-                              >{option}</button>
-                            ))}
-                          </div>}
-                        </div>
-                      ))}
+                      {message.questions && (
+                        <AgentSessionQuestions
+                          questions={message.questions}
+                          reply={reply}
+                          canReply={selected.canReply}
+                          onChange={setReply}
+                        />
+                      )}
                     </article>
                   );
                 })}
@@ -973,6 +962,7 @@ export function AgentSessionConsole({
                     disabled={pending || sendingSelected}
                   />
                   <div className="agent-console-reply-actions">
+                    <AgentSessionQuickSettings session={selected} />
                     <button type="submit" className="primary-button" disabled={!reply.trim() || pending || sendingSelected}>
                       {sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}
                     </button>
@@ -985,9 +975,7 @@ export function AgentSessionConsole({
                     : t("agentConsoleNoInlineReply")}
                 </p>
               )}
-              {/* Mode, model and effort live under the reply box (AND-158): the
-                  knobs a person reaches for while steering the conversation. */}
-              <AgentSessionQuickSettings session={selected} />
+              {(!selected.canReply || !selected.agentSessionId) && <AgentSessionQuickSettings session={selected} />}
               {cancel.isError && <p className="inline-error">{localizedErrorText(cancel.error, t)}</p>}
             </footer>
           </>
@@ -1010,19 +998,33 @@ function ItemPreviewModal({ itemKey, onClose }: {
   readonly onClose: () => void;
 }) {
   const { t, typeLabel, statusLabel, priorityLabel } = useI18n();
+  const [selectedMedia, setSelectedMedia] = useState<WorkItemAttachment | null>(null);
   const itemQuery = useQuery({
     queryKey: ["item", itemKey],
     queryFn: () => api.getItem(itemKey),
   });
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        if (selectedMedia) setSelectedMedia(null);
+        else onClose();
+      }
     };
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
+  }, [onClose, selectedMedia]);
   const item = itemQuery.data;
   const overview = item?.report?.overview ?? item?.description;
+  const media = item?.attachments.filter((attachment) => attachment.kind === "image" || attachment.kind === "video") ?? [];
+  const contentQuery = useQuery({
+    queryKey: ["attachment-content", itemKey, selectedMedia?.id, selectedMedia?.revision, selectedMedia?.kind === "image" ? "drawable" : "original"],
+    queryFn: () => selectedMedia?.kind === "image"
+      ? api.downloadAttachmentPreview(itemKey, selectedMedia.id, selectedMedia.revision)
+      : api.downloadAttachment(itemKey, selectedMedia!.id),
+    enabled: Boolean(selectedMedia),
+    staleTime: Infinity,
+  });
+  const contentUrl = usePreviewObjectUrl(contentQuery.data);
   return (
     <div
       className="item-preview-backdrop"
@@ -1045,8 +1047,62 @@ function ItemPreviewModal({ itemKey, onClose }: {
           {item && (overview
             ? <MarkdownText>{overview}</MarkdownText>
             : <p className="agent-session-muted">{t("itemPreviewNoDescription")}</p>)}
+          {media.length > 0 && <div className="item-preview-media">
+            {media.map((attachment) => <ItemPreviewMediaTile key={attachment.id} itemKey={itemKey} attachment={attachment} onOpen={() => setSelectedMedia(attachment)} />)}
+          </div>}
         </div>
       </div>
+      {selectedMedia && <div className="item-preview-media-viewer" role="dialog" aria-modal="true" aria-label={selectedMedia.filename} onClick={(event) => { event.stopPropagation(); setSelectedMedia(null); }}>
+        <div className="item-preview-media-viewer-content" onClick={(event) => event.stopPropagation()}>
+          <header><strong>{selectedMedia.filename}</strong><button type="button" className="icon-button" aria-label={t("close")} onClick={() => setSelectedMedia(null)}><X size={18} /></button></header>
+          {contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
+          {contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
+          {selectedMedia.kind === "image" && contentUrl && <img src={contentUrl} alt={selectedMedia.filename} />}
+          {selectedMedia.kind === "video" && contentUrl && <ItemPreviewVideo src={contentUrl} filename={selectedMedia.filename} />}
+        </div>
+      </div>}
     </div>
   );
+}
+
+function usePreviewObjectUrl(blob: Blob | undefined): string | null {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!blob) return;
+    const next = URL.createObjectURL(blob);
+    setUrl(next);
+    return () => {
+      URL.revokeObjectURL(next);
+      setUrl(null);
+    };
+  }, [blob]);
+  return url;
+}
+
+function ItemPreviewMediaTile({ itemKey, attachment, onOpen }: {
+  itemKey: string;
+  attachment: WorkItemAttachment;
+  onOpen: () => void;
+}) {
+  const { t } = useI18n();
+  const thumbnailQuery = useQuery({
+    queryKey: ["attachment-thumbnail", itemKey, attachment.id, attachment.revision, 192],
+    queryFn: () => api.downloadAttachmentThumbnail(itemKey, attachment.id, 192, attachment.revision),
+    enabled: attachment.kind === "image",
+    staleTime: Infinity,
+  });
+  const thumbnailUrl = usePreviewObjectUrl(thumbnailQuery.data);
+  const Icon = attachment.kind === "image" ? ImageIcon : Video;
+  return <button type="button" className="item-preview-media-tile" aria-label={t("previewAttachment", { filename: attachment.filename })} title={attachment.filename} onClick={onOpen}>
+    {thumbnailUrl ? <img src={thumbnailUrl} alt="" loading="lazy" decoding="async" /> : <Icon size={24} />}
+    <span>{attachment.filename}</span>
+  </button>;
+}
+
+function ItemPreviewVideo({ src, filename }: { src: string; filename: string }) {
+  const { t } = useI18n();
+  const [unplayable, setUnplayable] = useState(false);
+  useEffect(() => setUnplayable(false), [src]);
+  if (unplayable) return <div className="video-unplayable" role="status"><p>{t("videoUnplayable")}</p><a className="secondary-button" href={src} download={filename}>{t("download")}</a></div>;
+  return <video src={src} controls autoPlay playsInline preload="metadata" onError={() => setUnplayable(true)} />;
 }

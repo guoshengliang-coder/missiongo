@@ -1,8 +1,11 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
+import { Transform } from "node:stream";
+import { createGunzip } from "node:zlib";
 
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
+
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 
 import {
   AGENT_KINDS,
@@ -42,9 +45,13 @@ import {
   type ProductCapability,
   type ProductPermission,
 } from "./accounts-store.js";
-import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "./attachment-storage.js";
+import { AttachmentStorage, MAX_ATTACHMENT_BYTES, MEBIBYTE } from "./attachment-storage.js";
 import { AiTitleService } from "./ai-title.js";
-import { AgentSessionStore, type AgentMessageRole, type AgentSessionStatus } from "./agent-session-store.js";
+import {
+  AgentSessionStore,
+  type AgentMessageRole,
+  type AgentSessionStatus,
+} from "./agent-session-store.js";
 import { optionalName, parseAgentModels } from "./agent-settings.js";
 import { DispatchStore } from "./dispatch-store.js";
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
@@ -60,7 +67,9 @@ import {
 import { MissionGoStore } from "./store.js";
 import { COMMENT_BODY_KINDS, COMPONENT_KINDS, type ComponentKind } from "./types.js";
 import type { FeedbackLogEntry, SdkPrincipal } from "./types.js";
-import { widgetSummary } from "./widget-summary.js";
+import { WidgetDeviceStore } from "./widget-devices.js";
+import { WidgetPushService, type WidgetPushServiceAccount } from "./widget-push.js";
+import { widgetSummary, type WidgetSummary, type WidgetSummarySession } from "./widget-summary.js";
 
 export interface BuildAppOptions {
   readonly databasePath?: string;
@@ -78,6 +87,12 @@ export interface BuildAppOptions {
   readonly release?: string;
   /** Replaced only by tests; production sends requests directly to DeepSeek. */
   readonly aiProviderFetch?: typeof fetch;
+  /** AND-150: FCM credentials for widget pushes. Absent means the push half stays off. */
+  readonly widgetPushServiceAccount?: WidgetPushServiceAccount;
+  /** Replaced only by tests; production talks to Google directly. */
+  readonly widgetPushFetch?: typeof fetch;
+  /** Replaced only by tests; production merges bursts over a few seconds. */
+  readonly widgetPushDebounceMs?: number;
 }
 
 type SdkRateLimitBucket = "draft_read" | "draft_write" | "finalize" | "web_session" | "attachment_upload" | "ai_title";
@@ -221,6 +236,17 @@ function stringField(body: Record<string, unknown>, field: string, required = tr
 
 /** How many items one bulk transition may move (AND-66). */
 const BULK_TRANSITION_LIMIT = 50;
+
+/**
+ * AND-181: a session snapshot the store's contract accepts (2_000 messages of
+ * up to 100_000 characters) can easily exceed Fastify's 1 MiB default
+ * bodyLimit. The 413 it answered with is indistinguishable from a network blip
+ * to the node, so a large session silently stopped syncing. The route keeps a
+ * bound of its own -- far above any real mirrored conversation, well under the
+ * attachment precedent -- so a hostile request still cannot buffer unbounded
+ * memory.
+ */
+const MAX_SNAPSHOT_BODY_BYTES = 32 * MEBIBYTE;
 
 function stringArrayField(body: Record<string, unknown>, field: string): readonly string[] | undefined {
   const value = body[field];
@@ -394,9 +420,9 @@ function oauthLoginPage(
   invalidCredentials = false,
 ): string {
   const writes = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools !== "none";
-  const writeGrant = "<strong>发表评论、把待处理的任务领为处理中、并在 PR 合并后推到待验证</strong>。"
-    + "只有这两个状态变更——验收、退回、搁置，以及做不了怎么办，都由你决定。"
-    + "<strong>在你于会话里确认内容后，从正在处理的条目拆出衍生条目</strong>。"
+  const writeGrant = "<strong>发表评论、领取待处理任务、在 PR 合并后标记开发完成，并在相关产物核实发布后推到待验证</strong>。"
+    + "只有这三种状态交接——验收、退回、搁置，以及做不了怎么办，都由你决定。"
+    + "<strong>在你于会话里确认完整内容后创建条目</strong>。"
     + "它不能修改你写的内容，不能删除条目，不能撤回评论。";
   const nodeGrant = "<strong>把这台 Mac 登记为你的设备</strong>：接收你在控制台派出的任务，并在本机启动 agent 会话处理。"
     + "随时可以在控制台「Agent 管理」里撤销。";
@@ -443,6 +469,50 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.adminAccount?.sessionSecret ?? options.adminToken ?? "local-development-only",
     options.aiProviderFetch,
   );
+  // AND-149/150: the summary behind GET /api/v1/widget/summary, shared with the
+  // push service so a device is told to refresh exactly what the route serves.
+  const widgetDevices = new WidgetDeviceStore(store.database);
+  const visibleAgentSessionsFor = (account: AccountSnapshot) =>
+    agentSessionStore.listForAccount(account.id)
+      .filter((session) => session.items.length > 0
+        && session.items.every((item) => accountStore.allows(account, item.productId, "view")));
+  const widgetSummaryFor = (account: AccountSnapshot): WidgetSummary => {
+    const sessions = visibleAgentSessionsFor(account);
+    const reachable = accountStore.reachableProductIds(account, "view");
+    const readyByProduct = new Map(
+      store.listProducts()
+        .filter((product) => reachable === "*" || reachable.includes(product.id))
+        .map((product) => [product.id, store.getWorkItemListSummary({ productId: product.id }).byStatus.ready]),
+    );
+    const summarySession = (session: (typeof sessions)[number]): WidgetSummarySession => ({
+      id: session.id,
+      status: session.status,
+      needsAttention: session.needsAttention,
+      ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
+      ...(session.command ? { command: { status: session.command.status } } : {}),
+      items: session.items.map((item) => ({ productId: item.productId, key: item.key })),
+      attention: session.attention,
+      ...(session.latestMessage ? { latestMessageText: session.latestMessage.text } : {}),
+    });
+    return widgetSummary(sessions.map(summarySession), readyByProduct);
+  };
+  const widgetPush = new WidgetPushService({
+    devices: widgetDevices,
+    summaryFor: (accountId) => {
+      try {
+        const account = accountStore.getAccount(accountId);
+        return account.disabledAt ? undefined : widgetSummaryFor(account);
+      } catch {
+        // A deleted account's devices go with it (FK cascade); anything left
+        // simply stops hearing about summaries.
+        return undefined;
+      }
+    },
+    ...(options.widgetPushServiceAccount ? { serviceAccount: options.widgetPushServiceAccount } : {}),
+    ...(options.widgetPushFetch ? { fetchImpl: options.widgetPushFetch } : {}),
+    ...(options.widgetPushDebounceMs !== undefined ? { debounceMs: options.widgetPushDebounceMs } : {}),
+    log: app.log,
+  });
   const attentionClassifications = new Map<string, Promise<void>>();
   const scheduleAttentionClassification = (sessionId: string): void => {
     if (!aiTitle.attentionEnabled() || attentionClassifications.has(sessionId)) return;
@@ -450,13 +520,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!candidate) return;
     const task = aiTitle.classifyAttention(candidate.text)
       .then((classification) => {
-        agentSessionStore.completeAttention(sessionId, candidate.messageHash, classification);
+        if (agentSessionStore.completeAttention(sessionId, candidate.messageHash, classification)) {
+          // The verdict landed outside any request; the widget's push side still
+          // has to hear that "needs attention" may have changed.
+          widgetPush.noteChanged();
+        }
       })
       .catch(() => {
         // Missing credentials, provider failures and malformed model output all
         // fail safe: the person sees the session instead of silently missing a
         // request. Provider bodies and message text never reach logs.
-        agentSessionStore.failAttention(sessionId, candidate.messageHash);
+        if (agentSessionStore.failAttention(sessionId, candidate.messageHash)) {
+          widgetPush.noteChanged();
+        }
       });
     attentionClassifications.set(sessionId, task);
     void task.finally(() => attentionClassifications.delete(sessionId));
@@ -606,12 +682,73 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     (_request, body, done) => done(null, body),
   );
 
+  // AND-182: the Mac node gzip-compresses snapshot uploads, because a mirrored
+  // transcript re-uploaded whole on every poll was most of its traffic. The
+  // hook unwraps the body before the parsers see it, so the route's bodyLimit
+  // counts decoded bytes: a compressed bomb still stops at the limit, and the
+  // limit says what it always said -- how much snapshot the server will read.
+  // The cap has to live here rather than in the framework's own accounting
+  // because that one detaches its listeners mid-stream without destroying the
+  // pipe, and the orphaned decompressor then surfaces as a 500; cutting the
+  // chain here keeps the failure a clean 413. A corrupt body surfaces through
+  // the same destroy as a plain stream error, which Fastify answers with 400.
+  app.addHook("preParsing", async (request, _reply, payload) => {
+    const encoding = Array.isArray(request.headers["content-encoding"])
+      ? request.headers["content-encoding"][0]
+      : request.headers["content-encoding"];
+    if (encoding?.trim().toLowerCase() !== "gzip") return payload;
+    if (typeof (payload as { pipe?: unknown }).pipe !== "function") return payload;
+    // The header still names the compressed wire size, which the decoded stream
+    // can never match (FST_ERR_CTP_INVALID_CONTENT_LENGTH); without it the
+    // parser counts the decoded bytes against bodyLimit alone.
+    delete request.headers["content-length"];
+    const limit = request.routeOptions.bodyLimit ?? 1024 * 1024;
+    const gunzip = createGunzip();
+    let decoded = 0;
+    const capped = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        decoded += chunk.length;
+        if (decoded > limit) {
+          callback(new MissionGoError(
+            "gzip_body_too_large",
+            `The decoded gzip request body exceeds the route's limit of ${limit} bytes.`,
+            413,
+          ));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    gunzip.on("error", (error) => {
+      // Both a corrupt body and the teardown after the cap tripped arrive
+      // here; past the cap the stream is already gone and there is nothing
+      // left to report.
+      if (!capped.destroyed) {
+        capped.destroy(invalidInput(`The gzip request body could not be decoded: ${error.message}`, "invalid_gzip_body"));
+      }
+    });
+    return (payload as NodeJS.ReadableStream).pipe(gunzip).pipe(capped);
+  });
+
   app.decorate("missionGoStore", store);
   app.decorate("missionGoAccounts", accountStore);
   app.addHook("onClose", async () => {
     await Promise.allSettled(attentionClassifications.values());
+    await widgetPush.close();
     await mcpHandler?.close();
     store.close();
+  });
+
+  // AND-150: every mutating API call may have changed what a widget shows. The
+  // net is wide on purpose -- the fingerprint comparison in WidgetPushService,
+  // not this hook, is what keeps devices quiet, so a new mutation endpoint is
+  // covered the day it ships. Heartbeats are the one exclusion: they arrive on
+  // a timer forever and change nothing a widget displays.
+  app.addHook("onResponse", async (request) => {
+    if (request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") return;
+    const path = request.url.split("?", 1)[0]!;
+    if (!path.startsWith("/api/v1/") || path === "/api/v1/node/heartbeat") return;
+    widgetPush.noteChanged();
   });
 
   // Baseline security headers, so they survive swapping the reverse proxy. CSP
@@ -656,10 +793,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
   });
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler<FastifyError>((error, _request, reply) => {
     if (error instanceof MissionGoError) {
       return reply.status(error.statusCode).send({
         type: `urn:missiongo:problem:${error.code}`,
+        title: error.message,
+        status: error.statusCode,
+        code: error.code,
+      });
+    }
+
+    // Fastify's own refusals -- a body over a route's limit, a malformed JSON
+    // payload -- arrive carrying the status they mean to answer with. Folding
+    // them into a 500 hides what actually happened; the 413 is the very signal
+    // an oversized snapshot produces (AND-181). Only 4xx passes through: an
+    // error claiming anything else is still a bug worth a 500 and a log line.
+    if (error.statusCode !== undefined && error.statusCode >= 400 && error.statusCode < 500) {
+      return reply.status(error.statusCode).send({
+        type: "urn:missiongo:problem:request_rejected",
         title: error.message,
         status: error.statusCode,
         code: error.code,
@@ -1772,17 +1923,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // be what spends AI calls.
   app.get("/api/v1/widget/summary", async (request, reply) => {
     reply.header("cache-control", "no-store");
+    return widgetSummaryFor(requireAccount(request));
+  });
+
+  // AND-150: the app registers its FCM token with the session cookie it already
+  // holds from the WebView sign-in, and drops it on sign-out. A token seen again
+  // under a different account is that account's now: FCM mints one token per
+  // install, so a re-login must rebind rather than keep pushing the old account.
+  app.put("/api/v1/widget/device", async (request) => {
     const account = requireAccount(request);
-    const sessions = agentSessionStore.listForAccount(account.id)
-      .filter((session) => session.items.length > 0
-        && session.items.every((item) => accountStore.allows(account, item.productId, "view")));
-    const reachable = accountStore.reachableProductIds(account, "view");
-    const readyByProduct = new Map(
-      store.listProducts()
-        .filter((product) => reachable === "*" || reachable.includes(product.id))
-        .map((product) => [product.id, store.getWorkItemListSummary({ productId: product.id }).byStatus.ready]),
-    );
-    return widgetSummary(sessions, readyByProduct);
+    widgetDevices.register(account.id, stringField(objectBody(request.body), "token")!);
+    return { registered: true };
   });
 
   app.patch("/api/v1/agent-sessions/:sessionId", async (request) => {
@@ -1977,6 +2128,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return dispatchStore.describeSelf(node.nodeId, nodeProducts(node.accountId));
   });
 
+  // A Mac only holds its node credential. Give it the same all-product
+  // "needs attention" count as the console, scoped to its owner's current
+  // view permissions. Reading this never schedules AI classification.
+  app.get("/api/v1/node/attention-summary", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    const node = requireNode(request);
+    const account = accountStore.getAccount(node.accountId);
+    return {
+      attention: visibleAgentSessionsFor(account)
+        .filter((session) => !session.archivedAt && session.needsAttention).length,
+    };
+  });
+
   app.put("/api/v1/node/repos", async (request) => {
     const node = requireNode(request);
     const body = objectBody(request.body);
@@ -2008,97 +2172,112 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { sessions: agentSessionStore.listForNode(node.nodeId) };
   });
 
-  app.post("/api/v1/node/agent-sessions/:sessionId/snapshot", async (request, reply) => {
-    const node = requireNode(request);
-    const { sessionId } = request.params as { sessionId: string };
-    const body = objectBody(request.body);
-    const status = stringField(body, "status") as AgentSessionStatus;
-    if (!["active", "idle", "suspended", "stalled", "unavailable", "failed"].includes(status)) {
-      throw invalidInput("status must be active, idle, suspended, stalled, unavailable, or failed.");
-    }
-    if (!Array.isArray(body.messages)) throw invalidInput("messages must be an array.");
-    const messages = body.messages.map((entry) => {
-      const message = objectBody(entry);
-      const role = stringField(message, "role") as AgentMessageRole;
-      if (!["user", "agent", "plan"].includes(role)) {
-        throw invalidInput("message role must be user, agent, or plan.");
+  app.post(
+    "/api/v1/node/agent-sessions/:sessionId/snapshot",
+    // Counted after the gzip hook unwraps the body (see MAX_SNAPSHOT_BODY_BYTES).
+    { bodyLimit: MAX_SNAPSHOT_BODY_BYTES },
+    async (request, reply) => {
+      const node = requireNode(request);
+      const { sessionId } = request.params as { sessionId: string };
+      const body = objectBody(request.body);
+      const status = stringField(body, "status") as AgentSessionStatus;
+      if (!["active", "idle", "suspended", "stalled", "unavailable", "failed"].includes(status)) {
+        throw invalidInput("status must be active, idle, suspended, stalled, unavailable, or failed.");
       }
-      let questions: Array<{ header?: string; title: string; options?: string[]; multiSelect?: boolean }> | undefined;
-      if (message.questions !== undefined) {
-        if (!Array.isArray(message.questions)) throw invalidInput("questions must be an array.");
-        questions = message.questions.map((entry) => {
-          const question = objectBody(entry);
-          const options = stringArrayField(question, "options");
-          return {
-            ...(stringField(question, "header", false) ? { header: question.header as string } : {}),
-            title: stringField(question, "title")!,
-            ...(options ? { options: [...options] } : {}),
-            ...(typeof question.multiSelect === "boolean" ? { multiSelect: question.multiSelect } : {}),
-          };
-        });
+      if (!Array.isArray(body.messages)) throw invalidInput("messages must be an array.");
+      const messages = body.messages.map((entry) => {
+        const message = objectBody(entry);
+        const role = stringField(message, "role") as AgentMessageRole;
+        if (!["user", "agent", "plan"].includes(role)) {
+          throw invalidInput("message role must be user, agent, or plan.");
+        }
+        let questions: Array<{
+          header?: string; title: string; options?: string[]; multiSelect?: boolean;
+          key?: string; kind?: "text" | "number" | "boolean"; placeholder?: string;
+        }> | undefined;
+        if (message.questions !== undefined) {
+          if (!Array.isArray(message.questions)) throw invalidInput("questions must be an array.");
+          questions = message.questions.map((entry) => {
+            const question = objectBody(entry);
+            const options = stringArrayField(question, "options");
+            const kind = stringField(question, "kind", false);
+            if (kind !== undefined && !["text", "number", "boolean"].includes(kind)) {
+              throw invalidInput("question kind must be text, number, or boolean.");
+            }
+            return {
+              ...(stringField(question, "header", false) ? { header: question.header as string } : {}),
+              title: stringField(question, "title")!,
+              ...(options ? { options: [...options] } : {}),
+              ...(typeof question.multiSelect === "boolean" ? { multiSelect: question.multiSelect } : {}),
+              ...(stringField(question, "key", false) ? { key: question.key as string } : {}),
+              ...(kind ? { kind: kind as "text" | "number" | "boolean" } : {}),
+              ...(stringField(question, "placeholder", false) ? { placeholder: question.placeholder as string } : {}),
+            };
+          });
+        }
+        return {
+          sourceId: stringField(message, "sourceId")!,
+          ...(stringField(message, "turnId", false) ? { turnId: message.turnId as string } : {}),
+          role,
+          ...(stringField(message, "phase", false) ? { phase: message.phase as string } : {}),
+          text: stringField(message, "text")!,
+          ...(stringField(message, "occurredAt", false) ? { occurredAt: message.occurredAt as string } : {}),
+          ...(questions ? { questions } : {}),
+        };
+      });
+      if (body.activities !== undefined && !Array.isArray(body.activities)) {
+        throw invalidInput("activities must be an array.");
       }
-      return {
-        sourceId: stringField(message, "sourceId")!,
-        ...(stringField(message, "turnId", false) ? { turnId: message.turnId as string } : {}),
-        role,
-        ...(stringField(message, "phase", false) ? { phase: message.phase as string } : {}),
-        text: stringField(message, "text")!,
-        ...(stringField(message, "occurredAt", false) ? { occurredAt: message.occurredAt as string } : {}),
-        ...(questions ? { questions } : {}),
-      };
-    });
-    if (body.activities !== undefined && !Array.isArray(body.activities)) {
-      throw invalidInput("activities must be an array.");
-    }
-    const activities = (Array.isArray(body.activities) ? body.activities : []).map((entry) => {
-      const activity = objectBody(entry);
-      return {
-        id: stringField(activity, "id")!,
-        title: stringField(activity, "title")!,
-        ...(stringField(activity, "detail", false) ? { detail: activity.detail as string } : {}),
-      };
-    });
-    const commandStatusValue = stringField(body, "commandStatus", false);
-    if (commandStatusValue && !["delivering", "delivered", "failed"].includes(commandStatusValue)) {
-      throw invalidInput("commandStatus must be delivering, delivered, or failed.");
-    }
-    const commandStatus = commandStatusValue as "delivering" | "delivered" | "failed" | undefined;
-    if (body.sourceArchived !== undefined && typeof body.sourceArchived !== "boolean") {
-      throw invalidInput("sourceArchived must be true or false.");
-    }
-    const settingsRevisionValue = body.settingsRevision ?? undefined;
-    if (settingsRevisionValue !== undefined
-      && (typeof settingsRevisionValue !== "number" || !Number.isInteger(settingsRevisionValue) || settingsRevisionValue < 0)) {
-      throw invalidInput("settingsRevision must be a non-negative integer.");
-    }
-    const settingsRevision = settingsRevisionValue as number | undefined;
-    agentSessionStore.recordSnapshot({
-      nodeId: node.nodeId,
-      sessionId,
-      status,
-      messages,
-      activities,
-      ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
-      ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),
-      ...(commandStatus ? { commandStatus } : {}),
-      ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
-      ...(typeof body.sourceArchived === "boolean" ? { sourceArchived: body.sourceArchived } : {}),
-      ...(body.sourceRestored === true ? { sourceRestored: true } : {}),
-      ...(stringField(body, "sourceArchiveError", false)
-        ? { sourceArchiveError: body.sourceArchiveError as string }
-        : {}),
-      ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
-      ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
-      ...(optionalName(body, "modelEndpoint") ? { modelEndpoint: optionalName(body, "modelEndpoint")! } : {}),
-      ...(settingsRevision !== undefined ? { settingsRevision } : {}),
-      ...(stringField(body, "settingsError", false) ? { settingsError: body.settingsError as string } : {}),
-      ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
-      ...(body.clearSessionUrl === true ? { clearSessionUrl: true } : {}),
-      ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
-    });
-    scheduleAttentionClassification(sessionId);
-    return reply.status(204).send();
-  });
+      const activities = (Array.isArray(body.activities) ? body.activities : []).map((entry) => {
+        const activity = objectBody(entry);
+        return {
+          id: stringField(activity, "id")!,
+          title: stringField(activity, "title")!,
+          ...(stringField(activity, "detail", false) ? { detail: activity.detail as string } : {}),
+        };
+      });
+      const commandStatusValue = stringField(body, "commandStatus", false);
+      if (commandStatusValue && !["delivering", "delivered", "failed"].includes(commandStatusValue)) {
+        throw invalidInput("commandStatus must be delivering, delivered, or failed.");
+      }
+      const commandStatus = commandStatusValue as "delivering" | "delivered" | "failed" | undefined;
+      if (body.sourceArchived !== undefined && typeof body.sourceArchived !== "boolean") {
+        throw invalidInput("sourceArchived must be true or false.");
+      }
+      const settingsRevisionValue = body.settingsRevision ?? undefined;
+      if (settingsRevisionValue !== undefined
+        && (typeof settingsRevisionValue !== "number" || !Number.isInteger(settingsRevisionValue) || settingsRevisionValue < 0)) {
+        throw invalidInput("settingsRevision must be a non-negative integer.");
+      }
+      const settingsRevision = settingsRevisionValue as number | undefined;
+      agentSessionStore.recordSnapshot({
+        nodeId: node.nodeId,
+        sessionId,
+        status,
+        messages,
+        activities,
+        ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
+        ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),
+        ...(commandStatus ? { commandStatus } : {}),
+        ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
+        ...(typeof body.sourceArchived === "boolean" ? { sourceArchived: body.sourceArchived } : {}),
+        ...(body.sourceRestored === true ? { sourceRestored: true } : {}),
+        ...(stringField(body, "sourceArchiveError", false)
+          ? { sourceArchiveError: body.sourceArchiveError as string }
+          : {}),
+        ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
+        ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
+        ...(optionalName(body, "modelEndpoint") ? { modelEndpoint: optionalName(body, "modelEndpoint")! } : {}),
+        ...(settingsRevision !== undefined ? { settingsRevision } : {}),
+        ...(stringField(body, "settingsError", false) ? { settingsError: body.settingsError as string } : {}),
+        ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
+        ...(body.clearSessionUrl === true ? { clearSessionUrl: true } : {}),
+        ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
+      });
+      scheduleAttentionClassification(sessionId);
+      return reply.status(204).send();
+    },
+  );
 
   app.post("/api/v1/node/heartbeat", async (request) => {
     const node = requireNode(request);

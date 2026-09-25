@@ -1,10 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The attention notifications (AND-150). Requested from the activity on
+         first launch; without it the push signals still refresh the widget. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Only so the app can offer to clear the screenshots it just uploaded. It
          asks at the moment the offer is accepted, never on launch. -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <!-- AND-185: Huawei and HONOR launchers take the icon count through their own
+         badge provider, which requires its permission. Unknown to every other
+         ROM, where an undeclared-but-unused permission is simply ignored. -->
+    <uses-permission android:name="com.hihonor.android.launcher.permission.CHANGE_BADGE" />
+    <uses-permission android:name="com.huawei.android.launcher.permission.CHANGE_BADGE" />
 
     <application
         android:name="io.missiongo.android.MissionGoApplication"
@@ -56,5 +64,20 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/missiongo_widget_info" />
         </receiver>
+
+        <!-- AND-150: the FCM signal arrives here, and the notification's
+             「无需处理」button comes back to the receiver below. Both are driven
+             by explicit intents from this app only. -->
+        <service
+            android:name="io.missiongo.android.push.MissionGoMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name="io.missiongo.android.push.DismissReceiver"
+            android:exported="false" />
     </application>
 </manifest>

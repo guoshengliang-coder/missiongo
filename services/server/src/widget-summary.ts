@@ -14,7 +14,25 @@ export interface WidgetSummarySession {
   readonly needsAttention: boolean;
   readonly archivedAt?: string;
   readonly command?: { readonly status: string };
-  readonly items: readonly { readonly productId: string }[];
+  readonly items: readonly { readonly productId: string; readonly key?: string }[];
+  /** What the notification shows for a conversation waiting on the person (AND-150). */
+  readonly attention?: {
+    readonly kind?: string;
+    readonly reason?: string;
+    readonly revision?: string;
+  };
+  readonly latestMessageText?: string;
+}
+
+/** One notification line (AND-150): what is waiting, and what a tap or "无需处理" acts on. */
+export interface WidgetAttentionEntry {
+  readonly sessionId: string;
+  readonly itemKeys: readonly string[];
+  readonly productId: string | null;
+  readonly kind: string;
+  readonly reason?: string;
+  readonly excerpt: string;
+  readonly revision: string;
 }
 
 export interface WidgetSummary {
@@ -33,6 +51,8 @@ export interface WidgetSummary {
     /** Where a tap lands: the product with the most ready items. */
     readonly readyProductId: string | null;
   };
+  /** Same conversations as agent.attention, with what a notification needs to say about each. */
+  readonly attentionEntries: readonly WidgetAttentionEntry[];
 }
 
 /**
@@ -51,6 +71,13 @@ function busiest(counts: ReadonlyMap<string, number>): string | null {
     }
   }
   return best;
+}
+
+/** Short, single-line: a notification line, not a transcript. */
+function excerpt(text: string | undefined): string {
+  if (!text) return "";
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  return collapsed.length <= 140 ? collapsed : `${collapsed.slice(0, 140)}…`;
 }
 
 export function widgetSummary(
@@ -83,5 +110,19 @@ export function widgetSummary(
       ready,
       readyProductId: busiest(readyByProduct),
     },
+    attentionEntries: attention.map((session) => {
+      const itemKeys = session.items
+        .map((item) => item.key)
+        .filter((key): key is string => Boolean(key));
+      return {
+        sessionId: session.id,
+        itemKeys,
+        productId: session.items[0]?.productId ?? null,
+        kind: session.attention?.kind ?? "uncertain",
+        ...(session.attention?.reason ? { reason: session.attention.reason } : {}),
+        excerpt: excerpt(session.latestMessageText),
+        revision: session.attention?.revision ?? "",
+      };
+    }),
   };
 }

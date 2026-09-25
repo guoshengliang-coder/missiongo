@@ -8,13 +8,27 @@ struct MissionGoApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @ObservedObject private var model = AppModel.shared
 
+    private var appLabel: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "应用"
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuContentView()
                 .environmentObject(model)
         } label: {
-            Image(systemName: model.menuBarSymbol)
-                .accessibilityLabel("MissionGo")
+            HStack(spacing: 3) {
+                Image(systemName: model.menuBarSymbol)
+                if let count = model.attentionCount, count > 0 {
+                    Text(String(count))
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .frame(minWidth: 14, minHeight: 14)
+                        .background(.red, in: Capsule())
+                }
+            }
+            .accessibilityLabel(model.attentionCount.map { $0 > 0 ? "\(appLabel)，待我处理 \($0)" : appLabel } ?? appLabel)
         }
         .menuBarExtraStyle(.window)
     }
@@ -26,18 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var phaseObservation: AnyCancellable?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // The bundle sets LSUIElement; this covers running the bare executable
-        // from `swift run` or `.build/debug`, which has no Info.plist.
-        NSApp.setActivationPolicy(.accessory)
+        // The Dock stays visible even when the window closes, so its number
+        // remains useful alongside the menu-bar badge.
+        NSApp.setActivationPolicy(.regular)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // A menu-bar icon alone read as "the app does not open": the first person
-        // to install it double-clicked, saw nothing, and could not find the icon —
-        // on a MacBook the notch hides whatever does not fit, and macOS can hide an
-        // app's item from System Settings. So whenever the Mac is not signed in,
-        // the same content opens as an ordinary window. A signed-in Mac starting
-        // at login stays out of the way in the menu bar.
+        // When signed out, open the same content as a normal window so the
+        // sign-in action is immediately visible. Signed-in startup stays quiet.
         phaseObservation = AppModel.shared.$phase
             .removeDuplicates()
             .sink { [mainWindow] phase in
@@ -58,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// The menu's content in a normal window, for everyone who cannot or does not
 /// know to use the menu-bar icon.
 @MainActor
-final class MainWindowController: NSObject, NSWindowDelegate {
+final class MainWindowController: NSObject {
     private var window: NSWindow?
     /// The content's natural height, as last measured.
     private var measuredHeight: CGFloat?
@@ -68,9 +78,6 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     func show() {
         let window = self.window ?? makeWindow()
         self.window = window
-        // A Dock icon and a place in ⌘-Tab while the window is open, so it cannot
-        // get lost behind other windows; back to menu-bar-only when it closes.
-        NSApp.setActivationPolicy(.regular)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -112,7 +119,6 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         window.title = "MissionGo"
         window.contentView = content
         window.isReleasedWhenClosed = false
-        window.delegate = self
         window.center()
         self.window = window
         fitToContent()
@@ -171,10 +177,6 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             if frame.minY < visible.minY { frame.origin.y = visible.minY }
         }
         window.setFrame(frame, display: true)
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
     }
 }
 

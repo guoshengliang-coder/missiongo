@@ -39,6 +39,29 @@ public extension AgentAdapter {
     }
 }
 
+/// The last model list an agent gave, so a heartbeat every 30 seconds does not
+/// ask its daemon each time, and a failed ask still has an answer. Shared by
+/// every adapter that lists models (Codex, OpenCode).
+final class ModelListCache: @unchecked Sendable {
+    private let entry = Locked<(models: [AgentModelOption], at: Date)?>(nil)
+    let ttl: TimeInterval
+
+    init(ttl: TimeInterval = 10 * 60) {
+        self.ttl = ttl
+    }
+
+    func fresh(now: Date = Date()) -> [AgentModelOption]? {
+        guard let cached = entry.current, now.timeIntervalSince(cached.at) < ttl else { return nil }
+        return cached.models
+    }
+
+    var last: [AgentModelOption]? { entry.current?.models }
+
+    func store(_ models: [AgentModelOption], now: Date = Date()) {
+        entry.withLock { $0 = (models, now) }
+    }
+}
+
 public enum AgentDispatchAvailability: Equatable, Sendable {
     case ready
     case unavailable(reason: String)
@@ -824,7 +847,14 @@ public struct SessionLauncher: AgentAdapter {
                 activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )
         }
-        if command.kind == "message", ["active", "stalled"].contains(state.status), !state.waitingForInput {
+        // A running turn is not interrupted by a queued reply: the host only
+        // reads commands at a turn boundary anyway. But `status` alone cannot
+        // answer "is a turn running": a background task keeps it "active"
+        // after the turn's `result`. Waiting on that used to strand a reply
+        // for as long as the background task lived, so the decision reads the
+        // turn flag instead. A state from a host that predates it decodes as
+        // turnActive = true and keeps the old, conservative behaviour.
+        if command.kind == "message", ["active", "stalled"].contains(state.status), !state.waitingForInput, state.turnActive {
             return AgentSessionReport(
                 status: state.status, messages: state.messages, activities: state.activities,
                 error: state.error, sessionUrl: state.sessionUrl,

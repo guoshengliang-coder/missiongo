@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The protocol calls the loop makes, so a test can stand in for the server.
@@ -81,6 +82,20 @@ final class StopSignal: @unchecked Sendable {
         sleepers.forEach { $0.resume() }
     }
 
+    /// Resumes every sleeper without stopping: the loops run their next round
+    /// at once instead of waiting out the interval. This is the reconnect
+    /// button (AND-177) — a person should not wait out the heartbeat interval
+    /// to learn whether the network came back. Safe when nothing sleeps, and a
+    /// no-op once the loop has stopped.
+    func wake() {
+        let sleepers = state.withLock { value -> [CheckedContinuation<Void, Never>] in
+            guard !value.stopped else { return [] }
+            defer { value.sleepers = [:] }
+            return Array(value.sleepers.values)
+        }
+        sleepers.forEach { $0.resume() }
+    }
+
     /// Sleeps for `seconds`, or until `stop()`, whichever comes first.
     func sleep(_ seconds: TimeInterval) async {
         let id = UUID()
@@ -157,6 +172,9 @@ public final class NodeLoop: @unchecked Sendable {
     /// Every state change, starting with the current one. Also delivered to
     /// `onState`; use whichever suits the caller.
     public let states: AsyncStream<NodeLoopState>
+    /// The signal the running loops sleep on. Held as an instance property so
+    /// `retryNow()` can wake them; created once because `run()` runs once.
+    private let stopSignal = StopSignal()
 
     private let agentCache = Locked<(agents: [DetectedAgent], at: Date)?>(nil)
     private let lastReposFingerprint = Locked<[RepoMapping]?>(nil)
@@ -196,6 +214,13 @@ public final class NodeLoop: @unchecked Sendable {
         return state.current
     }
 
+    /// Runs both loops' next round now instead of waiting out their intervals
+    /// (AND-177). A heartbeat or claim already under way is left to finish;
+    /// a loop that has ended ignores this.
+    public func retryNow() {
+        stopSignal.wake()
+    }
+
     /// Runs both loops until the calling task is cancelled or the credential is
     /// refused, in which case it throws `APIError.credentialRevoked`.
     ///
@@ -207,7 +232,7 @@ public final class NodeLoop: @unchecked Sendable {
     /// A loop runs once: `states` finishes when `run()` returns, so logging in
     /// again means creating a new `NodeLoop` with the new credential.
     public func run() async throws {
-        let stop = StopSignal()
+        let stop = stopSignal
         let fatal = Locked<APIError?>(nil)
         update { $0.connection = .connecting }
 
@@ -332,11 +357,21 @@ public final class NodeLoop: @unchecked Sendable {
     }
 
     private func sessionLoop(stop: StopSignal, fatal: Locked<APIError?>) async {
+        /// Reports the server has already accepted, by session id (AND-182). A
+        /// mirrored transcript re-reads unchanged for most of a long tool call,
+        /// and re-uploading it whole every poll was most of the node's traffic.
+        /// The fingerprint covers the entire encoded report, so anything the
+        /// server reads — status, a delivered reply's command status, settings
+        /// revisions — still goes out the moment it changes. It is recorded only
+        /// after a report succeeded, so a failed upload is retried.
+        var reported: [String: Data] = [:]
         while !stop.isStopped {
             await shielded {
                 do {
                     let sessions = try await self.api.listAgentSessions()
                     self.reconcileCapacity(sessions)
+                    let live = Set(sessions.map(\.id))
+                    reported.keys.forEach { if !live.contains($0) { reported.removeValue(forKey: $0) } }
                     for session in sessions {
                         guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else { continue }
                         let report: AgentSessionReport
@@ -347,7 +382,13 @@ public final class NodeLoop: @unchecked Sendable {
                                 status: "unavailable", messages: [], error: error.localizedDescription
                             )
                         }
+                        // No fingerprint means the report cannot be encoded at
+                        // all; uploading it unconditionally errs on the side
+                        // of the server hearing about the session.
+                        let fingerprint = Self.fingerprint(of: report)
+                        if let fingerprint, reported[session.id] == fingerprint { continue }
                         try await self.api.reportAgentSession(sessionId: session.id, report: report)
+                        if let fingerprint { reported[session.id] = fingerprint }
                     }
                 } catch {
                     self.handle(error, what: "同步 Agent 会话出错", stop: stop, fatal: fatal)
@@ -355,6 +396,12 @@ public final class NodeLoop: @unchecked Sendable {
             }
             await stop.sleep(timing.sessionInterval)
         }
+    }
+
+    /// A stable digest of everything a report says. `APIClient.encoder` sorts
+    /// keys, so the same report value always encodes to the same bytes.
+    private static func fingerprint(of report: AgentSessionReport) -> Data? {
+        return (try? APIClient.encoder.encode(report)).map { Data(SHA256.hash(data: $0)) }
     }
 
     private func hasExecutionCapacity(now: Date = Date()) -> Bool {

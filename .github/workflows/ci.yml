@@ -82,6 +82,7 @@ jobs:
         run: >-
           ./gradlew
           :missiongo-feedback:testDebugUnitTest
+          :missiongo-android-app:testDebugUnitTest
           :sample:assembleDebug
           :missiongo-android-app:assembleDebug
 

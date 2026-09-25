@@ -1,4 +1,5 @@
 import Foundation
+import zlib
 
 /// The node side of the dispatch protocol.
 ///
@@ -79,27 +80,35 @@ public struct AgentModelOption: Codable, Equatable, Sendable {
     /// What goes back to the agent: `--model` for Claude Code, `model` for Codex.
     public let id: String
     public let label: String
+    /// The vendor the agent lists the model under (OpenCode reports one group
+    /// per provider). nil for agents without such a grouping.
+    public let provider: String?
     /// Reasoning efforts the model accepts; empty when it takes none.
     public let efforts: [String]
     public let defaultEffort: String?
     public let isDefault: Bool?
 
-    public init(id: String, label: String, efforts: [String] = [], defaultEffort: String? = nil, isDefault: Bool? = nil) {
+    public init(
+        id: String, label: String, provider: String? = nil, efforts: [String] = [], defaultEffort: String? = nil,
+        isDefault: Bool? = nil
+    ) {
         self.id = id
         self.label = label
+        self.provider = provider
         self.efforts = efforts
         self.defaultEffort = defaultEffort
         self.isDefault = isDefault
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, label, efforts, defaultEffort, isDefault
+        case id, label, provider, efforts, defaultEffort, isDefault
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
         label = try values.decodeIfPresent(String.self, forKey: .label) ?? id
+        provider = try values.decodeIfPresent(String.self, forKey: .provider)
         efforts = try values.decodeIfPresent([String].self, forKey: .efforts) ?? []
         defaultEffort = try values.decodeIfPresent(String.self, forKey: .defaultEffort)
         isDefault = try values.decodeIfPresent(Bool.self, forKey: .isDefault)
@@ -419,16 +428,38 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
 }
 
 public struct AgentSessionQuestion: Codable, Equatable, Sendable {
+    /// A non-choice control for a form field. Absent means the question either
+    /// offers `options` or is display-only, which is what Claude and Codex send.
+    public enum Kind: String, Codable, Equatable, Sendable {
+        case text, number, boolean
+    }
+
     public let header: String?
     public let title: String
     public let options: [String]?
     public let multiSelect: Bool?
+    /// The key a person's answer is matched on when it differs from `title`.
+    /// OpenCode form fields reply by key; Claude and Codex reply by title.
+    public let key: String?
+    public let kind: Kind?
+    public let placeholder: String?
 
-    public init(header: String? = nil, title: String, options: [String]? = nil, multiSelect: Bool? = nil) {
+    public init(
+        header: String? = nil,
+        title: String,
+        options: [String]? = nil,
+        multiSelect: Bool? = nil,
+        key: String? = nil,
+        kind: Kind? = nil,
+        placeholder: String? = nil
+    ) {
         self.header = header
         self.title = title
         self.options = options
         self.multiSelect = multiSelect
+        self.key = key
+        self.kind = kind
+        self.placeholder = placeholder
     }
 }
 
@@ -522,6 +553,18 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     /// The same report carrying the session's settings. Kept apart so every
     /// branch that decides status and commands need not repeat them.
     public func reportingSettings(model: String?, effort: String?, modelEndpoint: String? = nil, settingsRevision: Int?, settingsError: String?, clearSessionUrl: Bool? = nil) -> AgentSessionReport {
+        AgentSessionReport(
+            status: status, messages: messages, activities: activities, error: error,
+            commandId: commandId, commandStatus: commandStatus, commandError: commandError,
+            sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
+            sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
+            model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError
+        )
+    }
+
+    /// The same report mirroring only `messages`, used when the upload budget
+    /// forces the oldest history out (AND-181).
+    public func replacingMessages(_ messages: [AgentSessionMessage]) -> AgentSessionReport {
         AgentSessionReport(
             status: status, messages: messages, activities: activities, error: error,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
@@ -693,6 +736,103 @@ public struct NetworkFailure: Equatable, Sendable, CustomStringConvertible {
     }
 }
 
+// MARK: - Upload gzip
+
+/// gzip for request bodies (AND-182). A mirrored transcript is re-uploaded
+/// whole on every poll, so an uncompressed snapshot was most of the node's
+/// traffic; the server answers with a matching decompressing hook. `windowBits`
+/// of 31 in both directions asks zlib for the gzip wrapper rather than raw
+/// deflate, so what goes over the wire is a standard gzip stream.
+enum Gzip {
+    /// Bodies below this stay plain: gzip would barely shrink them and costs a
+    /// header, a trailer and a decompression pass on the server.
+    static let minimumBodySize = 1024
+
+    static func compress(_ data: Data) -> Data? {
+        guard !data.isEmpty else { return nil }
+        var stream = z_stream()
+        guard deflateInit2_(
+            &stream,
+            6,
+            Z_DEFLATED,
+            31,
+            8,
+            Z_DEFAULT_STRATEGY,
+            ZLIB_VERSION,
+            Int32(MemoryLayout<z_stream>.size)
+        ) == Z_OK else { return nil }
+        defer { deflateEnd(&stream) }
+
+        var output = Data()
+        let chunkSize = 65_536
+        var chunk = [UInt8](repeating: 0, count: chunkSize)
+        let status = data.withUnsafeBytes { (input: UnsafeRawBufferPointer) -> Int32 in
+            stream.next_in = UnsafeMutablePointer(mutating: input.bindMemory(to: Bytef.self).baseAddress)
+            // uInt is 32-bit; a body that large cannot be built here, but be
+            // explicit rather than truncating silently.
+            stream.avail_in = uInt(truncatingIfNeeded: input.count)
+            return chunk.withUnsafeMutableBytes { (sink: UnsafeMutableRawBufferPointer) -> Int32 in
+                while true {
+                    stream.next_out = sink.baseAddress?.assumingMemoryBound(to: Bytef.self)
+                    stream.avail_out = uInt(sink.count)
+                    let deflateStatus = deflate(&stream, Z_FINISH)
+                    output.append(contentsOf: sink.prefix(chunkSize - Int(stream.avail_out)))
+                    if deflateStatus == Z_STREAM_END || deflateStatus != Z_OK { return deflateStatus }
+                }
+            }
+        }
+        guard status == Z_STREAM_END else { return nil }
+        return output
+    }
+
+    /// The inverse, for tests and for the fallback check: only used offline.
+    static func decompress(_ data: Data) -> Data? {
+        guard !data.isEmpty else { return nil }
+        var stream = z_stream()
+        guard inflateInit2_(&stream, 31, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else { return nil }
+        defer { inflateEnd(&stream) }
+
+        var output = Data()
+        let chunkSize = 65_536
+        var chunk = [UInt8](repeating: 0, count: chunkSize)
+        let status = data.withUnsafeBytes { (input: UnsafeRawBufferPointer) -> Int32 in
+            stream.next_in = UnsafeMutablePointer(mutating: input.bindMemory(to: Bytef.self).baseAddress)
+            stream.avail_in = uInt(truncatingIfNeeded: input.count)
+            return chunk.withUnsafeMutableBytes { (sink: UnsafeMutableRawBufferPointer) -> Int32 in
+                while true {
+                    stream.next_out = sink.baseAddress?.assumingMemoryBound(to: Bytef.self)
+                    stream.avail_out = uInt(sink.count)
+                    let inflateStatus = inflate(&stream, Z_NO_FLUSH)
+                    output.append(contentsOf: sink.prefix(chunkSize - Int(stream.avail_out)))
+                    if inflateStatus == Z_STREAM_END || inflateStatus != Z_OK { return inflateStatus }
+                    if stream.avail_in == 0 { return Z_OK }  // truncated input
+                }
+            }
+        }
+        guard status == Z_STREAM_END else { return nil }
+        return output
+    }
+
+    static func looksLikeGzip(_ data: Data) -> Bool {
+        return data.count >= 2 && data[data.startIndex] == 0x1f && data[data.index(after: data.startIndex)] == 0x8b
+    }
+}
+
+/// Whether uploads still go out compressed. `APIClient` is a value type shared
+/// by copy, so the flag lives behind a lock: a fallback decided through one
+/// copy (`withToken`) has to hold for the others too.
+final class UploadCompression: @unchecked Sendable {
+    private let disabled = Locked(false)
+
+    var isDisabled: Bool {
+        return disabled.current
+    }
+
+    func disable() {
+        disabled.withLock { $0 = true }
+    }
+}
+
 // MARK: - Transport
 
 /// Drop trailing slashes from a server URL.
@@ -783,19 +923,42 @@ public struct APIClient: Sendable {
     public static let requestTimeout: TimeInterval = 15
     public static let defaultClaimWaitMs = 25_000
 
+    /// AND-181: the server's snapshot route caps a request body at 32 MiB, far
+    /// above any real mirrored conversation. The client stays under it with
+    /// room to spare so a large session uploads instead of being refused with a
+    /// 413 the sync loop treats as a generic offline blip.
+    static let snapshotUploadBudget = 30 * 1_024 * 1_024
+    /// The server refuses one message longer than 100_000 UTF-16 code units
+    /// (what its JavaScript `.length` counts), and the refusal rejects the
+    /// whole snapshot with a 400.
+    static let snapshotMessageTextLimit = 100_000
+    /// The server refuses a snapshot carrying more than 2_000 messages.
+    static let snapshotMessageCountLimit = 2_000
+
     public let serverUrl: String
     /// The node credential (`mgn_`). Only `register` runs without it.
     public let token: String?
     let transport: HTTPTransport
+    let uploadCompression: UploadCompression
 
     public init(serverUrl: String, token: String? = nil, session: URLSession = .shared) {
         self.serverUrl = normalizeServerUrl(serverUrl)
         self.token = token
         transport = HTTPTransport(session: session)
+        uploadCompression = UploadCompression()
+    }
+
+    /// Keeps the compression flag across the copy: a server that could not take
+    /// gzip uploads stays known as such after the credential changes.
+    init(serverUrl: String, token: String?, session: URLSession, uploadCompression: UploadCompression) {
+        self.serverUrl = normalizeServerUrl(serverUrl)
+        self.token = token
+        transport = HTTPTransport(session: session)
+        self.uploadCompression = uploadCompression
     }
 
     public func withToken(_ token: String) -> APIClient {
-        return APIClient(serverUrl: serverUrl, token: token, session: transport.session)
+        return APIClient(serverUrl: serverUrl, token: token, session: transport.session, uploadCompression: uploadCompression)
     }
 
     // MARK: Endpoints
@@ -913,14 +1076,76 @@ public struct APIClient: Sendable {
 
     public func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {
         let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/snapshot"
-        let response = try await send("POST", path, body: report, bearer: try nodeToken())
+        let response = try await send(
+            "POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true
+        )
         try requireSuccess(response, operation: "同步 Agent 会话")
+    }
+
+    /// The report as it can go on the wire: no message longer than the server's
+    /// per-message limit, no more messages than it accepts, and — when the
+    /// encoded body still exceeds the upload budget — the oldest messages
+    /// dropped until it fits. Every host funnels through here, so this one
+    /// chokepoint keeps a session of any size syncing (AND-181). Without it a
+    /// large session is refused with a 413 or 400 that the sync loop treats as
+    /// a generic offline blip, and its transcript silently stops updating.
+    static func uploadableSnapshot(
+        _ report: AgentSessionReport,
+        budget: Int = APIClient.snapshotUploadBudget
+    ) throws -> AgentSessionReport {
+        var messages = report.messages
+            .suffix(APIClient.snapshotMessageCountLimit)
+            .map { message in
+                AgentSessionMessage(
+                    sourceId: message.sourceId,
+                    turnId: message.turnId,
+                    role: message.role,
+                    phase: message.phase,
+                    text: APIClient.cappedText(message.text, limit: APIClient.snapshotMessageTextLimit),
+                    occurredAt: message.occurredAt,
+                    questions: message.questions
+                )
+            }
+        var uploadable = report.replacingMessages(messages)
+        while messages.count > 1, try APIClient.encoder.encode(uploadable).count > budget {
+            // Dropping a quarter at a time keeps a pathologically large session
+            // from re-encoding the full body hundreds of times on the way down.
+            messages.removeFirst(max(1, messages.count / 4))
+            uploadable = report.replacingMessages(messages)
+        }
+        return uploadable
+    }
+
+    /// Caps text at `limit` UTF-16 code units — the unit the server's JavaScript
+    /// `.length` counts. `prefix` counts grapheme clusters, each of which can
+    /// span several units, so emoji-heavy text may still be over afterwards and
+    /// sheds trailing characters until it fits.
+    private static func cappedText(_ text: String, limit: Int) -> String {
+        guard text.utf16.count > limit else { return text }
+        var prefix = text.prefix(limit)
+        while prefix.utf16.count > limit {
+            prefix = prefix.dropLast()
+        }
+        return String(prefix)
     }
 
     public func me() async throws -> NodeProfile {
         let response = try await send("GET", "/api/v1/node/me", body: Optional<String>.none, bearer: try nodeToken())
         try requireSuccess(response, operation: "读取本机信息")
         return try decode(response, operation: "读取本机信息")
+    }
+
+    public func attentionCount() async throws -> Int {
+        struct Reply: Decodable { let attention: Int }
+        let response = try await send(
+            "GET", "/api/v1/node/attention-summary", body: Optional<String>.none, bearer: try nodeToken()
+        )
+        try requireSuccess(response, operation: "读取待我处理数量")
+        let reply: Reply = try decode(response, operation: "读取待我处理数量")
+        guard reply.attention >= 0 else {
+            throw APIError.invalidResponse("待我处理数量不能为负数。")
+        }
+        return reply.attention
     }
 
     /// Sets this machine's nickname, or clears it with `nil`. The server answers
@@ -986,7 +1211,8 @@ public struct APIClient: Sendable {
         _ path: String,
         body: Body?,
         bearer: String,
-        timeout: TimeInterval = APIClient.requestTimeout
+        timeout: TimeInterval = APIClient.requestTimeout,
+        gzipBody: Bool = false
     ) async throws -> HTTPResponse {
         guard let url = URL(string: "\(serverUrl)\(path)") else {
             throw APIError.invalidResponse("服务地址不是合法的 URL：\(serverUrl)")
@@ -996,11 +1222,32 @@ public struct APIClient: Sendable {
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        var plain: Data?
+        var compressed: Data?
         if let body {
+            plain = try APIClient.encoder.encode(body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try APIClient.encoder.encode(body)
+            if gzipBody, !uploadCompression.isDisabled,
+               let encoded = plain, encoded.count >= Gzip.minimumBodySize,
+               let gzipped = Gzip.compress(encoded) {
+                compressed = gzipped
+            }
+            request.httpBody = compressed ?? plain
+            if compressed != nil {
+                request.setValue("gzip", forHTTPHeaderField: "Content-Encoding")
+            }
         }
-        let response = try await transport.send(request)
+        var response = try await transport.send(request)
+        if response.status == 400, compressed != nil, let plain {
+            // A server from before upload gzip (AND-182) parses the compressed
+            // bytes as JSON and refuses them. Retry the same body uncompressed
+            // and stop compressing uploads to this server for good; the worst
+            // case is one extra round trip once per client run.
+            uploadCompression.disable()
+            request.httpBody = plain
+            request.setValue(nil, forHTTPHeaderField: "Content-Encoding")
+            response = try await transport.send(request)
+        }
         if response.status == 401 || response.status == 403 {
             throw APIError.credentialRevoked(status: response.status, detail: HTTPTransport.problemTitle(response))
         }

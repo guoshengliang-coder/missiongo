@@ -22,6 +22,13 @@ data/
 *.p12
 *.mobileprovision
 
+# Firebase credentials (AND-150). google-services.json is copied into the
+# Android build from outside the repository at build time; the service-account
+# key never enters a checkout at all.
+google-services.json
+*firebase-service-account*.json
+*firebase-adminsdk*.json
+
 .DS_Store
 .idea/
 .vscode/

@@ -5,6 +5,10 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     let calls = Locked<[String]>([])
     let heartbeats = Locked<[[DetectedAgent]]>([])
     let reports = Locked<[(String, DispatchReport)]>([])
+    let sessionList = Locked<[NodeAgentSession]>([])
+    let sessionReports = Locked<[(String, AgentSessionReport)]>([])
+    let sessionUploadAttempts = Locked(0)
+    let sessionReportFailures = Locked(0)
     let queue: Locked<[Result<DispatchRequest?, Error>]>
     let heartbeatResult: Locked<Result<HeartbeatReply, Error>>
     let reportFailuresBeforeSuccess: Locked<Int>
@@ -45,6 +49,21 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
         if fail { throw APIError.network(NetworkFailure(host: "mg.test", error: URLError(.networkConnectionLost))) }
         reports.withLock { $0.append((dispatchId, report)) }
     }
+
+    func listAgentSessions() async throws -> [NodeAgentSession] {
+        return sessionList.current
+    }
+
+    func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {
+        sessionUploadAttempts.withLock { $0 += 1 }
+        let fail = sessionReportFailures.withLock { remaining -> Bool in
+            guard remaining > 0 else { return false }
+            remaining -= 1
+            return true
+        }
+        if fail { throw APIError.network(NetworkFailure(host: "mg.test", error: URLError(.networkConnectionLost))) }
+        sessionReports.withLock { $0.append((sessionId, report)) }
+    }
 }
 
 private struct FakeAdapter: AgentAdapter {
@@ -61,6 +80,31 @@ private struct FakeAdapter: AgentAdapter {
     func launch(_ job: DispatchJob) async throws -> LaunchResult {
         jobs.withLock { $0.append(job) }
         return try outcome.get()
+    }
+}
+
+/// Mirrors a session by replaying whatever reports it is currently holding, so
+/// a test can flip the transcript between rounds (AND-182 change detection).
+private final class SnapshotAdapter: AgentAdapter {
+    let kind = "claude_code"
+    private let reports: Locked<[AgentSessionReport]>
+
+    init(reports: [AgentSessionReport]) {
+        self.reports = Locked(reports)
+    }
+
+    func replaceReports(_ next: [AgentSessionReport]) {
+        reports.withLock { $0 = next }
+    }
+
+    func detect() async -> String? { "2.1.232" }
+
+    func launch(_ job: DispatchJob) async throws -> LaunchResult {
+        throw LaunchError("not used by these tests")
+    }
+
+    func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        return reports.withLock { $0.first ?? AgentSessionReport(status: "idle", messages: []) }
     }
 }
 
@@ -110,6 +154,12 @@ private func fastTiming() -> NodeLoop.Timing {
     timing.claimInterval = 0.01
     timing.agentUnavailableInterval = 0.01
     timing.resultRetryDelay = 0.01
+    return timing
+}
+
+private func snapshotTiming() -> NodeLoop.Timing {
+    var timing = fastTiming()
+    timing.sessionInterval = 0.02
     return timing
 }
 
@@ -377,5 +427,102 @@ final class NodeLoopTests: XCTestCase {
         task.cancel()
         try await task.value
         XCTAssertTrue(sawOnline)
+    }
+
+    // MARK: Snapshot change detection (AND-182)
+
+    private func snapshotSession() -> NodeAgentSession {
+        return NodeAgentSession(id: "s1", agentKind: "claude_code", sessionRef: "ref-1", status: "active")
+    }
+
+    func testAnUnchangedSnapshotIsNotReUploadedUntilItChanges() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [snapshotSession()] }
+        let first = AgentSessionReport(
+            status: "active",
+            messages: [AgentSessionMessage(sourceId: "u1", turnId: "t1", role: "user", text: "处理这一批。")]
+        )
+        let adapter = SnapshotAdapter(reports: [first])
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac mini", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+
+        await waitUntil { api.sessionReports.current.count >= 1 }
+        // Leave plenty of rounds: an unchanged report must not go out again.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(api.sessionReports.current.count, 1)
+
+        // A fresh instance of the same report -- what re-reading an unchanged
+        // transcript produces every round -- still encodes identically.
+        adapter.replaceReports([AgentSessionReport(status: first.status, messages: first.messages)])
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(api.sessionReports.current.count, 1, "a report that re-encodes identically stays skipped")
+
+        adapter.replaceReports([
+            AgentSessionReport(
+                status: "idle",
+                messages: [AgentSessionMessage(sourceId: "u1", turnId: "t1", role: "user", text: "处理这一批。")]
+            ),
+        ])
+        await waitUntil { api.sessionReports.current.count >= 2 }
+        task.cancel()
+        try await task.value
+        XCTAssertEqual(api.sessionReports.current.last?.1.status, "idle")
+    }
+
+    func testAFailedSnapshotUploadIsRetriedOnTheNextRound() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [snapshotSession()] }
+        api.sessionReportFailures.withLock { $0 = 1 }
+        let adapter = SnapshotAdapter(reports: [
+            AgentSessionReport(
+                status: "active",
+                messages: [AgentSessionMessage(sourceId: "u1", turnId: "t1", role: "user", text: "处理这一批。")]
+            ),
+        ])
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac mini", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+
+        // The failed upload leaves no fingerprint, so the retry carries the same
+        // report instead of being mistaken for "already on the server".
+        await waitUntil { api.sessionReports.current.count >= 1 }
+        task.cancel()
+        try await task.value
+        XCTAssertEqual(api.sessionUploadAttempts.current, 2, "one failed attempt, one retried upload")
+        XCTAssertEqual(api.sessionReports.current.count, 1)
+    }
+
+    /// The reconnect button (AND-177): a wake runs the next heartbeat round at
+    /// once. The interval is a minute so a pass can only come from the wake —
+    /// waiting it out would blow the test timeout.
+    func testRetryNowRerunsTheHeartbeatWithoutWaitingOutTheInterval() async throws {
+        let api = FakeAPI(
+            claims: [],
+            heartbeat: .failure(APIError.network(NetworkFailure(host: "mg.test", error: URLError(.timedOut))))
+        )
+        var timing = fastTiming()
+        timing.heartbeatInterval = 60
+        let loop = NodeLoop(api: api, adapters: [], fallbackNodeName: "Mac mini", detectRepoCandidates: { [] }, timing: timing, log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { loop.currentState.lastError?.contains("上报心跳出错") == true }
+        // Let the loop reach its sleep before waking it; the failure is
+        // published a moment before the sleeper is registered.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        loop.retryNow()
+        await waitUntil { api.heartbeats.current.count >= 2 }
+        task.cancel()
+        try await task.value
+        XCTAssertGreaterThanOrEqual(api.heartbeats.current.count, 2)
+    }
+
+    /// A wake must not blunt the stop signal: cancelling still ends the loops.
+    func testStoppingStillWorksAfterAWake() async throws {
+        let api = FakeAPI(claims: [])
+        let loop = NodeLoop(api: api, adapters: [], fallbackNodeName: "Mac mini", detectRepoCandidates: { [] }, timing: fastTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { loop.currentState.lastHeartbeatAt != nil }
+        loop.retryNow()
+        task.cancel()
+        try await task.value
+        XCTAssertEqual(loop.currentState.connection, .stopped)
     }
 }

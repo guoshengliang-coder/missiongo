@@ -40,6 +40,28 @@ val missionGoSigning: Properties? = missionGoSigningFile.takeIf { it.isFile }?.l
     Properties().apply { source.inputStream().use { load(it) } }
 }
 
+// AND-150: the widget's FCM push. google-services.json never enters the
+// repository (see .gitignore); like the signing key above, the build reads it
+// from the private configuration directory and copies it in when present. A
+// checkout without it still builds and runs -- the plugin stays unapplied,
+// Firebase never initialises, and the widget falls back to its three refresh
+// paths (periodic worker, leaving the app, the refresh pill).
+val missionGoGoogleServicesPath = providers.gradleProperty("missiongoAndroidGoogleServices")
+    .orElse(providers.environmentVariable("MISSIONGO_ANDROID_GOOGLE_SERVICES"))
+    .orElse(
+        providers.environmentVariable("XDG_CONFIG_HOME")
+            .orElse(providers.systemProperty("user.home").map { "$it/.config" })
+            .map { "$it/missiongo/google-services.json" },
+    )
+val missionGoGoogleServices = file("google-services.json")
+if (!missionGoGoogleServices.isFile) {
+    file(missionGoGoogleServicesPath.get()).takeIf { it.isFile }?.copyTo(missionGoGoogleServices)
+}
+val pushConfigured = missionGoGoogleServices.isFile
+if (pushConfigured) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 fun buildConfigString(value: String): String =
     "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
@@ -97,6 +119,11 @@ android {
     lint {
         // API 36 is the SDK project's supported compile/target baseline.
         disable += "OldTargetApi"
+        // Fires at registerForActivityResult because an old fragment version is
+        // on the merged classpath (via the feedback SDK). That risk is about
+        // FragmentActivity losing the callback; MainActivity is a
+        // ComponentActivity, which dispatches activity results itself.
+        disable += "InvalidFragmentVersionForActivityResult"
     }
 
     compileOptions {
@@ -111,4 +138,13 @@ dependencies {
     // The widget's periodic refresh. Already in the APK through the feedback SDK;
     // declared here because this module now calls it directly. Keep the versions equal.
     implementation("androidx.work:work-runtime:2.11.2")
+    // AND-150: FCM data-only push signals. Always compiled in so the source
+    // builds everywhere; at runtime the Firebase check in push/ turns it off on
+    // builds that shipped without google-services.json.
+    implementation("com.google.firebase:firebase-messaging:24.1.0")
+
+    // AND-185: unit tests for the badge's serial publisher. The version must
+    // equal the Kotlin the build compiles with -- see the matching comment in
+    // missiongo-feedback/build.gradle.kts.
+    testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.3.21")
 }

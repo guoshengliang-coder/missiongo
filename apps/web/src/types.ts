@@ -10,6 +10,7 @@ export const ITEM_STATUSES = [
   "inbox",
   "ready",
   "in_progress",
+  "development_complete",
   "on_hold",
   "pending_verification",
   "done",
@@ -214,6 +215,7 @@ export interface TransitionAction {
     | "request_human_input"
     | "resume"
     | "resolution_submitted"
+    | "release_verified"
     | "verification_passed"
     | "verification_failed"
     | "released"
@@ -245,6 +247,8 @@ export interface CreatedSdkToken extends SdkToken {
 export interface NodeAgentModel {
   readonly id: string;
   readonly label: string;
+  /** The vendor the agent listed the model under; absent when it has no such grouping. */
+  readonly provider?: string;
   readonly efforts: readonly string[];
   readonly defaultEffort?: string;
   readonly isDefault?: boolean;
@@ -396,6 +400,11 @@ export interface AgentSessionQuestion {
   readonly title: string;
   readonly options?: readonly string[];
   readonly multiSelect?: boolean;
+  /** Reply key when a field's answer is matched on something other than its title. */
+  readonly key?: string;
+  /** Non-choice control; absent means a choice built from `options`. */
+  readonly kind?: "text" | "number" | "boolean";
+  readonly placeholder?: string;
 }
 
 export interface AgentSessionActivity {

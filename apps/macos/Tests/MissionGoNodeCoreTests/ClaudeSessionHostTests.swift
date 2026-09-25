@@ -113,6 +113,10 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         snapshot.consume(["type": "result", "subtype": "success"])
 
         XCTAssertEqual(snapshot.state.status, "active")
+        // The turn is over even though the background task keeps the status
+        // "active" for display; only the flag may decide whether a reply can
+        // be handed over (AND-183).
+        XCTAssertFalse(snapshot.state.turnActive)
         XCTAssertEqual(snapshot.state.activities, [
             AgentSessionActivity(id: "task-1", title: "Inspect the synchronization path", detail: "运行中"),
         ])
@@ -122,7 +126,25 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         ])
         snapshot.consume(["type": "result", "subtype": "success"])
         XCTAssertEqual(snapshot.state.status, "idle")
+        XCTAssertFalse(snapshot.state.turnActive)
         XCTAssertTrue(snapshot.state.activities.isEmpty)
+    }
+
+    func testATurnMarksItselfRunningAgainWhenWorkStarts() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.consume([
+            "type": "system", "subtype": "background_tasks_changed",
+            "tasks": [["task_id": "task-1", "task_type": "local_agent", "description": "Poll"]],
+        ])
+        snapshot.consume(["type": "result", "subtype": "success"])
+        XCTAssertFalse(snapshot.state.turnActive)
+
+        snapshot.consume([
+            "type": "assistant", "uuid": "frame-1", "parent_tool_use_id": NSNull(),
+            "message": ["id": "message-1", "content": [["type": "text", "text": "继续处理"]]],
+        ])
+        XCTAssertTrue(snapshot.state.turnActive)
+        XCTAssertEqual(snapshot.state.status, "active")
     }
 
     func testSummarizesShellTasksWithoutExposingTheCommand() {
@@ -159,6 +181,9 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         let state = try JSONDecoder().decode(ClaudeHostState.self, from: data)
         XCTAssertEqual(state.activities, [])
         XCTAssertFalse(state.waitingForInput)
+        // A state without the field is an old host: keep the conservative
+        // "a turn may be running" reading rather than assume a free session.
+        XCTAssertTrue(state.turnActive)
     }
 
     func testOldHostConfigurationGetsApprovedLifecycleDefaults() throws {
@@ -458,6 +483,60 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         )
         let reservation = try await launcher.synchronize(queued)
         XCTAssertEqual(reservation.commandStatus, "delivering")
+    }
+
+    func testDeliversAReplyWhenOnlyBackgroundWorkKeepsTheSessionActive() async throws {
+        let (launcher, root, sessionRef) = try fixture(status: "active")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        // The turn's `result` has arrived; only the background task holds the
+        // session in "active". Such a session is at the prompt and must accept
+        // a reply instead of stranding it for the task's lifetime (AND-183).
+        try ClaudeHostFiles.write(
+            ClaudeHostState(
+                status: "active", sessionRef: sessionRef,
+                activities: [AgentSessionActivity(id: "task-1", title: "后台轮询", detail: "运行中")],
+                turnActive: false
+            ),
+            to: ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        )
+        let queued = NodeAgentSession(
+            id: "server-session", agentKind: "claude_code", sessionRef: sessionRef, status: "active",
+            command: AgentSessionCommand(id: "command-1", kind: "message", text: "合并")
+        )
+        let reservation = try await launcher.synchronize(queued)
+        XCTAssertEqual(reservation.commandStatus, "delivering")
+
+        let delivering = NodeAgentSession(
+            id: queued.id, agentKind: queued.agentKind, sessionRef: sessionRef, status: "active",
+            command: AgentSessionCommand(id: "command-1", kind: "message", text: "合并", status: "delivering")
+        )
+        _ = try await launcher.synchronize(delivering)
+        let path = ClaudeHostStore.commandPath(root: root, sessionRef: sessionRef, commandId: "command-1")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: path),
+            "a reply must reach the host while only background work runs"
+        )
+    }
+
+    func testKeepsAReplyQueuedWhileTheTurnIsActuallyRunning() async throws {
+        let (launcher, root, sessionRef) = try fixture(status: "active")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try ClaudeHostFiles.write(
+            ClaudeHostState(
+                status: "active", sessionRef: sessionRef,
+                activities: [AgentSessionActivity(id: "task-1", title: "后台轮询", detail: "运行中")],
+                turnActive: true
+            ),
+            to: ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        )
+        let queued = NodeAgentSession(
+            id: "server-session", agentKind: "claude_code", sessionRef: sessionRef, status: "active",
+            command: AgentSessionCommand(id: "command-1", kind: "message", text: "合并")
+        )
+        let report = try await launcher.synchronize(queued)
+        XCTAssertNil(report.commandStatus)
+        let path = ClaudeHostStore.commandPath(root: root, sessionRef: sessionRef, commandId: "command-1")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
     }
 
     func testAStoppedDetachedHostFoldsToSuspendedAndKeepsTheTranscript() async throws {

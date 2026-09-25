@@ -17,13 +17,18 @@ export const TRANSITIONS: Record<WorkItemStatus, readonly TransitionAction[]> = 
   ],
   in_progress: [
     {
-      label: "Submit for verification",
-      to: "pending_verification",
+      label: "Mark development complete",
+      to: "development_complete",
       reason: "resolution_submitted",
       tone: "primary",
     },
     { label: "Put on hold", to: "on_hold", reason: "request_human_input" },
     { label: "Release", to: "ready", reason: "released" },
+    CANCEL_ACTION,
+  ],
+  development_complete: [
+    { label: "Submit published work for verification", to: "pending_verification", reason: "release_verified", tone: "primary" },
+    { label: "Needs more work", to: "ready", reason: "released" },
     CANCEL_ACTION,
   ],
   on_hold: [

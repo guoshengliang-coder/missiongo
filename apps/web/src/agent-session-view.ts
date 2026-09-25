@@ -9,7 +9,7 @@ import type {
   AgentSessionSummary,
 } from "./types";
 
-export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;
+export const DEFAULT_AGENT_SESSION_FILTER = "attention" as const;
 export const DEFAULT_AGENT_KIND_FILTER = "all" as const;
 export const MESSAGE_BOTTOM_THRESHOLD_PX = 48;
 export const AGENT_SESSIONS_CONSOLE_REFETCH_MS = 5_000;
@@ -262,6 +262,16 @@ export function isNearMessageBottom(
 }
 
 /**
+ * A reply the person just sent is their own action, so the newest content must
+ * come into view even if they had scrolled up through history. Messages that
+ * merely arrive keep respecting the follow-latest position: scrolling up is a
+ * request to read something else, not an invitation to be pulled back down.
+ */
+export function shouldScrollMessagesAfterChange(outgoingChanged: boolean, followLatest: boolean): boolean {
+  return outgoingChanged || followLatest;
+}
+
+/**
  * A streamed answer keeps its id while its text grows. Treat that as one unseen
  * message, while a later snapshot of the same text changes nothing.
  */
@@ -275,20 +285,73 @@ export function changedMessageIds(
     .map((message) => message.id);
 }
 
-/** Build the plain-text answer format understood by Claude's host prompt. */
+/** The label a reply line is written under. OpenCode form fields answer by
+ * key; Claude and Codex questions answer by header or title. */
+export function questionAnswerLabel(
+  question: Pick<AgentSessionQuestion, "header" | "title" | "key">,
+): string {
+  return question.key ?? question.header ?? question.title;
+}
+
+/** The separator between several chosen values of one multi-select field. */
+export const QUESTION_VALUE_SEPARATOR = "、";
+
+/** Build the plain-text answer format understood by the host prompts. A single
+ * key-less question is answered with the option alone; a keyed field always
+ * carries its label so the answer routes back to the right form field. */
 export function questionAnswerText(
   current: string,
-  question: Pick<AgentSessionQuestion, "header" | "title">,
+  question: Pick<AgentSessionQuestion, "header" | "title" | "key">,
   option: string,
   questionCount: number,
 ): string {
-  if (questionCount <= 1) return option;
-  const label = question.header ?? question.title;
-  const prefix = `${label}: `;
+  if (questionCount <= 1 && !question.key) return option;
+  const prefix = `${questionAnswerLabel(question)}: `;
   const lines = current.split("\n").filter(Boolean);
   const next = lines.filter((line) => !line.startsWith(prefix));
   next.push(`${prefix}${option}`);
   return next.join("\n");
+}
+
+/** The single value already written for one question, without splitting it; a
+ * free-text field may itself contain the multi-select separator. */
+export function questionAnswerValue(
+  current: string,
+  question: Pick<AgentSessionQuestion, "header" | "title" | "key">,
+): string {
+  const prefix = `${questionAnswerLabel(question)}: `;
+  const line = current.split("\n").find((entry) => entry.startsWith(prefix));
+  return line ? line.slice(prefix.length) : "";
+}
+
+/** The values already written for one question, so a multi-select field can
+ * toggle against what the reply currently says. */
+export function questionAnswerValues(
+  current: string,
+  question: Pick<AgentSessionQuestion, "header" | "title" | "key">,
+): string[] {
+  return questionAnswerValue(current, question)
+    .split(QUESTION_VALUE_SEPARATOR)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+/** Toggle one option of a multi-select field, keeping the other answers. */
+export function toggleQuestionOption(
+  current: string,
+  question: Pick<AgentSessionQuestion, "header" | "title" | "key">,
+  option: string,
+  questionCount: number,
+): string {
+  const selected = questionAnswerValues(current, question);
+  const next = selected.includes(option)
+    ? selected.filter((value) => value !== option)
+    : [...selected, option];
+  if (next.length === 0) {
+    const prefix = `${questionAnswerLabel(question)}: `;
+    return current.split("\n").filter((line) => line && !line.startsWith(prefix)).join("\n");
+  }
+  return questionAnswerText(current, question, next.join(QUESTION_VALUE_SEPARATOR), questionCount);
 }
 
 export function messageLabelKey(

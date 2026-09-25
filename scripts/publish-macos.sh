@@ -127,4 +127,8 @@ fi
 echo "macOS client staged: ${VERSION}"
 echo "Website path: /downloads/missiongo-macos-latest.zip (ships with the next deploy)"
 echo "Update manifest: /downloads/missiongo-macos-latest.json"
+# The zip is git-ignored, so it exists only in this working tree. A deploy run
+# from any other checkout carries the live client over unchanged; run that
+# deploy here, after merging main into this worktree.
+echo "Deploy from this working tree; the git-ignored zip does not travel to another checkout."
 shasum -a 256 "$LATEST_ZIP"

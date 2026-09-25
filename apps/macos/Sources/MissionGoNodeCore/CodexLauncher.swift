@@ -383,28 +383,6 @@ public enum CodexPreflight {
     }
 }
 
-/// The last model list Codex gave, so a heartbeat every 30 seconds does not
-/// ask the app-server each time, and a failed ask still has an answer.
-final class CodexModelCache: @unchecked Sendable {
-    private let entry = Locked<(models: [AgentModelOption], at: Date)?>(nil)
-    let ttl: TimeInterval
-
-    init(ttl: TimeInterval = 10 * 60) {
-        self.ttl = ttl
-    }
-
-    func fresh(now: Date = Date()) -> [AgentModelOption]? {
-        guard let cached = entry.current, now.timeIntervalSince(cached.at) < ttl else { return nil }
-        return cached.models
-    }
-
-    var last: [AgentModelOption]? { entry.current?.models }
-
-    func store(_ models: [AgentModelOption], now: Date = Date()) {
-        entry.withLock { $0 = (models, now) }
-    }
-}
-
 /// The Codex adapter: starts one thread per dispatch in the ChatGPT app's
 /// Codex, where the operator follows it from a Mac or the phone.
 ///
@@ -422,7 +400,7 @@ public struct CodexLauncher: AgentAdapter {
     let serverUrl: String?
     /// How long a dispatch waits for a daemon it just started.
     let daemonWait: TimeInterval
-    let modelCache: CodexModelCache
+    let modelCache: ModelListCache
     public init(
         environment: ShellEnvironment,
         serverUrl: String?,
@@ -435,7 +413,7 @@ public struct CodexLauncher: AgentAdapter {
     ) {
         self.environment = environment
         self.daemonWait = daemonWait
-        self.modelCache = CodexModelCache(ttl: modelCacheTTL)
+        self.modelCache = ModelListCache(ttl: modelCacheTTL)
         self.serverUrl = serverUrl
         self.run = run ?? Commands.runner(environment: environment)
         let resolvedLocation = location ?? CodexLocation(environment: environment)
