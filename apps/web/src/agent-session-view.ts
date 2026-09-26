@@ -253,23 +253,35 @@ export interface ScrollMetrics {
 export interface OutgoingReply {
   readonly text: string;
   readonly occurredAt: string;
-  readonly status: "sending" | "queued" | "delivering" | "delivery_unknown" | "failed";
+  readonly status: "sending" | "queued" | "delivering" | "delivered" | "delivery_unknown" | "failed";
   readonly error?: string;
   readonly commandId?: string;
 }
 
 /**
  * The POST starts before MissionGo has a command id. Once it does, the mirrored
- * command carries the same bubble through queueing and delivery. Delivered
- * replies disappear here because the same node snapshot contains the real user
- * message; cancelled replies return to the editor instead of lingering.
+ * command carries the same bubble through queueing and delivery. A delivered
+ * reply disappears only once the mirrored message proves it landed: the node
+ * reports delivery and message in one snapshot, but a transcript read that
+ * failed would otherwise make the reply vanish for good beside a command that
+ * says delivered (AND-219). Cancelled replies return to the editor instead of
+ * lingering.
  */
 export function outgoingReply(
   command: AgentSessionCommand | undefined,
   request?: { readonly text: string; readonly occurredAt: string; readonly status: "sending" | "failed"; readonly error?: string },
+  mirrorArrived = true,
 ): OutgoingReply | null {
   if (request) return request;
   if (!command || command.kind !== "message") return null;
+  if (command.status === "delivered" && !mirrorArrived) {
+    return {
+      text: command.text,
+      occurredAt: command.createdAt,
+      status: command.status,
+      commandId: command.id,
+    };
+  }
   if (command.status !== "queued" && command.status !== "delivering"
     && command.status !== "delivery_unknown" && command.status !== "failed") return null;
   return {
@@ -279,6 +291,29 @@ export function outgoingReply(
     ...(command.error ? { error: command.error } : {}),
     commandId: command.id,
   };
+}
+
+/**
+ * Whether the conversation already shows the message a delivered command sent.
+ * An attachment command mirrors as its own attachment bubble keyed by command
+ * id; a plain reply mirrors as a user message with the same text from around
+ * the moment the command was created. The clock tolerance is generous on
+ * purpose: source and server timestamps can drift, and mistaking an older
+ * same-text message for the mirror only hides a bubble the mirror replaces.
+ */
+export function replyMirrorArrived(
+  command: AgentSessionCommand | undefined,
+  messages: readonly AgentSessionMessage[],
+  attachmentMessages: NonNullable<AgentSession["attachmentMessages"]>,
+): boolean {
+  if (!command) return true;
+  if (command.attachments?.length) {
+    return attachmentMessages.some((message) => message.commandId === command.id);
+  }
+  const created = Date.parse(command.createdAt);
+  const floor = Number.isNaN(created) ? Number.NEGATIVE_INFINITY : created - 60_000;
+  return messages.some((message) => message.role === "user" && message.text === command.text
+    && Date.parse(message.occurredAt) >= floor);
 }
 
 /**

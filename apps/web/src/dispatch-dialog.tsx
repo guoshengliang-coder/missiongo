@@ -5,6 +5,7 @@ import { CirclePause, LoaderCircle, Rocket, TriangleAlert } from "lucide-react";
 import { AGENT_KINDS, DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
+import { localizedErrorText } from "./error-text";
 import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, reconcileChoice } from "./agent-model-options";
 import { NODE_LIST_REFETCH_MS } from "./node-install";
 import {
@@ -320,7 +321,18 @@ export function DispatchDialog({
         </select>
       </label>
       {nodesQuery.isLoading && <p className="section-empty"><LoaderCircle className="spin" size={14} /></p>}
-      {!nodesQuery.isLoading && nodes.length === 0 && <p className="section-empty">{t("dispatchNoNodes")}</p>}
+      {/* A failed request is not an empty machine room: saying "no devices"
+          here sent people to install a client the server simply failed to
+          list (AND-224). */}
+      {nodesQuery.isError && (
+        <p className="section-empty" role="alert">
+          {t("dispatchNodesFailed", { error: localizedErrorText(nodesQuery.error, t) })}{" "}
+          <button type="button" className="attachment-load-button" onClick={() => void nodesQuery.refetch()}>
+            {t("retry")}
+          </button>
+        </p>
+      )}
+      {!nodesQuery.isLoading && !nodesQuery.isError && nodes.length === 0 && <p className="section-empty">{t("dispatchNoNodes")}</p>}
       {/* The reason is on the option too, but a select shows one line at a time:
           without this the submit button is disabled with the explanation hidden
           inside a closed dropdown. */}

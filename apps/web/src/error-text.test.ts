@@ -19,6 +19,23 @@ describe("localizedErrorText", () => {
     expect(errorMessageKey(new TypeError("Failed to fetch"))).toBe("errorNetwork");
   });
 
+  it("translates the conflict codes the console can meet (AND-224)", () => {
+    expect(errorMessageKey(new ApiError(409, "agent_stop_pending", "Stop pending."))).toBe("agentSessionStopQueued");
+    expect(errorMessageKey(new ApiError(409, "agent_reply_pending", "Reply pending."))).toBe("errorAgentReplyPending");
+    expect(errorMessageKey(new ApiError(409, "agent_not_running", "Not running."))).toBe("errorAgentNotRunning");
+    expect(errorMessageKey(new ApiError(409, "agent_turn_unavailable", "Turn unavailable."))).toBe("errorAgentTurnUnavailable");
+    expect(errorMessageKey(new ApiError(409, "agent_command_pending", "Command pending."))).toBe("errorAgentCommandPending");
+    expect(errorMessageKey(new ApiError(409, "agent_reply_changed", "Reply changed."))).toBe("errorAgentReplyChanged");
+    expect(errorMessageKey(new ApiError(409, "agent_attention_changed", "Attention changed."))).toBe("errorAgentAttentionChanged");
+    expect(errorMessageKey(new ApiError(409, "dispatch_not_retryable", "Not retryable."))).toBe("errorDispatchNotRetryable");
+  });
+
+  it("says timeout when the request deadline ends it (AND-224)", () => {
+    expect(errorMessageKey(new DOMException("The operation timed out.", "TimeoutError"))).toBe("errorTimeout");
+    // An abort the page itself asked for stays untranslated noise.
+    expect(errorMessageKey(new DOMException("Aborted", "AbortError"))).toBeNull();
+  });
+
   it("keeps a specific validation message rather than hiding it", () => {
     const error = new ApiError(400, "validation_failed", "Title must not be empty.");
     expect(localizedErrorText(error, t)).toBe("Title must not be empty.");

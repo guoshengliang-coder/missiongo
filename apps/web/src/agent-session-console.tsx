@@ -43,6 +43,7 @@ import {
   messageLabelKey,
   outgoingReply,
   replyBlockedLabelKey,
+  replyMirrorArrived,
   resolvedAgentSessionId,
   shouldMarkRead,
   shouldResetMessageView,
@@ -198,7 +199,7 @@ function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof u
 }
 
 function outgoingReplyStatusLabel(
-  status: "sending" | "queued" | "delivering" | "delivery_unknown" | "failed",
+  status: "sending" | "queued" | "delivering" | "delivered" | "delivery_unknown" | "failed",
   t: ReturnType<typeof useI18n>["t"],
 ): string {
   if (status === "sending") return t("agentSessionSending");
@@ -499,7 +500,10 @@ export function AgentSessionConsole({
   const sendingRequest = sendingSelected
     ? { text: send.variables.text, occurredAt: send.variables.occurredAt, status: "sending" as const }
     : failedRequest;
-  const outgoingCandidate = outgoingReply(command, sendingRequest);
+  const mirrorMessages = sessionQuery.data?.messages ?? [];
+  const mirrorAttachments = sessionQuery.data?.attachmentMessages ?? [];
+  const outgoingCandidate = outgoingReply(command, sendingRequest,
+    replyMirrorArrived(command, mirrorMessages, mirrorAttachments));
   const outgoing = outgoingCandidate?.commandId === dismissedCommandId ? null : outgoingCandidate;
   const outgoingSignature = outgoing ? `${selectedId}:${outgoing.commandId ?? "request"}:${outgoing.status}:${outgoing.text}` : "";
   const sessionStatus = effectiveAgentSessionStatus(
@@ -512,8 +516,15 @@ export function AgentSessionConsole({
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
-  const claudeTurn = selected?.agentKind === "claude_code" && sessionStatus === "active"
+  // A turn in progress reads as running for every agent that reports one —
+  // Claude's own instrumentation, Codex mapping its active thread, OpenCode
+  // reporting an active session without a pending question (AND-223).
+  const turnRunning = selected !== undefined && ["claude_code", "codex", "opencode"].includes(selected.agentKind)
+    && sessionStatus === "active"
     && turnState?.turnActive === true && !turnState.waitingForInput;
+  // The fine print beside a running turn — thinking tokens, last output — is
+  // metadata only Claude reports, so it stays Claude's alone.
+  const claudeTurn = turnRunning && selected?.agentKind === "claude_code";
   // A pending question or form is not "running" (AND-205's OpenCode half,
   // AND-222): OpenCode reports it through waitingForInput the way Claude does.
   const agentWaiting = selected !== undefined && ["claude_code", "opencode"].includes(selected.agentKind)
@@ -526,13 +537,17 @@ export function AgentSessionConsole({
     ? t("agentSessionWaitingForInput")
     : claudeBackgroundOnly
       ? t("agentSessionWaitingBackground", { count: activities.length })
-      : claudeTurn
+      : turnRunning
         ? t("agentSessionTurnRunning", { duration: elapsed(turnState?.turnStartedAt, clock) ?? "–" })
         : t(activityLabelKey(sessionStatus, command?.status === "queued"), { agent: selected ? agentLabel(selected, t) : "" });
 
   const markRead = useMutation({
     mutationFn: ({ dispatchId, through }: { dispatchId: string; through: string }) =>
       api.markDispatchRead(dispatchId, through),
+    // A mark-read that fails silently left the unread badge on forever with
+    // nothing retrying it (AND-224); give the mutation its own retries.
+    retry: 3,
+    retryDelay: 2_000,
     onMutate: ({ dispatchId, through }) => {
       queryClient.setQueryData<{ sessions: AgentSessionSummary[] }>(["agent-sessions"], (current) => current && {
         sessions: current.sessions.map((session) => session.dispatchId === dispatchId && session.unreadAt === through
@@ -544,12 +559,15 @@ export function AgentSessionConsole({
   });
   const { mutate: markReadMutate } = markRead;
   const selectedUnreadAt = selected?.unread ? selected.unreadAt : undefined;
+  const markReadRetry = markRead.isError && !markRead.isPending;
   useEffect(() => {
     if (!selected || !shouldMarkRead(selected, openedSessionId === selected.id, documentVisible)) return;
     markReadMutate({ dispatchId: selected.dispatchId, through: selected.unreadAt });
     // Keyed on the unread clock, not the object: each poll returns a new one.
+    // A failed attempt rejoins through the last dependency once the retries
+    // run out, so the badge clears on a later poll instead of never.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.dispatchId, selectedUnreadAt, openedSessionId, documentVisible, markReadMutate]);
+  }, [selected?.dispatchId, selectedUnreadAt, openedSessionId, documentVisible, markReadMutate, markReadRetry]);
 
   const scrollToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
     const messages = messagesRef.current;
@@ -718,6 +736,16 @@ export function AgentSessionConsole({
           </div>
         )}
         {bulkArchiveMessage && <p className="agent-console-bulk-result" role="status">{bulkArchiveMessage}</p>}
+        {/* A health request that fails used to make the panel vanish without a
+            word (AND-224); say what happened and offer the retry. */}
+        {filter === "failed" && healthQuery.isError && (
+          <p className="inline-error" role="alert">
+            {localizedErrorText(healthQuery.error, t)}{" "}
+            <button type="button" className="attachment-load-button" onClick={() => void healthQuery.refetch()}>
+              {t("retry")}
+            </button>
+          </p>
+        )}
         {filter === "failed" && healthQuery.data && (
           <section className="dispatch-health" aria-label={t("dispatchHealthTitle")}>
             <header>

@@ -139,10 +139,21 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Every request gets a deadline: a fetch that never answers used to leave the
+ * send button disabled and the poll backoff frozen forever, because no error
+ * ever arrived to count (AND-224). JSON calls stay short; file transfers get
+ * a wider budget since their size is the reason they are slow.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+const TRANSFER_TIMEOUT_MS = 300_000;
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
+    // A caller's own signal wins; otherwise this request ends on a deadline.
+    signal: init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       accept: "application/json",
       ...(init.body ? { "content-type": "application/json" } : {}),
@@ -161,6 +172,7 @@ async function attachmentRequest(path: string, init: RequestInit = {}): Promise<
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
+    signal: init.signal ?? AbortSignal.timeout(TRANSFER_TIMEOUT_MS),
     headers: {
       accept: "application/json",
       ...init.headers,

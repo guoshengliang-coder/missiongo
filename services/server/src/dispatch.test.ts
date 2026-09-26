@@ -2855,6 +2855,49 @@ describe("Claiming a dispatch on the node", () => {
     expect(detail.messages.map((message) => message.sourceId)).toEqual(["m1", "m2", "m3", "m4", "m5", "m6"]);
   });
 
+  it("keeps turn state fields a snapshot does not repeat (AND-223)", async () => {
+    const { app, cookie, node, mission, dispatchId } = await queuedDispatch();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionRef: "ses_turn_merge" },
+    });
+    const listed = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ id: string }> }>();
+    const sessionId = listed.sessions[0]!.id;
+    const snapshot = (payload: Record<string, unknown>) => app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: [], ...payload },
+    });
+    const turnState = async () => (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+    })).json<{ turnState: Record<string, unknown> }>().turnState;
+
+    // A healthy report establishes the full state.
+    expect((await snapshot({
+      turnActive: true, waitingForInput: true, turnStartedAt: "2026-09-26T00:00:00.000Z",
+    })).statusCode).toBe(204);
+    // A degraded snapshot carries none of it — no turn fields at all.
+    expect((await snapshot({ status: "unavailable" })).statusCode).toBe(204);
+    expect(await turnState()).toMatchObject({ turnActive: true, waitingForInput: true });
+    // A partial report overwrites what it carries and keeps the rest.
+    expect((await snapshot({ turnActive: false })).statusCode).toBe(204);
+    expect(await turnState()).toMatchObject({ turnActive: false, waitingForInput: true, turnStartedAt: "2026-09-26T00:00:00.000Z" });
+  });
+
   it("refuses a Codex link that carries more than a thread id", async () => {
     const { app, node, dispatchId } = await queuedDispatch();
     const result = await app.inject({

@@ -27,13 +27,26 @@ export function errorMessageKey(error: unknown): MessageKey | null {
     if (error.status === 404) return "errorNotFound";
     if (error.status === 429 || error.code === "rate_limit_exceeded") return "errorRateLimited";
     if (error.status >= 500) return "errorServer";
-    // Two clients racing to stop a session can still surface this conflict;
-    // the sentence the command list already uses explains it without English.
-    if (error.code === "agent_stop_pending") return "agentSessionStopQueued";
+    // Conflict codes the reader can act on get a sentence of our own; the
+    // server's English titles are written for logs and used to land in a
+    // Chinese console as-is (AND-224).
+    const conflictKeys: Readonly<Record<string, MessageKey>> = {
+      agent_stop_pending: "agentSessionStopQueued",
+      agent_reply_pending: "errorAgentReplyPending",
+      agent_not_running: "errorAgentNotRunning",
+      agent_turn_unavailable: "errorAgentTurnUnavailable",
+      agent_command_pending: "errorAgentCommandPending",
+      agent_reply_changed: "errorAgentReplyChanged",
+      agent_attention_changed: "errorAgentAttentionChanged",
+      dispatch_not_retryable: "errorDispatchNotRetryable",
+    };
+    if (Object.hasOwn(conflictKeys, error.code)) return conflictKeys[error.code]!;
     return null;
   }
   // fetch() rejects with a TypeError, and only a TypeError, when the request
   // never got a response: offline, DNS, a dropped connection.
   if (error instanceof TypeError) return "errorNetwork";
+  // AbortSignal.timeout() rejects with a DOMException named TimeoutError.
+  if (error instanceof DOMException && error.name === "TimeoutError") return "errorTimeout";
   return null;
 }

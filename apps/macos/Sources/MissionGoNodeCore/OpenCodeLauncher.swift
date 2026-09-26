@@ -758,6 +758,17 @@ public struct OpenCodeLauncher: AgentAdapter {
     /// each model's efforts and the default model, which the options carry
     /// only indirectly.
     private let catalogCache = Locked<OpenCodeModelCatalog?>(nil)
+    /// Replies this process already handed to OpenCode, keyed by command id.
+    /// OpenCode's prompt API takes no client message id, so a POST whose
+    /// response was lost — a timeout the service actually served — would be
+    /// retried on the next poll and delivered twice (AND-226). Remembering the
+    /// command ids keeps the retry a no-op. Entries expire so the map cannot
+    /// grow forever.
+    private let deliveredPrompts = Locked<[String: Date]>([:])
+    /// How long a delivered-command memory is trusted. A command older than
+    /// this has long left the server's delivering state, so the entry is dead
+    /// weight.
+    private static let deliveredPromptTTL: TimeInterval = 24 * 60 * 60
 
     public init(control: any OpenCodeControlling = OpenCodeHTTPControl()) {
         self.control = control
@@ -913,10 +924,13 @@ public struct OpenCodeLauncher: AgentAdapter {
         // work happening: the console must read that as waiting for a person,
         // not as "running" (AND-205's OpenCode half, AND-222).
         let waitingForInput = !choices.isEmpty
+        // A running session without a pending question is a turn in progress,
+        // the way Claude reports turnActive (AND-223's OpenCode half).
+        let turnActive = snapshot.status == "active" && choices.isEmpty
         guard let command = session.command else {
             report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
                                         sourceRestored: session.restoreInSource ? true : nil,
-                                        waitingForInput: waitingForInput)
+                                        turnActive: turnActive, waitingForInput: waitingForInput)
             return report.reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
@@ -924,18 +938,76 @@ public struct OpenCodeLauncher: AgentAdapter {
         if command.status == "queued" {
             report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
                                         commandId: command.id, commandStatus: "delivering",
-                                        waitingForInput: waitingForInput)
+                                        turnActive: turnActive, waitingForInput: waitingForInput)
             return report.reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
         guard command.status == "delivering" else {
             report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
-                                        waitingForInput: waitingForInput)
+                                        turnActive: turnActive, waitingForInput: waitingForInput)
             return report.reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
+        pruneDeliveredPrompts()
+        // How many copies of this reply's text the session already held before
+        // this delivery attempt: the proof a re-read offers after a failed POST
+        // is one more than this (AND-226).
+        let priorReplyCount = snapshot.messages.filter { $0.role == "user" && $0.text == command.promptText }.count
+        if deliveredPrompts.current[command.id] == nil {
+            do {
+                try await deliver(command: command, session: session, choices: choices)
+                deliveredPrompts.withLock { $0[command.id] = Date() }
+            } catch {
+                // The POST may have reached OpenCode anyway — a timeout only
+                // says the answer never came back. When the session proves the
+                // reply arrived, deliver nothing further; when it cannot,
+                // surface the uncertainty instead of blindly resending, the
+                // same contract Codex answers with (AND-226).
+                if Self.reReadShowsReply(priorCount: priorReplyCount, command: command,
+                                          in: try? await control.snapshot(id: session.sessionRef)) {
+                    deliveredPrompts.withLock { $0[command.id] = Date() }
+                } else {
+                    report = AgentSessionReport(
+                        status: snapshot.status, messages: messages, error: snapshot.failure,
+                        commandId: command.id, commandStatus: "delivery_unknown",
+                        commandError: "无法确认 OpenCode 是否收到回复，请在 OpenCode 会话核实后手动确认；不会自动重发。",
+                        turnActive: turnActive, waitingForInput: waitingForInput
+                    )
+                    return report.reportingSettings(
+                        model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
+                    )
+                }
+            }
+        }
+        // The delivered report used to carry the pre-delivery snapshot, so the
+        // console hid the outgoing bubble the moment the command read
+        // delivered — two to four seconds before the mirrored message arrived
+        // (AND-219). Re-read instead, and let a failed re-read fall back to
+        // what was read before rather than losing the delivery itself.
+        var deliveredMessages = messages
+        var deliveredStatus = snapshot.status
+        var deliveredWaiting = waitingForInput
+        if let refreshed = try? await control.snapshot(id: session.sessionRef) {
+            let refreshedChoices = (try? await control.pendingChoices(id: session.sessionRef)) ?? []
+            deliveredMessages = refreshed.messages + refreshedChoices.map(\.message)
+            deliveredStatus = refreshed.status
+            deliveredWaiting = !refreshedChoices.isEmpty
+        }
+        report = AgentSessionReport(status: deliveredStatus, messages: deliveredMessages, error: snapshot.failure,
+                                    commandId: command.id, commandStatus: "delivered",
+                                    turnActive: deliveredStatus == "active" && !deliveredWaiting,
+                                    waitingForInput: deliveredWaiting)
+        return report.reportingSettings(
+            model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
+        )
+    }
+
+    /// Performs the one action a command maps to: an interrupt, the answer to
+    /// the form or permission request the session is blocked on, or an
+    /// ordinary prompt.
+    private func deliver(command: AgentSessionCommand, session: NodeAgentSession, choices: [OpenCodeChoice]) async throws {
         if command.kind == "interrupt" {
             try await control.interrupt(id: session.sessionRef)
         } else if command.attachments?.isEmpty != false, let choice = choices.first, let answer = choice.answer(from: command.text) {
@@ -952,11 +1024,28 @@ public struct OpenCodeLauncher: AgentAdapter {
         } else {
             try await control.prompt(id: session.sessionRef, text: command.promptText)
         }
-        report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
-                                    commandId: command.id, commandStatus: "delivered",
-                                    waitingForInput: waitingForInput)
-        return report.reportingSettings(
-            model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
-        )
+    }
+
+    /// Whether a re-read of the session proves the reply arrived: one more
+    /// user message with the command's text than the pre-delivery snapshot
+    /// held. OpenCode's protocol carries no delivery id, so this evidence —
+    /// together with the delivered-command memory — is what keeps a timed-out
+    /// POST from turning into a second delivery (AND-226).
+    static func reReadShowsReply(
+        priorCount: Int,
+        command: AgentSessionCommand,
+        in snapshot: (status: String, messages: [AgentSessionMessage], failure: String?)?
+    ) -> Bool {
+        guard let snapshot else { return false }
+        let count = snapshot.messages.filter { $0.role == "user" && $0.text == command.promptText }.count
+        return count > priorCount
+    }
+
+    /// Drops delivered-command memories too old to matter: a command that old
+    /// has long since left the server's delivering state.
+    private func pruneDeliveredPrompts(now: Date = Date()) {
+        deliveredPrompts.withLock { map in
+            map = map.filter { now.timeIntervalSince($0.value) < Self.deliveredPromptTTL }
+        }
     }
 }

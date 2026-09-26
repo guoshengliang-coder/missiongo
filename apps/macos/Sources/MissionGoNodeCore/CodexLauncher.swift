@@ -599,7 +599,8 @@ public struct CodexLauncher: AgentAdapter {
                 status: report.status, messages: report.messages, activities: report.activities, error: report.error,
                 commandId: report.commandId, commandStatus: report.commandStatus, commandError: report.commandError,
                 sourceArchived: report.sourceArchived, sourceRestored: true,
-                sessionUrl: report.sessionUrl, activityAt: report.activityAt
+                sessionUrl: report.sessionUrl, activityAt: report.activityAt,
+                turnActive: report.turnActive
             )
         }
         if session.archiveInSource {
@@ -640,7 +641,8 @@ public struct CodexLauncher: AgentAdapter {
         guard let command = session.command else {
             return AgentSessionReport(
                 status: snapshot.status, messages: snapshot.messages,
-                sourceArchived: false, activityAt: snapshot.activityAt
+                sourceArchived: false, activityAt: snapshot.activityAt,
+                turnActive: snapshot.status == "active"
             )
         }
         // Codex can accept a turn while the HTTP report back to MissionGo is
@@ -651,7 +653,8 @@ public struct CodexLauncher: AgentAdapter {
             return AgentSessionReport(
                 status: snapshot.status, messages: snapshot.messages,
                 commandId: command.id, commandStatus: "delivered",
-                sourceArchived: false, activityAt: snapshot.activityAt
+                sourceArchived: false, activityAt: snapshot.activityAt,
+                turnActive: snapshot.status == "active"
             )
         }
         if command.kind == "interrupt" {
@@ -667,8 +670,18 @@ public struct CodexLauncher: AgentAdapter {
                     threadId: session.sessionRef,
                     turnId: turnId
                 )
+                // Re-read for the messages the interruption leaves behind so
+                // the delivered report carries the thread as it now stands
+                // (AND-219). The status stays the interrupted-idle contract;
+                // a re-read racing the interrupt's own effect would otherwise
+                // report a turn the person just stopped.
                 snapshot = CodexThreadSnapshot(
-                    status: "idle", messages: snapshot.messages, activityAt: snapshot.activityAt
+                    status: "idle",
+                    activeTurnId: nil,
+                    messages: ((try? await control.readThread(
+                        socketPath: location.controlSocketPath, threadId: session.sessionRef
+                    ))?.messages) ?? snapshot.messages,
+                    activityAt: snapshot.activityAt
                 )
             }
             return AgentSessionReport(
@@ -677,7 +690,8 @@ public struct CodexLauncher: AgentAdapter {
                 commandId: command.id,
                 commandStatus: "delivered",
                 sourceArchived: false,
-                activityAt: snapshot.activityAt
+                activityAt: snapshot.activityAt,
+                turnActive: snapshot.status == "active"
             )
         }
         // An active ordinary turn accepts same-turn steering. Older app-server
@@ -691,12 +705,14 @@ public struct CodexLauncher: AgentAdapter {
                     status: snapshot.status, messages: snapshot.messages,
                     commandId: command.id, commandStatus: "delivery_unknown",
                     commandError: "无法确认 Codex 是否收到回复，请在 Codex 会话核实后手动确认；不会自动重发。",
-                    sourceArchived: false, activityAt: snapshot.activityAt
+                    sourceArchived: false, activityAt: snapshot.activityAt,
+                    turnActive: snapshot.status == "active"
                 )
             }
             return AgentSessionReport(
                 status: snapshot.status, messages: snapshot.messages,
-                sourceArchived: false, activityAt: snapshot.activityAt
+                sourceArchived: false, activityAt: snapshot.activityAt,
+                turnActive: snapshot.status == "active"
             )
         }
         // Reserve the queued reply on the server before sending it. A person can
@@ -710,13 +726,15 @@ public struct CodexLauncher: AgentAdapter {
                 commandId: command.id,
                 commandStatus: "delivering",
                 sourceArchived: false,
-                activityAt: snapshot.activityAt
+                activityAt: snapshot.activityAt,
+                turnActive: snapshot.status == "active"
             )
         }
         guard command.status == "delivering" else {
             return AgentSessionReport(
                 status: snapshot.status, messages: snapshot.messages,
-                sourceArchived: false, activityAt: snapshot.activityAt
+                sourceArchived: false, activityAt: snapshot.activityAt,
+                turnActive: snapshot.status == "active"
             )
         }
         if let activeTurnId = snapshot.activeTurnId, snapshot.status == "active" {
@@ -735,17 +753,24 @@ public struct CodexLauncher: AgentAdapter {
                 clientUserMessageId: command.id,
                 overrides: turnOverrides(session)
             )
-            snapshot = CodexThreadSnapshot(
-                status: "active", messages: snapshot.messages, activityAt: snapshot.activityAt
-            )
         }
+        // The delivered report used to carry the pre-delivery read, so the
+        // console hid the outgoing bubble before the mirrored message existed
+        // (AND-219). Re-read for the messages so the reply itself travels with
+        // the delivery confirmation. The status keeps its contracts — a send
+        // means the turn has begun, a steer keeps the active turn it joined —
+        // because a re-read racing the turn's own start would say idle.
+        let deliveredMessages = ((try? await control.readThread(
+            socketPath: location.controlSocketPath, threadId: session.sessionRef
+        ))?.messages) ?? snapshot.messages
         return AgentSessionReport(
-            status: snapshot.status,
-            messages: snapshot.messages,
+            status: "active",
+            messages: deliveredMessages,
             commandId: command.id,
             commandStatus: "delivered",
             sourceArchived: false,
-            activityAt: snapshot.activityAt
+            activityAt: snapshot.activityAt,
+            turnActive: true
         )
     }
 }
