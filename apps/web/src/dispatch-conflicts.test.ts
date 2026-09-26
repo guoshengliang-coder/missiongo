@@ -15,6 +15,7 @@ const active = (itemKey: string, overrides: Partial<ActiveDispatch> = {}): Activ
   dispatchId: `d-${itemKey}`,
   itemKey,
   nodeName: "Mac mini",
+  agentKind: "claude_code",
   status: "launched",
   createdAt: "2026-09-14T10:00:00Z",
   ...overrides,
@@ -84,8 +85,9 @@ describe("wording for an unclaimed dispatch", () => {
     expect(activeDispatchStatusKey("paused")).toBeNull();
   });
 
-  it("puts the machine on the row and the whole story in the dialog", () => {
-    expect(translate("zh-CN", "activeDispatchBadge", { node: "Mac mini" })).toBe("已派给 Mac mini");
+  it("names the machine and agent on the row (AND-216), and the whole story in the dialog", () => {
+    expect(translate("zh-CN", "itemDispatchBadge", { agent: "Claude Code", node: "Mac mini" }))
+      .toBe("Claude Code · Mac mini");
     expect(translate("zh-CN", "dispatchConflictLine", {
       key: "AND-37",
       node: "Mac mini",

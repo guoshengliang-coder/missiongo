@@ -723,10 +723,11 @@ export class DispatchStore {
    * item sent back by a failed verification would otherwise read as dispatched
    * and unclaimed forever, and could only go out again with force.
    */
-  private dispatchesFor(itemIds: readonly string[], includeFailed = false): Array<{
+  private dispatchesFor(itemIds: readonly string[]): Array<{
     dispatchId: string;
     itemKey: string;
     nodeName: string;
+    agentKind: string;
     status: string;
     createdAt: string;
   }> {
@@ -734,14 +735,13 @@ export class DispatchStore {
     const placeholders = itemIds.map(() => "?").join(", ");
     return this.database.connection
       .prepare(
-        `SELECT d.id AS dispatch_id, w.item_key, COALESCE(n.nickname, n.name) AS node_name, d.status, d.created_at
+        `SELECT d.id AS dispatch_id, w.item_key, COALESCE(n.nickname, n.name) AS node_name,
+                d.agent_kind, d.status, d.created_at
          FROM dispatch_items di
          JOIN dispatches d ON d.id = di.dispatch_id
          JOIN nodes n ON n.id = d.node_id
          JOIN work_items w ON w.id = di.item_id
-         WHERE di.item_id IN (${placeholders}) AND d.status IN (${includeFailed
-           ? "'queued', 'delivered', 'launched', 'failed'"
-           : "'queued', 'delivered', 'launched'"})
+         WHERE di.item_id IN (${placeholders}) AND d.status IN ('queued', 'delivered', 'launched')
            AND NOT EXISTS (
              SELECT 1 FROM work_item_events e
              WHERE e.item_id = di.item_id AND e.created_at >= d.created_at
@@ -751,11 +751,12 @@ export class DispatchStore {
       )
       .all(...itemIds)
       .map((row) => {
-        const record = row as { dispatch_id: string; item_key: string; node_name: string; status: string; created_at: string };
+        const record = row as { dispatch_id: string; item_key: string; node_name: string; agent_kind: string; status: string; created_at: string };
         return {
           dispatchId: record.dispatch_id,
           itemKey: record.item_key,
           nodeName: record.node_name,
+          agentKind: record.agent_kind,
           status: record.status,
           createdAt: record.created_at,
         };
@@ -770,6 +771,7 @@ export class DispatchStore {
     dispatchId: string;
     itemKey: string;
     nodeName: string;
+    agentKind: string;
     status: string;
     createdAt: string;
   }> {
@@ -790,29 +792,53 @@ export class DispatchStore {
   }
 
   /**
-   * For the ready-item list: the newest dispatch result that still belongs to
-   * this ready cycle. Failed attempts are included so the row does not silently
-   * fall back to looking untouched; a newer retry naturally replaces one.
+   * For the work list: the newest hand-off of each item, whatever status the
+   * item has now, so a row can always say which machine and agent the work went
+   * to (AND-216).
+   *
+   * Presentation only, unlike `active`: this keeps a dispatch the item has since
+   * moved past, because "this went to OpenCode on M4" does not stop being true
+   * when the item is done, and that is exactly what the row is asked to show.
+   * Failed attempts are kept so the row can name the failure instead of falling
+   * back to looking untouched; a newer retry naturally replaces one. A cancelled
+   * dispatch never reached a machine, so it is the one status left out.
    */
   listLatestDispatches(accountId: string): Array<{
     dispatchId: string;
     itemKey: string;
     nodeName: string;
+    agentKind: string;
     status: string;
     createdAt: string;
   }> {
     const rows = this.database.connection
       .prepare(
-        `SELECT DISTINCT w.id FROM dispatch_items di
+        `SELECT w.item_key, d.id AS dispatch_id, COALESCE(n.nickname, n.name) AS node_name,
+                d.agent_kind, d.status, d.created_at
+         FROM dispatch_items di
          JOIN dispatches d ON d.id = di.dispatch_id
+         JOIN nodes n ON n.id = d.node_id
          JOIN work_items w ON w.id = di.item_id
-         WHERE d.account_id = ? AND w.status = 'ready'
-           AND d.status IN ('queued', 'delivered', 'launched', 'failed')`,
+         WHERE d.account_id = ? AND d.status <> 'cancelled'
+         ORDER BY d.created_at DESC`,
       )
-      .all(accountId) as unknown as Array<{ id: string }>;
-    const byItem = new Map<string, ReturnType<DispatchStore["dispatchesFor"]>[number]>();
-    for (const entry of this.dispatchesFor(rows.map((row) => row.id), true)) {
-      if (!byItem.has(entry.itemKey)) byItem.set(entry.itemKey, entry);
+      .all(accountId) as unknown as Array<{
+        item_key: string; dispatch_id: string; node_name: string; agent_kind: string; status: string; created_at: string;
+      }>;
+    const byItem = new Map<string, {
+      dispatchId: string; itemKey: string; nodeName: string; agentKind: string; status: string; createdAt: string;
+    }>();
+    // Newest first, so each item keeps its most recent dispatch.
+    for (const row of rows) {
+      if (byItem.has(row.item_key)) continue;
+      byItem.set(row.item_key, {
+        dispatchId: row.dispatch_id,
+        itemKey: row.item_key,
+        nodeName: row.node_name,
+        agentKind: row.agent_kind,
+        status: row.status,
+        createdAt: row.created_at,
+      });
     }
     return [...byItem.values()];
   }
