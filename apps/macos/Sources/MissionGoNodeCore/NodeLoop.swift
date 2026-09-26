@@ -394,85 +394,26 @@ public final class NodeLoop: @unchecked Sendable {
                     self.reconcileCapacity(sessions)
                     let live = Set(sessions.map(\.id))
                     awaitingReport.withLock { value in value = value.filter { live.contains($0.key) } }
-                    for session in sessions {
-                        if let deadline = rejectedUntil.current[session.id], deadline > Date() { continue }
-                        guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else { continue }
-                        let report: AgentSessionReport
-                        if let waiting = awaitingReport.current[session.id],
-                           session.command?.id == waiting.commandId,
-                           session.command?.status == "delivering" {
-                            report = waiting.report
-                        } else {
-                            _ = awaitingReport.withLock { $0.removeValue(forKey: session.id) }
-                            do {
-                                let prepared = try await self.prepareAttachments(session)
-                                do {
-                                    report = try await adapter.synchronize(prepared)
-                                } catch {
-                                    // After the command reached Codex, a transport
-                                    // error cannot prove whether turn/start took it.
-                                    let uncertain = session.agentKind == "codex"
-                                        && session.command?.status == "delivering"
-                                        && (session.command?.kind ?? "message") == "message"
-                                    if let command = session.command, command.status == "delivering",
-                                       command.attachments?.isEmpty == false, !uncertain {
-                                        report = AgentSessionReport(
-                                            status: session.status, messages: [], commandId: command.id,
-                                            commandStatus: "failed", commandError: "附件未能交付：\(error.localizedDescription)"
-                                        )
-                                    } else {
-                                        report = AgentSessionReport(
-                                            status: "unavailable", messages: [], error: error.localizedDescription,
-                                            commandId: uncertain ? session.command?.id : nil,
-                                            commandStatus: uncertain ? "delivery_unknown" : nil,
-                                            commandError: uncertain
-                                                ? "无法确认 Codex 是否收到回复，请在 Codex 会话核实后手动确认；不会自动重发。"
-                                                : nil
-                                        )
-                                    }
-                                }
-                            } catch {
-                                if let command = session.command, command.status == "delivering",
-                                   command.attachments?.isEmpty == false {
-                                    report = AgentSessionReport(
-                                        status: session.status, messages: [], commandId: command.id,
-                                        commandStatus: "failed", commandError: "附件未能下载：\(error.localizedDescription)"
-                                    )
-                                } else {
-                                    report = AgentSessionReport(
-                                        status: "unavailable", messages: [], error: error.localizedDescription
+                    // One agent kind must not wait on another (AND-220): a
+                    // half-dead Codex daemon used to hold back every Claude
+                    // mirror, approval and interrupt for its whole timeout,
+                    // because each synchronize was awaited in one line. The
+                    // kinds now run side by side; inside a kind the server's
+                    // order is kept and sessions stay serialized, so the
+                    // per-kind state above still changes one session at a time.
+                    let grouped = Dictionary(grouping: sessions, by: \.agentKind).sorted { $0.key < $1.key }
+                    await withTaskGroup(of: Void.self) { taskGroup in
+                        for entry in grouped {
+                            let kindSessions = entry.value
+                            taskGroup.addTask {
+                                for session in kindSessions {
+                                    await self.synchronizeOne(
+                                        session, reported: reported, awaitingReport: awaitingReport,
+                                        rejectedUntil: rejectedUntil, stop: stop, fatal: fatal
                                     )
                                 }
                             }
                         }
-                        // No fingerprint means the report cannot be encoded at
-                        // all; uploading it unconditionally errs on the side
-                        // of the server hearing about the session.
-                        let fingerprint = Self.fingerprint(of: report)
-                        if let fingerprint, reported.current[session.id] == fingerprint { continue }
-                        if session.agentKind == "codex", session.command?.status == "delivering",
-                           let commandId = report.commandId,
-                           report.commandStatus == "delivered" || report.commandStatus == "delivery_unknown" {
-                            awaitingReport.withLock { $0[session.id] = (commandId, report) }
-                        }
-                        do {
-                            try await self.api.reportAgentSession(sessionId: session.id, report: report)
-                            _ = rejectedUntil.withLock { $0.removeValue(forKey: session.id) }
-                        } catch {
-                            if let apiError = error as? APIError,
-                               case let .http(_, status, _) = apiError,
-                               (400..<500).contains(status) {
-                                rejectedUntil.withLock { $0[session.id] = Date().addingTimeInterval(60) }
-                                self.log("同步 Agent 会话 \(session.id) 被拒绝（HTTP \(status)）；该会话 60 秒后重试，其余会话继续同步：\(error.localizedDescription)")
-                                continue
-                            }
-                            self.handle(error, what: "同步 Agent 会话 \(session.id) 出错", stop: stop, fatal: fatal)
-                            continue
-                        }
-                        // Keep the result until a node poll no longer offers
-                        // this command. Even after a 204, a stale poll must
-                        // not call Codex a second time.
-                        if let fingerprint { reported.withLock { $0[session.id] = fingerprint } }
                     }
                 } catch {
                     self.handle(error, what: "同步 Agent 会话出错", stop: stop, fatal: fatal)
@@ -480,6 +421,130 @@ public final class NodeLoop: @unchecked Sendable {
             }
             await stop.sleep(timing.sessionInterval)
         }
+    }
+
+    /// Synchronizes one session and uploads its report through the loop's
+    /// fingerprint and retry discipline. Runs serialized within its agent kind.
+    private func synchronizeOne(
+        _ session: NodeAgentSession,
+        reported: Locked<[String: Data]>,
+        awaitingReport: Locked<[String: (commandId: String, report: AgentSessionReport)]>,
+        rejectedUntil: Locked<[String: Date]>,
+        stop: StopSignal,
+        fatal: Locked<APIError?>
+    ) async {
+        if let deadline = rejectedUntil.current[session.id], deadline > Date() { return }
+        guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else {
+            // The integration was turned off on this Mac (or the app no longer
+            // ships it). Skipping the session left its server-side status
+            // frozen at the last value an adapter reported — active forever,
+            // holding one of the node's execution slots (AND-221). Report it
+            // unavailable instead; a re-enabled adapter's next poll overwrites
+            // this with the real state.
+            let report = AgentSessionReport(
+                status: "unavailable", messages: [],
+                error: "本机已停用 \(session.agentKind) 集成，会话暂不同步；重新启用后会自动恢复。"
+            )
+            await self.uploadAgentSessionReport(
+                report, for: session, reported: reported, awaitingReport: awaitingReport,
+                rejectedUntil: rejectedUntil, stop: stop, fatal: fatal
+            )
+            return
+        }
+        let report: AgentSessionReport
+        if let waiting = awaitingReport.current[session.id],
+           session.command?.id == waiting.commandId,
+           session.command?.status == "delivering" {
+            report = waiting.report
+        } else {
+            _ = awaitingReport.withLock { $0.removeValue(forKey: session.id) }
+            do {
+                let prepared = try await self.prepareAttachments(session)
+                do {
+                    report = try await adapter.synchronize(prepared)
+                } catch {
+                    // After the command reached Codex, a transport
+                    // error cannot prove whether turn/start took it.
+                    let uncertain = session.agentKind == "codex"
+                        && session.command?.status == "delivering"
+                        && (session.command?.kind ?? "message") == "message"
+                    if let command = session.command, command.status == "delivering",
+                       command.attachments?.isEmpty == false, !uncertain {
+                        report = AgentSessionReport(
+                            status: session.status, messages: [], commandId: command.id,
+                            commandStatus: "failed", commandError: "附件未能交付：\(error.localizedDescription)"
+                        )
+                    } else {
+                        report = AgentSessionReport(
+                            status: "unavailable", messages: [], error: error.localizedDescription,
+                            commandId: uncertain ? session.command?.id : nil,
+                            commandStatus: uncertain ? "delivery_unknown" : nil,
+                            commandError: uncertain
+                                ? "无法确认 Codex 是否收到回复，请在 Codex 会话核实后手动确认；不会自动重发。"
+                                : nil
+                        )
+                    }
+                }
+            } catch {
+                if let command = session.command, command.status == "delivering",
+                   command.attachments?.isEmpty == false {
+                    report = AgentSessionReport(
+                        status: session.status, messages: [], commandId: command.id,
+                        commandStatus: "failed", commandError: "附件未能下载：\(error.localizedDescription)"
+                    )
+                } else {
+                    report = AgentSessionReport(
+                        status: "unavailable", messages: [], error: error.localizedDescription
+                    )
+                }
+            }
+        }
+        await self.uploadAgentSessionReport(
+            report, for: session, reported: reported, awaitingReport: awaitingReport,
+            rejectedUntil: rejectedUntil, stop: stop, fatal: fatal
+        )
+    }
+
+    /// Uploads one session's report unless it is byte-for-byte what the server
+    /// already accepted (AND-182), remembering an unacknowledged Codex command
+    /// result so a lost HTTP response cannot resend the command itself.
+    private func uploadAgentSessionReport(
+        _ report: AgentSessionReport,
+        for session: NodeAgentSession,
+        reported: Locked<[String: Data]>,
+        awaitingReport: Locked<[String: (commandId: String, report: AgentSessionReport)]>,
+        rejectedUntil: Locked<[String: Date]>,
+        stop: StopSignal,
+        fatal: Locked<APIError?>
+    ) async {
+        // No fingerprint means the report cannot be encoded at
+        // all; uploading it unconditionally errs on the side of
+        // the server hearing about the session.
+        let fingerprint = Self.fingerprint(of: report)
+        if let fingerprint, reported.current[session.id] == fingerprint { return }
+        if session.agentKind == "codex", session.command?.status == "delivering",
+           let commandId = report.commandId,
+           report.commandStatus == "delivered" || report.commandStatus == "delivery_unknown" {
+            awaitingReport.withLock { $0[session.id] = (commandId, report) }
+        }
+        do {
+            try await self.api.reportAgentSession(sessionId: session.id, report: report)
+            _ = rejectedUntil.withLock { $0.removeValue(forKey: session.id) }
+        } catch {
+            if let apiError = error as? APIError,
+               case let .http(_, status, _) = apiError,
+               (400..<500).contains(status) {
+                rejectedUntil.withLock { $0[session.id] = Date().addingTimeInterval(60) }
+                self.log("同步 Agent 会话 \(session.id) 被拒绝（HTTP \(status)）；该会话 60 秒后重试，其余会话继续同步：\(error.localizedDescription)")
+                return
+            }
+            self.handle(error, what: "同步 Agent 会话 \(session.id) 出错", stop: stop, fatal: fatal)
+            return
+        }
+        // Keep the result until a node poll no longer offers
+        // this command. Even after a 204, a stale poll must
+        // not call Codex a second time.
+        if let fingerprint { reported.withLock { $0[session.id] = fingerprint } }
     }
 
     func prepareAttachments(_ session: NodeAgentSession) async throws -> NodeAgentSession {

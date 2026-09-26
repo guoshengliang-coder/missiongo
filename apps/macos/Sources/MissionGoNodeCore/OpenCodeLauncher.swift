@@ -497,7 +497,10 @@ public protocol OpenCodeControlling: Sendable {
     func createSession(directory: String, agent: String, model: OpenCodeModelRef?) async throws -> String
     func renameSession(id: String, title: String) async throws
     func prompt(id: String, text: String) async throws
-    func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage])
+    /// The session's status, mirrored messages and — when the session ended
+    /// badly at the source — a person-readable reason for that status.
+    /// `failed` means the session is over and will not recover by itself.
+    func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage], failure: String?)
     func interrupt(id: String) async throws
     func deleteSession(id: String) async throws
     /// The catalog as a heartbeat reports it: one entry per model a dispatch
@@ -520,6 +523,15 @@ public protocol OpenCodeControlling: Sendable {
 }
 
 public struct OpenCodeHTTPControl: OpenCodeControlling {
+    /// How many message pages one snapshot may read (100 messages each). The
+    /// old cap of 20 pages meant a session past 2,000 messages had its newest
+    /// replies silently left out (AND-222); pages are followed to the cursor's
+    /// end, so ordinary sessions stop after a page or two.
+    static let snapshotPageLimit = 100
+    /// How many of the read messages are kept: the server refuses a snapshot
+    /// with more, and the newest ones are the point of a mirror (AND-222).
+    static let snapshotMessageCap = 2_000
+
     private let home: String
     private let session: URLSession
 
@@ -618,11 +630,22 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         }
     }
 
-    public func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage]) {
-        _ = try await call("GET", "/api/session/\(encoded(id))")
+    public func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage], failure: String?) {
+        let details: [String: Any]
+        do {
+            details = try await call("GET", "/api/session/\(encoded(id))")
+        } catch let error as OpenCodeHTTPError where error.status == 404 {
+            // A session that is gone at the source — deleted by a person in
+            // OpenCode, or a rebuilt service — is terminal, not a blip. Say
+            // `failed` with a reason instead of letting the transport error
+            // read as "temporarily unavailable", which the console keeps
+            // promising will recover on its own (AND-222).
+            return ("failed", [], "OpenCode 会话已不存在（可能在 OpenCode 中被删除）。")
+        }
+        let outcome = (try? OpenCodeProtocol.data(details))?["outcome"] as? String
         var messages: [AgentSessionMessage] = []
         var cursor: String?
-        for _ in 0..<20 {
+        for _ in 0..<Self.snapshotPageLimit {
             // OpenCode 2 rejects `order` together with a cursor
             // (InvalidCursorError: Cursor cannot be combined with order); the
             // cursor already carries the order it was issued for. Ask for
@@ -631,12 +654,28 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
             if let cursor { path += "&cursor=\(encoded(cursor))" } else { path += "&order=asc" }
             let page = try await call("GET", path)
             messages += try OpenCodeProtocol.messages(page)
-            guard let next = OpenCodeProtocol.nextCursor(page), next != cursor else { break }
+            guard let next = OpenCodeProtocol.nextCursor(page), next != cursor else { cursor = nil; break }
             cursor = next
+        }
+        if cursor != nil {
+            // Past the page cap the newest messages may not have been reached;
+            // say so in the log instead of failing silently (AND-222). The
+            // newest of what was read still goes out below.
+            NSLog("MissionGo：OpenCode 会话 %@ 的消息超过 %d 条，本轮仅同步到第 %d 条附近。", id, Self.snapshotPageLimit * 100, Self.snapshotPageLimit * 100)
+        }
+        if messages.count > Self.snapshotMessageCap {
+            // Keep the newest messages — the console reads a mirror for what
+            // just happened, and a head-only read meant the latest replies of a
+            // long session never arrived at all (AND-222).
+            messages = Array(messages.suffix(Self.snapshotMessageCap))
         }
         let active = try await call("GET", "/api/session/active")
         let running = (active["data"] as? [String: Any])?[id] != nil
-        return (running ? "active" : "idle", messages)
+        if running { return ("active", messages, nil) }
+        // `interrupted` is a person's own stop, not a failure; only a failed
+        // outcome is reported as one.
+        if outcome == "failed" { return ("failed", messages, "OpenCode 报告该会话以失败结束。") }
+        return ("idle", messages, nil)
     }
 
     public func interrupt(id: String) async throws {
@@ -870,22 +909,29 @@ public struct OpenCodeLauncher: AgentAdapter {
             }
         }
         let report: AgentSessionReport
+        // A pending form or permission request holds the turn open without any
+        // work happening: the console must read that as waiting for a person,
+        // not as "running" (AND-205's OpenCode half, AND-222).
+        let waitingForInput = !choices.isEmpty
         guard let command = session.command else {
-            report = AgentSessionReport(status: snapshot.status, messages: messages,
-                                        sourceRestored: session.restoreInSource ? true : nil)
+            report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
+                                        sourceRestored: session.restoreInSource ? true : nil,
+                                        waitingForInput: waitingForInput)
             return report.reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
         if command.status == "queued" {
-            report = AgentSessionReport(status: snapshot.status, messages: messages,
-                                        commandId: command.id, commandStatus: "delivering")
+            report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
+                                        commandId: command.id, commandStatus: "delivering",
+                                        waitingForInput: waitingForInput)
             return report.reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
         guard command.status == "delivering" else {
-            report = AgentSessionReport(status: snapshot.status, messages: messages)
+            report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
+                                        waitingForInput: waitingForInput)
             return report.reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
@@ -906,8 +952,9 @@ public struct OpenCodeLauncher: AgentAdapter {
         } else {
             try await control.prompt(id: session.sessionRef, text: command.promptText)
         }
-        report = AgentSessionReport(status: snapshot.status, messages: messages,
-                                    commandId: command.id, commandStatus: "delivered")
+        report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
+                                    commandId: command.id, commandStatus: "delivered",
+                                    waitingForInput: waitingForInput)
         return report.reportingSettings(
             model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
         )

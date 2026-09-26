@@ -11,10 +11,15 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     var info: (agent: String?, model: OpenCodeModelRef?)
     var appliedAgents: [String] = []
     var appliedModels: [OpenCodeModelRef] = []
+    var snapshotStatus: String?
+    var snapshotFailure: String?
     var snapshotMessages: [AgentSessionMessage] = []
     var choices: [OpenCodeChoice] = []
     var repliedForm: (formID: String, answer: [String: OpenCodeAnswerValue])?
     var repliedPermission: (requestID: String, decision: String)?
+
+    func setSnapshotStatus(_ status: String) { snapshotStatus = status }
+    func setSnapshotFailure(_ failure: String) { snapshotFailure = failure }
 
     init(
         mcpStatus: String?,
@@ -39,8 +44,8 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     }
     func renameSession(id: String, title: String) async throws {}
     func prompt(id: String, text: String) async throws { lastPrompt = text }
-    func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage]) {
-        ("idle", snapshotMessages)
+    func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage], failure: String?) {
+        (snapshotStatus ?? "idle", snapshotMessages, snapshotFailure)
     }
     func interrupt(id: String) async throws {}
     func deleteSession(id: String) async throws {}
@@ -610,8 +615,8 @@ final class OpenCodeTests: XCTestCase {
             func createSession(directory: String, agent: String, model: OpenCodeModelRef?) async throws -> String { "ses_test" }
             func renameSession(id: String, title: String) async throws {}
             func prompt(id: String, text: String) async throws {}
-            func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage]) {
-                (snapshotStatus, [])
+            func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage], failure: String?) {
+                (snapshotStatus, [], nil)
             }
             func interrupt(id: String) async throws {}
             func deleteSession(id: String) async throws {}
@@ -649,6 +654,39 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertTrue(report.settingsError?.contains("未应用") == true)
         let attempts = await idle.agentAttempts
         XCTAssertEqual(attempts, ["plan"])
+    }
+
+    /// A pending form or permission request is a session blocked on a person,
+    /// not one that is running (AND-205's OpenCode half, AND-222): the report
+    /// must say waitingForInput so the console stops showing "正在运行".
+    func testSynchronizeReportsWaitingForInputWhileAChoiceIsPending() async throws {
+        let field = OpenCodeFormField(key: "confirm", title: "确认继续吗", kind: .boolean, required: true)
+        let choice = OpenCodeChoice(
+            reply: .form(id: "form-1", fields: [field]),
+            message: AgentSessionMessage(sourceId: "form-form-1", role: "agent", text: "请确认", questions: [field.question])
+        )
+        let control = StubOpenCodeControl(mcpStatus: nil, choices: [choice])
+        await control.setSnapshotStatus("active")
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "active"
+        ))
+        XCTAssertEqual(report.status, "active")
+        XCTAssertEqual(report.waitingForInput, true)
+    }
+
+    /// A session that ended badly at the source reports as failed with the
+    /// reason the snapshot read (AND-222), instead of every poll reading as a
+    /// transport blip the console promises will recover.
+    func testSynchronizeCarriesTheSnapshotFailure() async throws {
+        let control = StubOpenCodeControl(mcpStatus: nil)
+        await control.setSnapshotStatus("failed")
+        await control.setSnapshotFailure("OpenCode 报告该会话以失败结束。")
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "active"
+        ))
+        XCTAssertEqual(report.status, "failed")
+        XCTAssertEqual(report.error, "OpenCode 报告该会话以失败结束。")
+        XCTAssertNotEqual(report.waitingForInput, true)
     }
 
     private static func query(of url: URL?) -> [String: String] {
