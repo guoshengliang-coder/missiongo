@@ -17,7 +17,9 @@ import {
   formatAgentMessageTime,
   isNearMessageBottom,
   isAbnormalAgentSession,
+  latestAgentSessionCommand,
   messageLabelKey,
+  mergeAgentSessionSnapshot,
   outgoingReply,
   questionAnswerLabel,
   questionAnswerText,
@@ -233,6 +235,63 @@ describe("agent session message view", () => {
       id: "command-1", kind: "message", text: "发布", status: "delivery_unknown",
       createdAt: "2026-09-21T00:00:00Z",
     })).toMatchObject({ status: "delivery_unknown", commandId: "command-1" });
+  });
+
+  it("protects only command updates that happen while a detail poll is in flight (AND-215)", () => {
+    const oldCommand = {
+      id: "older-command", kind: "message", text: "上一条", status: "delivered", createdAt: "2026-09-25T00:00:01Z",
+    } as const;
+    const newCommand = {
+      id: "new-command", kind: "message", text: "继续", status: "queued", createdAt: "2026-09-25T00:00:01Z",
+    } as const;
+    const base = {
+      id: "session-1", dispatchId: "dispatch-1", agentKind: "codex", status: "idle",
+      updatedAt: "2026-09-25T00:00:00Z", messages: [], activities: [], canReply: true,
+      canResolveDelivery: false,
+    } as const;
+
+    // The POST writes a new command after this poll starts. Its equal timestamp
+    // must not let the older response erase or replace it.
+    expect(mergeAgentSessionSnapshot(
+      { ...base, command: oldCommand },
+      { ...base, command: newCommand },
+      { ...base, command: oldCommand },
+    ).command).toEqual(newCommand);
+    expect(mergeAgentSessionSnapshot(base, { ...base, command: newCommand }, base).command).toEqual(newCommand);
+
+    // The response can already contain the same command at a newer status. It
+    // wins immediately; a genuinely stale status cannot move the cache back.
+    expect(mergeAgentSessionSnapshot(base, { ...base, command: newCommand }, {
+      ...base,
+      command: { ...newCommand, status: "delivered", deliveredAt: "2026-09-25T00:00:02Z" },
+    }).command?.status).toBe("delivered");
+    expect(mergeAgentSessionSnapshot(base, { ...base, command: { ...newCommand, status: "delivering" } }, {
+      ...base,
+      command: newCommand,
+    }).command?.status).toBe("delivering");
+
+    // A command that was already cached when the poll began is not protected:
+    // the response remains authoritative and can clear it.
+    expect(mergeAgentSessionSnapshot(
+      { ...base, command: oldCommand },
+      { ...base, command: oldCommand },
+      base,
+    ).command).toBeUndefined();
+  });
+
+  it("uses the POST result while the first detail request still has no new command (AND-215)", () => {
+    const submitted = {
+      id: "new-command", kind: "message", text: "继续", status: "queued", createdAt: "2026-09-25T00:00:01Z",
+    } as const;
+    const older = {
+      id: "older-command", kind: "message", text: "上一条", status: "delivered", createdAt: submitted.createdAt,
+    } as const;
+
+    expect(latestAgentSessionCommand(undefined, submitted)).toEqual(submitted);
+    expect(latestAgentSessionCommand(older, submitted)).toEqual(submitted);
+    expect(latestAgentSessionCommand({
+      ...submitted, status: "delivered", deliveredAt: "2026-09-25T00:00:02Z",
+    }, submitted)?.status).toBe("delivered");
   });
 
   it("stops synthesizing a reply once it is delivered or cancelled", () => {
