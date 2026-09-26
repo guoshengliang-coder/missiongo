@@ -40,7 +40,9 @@ import {
   formatAgentMessageTime,
   isNearMessageBottom,
   isAbnormalAgentSession,
+  latestAgentSessionCommand,
   messageLabelKey,
+  mergeAgentSessionSnapshot,
   outgoingReply,
   replyBlockedLabelKey,
   replyMirrorArrived,
@@ -348,7 +350,16 @@ export function AgentSessionConsole({
   }, [selected?.agentSessionId]);
   const sessionQuery = useQuery({
     queryKey: ["agent-session", selected?.agentSessionId],
-    queryFn: () => api.getAgentSession(selected!.agentSessionId!),
+    queryFn: async ({ queryKey }) => {
+      const sessionId = queryKey[1] as string;
+      const requestStarted = queryClient.getQueryData<AgentSession>(["agent-session", sessionId]);
+      const incoming = await api.getAgentSession(sessionId);
+      return mergeAgentSessionSnapshot(
+        requestStarted,
+        queryClient.getQueryData<AgentSession>(["agent-session", sessionId]),
+        incoming,
+      );
+    },
     enabled: Boolean(selected?.agentSessionId) && documentVisible,
     refetchInterval: (query) => selected?.agentSessionId
       ? agentSessionDetailRefetchInterval(documentVisible, query.state.fetchFailureCount)
@@ -490,7 +501,10 @@ export function AgentSessionConsole({
       ]);
     },
   });
-  const command = sessionQuery.data?.command;
+  const submittedCommand = send.isSuccess && send.variables?.sessionId === selected?.agentSessionId
+    ? send.data
+    : undefined;
+  const command = latestAgentSessionCommand(sessionQuery.data?.command, submittedCommand);
   const pending = command?.status === "queued" || command?.status === "delivering"
     || command?.status === "delivery_unknown";
   const sendingSelected = send.isPending && send.variables?.sessionId === selected?.agentSessionId;

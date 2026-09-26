@@ -258,6 +258,59 @@ export interface OutgoingReply {
   readonly commandId?: string;
 }
 
+const commandStatusOrder: Readonly<Record<AgentSessionCommand["status"], number>> = {
+  queued: 0,
+  delivering: 1,
+  delivery_unknown: 2,
+  delivered: 3,
+  failed: 3,
+  cancelled: 3,
+};
+
+/** Prefer the POST result until the detail endpoint catches up to that command. */
+export function latestAgentSessionCommand(
+  server: AgentSessionCommand | undefined,
+  submitted: AgentSessionCommand | undefined,
+): AgentSessionCommand | undefined {
+  if (!submitted || server?.id === submitted.id) return server;
+  if (!server) return submitted;
+  const serverCreatedAt = Date.parse(server.createdAt);
+  const submittedCreatedAt = Date.parse(submitted.createdAt);
+  return Number.isFinite(serverCreatedAt) && Number.isFinite(submittedCreatedAt)
+    && serverCreatedAt > submittedCreatedAt
+    ? server
+    : submitted;
+}
+
+/**
+ * A detail poll that began before a reply was queued can finish after the POST
+ * and must not erase the newer command already cached for the conversation.
+ */
+export function mergeAgentSessionSnapshot(
+  requestStarted: AgentSession | undefined,
+  current: AgentSession | undefined,
+  incoming: AgentSession,
+): AgentSession {
+  const before = requestStarted?.command;
+  const after = current?.command;
+  const unchanged = before === after || (before !== undefined && after !== undefined
+    && before.id === after.id
+    && before.status === after.status
+    && before.error === after.error
+    && before.deliveredAt === after.deliveredAt
+    && before.cancelledAt === after.cancelledAt);
+  if (unchanged || !after) return incoming;
+  if (incoming.command?.id === after.id
+    && commandStatusOrder[incoming.command.status] >= commandStatusOrder[after.status]) return incoming;
+  if (incoming.command && incoming.command.id !== after.id) {
+    const incomingCreatedAt = Date.parse(incoming.command.createdAt);
+    const currentCreatedAt = Date.parse(after.createdAt);
+    if (Number.isFinite(incomingCreatedAt) && Number.isFinite(currentCreatedAt)
+      && incomingCreatedAt > currentCreatedAt) return incoming;
+  }
+  return { ...incoming, command: after };
+}
+
 /**
  * The POST starts before MissionGo has a command id. Once it does, the mirrored
  * command carries the same bubble through queueing and delivery. A delivered
