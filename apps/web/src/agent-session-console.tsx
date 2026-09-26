@@ -1018,6 +1018,7 @@ export function AgentSessionConsole({
                           reply={reply}
                           canReply={selected.canReply}
                           onChange={setReply}
+                          onPick={() => scrollToLatest("smooth")}
                         />
                       )}
                     </article>

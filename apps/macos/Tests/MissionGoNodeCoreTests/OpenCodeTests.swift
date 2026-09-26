@@ -17,6 +17,7 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     var choices: [OpenCodeChoice] = []
     var repliedForm: (formID: String, answer: [String: OpenCodeAnswerValue])?
     var repliedPermission: (requestID: String, decision: String)?
+    var repliedPermissions: [(requestID: String, decision: String)] = []
     var promptError: Error?
     var promptCount = 0
     var snapshotQueue: [(status: String, messages: [AgentSessionMessage], failure: String?)] = []
@@ -71,6 +72,7 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     }
     func replyPermission(id: String, requestID: String, decision: String) async throws {
         repliedPermission = (requestID, decision)
+        repliedPermissions.append((requestID, decision))
     }
 }
 
@@ -246,6 +248,96 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertEqual(replied?.decision, "always")
         let prompt = await control.lastPrompt
         XCTAssertNil(prompt)
+    }
+
+    /// AND-227/AND-218: OpenCode's form and permission replies never enter its
+    /// own message log, so the delivered report must carry the trace itself —
+    /// the card with what was picked, and the person's reply as a message.
+    func testADeliveredAnswerLeavesItsTraceInTheMirror() async throws {
+        let entry: [String: Any] = [
+            "id": "per_1", "sessionID": "ses_test", "action": "external_directory",
+            "resources": ["/repo/apps/web/src/*"],
+        ]
+        let choice = try XCTUnwrap(OpenCodeProtocol.permissionChoice(entry))
+        let control = StubOpenCodeControl(mcpStatus: "connected", choices: [choice])
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(
+                id: "c1", kind: "message", text: "允许一次", status: "delivering",
+                createdAt: "2026-09-26T02:00:00Z"
+            )
+        ))
+        let answeredCard = try XCTUnwrap(report.messages.first { $0.sourceId == "permission-per_1" && $0.questions?.first?.answered != nil })
+        XCTAssertEqual(answeredCard.questions?.first?.answered, "允许一次")
+        let reply = try XCTUnwrap(report.messages.first { $0.sourceId == "answer-c1" })
+        XCTAssertEqual(reply.role, "user")
+        XCTAssertEqual(reply.text, "允许一次")
+        XCTAssertEqual(reply.occurredAt, "2026-09-26T02:00:00Z")
+    }
+
+    /// AND-227: a form answer marks each field's question with the label the
+    /// person picked — the value's label for options, the wording for free text.
+    func testAFormAnswerMarksEachQuestionWithWhatWasPicked() async throws {
+        let entry: [String: Any] = [
+            "id": "frm_1", "sessionID": "ses_test", "title": "发布确认",
+            "fields": [
+                ["key": "scope", "title": "范围", "type": "string",
+                 "options": [["value": "small", "label": "小"], ["value": "full", "label": "完整"]]],
+                ["key": "note", "title": "备注", "type": "string"],
+            ],
+        ]
+        let choice = try XCTUnwrap(OpenCodeProtocol.formChoice(entry))
+        let control = StubOpenCodeControl(mcpStatus: "connected", choices: [choice])
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "范围: 完整\n备注: 今天发布", status: "delivering")
+        ))
+        let card = try XCTUnwrap(report.messages.last { $0.sourceId == "form-frm_1" && $0.questions != nil })
+        let questions = try XCTUnwrap(card.questions)
+        XCTAssertEqual(questions.first { $0.key == "scope" }?.answered, "完整")
+        XCTAssertEqual(questions.first { $0.key == "note" }?.answered, "今天发布")
+        XCTAssertTrue(report.messages.contains { $0.sourceId == "answer-c1" && $0.role == "user" })
+    }
+
+    /// AND-218: "always allow" answers every queued ask of the same action in
+    /// one pick, while "allow once" settles only the first.
+    func testAlwaysAllowClearsEveryQueuedAskOfTheSameAction() async throws {
+        func ask(_ id: String) -> OpenCodeChoice {
+            try! OpenCodeProtocol.permissionChoice([
+                "id": id, "sessionID": "ses_test", "action": "external_directory",
+                "resources": ["/repo/apps/web/src/*"],
+            ])!
+        }
+        let choices = [ask("per_1"), ask("per_2"), ask("per_3")]
+        let control = StubOpenCodeControl(mcpStatus: "connected", choices: choices)
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "始终允许", status: "delivering")
+        ))
+        let replies = await control.repliedPermissions
+        XCTAssertEqual(replies.map(\.requestID), ["per_1", "per_2", "per_3"])
+        XCTAssertTrue(replies.allSatisfy { $0.decision == "always" })
+        for id in ["per_1", "per_2", "per_3"] {
+            let card = try XCTUnwrap(report.messages.first { $0.sourceId == "permission-\(id)" && $0.questions?.first?.answered != nil })
+            XCTAssertEqual(card.questions?.first?.answered, "始终允许")
+        }
+    }
+
+    func testAllowOnceSettlesOnlyTheFirstAsk() async throws {
+        func ask(_ id: String) -> OpenCodeChoice {
+            try! OpenCodeProtocol.permissionChoice([
+                "id": id, "sessionID": "ses_test", "action": "external_directory",
+                "resources": ["/repo/apps/web/src/*"],
+            ])!
+        }
+        let control = StubOpenCodeControl(mcpStatus: "connected", choices: [ask("per_1"), ask("per_2")])
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "允许一次", status: "delivering")
+        ))
+        let replies = await control.repliedPermissions
+        XCTAssertEqual(replies.map(\.requestID), ["per_1"])
+        XCTAssertEqual(report.messages.filter { $0.sourceId.hasPrefix("permission-") && $0.questions?.first?.answered != nil }.count, 1)
     }
 
     /// A reply that does not answer the pending choice is still an ordinary
@@ -675,7 +767,8 @@ final class OpenCodeTests: XCTestCase {
         let field = OpenCodeFormField(key: "confirm", title: "确认继续吗", kind: .boolean, required: true)
         let choice = OpenCodeChoice(
             reply: .form(id: "form-1", fields: [field]),
-            message: AgentSessionMessage(sourceId: "form-form-1", role: "agent", text: "请确认", questions: [field.question])
+            message: AgentSessionMessage(sourceId: "form-form-1", role: "agent", text: "请确认", questions: [field.question]),
+            action: nil
         )
         let control = StubOpenCodeControl(mcpStatus: nil, choices: [choice])
         await control.setSnapshotStatus("active")

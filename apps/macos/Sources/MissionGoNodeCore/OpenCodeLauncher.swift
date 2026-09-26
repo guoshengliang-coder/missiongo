@@ -237,6 +237,10 @@ public struct OpenCodeChoice: Equatable, Sendable {
     public let reply: Reply
     /// The synthetic message the console draws this choice on.
     public let message: AgentSessionMessage
+    /// The action a permission request wants, nil for a form. "Always allow"
+    /// answers every other queued ask of the same action, so the console's
+    /// look-alike cards clear in one pick (AND-218).
+    public let action: String?
 
     /// The request an answer text maps to, or nil when the text does not answer
     /// this choice — then it is an ordinary prompt for the agent.
@@ -250,6 +254,55 @@ public struct OpenCodeChoice: Equatable, Sendable {
             guard let answer = Self.formAnswer(text: text, fields: fields) else { return nil }
             return .form(answer)
         }
+    }
+
+    /// The card as it should read once the answer went through: the same
+    /// message with each question marked by the option or text the person
+    /// chose. Reported once with the delivery; the server keeps messages
+    /// forever, so the card stops looking like a fresh ask without the node
+    /// remembering anything about it (AND-227).
+    func answeredMessage(replyText: String) -> AgentSessionMessage {
+        let rawLines = Self.replyLines(replyText)
+        let answered: [AgentSessionQuestion] = (message.questions ?? []).map { question in
+            // The reply's own wording, not a re-encoded value: the console
+            // highlights the button whose label that wording was picked from,
+            // whatever language drew it.
+            let picked: String?
+            switch reply {
+            case .permission:
+                picked = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+            case let .form(id: _, fields: fields):
+                let label = question.key ?? question.title
+                picked = fields.first(where: { $0.key == label || $0.title == label })
+                    .flatMap { rawLines[$0.key] ?? rawLines[$0.title] }
+            }
+            guard let picked, !picked.isEmpty else { return question }
+            return AgentSessionQuestion(
+                header: question.header, title: question.title, detail: question.detail,
+                options: question.options, multiSelect: question.multiSelect, key: question.key,
+                kind: question.kind, placeholder: question.placeholder, custom: question.custom,
+                answered: picked
+            )
+        }
+        return AgentSessionMessage(
+            sourceId: message.sourceId, turnId: message.turnId, role: message.role,
+            phase: message.phase, text: message.text, occurredAt: message.occurredAt,
+            questions: answered.isEmpty ? nil : answered
+        )
+    }
+
+    /// The reply split into its labelled lines — `key: value` pairs in the
+    /// format the console's questions write. A key-less single question never
+    /// carries a prefix, which only Claude and Codex questions can be.
+    static func replyLines(_ text: String) -> [String: String] {
+        var lines: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            guard let colon = line.firstIndex(where: { $0 == ":" || $0 == "：" }) else { continue }
+            let label = line[..<colon].trimmingCharacters(in: .whitespaces)
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            if !label.isEmpty && !value.isEmpty { lines[label] = value }
+        }
+        return lines
     }
 
     static func formAnswer(text: String, fields: [OpenCodeFormField]) -> [String: OpenCodeAnswerValue]? {
@@ -352,7 +405,8 @@ public enum OpenCodeProtocol {
                 sourceId: "form-\(id)", role: "agent",
                 text: isQuestionTool ? "OpenCode 想请你确认以下问题。" : title,
                 questions: fields.map(\.question)
-            )
+            ),
+            action: nil
         )
     }
 
@@ -377,7 +431,8 @@ public enum OpenCodeProtocol {
             reply: .permission(id: id),
             message: AgentSessionMessage(
                 sourceId: "permission-\(id)", role: "agent", text: text, questions: [question]
-            )
+            ),
+            action: action
         )
     }
 
@@ -955,9 +1010,10 @@ public struct OpenCodeLauncher: AgentAdapter {
         // this delivery attempt: the proof a re-read offers after a failed POST
         // is one more than this (AND-226).
         let priorReplyCount = snapshot.messages.filter { $0.role == "user" && $0.text == command.promptText }.count
+        var answered: [OpenCodeChoice] = []
         if deliveredPrompts.current[command.id] == nil {
             do {
-                try await deliver(command: command, session: session, choices: choices)
+                answered = try await deliver(command: command, session: session, choices: choices)
                 deliveredPrompts.withLock { $0[command.id] = Date() }
             } catch {
                 // The POST may have reached OpenCode anyway — a timeout only
@@ -986,12 +1042,13 @@ public struct OpenCodeLauncher: AgentAdapter {
         // delivered — two to four seconds before the mirrored message arrived
         // (AND-219). Re-read instead, and let a failed re-read fall back to
         // what was read before rather than losing the delivery itself.
-        var deliveredMessages = messages
+        let answeredTrace = Self.answerTraceMessages(command: command, answered: answered)
+        var deliveredMessages = messages + answeredTrace
         var deliveredStatus = snapshot.status
         var deliveredWaiting = waitingForInput
         if let refreshed = try? await control.snapshot(id: session.sessionRef) {
             let refreshedChoices = (try? await control.pendingChoices(id: session.sessionRef)) ?? []
-            deliveredMessages = refreshed.messages + refreshedChoices.map(\.message)
+            deliveredMessages = refreshed.messages + refreshedChoices.map(\.message) + answeredTrace
             deliveredStatus = refreshed.status
             deliveredWaiting = !refreshedChoices.isEmpty
         }
@@ -1004,25 +1061,65 @@ public struct OpenCodeLauncher: AgentAdapter {
         )
     }
 
+    /// The mirror entries a delivered answer leaves behind (AND-227, AND-218):
+    /// the answered cards — same source ids, questions now carrying what the
+    /// person picked — and one user message with the reply text itself.
+    /// OpenCode's form and permission replies never enter its own message log,
+    /// so without these the console would show neither what was chosen nor
+    /// that anything was; the server keeps messages forever, so reporting them
+    /// once with the delivery is enough.
+    static func answerTraceMessages(
+        command: AgentSessionCommand,
+        answered: [OpenCodeChoice]
+    ) -> [AgentSessionMessage] {
+        guard !answered.isEmpty else { return [] }
+        return answered.map { $0.answeredMessage(replyText: command.text) }
+            + [AgentSessionMessage(
+                sourceId: "answer-\(command.id)",
+                role: "user",
+                text: command.text,
+                occurredAt: command.createdAt.isEmpty ? nil : command.createdAt
+            )]
+    }
+
     /// Performs the one action a command maps to: an interrupt, the answer to
     /// the form or permission request the session is blocked on, or an
-    /// ordinary prompt.
-    private func deliver(command: AgentSessionCommand, session: NodeAgentSession, choices: [OpenCodeChoice]) async throws {
+    /// ordinary prompt. Returns the choices the reply answered, so the caller
+    /// can leave the answer's trace in the mirror.
+    private func deliver(command: AgentSessionCommand, session: NodeAgentSession, choices: [OpenCodeChoice]) async throws -> [OpenCodeChoice] {
         if command.kind == "interrupt" {
             try await control.interrupt(id: session.sessionRef)
-        } else if command.attachments?.isEmpty != false, let choice = choices.first, let answer = choice.answer(from: command.text) {
-            // The reply answers what OpenCode is blocked on; anything that does
-            // not parse as that answer stays an ordinary prompt.
-            switch (choice.reply, answer) {
-            case let (.permission(requestID), .permission(decision)):
-                try await control.replyPermission(id: session.sessionRef, requestID: requestID, decision: decision)
-            case let (.form(formID, _), .form(values)):
-                try await control.replyForm(id: session.sessionRef, formID: formID, answer: values)
-            default:
-                try await control.prompt(id: session.sessionRef, text: command.promptText)
-            }
-        } else {
+            return []
+        }
+        guard command.attachments?.isEmpty != false, let choice = choices.first, let answer = choice.answer(from: command.text) else {
             try await control.prompt(id: session.sessionRef, text: command.promptText)
+            return []
+        }
+        // The reply answers what OpenCode is blocked on; anything that does
+        // not parse as that answer stays an ordinary prompt.
+        switch (choice.reply, answer) {
+        case let (.permission(requestID), .permission(decision)):
+            try await control.replyPermission(id: session.sessionRef, requestID: requestID, decision: decision)
+            var settled: [OpenCodeChoice] = [choice]
+            // "Always allow" speaks for the whole queue of the same action —
+            // the console can hold several look-alike cards for one directory
+            // (AND-218), and answering them one pick at a time reads as
+            // "clicking does nothing". A card the service refuses keeps its
+            // place and is answered by a later reply.
+            if decision == "always", let action = choice.action {
+                for other in choices.dropFirst() where other.action == action {
+                    guard case let .permission(requestID) = other.reply else { continue }
+                    try? await control.replyPermission(id: session.sessionRef, requestID: requestID, decision: decision)
+                    settled.append(other)
+                }
+            }
+            return settled
+        case let (.form(formID, _), .form(values)):
+            try await control.replyForm(id: session.sessionRef, formID: formID, answer: values)
+            return [choice]
+        default:
+            try await control.prompt(id: session.sessionRef, text: command.promptText)
+            return []
         }
     }
 

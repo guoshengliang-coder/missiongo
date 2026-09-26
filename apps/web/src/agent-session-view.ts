@@ -500,6 +500,18 @@ export function toggleQuestionOption(
   return questionAnswerText(current, question, next.join(QUESTION_VALUE_SEPARATOR), questionCount);
 }
 
+/** Whether one listed option is among what a settled question was answered
+ * with. The node joins a multi-select answer with the same separator the
+ * reply format uses. */
+export function answeredOptionSelected(
+  question: Pick<AgentSessionQuestion, "answered" | "multiSelect">,
+  option: string,
+): boolean {
+  if (!question.answered) return false;
+  if (!question.multiSelect) return question.answered === option;
+  return question.answered.split(QUESTION_VALUE_SEPARATOR).includes(option);
+}
+
 export function messageLabelKey(
   role: AgentSessionMessage["role"],
   agentKind: AgentKind = "codex",

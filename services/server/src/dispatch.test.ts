@@ -1530,6 +1530,74 @@ describe("Claiming a dispatch on the node", () => {
     expect(after.attention.revision).not.toBe(before.attention.revision);
   });
 
+  it("keeps an answered question card as history, not an open ask (AND-227)", async () => {
+    const { app, cookie, node, mission, dispatchId } = await queuedDispatch();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "launched",
+        sessionName: `Mac mini-${mission.itemKey}`,
+        sessionUrl: "https://claude.ai/code/session_answered_card",
+        sessionRef: "31111111-2222-4333-8444-555555555555",
+      },
+    });
+    const sessionId = (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+    const snapshot = (status: string, questions: Array<Record<string, unknown>>) => app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status,
+        messages: [
+          { sourceId: "u1", turnId: "t1", role: "user", text: "处理它。" },
+          {
+            sourceId: "a1", turnId: "t1", role: "agent", text: "已选择。",
+            questions,
+          },
+        ],
+      },
+    });
+
+    // An open card as the newest message asks for an answer.
+    expect((await snapshot("idle", [{ title: "选择范围", options: ["小", "完整"], answered: undefined }])).statusCode).toBe(204);
+    const open = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ needsAttention: boolean; attention: { kind?: string } }> }>().sessions[0]!;
+    expect(open.needsAttention).toBe(true);
+    expect(open.attention.kind).toBe("answer");
+
+    // The same card, every question now carrying what was picked, is settled
+    // history: no answer is waited for, and the choice travels to the client.
+    expect((await snapshot("idle", [{ title: "选择范围", options: ["小", "完整"], answered: "完整" }])).statusCode).toBe(204);
+    const settled = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ needsAttention: boolean; attention: { kind?: string; state: string } }> }>().sessions[0]!;
+    expect(settled.needsAttention).toBe(false);
+    expect(settled.attention.kind).not.toBe("answer");
+
+    const detail = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+    })).json<{ messages: Array<{ questions?: Array<{ answered?: string }> }> }>();
+    expect(detail.messages.at(-1)?.questions?.[0]).toMatchObject({ title: "选择范围", answered: "完整" });
+  });
+
   it("hands a dispatch to a machine already waiting on a long poll", async () => {
     const { app, cookie } = await signedInApp();
     const node = await registeredNode(app);

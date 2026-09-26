@@ -47,6 +47,9 @@ export interface AgentSessionMessageInput {
     readonly placeholder?: string;
     /** The question also takes an answer outside its options. */
     readonly custom?: boolean;
+    /** What the person picked, once the reply this question waited on was
+     * delivered; absent while it is still open. */
+    readonly answered?: string;
   }[];
 }
 
@@ -382,7 +385,12 @@ function hasQuestions(value: string | null | undefined): boolean {
   if (!value) return false;
   try {
     const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) && parsed.length > 0;
+    // A question marked `answered` is settled history, not an open ask: an
+    // answered card as the newest message must not read as waiting for a
+    // person (AND-227).
+    return Array.isArray(parsed) && parsed.some(
+      (question) => !((question as { answered?: string }).answered),
+    );
   } catch {
     return false;
   }

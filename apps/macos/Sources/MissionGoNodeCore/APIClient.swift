@@ -481,6 +481,11 @@ public struct AgentSessionQuestion: Codable, Equatable, Sendable {
     /// A form field that also takes free text: OpenCode's question tool adds a
     /// "type your own answer" choice on top of the listed options.
     public let custom: Bool?
+    /// The option or text a person already answered with, once the reply this
+    /// question waited on has been delivered. Absent while it is still open.
+    /// The console uses it to keep the chosen option highlighted and the
+    /// controls disabled, so a answered card no longer reads as a fresh ask.
+    public let answered: String?
 
     public init(
         header: String? = nil,
@@ -491,7 +496,8 @@ public struct AgentSessionQuestion: Codable, Equatable, Sendable {
         key: String? = nil,
         kind: Kind? = nil,
         placeholder: String? = nil,
-        custom: Bool? = nil
+        custom: Bool? = nil,
+        answered: String? = nil
     ) {
         self.header = header
         self.title = title
@@ -502,6 +508,7 @@ public struct AgentSessionQuestion: Codable, Equatable, Sendable {
         self.kind = kind
         self.placeholder = placeholder
         self.custom = custom
+        self.answered = answered
     }
 }
 

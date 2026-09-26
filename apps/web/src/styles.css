@@ -2061,6 +2061,9 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-session-question { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; font-size: var(--text-xs); }
 .agent-session-question > small { color: var(--muted); font-weight: 700; }
 .agent-session-question-detail { margin: 0; color: var(--muted); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-session-question-answered { align-self: flex-start; padding: 1px 7px; color: var(--accent-text-strong); background: var(--accent-bg); border: 1px solid var(--accent-line); border-radius: 999px; }
+.agent-session-question.answered .agent-session-options button { cursor: default; opacity: .55; }
+.agent-session-question.answered .agent-session-options button.selected { opacity: 1; }
 .agent-session-background { width: 100%; padding: 9px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--muted); font-size: var(--text-xs); }
 .agent-session-options { display: flex; flex-wrap: wrap; gap: 6px; }
 .agent-session-options button { padding: 5px 8px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-dark); border-radius: var(--radius-sm); cursor: pointer; }

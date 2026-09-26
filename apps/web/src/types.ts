@@ -416,6 +416,10 @@ export interface AgentSessionQuestion {
   readonly placeholder?: string;
   /** The question also takes an answer outside its options. */
   readonly custom?: boolean;
+  /** What was picked, once this question's reply was delivered. The controls
+   * disable and the chosen option stays highlighted, so an answered card no
+   * longer reads as a fresh ask (AND-227). */
+  readonly answered?: string;
 }
 
 export interface AgentSessionActivity {

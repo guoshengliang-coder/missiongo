@@ -2297,6 +2297,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         let questions: Array<{
           header?: string; title: string; detail?: string; options?: string[]; multiSelect?: boolean;
           key?: string; kind?: "text" | "number" | "boolean"; placeholder?: string; custom?: boolean;
+          answered?: string;
         }> | undefined;
         if (message.questions !== undefined) {
           if (!Array.isArray(message.questions)) throw invalidInput("questions must be an array.");
@@ -2317,6 +2318,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               ...(kind ? { kind: kind as "text" | "number" | "boolean" } : {}),
               ...(stringField(question, "placeholder", false) ? { placeholder: question.placeholder as string } : {}),
               ...(typeof question.custom === "boolean" ? { custom: question.custom } : {}),
+              ...(stringField(question, "answered", false) ? { answered: question.answered as string } : {}),
             };
           });
         }
