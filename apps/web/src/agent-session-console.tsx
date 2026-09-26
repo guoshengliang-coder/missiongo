@@ -64,6 +64,7 @@ import { SessionLink } from "./session-link";
 import type { AgentSession, AgentSessionAttachment, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary, Dispatch, WorkItemAttachment } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { validateAttachment } from "./attachment-validation";
+import { useMediaQuery } from "./use-media-query";
 
 const CHAT_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf";
 
@@ -256,6 +257,10 @@ export function AgentSessionConsole({
   const [followLatest, setFollowLatest] = useState(true);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
+  // A handset is a coarse pointer. The same signal the stylesheet uses for touch
+  // sizing decides whether a session link can reach a client on this device
+  // (AND-214), rather than guessing from the viewport width.
+  const touchDevice = useMediaQuery("(pointer: coarse)");
   // The conversation the person clicked. Only that one counts as read; merely
   // opening the console or changing a filter never selects or reads a row.
   // (conversationOpen cannot tell: it only ever turns true on the one-pane layout.)
@@ -903,7 +908,7 @@ export function AgentSessionConsole({
               </div>
               <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t("agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
               <div className="agent-console-actions">
-                {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact />}
+                {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact mobile={touchDevice} />}
                 {selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
                   <span className="agent-session-muted" title={t("agentConsoleClaudeLocal")}>{t("agentConsoleClaudeLocalBadge")}</span>
                 )}
