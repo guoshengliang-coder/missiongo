@@ -86,7 +86,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               <header className="agent-session-head">
                 <strong>{t("agentSessionTitle")}</strong>
                 <span className={`status-pill agent-session-status-${session.data.status}`}>
-                  {session.data.agentKind === "claude_code" && ["active", "idle"].includes(session.data.status)
+                  {["claude_code", "opencode"].includes(session.data.agentKind) && ["active", "idle"].includes(session.data.status)
                     && !pending && session.data.turnState?.waitingForInput
                     ? t("agentSessionWaitingStatus")
                     : session.data.agentKind === "claude_code" && session.data.status === "active" && session.data.turnState?.turnActive === false

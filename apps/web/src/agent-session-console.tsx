@@ -514,12 +514,15 @@ export function AgentSessionConsole({
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
   const claudeTurn = selected?.agentKind === "claude_code" && sessionStatus === "active"
     && turnState?.turnActive === true && !turnState.waitingForInput;
-  const claudeWaiting = selected?.agentKind === "claude_code" && ["active", "idle"].includes(sessionStatus)
+  // A pending question or form is not "running" (AND-205's OpenCode half,
+  // AND-222): OpenCode reports it through waitingForInput the way Claude does.
+  const agentWaiting = selected !== undefined && ["claude_code", "opencode"].includes(selected.agentKind)
+    && ["active", "idle"].includes(sessionStatus)
     && !pending && turnState?.waitingForInput === true;
   const claudeBackgroundOnly = selected?.agentKind === "claude_code"
-    && sessionStatus === "active" && turnState?.turnActive === false && !claudeWaiting && activities.length > 0;
-  const visualStatus = claudeBackgroundOnly || claudeWaiting ? "idle" : sessionStatus;
-  const activityText = claudeWaiting
+    && sessionStatus === "active" && turnState?.turnActive === false && !agentWaiting && activities.length > 0;
+  const visualStatus = claudeBackgroundOnly || agentWaiting ? "idle" : sessionStatus;
+  const activityText = agentWaiting
     ? t("agentSessionWaitingForInput")
     : claudeBackgroundOnly
       ? t("agentSessionWaitingBackground", { count: activities.length })
@@ -762,7 +765,9 @@ export function AgentSessionConsole({
             const rowStatus = effectiveAgentSessionStatus(session.status, session.command);
             const rowBackground = session.agentKind === "claude_code" && rowStatus === "active" && session.turnState?.turnActive === false
               && !session.turnState.waitingForInput && session.activities.length > 0;
-            const rowWaiting = session.agentKind === "claude_code" && ["active", "idle"].includes(rowStatus)
+            // Same rule as the conversation panel above (AND-222): an OpenCode
+            // session blocked on a person reads as waiting, not as running.
+            const rowWaiting = ["claude_code", "opencode"].includes(session.agentKind) && ["active", "idle"].includes(rowStatus)
               && session.command?.status !== "queued" && session.turnState?.waitingForInput === true;
             const rowLabel = rowBackground ? t("agentSessionBackgroundStatus")
               : rowWaiting ? t("agentSessionWaitingStatus") : statusLabel(rowStatus, t);
@@ -854,7 +859,7 @@ export function AgentSessionConsole({
                   ))}</div>
                 </div>
               </div>
-              <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : claudeWaiting ? t("agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
+              <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t("agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
               <div className="agent-console-actions">
                 {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact />}
                 {selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (

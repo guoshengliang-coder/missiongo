@@ -2665,6 +2665,196 @@ describe("Claiming a dispatch on the node", () => {
     expect(queuedOffline.json()).toMatchObject({ status: "queued" });
   });
 
+  it("keeps archived frozen sessions from occupying a node's execution slots (AND-221)", async () => {
+    const { app, cookie, databasePath, node, mission, dispatchId } = await queuedDispatch();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionRef: "ses_frozen_real" },
+    });
+
+    const database = new DatabaseSync(databasePath);
+    const now = new Date().toISOString();
+    const accountId = (database.prepare("SELECT account_id AS id FROM dispatches WHERE id = ?")
+      .get(dispatchId) as unknown as { id: string }).id;
+    const insertFrozen = database.prepare(
+      `INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+       VALUES (?, ?, ?, 'codex', 'default', 'launched', '/repo', ?)`,
+    );
+    const insertSession = database.prepare(
+      `INSERT INTO agent_sessions (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at)
+       VALUES (?, ?, ?, 'codex', ?, 'active', ?, ?)`,
+    );
+    // Nine more frozen active sessions besides the mirrored one: ten occupied
+    // slots is the node's cap.
+    for (let index = 0; index < 9; index += 1) {
+      insertFrozen.run(`dispatch-frozen-${index}`, accountId, node.nodeId, now);
+      insertSession.run(`session-frozen-${index}`, `dispatch-frozen-${index}`, node.nodeId, `thread-frozen-${index}`, now, now);
+    }
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/items",
+      headers: { cookie },
+      payload: {
+        productId: mission.productId,
+        status: "ready",
+        type: "task",
+        priority: "normal",
+        title: "AND second work",
+        description: "dispatch me too",
+        environment: { platform: "web" },
+      },
+    });
+    expect(second.statusCode).toBe(201);
+    const secondItemKey = second.json<{ key: string }>().key;
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [secondItemKey] },
+    });
+    const claim = () => app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    // Ten active sessions fill the node; the queued dispatch waits.
+    expect((await claim()).statusCode).toBe(204);
+
+    // The sessions were archived in MissionGo while their Mac never reported
+    // again (the archive path drops them from the node list): archived work
+    // must not hold a slot forever.
+    database.prepare("UPDATE agent_sessions SET archived_at = ?, archive_source = 'missiongo' WHERE node_id = ?")
+      .run(now, node.nodeId);
+    database.close();
+
+    const afterArchive = await claim();
+    expect(afterArchive.statusCode).toBe(200);
+    expect(afterArchive.json()).toMatchObject({ itemKeys: [secondItemKey] });
+  });
+
+  it("reads a session on a node offline past the degrade window as unavailable with attention (AND-221)", async () => {
+    const { app, cookie, databasePath, node, mission, dispatchId } = await queuedDispatch();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionRef: "ses_offline" },
+    });
+    const listed = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ id: string }> }>();
+    const sessionId = listed.sessions[0]!.id;
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: [{ sourceId: "m1", role: "agent", text: "Working." }] },
+    })).statusCode).toBe(204);
+
+    const database = new DatabaseSync(databasePath);
+    // Offline, but not yet past the window: the stored status still reads.
+    database.prepare("UPDATE nodes SET last_seen_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 25 * 60_000).toISOString(), node.nodeId);
+    database.close();
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json()).toMatchObject({ sessions: [{ status: "active", nodeConnectionState: "offline" }] });
+
+    // Past the window the console must not keep calling it "running".
+    const databaseLater = new DatabaseSync(databasePath);
+    databaseLater.prepare("UPDATE nodes SET last_seen_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 35 * 60_000).toISOString(), node.nodeId);
+    databaseLater.close();
+    const degraded = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ status: string; attention: { state: string; reason: string } }> }>();
+    expect(degraded.sessions[0]!.status).toBe("unavailable");
+    expect(degraded.sessions[0]!.attention.state).toBe("needed");
+    expect(degraded.sessions[0]!.attention.reason).toContain("节点已离线超过 30 分钟");
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+    })).json<{ status: string }>().status).toBe("unavailable");
+
+    // The stored status is untouched: a heartbeat that reaches the server
+    // again puts the session back exactly as the Mac last reported it.
+    await heartbeat(app, node.token);
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json()).toMatchObject({ sessions: [{ status: "active", nodeConnectionState: "online" }] });
+  });
+
+  it("keeps transcript order when a snapshot arrives trimmed to its newest messages (AND-222)", async () => {
+    const { app, cookie, node, mission, dispatchId } = await queuedDispatch();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionRef: "ses_trimmed" },
+    });
+    const listed = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ id: string }> }>();
+    const sessionId = listed.sessions[0]!.id;
+    const snapshot = (messages: Array<{ sourceId: string; text: string }>) => app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "active", messages: messages.map((message) => ({ sourceId: message.sourceId, role: "agent", text: message.text })) },
+    });
+    expect((await snapshot([
+      { sourceId: "m1", text: "first" },
+      { sourceId: "m2", text: "second" },
+      { sourceId: "m3", text: "third" },
+      { sourceId: "m4", text: "fourth" },
+      { sourceId: "m5", text: "fifth" },
+    ])).statusCode).toBe(204);
+    // The next poll carries only the newest slice plus one new message, the
+    // way a long session is mirrored after the head is dropped.
+    expect((await snapshot([
+      { sourceId: "m3", text: "third" },
+      { sourceId: "m4", text: "fourth" },
+      { sourceId: "m5", text: "fifth" },
+      { sourceId: "m6", text: "sixth" },
+    ])).statusCode).toBe(204);
+
+    const detail = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+    })).json<{ messages: Array<{ sourceId: string }> }>();
+    expect(detail.messages.map((message) => message.sourceId)).toEqual(["m1", "m2", "m3", "m4", "m5", "m6"]);
+  });
+
   it("refuses a Codex link that carries more than a thread id", async () => {
     const { app, node, dispatchId } = await queuedDispatch();
     const result = await app.inject({

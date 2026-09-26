@@ -136,6 +136,18 @@ private final class CodexReplyAdapter: AgentAdapter {
     }
 }
 
+/// A Codex stand-in whose synchronize blocks, the way a half-dead daemon does
+/// (AND-220): the loop must not let it hold back another agent's sessions.
+private final class SlowCodexAdapter: AgentAdapter {
+    let kind = "codex"
+    func detect() async -> String? { "0.155.1" }
+    func launch(_ job: DispatchJob) async throws -> LaunchResult { throw LaunchError("not used") }
+    func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        return AgentSessionReport(status: "idle", messages: [])
+    }
+}
+
 private struct RecoveringAdapter: AgentAdapter {
     let kind = "claude_code"
     let detections = Locked(0)
@@ -586,6 +598,53 @@ final class NodeLoopTests: XCTestCase {
         try await task.value
         XCTAssertEqual(api.sessionUploadAttempts.current, 2, "one failed attempt, one retried upload")
         XCTAssertEqual(api.sessionReports.current.count, 1)
+    }
+
+    /// One agent kind must not wait on another (AND-220): a Codex daemon that
+    /// hangs holds back only its own sessions, not a Claude mirror in the same
+    /// round.
+    func testOneAgentKindDoesNotWaitOnAnother() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [
+            NodeAgentSession(id: "codex-slow", agentKind: "codex", sessionRef: "t1", status: "active"),
+            NodeAgentSession(id: "claude-fast", agentKind: "claude_code", sessionRef: "s1", status: "active"),
+        ] }
+        let loop = NodeLoop(
+            api: api, adapters: [SlowCodexAdapter(), SnapshotAdapter(reports: [AgentSessionReport(status: "idle", messages: [])])],
+            fallbackNodeName: "Mac mini", timing: snapshotTiming(), log: { _ in }
+        )
+        let task = Task { try await loop.run() }
+
+        await waitUntil { api.sessionReports.current.contains { $0.0 == "claude-fast" } }
+        // Serialized, the Claude mirror could only have been uploaded after
+        // the Codex poll finished its delay.
+        XCTAssertFalse(
+            api.sessionReports.current.contains { $0.0 == "codex-slow" },
+            "the Claude session must not wait out the Codex daemon"
+        )
+        task.cancel()
+        try await task.value
+    }
+
+    /// The Mac turned an integration off (or no longer ships it): the session
+    /// reads as unavailable instead of staying frozen at its last status,
+    /// holding one of the node's execution slots (AND-221). A re-enabled
+    /// adapter's next poll overwrites the report with the real state.
+    func testASessionWithoutItsAdapterReportsUnavailableInsteadOfFreezing() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [NodeAgentSession(id: "codex-gone", agentKind: "codex", sessionRef: "t1", status: "active")] }
+        let loop = NodeLoop(
+            api: api, adapters: [SnapshotAdapter(reports: [])],
+            fallbackNodeName: "Mac mini", timing: snapshotTiming(), log: { _ in }
+        )
+        let task = Task { try await loop.run() }
+
+        await waitUntil { api.sessionReports.current.contains { $0.0 == "codex-gone" } }
+        task.cancel()
+        try await task.value
+        let report = api.sessionReports.current.first { $0.0 == "codex-gone" }!.1
+        XCTAssertEqual(report.status, "unavailable")
+        XCTAssertTrue(report.error?.contains("已停用 codex 集成") == true)
     }
 
     func testRejectedSnapshotDoesNotBlockTheFollowingSession() async throws {

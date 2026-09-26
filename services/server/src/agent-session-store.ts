@@ -436,6 +436,36 @@ function initialAttention(
 }
 
 /**
+ * How long a Mac may be silent before its active sessions read as
+ * unavailable (AND-221). Past this, "running" describes a stale mirror, not
+ * the machine: nothing can report the session, and every one of them frozen
+ * at `active` kept occupying an execution slot with the console still saying
+ * it was working. Read-time only — the stored status stays the node's last
+ * word and is overwritten by the next snapshot a reconnected Mac sends.
+ */
+export const NODE_OFFLINE_SESSION_DEGRADE_MS = 30 * 60_000;
+
+/**
+ * A session whose Mac has been offline this long (or whose node was revoked)
+ * is not running anything the server can vouch for. Returns the status the
+ * console should read, and whether it was degraded (AND-221).
+ */
+export function offlineDegradedStatus(
+  status: AgentSessionStatus,
+  nodeLastSeenAt: string | null | undefined,
+  nodeRevoked: boolean,
+  now = Date.now(),
+): { degraded: boolean; status: AgentSessionStatus } {
+  if (status !== "active" && status !== "stalled") return { degraded: false, status };
+  if (nodeRevoked) return { degraded: true, status: "unavailable" };
+  const seen = Date.parse(nodeLastSeenAt ?? "");
+  if (!Number.isFinite(seen) || now - seen < NODE_OFFLINE_SESSION_DEGRADE_MS) {
+    return { degraded: false, status };
+  }
+  return { degraded: true, status: "unavailable" };
+}
+
+/**
  * How long MissionGo waits for the Mac to settle a reply it has already claimed
  * (AND-184). Before this, a command's whole life was driven by the node: a Mac
  * that went away mid-delivery left the one pending slot occupied forever, and
@@ -551,11 +581,15 @@ export class AgentSessionStore {
     const row = this.database.connection
       .prepare(
         `SELECT s.id, s.dispatch_id, s.agent_kind, s.agent_session_ref, s.status, s.last_error, s.updated_at,
-                s.archived_at, s.archive_source, s.activities_json, s.turn_state_json
-         FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
+                s.archived_at, s.archive_source, s.activities_json, s.turn_state_json,
+                n.last_seen_at AS node_last_seen_at, n.revoked_at AS node_revoked_at
+         FROM agent_sessions s
+         JOIN dispatches d ON d.id = s.dispatch_id
+         JOIN nodes n ON n.id = s.node_id
          WHERE s.id = ? AND d.account_id = ?`,
       )
-      .get(sessionId, accountId) as unknown as SessionRow | undefined;
+      .get(sessionId, accountId) as unknown as
+        (SessionRow & { node_last_seen_at: string | null; node_revoked_at: string | null }) | undefined;
     if (!row) throw notFound("Agent session");
     const messages = this.database.connection
       .prepare(
@@ -571,7 +605,11 @@ export class AgentSessionStore {
       id: row.id,
       dispatchId: row.dispatch_id,
       agentKind: row.agent_kind,
-      status: row.status,
+      // Same read-time rule as the list (AND-221): a Mac nobody has heard
+      // from in half an hour is not running this session.
+      status: offlineDegradedStatus(
+        row.status, row.node_last_seen_at, Boolean(row.node_revoked_at),
+      ).status,
       ...(row.last_error ? { lastError: row.last_error } : {}),
       updatedAt: row.updated_at,
       ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
@@ -674,7 +712,13 @@ export class AgentSessionStore {
             && itemRows.every((item) => item.status !== "ready" && item.status !== "in_progress")
             ? "idle"
             : "active";
-      const status = row.session_status ?? inferredStatus;
+      // A Mac silent for half an hour (or revoked) is not running anything the
+      // server can vouch for (AND-221): read its active sessions as
+      // unavailable rather than "running".
+      const offlineDegraded = offlineDegradedStatus(
+        row.session_status ?? inferredStatus, row.node_last_seen_at, Boolean(row.node_revoked_at),
+      );
+      const status = offlineDegraded.status;
       const updatedAt = row.session_updated_at ?? row.dispatch_archived_at
         ?? row.completed_at ?? row.delivered_at ?? row.created_at;
       const activityAt = row.session_activity_at ?? row.dispatch_archived_at
@@ -723,9 +767,19 @@ export class AgentSessionStore {
       // message-derived attention so the console shows it; deliberately without a
       // revision, so nobody can dismiss a condition that is still true.
       const stuckReason = command ? stuckCommandReason(command) : undefined;
+      // So is a session reading "running" on a Mac nobody has heard from in
+      // half an hour (AND-221) — same discipline, still true until the Mac
+      // reports again, so it cannot be dismissed either.
+      const offlineReason = offlineDegraded.degraded
+        ? row.node_revoked_at
+          ? "该会话所属节点已被撤销，状态不再更新；如需继续请重新派单。"
+          : "节点已离线超过 30 分钟，会话状态无法确认；节点恢复后会自动更正。"
+        : undefined;
       const alertAttention: AgentSessionAttention = stuckReason
         ? { state: "needed", kind: "action", reason: stuckReason }
-        : attention;
+        : offlineReason
+          ? { state: "needed", kind: "uncertain", reason: offlineReason }
+          : attention;
       const needsAttention = alertAttention.state === "needed";
       return {
         id: row.session_id ?? `dispatch:${row.dispatch_id}`,
@@ -1224,8 +1278,15 @@ export class AgentSessionStore {
   }
 
   countExecutionSlots(nodeId: string): number {
+    // Archived conversations must not hold a slot (AND-221): their Mac work is
+    // done, and a session archived while `active` — its status frozen at the
+    // last snapshot, because only a node poll updates it — used to keep
+    // occupying one of the ten slots until the node could never claim again.
     const row = this.database.connection
-      .prepare("SELECT COUNT(*) AS count FROM agent_sessions WHERE node_id = ? AND status IN ('active', 'stalled')")
+      .prepare(
+        `SELECT COUNT(*) AS count FROM agent_sessions
+         WHERE node_id = ? AND status IN ('active', 'stalled') AND archived_at IS NULL`,
+      )
       .get(nodeId) as unknown as { count: number };
     return row.count;
   }
@@ -1351,13 +1412,15 @@ export class AgentSessionStore {
     const storedBySource = new Map(storedMessages.map((message) => [message.source_id, message]));
     const messagesChanged = messages.some((message) => {
       const stored = storedBySource.get(message.sourceId);
+      // Position is deliberately not compared: stored messages keep the
+      // position they were first written with, so a mirror that arrives
+      // trimmed to its newest messages does not count as a change (AND-222).
       return !stored
         || stored.turn_id !== message.turnId
         || stored.role !== message.role
         || stored.phase !== message.phase
         || stored.text !== message.text
-        || stored.questions_json !== message.questionsJson
-        || stored.position !== message.position;
+        || stored.questions_json !== message.questionsJson;
     });
     // While a restore is on its way to the Mac, a snapshot still reading the
     // thread as archived is stale, not a new archive in Codex.
@@ -1461,25 +1524,42 @@ export class AgentSessionStore {
            WHERE id = (SELECT dispatch_id FROM agent_sessions WHERE id = ?)`,
         ).run(sessionUrl || null, input.sessionId);
       }
-      const upsert = this.database.connection.prepare(
+      // A message keeps the position it was first stored with; a later mirror
+      // that starts further back (a long session trimmed to its newest
+      // messages, AND-222) would otherwise renumber everything it still
+      // carries and interleave the transcript. Messages new to the session
+      // continue after the newest position it already has.
+      const maxStoredPosition = (storedMessages.reduce(
+        (max, message) => Math.max(max, message.position), -1,
+      ));
+      const insertMessage = this.database.connection.prepare(
         `INSERT INTO agent_session_messages
           (id, session_id, source_id, turn_id, role, phase, text, questions_json, position, observed_at, occurred_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(session_id, source_id) DO UPDATE SET
-           turn_id = excluded.turn_id, role = excluded.role, phase = excluded.phase,
-           text = excluded.text, questions_json = excluded.questions_json,
-           position = excluded.position, observed_at = excluded.observed_at,
-           occurred_at = excluded.occurred_at`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
+      const refreshMessage = this.database.connection.prepare(
+        `UPDATE agent_session_messages
+         SET turn_id = ?, role = ?, phase = ?, text = ?, questions_json = ?, observed_at = ?, occurred_at = ?
+         WHERE session_id = ? AND source_id = ?`,
+      );
+      let nextPosition = maxStoredPosition + 1;
       messages.forEach((message) => {
         const occurredAt = message.sourceOccurredAt
           ?? storedBySource.get(message.sourceId)?.occurred_at
           ?? now;
-        upsert.run(
+        if (storedBySource.has(message.sourceId)) {
+          refreshMessage.run(
+            message.turnId, message.role, message.phase, message.text,
+            message.questionsJson, now, occurredAt, input.sessionId, message.sourceId,
+          );
+          return;
+        }
+        insertMessage.run(
           randomUUID(), input.sessionId, message.sourceId, message.turnId,
           message.role, message.phase, message.text,
-          message.questionsJson, message.position, now, occurredAt,
+          message.questionsJson, nextPosition, now, occurredAt,
         );
+        nextPosition += 1;
       });
       this.database.connection.prepare(
         `INSERT INTO agent_session_attention

@@ -582,10 +582,16 @@ public struct CodexAppServerControl: CodexControl {
     /// Per call. `thread/start` loads configuration and MCP servers, which can
     /// take a few seconds on a cold app-server.
     public let timeout: TimeInterval
+    /// Per poll of the mirror path (`thread/read` and friends). This runs every
+    /// couple of seconds per session, so a half-dead daemon must fail a read
+    /// fast instead of holding its whole timeout (AND-220); a slow launch or
+    /// reply keeps the full `timeout` above.
+    public let readTimeout: TimeInterval
     private let archiveCache: CodexArchiveCache
 
-    public init(timeout: TimeInterval = 30) {
+    public init(timeout: TimeInterval = 30, readTimeout: TimeInterval = 10) {
         self.timeout = timeout
+        self.readTimeout = readTimeout
         archiveCache = CodexArchiveCache()
     }
 
@@ -599,7 +605,7 @@ public struct CodexAppServerControl: CodexControl {
     }
 
     public func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
-        let timeout = self.timeout
+        let timeout = self.readTimeout
         let archiveCache = self.archiveCache
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
@@ -653,12 +659,22 @@ public struct CodexAppServerControl: CodexControl {
         var ids = Set<String>()
         var cursor: String?
         var seenCursors = Set<String>()
+        // An archive list that paginates forever would hold the sync poll for
+        // its whole timeout budget; past this many pages the answer is wrong on
+        // purpose rather than late (AND-220). Callers treat a throw as "not
+        // archived" and ask `thread/read` directly.
+        let pageLimit = 50
+        var pages = 0
         repeat {
             let result = try connection.call("thread/list", CodexProtocol.archivedThreadListParams(cursor: cursor))
             let page = try CodexProtocol.threadListPage(result)
             ids.formUnion(page.ids)
             cursor = page.nextCursor
             if let cursor, !seenCursors.insert(cursor).inserted {
+                throw CodexControlError.invalidResponse(method: "thread/list")
+            }
+            pages += 1
+            if pages >= pageLimit, cursor != nil {
                 throw CodexControlError.invalidResponse(method: "thread/list")
             }
         } while cursor != nil
@@ -739,7 +755,7 @@ public struct CodexAppServerControl: CodexControl {
     }
 
     public func hasLoadedThreads(socketPath: String) async throws -> Bool {
-        let timeout = self.timeout
+        let timeout = self.readTimeout
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result {
@@ -1095,6 +1111,11 @@ enum WebSocketFrame {
     }
 }
 
+/// How long a Unix socket connect may take before the daemon is called
+/// unreachable (AND-220). A healthy app-server accepts instantly; a half-dead
+/// one leaves the connect pending forever without this.
+private let unixSocketConnectTimeout: TimeInterval = 3
+
 /// A connected, blocking Unix domain socket with send and receive timeouts.
 final class UnixSocket {
     enum ReadResult {
@@ -1133,15 +1154,49 @@ final class UnixSocket {
             raw.copyBytes(from: bytes)
         }
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-        let result = withUnsafePointer(to: &address) { pointer in
+        // Connect without blocking: a half-dead daemon can leave a blocking
+        // connect() pending indefinitely, which no receive timeout ever sees
+        // (AND-220). Poll for writability with its own deadline, then put the
+        // socket back the blocking way the read/write paths expect.
+        let originalFlags = fcntl(descriptor, F_GETFL)
+        if originalFlags >= 0 {
+            _ = fcntl(descriptor, F_SETFL, originalFlags | O_NONBLOCK)
+        }
+        let connectResult = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard result == 0 else {
+        if connectResult != 0 && errno == EINPROGRESS && originalFlags >= 0 {
+            var pollDescriptor = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+            let polled = poll(&pollDescriptor, 1, Int32(unixSocketConnectTimeout * 1000))
+            let failure: String?
+            if polled == 0 {
+                failure = "连接超时（\(Int(unixSocketConnectTimeout)) 秒）"
+            } else if polled < 0 {
+                failure = UnixSocket.errnoText()
+            } else {
+                var pendingError: Int32 = 0
+                var pendingLength = socklen_t(MemoryLayout<Int32>.size)
+                if getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &pendingError, &pendingLength) == 0 && pendingError != 0 {
+                    errno = pendingError
+                    failure = UnixSocket.errnoText()
+                } else {
+                    failure = nil
+                }
+            }
+            _ = fcntl(descriptor, F_SETFL, originalFlags)
+            if let failure {
+                Darwin.close(descriptor)
+                throw CodexControlError.connect(path: path, reason: failure)
+            }
+        } else if connectResult != 0 {
             let reason = UnixSocket.errnoText()
+            if originalFlags >= 0 { _ = fcntl(descriptor, F_SETFL, originalFlags) }
             Darwin.close(descriptor)
             throw CodexControlError.connect(path: path, reason: reason)
+        } else if originalFlags >= 0 {
+            _ = fcntl(descriptor, F_SETFL, originalFlags)
         }
         self.descriptor = descriptor
     }
