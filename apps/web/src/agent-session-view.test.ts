@@ -9,6 +9,7 @@ import {
   agentSessionsRefetchInterval,
   archivableVisibleSessionIds,
   agentSessionMatches,
+  answeredOptionSelected,
   byLatestActivity,
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
@@ -346,5 +347,17 @@ describe("agent session message view", () => {
     const field = { title: "备注", key: "note" };
     expect(questionAnswerValue("note: 今天、明天", field)).toBe("今天、明天");
     expect(questionAnswerValues("note: 今天、明天", field)).toEqual(["今天", "明天"]);
+  });
+
+  it("matches a settled question's picked option exactly, multi-select by part", () => {
+    expect(answeredOptionSelected({ answered: "始终允许" }, "始终允许")).toBe(true);
+    expect(answeredOptionSelected({ answered: "始终允许" }, "允许一次")).toBe(false);
+    expect(answeredOptionSelected({}, "始终允许")).toBe(false);
+    const multi = { answered: "小、完整", multiSelect: true };
+    expect(answeredOptionSelected(multi, "小")).toBe(true);
+    expect(answeredOptionSelected(multi, "完整")).toBe(true);
+    expect(answeredOptionSelected(multi, "大")).toBe(false);
+    // A single-select answer containing the separator must not match a part.
+    expect(answeredOptionSelected({ answered: "小、完整" }, "小")).toBe(false);
   });
 });

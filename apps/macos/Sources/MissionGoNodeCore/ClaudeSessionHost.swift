@@ -469,6 +469,29 @@ public struct ClaudeStreamSnapshot: Sendable {
         ))
     }
 
+    /// A request this host just answered keeps its card, with the choice the
+    /// person made marked on it (AND-227): the recordUserMessage beside it
+    /// already carries the reply itself, but the card without the mark reads
+    /// as an ask still waiting for an answer.
+    public mutating func markPermissionAnswered(requestId: String, answer: String) {
+        guard let index = state.messages.firstIndex(where: { $0.sourceId == "permission-\(requestId)" }) else { return }
+        let card = state.messages[index]
+        guard let questions = card.questions else { return }
+        state.messages[index] = AgentSessionMessage(
+            sourceId: card.sourceId, turnId: card.turnId, role: card.role,
+            phase: card.phase, text: card.text, occurredAt: card.occurredAt,
+            questions: questions.map { question in
+                AgentSessionQuestion(
+                    header: question.header, title: question.title, detail: question.detail,
+                    options: question.options, multiSelect: question.multiSelect, key: question.key,
+                    kind: question.kind, placeholder: question.placeholder, custom: question.custom,
+                    answered: answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
+        )
+        noteProgress()
+    }
+
     public mutating func setRemote(sessionUrl: String) {
         state.sessionUrl = sessionUrl
         if state.status == "suspended" { state.status = "idle" }

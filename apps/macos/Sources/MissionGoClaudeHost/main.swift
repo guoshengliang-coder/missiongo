@@ -322,6 +322,9 @@ private func run(configPath: String) throws {
                     snapshot.recordUserMessage(
                         id: command.id, text: command.text, occurredAt: command.createdAt
                     )
+                    // The card keeps its place in the transcript; mark what was
+                    // picked on it so it stops reading as an open ask (AND-227).
+                    snapshot.markPermissionAnswered(requestId: answered.requestId, answer: command.text)
                 } else {
                     snapshot.makeUserMessageVisible(id: command.id)
                     try write(userMessage(id: command.id, text: command.text), to: writer)
