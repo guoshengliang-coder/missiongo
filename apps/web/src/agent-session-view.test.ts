@@ -23,6 +23,7 @@ import {
   questionAnswerText,
   questionAnswerValue,
   questionAnswerValues,
+  replyMirrorArrived,
   toggleQuestionOption,
   replyBlockedLabelKey,
   resolvedAgentSessionId,
@@ -238,6 +239,42 @@ describe("agent session message view", () => {
     const command = { id: "command-1", kind: "message", text: "发布", createdAt: "2026-09-21T00:00:00Z" } as const;
     expect(outgoingReply({ ...command, status: "delivered" })).toBeNull();
     expect(outgoingReply({ ...command, status: "cancelled" })).toBeNull();
+  });
+
+  it("keeps a delivered reply visible until its mirror lands (AND-219)", () => {
+    const command = { id: "command-1", kind: "message", text: "继续", createdAt: "2026-09-25T00:00:00Z" } as const;
+    // No mirrored message yet: the bubble stays so the reply never vanishes
+    // beside a command that says delivered.
+    expect(outgoingReply({ ...command, status: "delivered" }, undefined, false))
+      .toMatchObject({ text: "继续", status: "delivered", commandId: "command-1" });
+    // The mirror arrived: the real message replaces the bubble.
+    expect(outgoingReply({ ...command, status: "delivered" }, undefined, true)).toBeNull();
+  });
+
+  it("sees the mirror in a same-text user message or an attachment bubble (AND-219)", () => {
+    const command = { id: "command-1", kind: "message", text: "继续", createdAt: "2026-09-25T00:00:00Z" } as const;
+    expect(replyMirrorArrived({ ...command, status: "delivered" }, [], [])).toBe(false);
+    expect(replyMirrorArrived({ ...command, status: "delivered" }, [
+      { id: "m1", sourceId: "m1", role: "agent", text: "收到", occurredAt: "2026-09-25T00:00:10Z" },
+    ], [])).toBe(false);
+    expect(replyMirrorArrived({ ...command, status: "delivered" }, [
+      { id: "m2", sourceId: "m2", role: "user", text: "继续", occurredAt: "2026-09-25T00:00:30Z" },
+    ], [])).toBe(true);
+    // Clock drift: a mirror stamped slightly before the command still counts.
+    expect(replyMirrorArrived({ ...command, status: "delivered" }, [
+      { id: "m3", sourceId: "m3", role: "user", text: "继续", occurredAt: "2026-09-24T23:59:30Z" },
+    ], [])).toBe(true);
+
+    const attachmentCommand = {
+      id: "command-2", kind: "message", text: "看图", createdAt: "2026-09-25T00:00:00Z", status: "delivered",
+      attachments: [{ id: "a1", filename: "f.png", kind: "image", contentType: "image/png", sizeBytes: 1, sha256: "0", createdAt: "2026-09-25T00:00:00Z" }],
+    } as const;
+    expect(replyMirrorArrived(attachmentCommand, [
+      { id: "m4", sourceId: "m4", role: "user", text: "看图", occurredAt: "2026-09-25T00:01:00Z" },
+    ], [])).toBe(false);
+    expect(replyMirrorArrived(attachmentCommand, [], [
+      { commandId: "command-2", text: "看图", createdAt: "2026-09-25T00:00:05Z", status: "delivered", attachments: [] },
+    ])).toBe(true);
   });
 
   it("reads a session as working while its reply is still on its way (AND-195)", () => {

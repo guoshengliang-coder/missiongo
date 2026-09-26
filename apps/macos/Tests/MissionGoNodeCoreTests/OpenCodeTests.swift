@@ -17,9 +17,16 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     var choices: [OpenCodeChoice] = []
     var repliedForm: (formID: String, answer: [String: OpenCodeAnswerValue])?
     var repliedPermission: (requestID: String, decision: String)?
+    var promptError: Error?
+    var promptCount = 0
+    var snapshotQueue: [(status: String, messages: [AgentSessionMessage], failure: String?)] = []
 
     func setSnapshotStatus(_ status: String) { snapshotStatus = status }
     func setSnapshotFailure(_ failure: String) { snapshotFailure = failure }
+    func setPromptError(_ error: Error?) { promptError = error }
+    func queueSnapshots(_ snapshots: [(status: String, messages: [AgentSessionMessage], failure: String?)]) {
+        snapshotQueue = snapshots
+    }
 
     init(
         mcpStatus: String?,
@@ -43,9 +50,14 @@ private actor StubOpenCodeControl: OpenCodeControlling {
         return "ses_test"
     }
     func renameSession(id: String, title: String) async throws {}
-    func prompt(id: String, text: String) async throws { lastPrompt = text }
+    func prompt(id: String, text: String) async throws {
+        if let promptError { throw promptError }
+        promptCount += 1
+        lastPrompt = text
+    }
     func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage], failure: String?) {
-        (snapshotStatus ?? "idle", snapshotMessages, snapshotFailure)
+        if !snapshotQueue.isEmpty { return snapshotQueue.removeFirst() }
+        return (snapshotStatus ?? "idle", snapshotMessages, snapshotFailure)
     }
     func interrupt(id: String) async throws {}
     func deleteSession(id: String) async throws {}
@@ -687,6 +699,127 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertEqual(report.status, "failed")
         XCTAssertEqual(report.error, "OpenCode 报告该会话以失败结束。")
         XCTAssertNotEqual(report.waitingForInput, true)
+    }
+
+    /// AND-219: the delivered report re-reads the session, so the reply it just
+    /// delivered travels with the delivery confirmation instead of arriving
+    /// one poll later.
+    func testDeliveredReportCarriesTheReReadConversation() async throws {
+        let control = StubOpenCodeControl(mcpStatus: nil)
+        await control.queueSnapshots([
+            ("idle", [], nil),
+            ("active", [AgentSessionMessage(sourceId: "m1", role: "user", text: "继续", occurredAt: "2026-09-26T00:00:01Z")], nil),
+        ])
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "继续", status: "delivering")
+        ))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        XCTAssertEqual(report.messages.map(\.text), ["继续"])
+        XCTAssertEqual(report.status, "active")
+        XCTAssertEqual(report.turnActive, true)
+    }
+
+    /// AND-226: a command this process already handed to OpenCode is not sent
+    /// again when the server still shows it delivering.
+    func testADeliveredCommandIsNotResentOnTheNextPoll() async throws {
+        let control = StubOpenCodeControl(mcpStatus: nil)
+        await control.queueSnapshots([
+            ("idle", [], nil),
+            ("active", [AgentSessionMessage(sourceId: "m1", role: "user", text: "继续", occurredAt: "2026-09-26T00:00:01Z")], nil),
+        ])
+        let launcher = OpenCodeLauncher(control: control)
+        let session = NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "继续", status: "delivering")
+        )
+        let first = try await launcher.synchronize(session)
+        XCTAssertEqual(first.commandStatus, "delivered")
+        let second = try await launcher.synchronize(session)
+        XCTAssertEqual(second.commandStatus, "delivered")
+        let prompts = await control.promptCount
+        XCTAssertEqual(prompts, 1, "the same command must reach OpenCode exactly once")
+    }
+
+    /// AND-226: a prompt whose POST timed out but reached the service is
+    /// recognized by the re-read — the mirrored message proves it — and
+    /// confirmed delivered without a second attempt.
+    func testATimedOutPromptThatArrivedIsConfirmedByTheReRead() async throws {
+        let control = StubOpenCodeControl(mcpStatus: nil)
+        await control.setPromptError(LaunchError("无法连接 OpenCode 共享服务；请确认服务仍在运行。"))
+        await control.queueSnapshots([
+            ("idle", [], nil),
+            ("active", [AgentSessionMessage(sourceId: "m1", role: "user", text: "继续", occurredAt: "2026-09-26T00:00:01Z")], nil),
+        ])
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "继续", status: "delivering")
+        ))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        let prompts = await control.promptCount
+        XCTAssertEqual(prompts, 0, "the delivery is proven by the mirror, not by resending")
+    }
+
+    /// AND-226: a prompt whose fate cannot be proven reports delivery_unknown —
+    /// the person confirms — instead of the node blindly resending.
+    func testATimedOutPromptWithoutProofReportsDeliveryUnknown() async throws {
+        let control = StubOpenCodeControl(mcpStatus: nil)
+        await control.setPromptError(LaunchError("无法连接 OpenCode 共享服务；请确认服务仍在运行。"))
+        await control.queueSnapshots([
+            ("idle", [], nil),
+            ("idle", [], nil),
+        ])
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "继续", status: "delivering")
+        ))
+        XCTAssertEqual(report.commandStatus, "delivery_unknown")
+        XCTAssertNotNil(report.commandError)
+    }
+
+    /// AND-223: an active session without a pending question reports a turn in
+    /// progress, and the same session blocked on a person does not.
+    func testTurnActiveReportsAnActiveSessionWithoutPendingChoices() async throws {
+        let control = StubOpenCodeControl(mcpStatus: nil)
+        await control.setSnapshotStatus("active")
+        let running = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "active"
+        ))
+        XCTAssertEqual(running.turnActive, true)
+        XCTAssertEqual(running.waitingForInput, false)
+
+        let entry: [String: Any] = [
+            "id": "per_1", "sessionID": "ses_test", "action": "bash",
+            "resources": ["ls"], "message": "需要列目录",
+        ]
+        let choice = try XCTUnwrap(OpenCodeProtocol.permissionChoice(entry))
+        let blocked = StubOpenCodeControl(mcpStatus: nil, choices: [choice])
+        await blocked.setSnapshotStatus("active")
+        let waiting = try await OpenCodeLauncher(control: blocked).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "active"
+        ))
+        XCTAssertEqual(waiting.turnActive, false)
+        XCTAssertEqual(waiting.waitingForInput, true)
+    }
+
+    /// AND-219/AND-226: the re-read evidence is counted against the
+    /// pre-delivery snapshot, so a reply whose text appeared before the
+    /// delivery attempt does not count as proof.
+    func testReReadProofRequiresANewCopyOfTheReply() {
+        let command = AgentSessionCommand(id: "c1", kind: "message", text: "继续", status: "delivering")
+        let before = [AgentSessionMessage(sourceId: "old", role: "user", text: "继续", occurredAt: "2026-09-25T00:00:00Z")]
+        XCTAssertFalse(OpenCodeLauncher.reReadShowsReply(
+            priorCount: before.filter { $0.role == "user" && $0.text == command.promptText }.count,
+            command: command,
+            in: ("idle", before, nil)
+        ))
+        let after = before + [AgentSessionMessage(sourceId: "new", role: "user", text: "继续", occurredAt: "2026-09-26T00:00:00Z")]
+        XCTAssertTrue(OpenCodeLauncher.reReadShowsReply(
+            priorCount: before.filter { $0.role == "user" && $0.text == command.promptText }.count,
+            command: command,
+            in: ("idle", after, nil)
+        ))
+        XCTAssertFalse(OpenCodeLauncher.reReadShowsReply(priorCount: 0, command: command, in: nil))
     }
 
     private static func query(of url: URL?) -> [String: String] {

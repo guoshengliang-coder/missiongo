@@ -950,6 +950,23 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws {
         replies.withLock { $0.append((clientUserMessageId, text)) }
         replyOverrides.withLock { $0.append(overrides) }
+        mirrorDeliveredReply(clientUserMessageId: clientUserMessageId, text: text)
+    }
+
+    /// When set, a delivered reply appears in the thread: the next readThread
+    /// mirrors it the way the real app-server does once a turn starts.
+    var mirrorDeliveredReplies = false
+
+    private func mirrorDeliveredReply(clientUserMessageId: String, text: String) {
+        guard mirrorDeliveredReplies else { return }
+        snapshot = CodexThreadSnapshot(
+            status: "active",
+            messages: snapshot.messages + [AgentSessionMessage(
+                sourceId: clientUserMessageId, role: "user", text: text,
+                occurredAt: "2026-09-26T00:00:01.000Z"
+            )],
+            activityAt: snapshot.activityAt
+        )
     }
 
     func applySettings(socketPath: String, threadId: String, overrides: CodexTurnOverrides) async throws -> CodexAppliedSettings {
@@ -965,6 +982,7 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
 
     func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws {
         steerings.withLock { $0.append((clientUserMessageId, turnId, text)) }
+        mirrorDeliveredReply(clientUserMessageId: clientUserMessageId, text: text)
     }
 
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
@@ -1269,6 +1287,54 @@ final class CodexLauncherTests: XCTestCase {
         ))
         XCTAssertEqual(report.commandStatus, "delivered")
         XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
+    /// AND-219: the delivered report re-reads the thread, so the reply it just
+    /// delivered travels with the delivery confirmation instead of arriving
+    /// one poll later.
+    func testADeliveredReplyCarriesItsMirrorInTheSameReport() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(
+            status: "idle",
+            messages: [AgentSessionMessage(sourceId: "a1", role: "agent", text: "Ready")]
+        )
+        control.mirrorDeliveredReplies = true
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "command-1", text: "Continue", status: "delivering")
+        ))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        XCTAssertEqual(report.messages.map(\.sourceId), ["a1", "command-1"])
+        XCTAssertEqual(report.status, "active")
+        XCTAssertEqual(report.turnActive, true)
+    }
+
+    /// AND-223: Codex maps its active thread onto the turn state the console
+    /// reads, the way Claude reports turnActive.
+    func testAnActiveCodexThreadReportsItsTurn() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(
+            status: "active", activeTurnId: "turn-9",
+            messages: [AgentSessionMessage(sourceId: "a1", role: "agent", text: "Working")]
+        )
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let running = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "active"
+        ))
+        XCTAssertEqual(running.turnActive, true)
+
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [])
+        let idle = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle"
+        ))
+        XCTAssertEqual(idle.turnActive, false)
     }
 
     func testAnUnavailableCodexThreadLeavesDeliveryForHumanConfirmation() async throws {

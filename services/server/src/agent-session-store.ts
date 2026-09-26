@@ -1333,7 +1333,7 @@ export class AgentSessionStore {
       ...(activity.startedAt ? { startedAt: normalizedSourceTimestamp(activity.startedAt, now, "activity startedAt") } : {}),
     }));
     const activitiesJson = JSON.stringify(activities);
-    const turnState: AgentSessionTurnState = {
+    const incomingTurnState: AgentSessionTurnState = {
       ...(input.turnState?.turnActive !== undefined ? { turnActive: input.turnState.turnActive } : {}),
       ...(input.turnState?.waitingForInput !== undefined ? { waitingForInput: input.turnState.waitingForInput } : {}),
       ...(input.turnState?.turnStartedAt ? { turnStartedAt: normalizedSourceTimestamp(input.turnState.turnStartedAt, now, "turnStartedAt")! } : {}),
@@ -1342,7 +1342,6 @@ export class AgentSessionStore {
       ...(input.turnState?.thinkingTokens !== undefined ? { thinkingTokens: input.turnState.thinkingTokens } : {}),
       ...(input.turnState?.thinkingDurationSeconds !== undefined ? { thinkingDurationSeconds: input.turnState.thinkingDurationSeconds } : {}),
     };
-    const turnStateJson = JSON.stringify(turnState);
     const messages = input.messages.map((message, position) => ({
       sourceId: requiredText(message.sourceId, "sourceId", 200),
       turnId: message.turnId?.slice(0, 200) || null,
@@ -1385,6 +1384,15 @@ export class AgentSessionStore {
         activity_at: string;
       } | undefined;
     if (!session) throw notFound("Agent session");
+    // A turn state an agent did not report means "not reported this time",
+    // not "cleared": a degraded snapshot (a Claude unavailable fallback, or
+    // any report from an agent without turn instrumentation) must not blank
+    // what an earlier healthy report established (AND-223). Fields the input
+    // does carry overwrite; fields it omits survive.
+    const storedTurnState = session.turn_state_json
+      ? JSON.parse(session.turn_state_json) as AgentSessionTurnState
+      : {};
+    const turnStateJson = JSON.stringify({ ...storedTurnState, ...incomingTurnState });
     const sourceActivityAt = normalizedSourceTimestamp(input.activityAt, now, "activityAt");
     const error = input.error?.slice(0, 2_000) || null;
     const sessionUrl = input.sessionUrl?.trim();

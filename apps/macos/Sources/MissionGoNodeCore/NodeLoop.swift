@@ -522,7 +522,14 @@ public final class NodeLoop: @unchecked Sendable {
         // the server hearing about the session.
         let fingerprint = Self.fingerprint(of: report)
         if let fingerprint, reported.current[session.id] == fingerprint { return }
-        if session.agentKind == "codex", session.command?.status == "delivering",
+        // Codex and OpenCode both hand the reply to the agent before this
+        // upload confirms it: a lost HTTP response must not turn into a second
+        // delivery on the next poll. Codex answers with clientUserMessageId
+        // (AND-203); OpenCode has no such id, so the unacknowledged report is
+        // the only thing standing between a timeout and a duplicate reply
+        // (AND-226).
+        if (session.agentKind == "codex" || session.agentKind == "opencode"),
+           session.command?.status == "delivering",
            let commandId = report.commandId,
            report.commandStatus == "delivered" || report.commandStatus == "delivery_unknown" {
             awaitingReport.withLock { $0[session.id] = (commandId, report) }
