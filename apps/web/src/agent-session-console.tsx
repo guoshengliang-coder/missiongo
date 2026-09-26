@@ -124,6 +124,22 @@ function lastSeenAgo(value: string | undefined, locale: string): string | null {
   return formatter.format(-Math.floor(hours / 24), "day");
 }
 
+function elapsed(value: string | undefined, now: number): string | null {
+  if (!value) return null;
+  const start = Date.parse(value);
+  if (!Number.isFinite(start)) return null;
+  const seconds = Math.max(0, Math.floor((now - start) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function duration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
 function nodeConnectionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>["t"]): string {
   if (session.nodeRevoked) return t("agentNodeRevoked");
   if (session.nodeConnectionState === "offline") return t("agentNodeOffline");
@@ -225,6 +241,11 @@ export function AgentSessionConsole({
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [search, setSearch] = useState("");
   const [reply, setReply] = useState("");
+  const [clock, setClock] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const [replyFiles, setReplyFiles] = useState<File[]>([]);
   const [replyFileError, setReplyFileError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -490,6 +511,21 @@ export function AgentSessionConsole({
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
   const activities = sessionQuery.data?.activities ?? [];
+  const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
+  const claudeTurn = selected?.agentKind === "claude_code" && sessionStatus === "active"
+    && turnState?.turnActive === true && !turnState.waitingForInput;
+  const claudeWaiting = selected?.agentKind === "claude_code" && ["active", "idle"].includes(sessionStatus)
+    && !pending && turnState?.waitingForInput === true;
+  const claudeBackgroundOnly = selected?.agentKind === "claude_code"
+    && sessionStatus === "active" && turnState?.turnActive === false && !claudeWaiting && activities.length > 0;
+  const visualStatus = claudeBackgroundOnly || claudeWaiting ? "idle" : sessionStatus;
+  const activityText = claudeWaiting
+    ? t("agentSessionWaitingForInput")
+    : claudeBackgroundOnly
+      ? t("agentSessionWaitingBackground", { count: activities.length })
+      : claudeTurn
+        ? t("agentSessionTurnRunning", { duration: elapsed(turnState?.turnStartedAt, clock) ?? "–" })
+        : t(activityLabelKey(sessionStatus, command?.status === "queued"), { agent: selected ? agentLabel(selected, t) : "" });
 
   const markRead = useMutation({
     mutationFn: ({ dispatchId, through }: { dispatchId: string; through: string }) =>
@@ -724,6 +760,12 @@ export function AgentSessionConsole({
             // list does not say "ended" beside a session that is about to run
             // (AND-195).
             const rowStatus = effectiveAgentSessionStatus(session.status, session.command);
+            const rowBackground = session.agentKind === "claude_code" && rowStatus === "active" && session.turnState?.turnActive === false
+              && !session.turnState.waitingForInput && session.activities.length > 0;
+            const rowWaiting = session.agentKind === "claude_code" && ["active", "idle"].includes(rowStatus)
+              && session.command?.status !== "queued" && session.turnState?.waitingForInput === true;
+            const rowLabel = rowBackground ? t("agentSessionBackgroundStatus")
+              : rowWaiting ? t("agentSessionWaitingStatus") : statusLabel(rowStatus, t);
             return (
               <div
                 key={session.id}
@@ -764,11 +806,11 @@ export function AgentSessionConsole({
                   }}
                 >
                   <span
-                    className={`agent-console-status-icon agent-console-status-${rowStatus} agent-console-node-${session.nodeConnectionState}`}
+                    className={`agent-console-status-icon agent-console-status-${rowBackground || rowWaiting ? "idle" : rowStatus} agent-console-node-${session.nodeConnectionState}`}
                     role="img"
-                    aria-label={`${nodeConnectionLabel(session, t)} · ${session.archivedAt ? t("archived") : statusLabel(rowStatus, t)}`}
+                    aria-label={`${nodeConnectionLabel(session, t)} · ${session.archivedAt ? t("archived") : rowLabel}`}
                   >
-                    {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={rowStatus} />}
+                    {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={rowBackground || rowWaiting ? "idle" : rowStatus} />}
                   </span>
                   <span className="agent-console-session-copy">
                     <span className="agent-console-session-heading">
@@ -812,7 +854,7 @@ export function AgentSessionConsole({
                   ))}</div>
                 </div>
               </div>
-              <span className={`status-pill agent-session-status-${sessionStatus}`}>{selected.archivedAt ? t("archived") : statusLabel(sessionStatus, t)}</span>
+              <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : claudeWaiting ? t("agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
               <div className="agent-console-actions">
                 {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact />}
                 {selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
@@ -1023,7 +1065,18 @@ export function AgentSessionConsole({
                   <section className="agent-console-background" aria-label={t("agentSessionBackgroundTitle")}>
                     <header><LoaderCircle className="spin" size={15} /><strong>{t("agentSessionBackgroundCount", { count: activities.length })}</strong></header>
                     <ul>{activities.map((activity) => (
-                      <li key={activity.id}><span>{activity.title}</span>{activity.detail && <small>{activity.detail}</small>}</li>
+                      <li key={activity.id}>
+                        <span>{activity.title}</span>
+                        <small>{activity.startedAt ? t("agentSessionBackgroundElapsed", { duration: elapsed(activity.startedAt, clock) ?? "–" }) : activity.detail}</small>
+                        {selected.canReply && selected.agentSessionId && !pending && !sendingSelected && (
+                          <button type="button" className="text-button" onClick={() => setReply(t("agentSessionStopTaskMessage", { title: activity.title, id: activity.id }))}>
+                            {t("agentSessionRequestTaskStop")}
+                          </button>
+                        )}
+                        {command?.kind === "message" && !["failed", "cancelled"].includes(command.status)
+                          && command.text === t("agentSessionStopTaskMessage", { title: activity.title, id: activity.id })
+                          && <small>{t("agentSessionTaskStopSent")}</small>}
+                      </li>
                     ))}</ul>
                   </section>
                 )}
@@ -1031,11 +1084,17 @@ export function AgentSessionConsole({
                   <p className="inline-error">{sessionQuery.data?.lastError ?? selected.lastError}</p>
                 )}
                 {selected.agentSessionId && !sessionQuery.isLoading && !sessionQuery.isError && (
-                  <div className={`agent-console-activity agent-console-activity-${sessionStatus}`} role="status">
-                    <SessionStatusIcon status={sessionStatus} />
-                    <span>{t(activityLabelKey(sessionStatus, command?.status === "queued"), {
-                      agent: agentLabel(selected, t),
-                    })}</span>
+                  <div className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
+                    <SessionStatusIcon status={visualStatus} />
+                    <span>{activityText}</span>
+                    {claudeTurn && <small>{t("agentSessionLastActivity", { duration: elapsed(selected.activityAt, clock) ?? "–" })}</small>}
+                    {claudeTurn && turnState?.lastOutputAt && <small>{t("agentSessionLastOutput", { duration: elapsed(turnState.lastOutputAt, clock) ?? "–" })}</small>}
+                    {claudeTurn && (turnState?.thinkingStartedAt || (turnState?.thinkingTokens ?? 0) > 0) && <small>{t("agentSessionThinking", {
+                      duration: duration((turnState?.thinkingDurationSeconds ?? 0) + (turnState?.thinkingStartedAt
+                        ? Math.max(0, Math.floor((clock - Date.parse(turnState.thinkingStartedAt)) / 1000)) : 0)),
+                      tokens: turnState?.thinkingTokens ?? 0,
+                    })}</small>}
+                    {claudeTurn && command?.status === "queued" && <small>{t("agentSessionClaudeNextTurnQueued")}</small>}
                   </div>
                 )}
               </div>

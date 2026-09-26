@@ -509,11 +509,13 @@ public struct AgentSessionActivity: Codable, Equatable, Sendable {
     public let id: String
     public let title: String
     public let detail: String?
+    public let startedAt: String?
 
-    public init(id: String, title: String, detail: String? = nil) {
+    public init(id: String, title: String, detail: String? = nil, startedAt: String? = nil) {
         self.id = id
         self.title = title
         self.detail = detail
+        self.startedAt = startedAt
     }
 }
 
@@ -541,6 +543,13 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let status: String
     public let messages: [AgentSessionMessage]
     public let activities: [AgentSessionActivity]
+    public let turnActive: Bool?
+    public let waitingForInput: Bool?
+    public let turnStartedAt: String?
+    public let lastOutputAt: String?
+    public let thinkingStartedAt: String?
+    public let thinkingTokens: Int?
+    public let thinkingDurationSeconds: Int?
     public let error: String?
     public let commandId: String?
     public let commandStatus: String?
@@ -571,10 +580,17 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let settingsRevision: Int?
     public let settingsError: String?
 
-    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, clearSessionUrl: Bool? = nil, activityAt: String? = nil, model: String? = nil, effort: String? = nil, modelEndpoint: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil) {
+    public init(status: String, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, clearSessionUrl: Bool? = nil, activityAt: String? = nil, model: String? = nil, effort: String? = nil, modelEndpoint: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil, turnActive: Bool? = nil, waitingForInput: Bool? = nil, turnStartedAt: String? = nil, lastOutputAt: String? = nil, thinkingStartedAt: String? = nil, thinkingTokens: Int? = nil, thinkingDurationSeconds: Int? = nil) {
         self.status = status
         self.messages = messages
         self.activities = activities
+        self.turnActive = turnActive
+        self.waitingForInput = waitingForInput
+        self.turnStartedAt = turnStartedAt
+        self.lastOutputAt = lastOutputAt
+        self.thinkingStartedAt = thinkingStartedAt
+        self.thinkingTokens = thinkingTokens
+        self.thinkingDurationSeconds = thinkingDurationSeconds
         self.error = error
         self.commandId = commandId
         self.commandStatus = commandStatus
@@ -600,7 +616,10 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
-            model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError
+            model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError,
+            turnActive: turnActive, waitingForInput: waitingForInput, turnStartedAt: turnStartedAt,
+            lastOutputAt: lastOutputAt, thinkingStartedAt: thinkingStartedAt, thinkingTokens: thinkingTokens,
+            thinkingDurationSeconds: thinkingDurationSeconds
         )
     }
 
@@ -612,7 +631,29 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
-            model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError
+            model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError,
+            turnActive: turnActive, waitingForInput: waitingForInput, turnStartedAt: turnStartedAt,
+            lastOutputAt: lastOutputAt, thinkingStartedAt: thinkingStartedAt, thinkingTokens: thinkingTokens,
+            thinkingDurationSeconds: thinkingDurationSeconds
+        )
+    }
+
+    public func reportingTurn(_ state: ClaudeHostState) -> AgentSessionReport {
+        let running = status == "active" || status == "stalled"
+        return AgentSessionReport(
+            status: status, messages: messages, activities: activities, error: error,
+            commandId: commandId, commandStatus: commandStatus, commandError: commandError,
+            sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
+            sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
+            model: model, effort: effort, modelEndpoint: modelEndpoint,
+            settingsRevision: settingsRevision, settingsError: settingsError,
+            turnActive: running && state.turnActive,
+            waitingForInput: status == "idle" || running ? state.waitingForInput : false,
+            turnStartedAt: running && state.turnActive ? state.turnStartedAt : nil,
+            lastOutputAt: state.lastOutputAt,
+            thinkingStartedAt: running && state.turnActive ? state.thinkingStartedAt : nil,
+            thinkingTokens: running && state.turnActive ? state.thinkingTokens : nil,
+            thinkingDurationSeconds: running && state.turnActive ? state.thinkingDurationSeconds : nil
         )
     }
 }

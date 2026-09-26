@@ -54,6 +54,17 @@ export interface AgentSessionActivity {
   readonly id: string;
   readonly title: string;
   readonly detail?: string;
+  readonly startedAt?: string;
+}
+
+export interface AgentSessionTurnState {
+  readonly turnActive?: boolean;
+  readonly waitingForInput?: boolean;
+  readonly turnStartedAt?: string;
+  readonly lastOutputAt?: string;
+  readonly thinkingStartedAt?: string;
+  readonly thinkingTokens?: number;
+  readonly thinkingDurationSeconds?: number;
 }
 
 export interface AgentSessionCommand {
@@ -88,6 +99,7 @@ export interface AgentSessionSnapshot {
     readonly attachments: readonly AgentSessionAttachment[];
   }[];
   readonly activities: readonly AgentSessionActivity[];
+  readonly turnState: AgentSessionTurnState;
   readonly command?: AgentSessionCommand;
   /** False once every linked item is done. */
   readonly replyable: boolean;
@@ -99,6 +111,7 @@ export interface AgentSessionListItem {
   readonly dispatchId: string;
   readonly agentKind: AgentKind;
   readonly status: AgentSessionStatus;
+  readonly turnState?: AgentSessionTurnState;
   readonly lastError?: string;
   readonly updatedAt: string;
   readonly activityAt: string;
@@ -195,6 +208,7 @@ interface SessionRow {
   archived_at: string | null;
   archive_source: "missiongo" | "source" | null;
   activities_json: string;
+  turn_state_json: string;
   archive_reason?: "auto" | null;
   source_archived_at?: string | null;
   source_archive_error?: string | null;
@@ -258,6 +272,7 @@ interface SessionListRow {
   session_archived_at: string | null;
   session_archive_source: "missiongo" | "source" | null;
   session_activities_json: string | null;
+  session_turn_state_json: string | null;
   dispatch_archived_at: string | null;
   dispatch_error: string | null;
   node_id: string;
@@ -536,7 +551,7 @@ export class AgentSessionStore {
     const row = this.database.connection
       .prepare(
         `SELECT s.id, s.dispatch_id, s.agent_kind, s.agent_session_ref, s.status, s.last_error, s.updated_at,
-                s.archived_at, s.archive_source, s.activities_json
+                s.archived_at, s.archive_source, s.activities_json, s.turn_state_json
          FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
          WHERE s.id = ? AND d.account_id = ?`,
       )
@@ -562,6 +577,7 @@ export class AgentSessionStore {
       ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
       ...(row.archive_source ? { archivedSource: row.archive_source } : {}),
       activities: JSON.parse(row.activities_json) as AgentSessionActivity[],
+      turnState: JSON.parse(row.turn_state_json) as AgentSessionTurnState,
       messages: messages.map((message) => ({
         id: message.id,
         sourceId: message.source_id,
@@ -601,6 +617,7 @@ export class AgentSessionStore {
                 s.updated_at AS session_updated_at, s.activity_at AS session_activity_at,
                 s.archived_at AS session_archived_at, s.archive_source AS session_archive_source,
                 s.activities_json AS session_activities_json,
+                s.turn_state_json AS session_turn_state_json,
                 d.node_id, COALESCE(n.nickname, n.name) AS node_name, n.last_seen_at AS node_last_seen_at,
                 n.revoked_at AS node_revoked_at, d.mode, d.status AS dispatch_status,
                 d.session_name, d.session_url, d.error AS dispatch_error,
@@ -739,6 +756,9 @@ export class AgentSessionStore {
         activities: row.session_activities_json
           ? JSON.parse(row.session_activities_json) as AgentSessionActivity[]
           : [],
+        ...(row.session_turn_state_json
+          ? { turnState: JSON.parse(row.session_turn_state_json) as AgentSessionTurnState }
+          : {}),
         waitingForReply: needsAttention,
         retryable: (["failed", "cancelled"].includes(row.dispatch_status) || deliveryTimedOut)
           && itemRows.length > 0 && itemRows.every((item) => item.status === "ready"),
@@ -1216,6 +1236,7 @@ export class AgentSessionStore {
     status: AgentSessionStatus;
     messages: readonly AgentSessionMessageInput[];
     activities?: readonly AgentSessionActivity[];
+    turnState?: AgentSessionTurnState;
     error?: string;
     commandId?: string;
     commandStatus?: "delivering" | "delivery_unknown" | "delivered" | "failed";
@@ -1243,13 +1264,24 @@ export class AgentSessionStore {
     if ((input.activities?.length ?? 0) > MAX_ACTIVITIES_PER_SNAPSHOT) {
       throw invalidInput(`activities must contain ${MAX_ACTIVITIES_PER_SNAPSHOT} entries or fewer.`);
     }
+    const now = new Date().toISOString();
     const activities = (input.activities ?? []).map((activity) => ({
       id: requiredText(activity.id, "activity id", 200),
       title: requiredText(activity.title, "activity title", 500),
       ...(activity.detail ? { detail: requiredText(activity.detail, "activity detail", 500) } : {}),
+      ...(activity.startedAt ? { startedAt: normalizedSourceTimestamp(activity.startedAt, now, "activity startedAt") } : {}),
     }));
     const activitiesJson = JSON.stringify(activities);
-    const now = new Date().toISOString();
+    const turnState: AgentSessionTurnState = {
+      ...(input.turnState?.turnActive !== undefined ? { turnActive: input.turnState.turnActive } : {}),
+      ...(input.turnState?.waitingForInput !== undefined ? { waitingForInput: input.turnState.waitingForInput } : {}),
+      ...(input.turnState?.turnStartedAt ? { turnStartedAt: normalizedSourceTimestamp(input.turnState.turnStartedAt, now, "turnStartedAt")! } : {}),
+      ...(input.turnState?.lastOutputAt ? { lastOutputAt: normalizedSourceTimestamp(input.turnState.lastOutputAt, now, "lastOutputAt")! } : {}),
+      ...(input.turnState?.thinkingStartedAt ? { thinkingStartedAt: normalizedSourceTimestamp(input.turnState.thinkingStartedAt, now, "thinkingStartedAt")! } : {}),
+      ...(input.turnState?.thinkingTokens !== undefined ? { thinkingTokens: input.turnState.thinkingTokens } : {}),
+      ...(input.turnState?.thinkingDurationSeconds !== undefined ? { thinkingDurationSeconds: input.turnState.thinkingDurationSeconds } : {}),
+    };
+    const turnStateJson = JSON.stringify(turnState);
     const messages = input.messages.map((message, position) => ({
       sourceId: requiredText(message.sourceId, "sourceId", 200),
       turnId: message.turnId?.slice(0, 200) || null,
@@ -1275,7 +1307,7 @@ export class AgentSessionStore {
     } : undefined);
     const session = this.database.connection
       .prepare(
-        `SELECT id, dispatch_id, status, last_error, archived_at, archive_source, activities_json, activity_at,
+        `SELECT id, dispatch_id, status, last_error, archived_at, archive_source, activities_json, turn_state_json, activity_at,
                 source_restore_pending
          FROM agent_sessions WHERE id = ? AND node_id = ?`,
       )
@@ -1288,6 +1320,7 @@ export class AgentSessionStore {
         archived_at: string | null;
         archive_source: "missiongo" | "source" | null;
         activities_json: string;
+        turn_state_json: string;
         activity_at: string;
       } | undefined;
     if (!session) throw notFound("Agent session");
@@ -1338,6 +1371,7 @@ export class AgentSessionStore {
       || session.last_error !== error
       || messagesChanged
       || session.activities_json !== activitiesJson
+      || session.turn_state_json !== turnStateJson
       || archiveChanged
       || Boolean(input.commandId && input.commandStatus);
     const nextActivityAt = activityChanged ? sourceActivityAt ?? now : session.activity_at;
@@ -1346,11 +1380,11 @@ export class AgentSessionStore {
       this.database.connection
         .prepare(
           `UPDATE agent_sessions
-           SET status = ?, last_error = ?, activities_json = ?, updated_at = ?,
+           SET status = ?, last_error = ?, activities_json = ?, turn_state_json = ?, updated_at = ?,
                activity_at = ?
            WHERE id = ?`,
         )
-        .run(input.status, error, activitiesJson, now, nextActivityAt, input.sessionId);
+        .run(input.status, error, activitiesJson, turnStateJson, now, nextActivityAt, input.sessionId);
       if (unreadEvent) {
         this.database.connection
           .prepare("UPDATE dispatches SET unread_at = ? WHERE id = ?")

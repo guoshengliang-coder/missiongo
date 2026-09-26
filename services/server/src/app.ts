@@ -2338,8 +2338,27 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           id: stringField(activity, "id")!,
           title: stringField(activity, "title")!,
           ...(stringField(activity, "detail", false) ? { detail: activity.detail as string } : {}),
+          ...(stringField(activity, "startedAt", false) ? { startedAt: activity.startedAt as string } : {}),
         };
       });
+      for (const key of ["turnActive", "waitingForInput"] as const) {
+        if (body[key] !== undefined && typeof body[key] !== "boolean") throw invalidInput(`${key} must be boolean.`);
+      }
+      if (body.thinkingTokens !== undefined
+        && (typeof body.thinkingTokens !== "number" || !Number.isSafeInteger(body.thinkingTokens)
+          || body.thinkingTokens < 0)) throw invalidInput("thinkingTokens must be a non-negative integer.");
+      if (body.thinkingDurationSeconds !== undefined
+        && (typeof body.thinkingDurationSeconds !== "number" || !Number.isSafeInteger(body.thinkingDurationSeconds)
+          || body.thinkingDurationSeconds < 0)) throw invalidInput("thinkingDurationSeconds must be a non-negative integer.");
+      const turnState = {
+        ...(typeof body.turnActive === "boolean" ? { turnActive: body.turnActive } : {}),
+        ...(typeof body.waitingForInput === "boolean" ? { waitingForInput: body.waitingForInput } : {}),
+        ...(stringField(body, "turnStartedAt", false) ? { turnStartedAt: body.turnStartedAt as string } : {}),
+        ...(stringField(body, "lastOutputAt", false) ? { lastOutputAt: body.lastOutputAt as string } : {}),
+        ...(stringField(body, "thinkingStartedAt", false) ? { thinkingStartedAt: body.thinkingStartedAt as string } : {}),
+        ...(typeof body.thinkingTokens === "number" ? { thinkingTokens: body.thinkingTokens } : {}),
+        ...(typeof body.thinkingDurationSeconds === "number" ? { thinkingDurationSeconds: body.thinkingDurationSeconds } : {}),
+      };
       const commandStatusValue = stringField(body, "commandStatus", false);
       if (commandStatusValue && !["delivering", "delivery_unknown", "delivered", "failed"].includes(commandStatusValue)) {
         throw invalidInput("commandStatus must be delivering, delivery_unknown, delivered, or failed.");
@@ -2360,6 +2379,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         status,
         messages,
         activities,
+        turnState,
         ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
         ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),
         ...(commandStatus ? { commandStatus } : {}),

@@ -384,6 +384,9 @@ public final class NodeLoop: @unchecked Sendable {
         // Re-send an unacknowledged result report, never the Codex command
         // itself. A lost snapshot HTTP response must not start another turn.
         let awaitingReport = Locked<[String: (commandId: String, report: AgentSessionReport)]>([:])
+        // A malformed snapshot must not starve every session behind it in the
+        // server's ordered list. Retry deterministic client errors less often.
+        let rejectedUntil = Locked<[String: Date]>([:])
         while !stop.isStopped {
             await shielded {
                 do {
@@ -392,6 +395,7 @@ public final class NodeLoop: @unchecked Sendable {
                     let live = Set(sessions.map(\.id))
                     awaitingReport.withLock { value in value = value.filter { live.contains($0.key) } }
                     for session in sessions {
+                        if let deadline = rejectedUntil.current[session.id], deadline > Date() { continue }
                         guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else { continue }
                         let report: AgentSessionReport
                         if let waiting = awaitingReport.current[session.id],
@@ -451,7 +455,20 @@ public final class NodeLoop: @unchecked Sendable {
                            report.commandStatus == "delivered" || report.commandStatus == "delivery_unknown" {
                             awaitingReport.withLock { $0[session.id] = (commandId, report) }
                         }
-                        try await self.api.reportAgentSession(sessionId: session.id, report: report)
+                        do {
+                            try await self.api.reportAgentSession(sessionId: session.id, report: report)
+                            _ = rejectedUntil.withLock { $0.removeValue(forKey: session.id) }
+                        } catch {
+                            if let apiError = error as? APIError,
+                               case let .http(_, status, _) = apiError,
+                               (400..<500).contains(status) {
+                                rejectedUntil.withLock { $0[session.id] = Date().addingTimeInterval(60) }
+                                self.log("同步 Agent 会话 \(session.id) 被拒绝（HTTP \(status)）；该会话 60 秒后重试，其余会话继续同步：\(error.localizedDescription)")
+                                continue
+                            }
+                            self.handle(error, what: "同步 Agent 会话 \(session.id) 出错", stop: stop, fatal: fatal)
+                            continue
+                        }
                         // Keep the result until a node poll no longer offers
                         // this command. Even after a 204, a stale poll must
                         // not call Codex a second time.

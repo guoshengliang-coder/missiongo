@@ -86,7 +86,13 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               <header className="agent-session-head">
                 <strong>{t("agentSessionTitle")}</strong>
                 <span className={`status-pill agent-session-status-${session.data.status}`}>
-                  {statusLabel(session.data.status, t)}
+                  {session.data.agentKind === "claude_code" && ["active", "idle"].includes(session.data.status)
+                    && !pending && session.data.turnState?.waitingForInput
+                    ? t("agentSessionWaitingStatus")
+                    : session.data.agentKind === "claude_code" && session.data.status === "active" && session.data.turnState?.turnActive === false
+                      && session.data.activities.length > 0
+                      ? t("agentSessionBackgroundStatus")
+                      : statusLabel(session.data.status, t)}
                 </span>
               </header>
               {session.data.messages.length === 0 && (
@@ -114,7 +120,16 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                   <section className="agent-session-background" aria-label={t("agentSessionBackgroundTitle")}>
                     <strong>{t("agentSessionBackgroundCount", { count: session.data.activities.length })}</strong>
                     <ul>{session.data.activities.map((activity) => (
-                      <li key={activity.id}>{activity.title}</li>
+                      <li key={activity.id}>{activity.title}
+                        {activity.startedAt && <small> · {t("agentSessionBackgroundElapsed", { duration: Math.max(0, Math.floor((Date.now() - Date.parse(activity.startedAt)) / 60_000)) + "m" })}</small>}
+                        {canReply && !pending && !send.isPending && <button type="button" className="text-button"
+                          onClick={() => setReply(t("agentSessionStopTaskMessage", { title: activity.title, id: activity.id }))}>
+                          {t("agentSessionRequestTaskStop")}
+                        </button>}
+                        {command?.kind === "message" && !["failed", "cancelled"].includes(command.status)
+                          && command.text === t("agentSessionStopTaskMessage", { title: activity.title, id: activity.id })
+                          && <small>{t("agentSessionTaskStopSent")}</small>}
+                      </li>
                     ))}</ul>
                   </section>
                 )}

@@ -662,7 +662,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-message-delivery > span { min-width: 0; flex: 1; }
 .agent-console-message-delivery .text-button { flex: 0 0 auto; padding: 3px 5px; font-size: var(--text-xs); }
 .agent-console-message-outgoing-failed .agent-console-message-delivery { color: var(--danger); }
-.agent-console-activity { align-self: center; display: inline-flex; align-items: center; gap: 7px; margin: 5px 0; padding: 7px 10px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: 999px; font-size: var(--text-xs); }
+.agent-console-activity { align-self: center; display: inline-flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 5px 0; padding: 7px 10px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); }
 .agent-console-activity-active { color: var(--status-progress-fg); background: var(--status-progress-bg); border-color: var(--accent-line); }
 .agent-console-activity-failed { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-line); }
 .agent-console-background { align-self: center; width: min(680px, 92%); padding: 10px 12px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); }
@@ -670,6 +670,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-background ul, .agent-session-background ul { margin: 7px 0 0; padding-left: 20px; }
 .agent-console-background li { margin-top: 4px; }
 .agent-console-background li small { margin-left: 8px; color: var(--muted); }
+.agent-console-background li button, .agent-session-background li button { margin-left: 8px; }
 .agent-console-dispatch-state { align-self: center; max-width: 520px; display: grid; justify-items: center; gap: 7px; padding: 18px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-lg); text-align: center; }
 .agent-console-dispatch-state strong { color: var(--ink); font-size: var(--text-sm); }
 .agent-console-dispatch-state p { margin: 0; font-size: var(--text-xs); }

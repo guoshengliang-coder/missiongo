@@ -331,6 +331,7 @@ export const INITIAL_SCHEMA = `
     status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'suspended', 'stalled', 'unavailable', 'failed')),
     last_error TEXT,
     activities_json TEXT NOT NULL DEFAULT '[]',
+    turn_state_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     activity_at TEXT NOT NULL DEFAULT '',

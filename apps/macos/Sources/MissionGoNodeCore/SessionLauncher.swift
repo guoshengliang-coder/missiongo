@@ -598,7 +598,7 @@ public struct SessionLauncher: AgentAdapter {
             settingsRevision: state.settingsRevision,
             settingsError: state.settingsError,
             clearSessionUrl: state.launchReady && state.sessionUrl == nil ? true : nil
-        )
+        ).reportingTurn(state)
     }
 
     /// Hands a person's settings change to a running host. Nothing to do when

@@ -160,6 +160,11 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     /// written before this field decodes as true: unknown hosts keep the old,
     /// conservative behaviour.
     public var turnActive: Bool
+    public var turnStartedAt: String?
+    public var lastOutputAt: String?
+    public var thinkingStartedAt: String?
+    public var thinkingTokens: Int = 0
+    public var thinkingDurationSeconds: Int = 0
     public var commandResults: [String: ClaudeHostCommandResult]
     public var error: String?
     public var idleSince: Date?
@@ -188,6 +193,11 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         activities: [AgentSessionActivity] = [],
         waitingForInput: Bool = false,
         turnActive: Bool = true,
+        turnStartedAt: String? = nil,
+        lastOutputAt: String? = nil,
+        thinkingStartedAt: String? = nil,
+        thinkingTokens: Int = 0,
+        thinkingDurationSeconds: Int = 0,
         commandResults: [String: ClaudeHostCommandResult] = [:],
         error: String? = nil,
         idleSince: Date? = nil,
@@ -203,6 +213,11 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         self.activities = activities
         self.waitingForInput = waitingForInput
         self.turnActive = turnActive
+        self.turnStartedAt = turnStartedAt
+        self.lastOutputAt = lastOutputAt
+        self.thinkingStartedAt = thinkingStartedAt
+        self.thinkingTokens = thinkingTokens
+        self.thinkingDurationSeconds = thinkingDurationSeconds
         self.commandResults = commandResults
         self.error = error
         self.idleSince = idleSince
@@ -213,7 +228,8 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case version, status, sessionRef, hostPid, sessionUrl, launchReady, messages, activities, waitingForInput, commandResults, error
         case idleSince, lastProgressAt
-        case turnActive, model, effort, mode, settingsRevision, settingsError, acceptsSettings
+        case turnActive, turnStartedAt, lastOutputAt, thinkingStartedAt, thinkingTokens, thinkingDurationSeconds
+        case model, effort, mode, settingsRevision, settingsError, acceptsSettings
     }
 
     public init(from decoder: Decoder) throws {
@@ -228,6 +244,11 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         activities = try values.decodeIfPresent([AgentSessionActivity].self, forKey: .activities) ?? []
         waitingForInput = try values.decodeIfPresent(Bool.self, forKey: .waitingForInput) ?? false
         turnActive = try values.decodeIfPresent(Bool.self, forKey: .turnActive) ?? true
+        turnStartedAt = try values.decodeIfPresent(String.self, forKey: .turnStartedAt)
+        lastOutputAt = try values.decodeIfPresent(String.self, forKey: .lastOutputAt)
+        thinkingStartedAt = try values.decodeIfPresent(String.self, forKey: .thinkingStartedAt)
+        thinkingTokens = try values.decodeIfPresent(Int.self, forKey: .thinkingTokens) ?? 0
+        thinkingDurationSeconds = try values.decodeIfPresent(Int.self, forKey: .thinkingDurationSeconds) ?? 0
         commandResults = try values.decodeIfPresent([String: ClaudeHostCommandResult].self, forKey: .commandResults) ?? [:]
         error = try values.decodeIfPresent(String.self, forKey: .error)
         idleSince = try values.decodeIfPresent(Date.self, forKey: .idleSince)
@@ -279,6 +300,7 @@ public struct ClaudeStreamSnapshot: Sendable {
     public private(set) var initialized = false
     private var visibleUserMessageIds = Set<String>()
     private var taskTitles: [String: String] = [:]
+    private var taskStartedAt: [String: String] = [:]
 
     public init(sessionRef: String, hostPid: Int32? = nil) {
         state = ClaudeHostState(status: "active", sessionRef: sessionRef, hostPid: hostPid)
@@ -296,7 +318,13 @@ public struct ClaudeStreamSnapshot: Sendable {
         resumed.idleSince = nil
         resumed.lastProgressAt = Date()
         resumed.turnActive = false
+        resumed.turnStartedAt = nil
+        resumed.thinkingStartedAt = nil
         self.state = resumed
+        taskTitles = Dictionary(uniqueKeysWithValues: resumed.activities.map { ($0.id, $0.title) })
+        taskStartedAt = Dictionary(uniqueKeysWithValues: resumed.activities.compactMap { activity in
+            activity.startedAt.map { (activity.id, $0) }
+        })
     }
 
     public mutating func consume(_ value: [String: Any]) {
@@ -327,6 +355,7 @@ public struct ClaudeStreamSnapshot: Sendable {
             state.status = "active"
             state.idleSince = nil
             state.turnActive = true
+            startTurnIfNeeded()
             state.error = nil
             return
         }
@@ -339,6 +368,7 @@ public struct ClaudeStreamSnapshot: Sendable {
                   let message = value["message"] as? [String: Any],
                   let content = message["content"] as? [[String: Any]]
             else { return }
+            startTurnIfNeeded()
             let sourceId = (message["id"] as? String) ?? (value["uuid"] as? String) ?? UUID().uuidString
             let turnId = (value["user_message_uuid"] as? String) ?? latestTurnId() ?? sourceId
             let text = content.compactMap { block -> String? in
@@ -349,6 +379,8 @@ public struct ClaudeStreamSnapshot: Sendable {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let questions = Self.questions(content)
             if !text.isEmpty || !questions.isEmpty {
+                state.lastOutputAt = Self.timestampNow()
+                finishThinking()
                 let previous = state.messages.first(where: { $0.sourceId == sourceId })
                 // The server refuses a message whose text is blank (AND-210), so
                 // blocks that are only whitespace join into nothing here rather
@@ -377,6 +409,8 @@ public struct ClaudeStreamSnapshot: Sendable {
         }
         if type == "result" {
             state.turnActive = false
+            state.turnStartedAt = nil
+            finishThinking()
             state.waitingForInput = false
             state.status = state.activities.isEmpty ? "idle" : "active"
             state.idleSince = state.status == "idle" ? Date() : nil
@@ -404,6 +438,7 @@ public struct ClaudeStreamSnapshot: Sendable {
         state.status = "active"
         state.idleSince = nil
         state.turnActive = true
+        startTurnIfNeeded()
         state.error = nil
     }
 
@@ -472,6 +507,7 @@ public struct ClaudeStreamSnapshot: Sendable {
 
     public mutating func markActive() {
         state.turnActive = true
+        startTurnIfNeeded()
         state.status = "active"
         state.error = nil
         state.idleSince = nil
@@ -480,6 +516,8 @@ public struct ClaudeStreamSnapshot: Sendable {
 
     public mutating func markIdle() {
         state.turnActive = false
+        state.turnStartedAt = nil
+        finishThinking()
         state.status = state.activities.isEmpty ? "idle" : "active"
         state.idleSince = state.status == "idle" && !state.waitingForInput ? Date() : nil
         noteProgress()
@@ -566,8 +604,16 @@ public struct ClaudeStreamSnapshot: Sendable {
 
     private mutating func consumeSystemEvent(_ value: [String: Any]) {
         guard let subtype = value["subtype"] as? String else { return }
+        if subtype == "thinking_tokens" {
+            startTurnIfNeeded()
+            if state.thinkingStartedAt == nil { state.thinkingStartedAt = Self.timestampNow() }
+            state.thinkingTokens += max(0, (value["thinking_tokens"] as? Int)
+                ?? (value["tokens"] as? Int) ?? (value["count"] as? Int) ?? 0)
+            return
+        }
         if subtype == "task_started", let id = value["task_id"] as? String {
             taskTitles[id] = Self.safeTaskTitle(value["description"] as? String)
+            taskStartedAt[id] = taskStartedAt[id] ?? Self.timestampNow()
             refreshActivities(ids: Set(taskTitles.keys))
             return
         }
@@ -575,6 +621,7 @@ public struct ClaudeStreamSnapshot: Sendable {
             let status = value["status"] as? String
             if status == "completed" || status == "failed" || status == "cancelled" {
                 taskTitles.removeValue(forKey: id)
+                taskStartedAt.removeValue(forKey: id)
                 refreshActivities(ids: Set(taskTitles.keys))
             }
             return
@@ -587,14 +634,16 @@ public struct ClaudeStreamSnapshot: Sendable {
             let type = task["task_type"] as? String
             let description = task["description"] as? String
             taskTitles[id] = type == "local_agent" ? Self.safeTaskTitle(description) : "后台命令"
+            taskStartedAt[id] = taskStartedAt[id] ?? Self.timestampNow()
         }
         taskTitles = taskTitles.filter { activeIds.contains($0.key) }
+        taskStartedAt = taskStartedAt.filter { activeIds.contains($0.key) }
         refreshActivities(ids: activeIds)
     }
 
     private mutating func refreshActivities(ids: Set<String>) {
         state.activities = ids.sorted().map { id in
-            AgentSessionActivity(id: id, title: taskTitles[id] ?? "后台任务", detail: "运行中")
+            AgentSessionActivity(id: id, title: taskTitles[id] ?? "后台任务", detail: "运行中", startedAt: taskStartedAt[id])
         }
         state.status = state.turnActive || !state.activities.isEmpty ? "active" : "idle"
         state.idleSince = state.status == "idle" && !state.waitingForInput ? Date() : nil
@@ -607,6 +656,31 @@ public struct ClaudeStreamSnapshot: Sendable {
             return "后台命令"
         }
         return value
+    }
+
+    private mutating func startTurnIfNeeded() {
+        if state.turnStartedAt == nil {
+            state.turnStartedAt = Self.timestampNow()
+            state.lastOutputAt = nil
+            state.thinkingStartedAt = nil
+            state.thinkingTokens = 0
+            state.thinkingDurationSeconds = 0
+        }
+    }
+
+    private mutating func finishThinking() {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let started = state.thinkingStartedAt, let date = formatter.date(from: started) {
+            state.thinkingDurationSeconds += max(0, Int(Date().timeIntervalSince(date)))
+        }
+        state.thinkingStartedAt = nil
+    }
+
+    private static func timestampNow() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: Date())
     }
 
     private static func textContent(_ value: Any?) -> String? {
