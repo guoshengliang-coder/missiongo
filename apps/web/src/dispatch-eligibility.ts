@@ -223,6 +223,43 @@ export function sessionLinkLabelKey(sessionUrl: string): MessageKey {
   return isCodexThreadLink(sessionUrl) ? "dispatchOpenInCodex" : "dispatchOpenSession";
 }
 
+/**
+ * The session id inside an https Claude Code link (`https://claude.ai/code/<id>`).
+ * Null for anything else, including a Codex thread link or a host that only
+ * happens to be https.
+ */
+export function claudeCodeSessionId(sessionUrl: string): string | null {
+  const match = /^https:\/\/claude\.ai\/code\/([A-Za-z0-9_-]{1,200})\/?$/.exec(sessionUrl);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Where the "view in client" button should send the reader (AND-214).
+ *
+ * On a Mac an https link opens a page (Claude Code) and a Codex thread link
+ * opens the Codex app. A phone has neither: the ChatGPT mobile app exposes no
+ * public codex:// thread address, so a Codex session becomes a note saying it
+ * opens on a Mac, while Claude Code keeps working through the mobile app's own
+ * `claude://code/<id>` address. Desktop targets and wording are unchanged, so a
+ * link that still has no mobile client falls through to what it did before.
+ */
+export type SessionLinkTarget =
+  | { readonly kind: "link"; readonly href: string; readonly newTab: boolean }
+  | { readonly kind: "hint"; readonly hintKey: MessageKey; readonly titleKey: MessageKey };
+
+export function sessionLinkTarget(sessionUrl: string, mobile: boolean): SessionLinkTarget {
+  if (isCodexThreadLink(sessionUrl)) {
+    return mobile
+      ? { kind: "hint", hintKey: "agentConsoleClientMacOnly", titleKey: "dispatchOpenInCodex" }
+      : { kind: "link", href: sessionUrl, newTab: false };
+  }
+  if (mobile) {
+    const sessionId = claudeCodeSessionId(sessionUrl);
+    if (sessionId) return { kind: "link", href: `claude://code/${sessionId}`, newTab: false };
+  }
+  return { kind: "link", href: sessionUrl, newTab: true };
+}
+
 /** Help under the mode picker, where the chosen mode does something worth explaining. */
 export function dispatchModeHelpKey(agentKind: AgentKind, mode: string): MessageKey | null {
   if (agentKind === "claude_code" && mode === "bypassPermissions") return "dispatchBypassPermissionsHelp";

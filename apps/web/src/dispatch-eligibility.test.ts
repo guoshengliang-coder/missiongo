@@ -13,6 +13,8 @@ import {
   productAllowsAi,
   selectionScope,
   sessionLinkLabelKey,
+  sessionLinkTarget,
+  claudeCodeSessionId,
   toggleItemSelection,
 } from "./dispatch-eligibility";
 import type { DispatchNode, Product, WorkItemStatus } from "./types";
@@ -257,6 +259,34 @@ describe("wording for values that come from the server", () => {
   it("does not promise a web page for a Codex thread", () => {
     expect(sessionLinkLabelKey("codex://threads/01a09f35-d6fa-7eb2-9d90-1352cf2fb661")).toBe("dispatchOpenInCodex");
     expect(sessionLinkLabelKey("https://claude.ai/code/session_1")).toBe("dispatchOpenSession");
+  });
+
+  it("reads the Claude Code session id out of its web link and nothing else", () => {
+    const sessions = [
+      "https://claude.ai/code/session_01H8ve1LdEn8xxnjrmL5kKWu",
+      "https://claude.ai/code/session_01H8ve1LdEn8xxnjrmL5kKWu/",
+    ];
+    for (const url of sessions) expect(claudeCodeSessionId(url)).toBe("session_01H8ve1LdEn8xxnjrmL5kKWu");
+    expect(claudeCodeSessionId("codex://threads/01a09f35-d6fa-7eb2-9d90-1352cf2fb661")).toBeNull();
+    expect(claudeCodeSessionId("https://claude.ai/code/session_1/extra")).toBeNull();
+    expect(claudeCodeSessionId("https://example.com/code/session_1")).toBeNull();
+  });
+
+  it("sends the phone to a mobile client where one exists and says so where none does (AND-214)", () => {
+    const codex = "codex://threads/01a09f35-d6fa-7eb2-9d90-1352cf2fb661";
+    // A Mac keeps the two desktop targets.
+    expect(sessionLinkTarget(codex, false)).toEqual({ kind: "link", href: codex, newTab: false });
+    expect(sessionLinkTarget("https://claude.ai/code/session_1", false))
+      .toEqual({ kind: "link", href: "https://claude.ai/code/session_1", newTab: true });
+    // A phone cannot open the Codex desktop scheme, so it says where the session is.
+    expect(sessionLinkTarget(codex, true))
+      .toEqual({ kind: "hint", hintKey: "agentConsoleClientMacOnly", titleKey: "dispatchOpenInCodex" });
+    // Claude Code has a mobile address, so the button keeps working.
+    expect(sessionLinkTarget("https://claude.ai/code/session_1", true))
+      .toEqual({ kind: "link", href: "claude://code/session_1", newTab: false });
+    // An https session MissionGo cannot map to a client keeps its old target.
+    expect(sessionLinkTarget("https://example.com/session_1", true))
+      .toEqual({ kind: "link", href: "https://example.com/session_1", newTab: true });
   });
 
   it("warns that Codex plan mode rests on the prompt alone", () => {

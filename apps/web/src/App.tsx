@@ -176,6 +176,7 @@ import { AgentSessionConsole } from "./agent-session-console";
 import { agentAttentionCounts, agentSessionDispatchFailed, agentSessionsRefetchInterval } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
+import { useMediaQuery } from "./use-media-query";
 
 const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
   inbox: Inbox,
@@ -2285,18 +2286,6 @@ function ProductSwitcher({
       )}
     </div>
   );
-}
-
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
-  useEffect(() => {
-    const media = window.matchMedia(query);
-    const update = () => setMatches(media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, [query]);
-  return matches;
 }
 
 /** Below this the workspace shows one pane at a time, and so should the manager. */
