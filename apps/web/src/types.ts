@@ -565,11 +565,16 @@ export interface CreateDispatchInput {
   readonly force?: boolean;
 }
 
-/** A ready item's newest dispatch attempt in its current ready cycle. */
+/**
+ * An item's newest hand-off, whatever status the item has now, so the list row
+ * can say which machine and agent the work went to (AND-216). `active` is the
+ * separate, conflict-checking subset.
+ */
 export interface ItemDispatchSummary {
   readonly dispatchId: string;
   readonly itemKey: string;
   readonly nodeName: string;
+  readonly agentKind: AgentKind;
   readonly status: Extract<DispatchStatus, "queued" | "delivered" | "launched" | "failed">;
   readonly createdAt: string;
 }

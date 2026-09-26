@@ -656,14 +656,14 @@ describe("Dispatching the same item twice", () => {
     }] });
   });
 
-  it("lists ready items with an unclaimed dispatch, and forgets them once claimed", async () => {
+  it("stops warning once an item is claimed, but the row still says where it went (AND-216)", async () => {
     const { app, cookie, mission, mini } = await setup();
     await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey]);
 
     const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
     expect(active.json()).toMatchObject({
-      active: [{ itemKey: mission.itemKey, nodeName: "Mac mini", status: "queued" }],
-      latest: [{ itemKey: mission.itemKey, nodeName: "Mac mini", status: "queued" }],
+      active: [{ itemKey: mission.itemKey, nodeName: "Mac mini", agentKind: "claude_code", status: "queued" }],
+      latest: [{ itemKey: mission.itemKey, nodeName: "Mac mini", agentKind: "claude_code", status: "queued" }],
     });
 
     // The session claims the item: it is no longer ready, so there is nothing to warn about.
@@ -675,7 +675,13 @@ describe("Dispatching the same item twice", () => {
     });
     expect(claimed.json<{ status: string }>().status).toBe("in_progress");
     const after = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
-    expect(after.json()).toEqual({ active: [], latest: [], handlers: [] });
+    expect(after.json()).toMatchObject({
+      active: [],
+      // Presentation, not a conflict: the row still names the machine and agent
+      // even though the item has moved on (AND-216).
+      latest: [{ itemKey: mission.itemKey, nodeName: "Mac mini", agentKind: "claude_code", status: "queued" }],
+      handlers: [],
+    });
   });
 
   it("names the agent behind an in-progress item once its session claims (AND-163)", async () => {
@@ -697,7 +703,7 @@ describe("Dispatching the same item twice", () => {
     const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
     expect(active.json()).toMatchObject({
       active: [],
-      latest: [],
+      latest: [{ itemKey: mission.itemKey, nodeName: "Mac mini", agentKind: "claude_code", status: "launched" }],
       handlers: [{ itemKey: mission.itemKey, nodeName: "Mac mini", agentKind: "claude_code" }],
     });
   });
@@ -722,7 +728,13 @@ describe("Dispatching the same item twice", () => {
     expect(started.json<{ status: string }>().status).toBe("in_progress");
 
     const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
-    expect(active.json()).toMatchObject({ active: [], latest: [], handlers: [] });
+    // No handler: the person, not the agent, took this on. The row still says
+    // where the launch went, which is a fact about the hand-off (AND-216).
+    expect(active.json()).toMatchObject({
+      active: [],
+      latest: [{ itemKey: mission.itemKey, status: "launched" }],
+      handlers: [],
+    });
   });
 
   it("dispatches an item sent back by a failed verification without force", async () => {
@@ -748,7 +760,13 @@ describe("Dispatching the same item twice", () => {
     }
 
     const active = await app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie } });
-    expect(active.json()).toEqual({ active: [], latest: [], handlers: [] });
+    // The spent dispatch is not a conflict -- `active` is empty and a re-dispatch
+    // needs no force -- but it stays the last hand-off the row reports (AND-216).
+    expect(active.json()).toMatchObject({
+      active: [],
+      latest: [{ itemKey: mission.itemKey, status: "launched" }],
+      handlers: [],
+    });
     expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(201);
 
     // The machine hears that this is a second session, and on reworked work.

@@ -17,6 +17,7 @@ import {
   CirclePause,
   ClipboardCheck,
   Download,
+  ExternalLink,
   FileText,
   Filter,
   Highlighter,
@@ -537,6 +538,44 @@ export function App() {
     syncBackDepth();
     setAgentSessionId(null);
     setAgentConversationOpen(false);
+    setAgentConsoleBulkMode(false);
+    setAgentConsoleOpen(true);
+    setMobileSearchOpen(false);
+  };
+
+  /**
+   * Open the console on one dispatch's session, from the work item it belongs
+   * to (AND-217). The console entry is pushed, so the item detail is still one
+   * back away; on the phone layout the conversation is pushed above it, the
+   * same way a deep link from the address bar lands.
+   */
+  const openAgentSession = (sessionId: string) => {
+    setAgentConsoleLinkedFilter(null);
+    const current = typeof history.state === "object" && history.state
+      ? history.state as Record<string, unknown>
+      : {};
+    const {
+      [AGENT_CONSOLE_HISTORY_MARKER]: _console,
+      [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
+      [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      ...state
+    } = current;
+    const consoleState = {
+      ...state,
+      [AGENT_CONSOLE_HISTORY_MARKER]: true,
+      [AGENT_CONSOLE_LAYOUT_KEY]: agentConsoleLayout,
+    };
+    history.pushState(consoleState, "", agentConsoleUrl(sessionId));
+    if (agentConsoleSinglePane) {
+      history.pushState(
+        { ...consoleState, [AGENT_CONVERSATION_HISTORY_MARKER]: true },
+        "",
+        agentConsoleUrl(sessionId),
+      );
+    }
+    syncBackDepth();
+    setAgentSessionId(sessionId);
+    setAgentConversationOpen(agentConsoleSinglePane);
     setAgentConsoleBulkMode(false);
     setAgentConsoleOpen(true);
     setMobileSearchOpen(false);
@@ -1612,7 +1651,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} handler={inProgressHandlers.get(selectedItemKey)} />
+            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} sessionFailure={sessionFailures.get(selectedItemKey)} onOpenConsoleSession={openAgentSession} />
           </div>
         )}
       </main>
@@ -1900,10 +1939,14 @@ function ItemRow({
   // The list answers "who is moving this", and the client alone answers it.
   const shortCreator = creatorShort(creator);
   const handlerAgentKey = handlerSummary ? agentLabelKey(handlerSummary.agentKind) : null;
-  const dispatchable = isDispatchable(item.status);
-  // Only on a ready row: the list can refetch before the dispatch list does, and
-  // an item a session has just claimed must not still read as waiting on a Mac.
-  const latestDispatch = dispatchable ? dispatchSummary : undefined;
+  // Where the work went stays on the row whatever status the item has now
+  // (AND-216), so a finished item still names the agent that did it. An
+  // in-progress item keeps its handler instead: the claim is what says an agent
+  // is on it now, and a person who took over an unclaimed launch must not read
+  // as that agent (AND-163).
+  const handlerBadge = item.status === "in_progress" && handlerSummary ? handlerSummary : undefined;
+  const latestDispatch = handlerBadge ? undefined : dispatchSummary;
+  const dispatchAgentKey = latestDispatch ? agentLabelKey(latestDispatch.agentKind) : null;
   const pendingDispatchStatusKey = latestDispatch ? activeDispatchStatusKey(latestDispatch.status) : null;
   // A launch that later fell over still carries `launched`, so the row calls it
   // a failure when the session behind it did (AND-180).
@@ -1950,20 +1993,41 @@ function ItemRow({
             <span className="item-meta">
               <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={16} /></span>
               <code>{item.key}</code>
-              {/* First of the badges, so the current dispatch result is the one
-                  that keeps its width when the line runs out. Active attempts
-                  guard against a second session; failed ones call out that the
-                  item needs attention. */}
-              {latestDispatch && (
+              {/* First of the badges, so the one that names the machine and
+                  agent keeps its width when the line runs out. A failure calls
+                  out that the item needs attention; a hand-off just says where
+                  the work went (AND-216). */}
+              {handlerBadge ? (
                 <small
-                  className={`item-dispatch-badge ${dispatchFailed ? "failed" : ""}`}
+                  className="item-handler-badge"
+                  title={t("itemHandlerBadgeTitle", {
+                    agent: handlerAgentKey ? t(handlerAgentKey) : handlerBadge.agentKind,
+                    node: handlerBadge.nodeName,
+                    time: formatTime(handlerBadge.createdAt),
+                    at: new Date(handlerBadge.createdAt).toLocaleString(locale, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    }),
+                  })}
+                >
+                  {t("itemHandlerBadge", {
+                    agent: handlerAgentKey ? t(handlerAgentKey) : handlerBadge.agentKind,
+                    node: handlerBadge.nodeName,
+                  })}
+                </small>
+              ) : latestDispatch ? (
+                <small
+                  className={dispatchFailed ? "item-dispatch-badge" : "item-handler-badge"}
                   title={t(
                     dispatchFailed
                       ? sessionFailed && sessionFailure
                         ? "dispatchSessionFailedTitle"
                         : "failedDispatchBadgeTitle"
-                      : "activeDispatchBadgeTitle",
+                      : "itemDispatchBadgeTitle",
                     {
+                      agent: dispatchAgentKey ? t(dispatchAgentKey) : latestDispatch.agentKind,
                       node: latestDispatch.nodeName,
                       status: pendingDispatchStatusKey ? t(pendingDispatchStatusKey) : latestDispatch.status,
                       time: formatTime(latestDispatch.createdAt),
@@ -1977,30 +2041,14 @@ function ItemRow({
                     },
                   )}
                 >
-                  {t(dispatchFailed ? "failedDispatchBadge" : "activeDispatchBadge", { node: latestDispatch.nodeName })}
+                  {dispatchFailed
+                    ? t("failedDispatchBadge")
+                    : t("itemDispatchBadge", {
+                        agent: dispatchAgentKey ? t(dispatchAgentKey) : latestDispatch.agentKind,
+                        node: latestDispatch.nodeName,
+                      })}
                 </small>
-              )}
-              {item.status === "in_progress" && handlerSummary && (
-                <small
-                  className="item-handler-badge"
-                  title={t("itemHandlerBadgeTitle", {
-                    agent: handlerAgentKey ? t(handlerAgentKey) : handlerSummary.agentKind,
-                    node: handlerSummary.nodeName,
-                    time: formatTime(handlerSummary.createdAt),
-                    at: new Date(handlerSummary.createdAt).toLocaleString(locale, {
-                      month: "short",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    }),
-                  })}
-                >
-                  {t("itemHandlerBadge", {
-                    agent: handlerAgentKey ? t(handlerAgentKey) : handlerSummary.agentKind,
-                    node: handlerSummary.nodeName,
-                  })}
-                </small>
-              )}
+              ) : null}
               {item.derivedFrom && <small className="item-derived-badge" title={item.derivedFrom.title}>{t("derivedFromBadge", { key: item.derivedFrom.key })}</small>}
               {item.verificationReturn && <VerificationReturnBadge />}
               <span className="item-evidence-summary">
@@ -2629,7 +2677,8 @@ function DetailPane({
   onNotice,
   onOpenItem,
   onStartWork,
-  handler,
+  sessionFailure,
+  onOpenConsoleSession,
 }: {
   itemKey: string | null;
   openInEdit: boolean;
@@ -2638,13 +2687,21 @@ function DetailPane({
   onNotice: (message: string) => void;
   onOpenItem: (itemKey: string) => void;
   onStartWork: (item: WorkItem) => void;
-  /** The agent behind the item's in-progress claim, when it came from a dispatch. */
-  handler: ItemDispatchHandler | undefined;
+  /** The error from the session behind the item's latest launch, when it died before finishing (AND-180). */
+  sessionFailure: string | null | undefined;
+  onOpenConsoleSession: (sessionId: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const { actorLabel, eventLabel, formatTime, locale, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
+  const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
   const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey) });
   const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey) });
+  // The same cache entry the dispatch history below reads: the newest record is
+  // the one the detail's own line reports (AND-217).
+  const dispatchesQuery = useQuery({
+    queryKey: ["dispatches", itemKey],
+    queryFn: () => api.listItemDispatches(itemKey!),
+    enabled: Boolean(itemKey),
+  });
   const item = itemQuery.data;
   const componentsQuery = useQuery({
     queryKey: ["components", item?.productId, "with-archived"],
@@ -2754,33 +2811,27 @@ function DetailPane({
   const logAttachments = item.attachments.filter((attachment) => attachment.kind === "log");
   const documentAttachments = item.attachments.filter((attachment) => attachment.kind === "document");
   const mediaAttachments = item.attachments.filter(isMediaAttachment);
+  // The newest hand-off, whatever status the item is in, so the detail says
+  // where the work went even for a finished item (AND-217). The server orders
+  // this newest first.
+  const latestDispatch = dispatchesQuery.data?.dispatches[0];
+  const dispatchAgentKey = latestDispatch ? agentLabelKey(latestDispatch.agentKind) : null;
+  // A launch that later fell over still carries `launched`; the session behind
+  // it is what failed (AND-180).
+  const dispatchSessionFailed = sessionFailure !== undefined;
+  const dispatchFailed = latestDispatch !== undefined
+    && (latestDispatch.status === "failed" || dispatchSessionFailed);
+  const dispatchFailureReason = latestDispatch?.status === "failed" ? latestDispatch.error : sessionFailure ?? "";
+  // Only a dispatch that reached a session can be opened in the console; one
+  // that failed before starting left nothing to jump to (AND-217).
+  const jumpSessionId = latestDispatch?.agentSessionId;
+  const dispatchStatusKey = latestDispatch ? dispatchStatusLabelKey(latestDispatch.status) : null;
   return (
     <section className="detail-pane">
       <div className="detail-toolbar">
         <button className="secondary-button detail-back-button" onClick={onClose} aria-label={t("backToList")}><ArrowLeft size={17} /> {t("backToList")}</button>
         <code>{item.key}</code>
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
-        {item.status === "in_progress" && handler && (
-          <small
-            className="item-handler-badge"
-            title={t("itemHandlerBadgeTitle", {
-              agent: agentLabelKey(handler.agentKind) ? t(agentLabelKey(handler.agentKind)!) : handler.agentKind,
-              node: handler.nodeName,
-              time: formatTime(handler.createdAt),
-              at: new Date(handler.createdAt).toLocaleString(locale, {
-                month: "short",
-                day: "numeric",
-                hour: "2-digit",
-                minute: "2-digit",
-              }),
-            })}
-          >
-            {t("itemHandlerBadge", {
-              agent: agentLabelKey(handler.agentKind) ? t(agentLabelKey(handler.agentKind)!) : handler.agentKind,
-              node: handler.nodeName,
-            })}
-          </small>
-        )}
         <span className="toolbar-spacer" />
         <div className="detail-toolbar-actions">
           {primaryAction && (
@@ -2851,6 +2902,39 @@ function DetailPane({
       </div>
       <div className="detail-scroll">
         <>
+            {/* Between the toolbar and the title: who the work was last handed
+                to, which the toolbar's chip used to squeeze in and only for an
+                in-progress item (AND-217). A jump to the console session is
+                offered only when one was actually started for it. */}
+            {latestDispatch && (
+              <div className={`detail-dispatch-line ${dispatchFailed ? "failed" : ""}`}>
+                <Bot size={16} aria-hidden="true" />
+                <span className="detail-dispatch-target">
+                  <strong>
+                    {dispatchFailed
+                      ? t("failedDispatchBadge")
+                      : t("itemDispatchBadge", {
+                          agent: dispatchAgentKey ? t(dispatchAgentKey) : latestDispatch.agentKind,
+                          node: latestDispatch.nodeName,
+                        })}
+                  </strong>
+                  <small>
+                    {!dispatchFailed && dispatchStatusKey && <>{t(dispatchStatusKey)} · </>}
+                    {formatTime(latestDispatch.createdAt)}
+                  </small>
+                </span>
+                {dispatchFailed && dispatchFailureReason && <span className="detail-dispatch-reason">{dispatchFailureReason}</span>}
+                {jumpSessionId && (
+                  <button
+                    type="button"
+                    className="secondary-button detail-dispatch-jump"
+                    onClick={() => onOpenConsoleSession(jumpSessionId)}
+                  >
+                    <ExternalLink size={15} aria-hidden="true" /> {t("openDispatchInConsole")}
+                  </button>
+                )}
+              </div>
+            )}
             <div className="detail-title-block">
               <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
               <div>

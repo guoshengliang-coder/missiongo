@@ -1778,9 +1778,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   // `active` keeps its conflict-checking contract. `latest` is presentation:
-  // it also includes a failed attempt, so a ready row can say that it failed
-  // without making that failure block a retry. `handlers` names the agent
-  // behind each in-progress item (AND-163).
+  // the newest hand-off of each item whatever its status, so a row can always
+  // say which machine and agent the work went to (AND-216); a failed attempt is
+  // included so the row can name the failure without that blocking a retry.
+  // `handlers` names the agent behind each in-progress item (AND-163).
   app.get("/api/v1/dispatches/active", async (request) => ({
     active: dispatchStore.listActiveDispatches(requireAccountId(request)),
     latest: dispatchStore.listLatestDispatches(requireAccountId(request)),
