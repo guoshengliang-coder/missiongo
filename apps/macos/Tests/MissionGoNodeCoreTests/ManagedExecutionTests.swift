@@ -127,7 +127,7 @@ final class ManagedExecutionTests: XCTestCase {
         let valid: [String: Any] = ["thread": ["id": "frozen"], "model": "actual", "cwd": work.path,
             "runtimeWorkspaceRoots": [work.path], "approvalPolicy": "on-request", "approvalsReviewer": "user",
             "sandbox": ["type": "workspaceWrite", "writableRoots": [] as [String]]]
-        for (key, value): (String, Any) in [
+        let invalidFields: [(String, Any)] = [
             ("cwd", "relative"), ("cwd", alias.path), ("cwd", alias.path + "/.."),
             ("runtimeWorkspaceRoots", [work.path, outside.path]), ("runtimeWorkspaceRoots", [] as [String]),
             ("runtimeWorkspaceRoots", ["relative"]), ("runtimeWorkspaceRoots", "invalid"),
@@ -137,7 +137,8 @@ final class ManagedExecutionTests: XCTestCase {
             ("sandbox", ["type": "workspaceWrite", "writableRoots": [work.path, outside.path]]),
             ("sandbox", ["type": "workspaceWrite", "writableRoots": ["relative"]]),
             ("sandbox", ["type": "workspaceWrite", "writableRoots": [alias.path + "/.."]])
-        ] {
+        ]
+        for (key, value) in invalidFields {
             var bad = valid; bad[key] = value
             XCTAssertThrowsError(try ManagedCodexProtocol.validate(bad, request: request), key)
             XCTAssertThrowsError(try ManagedCodexProtocol.validateResumed(bad, settings: settings, context: context), key)
