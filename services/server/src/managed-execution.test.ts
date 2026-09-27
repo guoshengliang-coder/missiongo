@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
 import { createAiAccessToken, hashPassword } from "./admin-auth.js";
+import { MISSIONGO_SKILL_VERSION } from "@missiongo/contracts";
 const config = { id: "owner", username: "owner@example.test", passwordScrypt: hashPassword("synthetic-password-long"),
   sessionSecret: randomBytes(32).toString("hex"), cookieSecure: true };
 it("requires an explicitly trusted coordinator OAuth client, never a caller role tag", async () => {
@@ -18,7 +19,7 @@ it("requires an explicitly trusted coordinator OAuth client, never a caller role
     expect(refused.statusCode).toBe(403);
   } finally { await app.close(); }
 });
-it.each(["baseline", "operate", "ai", "view-off", "view-on", "late-before", "late-ack", "terminal-before", "terminal-ack"])("binds HTTP requests and rechecks %s permission at delivery", async (revokedCapability) => {
+it.each(["separation", "separation-running", "baseline", "operate", "ai", "view-off", "view-on", "late-before", "late-ack", "terminal-before", "terminal-ack"])("binds HTTP requests and rechecks %s permission at delivery", async (revokedCapability) => {
   const managedOptions = { enabled: true, coordinatorClientIds: ["coordinator-fixture"] };
   const app = buildApp({ adminAccount: config, publicOrigin: "https://managed.test", managedExecution: managedOptions });
   try {
@@ -70,6 +71,60 @@ it.each(["baseline", "operate", "ai", "view-off", "view-on", "late-before", "lat
     expect((await operation("claim")).json().state).toBe("acknowledged");
     expect((await operation("permit")).json().mayStart).toBe(true);
     expect((await operation("permit")).json().mayStart).toBe(false);
+    if (revokedCapability.startsWith("separation")) {
+      const running = revokedCapability === "separation-running";
+      db.exec(`INSERT INTO work_items(id,item_key,sequence,product_id,type,priority,status,title,description,created_at,updated_at)
+        VALUES ('ordinary-item','AND-2',2,'p','task','normal','ready','Ordinary task','Data','now','now');`);
+      const headers = { authorization: "Bearer " + node.token };
+      const beat = await app.inject({ method: "POST", url: "/api/v1/node/heartbeat", headers, payload: {
+        agents: [{ kind: "codex", version: "synthetic", ready: true, models: [],
+          skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" } }],
+      } });
+      expect(beat.statusCode).toBe(200);
+      expect((await app.inject({ method: "POST", url: `/api/v1/node/managed-execution/${intent.id}/report`, headers,
+        payload: { sequence: 1, generation: 1, state: running ? "running" : "unknown",
+          ...(running ? { sessionRef: "synthetic-managed-thread", resolvedModel: "synthetic-model" } : {}) } })).statusCode).toBe(200);
+      if (!running) expect((await app.inject({ method: "POST", url: `/api/v1/managed-execution/intents/${intent.id}/stop`, headers: coordinator,
+        payload: { generation: 1 } })).statusCode).toBe(200);
+      const dispatch = await app.inject({ method: "POST", url: "/api/v1/dispatches", headers: human,
+        payload: { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: ["AND-2"] } });
+      expect(dispatch.statusCode, dispatch.body).toBe(201);
+      const ordinaryId = dispatch.json().id;
+      expect((await app.inject({ method: "POST", url: "/api/v1/dispatches", headers: human,
+        payload: { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: ["AND-2"] } })).statusCode).toBe(409);
+      const claimed = await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
+      expect(claimed.statusCode, claimed.body).toBe(200);
+      expect(claimed.json()).toMatchObject({ dispatchId: ordinaryId, mode: "plan", agentKind: "codex", repoPath: "/synthetic/repo" });
+      expect((await app.inject({ method: "POST", url: `/api/v1/node/dispatches/${ordinaryId}/result`, headers,
+        payload: { status: "launched", sessionName: "Synthetic ordinary", sessionRef: "synthetic-ordinary-thread" } })).statusCode).toBe(204);
+      const sessions = (await app.inject({ url: "/api/v1/node/agent-sessions", headers })).json().sessions;
+      const ordinary = sessions.find((s: { dispatchId: string }) => s.dispatchId === ordinaryId);
+      expect(ordinary.managedExecution).toBeUndefined();
+      expect((await app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${ordinary.id}/snapshot`, headers,
+        payload: { status: "idle", messages: [] } })).statusCode).toBe(204);
+      expect((await app.inject({ method: "PATCH", url: `/api/v1/agent-sessions/${ordinary.id}/settings`, headers: human,
+        payload: { mode: "auto" } })).statusCode).toBe(200);
+      for (const archived of [true, false]) expect((await app.inject({ method: "PATCH", url: `/api/v1/agent-sessions/${ordinary.id}`, headers: human,
+        payload: { archived } })).statusCode).toBe(200);
+      const command = await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${ordinary.id}/commands`, headers: human,
+        payload: { text: "Continue the ordinary plan" } });
+      expect(command.statusCode, command.body).toBe(201);
+      const poll = await app.inject({ url: "/api/v1/node/agent-sessions", headers });
+      expect(poll.json().sessions.find((s: { id: string }) => s.id === ordinary.id).command.id).toBe(command.json().id);
+      expect((await app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${ordinary.id}/snapshot`, headers,
+        payload: { status: "idle", messages: [], commandId: command.json().id, commandStatus: "delivering" } })).statusCode).toBe(204);
+      const held = (await app.inject({ url: `/api/v1/managed-execution/intents/${intent.id}`, headers: coordinator })).json();
+      expect(held).toMatchObject({ state: running ? "running" : "unknown", ownershipHeld: true, stopRequested: !running });
+      if (running) expect((await operation("permit")).json().mayStart).toBe(false);
+      else expect((await operation("permit")).statusCode).toBe(409);
+      if (process.env.AND235_TCP === "1") {
+        const origin = await app.listen({ port: 0, host: "127.0.0.1" });
+        const response = await fetch(origin + "/api/v1/node/agent-sessions", { headers });
+        expect(response.status).toBe(200);
+        expect((await response.json() as { sessions: unknown[] }).sessions.length).toBeGreaterThan(0);
+      }
+      return;
+    }
     if (revokedCapability.startsWith("late-")) {
       const receipt = { sequence: 1, generation: 1, state: "bound", sessionRef: "late-native-thread", resolvedModel: "late-actual-model" };
       const report = (payload = receipt, token = node.token) => app.inject({ method: "POST", url: "/api/v1/node/managed-execution/" + intent.id + "/report",
@@ -219,7 +274,7 @@ it.each(["baseline", "operate", "ai", "view-off", "view-on", "late-before", "lat
     const wire = await app.inject({ url: "/api/v1/node/agent-sessions", headers: { authorization: "Bearer " + node.token } });
     expect(wire.statusCode).toBe(200);
     expect(wire.json().sessions).toHaveLength(1);
-    expect(wire.json().sessions[0]).toMatchObject({ occupiesExecutionSlot: true,
+    expect(wire.json().sessions[0]).toMatchObject({ occupiesExecutionSlot: false,
       managedExecution: { id: intent.id, generation: 1, role: "review", stopRequested: true } });
     expect(wire.json().sessions[0].command).toBeUndefined();
     if (process.env.MANAGED_WIRE_FIXTURE) writeFileSync(process.env.MANAGED_WIRE_FIXTURE, wire.body);

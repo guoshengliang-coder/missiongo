@@ -1,4 +1,3 @@
-import { executorConflictSql } from "./storage/execution-ownership-sql.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { ExecutionRequest, ExecutionObservation, ExecutionIntent, ExecutionObservationReceipt } from "@missiongo/domain";
 import { AgentSessionStore } from "./agent-session-store.js";
@@ -17,7 +16,7 @@ export class ManagedExecutionStore {
   constructor(private readonly db: MissionGoDatabase, private readonly enabled = false) {}
   registerExecutor(access: DecisionAccess, nodeId: string, input: { mode: string; evidence: string }): unknown {
     if (input.mode !== "single_node_local") throw conflict("unsupported_executor", "Shared workspaces across Nodes are unsupported.");
-    if (!input.evidence.trim() || input.evidence.length > 1000) throw invalidInput("Exclusive local executor verification evidence is required.");
+    if (!input.evidence.trim() || input.evidence.length > 1000) throw invalidInput("Local executor verification evidence is required.");
     return this.db.transaction(() => {
       const node = this.db.connection.prepare("SELECT account_id,installation_id FROM nodes WHERE id=? AND revoked_at IS NULL")
         .get(nodeId) as { account_id: string; installation_id: string } | undefined;
@@ -45,7 +44,7 @@ export class ManagedExecutionStore {
         .get(d.scope.repositoryRef, d.scope.productId, input.nodeId, actor.accountId) as { id: string; repo_path: string } | undefined;
       if (!mapping) throw notFound("Registered repository");
       if (!this.db.connection.prepare("SELECT node_id FROM managed_executor_registrations WHERE node_id=? AND account_id=?")
-        .get(input.nodeId, actor.accountId)) throw conflict("executor_not_registered", "Register a verified exclusive single-Node local executor first; shared workspaces are unsupported.");
+        .get(input.nodeId, actor.accountId)) throw conflict("executor_not_registered", "Register a verified local executor first; each managed execution requires a dedicated worktree.");
       const old = this.db.connection.prepare("SELECT id,payload_digest FROM managed_execution_intents WHERE run_id=? AND idempotency_key=?")
         .get(input.runId, input.idempotencyKey) as { id: string; payload_digest: string } | undefined;
       if (old) {
@@ -53,8 +52,9 @@ export class ManagedExecutionStore {
         return this.get(access, old.id);
       }
       decisions.requireApproval(access, input.decisionId, { ...input, action: input.role });
-      if (this.db.connection.prepare(`SELECT id FROM nodes n WHERE n.id=? AND ${executorConflictSql("n.id", "''", false)}`).get(input.nodeId)) {
-        throw conflict("workspace_owned", "An unresolved managed or manual writer owns the supervised executor.");
+      // An uncertain execution fences its own batch, never the Node or Git common directory.
+      if (this.db.connection.prepare("SELECT id FROM managed_execution_intents WHERE run_id=? AND ownership_held=1").get(input.runId)) {
+        throw conflict("workspace_owned", "An unresolved execution still owns this managed run.");
       }
       const runs = new ManagedRunStore(this.db);
       const run = runs.getRun(actor, input.runId);

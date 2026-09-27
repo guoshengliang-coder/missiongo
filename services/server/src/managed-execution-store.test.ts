@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -7,6 +8,7 @@ import { ManagedRunStore } from "./managed-run-store.js";
 import { ManagedDecisionStore } from "./managed-decision-store.js";
 import { AgentSessionStore } from "./agent-session-store.js";
 import { ManagedExecutionStore } from "./managed-execution-store.js";
+import { restoreNodeOwnership } from "./test-fixtures/before-dispatch-separation.js";
 
 let sequence = 0;
 let db: MissionGoDatabase;
@@ -19,15 +21,15 @@ beforeEach(async () => {
   db.connection.exec(`INSERT INTO products(id,key_prefix,name,created_at,updated_at) VALUES ('p','AND','Test','now','now');
     INSERT INTO work_items(id,item_key,sequence,product_id,type,priority,status,title,description,created_at,updated_at)
     VALUES ('i','AND-1',1,'p','task','normal','ready','Task','Data only','now','now');
-    INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,created_at,updated_at) VALUES ('n','owner','install','Node','synthetic','[]','now','now');
+    INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,created_at,updated_at) VALUES ('n','owner','install','Node','synthetic','[{"kind":"codex","models":[]}]','now','now');
     INSERT INTO node_product_repos(id,node_id,product_id,repo_path,created_at,updated_at) VALUES ('repo','n','p','/synthetic/repo','now','now');`);
 });
 afterEach(async () => { db.close(); await rm(dir, { recursive: true, force: true }); });
-function setup(_registerExecutor = true) {
+function setup(_registerExecutor = true, runKey = "run", nodeId = "n", repositoryRef = "repo") {
   const runs = new ManagedRunStore(db);
   const run = runs.createRun({ accountId: "owner", productIds: ["p"] }, { scope: {
-    productId: "p", repositoryRef: "repo", itemKeys: ["AND-1"], contractRevision: 1,
-  }, idempotencyKey: "run" });
+    productId: "p", repositoryRef, itemKeys: ["AND-1"], contractRevision: 1,
+  }, idempotencyKey: runKey });
   const decisions = new ManagedDecisionStore(db);
   let decision = decisions.create(access, { runId: run.id, decisionKey: "d", scopeDigest: run.scopeDigest,
     contractRevision: 1, idempotencyKey: "create", content: { title: "Task", recommendation: "Local work",
@@ -36,11 +38,139 @@ function setup(_registerExecutor = true) {
     scopeDigest: decision.scopeDigest, contractRevision: 1, idempotencyKey: key });
   decision = decisions.change(access, decision.id, "approve", guard("approve"));
   const input = { runId: run.id, decisionId: decision.id, ...guard("start"), stageKey: "implement-1", role: "implement" as const,
-    inputCommit: "a".repeat(40), nodeId: "n", permissionMode: "workspace-write" as const };
+    inputCommit: "a".repeat(40), nodeId, permissionMode: "workspace-write" as const };
   const store = new ManagedExecutionStore(db, true);
-  if (_registerExecutor) store.registerExecutor(access, "n", { mode: "single_node_local", evidence: "fixture:exclusive-local-installation" });
+  if (_registerExecutor) store.registerExecutor(access, nodeId, { mode: "single_node_local", evidence: "fixture:exclusive-local-installation" });
   return { store, decisions, decision, guard, run, input };
 }
+it.each(["message", "settings", "restore", "delivery"])("AND-235 ordinary %s ignores another managed unknown", (control) => {
+  const { store, input } = setup();
+  db.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+    VALUES ('ordinary','owner','n','codex','plan','failed','/synthetic/repo','now');`);
+  const sessions = new AgentSessionStore(db);
+  const id = sessions.createForDispatch({ dispatchId: "ordinary", nodeId: "n", sessionRef: "ordinary-thread" });
+  const queued = control === "delivery" ? sessions.enqueue("owner", id, "Queued before managed") : undefined;
+  if (control === "restore") {
+    sessions.setArchived("owner", id, true);
+    db.connection.prepare("UPDATE agent_sessions SET source_archived_at='now' WHERE id=?").run(id);
+  }
+  const intent = store.request(access, input);
+  store.claim(access, "n", intent.id, 1); store.permit(access, "n", intent.id, 1);
+  store.report(access, "n", intent.id, { sequence: 1, generation: 1, state: "unknown" });
+  if (control === "message") expect(sessions.enqueue("owner", id, "Continue").status).toBe("queued");
+  if (control === "settings") {
+    expect(() => sessions.requestSettings("owner", id, { mode: "auto" })).not.toThrow();
+    expect(sessions.listForNode("n").find((s) => s.id === id)?.desiredSettings?.mode).toBe("auto");
+  }
+  if (control === "restore") {
+    expect(() => sessions.setArchived("owner", id, false)).not.toThrow();
+    expect(sessions.listForNode("n").find((s) => s.id === id)?.restoreInSource).toBe(true);
+  }
+  if (queued) {
+    expect(sessions.listForNode("n").find((s) => s.id === id)?.command?.id).toBe(queued.id);
+    expect(() => sessions.recordSnapshot({ nodeId: "n", sessionId: id, status: "idle", messages: [], commandId: queued.id, commandStatus: "delivering" })).not.toThrow();
+  }
+});
+it("AND-235 keeps ordinary controls available during managed unknown and stop reconciliation", () => {
+  const { store, input } = setup();
+  const intent = store.request(access, input);
+  store.claim(access, "n", intent.id, 1); store.permit(access, "n", intent.id, 1);
+  store.report(access, "n", intent.id, { sequence: 1, generation: 1, state: "unknown" });
+  store.stop(access, intent.id, 1);
+  db.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+    VALUES ('ordinary','owner','n','codex','plan','queued','/synthetic/repo','now');
+    UPDATE dispatches SET status='delivered' WHERE id='ordinary';`);
+  const sessions = new AgentSessionStore(db);
+  const id = sessions.createForDispatch({ dispatchId: "ordinary", nodeId: "n", sessionRef: "ordinary-thread" });
+  sessions.requestSettings("owner", id, { mode: "auto" });
+  sessions.setArchived("owner", id, true);
+  sessions.setArchived("owner", id, false);
+  const command = sessions.enqueue("owner", id, "Continue ordinary work");
+  expect(sessions.listForNode("n").find((s) => s.id === id)?.command?.id).toBe(command.id);
+  expect(() => sessions.recordSnapshot({ nodeId: "n", sessionId: id, status: "idle", messages: [], commandId: command.id, commandStatus: "delivering" })).not.toThrow();
+  expect(store.get(access, intent.id)).toMatchObject({ state: "unknown", ownershipHeld: true, stopRequested: true });
+});
+it("AND-235 permits separate managed batches on one repository while fencing the unknown batch", () => {
+  const { store, input } = setup();
+  const first = store.request(access, input);
+  store.claim(access, "n", first.id, 1); store.permit(access, "n", first.id, 1);
+  store.report(access, "n", first.id, { sequence: 1, generation: 1, state: "unknown" });
+  const second = setup(true, "separate-batch");
+  const intent = second.store.request(access, second.input);
+  expect(intent.id).not.toBe(first.id);
+  second.store.claim(access, "n", intent.id, 1);
+  expect(second.store.permit(access, "n", intent.id, 1).mayStart).toBe(true);
+  expect(store.permit(access, "n", first.id, 1).mayStart).toBe(false);
+  expect(() => store.request(access, { ...input, idempotencyKey: "replacement" })).toThrow();
+  expect(db.connection.prepare("SELECT id FROM managed_execution_intents WHERE ownership_held=1").all()).toHaveLength(2);
+});
+it("AND-235 upgrades old unknown intents without changing receipts, attempts or audit evidence", () => {
+  const { store, input } = setup();
+  db.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at,delivered_at)
+    VALUES ('manual-history','owner','n','codex','default','launched','/synthetic/repo','now','delivery');
+    INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('manual-history','i',0);`);
+  store.reconcileManual(access, "manual-history", { generation: 1, deliveredAt: "delivery", evidence: "fixture:stopped" });
+  const intent = store.request(access, input);
+  store.claim(access, "n", intent.id, 1); store.permit(access, "n", intent.id, 1);
+  const observation = { sequence: 1, generation: 1, state: "unknown" as const, sessionRef: "old-native", resolvedModel: "old-model" };
+  store.report(access, "n", intent.id, observation);
+  restoreNodeOwnership(db.connection);
+  const tables = ["managed_execution_intents", "managed_execution_bindings", "managed_execution_events",
+    "managed_execution_observations", "managed_manual_reconciliations", "managed_attempts", "managed_run_events", "agent_sessions",
+    "managed_executor_registrations", "managed_execution_inputs", "managed_runs", "managed_stages", "decision_records", "decision_events"];
+  const rows = () => tables.map((table) => db.connection.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+  const before = rows();
+  db.close(); db = new MissionGoDatabase(join(dir, "test.sqlite"));
+  expect(rows()).toEqual(before);
+  expect(() => db.connection.prepare("DELETE FROM managed_execution_observations WHERE intent_id=?").run(intent.id)).toThrow("immutable observation");
+  expect(() => db.connection.prepare("DELETE FROM managed_execution_events WHERE intent_id=?").run(intent.id)).toThrow("immutable execution event");
+  const restarted = new ManagedExecutionStore(db, true);
+  expect(restarted.report(access, "n", intent.id, observation)).toMatchObject({ state: "unknown", ownershipHeld: true });
+  expect(restarted.permit(access, "n", intent.id, 1).mayStart).toBe(false);
+  expect(() => restarted.request(access, { ...input, idempotencyKey: "replacement" })).toThrow();
+  const other = setup(true, "after-upgrade");
+  expect(other.store.request(access, other.input).ownershipHeld).toBe(true);
+  expect(db.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+});
+it("AND-235 synthetic Agent adapter runs ordinary and managed worktrees sharing one Git common directory", async () => {
+  // Real Git and SQLite; native model execution is intentionally synthetic.
+  // Disable user/system Git configuration for this isolated test repository.
+  const git = (args: string[], cwd = dir) => execFileSync("git", args, { cwd, encoding: "utf8",
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.test",
+      GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.test" }, stdio: ["pipe", "pipe", "pipe"] }).trim();
+  const repo = join(dir, "repository");
+  git(["init", repo]);
+  git(["commit", "--allow-empty", "-m", "Synthetic worktree fixture"], repo);
+  const commit = git(["rev-parse", "HEAD"], repo);
+  db.connection.prepare("UPDATE node_product_repos SET repo_path=? WHERE id='repo'").run(repo);
+  const ordinaryTree = join(dir, "missiongo-ordinary");
+  git(["worktree", "add", "--detach", ordinaryTree, commit], repo);
+  db.connection.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at,delivered_at)
+    VALUES ('ordinary-tree','owner','n','codex','plan','launched',?,'now','delivery')`).run(repo);
+  const first = setup();
+  const one = first.store.request(access, { ...first.input, inputCommit: commit });
+  const launchSynthetic = (intent: typeof one) => {
+    first.store.claim(access, "n", intent.id, intent.generation);
+    if (!first.store.permit(access, "n", intent.id, intent.generation).mayStart) return undefined;
+    const tree = join(dir, "missiongo-managed-" + intent.id);
+    git(["worktree", "add", "--detach", tree, commit], repo);
+    return tree;
+  };
+  const firstTree = launchSynthetic(one)!;
+  first.store.report(access, "n", one.id, { sequence: 1, generation: 1, state: "unknown" });
+  const second = setup(true, "parallel-tree");
+  const two = second.store.request(access, { ...second.input, inputCommit: commit });
+  const secondTree = launchSynthetic(two)!;
+  await Promise.all([ordinaryTree, firstTree, secondTree].map((tree) => writeFile(join(tree, "independent.txt"), tree)));
+  const common = [ordinaryTree, firstTree, secondTree].map((tree) => git(["rev-parse", "--path-format=absolute", "--git-common-dir"], tree));
+  expect(new Set(common).size).toBe(1);
+  expect(launchSynthetic(one)).toBeUndefined();
+  expect(launchSynthetic(two)).toBeUndefined();
+  expect(() => git(["worktree", "add", "--detach", firstTree, commit], repo)).toThrow();
+  for (const tree of [ordinaryTree, firstTree, secondTree]) expect(await readFile(join(tree, "independent.txt"), "utf8")).toBe(tree);
+  expect(first.store.get(access, one.id)).toMatchObject({ state: "unknown", ownershipHeld: true });
+});
 it("persists an approved start intent without inventing an AND-230 runtime attempt", () => {
   const { store, input } = setup();
   const intent = store.request(access, input);
@@ -65,6 +195,42 @@ it("delivers the managed binding and stop request in the actual Node session pro
   expect(sessions.managedBinding(running.sessionId!)).toMatchObject(expected);
   const nodeSession = sessions.listForNode("n").find((session) => session.id === running.sessionId);
   expect(nodeSession).toMatchObject({ managedExecution: expected });
+});
+it("AND-235 managed running and unknown sessions do not consume ordinary Node capacity", () => {
+  const { store, input } = setup();
+  const intent = store.request(access, input);
+  store.claim(access, "n", intent.id, 1); store.permit(access, "n", intent.id, 1);
+  const running = store.report(access, "n", intent.id, { sequence: 1, generation: 1, state: "running", sessionRef: "managed-capacity", resolvedModel: "fixture-model" });
+  const sessions = new AgentSessionStore(db);
+  db.connection.prepare("UPDATE agent_sessions SET status='active' WHERE id=?").run(running.sessionId!);
+  expect(sessions.listForNode("n").find((s) => s.id === running.sessionId)?.occupiesExecutionSlot).toBe(false);
+  store.report(access, "n", intent.id, { sequence: 2, generation: 1, state: "unknown" });
+  store.stop(access, intent.id, 1);
+  db.connection.prepare("UPDATE agent_sessions SET status='stalled' WHERE id=?").run(running.sessionId!);
+  expect(sessions.listForNode("n").find((s) => s.id === running.sessionId)?.occupiesExecutionSlot).toBe(false);
+  expect(store.get(access, intent.id).ownershipHeld).toBe(true);
+  db.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+    VALUES ('ordinary-capacity','owner','n','codex','default','launched','/synthetic/repo','now');`);
+  const ordinary = sessions.createForDispatch({ dispatchId: "ordinary-capacity", nodeId: "n", sessionRef: "ordinary-capacity-thread" });
+  db.connection.prepare("UPDATE agent_sessions SET status='active' WHERE id=?").run(ordinary);
+  expect(sessions.listForNode("n").find((s) => s.id === ordinary)?.occupiesExecutionSlot).toBe(true);
+});
+it("AND-235 managed recovery pages cannot starve ordinary queued controls", () => {
+  const sessions = new AgentSessionStore(db);
+  db.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+    VALUES ('ordinary-page','owner','n','codex','plan','launched','/synthetic/repo','now');`);
+  const ordinary = sessions.createForDispatch({ dispatchId: "ordinary-page", nodeId: "n", sessionRef: "ordinary-page-thread" });
+  const command = sessions.enqueue("owner", ordinary, "Queued ordinary control");
+  for (let index = 0; index < 100; index++) {
+    const { store, input } = setup(true, "page-" + index);
+    const intent = store.request(access, input);
+    store.claim(access, "n", intent.id, 1); store.permit(access, "n", intent.id, 1);
+    store.report(access, "n", intent.id, { sequence: 1, generation: 1, state: "unknown", sessionRef: "managed-page-" + index, resolvedModel: "fixture-model" });
+    store.stop(access, intent.id, 1);
+  }
+  const page = sessions.listForNode("n");
+  expect(page.find((s) => s.id === ordinary)?.command?.id).toBe(command.id);
+  expect(page.filter((s) => s.managedExecution?.stopRequested)).toHaveLength(100);
 });
 it("revalidates decision at delivery and gives permission to start only once", () => {
   const { store, decisions, decision, guard, input } = setup();
@@ -92,12 +258,12 @@ it("retains ownership on interrupted launch and creates a ledger attempt only fr
   expect(() => store.report(access, "n", intent.id, { sequence: ++sequence, generation: 2, state: "running" })).toThrow(expect.objectContaining({ code: "stale_generation" }));
   expect(db.connection.prepare("SELECT status FROM work_items").get()).toEqual({ status: "ready" });
 });
-it("reserves across runs and old manual writers, including uncertain timed-out delivery", () => {
+it("does not reserve an executor for an old uncertain manual delivery", () => {
   const { store, input } = setup();
   db.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at,delivered_at)
     VALUES ('manual','owner','n','codex','default','failed','/synthetic/alias','now','yesterday');`);
-  expect(() => store.request(access, input)).toThrow(expect.objectContaining({ code: "workspace_owned" }));
-  expect(db.connection.prepare("SELECT * FROM managed_stages").all()).toHaveLength(0);
+  expect(store.request(access, input).ownershipHeld).toBe(true);
+  expect(db.connection.prepare("SELECT * FROM managed_stages").all()).toHaveLength(1);
 });
 it("separates terminal result from explicit cleanup reconciliation and never releases on elapsed time", () => {
   const { store, input } = setup();
@@ -206,7 +372,7 @@ it("uses two real connections to serialize ownership and single permission-to-st
     expect(store.permit(access, "n", intentId, 1).mayStart).toBe(false);
     expect(() => other.request(access, { ...input, stageKey: "another", idempotencyKey: "another" })).toThrow(expect.objectContaining({ code: "workspace_owned" }));
     expect(() => peer.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
-      VALUES ('manual','owner','n','codex','default','queued','/synthetic/alias','now')`)).toThrow("workspace_owned");
+      VALUES ('manual','owner','n','codex','default','queued','/synthetic/alias','now')`)).not.toThrow();
   } finally { peer.close(); }
 });
 it("rechecks account, product scope, node and permissions on current receipts", () => {
@@ -235,20 +401,20 @@ it("records a timed-out known runtime as unknown in both the control intent and 
   expect(store.get(access, intent.id).state).toBe("unknown");
   expect(new ManagedRunStore(db).getAttempt({ accountId: "owner", productIds: ["p"] }, input.runId, intent.stageId, running.attemptId!).status).toBe("unknown");
 });
-it("requires scoped explicit reconciliation of an old manual writer and fences its later retry", () => {
+it("retains scoped manual reconciliation evidence without fencing ordinary continuation", () => {
   const { store, input } = setup();
   db.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at,delivered_at)
     VALUES ('manual','owner','n','codex','default','launched','/synthetic/repo','now','observed-delivery');
     INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('manual','i',0);`);
-  expect(() => store.request(access, input)).toThrow();
+  expect(store.request(access, input).ownershipHeld).toBe(true);
   expect(() => store.reconcileManual(access, "manual", { generation: 1, deliveredAt: "stale", evidence: "fixture:stopped" })).toThrow();
   expect(() => store.reconcileManual(() => "other-account", "manual", { generation: 1, deliveredAt: "observed-delivery", evidence: "fixture:stopped" })).toThrow();
   const sessions = new AgentSessionStore(db);
   const sessionId = sessions.createForDispatch({ dispatchId: "manual", nodeId: "n", sessionRef: "manual-thread" });
   store.reconcileManual(access, "manual", { generation: 1, deliveredAt: "observed-delivery", evidence: "fixture:stopped" });
   expect(store.request(access, input).ownershipHeld).toBe(true);
-  expect(() => sessions.enqueue("owner", sessionId, "Restart old writer")).toThrow();
-  expect(() => db.connection.exec("UPDATE dispatches SET status='queued' WHERE id='manual'")).toThrow();
+  expect(sessions.enqueue("owner", sessionId, "Continue ordinary writer").status).toBe("queued");
+  expect(() => db.connection.exec("UPDATE dispatches SET status='queued' WHERE id='manual'")).not.toThrow();
 });
 it("accepts a second waiting observation after running without reusing the ledger operation", () => {
   const { store, input } = setup();
@@ -352,7 +518,8 @@ it("lets a reconciled manual session reacquire a new execution generation withou
   const session = sessions.createForDispatch({ dispatchId: "manual", nodeId: "n", sessionRef: "manual-native" });
   store.reconcileManual(access, "manual", { generation: 1, deliveredAt: "delivery-one", evidence: "fixture:stopped" });
   const intent = store.request(access, input);
-  expect(() => sessions.enqueue("owner", session, "Blocked while managed owns it")).toThrow();
+  expect(sessions.enqueue("owner", session, "Continue while managed owns its tree").status).toBe("queued");
+  db.connection.exec("UPDATE agent_session_commands SET status='delivered'");
   store.stop(access, intent.id, 1);
   const off = new ManagedExecutionStore(db);
   expect(sessions.enqueue("owner", session, "Continue manually").status).toBe("queued");
@@ -360,7 +527,7 @@ it("lets a reconciled manual session reacquire a new execution generation withou
   expect(db.connection.prepare("SELECT * FROM managed_manual_reconciliations").all()).toHaveLength(1);
   expect(store.manualSnapshot(access, "manual")).toMatchObject({ generation: 2, reconciliations: [{ generation: 1 }] });
   expect(() => store.manualSnapshot(() => "other-account", "manual")).toThrow();
-  expect(() => store.request(access, { ...input, idempotencyKey: "next" })).toThrow(expect.objectContaining({ code: "workspace_owned" }));
+  expect(store.request(access, { ...input, idempotencyKey: "next" }).ownershipHeld).toBe(true);
   expect(() => off.reconcileManual(access, "manual", { generation: 1, deliveredAt: "delivery-one", evidence: "fixture:stopped" })).toThrow();
 });
 
@@ -372,7 +539,7 @@ it("requires explicit single-Node local executor registration and rejects shared
   store.registerExecutor(access, "n", { mode: "single_node_local", evidence: "fixture:exclusive" });
   expect(store.request(access, input).ownershipHeld).toBe(true);
 });
-it("serializes manual continuation and queued delivery inside the registered executor domain", () => {
+it("keeps registration independent of manual continuation and queued delivery", () => {
   const { store } = setup(false);
   db.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at,delivered_at)
     VALUES ('manual-one','owner','n','codex','default','launched','/synthetic/repo','now','one'),
@@ -381,13 +548,14 @@ it("serializes manual continuation and queued delivery inside the registered exe
   const sessions = new AgentSessionStore(db);
   const session = sessions.createForDispatch({ dispatchId: "manual-one", nodeId: "n", sessionRef: "manual-one-thread" });
   store.registerExecutor(access, "n", { mode: "single_node_local", evidence: "fixture:exclusive" });
-  expect(() => sessions.enqueue("owner", session, "Do not overlap uncertain manual-two")).toThrow(expect.objectContaining({ code: "workspace_owned" }));
+  expect(sessions.enqueue("owner", session, "Independent ordinary work").status).toBe("queued");
+  db.connection.exec("UPDATE agent_session_commands SET status='delivered'");
   expect(() => db.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
-    VALUES ('third','owner','n','codex','default','queued','/synthetic/alias','now')`)).toThrow();
+    VALUES ('third','owner','n','codex','default','queued','/synthetic/alias','now')`)).not.toThrow();
   store.reconcileManual(access, "manual-two", { generation: 1, deliveredAt: "two", evidence: "fixture:stopped" });
   expect(sessions.enqueue("owner", session, "Continue with ownership").status).toBe("queued");
 });
-it("does not deliver queued manual controls after domain registration reveals another unresolved writer", () => {
+it("delivers queued manual controls after executor registration", () => {
   const { store } = setup(false);
   db.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at,delivered_at)
     VALUES ('one','owner','n','codex','default','launched','/synthetic/repo','now','one'),
@@ -396,8 +564,8 @@ it("does not deliver queued manual controls after domain registration reveals an
   const sessionId = sessions.createForDispatch({ dispatchId: "one", nodeId: "n", sessionRef: "one-thread" });
   const command = sessions.enqueue("owner", sessionId, "Legacy queued reply");
   store.registerExecutor(access, "n", { mode: "single_node_local", evidence: "fixture:exclusive" });
-  expect(sessions.listForNode("n").find((s) => s.id === sessionId)?.command).toBeUndefined();
-  expect(() => sessions.recordSnapshot({ nodeId: "n", sessionId, status: "idle", messages: [], commandId: command.id, commandStatus: "delivering" })).toThrow();
+  expect(sessions.listForNode("n").find((s) => s.id === sessionId)?.command?.id).toBe(command.id);
+  expect(() => sessions.recordSnapshot({ nodeId: "n", sessionId, status: "idle", messages: [], commandId: command.id, commandStatus: "delivering" })).not.toThrow();
 });
 it("restoring a reconciled manual mirror acquires a new generation even without source archive", () => {
   const { store } = setup();
@@ -462,4 +630,115 @@ it.each([false, true])("records late bound receipt after timeout and restart, co
     expect(() => restarted.report(access, "n", intent.id, { ...receipt, sequence: 2, resolvedModel: "changed" })).toThrow(expect.objectContaining({ code: "runtime_identity_changed" }));
     expect(db.connection.prepare("SELECT COUNT(*) AS n FROM managed_attempts").get()).toEqual({ n: 1 });
   } finally { clock.mockRestore(); }
+});
+
+it("AND-235 repair traverses every held batch across polls, connections, restarts and queue changes", () => {
+  const add = (index: number) => {
+    const { store, input } = setup(true, `fair-${index}`);
+    const intent = store.request(access, input);
+    store.claim(access, "n", intent.id, 1);
+    expect(store.permit(access, "n", intent.id, 1).mayStart).toBe(true);
+    const observed = store.report(access, "n", intent.id, { sequence: 1, generation: 1,
+      state: index % 2 ? "running" : "unknown", sessionRef: `fair-thread-${index}`, resolvedModel: "fixture-model" });
+    // Deliberately make the oldest batch sort behind every newer one in the old query.
+    db.connection.prepare("UPDATE agent_sessions SET updated_at=? WHERE id=?").run(String(index).padStart(6, "0"), observed.sessionId!);
+    return observed;
+  };
+  const intents = Array.from({ length: 205 }, (_, index) => add(index));
+  const store = new ManagedExecutionStore(db, true);
+  // More than a whole page of persistent stops: stop priority alone cannot pass.
+  for (const intent of intents.slice(0, 105)) store.stop(access, intent.id, 1);
+  const evidenceTables = ["managed_execution_intents", "managed_execution_bindings", "managed_execution_observations",
+    "managed_execution_events", "managed_attempts", "agent_sessions"];
+  const evidence = () => evidenceTables.map((table) => db.connection.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+  const beforeUpgrade = evidence();
+  // Reopen an actual pre-cursor database containing held unknown/stop evidence.
+  db.connection.exec(`DROP TABLE managed_session_poll_cursors; DROP INDEX idx_agent_sessions_node_id;
+    DELETE FROM schema_migrations WHERE version=202609271554;`);
+  db.close(); db = new MissionGoDatabase(join(dir, "test.sqlite"));
+  expect(evidence()).toEqual(beforeUpgrade);
+  db.connection.exec(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+    VALUES ('fair-ordinary','owner','n','codex','plan','launched','/synthetic/repo','now');`);
+  const sessions = new AgentSessionStore(db);
+  const ordinary = sessions.createForDispatch({ dispatchId: "fair-ordinary", nodeId: "n", sessionRef: "fair-ordinary" });
+  const command = sessions.enqueue("owner", ordinary, "Ordinary control remains visible");
+  const seen = new Set<string>();
+  for (let poll = 0; poll < 3; poll++) {
+    // Two connections share persisted progress; reopening also simulates server restart.
+    const other = new MissionGoDatabase(join(dir, "test.sqlite"));
+    try {
+      const page = new AgentSessionStore(other).listForNode("n");
+      expect(page.find((s) => s.id === ordinary)?.command?.id).toBe(command.id);
+      const managed = page.filter((s) => s.managedExecution);
+      expect(managed.length).toBeLessThanOrEqual(100);
+      for (const session of managed) {
+        expect(seen.has(session.id)).toBe(false);
+        seen.add(session.id);
+        expect(session.managedExecution?.ownershipHeld).toBe(true);
+      }
+    } finally { other.close(); }
+    if (poll === 0) {
+      add(205); // A new arrival must not postpone completion of this sweep.
+      // Updates to an already seen session must not put it ahead of unseen ones.
+      db.connection.prepare("UPDATE agent_sessions SET updated_at='999999' WHERE id=?").run(intents[0]!.sessionId!);
+    }
+  }
+  for (const intent of intents) expect(seen.has(intent.sessionId!)).toBe(true);
+  // Every old batch is delivered again even when stop/unknown remains unresolved.
+  const again = new Set<string>();
+  for (let poll = 0; poll < 3; poll++) {
+    for (const session of new AgentSessionStore(db).listForNode("n")) {
+      if (session.managedExecution) again.add(session.id);
+    }
+  }
+  expect(again.size).toBe(206);
+  const restarted = new ManagedExecutionStore(db, true);
+  for (const intent of intents) {
+    const held = restarted.get(access, intent.id);
+    expect(held.ownershipHeld).toBe(true);
+    if (held.stopRequested) expect(() => restarted.permit(access, "n", intent.id, 1)).toThrow();
+    else expect(restarted.permit(access, "n", intent.id, 1).mayStart).toBe(false);
+  }
+  expect(db.connection.prepare("SELECT id FROM managed_attempts").all()).toHaveLength(206);
+});
+
+it("AND-235 repair isolates node cursors and serializes competing poll connections", () => {
+  db.connection.exec(`INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,created_at,updated_at)
+    VALUES ('other','owner','other-install','Other','synthetic-other','[{"kind":"codex","models":[]}]','now','now');
+    INSERT INTO node_product_repos(id,node_id,product_id,repo_path,created_at,updated_at)
+    VALUES ('other-repo','other','p','/synthetic/other','now','now');`);
+  const expected = new Map<string, Set<string>>();
+  for (const node of ["n", "other"]) {
+    const ids = new Set<string>();
+    for (let index = 0; index < 101; index++) {
+      const { store, input } = setup(true, `${node}-${index}`, node, node === "n" ? "repo" : "other-repo");
+      const intent = store.request(access, input);
+      store.claim(access, node, intent.id, 1); store.permit(access, node, intent.id, 1);
+      const observed = store.report(access, node, intent.id, { sequence: 1, generation: 1, state: "unknown",
+        sessionRef: `${node}-thread-${index}`, resolvedModel: "fixture-model" });
+      ids.add(observed.sessionId!);
+    }
+    expected.set(node, ids);
+  }
+  const other = new MissionGoDatabase(join(dir, "test.sqlite"));
+  try {
+    const a = new AgentSessionStore(db);
+    const b = new AgentSessionStore(other);
+    const first = a.listForNode("n");
+    expect(first).toHaveLength(100);
+    const cursor = () => db.connection.prepare("SELECT * FROM managed_session_poll_cursors ORDER BY node_id").all();
+    const before = cursor();
+    db.transaction(() => {
+      expect(() => b.listForNode("n")).toThrow(/locked/);
+      expect(cursor()).toEqual(before);
+    });
+    const otherFirst = b.listForNode("other");
+    expect(otherFirst).toHaveLength(100);
+    const tail = b.listForNode("n");
+    expect(tail).toHaveLength(1);
+    const otherTail = a.listForNode("other");
+    expect(otherTail).toHaveLength(1);
+    expect(new Set([...first, ...tail].map((s) => s.id))).toEqual(expected.get("n"));
+    expect(new Set([...otherFirst, ...otherTail].map((s) => s.id))).toEqual(expected.get("other"));
+  } finally { other.close(); }
 });

@@ -2,6 +2,25 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class ManagedExecutionTests: XCTestCase {
+    func testDedicatedWorktreePathsAllowSeparateBatchesButRejectExistingAndAliasedPaths() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("repository")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let ordinary = try CodexWorkspace.worktreePath(repoPath: repo.path, dispatchId: "ordinary")
+        let first = try CodexWorkspace.worktreePath(repoPath: repo.path, dispatchId: "managed-first")
+        let second = try CodexWorkspace.worktreePath(repoPath: repo.path, dispatchId: "managed-second")
+        XCTAssertEqual(Set([ordinary, first, second]).count, 3)
+        try FileManager.default.createDirectory(atPath: first, withIntermediateDirectories: true)
+        let marker = URL(fileURLWithPath: first).appendingPathComponent("keep.txt")
+        try Data("existing work".utf8).write(to: marker)
+        XCTAssertThrowsError(try CodexWorkspace.worktreePath(repoPath: repo.path, dispatchId: "managed-first"))
+        try FileManager.default.createSymbolicLink(atPath: second, withDestinationPath: first)
+        XCTAssertThrowsError(try CodexWorkspace.worktreePath(repoPath: repo.path, dispatchId: "managed-second"))
+        XCTAssertEqual(try Data(contentsOf: marker), Data("existing work".utf8))
+        XCTAssertNoThrow(try CodexWorkspace.worktreePath(repoPath: repo.path, dispatchId: "ordinary"))
+    }
+
     func testActualServerWireReachesManagedNodeConsumer() async throws {
         guard let path = ProcessInfo.processInfo.environment["MANAGED_WIRE_FIXTURE"] else {
             throw XCTSkip("Generate with the server managed-execution HTTP test and MANAGED_WIRE_FIXTURE.")
@@ -11,7 +30,7 @@ final class ManagedExecutionTests: XCTestCase {
         let session = try XCTUnwrap(envelope.sessions.first)
         XCTAssertEqual(session.managedExecution?.role, "review")
         XCTAssertEqual(session.managedExecution?.stopRequested, true)
-        XCTAssertTrue(session.occupiesExecutionSlot)
+        XCTAssertFalse(session.occupiesExecutionSlot)
         XCTAssertNil(session.command)
         let launcher = CodexLauncher(environment: ShellEnvironment(path: "/synthetic/bin", base: [:]), serverUrl: nil,
             location: CodexLocation(codexHome: "/synthetic/agent"), control: ManagedStopControl(), resources: ManagedTestResources())
