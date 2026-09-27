@@ -2,11 +2,12 @@
 
 ## Delivered boundary
 
-This is an **internal recording API**, not an execution or approval API. Nothing
-instantiates it in HTTP, MCP, dispatch, a scheduler or a Node agent adapter. It
-cannot start a process, approve an action, retry a delivery, or transition a work
-item. AND-231 owns future formal approval. A successful ledger write is not
-proof that a native agent ran, stopped, or respected its sandbox.
+This remains an **internal recording API**, not an execution API. AND-231 adds
+human-only decision endpoints that read existing runs through this store; see
+[managed-decisions.md](managed-decisions.md). There is still no public create-run,
+stage/attempt, scheduler or Node adapter endpoint. A ledger write cannot start a
+process, approve an action, retry a delivery, or transition a work item, and is
+not proof that a native agent ran, stopped, or respected its sandbox.
 
 The domain contracts live in `packages/domain/src/managed-run.ts`; the server
 store is `services/server/src/managed-run-store.ts`. No new dependency is needed.

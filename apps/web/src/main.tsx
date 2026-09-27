@@ -31,7 +31,9 @@ persistQueryCache(queryClient);
 // render anything. Only one of the two ever runs, so only one is fetched.
 const RootPage = window.location.pathname.startsWith("/sdk/feedback")
   ? lazy(() => import("./SdkFeedback").then(({ SdkFeedbackPage }) => ({ default: SdkFeedbackPage })))
-  : lazy(() => import("./App").then(({ App }) => ({ default: App })));
+  : window.location.pathname.startsWith("/managed-decisions/")
+    ? lazy(() => import("./managed-decision-page").then(({ ManagedDecisionPage }) => ({ default: ManagedDecisionPage })))
+    : lazy(() => import("./App").then(({ App }) => ({ default: App })));
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

@@ -1,3 +1,4 @@
+import type { ManagedDecision, ManagedDecisionGuard } from "@missiongo/domain";
 import { attachmentPreviewPath, attachmentThumbnailPath } from "./attachment-thumbnail";
 import type {
   ActiveDispatch,
@@ -127,6 +128,12 @@ export type BulkTransitionResult =
   | { readonly itemKey: string; readonly ok: true }
   | { readonly itemKey: string; readonly ok: false; readonly code: string; readonly message: string };
 
+export interface ManagedDecisionView {
+  readonly decision: ManagedDecision;
+  readonly productName: string;
+  readonly access: { readonly canApprove: boolean; readonly canRevoke: boolean };
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -245,6 +252,13 @@ export const api = {
     return request<Bootstrap>(`/api/v1/bootstrap${suffix}`);
   },
   getSession: () => request<AuthSession>("/api/v1/auth/session"),
+  getManagedDecision: (id: string) => request<ManagedDecisionView>(`/api/v1/managed-decisions/${encodeURIComponent(id)}`),
+  approveManagedDecision: (id: string, input: ManagedDecisionGuard) => request<ManagedDecision>(`/api/v1/managed-decisions/${encodeURIComponent(id)}/approve`, {
+    method: "POST", body: JSON.stringify(input),
+  }),
+  revokeManagedDecision: (id: string, input: ManagedDecisionGuard) => request<ManagedDecision>(`/api/v1/managed-decisions/${encodeURIComponent(id)}/revoke`, {
+    method: "POST", body: JSON.stringify(input),
+  }),
   login: (input: { username: string; password: string }) =>
     request<AuthSession>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(input) }),
   logout: () => request<{ ok: true }>("/api/v1/auth/logout", { method: "POST" }),

@@ -56,6 +56,7 @@ import {
 } from "./agent-session-store.js";
 import { optionalName, parseAgentModels } from "./agent-settings.js";
 import { DispatchStore } from "./dispatch-store.js";
+import { registerManagedDecisionRoutes } from "./managed-decision-routes.js";
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
 import {
@@ -1727,6 +1728,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     accountStore.revokeAiAuthorization(account.id, authorizationId);
     return reply.status(204).send();
   });
+
+  registerManagedDecisionRoutes(app, { db: store.database, accounts: accountStore, requireAccount,
+    ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}) });
 
   // Dispatching work to a machine. The console half of this is account-scoped
   // and needs a session; the node half below authenticates with the machine's

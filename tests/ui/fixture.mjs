@@ -70,6 +70,7 @@ export async function startFixtureServer() {
       SESSION_SECRET: randomBytes(32).toString("base64url"),
       ADMIN_API_TOKEN: "",
       MISSIONGO_RELEASE: "ui-fixture",
+      MISSIONGO_PUBLIC_ORIGIN: WEB_ORIGIN,
     },
   });
 

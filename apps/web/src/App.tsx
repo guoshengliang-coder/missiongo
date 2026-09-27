@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
 import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { LoginForm } from "./login-form";
 import {
   ArrowLeft,
   Archive,
@@ -48,7 +49,7 @@ import {
   X,
 } from "lucide-react";
 
-import { api, ApiError, productIconUrl, type AuthSession, type AuthenticatedUser, type BulkTransitionResult } from "./api";
+import { api, ApiError, productIconUrl, type AuthenticatedUser, type BulkTransitionResult } from "./api";
 import { BootSkeleton } from "./BootSkeleton";
 import { clearPersistedQueryCache } from "./query-persistence";
 // Type-only: erased at compile time, so it does not pull the chunk into the boot.
@@ -4947,37 +4948,6 @@ function ProductForm({ onCreated }: { onCreated: (product: Product) => void | Pr
   );
 }
 
-function LoginForm({ onAuthenticated }: { onAuthenticated: (session: AuthSession) => void }) {
-  const { t } = useI18n();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const mutation = useMutation({
-    mutationFn: () => api.login({ username: username.trim(), password }),
-    onSuccess: onAuthenticated,
-  });
-  const loginError = mutation.error instanceof ApiError
-    ? mutation.error.code === "invalid_credentials"
-      ? t("invalidCredentials")
-      : mutation.error.code === "login_rate_limited"
-        ? t("loginRateLimited")
-        : mutation.error.code === "authentication_unavailable"
-          ? t("accountUnavailable")
-          : mutation.error.message
-    : mutation.isError
-      ? t("somethingWentWrong")
-      : null;
-  return (
-    <form className="login-form" onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}>
-      <label>{t("username")}<input type="email" value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("usernamePlaceholder")} autoComplete="username" autoCapitalize="none" spellCheck={false} required autoFocus /></label>
-      <label>{t("password")}<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("passwordPlaceholder")} autoComplete="current-password" required /></label>
-      {loginError && <InlineError message={loginError} />}
-      <p className="privacy-note"><KeyRound size={14} /> {t("noRegistration")}</p>
-      <button className="primary-button wide" disabled={mutation.isPending || !username.trim() || !password}>
-        {mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />} {t("signIn")}
-      </button>
-    </form>
-  );
-}
 
 function RefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: () => unknown }) {
   const { t } = useI18n();

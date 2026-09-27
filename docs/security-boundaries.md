@@ -44,6 +44,12 @@ AI 客户端不得保存账号密码；首次连接时密码只提交给 Mission
 授权只能由它的所有者查看和撤销。管理员管理的是账号，而一次授权是账号所有者自己授予的凭据；管理员
 对应的手段是停用该账号，那会一次性切断它的全部凭据。
 
+## 托管决策的人工批准（AND-231）
+
+`/api/v1/managed-runs/:runId/decisions` 与 `/api/v1/managed-decisions/:id` 系列是独立人类 Cookie 入口，不继承运维 Bearer 的产品绕过。混合 Authorization 头也拒绝。写入要求配置的同源 Origin；权限与会话在写事务内重新验证，完整冻结范围逐项核对。批准需 operate + ai，撤销需 operate；无认证部署不能批准。
+
+本功能只记录批准，不启动 Agent，也不改变现有手动派单。详细身份、幂等、撤销和未来执行消费边界见 [managed-decisions.md](managed-decisions.md)。
+
 ## 产品授权（AND-58）
 
 产品的创建者可以给别人授予或移除该产品的三项权限（查看、操作、AI 调用），不需要对方同意，直接生效。

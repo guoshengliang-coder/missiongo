@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { AUTO_ARCHIVE_BACKFILL_SQL } from "../auto-archive.js";
 import { INITIAL_SCHEMA, MANAGED_RUN_SCHEMA } from "./schema.js";
+import { DECISION_SCHEMA } from "./decision-schema.js";
 
 const LEGACY_CODEX_THREAD_LINK = /^codex:\/\/threads\/[A-Za-z0-9-]{1,100}$/;
 
@@ -1430,6 +1431,15 @@ export class MissionGoDatabase {
         this.connection.exec(MANAGED_RUN_SCHEMA);
         this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
           .run(202609262149, new Date().toISOString());
+      }
+    });
+    this.transaction(() => {
+      const decisionMigration = this.connection
+        .prepare("SELECT version FROM schema_migrations WHERE version = 202609270131").get();
+      if (!decisionMigration) {
+        this.connection.exec(DECISION_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609270131, new Date().toISOString());
       }
     });
     this.connection.exec("PRAGMA optimize;");
