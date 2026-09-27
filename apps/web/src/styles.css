@@ -730,6 +730,12 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-chat-draft-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .agent-chat-draft-files > span { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 5px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-inset); font-size: var(--text-xs); overflow-wrap: anywhere; }
 .agent-chat-draft-files button { width: 44px; height: 44px; flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0; display: grid; place-items: center; }
+/* AND-234: anchors the shared drag overlay to the reply form. The overlay's
+   sticky message assumes a tall capture dialog; this form is a couple of rows,
+   so the message sits inline instead of reserving margin it cannot fill. */
+.agent-console-reply form { position: relative; }
+.agent-console-reply .file-drop-overlay { inset: 0; border-radius: var(--radius-md); }
+.agent-console-reply .file-drop-overlay-message { position: static; margin-top: 0; padding: 18px 16px; }
 .agent-chat-attachments { display: grid; gap: 7px; margin-top: 8px; }
 .agent-chat-attachment { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-strong); }
 .agent-chat-attachment > a:first-child { max-width: 180px; }

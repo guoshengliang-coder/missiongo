@@ -64,6 +64,7 @@ import {
 } from "./capture-draft";
 import { clearDraftFiles, loadDraftFiles, saveDraftFiles } from "./draft-files";
 import { useFileDropZone } from "./file-drop";
+import { FileDropOverlay } from "./file-drop-overlay";
 import {
   MAX_DIAGNOSTIC_LOG_BYTES,
   collectWebContext,
@@ -3997,20 +3998,8 @@ function EnvironmentFields({ value, onChange }: { value: EnvironmentDraft; onCha
   );
 }
 
-// Covers the whole form while files are dragged over it. Where a file lands
-// does not matter: WorkItemFields sorts each one into its section by extension.
-function FileDropOverlay({ remaining }: { remaining: number }) {
-  const { t } = useI18n();
-  return (
-    <div className={`file-drop-overlay ${remaining < 1 ? "full" : ""}`} aria-hidden>
-      <div className="file-drop-overlay-message">
-        <Paperclip size={22} />
-        <strong>{remaining > 0 ? t("dropFilesToAttach") : t("dropFilesLimitReached", { count: 10 })}</strong>
-        {remaining > 0 && <small>{t("dropFilesToAttachHelp")}</small>}
-      </div>
-    </div>
-  );
-}
+// The drag overlay itself lives in file-drop-overlay.tsx, shared with the
+// agent console reply box (AND-234); the + picker below stays local.
 
 function FilePicker({
   files = [],
