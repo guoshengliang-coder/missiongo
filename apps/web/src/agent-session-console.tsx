@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -63,7 +63,9 @@ import { MarkdownText } from "./markdown-text";
 import { SessionLink } from "./session-link";
 import type { AgentSession, AgentSessionAttachment, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary, Dispatch, WorkItemAttachment } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
-import { validateAttachment } from "./attachment-validation";
+import { mergeChatFiles } from "./agent-chat-files";
+import { FileDropOverlay } from "./file-drop-overlay";
+import { useFileDropZone } from "./file-drop";
 import { useMediaQuery } from "./use-media-query";
 
 const CHAT_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf";
@@ -631,15 +633,37 @@ export function AgentSessionConsole({
       send.mutate({ sessionId: selected.agentSessionId, text, files: replyFiles, occurredAt: new Date().toISOString() });
     }
   };
-  const addFiles = (incoming: FileList | null) => {
-    if (!incoming) return;
-    const next = [...replyFiles, ...Array.from(incoming)];
-    if (fileInputRef.current) fileInputRef.current.value = "";
-    if (next.length > 10) { setReplyFileError(t("agentChatTooManyFiles")); return; }
-    const invalid = next.find((file) => !validateAttachment(file).valid);
-    if (invalid) { setReplyFileError(t("agentChatInvalidFile", { filename: invalid.name })); return; }
-    setReplyFiles(next);
+  // One gate for the three ways files reach the draft: the + picker, a drop,
+  // and a paste (AND-234). The whole batch is rejected on the first problem,
+  // so a stray unsupported file never drops a screenshot someone just pasted.
+  const canAttach = sessionQuery.data?.canAttach === true;
+  const addFilesList = (incoming: readonly File[]) => {
+    if (incoming.length === 0) return;
+    if (sessionQuery.data && !canAttach) { setReplyFileError(t("agentChatNodeUpdate")); return; }
+    const { files, rejection } = mergeChatFiles(replyFiles, incoming);
+    if (rejection) {
+      setReplyFileError(rejection.reason === "too-many"
+        ? t("agentChatTooManyFiles")
+        : t("agentChatInvalidFile", { filename: rejection.filename }));
+      return;
+    }
+    setReplyFiles(files);
     setReplyFileError(null);
+  };
+  const { isDraggingFiles, dropHandlers } = useFileDropZone(addFilesList, {
+    canAccept: sessionQuery.data ? canAttach && replyFiles.length < 10 : true,
+  });
+  const replyPaste = (event: ClipboardEvent<HTMLElement>) => {
+    const pasted = Array.from(event.clipboardData?.files ?? []);
+    if (pasted.length === 0) return;
+    event.preventDefault();
+    addFilesList(pasted);
+  };
+  const addFiles = (incoming: FileList | null) => {
+    // Copy before clearing the input: resetting .value empties the FileList.
+    const picked = incoming ? Array.from(incoming) : [];
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    addFilesList(picked);
   };
   const chooseFilter = (next: AgentSessionFilter) => {
     setFilter(next);
@@ -1176,7 +1200,8 @@ export function AgentSessionConsole({
                 </div>
               )}
               {selected.canReply && selected.agentSessionId ? (
-                <form onSubmit={submit}>
+                <form onSubmit={submit} onPaste={replyPaste} {...dropHandlers}>
+                  {isDraggingFiles && <FileDropOverlay remaining={Math.max(0, 10 - replyFiles.length)} limitReachedText={t("agentChatTooManyFiles")} />}
                   <AutoGrowTextarea
                     rows={1}
                     maximumHeight={240}
