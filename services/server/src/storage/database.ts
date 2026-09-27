@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { AUTO_ARCHIVE_BACKFILL_SQL } from "../auto-archive.js";
-import { INITIAL_SCHEMA } from "./schema.js";
+import { INITIAL_SCHEMA, MANAGED_RUN_SCHEMA } from "./schema.js";
 
 const LEGACY_CODEX_THREAD_LINK = /^codex:\/\/threads\/[A-Za-z0-9-]{1,100}$/;
 
@@ -1422,6 +1422,16 @@ export class MissionGoDatabase {
           .run(202609251604, new Date().toISOString());
       });
     }
+    this.transaction(() => {
+      const managedRunMigration = this.connection
+        .prepare("SELECT version FROM schema_migrations WHERE version = 202609262149")
+        .get();
+      if (!managedRunMigration) {
+        this.connection.exec(MANAGED_RUN_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609262149, new Date().toISOString());
+      }
+    });
     this.connection.exec("PRAGMA optimize;");
   }
 }

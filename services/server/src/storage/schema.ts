@@ -517,3 +517,62 @@ export const INITIAL_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_feedback_drafts_expiry ON feedback_drafts(status, expires_at);
   CREATE INDEX IF NOT EXISTS idx_feedback_web_sessions_expiry ON feedback_web_sessions(expires_at);
 `;
+
+// Kept outside INITIAL_SCHEMA so the tables and migration receipt are atomic.
+export const MANAGED_RUN_SCHEMA = `
+  CREATE TABLE managed_runs (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    scope_json TEXT NOT NULL CHECK (json_valid(scope_json)),
+    scope_digest TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK (version > 0),
+    created_at TEXT NOT NULL
+  ) STRICT;
+  CREATE TABLE managed_stages (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES managed_runs(id),
+    stage_key TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('implement', 'review', 'verify')),
+    input_commit TEXT NOT NULL,
+    current_generation INTEGER NOT NULL DEFAULT 0 CHECK (current_generation >= 0),
+    status TEXT NOT NULL CHECK (status IN ('ready', 'running', 'waiting_for_human', 'unknown', 'succeeded', 'failed')),
+    UNIQUE (run_id, stage_key),
+    UNIQUE (id, run_id)
+  ) STRICT;
+  CREATE TABLE managed_attempts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    stage_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    status TEXT NOT NULL CHECK (status IN ('running', 'waiting_for_human', 'unknown', 'succeeded', 'failed')),
+    executor_json TEXT NOT NULL CHECK (json_valid(executor_json)),
+    result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (stage_id, run_id) REFERENCES managed_stages(id, run_id),
+    UNIQUE (stage_id, generation)
+  ) STRICT;
+  -- The first ledger is intentionally serial per run. Unknown still owns the slot.
+  CREATE UNIQUE INDEX idx_managed_attempt_active_run ON managed_attempts(run_id)
+    WHERE status IN ('running', 'waiting_for_human', 'unknown');
+  CREATE TABLE managed_run_events (
+    run_id TEXT NOT NULL REFERENCES managed_runs(id),
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    account_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    event_json TEXT NOT NULL CHECK (json_valid(event_json)),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, sequence),
+    UNIQUE (account_id, operation, target_id, idempotency_key)
+  ) STRICT;
+  CREATE TRIGGER managed_scope_immutable BEFORE UPDATE OF id, account_id, product_id, scope_json, scope_digest, created_at ON managed_runs
+    BEGIN SELECT RAISE(ABORT, 'managed scope is immutable'); END;
+  CREATE TRIGGER managed_events_no_update BEFORE UPDATE ON managed_run_events
+    BEGIN SELECT RAISE(ABORT, 'managed events are immutable'); END;
+  CREATE TRIGGER managed_events_no_delete BEFORE DELETE ON managed_run_events
+    BEGIN SELECT RAISE(ABORT, 'managed events are immutable'); END;
+`;
