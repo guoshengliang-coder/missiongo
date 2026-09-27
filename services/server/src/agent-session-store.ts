@@ -1,3 +1,4 @@
+import { executorConflictSql } from "./storage/execution-ownership-sql.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import { isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
@@ -84,7 +85,11 @@ export interface AgentSessionCommand {
   readonly cancelledAt?: string;
 }
 
+export interface ManagedSessionBinding {
+  id: string; runId: string; stageId: string; generation: number; role: string; stopRequested: boolean; state: string; ownershipHeld: boolean;
+}
 export interface AgentSessionSnapshot {
+  readonly managedExecution?: ManagedSessionBinding;
   readonly id: string;
   readonly dispatchId: string;
   readonly agentKind: "codex" | "claude_code" | "opencode";
@@ -109,6 +114,7 @@ export interface AgentSessionSnapshot {
 }
 
 export interface AgentSessionListItem {
+  readonly managedExecution?: ManagedSessionBinding;
   readonly id: string;
   readonly agentSessionId?: string;
   readonly dispatchId: string;
@@ -177,6 +183,7 @@ export interface AgentSessionSettings {
 }
 
 export interface NodeAgentSession {
+  readonly managedExecution?: ManagedSessionBinding;
   readonly id: string;
   readonly dispatchId: string;
   readonly agentKind: "codex" | "claude_code" | "opencode";
@@ -560,6 +567,25 @@ export function snapshotMakesUnread(
 export class AgentSessionStore {
   constructor(private readonly database: MissionGoDatabase, private readonly attachments?: AgentSessionAttachments) {}
 
+  managedBinding(sessionId: string): ManagedSessionBinding | undefined {
+    const row = this.database.connection.prepare("SELECT i.snapshot_json FROM managed_execution_intents i JOIN agent_sessions s ON s.dispatch_id=i.id WHERE s.id=?")
+      .get(sessionId) as { snapshot_json: string } | undefined;
+    if (!row) return undefined;
+    const i = JSON.parse(row.snapshot_json);
+    return { id: i.id, runId: i.binding.runId, stageId: i.stageId, generation: i.generation, role: i.binding.role, stopRequested: i.stopRequested, state: i.state, ownershipHeld: i.ownershipHeld };
+  }
+  private requireManualSession(sessionId: string): void {
+    if (this.managedBinding(sessionId)) throw conflict("managed_session_control", "Use the scoped coordinator control for a managed session.");
+  }
+  private sessionStartBlocked(sessionId: string): boolean {
+    const row = this.database.connection.prepare(`SELECT s.id FROM agent_sessions s WHERE s.id=? AND (
+      ${executorConflictSql("s.node_id", "s.dispatch_id")})`).get(sessionId);
+    return Boolean(row);
+  }
+  private requireSessionStart(sessionId: string): void {
+    if (this.sessionStartBlocked(sessionId)) throw conflict("workspace_owned", "Another unresolved writer owns this executor.");
+  }
+
   createForDispatch(input: { dispatchId: string; nodeId: string; sessionRef: string }): string {
     const dispatch = this.database.connection
       .prepare("SELECT agent_kind FROM dispatches WHERE id = ? AND node_id = ?")
@@ -612,6 +638,7 @@ export class AgentSessionStore {
     return {
       id: row.id,
       dispatchId: row.dispatch_id,
+      ...(this.managedBinding(row.id) ? { managedExecution: this.managedBinding(row.id)! } : {}),
       agentKind: row.agent_kind,
       // Same read-time rule as the list (AND-221): a Mac nobody has heard
       // from in half an hour is not running this session.
@@ -638,7 +665,7 @@ export class AgentSessionStore {
       })),
       ...(this.attachments ? { attachmentMessages: this.attachmentMessages(sessionId) } : {}),
       ...(command ? { command: this.mapCommand(command) } : {}),
-      replyable: !this.itemsCompleted(sessionId),
+      replyable: !this.managedBinding(sessionId) && !this.itemsCompleted(sessionId),
     };
   }
 
@@ -793,6 +820,7 @@ export class AgentSessionStore {
         id: row.session_id ?? `dispatch:${row.dispatch_id}`,
         ...(row.session_id ? { agentSessionId: row.session_id } : {}),
         dispatchId: row.dispatch_id,
+        ...(row.session_id && this.managedBinding(row.session_id) ? { managedExecution: this.managedBinding(row.session_id)! } : {}),
         agentKind: row.agent_kind,
         status,
         ...(lastError ? { lastError } : {}),
@@ -826,10 +854,10 @@ export class AgentSessionStore {
           && itemRows.length > 0 && itemRows.every((item) => item.status === "ready"),
         stoppable: row.dispatch_status === "queued"
           || Boolean(row.session_id && (row.session_status === "active" || row.session_status === "stalled")),
-        replyable: row.session_id ? !this.itemsCompleted(row.session_id) : false,
+        replyable: row.session_id ? !this.managedBinding(row.session_id) && !this.itemsCompleted(row.session_id) : false,
         settings: sessionSettings(
           row,
-          Boolean(row.session_id) && !archivedAt && !(row.session_id && this.itemsCompleted(row.session_id)),
+          Boolean(row.session_id) && !archivedAt && !(row.session_id && (this.itemsCompleted(row.session_id) || this.managedBinding(row.session_id))),
         ),
         unread: Boolean(row.unread_at && (!row.read_at || row.unread_at > row.read_at)),
         ...(row.unread_at ? { unreadAt: row.unread_at } : {}),
@@ -838,6 +866,8 @@ export class AgentSessionStore {
   }
 
   setArchived(accountId: string, sessionId: string, archived: boolean): AgentSessionSnapshot {
+    this.requireManualSession(sessionId);
+    if (!archived) this.requireSessionStart(sessionId);
     const session = this.database.connection
       .prepare(
         `SELECT s.archived_at, s.archive_source FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
@@ -906,6 +936,8 @@ export class AgentSessionStore {
    * Mac apply each request once and report which one it is on.
    */
   requestSettings(accountId: string, sessionId: string, change: AgentRunSettings): AgentSessionSettings {
+    this.requireManualSession(sessionId);
+    this.requireSessionStart(sessionId);
     const row = this.database.connection
       .prepare(
         `SELECT s.agent_kind, d.mode AS dispatch_mode, d.model AS dispatch_model, d.effort AS dispatch_effort,
@@ -987,7 +1019,9 @@ export class AgentSessionStore {
     ).run(sessionId, messageHash, now, revision, now, accountId);
   }
 
-  enqueue(accountId: string, sessionId: string, textValue: string, attachmentIds: readonly string[] = []): AgentSessionCommand {
+  enqueue(accountId: string, sessionId: string, textValue: string, attachmentIds: readonly string[] = [], managedControl = false): AgentSessionCommand {
+    if (!managedControl) this.requireManualSession(sessionId);
+    this.requireSessionStart(sessionId);
     const text = textValue.trim();
     if (!text && attachmentIds.length === 0) throw invalidInput("text or attachments are required.");
     if (text.length > MAX_COMMAND_LENGTH) throw invalidInput(`text must be ${MAX_COMMAND_LENGTH} characters or fewer.`);
@@ -1063,6 +1097,7 @@ export class AgentSessionStore {
   }
 
   enqueueInterrupt(accountId: string, sessionId: string): AgentSessionCommand {
+    this.requireManualSession(sessionId);
     const session = this.database.connection
       .prepare(
         `SELECT s.id, s.status, s.archived_at, s.agent_kind FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
@@ -1230,7 +1265,8 @@ export class AgentSessionStore {
                 desired_settings_json, settings_revision, applied_settings_revision, settings_error_revision
          FROM agent_sessions s
          WHERE node_id = ?
-         AND (archived_at IS NULL OR (archive_source = 'source' AND updated_at <= ?)
+         AND (EXISTS (SELECT 1 FROM managed_execution_intents i WHERE i.id=s.dispatch_id AND (i.ownership_held=1 OR (json_extract(i.snapshot_json,'$.stopRequested')=1 AND json_extract(i.snapshot_json,'$.cleanup') IS NULL)))
+           OR archived_at IS NULL OR (archive_source = 'source' AND updated_at <= ?)
            -- Finished work archived by MissionGo still needs the Mac once: a
            -- Codex thread to archive at the source, a Claude process to close.
            OR (archive_source = 'missiongo' AND agent_kind = 'codex'
@@ -1239,7 +1275,8 @@ export class AgentSessionStore {
              AND source_archived_at IS NULL AND source_archive_error IS NULL)
            OR (archive_reason = 'auto' AND agent_kind = 'claude_code' AND status NOT IN ('suspended', 'failed')))
          AND (
-           status IN ('active', 'stalled', 'unavailable') OR EXISTS (
+           EXISTS (SELECT 1 FROM managed_execution_intents i WHERE i.id=s.dispatch_id AND (i.ownership_held=1 OR (json_extract(i.snapshot_json,'$.stopRequested')=1 AND json_extract(i.snapshot_json,'$.cleanup') IS NULL)))
+           OR status IN ('active', 'stalled', 'unavailable') OR EXISTS (
              SELECT 1 FROM agent_session_commands c
              WHERE c.session_id = s.id AND c.status IN ('queued', 'delivering', 'delivery_unknown')
            ) OR s.settings_revision > MAX(s.applied_settings_revision, s.settings_error_revision)
@@ -1251,28 +1288,32 @@ export class AgentSessionStore {
              AND source_archived_at IS NULL AND source_archive_error IS NULL)
            OR s.updated_at <= ?
          )
-         ORDER BY archive_source = 'source', updated_at DESC LIMIT 100`,
+         ORDER BY EXISTS (SELECT 1 FROM managed_execution_intents i WHERE i.id=s.dispatch_id AND i.ownership_held=1) DESC, archive_source = 'source', updated_at DESC LIMIT 100`,
       )
       .all(nodeId, sourceArchiveBefore, sourceArchiveBefore) as unknown as SessionRow[];
     return rows.map((row) => {
-      const command = this.pendingCommand(row.id);
+      const managed = this.managedBinding(row.id);
+      const blocked = this.sessionStartBlocked(row.id);
+      const pending = this.pendingCommand(row.id);
+      const command = pending?.kind === "interrupt" ? pending : blocked || (managed && (managed.stopRequested || !["running", "waiting"].includes(managed.state))) ? undefined : pending;
       const autoArchived = row.archive_reason === "auto";
       return {
         id: row.id,
         dispatchId: row.dispatch_id,
+        ...(this.managedBinding(row.id) ? { managedExecution: this.managedBinding(row.id)! } : {}),
         agentKind: row.agent_kind,
         sessionRef: row.agent_session_ref,
         status: row.status,
         lifecycle: row.agent_kind === "claude_code" && !row.source_restore_pending
           && (Boolean(row.archived_at) || autoArchived || this.itemsCompleted(row.id)) ? "close" : "keep",
-        occupiesExecutionSlot: row.status === "active" || row.status === "stalled",
+        occupiesExecutionSlot: managed?.ownershipHeld === true || row.status === "active" || row.status === "stalled",
         ...(command && command.status !== "delivery_unknown" ? { command: this.mapCommand(command) } : {}),
         ...(row.archive_source === "missiongo" && row.archived_at && row.agent_kind === "codex"
           && !row.source_archived_at && !row.source_archive_error
           ? { archiveInSource: true as const }
           : {}),
-        ...(row.source_restore_pending ? { restoreInSource: true as const } : {}),
-        ...(row.desired_settings_json && (row.settings_revision ?? 0) > 0
+        ...(!blocked && row.source_restore_pending ? { restoreInSource: true as const } : {}),
+        ...(!blocked && row.desired_settings_json && (row.settings_revision ?? 0) > 0
           ? {
               desiredSettings: {
                 ...(JSON.parse(row.desired_settings_json) as AgentRunSettings),
@@ -1599,9 +1640,9 @@ export class AgentSessionStore {
       );
       if (input.commandId && input.commandStatus) {
         const current = this.database.connection
-          .prepare("SELECT status, error FROM agent_session_commands WHERE id = ? AND session_id = ?")
+          .prepare("SELECT status, error, kind FROM agent_session_commands WHERE id = ? AND session_id = ?")
           .get(input.commandId, input.sessionId) as unknown as
-            { status: AgentSessionCommandStatus; error: string | null } | undefined;
+            { status: AgentSessionCommandStatus; error: string | null; kind: string } | undefined;
         if (!current) {
           throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
         }
@@ -1613,6 +1654,11 @@ export class AgentSessionStore {
         // lost.
         const reaped = current.status === "failed" && current.error === COMMAND_DELIVERY_TIMEOUT_ERROR;
         if (input.commandStatus === "delivering") {
+          if (current.kind !== "interrupt") this.requireSessionStart(input.sessionId);
+          const managed = this.managedBinding(input.sessionId);
+          if (managed && (managed.stopRequested || managed.state === "unknown" || managed.state === "terminal")) {
+            throw conflict("execution_stopped", "Managed input permission is no longer active.");
+          }
           if (!reaped && !["delivery_unknown", "delivered", "cancelled"].includes(current.status)) {
             const changed = this.database.connection
               .prepare(

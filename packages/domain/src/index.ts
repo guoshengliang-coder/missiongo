@@ -6,3 +6,5 @@ export * from "./feedback-log.js";
 export * from "./password.js";
 export * from "./work-item-status.js";
 export * from "./work-item.js";
+
+export * from "./managed-execution.js";

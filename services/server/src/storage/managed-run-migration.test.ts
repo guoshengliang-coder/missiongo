@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 
+import { beforeManagedExecution } from "../test-fixtures/before-managed-execution.js";
 import { MissionGoDatabase } from "./database.js";
 import { INITIAL_SCHEMA } from "./schema.js";
 
@@ -11,6 +12,7 @@ async function beforeLedgerMigration() {
   const dir = await mkdtemp(join(tmpdir(), "managed-migration-"));
   const path = join(dir, "test.sqlite");
   const db = new MissionGoDatabase(path);
+  beforeManagedExecution(db.connection);
   db.connection.exec(`
     DROP TABLE managed_run_events;
     DROP TABLE managed_attempts;
@@ -45,7 +47,7 @@ it("handles another connection completing the migration before this connection t
     expect(interleaved).toBe(true);
     expect(connections.size).toBe(2);
     expect(db.connection.prepare("SELECT count(*) AS n FROM schema_migrations WHERE version=202609262149").get()).toEqual({ n: 1 });
-    expect(db.connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'managed_%'").all()).toHaveLength(4);
+    expect(db.connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('managed_runs','managed_stages','managed_attempts','managed_run_events')").all()).toHaveLength(4);
     expect(db.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally {
     spy.mockRestore();
@@ -74,7 +76,7 @@ it("rolls back all ledger tables when the migration receipt fails and can then r
     inspect.exec("DROP TRIGGER fail_test_migration;");
     const recovered = new MissionGoDatabase(path);
     connections.add(recovered);
-    expect(recovered.connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'managed_%'").all()).toHaveLength(4);
+    expect(recovered.connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('managed_runs','managed_stages','managed_attempts','managed_run_events')").all()).toHaveLength(4);
     expect(recovered.connection.prepare("SELECT count(*) AS n FROM schema_migrations WHERE version=202609262149").get()).toEqual({ n: 1 });
   } finally {
     spy.mockRestore();

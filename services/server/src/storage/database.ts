@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { AUTO_ARCHIVE_BACKFILL_SQL } from "../auto-archive.js";
 import { INITIAL_SCHEMA, MANAGED_RUN_SCHEMA } from "./schema.js";
+import { MANAGED_EXECUTION_SCHEMA } from "./managed-execution-schema.js";
 import { DECISION_SCHEMA } from "./decision-schema.js";
 
 const LEGACY_CODEX_THREAD_LINK = /^codex:\/\/threads\/[A-Za-z0-9-]{1,100}$/;
@@ -29,15 +30,21 @@ export class MissionGoDatabase {
     this.connection.close();
   }
 
+  private transactionDepth = 0;
+
   transaction<T>(operation: () => T): T {
-    this.connection.exec("BEGIN IMMEDIATE;");
+    const depth = this.transactionDepth;
+    this.connection.exec(depth === 0 ? "BEGIN IMMEDIATE;" : `SAVEPOINT nested_${depth};`);
+    this.transactionDepth += 1;
     try {
       const result = operation();
-      this.connection.exec("COMMIT;");
+      this.connection.exec(depth === 0 ? "COMMIT;" : `RELEASE nested_${depth};`);
       return result;
     } catch (error) {
-      this.connection.exec("ROLLBACK;");
+      this.connection.exec(depth === 0 ? "ROLLBACK;" : `ROLLBACK TO nested_${depth}; RELEASE nested_${depth};`);
       throw error;
+    } finally {
+      this.transactionDepth -= 1;
     }
   }
 
@@ -1440,6 +1447,13 @@ export class MissionGoDatabase {
         this.connection.exec(DECISION_SCHEMA);
         this.connection.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
           .run(202609270131, new Date().toISOString());
+      }
+    });
+    this.transaction(() => {
+      if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609270536").get()) {
+        this.connection.exec(MANAGED_EXECUTION_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202609270536, new Date().toISOString());
       }
     });
     this.connection.exec("PRAGMA optimize;");

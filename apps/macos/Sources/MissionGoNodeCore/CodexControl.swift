@@ -17,7 +17,9 @@ public protocol CodexControl: Sendable {
     /// Creates one named thread, sends its first turn and disconnects.
     /// Returns the thread id.
     func startThread(_ request: CodexThreadRequest) async throws -> String
+    func startManagedThread(_ request: CodexThreadRequest) async throws -> ManagedRuntimeReceipt
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
+    func readManagedThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     /// `overrides` carry the settings a person chose for this conversation;
     /// Codex keeps turn-level overrides for the turns after it too.
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws
@@ -35,6 +37,12 @@ public protocol CodexControl: Sendable {
 }
 
 public extension CodexControl {
+    func readManagedThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        try await readThread(socketPath: socketPath, threadId: threadId)
+    }
+    func startManagedThread(_ request: CodexThreadRequest) async throws -> ManagedRuntimeReceipt {
+        throw CodexControlError.invalidResponse(method: "managed thread unsupported")
+    }
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         throw CodexControlError.rpc(method: "thread/read", message: "这个 Codex 控制器不支持读取会话。")
     }
@@ -76,11 +84,15 @@ public struct CodexTurnOverrides: Equatable, Sendable {
     public let model: String?
     public let effort: String?
     public let settings: CodexThreadSettings?
+    public let managed: Bool
+    public let managedContext: ManagedResumeContext?
 
-    public init(model: String? = nil, effort: String? = nil, settings: CodexThreadSettings? = nil) {
+    public init(model: String? = nil, effort: String? = nil, settings: CodexThreadSettings? = nil, managed: Bool = false, managedContext: ManagedResumeContext? = nil) {
         self.model = model
         self.effort = effort
         self.settings = settings
+        self.managed = managed
+        self.managedContext = managedContext
     }
 
     /// Checks what arrived over the wire, as a launch does: a mode maps to the
@@ -369,6 +381,7 @@ public enum CodexProtocol {
     /// `thread/resume` takes no effort; that one rides on the next `turn/start`.
     public static func threadResumeParams(threadId: String, overrides: CodexTurnOverrides? = nil) -> [String: Any] {
         var params: [String: Any] = ["threadId": threadId]
+        if overrides?.managed == true { params["config"] = ["mcp_servers.missiongo.enabled": false] }
         if let model = overrides?.model { params["model"] = model }
         if let settings = overrides?.settings {
             params["approvalPolicy"] = settings.approvalPolicy
@@ -423,7 +436,7 @@ public enum CodexProtocol {
         return ["threadId": threadId, "turnId": turnId]
     }
 
-    public static func threadSnapshot(fromRead result: [String: Any]) throws -> CodexThreadSnapshot {
+    public static func threadSnapshot(fromRead result: [String: Any], includeExecutionItems: Bool = false) throws -> CodexThreadSnapshot {
         guard let thread = result["thread"] as? [String: Any] else {
             throw CodexControlError.invalidResponse(method: "thread/read")
         }
@@ -493,7 +506,18 @@ public enum CodexProtocol {
                         ))
                     }
                 default:
-                    continue
+                    if includeExecutionItems {
+                        // Keep visible native tool/event records; never mirror encrypted reasoning payloads.
+                        var visible = item
+                        visible.removeValue(forKey: "encryptedContent")
+                        visible.removeValue(forKey: "encrypted_content")
+                        if itemType == "reasoning" { visible = ["type": itemType, "summary": item["summary"] ?? []] }
+                        if let data = try? JSONSerialization.data(withJSONObject: visible, options: [.sortedKeys]),
+                           let text = String(data: data, encoding: .utf8) {
+                            messages.append(AgentSessionMessage(sourceId: sourceId, turnId: turnId, role: "agent",
+                                phase: "execution", text: text, occurredAt: occurredAt))
+                        }
+                    }
                 }
             }
         }
@@ -604,7 +628,13 @@ public struct CodexAppServerControl: CodexControl {
         }
     }
 
+    public func readManagedThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: true)
+    }
     public func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false)
+    }
+    private func readThread(socketPath: String, threadId: String, includeExecutionItems: Bool) async throws -> CodexThreadSnapshot {
         let timeout = self.readTimeout
         let archiveCache = self.archiveCache
         return try await withCheckedThrowingContinuation { continuation in
@@ -621,7 +651,7 @@ public struct CodexAppServerControl: CodexControl {
                         return CodexThreadSnapshot(status: "unavailable", messages: [], archived: true)
                     }
                     let result = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId))
-                    return try CodexProtocol.threadSnapshot(fromRead: result)
+                    return try CodexProtocol.threadSnapshot(fromRead: result, includeExecutionItems: includeExecutionItems)
                 })
             }
         }
@@ -688,12 +718,22 @@ public struct CodexAppServerControl: CodexControl {
                 continuation.resume(with: Result {
                     let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
                     defer { connection.close() }
-                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    let initialized = try connection.call("initialize", CodexProtocol.initializeParams())
+                    if overrides?.managed == true { try ManagedCodexProtocol.validateVersion(initialized) }
                     try connection.notify("initialized")
-                    _ = try connection.call(
+                    if overrides?.managed == true {
+                        guard let context = overrides?.managedContext, context.threadId == threadId, overrides?.settings != nil else {
+                            throw LaunchError("Managed resume requires a frozen receipt.")
+                        }
+                    }
+                    let resumed = try connection.call(
                         "thread/resume",
                         CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides)
                     )
+                    if overrides?.managed == true, let settings = overrides?.settings, let context = overrides?.managedContext {
+                        try ManagedCodexProtocol.validateResumed(resumed, settings: settings, context: context)
+                        try ManagedCodexProtocol.validateMcp(connection.call("mcpServerStatus/list", ["threadId": threadId, "limit": 100]))
+                    }
                     _ = try connection.call(
                         "turn/start",
                         CodexProtocol.turnStartParams(
@@ -812,6 +852,40 @@ public struct CodexAppServerControl: CodexControl {
                 })
             }
         }
+    }
+
+    public func startManagedThread(_ request: CodexThreadRequest) async throws -> ManagedRuntimeReceipt {
+        let timeout = self.timeout
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result { try Self.startManagedSync(request, timeout: timeout) })
+            }
+        }
+    }
+
+    static func startManagedSync(_ request: CodexThreadRequest, timeout: TimeInterval) throws -> ManagedRuntimeReceipt {
+        let connection = try JSONRPCWebSocket(socketPath: request.socketPath, timeout: timeout)
+        defer { connection.close() }
+        try ManagedCodexProtocol.validateVersion(connection.call("initialize", CodexProtocol.initializeParams()))
+        try connection.notify("initialized")
+        let started = try connection.call("thread/start", ManagedCodexProtocol.startParams(request))
+        let receipt = try ManagedCodexProtocol.runtimeReceipt(started)
+        let threadId = receipt.sessionRef
+        do {
+            try ManagedCodexProtocol.validate(started, request: request)
+            try ManagedCodexProtocol.validateMcp(connection.call("mcpServerStatus/list", ["threadId": threadId, "limit": 100]))
+            guard let model = receipt.resolvedModel, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw CodexControlError.invalidResponse(method: "managed/thread/start model")
+            }
+            _ = try? connection.call("thread/name/set", CodexProtocol.threadNameParams(threadId: threadId, name: request.name))
+            // Identity is returned and durably acknowledged before the coordinator permits a turn.
+        } catch {
+            // A turn/start timeout may already have started work. Keep its identity;
+            // never archive, restart the daemon or try another thread automatically.
+            throw ManagedLaunchUncertain(receipt: receipt)
+        }
+        _ = try? connection.call("thread/unsubscribe", ["threadId": threadId])
+        return receipt
     }
 
     static func startThreadSync(_ request: CodexThreadRequest, timeout: TimeInterval) throws -> String {

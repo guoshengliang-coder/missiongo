@@ -91,6 +91,23 @@ export class ManagedDecisionStore {
           status: operation === "approve" ? "approved" : "revoked", approval: operation === "approve" ? { accountId, approvedAt: now } : null };
       }
       this.db.connection.prepare("UPDATE decision_records SET snapshot_json=? WHERE id=?").run(JSON.stringify(result), id);
+      if (result.version !== current.version || result.stateVersion !== current.stateVersion) {
+        const intents = this.db.connection.prepare("SELECT id,snapshot_json FROM managed_execution_intents WHERE json_extract(snapshot_json,'$.binding.decisionId')=? AND ownership_held=1")
+          .all(id) as { id: string; snapshot_json: string }[];
+        for (const row of intents) {
+          const intent = JSON.parse(row.snapshot_json);
+          intent.stopRequested = true;
+          if (intent.state === "requested" || intent.state === "acknowledged") {
+            intent.state = "terminal"; intent.outcome = "cancelled"; intent.ownershipHeld = false;
+          }
+          const snapshot = JSON.stringify(intent);
+          this.db.connection.prepare("UPDATE managed_execution_intents SET snapshot_json=?,ownership_held=? WHERE id=?")
+            .run(snapshot, intent.ownershipHeld ? 1 : 0, row.id);
+          this.db.connection.prepare(
+            "INSERT INTO managed_execution_events SELECT ?,COALESCE(MAX(sequence),0)+1,'decision_invalidated',?,? FROM managed_execution_events WHERE intent_id=?"
+          ).run(row.id, snapshot, now, row.id);
+        }
+      }
       this.record(accountId, operation, idempotencyKey, payloadDigest, result);
       return result;
     });

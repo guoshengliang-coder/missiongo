@@ -371,6 +371,7 @@ public struct AgentSessionCommand: Codable, Equatable, Sendable {
 }
 
 public struct NodeAgentSession: Codable, Equatable, Sendable {
+    public let managedExecution: ManagedSessionBinding?
     public let id: String
     public let dispatchId: String?
     public let agentKind: String
@@ -401,6 +402,7 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
 
     public init(
         id: String,
+        managedExecution: ManagedSessionBinding? = nil,
         dispatchId: String? = nil,
         agentKind: String = "codex",
         sessionRef: String,
@@ -413,6 +415,7 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
         desiredSettings: AgentSessionSettings? = nil,
         appliedSettingsRevision: Int = 0
     ) {
+        self.managedExecution = managedExecution
         self.id = id
         self.dispatchId = dispatchId
         self.agentKind = agentKind
@@ -435,11 +438,12 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, dispatchId, agentKind, sessionRef, status, lifecycle, occupiesExecutionSlot, command, archiveInSource
-        case restoreInSource, desiredSettings, appliedSettingsRevision
+        case restoreInSource, desiredSettings, appliedSettingsRevision, managedExecution
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        managedExecution = try values.decodeIfPresent(ManagedSessionBinding.self, forKey: .managedExecution)
         id = try values.decode(String.self, forKey: .id)
         dispatchId = try values.decodeIfPresent(String.self, forKey: .dispatchId)
         // A server from before Claude mirroring only ever lists Codex here.
@@ -1121,6 +1125,31 @@ public struct APIClient: Sendable {
     /// Long poll: `waitMs` asks the server to hold the request open until there
     /// is work. It answers 204 when the wait runs out, which is an idle poll, not
     /// an error — the loop simply asks again. `nil` means nothing was queued.
+    public func managedJobs() async throws -> [ManagedExecutionJob] {
+        struct Reply: Decodable { let jobs: [ManagedExecutionJob] }
+        let response = try await send("GET", "/api/v1/node/managed-execution", body: Optional<String>.none, bearer: try nodeToken())
+        let reply: Reply = try decode(response, operation: "managed jobs")
+        for job in reply.jobs { try job.validate() }
+        return reply.jobs
+    }
+    public func claimManaged(id: String, generation: Int) async throws -> ManagedExecutionIntent {
+        struct Body: Encodable { let generation: Int }
+        let response = try await send("POST", "/api/v1/node/managed-execution/\(APIClient.encodePathComponent(id))/claim",
+            body: Body(generation: generation), bearer: try nodeToken())
+        return try decode(response, operation: "managed claim")
+    }
+    public func permitManaged(id: String, generation: Int) async throws -> ManagedExecutionPermit {
+        struct Body: Encodable { let generation: Int }
+        let response = try await send("POST", "/api/v1/node/managed-execution/\(APIClient.encodePathComponent(id))/permit",
+            body: Body(generation: generation), bearer: try nodeToken())
+        return try decode(response, operation: "managed permit")
+    }
+    public func reportManaged(id: String, observation: ManagedExecutionObservation) async throws -> ManagedObservationReceipt {
+        let response = try await send("POST", "/api/v1/node/managed-execution/\(APIClient.encodePathComponent(id))/report",
+            body: observation, bearer: try nodeToken())
+        return try decode(response, operation: "managed observation")
+    }
+
     public func claimNext(
         waitMs: Int = defaultClaimWaitMs,
         availableAgentKinds: [String]? = nil

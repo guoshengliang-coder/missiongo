@@ -539,15 +539,55 @@ public struct CodexLauncher: AgentAdapter {
         )
     }
 
+    public func launchManaged(_ job: ManagedExecutionJob) async throws -> ManagedRuntimeReceipt {
+        try job.validate()
+        guard job.enabled, !job.intent.stopRequested, job.intent.state == "starting" else {
+            throw LaunchError("Managed execution has no permission to start.")
+        }
+        // No MissionGo MCP/Skill preflight and no daemon restart on this path.
+        guard CodexLocation.controlChannelIsUp(location.controlSocketPath) else {
+            throw LaunchError("Managed execution requires an already available native Codex daemon.")
+        }
+        if let reason = await resources.unavailableReason(socketPath: location.controlSocketPath) { throw LaunchError(reason) }
+        let b = job.intent.binding
+        let path = try CodexWorkspace.worktreePath(repoPath: job.repoPath, dispatchId: "managed-" + job.intent.id)
+        let commit = await run("git", ["-C", job.repoPath, "rev-parse", "--verify", b.inputCommit + "^{commit}"])
+        guard commit.code == 0, commit.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == b.inputCommit else {
+            throw LaunchError("Managed input commit is unavailable.")
+        }
+        let prepared = await run("git", ["-C", job.repoPath, "worktree", "add", "--detach", path, b.inputCommit])
+        guard prepared.code == 0 else { throw LaunchError("Managed dedicated directory could not be prepared; reconciliation required.") }
+        let policy = try ManagedExecutionPolicy(role: b.role)
+        return try await control.startManagedThread(CodexThreadRequest(socketPath: location.controlSocketPath,
+            cwd: path, settings: policy.settings, name: "Managed " + b.role + " " + job.intent.id,
+            prompt: policy.prompt(context: job.taskContext, inputCommit: b.inputCommit), workspaceRoots: [path]))
+    }
+
+    public func startManagedTurn(_ job: ManagedExecutionJob, receipt: ManagedRuntimeReceipt) async throws {
+        try job.validate()
+        let policy = try ManagedExecutionPolicy(role: job.intent.binding.role)
+        try await control.sendMessage(socketPath: location.controlSocketPath, threadId: receipt.sessionRef,
+            text: policy.prompt(context: job.taskContext, inputCommit: job.intent.binding.inputCommit),
+            clientUserMessageId: "managed-" + job.intent.id,
+            overrides: CodexTurnOverrides(settings: policy.settings, managed: true, managedContext: try receipt.resumeContext()))
+    }
+
+    private func readSnapshot(_ session: NodeAgentSession) async throws -> CodexThreadSnapshot {
+        if session.managedExecution != nil {
+            return try await control.readManagedThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        }
+        return try await control.readThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+    }
+
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
-        let snapshot = try await control.readThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        let snapshot = try await readSnapshot(session)
         var model = snapshot.model
         var effort = snapshot.reasoningEffort
         var settingsRevision: Int?
         var settingsError: String?
         // Settings change only between turns: a running turn keeps what it
         // started with, so an active thread gets the change at a later idle poll.
-        if let desired = session.pendingSettings, !session.archiveInSource, !snapshot.archived,
+        if session.managedExecution == nil, let desired = session.pendingSettings, !session.archiveInSource, !snapshot.archived,
            snapshot.status == "idle" {
             settingsRevision = desired.revision
             do {
@@ -572,12 +612,26 @@ public struct CodexLauncher: AgentAdapter {
     /// needs no memory of its own. A malformed value was already reported as
     /// a failed revision; the turn then goes ahead without it.
     private func turnOverrides(_ session: NodeAgentSession) -> CodexTurnOverrides? {
+        if let managed = session.managedExecution, let policy = try? ManagedExecutionPolicy(role: managed.role) {
+            return CodexTurnOverrides(settings: policy.settings, managed: true, managedContext: managed.resumeContext)
+        }
         guard let desired = session.desiredSettings else { return nil }
         return try? CodexTurnOverrides(desired: desired)
     }
 
     private func synchronize(_ session: NodeAgentSession, snapshot: CodexThreadSnapshot) async throws -> AgentSessionReport {
         var snapshot = snapshot
+        if let managed = session.managedExecution {
+            _ = try ManagedExecutionPolicy(role: managed.role)
+            if managed.stopRequested {
+                if let turnId = snapshot.activeTurnId {
+                    try await control.interruptTurn(socketPath: location.controlSocketPath, threadId: session.sessionRef, turnId: turnId)
+                    snapshot = try await readSnapshot(session)
+                }
+                return AgentSessionReport(status: snapshot.status, messages: snapshot.messages,
+                    activityAt: snapshot.activityAt, turnActive: snapshot.status == "active")
+            }
+        }
         if session.restoreInSource {
             // Restored in MissionGo: bring the thread back in Codex first, then
             // carry on with the fresh read so a queued reply can still go out.
@@ -588,7 +642,7 @@ public struct CodexLauncher: AgentAdapter {
             }
             let report = try await synchronize(
                 NodeAgentSession(
-                    id: session.id, dispatchId: session.dispatchId, agentKind: session.agentKind,
+                    id: session.id, managedExecution: session.managedExecution, dispatchId: session.dispatchId, agentKind: session.agentKind,
                     sessionRef: session.sessionRef, status: session.status, lifecycle: session.lifecycle,
                     occupiesExecutionSlot: session.occupiesExecutionSlot, command: session.command,
                     desiredSettings: session.desiredSettings, appliedSettingsRevision: session.appliedSettingsRevision
@@ -698,7 +752,7 @@ public struct CodexLauncher: AgentAdapter {
         // snapshots that do not identify the active turn keep the reply queued
         // and fall back to turn/start once the thread becomes idle.
         let canDeliver = snapshot.status == "idle"
-            || (snapshot.status == "active" && snapshot.activeTurnId != nil)
+            || (session.managedExecution == nil && snapshot.status == "active" && snapshot.activeTurnId != nil)
         guard canDeliver else {
             if command.status == "delivering" && (snapshot.status == "unavailable" || snapshot.status == "failed") {
                 return AgentSessionReport(

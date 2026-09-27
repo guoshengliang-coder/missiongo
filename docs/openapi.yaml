@@ -8,6 +8,725 @@ security:
   - adminSessionCookie: []
   - bearerAuth: []
 paths:
+  /api/v1/managed-execution/intents/{id}/session:
+    "get":
+      "operationId": "managedExecutionSessionRead"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "Read this exact intent’s existing native session mirror and real runtime attempt; either may be null."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+      "responses":
+        "200":
+          "description": "Current scoped receipt."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedExecutionSession"
+        "400":
+          "description": "Invalid contract"
+        "401":
+          "description": "Authentication required"
+        "403":
+          "description": "Trusted coordinator with current scope permission required"
+        "404":
+          "description": "Resource not visible"
+        "409":
+          "description": "Pending control, changed delivery or conflicting evidence"
+  /api/v1/managed-execution/executors/{id}/register:
+    post:
+      operationId: registerManagedExecutor
+      security:
+        - coordinatorBearer: []
+      description: "Register a trusted Node installation as one exclusive local executor. Evidence attests that its repositories are not shared with other Nodes. Cross-Node/shared workspace execution is unsupported; this is supervised registration, not physical isolation proof."
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mode, evidence]
+              properties:
+                mode: { const: single_node_local }
+                evidence: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        '200':
+          description: Immutable executor registration receipt.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [nodeId, mode, evidence]
+                properties:
+                  nodeId: { type: string }
+                  mode: { const: single_node_local }
+                  evidence: { type: string }
+        '403': { description: Current coordinator capability required }
+        '404': { description: Node is outside the current account/product scope }
+        '409': { description: Unsupported shared mode or conflicting installation registration }
+  /api/v1/managed-execution/manual-dispatches/{id}:
+    get:
+      operationId: getManualExecutionReconciliation
+      security:
+        - coordinatorBearer: []
+      description: Read the currently owned manual generation and immutable reconciliation history under current account and product scope.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Current generation and evidence, with Cache-Control no-store.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [dispatchId, generation, deliveredAt, reconciliations]
+                properties:
+                  dispatchId: { type: string }
+                  generation: { type: integer, minimum: 1 }
+                  deliveredAt: { type: [string, 'null'] }
+                  reconciliations:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [generation, deliveredAt, evidence, createdAt]
+                      properties:
+                        generation: { type: integer, minimum: 1 }
+                        deliveredAt: { type: string }
+                        evidence: { type: string }
+                        createdAt: { type: string }
+        '403': { description: Current coordinator capability required }
+        '404': { description: Manual dispatch is outside the current scope }
+  /api/v1/managed-execution/manual-dispatches/{id}/reconcile:
+    "post":
+      "operationId": "managedExecutionManualReconcile"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "Attest the exact manual execution generation and delivery have stopped. Pending controls must be resolved first. Reacquisition uses a new generation and preserves this immutable audit; no process proof or business status change."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ManagedManualReconciliation"
+      "responses":
+        "200":
+          "description": "Current scoped receipt."
+          "content":
+            "application/json":
+              "schema":
+                "type": "object"
+                "additionalProperties": false
+                "required":
+                  - "generation"
+                  - "dispatchId"
+                  - "deliveredAt"
+                  - "evidence"
+                  - "reconciled"
+                "properties":
+                  "generation":
+                    "type": "integer"
+                    "minimum": 1
+                  "dispatchId":
+                    "type": "string"
+                  "deliveredAt":
+                    "type": "string"
+                  "evidence":
+                    "type": "string"
+                  "reconciled":
+                    "const": true
+        "400":
+          "description": "Invalid contract"
+        "401":
+          "description": "Authentication required"
+        "403":
+          "description": "Trusted coordinator with current scope permission required"
+        "404":
+          "description": "Resource not visible"
+        "409":
+          "description": "Pending control, changed delivery or conflicting evidence"
+  /api/v1/managed-execution/repositories:
+    "get":
+      "operationId": "managedExecutionrepositoriesget"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "List registered opaque mappings for the coordinator account."
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "type": "object"
+                "additionalProperties": false
+                "required":
+                  - "repositories"
+                "properties":
+                  "repositories":
+                    "type": "array"
+                    "items":
+                      "type": "object"
+                      "additionalProperties": false
+                      "required":
+                        - "repositoryRef"
+                        - "productId"
+                        - "nodeId"
+                      "properties":
+                        "repositoryRef":
+                          "type": "string"
+                          "minLength": 1
+                          "maxLength": 200
+                        "productId":
+                          "type": "string"
+                          "minLength": 1
+                          "maxLength": 200
+                        "nodeId":
+                          "type": "string"
+                          "minLength": 1
+                          "maxLength": 200
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/managed-execution/runs:
+    "post":
+      "operationId": "managedExecutionrunspost"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "Create a frozen scoped run; execution defaults off."
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ManagedExecutionRunRequest"
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedExecutionRun"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/managed-execution/runs/{id}:
+    "get":
+      "operationId": "managedExecutionrunsidget"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "Read a scoped run and its stages through current intent receipts."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+            "maxLength": 200
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "type": "object"
+                "additionalProperties": false
+                "required":
+                  - "run"
+                  - "intents"
+                "properties":
+                  "run":
+                    "$ref": "#/components/schemas/ManagedExecutionRun"
+                  "intents":
+                    "type": "array"
+                    "items":
+                      "$ref": "#/components/schemas/ManagedExecutionIntent"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/managed-execution/intents:
+    "post":
+      "operationId": "managedExecutionintentspost"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "Request an approved stage. Recheck decision, access and ownership inside BEGIN IMMEDIATE. Same key/payload returns current receipt."
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ManagedExecutionRequest"
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedExecutionIntent"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/managed-execution/intents/{id}:
+    "get":
+      "operationId": "managedExecutionintentsidget"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "Read current intent, including unknown and retained ownership."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+            "maxLength": 200
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedExecutionIntent"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/managed-execution/intents/{id}/events:
+    "get":
+      "operationId": "managedExecutionintentsideventsget"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "Read durable exclusive sequence cursor; at most 100 records, continue from last sequence. No automatic Bridge."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+            "maxLength": 200
+        -
+          "name": "after"
+          "in": "query"
+          "schema":
+            "type": "integer"
+            "minimum": 0
+            "default": 0
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedExecutionEvents"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/managed-execution/intents/{id}/stop:
+    "post":
+      "operationId": "managedExecutionintentsidstoppost"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "Cancel before permission to start, otherwise request stop and retain ownership."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+            "maxLength": 200
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ManagedExecutionGeneration"
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedExecutionIntent"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/managed-execution/intents/{id}/input:
+    "post":
+      "operationId": "managedExecutionintentsidinputpost"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "Supplement exact approved session/attempt; no arbitrary execution API."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+            "maxLength": 200
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ManagedExecutionInput"
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedExecutionCommand"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/managed-execution/intents/{id}/finish:
+    "post":
+      "operationId": "managedExecutionintentsidfinishpost"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "Coordinator reconciliation of result. Does not release workspace or change work item status."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+            "maxLength": 200
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ManagedExecutionResult"
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedExecutionIntent"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/managed-execution/intents/{id}/cleanup:
+    "post":
+      "operationId": "managedExecutionintentsidcleanuppost"
+      "security":
+        -
+          "coordinatorBearer": []
+      "description": "Record separate trusted cleanup observation and release terminal ownership. Does not delete directories."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+            "maxLength": 200
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ManagedExecutionCleanup"
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedExecutionIntent"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/node/managed-execution:
+    "get":
+      "operationId": "nodeManagedget"
+      "security":
+        -
+          "nodeBearer": []
+      "description": "Node-only pending/owned work. No TTL replacement; disabled server or lost execution permissions returns only frozen id/generation stops. Product access is not required for these minimal stops; Node/account authentication is still required."
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "type": "object"
+                "additionalProperties": false
+                "required":
+                  - "jobs"
+                  - "stops"
+                "properties":
+                  "stops":
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [id, generation]
+                      properties:
+                        id: {type: string}
+                        generation: {type: integer, minimum: 1}
+                  "jobs":
+                    "type": "array"
+                    "items":
+                      "$ref": "#/components/schemas/ManagedExecutionJob"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/node/managed-execution/{id}/claim:
+    "post":
+      "operationId": "nodeManagedidclaimpost"
+      "security":
+        -
+          "nodeBearer": []
+      "description": "Acknowledge exact node/generation under current approval."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+            "maxLength": 200
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ManagedExecutionGeneration"
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedExecutionIntent"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/node/managed-execution/{id}/permit:
+    "post":
+      "operationId": "nodeManagedidpermitpost"
+      "security":
+        -
+          "nodeBearer": []
+      "description": "Persist permission to start before workspace/native effects; first delivery only."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+            "maxLength": 200
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ManagedExecutionGeneration"
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedExecutionPermit"
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
+  /api/v1/node/managed-execution/{id}/report:
+    "post":
+      "operationId": "nodeManagedidreportpost"
+      "security":
+        -
+          "nodeBearer": []
+      "description": "Record native observations. Missing session/model remains unknown; no invented ledger attempt. Exact frozen Node/account bindings may report after product permission loss. A late bound receipt can fill identity while remaining unknown and occupied, without turn permission. After terminal, only the exact existing generation/session/model may archive a late observation. The terminal receipt acknowledges immutable evidence without changing result, permissions or ownership."
+      "parameters":
+        -
+          "name": "id"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+            "maxLength": 200
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ManagedExecutionObservation"
+      "responses":
+        "200":
+          "description": "Current scoped receipt. Reads use Cache-Control: no-store."
+          "content":
+            "application/json":
+              "schema":
+                type: object
+                additionalProperties: false
+                required: [accepted]
+                properties:
+                  accepted: {type: boolean, const: true}
+                  terminal:
+                    type: object
+                    additionalProperties: false
+                    required: [intentId, generation, sequence, state, sessionRef, resolvedModel]
+                    properties:
+                      intentId: {type: string, minLength: 1, maxLength: 200}
+                      generation: {type: integer, minimum: 1}
+                      sequence: {type: integer, minimum: 1}
+                      state: {type: string, const: terminal}
+                      sessionRef: {type: string, minLength: 1, maxLength: 200}
+                      resolvedModel: {type: string, minLength: 1, maxLength: 200}
+        "400":
+          "description": "Invalid or unexpected contract fields"
+        "401":
+          "description": "Invalid authentication"
+        "403":
+          "description": "Coordinator or current capability required"
+        "404":
+          "description": "Scoped resource or mapping not visible"
+        "409":
+          "description": "Disabled, stale decision/generation, idempotency conflict, ownership or state conflict"
   /api/v1/managed-runs/{runId}/decisions:
     post:
       operationId: proposeManagedDecision
@@ -1630,6 +2349,14 @@ paths:
           description: The attachment is not an image.
 components:
   securitySchemes:
+    "nodeBearer":
+      "type": "http"
+      "scheme": "bearer"
+      "description": "Existing registered Node credential, bound to its current account."
+    "coordinatorBearer":
+      "type": "http"
+      "scheme": "bearer"
+      "description": "Existing account OAuth bearer from an explicitly allowlisted coordinator client ID. Requires missiongo:read and, for mutations, missiongo:write. Current view/operate/ai permissions rechecked. No actor tags, operator or Node tokens."
     adminSessionCookie:
       type: apiKey
       in: cookie
@@ -1702,6 +2429,602 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
   schemas:
+    "ManagedManualReconciliation":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "generation"
+        - "deliveredAt"
+        - "evidence"
+      "properties":
+        "generation":
+          "type": "integer"
+          "minimum": 1
+        "deliveredAt":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 100
+        "evidence":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 1000
+    "ManagedExecutionSession":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "session"
+        - "attempt"
+      "properties":
+        "session":
+          "anyOf":
+            -
+              "type": "null"
+            -
+              "type": "object"
+              "additionalProperties": true
+              "required":
+                - "id"
+                - "dispatchId"
+                - "agentKind"
+                - "status"
+                - "updatedAt"
+                - "messages"
+                - "activities"
+                - "turnState"
+                - "replyable"
+                - "managedExecution"
+              "properties":
+                "id":
+                  "type": "string"
+                "dispatchId":
+                  "type": "string"
+                "agentKind":
+                  "const": "codex"
+                "status":
+                  "type": "string"
+                "updatedAt":
+                  "type": "string"
+                  "format": "date-time"
+                "messages":
+                  "type": "array"
+                  "items":
+                    "type": "object"
+                    "additionalProperties": true
+                    "required":
+                      - "id"
+                      - "sourceId"
+                      - "role"
+                      - "text"
+                    "properties":
+                      "id":
+                        "type": "string"
+                      "sourceId":
+                        "type": "string"
+                      "role":
+                        "type": "string"
+                      "text":
+                        "type": "string"
+                "activities":
+                  "type": "array"
+                  "items":
+                    "type": "object"
+                "turnState":
+                  "type": "object"
+                "replyable":
+                  "const": false
+                "managedExecution":
+                  "type": "object"
+                  "additionalProperties": false
+                  "required":
+                    - "id"
+                    - "runId"
+                    - "stageId"
+                    - "generation"
+                    - "role"
+                    - "stopRequested"
+                    - "state"
+                    - "ownershipHeld"
+                  "properties":
+                    "id":
+                      "type": "string"
+                    "runId":
+                      "type": "string"
+                    "stageId":
+                      "type": "string"
+                    "generation":
+                      "type": "integer"
+                      "minimum": 1
+                    "role":
+                      "enum":
+                        - "implement"
+                        - "review"
+                        - "verify"
+                    "ownershipHeld":
+                      "type": "boolean"
+                    "stopRequested":
+                      "type": "boolean"
+                    "state":
+                      "type": "string"
+          "description": "Existing AgentSessionSnapshot mirror, including optional commands, questions, attachments and archive metadata."
+        "attempt":
+          "anyOf":
+            -
+              "type": "null"
+            -
+              "type": "object"
+              "additionalProperties": false
+              "required":
+                - "id"
+                - "runId"
+                - "stageId"
+                - "generation"
+                - "status"
+                - "executor"
+                - "result"
+                - "createdAt"
+                - "updatedAt"
+              "properties":
+                "id":
+                  "type": "string"
+                "runId":
+                  "type": "string"
+                "stageId":
+                  "type": "string"
+                "generation":
+                  "type": "integer"
+                  "minimum": 1
+                "status":
+                  "enum":
+                    - "running"
+                    - "waiting_for_human"
+                    - "unknown"
+                    - "succeeded"
+                    - "failed"
+                "executor":
+                  "type": "object"
+                  "additionalProperties": false
+                  "required":
+                    - "agentKind"
+                    - "sessionRef"
+                    - "resolvedModel"
+                  "properties":
+                    "agentKind":
+                      "const": "codex"
+                    "sessionRef":
+                      "type": "string"
+                    "resolvedModel":
+                      "type": "string"
+                "result":
+                  "anyOf":
+                    -
+                      "type": "null"
+                    -
+                      "type": "object"
+                      "additionalProperties": false
+                      "required":
+                        - "summary"
+                        - "evidenceRefs"
+                      "properties":
+                        "summary":
+                          "type": "string"
+                        "evidenceRefs":
+                          "type": "array"
+                          "items":
+                            "type": "string"
+                "createdAt":
+                  "type": "string"
+                  "format": "date-time"
+                "updatedAt":
+                  "type": "string"
+                  "format": "date-time"
+    "ManagedExecutionRequest":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "runId"
+        - "decisionId"
+        - "version"
+        - "stateVersion"
+        - "contentDigest"
+        - "scopeDigest"
+        - "contractRevision"
+        - "idempotencyKey"
+        - "stageKey"
+        - "role"
+        - "inputCommit"
+        - "nodeId"
+        - "permissionMode"
+      "properties":
+        "runId":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "decisionId":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "version":
+          "type": "integer"
+          "minimum": 1
+        "stateVersion":
+          "type": "integer"
+          "minimum": 1
+        "contentDigest":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "scopeDigest":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "contractRevision":
+          "type": "integer"
+          "minimum": 1
+        "idempotencyKey":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "stageKey":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "role":
+          "enum":
+            - "implement"
+            - "review"
+            - "verify"
+        "inputCommit":
+          "type": "string"
+          "pattern": "^[a-f0-9]{40}$"
+        "nodeId":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "permissionMode":
+          "enum":
+            - "read-only"
+            - "workspace-write"
+    "ManagedExecutionIntent":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "id"
+        - "binding"
+        - "stageId"
+        - "generation"
+        - "state"
+        - "ownershipHeld"
+        - "attemptId"
+        - "attemptGeneration"
+        - "sessionId"
+        - "stopRequested"
+        - "outcome"
+        - "cleanup"
+        - "updatedAt"
+      "properties":
+        "id":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "binding":
+          "$ref": "#/components/schemas/ManagedExecutionRequest"
+        "stageId":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "generation":
+          "type": "integer"
+          "minimum": 1
+        "state":
+          "enum":
+            - "requested"
+            - "acknowledged"
+            - "starting"
+            - "bound"
+            - "turn_starting"
+            - "running"
+            - "waiting"
+            - "unknown"
+            - "terminal"
+        "ownershipHeld":
+          "type": "boolean"
+        "attemptGeneration":
+          "type": ["integer", "null"]
+          "minimum": 1
+          "description": "Real ledger attempt generation; independent of intent generation. Null until an authentic receipt creates an attempt."
+        "attemptId":
+          "type":
+            - "string"
+            - "null"
+        "sessionId":
+          "type":
+            - "string"
+            - "null"
+        "stopRequested":
+          "type": "boolean"
+        "outcome":
+          "enum":
+            - null
+            - "cancelled"
+            - "succeeded"
+            - "failed"
+        "cleanup":
+          "type":
+            - "string"
+            - "null"
+        "updatedAt":
+          "type": "string"
+          "format": "date-time"
+        "resultDigest":
+          "type": "string"
+    "ManagedExecutionPermit":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "intent"
+        - "mayStart"
+      "properties":
+        "intent":
+          "$ref": "#/components/schemas/ManagedExecutionIntent"
+        "mayStart":
+          "type": "boolean"
+          "description": "True once for acknowledged-to-starting (thread preparation), and once for bound-to-turn_starting (first turn). A retry of either transition never grants another native side effect."
+    "ManagedExecutionGeneration":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "generation"
+      "properties":
+        "generation":
+          "type": "integer"
+          "minimum": 1
+    "ManagedExecutionObservation":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "sequence"
+        - "generation"
+        - "state"
+      "properties":
+        "sequence":
+          "type": "integer"
+          "minimum": 1
+        "generation":
+          "type": "integer"
+          "minimum": 1
+        "state":
+          "enum":
+            - "bound"
+            - "running"
+            - "waiting"
+            - "unknown"
+        "sessionRef":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "resolvedModel":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+    "ManagedExecutionInput":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "generation"
+        - "idempotencyKey"
+        - "text"
+      "properties":
+        "generation":
+          "type": "integer"
+          "minimum": 1
+        "idempotencyKey":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "text":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 8000
+    "ManagedExecutionResult":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "generation"
+        - "outcome"
+        - "summary"
+        - "evidence"
+      "properties":
+        "generation":
+          "type": "integer"
+          "minimum": 1
+        "outcome":
+          "enum":
+            - "succeeded"
+            - "failed"
+        "summary":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 4000
+        "evidence":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 1000
+    "ManagedExecutionCleanup":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "generation"
+        - "evidence"
+      "properties":
+        "generation":
+          "type": "integer"
+          "minimum": 1
+        "evidence":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 1000
+    "ManagedExecutionRunRequest":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "scope"
+        - "idempotencyKey"
+      "properties":
+        "scope":
+          "type": "object"
+          "additionalProperties": false
+          "required":
+            - "productId"
+            - "repositoryRef"
+            - "itemKeys"
+            - "contractRevision"
+          "properties":
+            "productId":
+              "type": "string"
+              "minLength": 1
+              "maxLength": 200
+            "repositoryRef":
+              "type": "string"
+              "minLength": 1
+              "maxLength": 200
+            "itemKeys":
+              "type": "array"
+              "minItems": 1
+              "maxItems": 20
+              "items":
+                "type": "string"
+                "minLength": 1
+                "maxLength": 200
+            "contractRevision":
+              "type": "integer"
+              "minimum": 1
+        "idempotencyKey":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+    "ManagedExecutionJob":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "intent"
+        - "repoPath"
+        - "taskContext"
+        - "enabled"
+      "properties":
+        "intent":
+          "$ref": "#/components/schemas/ManagedExecutionIntent"
+        "repoPath":
+          "type": "string"
+          "description": "Resolved registered path, delivered only to its authenticated Node; never a coordinator-supplied path."
+        "taskContext":
+          "type": "string"
+          "description": "JSON task data, not instruction authority; local prompt limit is 64 KiB."
+        "enabled":
+          "type": "boolean"
+    "ManagedExecutionRun":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "id"
+        - "accountId"
+        - "scope"
+        - "scopeDigest"
+        - "version"
+        - "createdAt"
+      "properties":
+        "id":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "accountId":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "scope":
+          "type": "object"
+          "additionalProperties": false
+          "required":
+            - "productId"
+            - "repositoryRef"
+            - "itemKeys"
+            - "contractRevision"
+          "properties":
+            "productId":
+              "type": "string"
+              "minLength": 1
+              "maxLength": 200
+            "repositoryRef":
+              "type": "string"
+              "minLength": 1
+              "maxLength": 200
+            "itemKeys":
+              "type": "array"
+              "items":
+                "type": "string"
+                "minLength": 1
+                "maxLength": 200
+            "contractRevision":
+              "type": "integer"
+              "minimum": 1
+        "scopeDigest":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "version":
+          "type": "integer"
+          "minimum": 1
+        "createdAt":
+          "type": "string"
+          "format": "date-time"
+    "ManagedExecutionEvents":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "events"
+      "properties":
+        "events":
+          "type": "array"
+          "maxItems": 100
+          "items":
+            "type": "object"
+            "additionalProperties": false
+            "required":
+              - "sequence"
+              - "operation"
+              - "intent"
+              - "createdAt"
+            "properties":
+              "sequence":
+                "type": "integer"
+                "minimum": 1
+              "operation":
+                "type": "string"
+                "minLength": 1
+                "maxLength": 200
+              "intent":
+                "$ref": "#/components/schemas/ManagedExecutionIntent"
+              "createdAt":
+                "type": "string"
+                "format": "date-time"
+    "ManagedExecutionCommand":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "id"
+        - "status"
+      "properties":
+        "id":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 200
+        "status":
+          "enum":
+            - "queued"
+            - "delivering"
+            - "delivery_unknown"
+            - "delivered"
+            - "failed"
+            - "cancelled"
     ManagedDecisionContent:
       type: object
       additionalProperties: false

@@ -1,3 +1,4 @@
+import { executorConflictSql } from "./storage/execution-ownership-sql.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import {
@@ -548,11 +549,16 @@ export class DispatchStore {
     this.getNode(accountId, nodeId);
     const now = new Date().toISOString();
     this.database.transaction(() => {
-      if (visibleProductIds === "*") {
-        this.database.connection.prepare("DELETE FROM node_product_repos WHERE node_id = ?").run(nodeId);
-      } else {
-        const remove = this.database.connection.prepare("DELETE FROM node_product_repos WHERE node_id = ? AND product_id = ?");
-        for (const productId of visibleProductIds) remove.run(nodeId, productId);
+      const existing = this.database.connection.prepare("SELECT id,product_id,repo_path FROM node_product_repos WHERE node_id=?")
+        .all(nodeId) as { id: string; product_id: string; repo_path: string }[];
+      for (const old of existing) {
+        if (visibleProductIds !== "*" && !visibleProductIds.includes(old.product_id)) continue;
+        const replacement = repos.find((repo) => repo.productId === old.product_id);
+        if (replacement?.repoPath.trim() === old.repo_path) continue;
+        if (this.database.connection.prepare("SELECT 1 FROM managed_execution_bindings b JOIN managed_execution_intents i ON i.id=b.intent_id WHERE b.repository_ref=? AND i.ownership_held=1").get(old.id)) {
+          throw conflict("repository_owned", "An execution still owns this registered mapping; reconcile before changing it.");
+        }
+        this.database.connection.prepare("DELETE FROM node_product_repos WHERE id=?").run(old.id);
       }
       const insert = this.database.connection.prepare(
         `INSERT INTO node_product_repos (id, node_id, product_id, repo_path, created_at, updated_at)
@@ -567,6 +573,7 @@ export class DispatchStore {
         // The machine checks that the path is a git checkout it can use; the
         // server only checks the shape, because it cannot see that disk.
         if (!repoPath.startsWith("/")) throw invalidInput("Repository path must be absolute.");
+        if (existing.some((old) => old.product_id === repo.productId && old.repo_path === repoPath)) continue;
         insert.run(randomUUID(), nodeId, repo.productId, repoPath, now, now);
       }
     });
@@ -615,6 +622,9 @@ export class DispatchStore {
     if (input.itemKeys.length > 20) throw invalidInput("A dispatch can carry at most 20 work items.");
 
     const create = () => {
+      if (this.database.connection.prepare(`SELECT id FROM nodes n WHERE n.id=? AND ${executorConflictSql("n.id", "''")}`).get(input.nodeId)) {
+        throw conflict("workspace_owned", "An unresolved managed execution owns the supervised executor.");
+      }
       const node = this.getNode(input.accountId, input.nodeId);
       if (node.revokedAt) throw conflict("node_revoked", "This node was revoked.");
       if (!node.online) throw conflict("node_offline", "This node is not currently connected.");

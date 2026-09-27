@@ -2,6 +2,95 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class APIClientTests: XCTestCase {
+    func testManagedTerminalHTTPReceiptSealsDurableEvidenceAcrossRestart() async throws {
+        guard let wire = ProcessInfo.processInfo.environment["MANAGED_WIRE_FIXTURE"] else { throw XCTSkip("Generate actual HTTP fixtures first") }
+        struct Wire: Decodable {
+            let oldIntent: ManagedExecutionIntent
+            let observation: ManagedExecutionObservation
+        }
+        for scenario in ["terminal-before", "terminal-ack"] {
+            let data = try Data(contentsOf: URL(fileURLWithPath: wire + "." + scenario + ".json"))
+            let fixture = try JSONDecoder().decode(Wire.self, from: data)
+            let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            let response = String(decoding: try JSONSerialization.data(withJSONObject: object["receipt"]!), as: UTF8.self)
+            StubURLProtocol.install { _, _ in .response(status: 200, body: response) }
+            let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            var stale = object["oldIntent"] as! [String: Any]
+            stale["state"] = "requested"; stale["stopRequested"] = false
+            let staleIntent = try JSONDecoder().decode(ManagedExecutionIntent.self, from: JSONSerialization.data(withJSONObject: stale))
+            let job = ManagedExecutionJob(intent: staleIntent, repoPath: "/synthetic/repo", taskContext: "{}", enabled: true)
+            let entry = ManagedExecutionRuntime.Entry(job: job, phase: "bound",
+                receipt: ManagedRuntimeReceipt(sessionRef: fixture.observation.sessionRef!, resolvedModel: fixture.observation.resolvedModel),
+                pending: fixture.observation)
+            let file = root.appendingPathComponent(job.intent.id + ".json")
+            try JSONEncoder().encode(entry).write(to: file)
+            let api = client()
+            let adapter = ReceiptAdapter()
+            try await ManagedExecutionRuntime(root: root).process(job, api: api, adapter: adapter)
+            let archived = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
+            XCTAssertEqual(archived["phase"] as? String, "terminal")
+            XCTAssertNil(archived["pending"])
+            XCTAssertEqual((archived["terminalObservation"] as? [String: Any])?["state"] as? String, "waiting")
+            XCTAssertNotNil(archived["terminalReceipt"])
+            let before = StubURLProtocol.recorded.count
+            let restarted = ManagedExecutionRuntime(root: root)
+            try await restarted.process(job, api: api, adapter: adapter)
+            let binding = ManagedSessionBinding(state: "running", id: job.intent.id, runId: job.intent.binding.runId,
+                stageId: job.intent.stageId, generation: job.intent.generation, role: job.intent.binding.role, stopRequested: false)
+            try await restarted.observe(binding, state: "running", sessionRef: fixture.observation.sessionRef!, model: nil, api: api)
+            let resume = try await restarted.resumeContext(binding, sessionRef: fixture.observation.sessionRef!)
+            XCTAssertNil(resume)
+            XCTAssertEqual(StubURLProtocol.recorded.count, before)
+            XCTAssertEqual(adapter.launches.current, 0); XCTAssertEqual(adapter.turns.current, 0)
+        }
+    }
+
+    func testManagedInvalidConfirmationPreservesPendingAndLegacyACKDoesNotSeal() async throws {
+        guard let wire = ProcessInfo.processInfo.environment["MANAGED_WIRE_FIXTURE"] else { throw XCTSkip("Generate HTTP fixtures first") }
+        let object = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: wire + ".terminal-before.json"))) as! [String: Any]
+        let intent = try JSONDecoder().decode(ManagedExecutionIntent.self, from: JSONSerialization.data(withJSONObject: object["oldIntent"]!))
+        let observation = try JSONDecoder().decode(ManagedExecutionObservation.self, from: JSONSerialization.data(withJSONObject: object["observation"]!))
+        let response = object["receipt"] as! [String: Any]
+        let terminal = response["terminal"] as! [String: Any]
+        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let job = ManagedExecutionJob(intent: intent, repoPath: "/synthetic/repo", taskContext: "{}", enabled: false)
+        let entry = ManagedExecutionRuntime.Entry(job: job, phase: "running",
+            receipt: ManagedRuntimeReceipt(sessionRef: observation.sessionRef!, resolvedModel: observation.resolvedModel), pending: observation)
+        let original = try JSONEncoder().encode(entry)
+        let file = root.appendingPathComponent(intent.id + ".json")
+        var invalid: [[String: Any]] = [[:], ["accepted": false], ["accepted": true, "terminal": [:]]]
+        for key in ["intentId", "generation", "sequence", "state", "sessionRef", "resolvedModel"] {
+            var changed = terminal; changed[key] = key == "generation" || key == "sequence" ? 999 : "wrong" as Any
+            invalid.append(["accepted": true, "terminal": changed])
+        }
+        for body in invalid {
+            try original.write(to: file)
+            let json = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
+            StubURLProtocol.install { _, _ in .response(status: 200, body: json) }
+            do { try await ManagedExecutionRuntime(root: root).process(job, api: client(), adapter: nil); XCTFail("Invalid confirmation accepted") }
+            catch {}
+            XCTAssertEqual(try Data(contentsOf: file), original)
+        }
+        for status in [409, 503] {
+            StubURLProtocol.install { _, _ in .response(status: status, body: "{}") }
+            do { try await ManagedExecutionRuntime(root: root).process(job, api: client(), adapter: nil); XCTFail("HTTP rejection accepted") }
+            catch {}
+            XCTAssertEqual(try Data(contentsOf: file), original)
+        }
+        StubURLProtocol.install { _, _ in .failure(URLError(.networkConnectionLost)) }
+        do { try await ManagedExecutionRuntime(root: root).process(job, api: client(), adapter: nil); XCTFail("Network loss accepted") }
+        catch {}
+        XCTAssertEqual(try Data(contentsOf: file), original)
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"accepted":true}"#) }
+        try await ManagedExecutionRuntime(root: root).process(job, api: client(), adapter: nil)
+        let legacy = try JSONDecoder().decode(ManagedExecutionRuntime.Entry.self, from: Data(contentsOf: file))
+        XCTAssertNil(legacy.pending); XCTAssertNil(legacy.terminalReceipt); XCTAssertEqual(legacy.phase, "running")
+    }
+
     func testOldNodeSessionPayloadDefaultsToCodex() throws {
         let session = try JSONDecoder().decode(
             NodeAgentSession.self,

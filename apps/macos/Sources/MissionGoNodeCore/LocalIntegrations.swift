@@ -132,6 +132,16 @@ public struct ConsentedAgentAdapter: AgentAdapter {
         }
     }
 
+    public func startManagedTurn(_ job: ManagedExecutionJob, receipt: ManagedRuntimeReceipt) async throws {
+        guard access.state(for: agent)?.version != nil else { throw LaunchError("Native integration is not enabled.") }
+        try await base.startManagedTurn(job, receipt: receipt)
+    }
+
+    public func launchManaged(_ job: ManagedExecutionJob) async throws -> ManagedRuntimeReceipt {
+        guard access.state(for: agent)?.version != nil else { throw LaunchError("Native integration is not enabled.") }
+        return try await base.launchManaged(job)
+    }
+
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         guard access.state(for: agent) != nil else {
             throw LaunchError("\(agent.title) 集成已停用；不会读取或回复现有会话。")

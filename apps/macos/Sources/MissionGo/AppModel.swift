@@ -336,6 +336,7 @@ final class AppModel: ObservableObject {
         let codexHome = CodexLocation(environment: environment).codexHome
         let loop = NodeLoop(
             api: APIClient(serverUrl: credential.serverUrl, token: credential.token),
+            managedExecutionEnabled: ProcessInfo.processInfo.environment["MISSIONGO_MANAGED_EXECUTION"] == "1",
             adapters: [
                 ConsentedAgentAdapter(agent: .claudeCode, base: SessionLauncher(environment: environment), access: integrations),
                 ConsentedAgentAdapter(agent: .codex, base: CodexLauncher(environment: environment, serverUrl: credential.serverUrl), access: integrations),
