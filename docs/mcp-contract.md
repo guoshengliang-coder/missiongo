@@ -30,6 +30,10 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 
 档位和权限范围回答两个不同的问题——这个部署提供什么，以及这次连接被允许做什么。两者都满足才能写入。`get_current_account` 返回二者的交集，客户端应以它为准，不得依据本地 Skill 的描述判断能否写入。
 
+## 人工批准不是 MCP 工具（AND-231）
+
+托管决策的提出、修订、读取、批准与撤销在独立人类 Cookie HTTP 入口实现，本版不新增 MCP 工具。`missiongo:write`、节点或运维 Bearer、AI 评论和聊天批准不能生成正式人工批准记录；当前工具清单与写入档位保持不变。见 [managed-decisions.md](managed-decisions.md)。
+
 ## 已开放工具
 
 - `get_current_account`：确认当前连接账号及其全部产品或指定产品读取范围，并返回服务端期望的

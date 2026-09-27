@@ -8,6 +8,306 @@ security:
   - adminSessionCookie: []
   - bearerAuth: []
 paths:
+  /api/v1/managed-runs/{runId}/decisions:
+    post:
+      operationId: proposeManagedDecision
+      security:
+      - adminSessionCookie: []
+      description: Human session only; any Authorization header is rejected. Owner and
+        current product permissions are rechecked. No dispatch or execution side effects.
+        See managed-decisions.md.
+      parameters:
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Origin
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uri
+        description: Must exactly match configured public origin; absent/null/cross-site
+          requests fail closed.
+      responses:
+        '201':
+          description: 'Persisted result or current view; never an execution receipt.
+            Cache-Control: no-store.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedDecision'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Human session, permission or same-origin gate failed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedDecisionProposal'
+  /api/v1/managed-decisions/{id}:
+    get:
+      operationId: getManagedDecision
+      security:
+      - adminSessionCookie: []
+      description: Human session only; any Authorization header is rejected. Owner and
+        current product permissions are rechecked. No dispatch or execution side effects.
+        See managed-decisions.md.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: 'Persisted result or current view; never an execution receipt.
+            Cache-Control: no-store.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedDecisionView'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Human session, permission or same-origin gate failed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/managed-decisions/{id}/events:
+    get:
+      operationId: getManagedDecisionEvents
+      security:
+      - adminSessionCookie: []
+      description: Human session only; any Authorization header is rejected. Owner and
+        current product permissions are rechecked. No dispatch or execution side effects.
+        See managed-decisions.md.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: after
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      responses:
+        '200':
+          description: 'Persisted result or current view; never an execution receipt.
+            Cache-Control: no-store.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedDecisionEvents'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Human session, permission or same-origin gate failed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/managed-decisions/{id}/approve:
+    post:
+      operationId: approveManagedDecision
+      security:
+      - adminSessionCookie: []
+      description: Human session only; any Authorization header is rejected. Owner and
+        current product permissions are rechecked. No dispatch or execution side effects.
+        See managed-decisions.md.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Origin
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uri
+        description: Must exactly match configured public origin; absent/null/cross-site
+          requests fail closed.
+      responses:
+        '200':
+          description: 'Persisted result or current view; never an execution receipt.
+            Cache-Control: no-store.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedDecision'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Human session, permission or same-origin gate failed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedDecisionGuard'
+  /api/v1/managed-decisions/{id}/revoke:
+    post:
+      operationId: revokeManagedDecision
+      security:
+      - adminSessionCookie: []
+      description: Human session only; any Authorization header is rejected. Owner and
+        current product permissions are rechecked. No dispatch or execution side effects.
+        See managed-decisions.md.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Origin
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uri
+        description: Must exactly match configured public origin; absent/null/cross-site
+          requests fail closed.
+      responses:
+        '200':
+          description: 'Persisted result or current view; never an execution receipt.
+            Cache-Control: no-store.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedDecision'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Human session, permission or same-origin gate failed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedDecisionGuard'
+  /api/v1/managed-decisions/{id}/revise:
+    post:
+      operationId: reviseManagedDecision
+      security:
+      - adminSessionCookie: []
+      description: Human session only; any Authorization header is rejected. Owner and
+        current product permissions are rechecked. No dispatch or execution side effects.
+        See managed-decisions.md.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Origin
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uri
+        description: Must exactly match configured public origin; absent/null/cross-site
+          requests fail closed.
+      responses:
+        '200':
+          description: 'Persisted result or current view; never an execution receipt.
+            Cache-Control: no-store.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedDecision'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Human session, permission or same-origin gate failed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedDecisionRevision'
+  /api/v1/managed-decisions/{id}/explain:
+    post:
+      operationId: explainManagedDecision
+      security:
+      - adminSessionCookie: []
+      description: Human session only; any Authorization header is rejected. Owner and
+        current product permissions are rechecked. No dispatch or execution side effects.
+        See managed-decisions.md.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Origin
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uri
+        description: Must exactly match configured public origin; absent/null/cross-site
+          requests fail closed.
+      responses:
+        '200':
+          description: 'Persisted result or current view; never an execution receipt.
+            Cache-Control: no-store.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedDecision'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Human session, permission or same-origin gate failed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedDecisionExplanation'
   /health:
     get:
       operationId: getHealth
@@ -1402,6 +1702,332 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
   schemas:
+    ManagedDecisionContent:
+      type: object
+      additionalProperties: false
+      required:
+      - title
+      - recommendation
+      - alternatives
+      - costs
+      - acceptanceCriteria
+      - allowedActions
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        recommendation:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        alternatives:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 4000
+        costs:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        acceptanceCriteria:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 4000
+        allowedActions:
+          type: array
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+            - implement
+            - review
+            - verify
+    ManagedDecisionGuard:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      - stateVersion
+      - contentDigest
+      - scopeDigest
+      - contractRevision
+      - idempotencyKey
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        stateVersion:
+          type: integer
+          minimum: 1
+        contentDigest:
+          type: string
+        scopeDigest:
+          type: string
+        contractRevision:
+          type: integer
+          minimum: 1
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+    ManagedDecisionProposal:
+      type: object
+      additionalProperties: false
+      required:
+      - decisionKey
+      - scopeDigest
+      - contractRevision
+      - content
+      - idempotencyKey
+      properties:
+        decisionKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scopeDigest:
+          type: string
+        contractRevision:
+          type: integer
+          minimum: 1
+        content:
+          $ref: '#/components/schemas/ManagedDecisionContent'
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+    ManagedDecisionRevision:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      - stateVersion
+      - contentDigest
+      - scopeDigest
+      - contractRevision
+      - idempotencyKey
+      - content
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        stateVersion:
+          type: integer
+          minimum: 1
+        contentDigest:
+          type: string
+        scopeDigest:
+          type: string
+        contractRevision:
+          type: integer
+          minimum: 1
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+        content:
+          $ref: '#/components/schemas/ManagedDecisionContent'
+    ManagedDecisionExplanation:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      - stateVersion
+      - contentDigest
+      - scopeDigest
+      - contractRevision
+      - idempotencyKey
+      - explanation
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        stateVersion:
+          type: integer
+          minimum: 1
+        contentDigest:
+          type: string
+        scopeDigest:
+          type: string
+        contractRevision:
+          type: integer
+          minimum: 1
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+        explanation:
+          type: string
+          minLength: 1
+          maxLength: 4000
+    ManagedDecision:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - runId
+      - decisionKey
+      - scope
+      - scopeDigest
+      - version
+      - stateVersion
+      - contentDigest
+      - content
+      - explanation
+      - status
+      - approval
+      - createdAt
+      - updatedAt
+      properties:
+        id:
+          type: string
+        runId:
+          type: string
+        decisionKey:
+          type: string
+        scope:
+          type: object
+          additionalProperties: false
+          required:
+          - productId
+          - repositoryRef
+          - itemKeys
+          - contractRevision
+          properties:
+            productId:
+              type: string
+            repositoryRef:
+              type: string
+            itemKeys:
+              type: array
+              minItems: 1
+              maxItems: 20
+              uniqueItems: true
+              items:
+                type: string
+            contractRevision:
+              type: integer
+              minimum: 1
+        scopeDigest:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        stateVersion:
+          type: integer
+          minimum: 1
+        contentDigest:
+          type: string
+        content:
+          $ref: '#/components/schemas/ManagedDecisionContent'
+        explanation:
+          type: string
+        status:
+          type: string
+          enum:
+          - pending
+          - approved
+          - revoked
+        approval:
+          type:
+          - object
+          - 'null'
+          additionalProperties: false
+          required:
+          - accountId
+          - approvedAt
+          properties:
+            accountId:
+              type: string
+            approvedAt:
+              type: string
+              format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ManagedDecisionView:
+      type: object
+      additionalProperties: false
+      required:
+      - decision
+      - productName
+      - access
+      properties:
+        decision:
+          $ref: '#/components/schemas/ManagedDecision'
+        productName:
+          type: string
+        access:
+          type: object
+          additionalProperties: false
+          required:
+          - canApprove
+          - canRevoke
+          properties:
+            canApprove:
+              type: boolean
+            canRevoke:
+              type: boolean
+    ManagedDecisionEvents:
+      type: object
+      additionalProperties: false
+      required:
+      - events
+      - nextAfter
+      properties:
+        events:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - sequence
+            - operation
+            - accountId
+            - version
+            - stateVersion
+            - createdAt
+            properties:
+              sequence:
+                type: integer
+                minimum: 1
+              operation:
+                type: string
+                enum:
+                - create
+                - revise
+                - explain
+                - approve
+                - revoke
+              accountId:
+                type: string
+              version:
+                type: integer
+                minimum: 1
+              stateVersion:
+                type: integer
+                minimum: 1
+              createdAt:
+                type: string
+                format: date-time
+        nextAfter:
+          type:
+          - integer
+          - 'null'
+          description: Follow until null; a full last page may require one empty page.
     AuthSession:
       type: object
       required: [user]

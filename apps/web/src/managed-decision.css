@@ -1,0 +1,15 @@
+.managed-decision-page { width: min(100%, 780px); margin: 0 auto; padding: 24px max(16px, env(safe-area-inset-right)) max(32px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); line-height: 1.65; overflow-wrap: anywhere; }
+.managed-decision-page header, .managed-decision-page section { margin: 20px 0; padding: 20px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: 14px; }
+.managed-decision-page h1 { font-size: 25px; line-height: 1.35; margin: 8px 0 16px; }
+.managed-decision-page h2 { font-size: 18px; margin: 8px 0 12px; }
+.managed-decision-page p { white-space: pre-wrap; }
+.managed-decision-page ul, .managed-decision-page ol { padding-inline-start: 24px; }
+.managed-decision-page li { margin: 8px 0; white-space: pre-wrap; }
+.managed-decision-page a { color: var(--accent-text); display: inline-flex; align-items: center; min-height: 44px; }
+.managed-decision-page .decision-note { color: var(--muted); }
+.managed-decision-page .decision-actions { border-color: var(--accent-line); }
+.managed-decision-page .decision-confirm { display: flex; align-items: center; gap: 12px; min-height: 48px; margin: 12px 0; cursor: pointer; }
+.managed-decision-page .decision-confirm input { flex: 0 0 22px; width: 22px; height: 22px; }
+.managed-decision-page .decision-buttons { display: flex; gap: 12px; flex-wrap: wrap; }
+.managed-decision-page button { min-height: 44px; }
+@media (max-width: 600px) { .managed-decision-page .decision-buttons { flex-direction: column; } .managed-decision-page .decision-buttons button { width: 100%; } }
