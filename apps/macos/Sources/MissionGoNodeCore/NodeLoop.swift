@@ -3,6 +3,10 @@ import Foundation
 
 /// The protocol calls the loop makes, so a test can stand in for the server.
 public protocol NodeAPI: Sendable {
+    func managedJobs() async throws -> [ManagedExecutionJob]
+    func claimManaged(id: String, generation: Int) async throws -> ManagedExecutionIntent
+    func permitManaged(id: String, generation: Int) async throws -> ManagedExecutionPermit
+    func reportManaged(id: String, observation: ManagedExecutionObservation) async throws -> ManagedObservationReceipt
     func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate]) async throws -> HeartbeatReply
     func claimNext(waitMs: Int, availableAgentKinds: [String]?) async throws -> DispatchRequest?
     func reportResult(dispatchId: String, report: DispatchReport) async throws
@@ -12,6 +16,10 @@ public protocol NodeAPI: Sendable {
 }
 
 public extension NodeAPI {
+    func managedJobs() async throws -> [ManagedExecutionJob] { [] }
+    func claimManaged(id: String, generation: Int) async throws -> ManagedExecutionIntent { throw LaunchError("Managed API unsupported") }
+    func permitManaged(id: String, generation: Int) async throws -> ManagedExecutionPermit { throw LaunchError("Managed API unsupported") }
+    func reportManaged(id: String, observation: ManagedExecutionObservation) async throws -> ManagedObservationReceipt { throw LaunchError("Managed API unsupported") }
     func listAgentSessions() async throws -> [NodeAgentSession] { [] }
     func downloadAgentSessionAttachment(sessionId: String, attachmentId: String) async throws -> Data {
         throw CocoaError(.fileNoSuchFile)
@@ -159,6 +167,8 @@ public final class NodeLoop: @unchecked Sendable {
     public static let recentLaunchLimit = 20
     public static let maximumExecutingSessions = 10
 
+    let managedRuntime: ManagedExecutionRuntime
+    let managedExecutionEnabled: Bool
     let api: NodeAPI
     let adapters: [AgentAdapter]
     /// The name sessions carry when the server does not say (one from before
@@ -193,6 +203,7 @@ public final class NodeLoop: @unchecked Sendable {
 
     public init(
         api: NodeAPI,
+        managedExecutionEnabled: Bool = false,
         adapters: [AgentAdapter],
         fallbackNodeName: String,
         detectRepoCandidates: @escaping @Sendable () -> [RepoCandidate] = { [] },
@@ -202,6 +213,10 @@ public final class NodeLoop: @unchecked Sendable {
         log: @escaping @Sendable (String) -> Void = { NSLog("%@", $0) },
         onState: @escaping @Sendable (NodeLoopState) -> Void = { _ in }
     ) {
+        self.managedRuntime = ManagedExecutionRuntime(root: (attachmentCacheRoot ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/MissionGo", isDirectory: true))
+            .appendingPathComponent("ManagedExecutionRuntime", isDirectory: true))
+        self.managedExecutionEnabled = managedExecutionEnabled
         self.api = api
         self.adapters = adapters
         self.fallbackNodeName = fallbackNodeName
@@ -248,7 +263,8 @@ public final class NodeLoop: @unchecked Sendable {
             async let heartbeat: Void = heartbeatLoop(stop: stop, fatal: fatal)
             async let claim: Void = claimLoop(stop: stop, fatal: fatal)
             async let sessions: Void = sessionLoop(stop: stop, fatal: fatal)
-            _ = await (heartbeat, claim, sessions)
+            async let managed: Void = managedLoop(stop: stop)
+            _ = await (heartbeat, claim, sessions, managed)
         } onCancel: {
             stop.stop()
         }
@@ -305,6 +321,27 @@ public final class NodeLoop: @unchecked Sendable {
                 }
             }
             await stop.sleep(timing.heartbeatInterval)
+        }
+    }
+
+    private func managedLoop(stop: StopSignal) async {
+        while !stop.isStopped {
+            do {
+                try await managedRuntime.flushObservations(api: api, onError: { id, error in
+                    log("Managed observation \(id): \(error.localizedDescription)")
+                })
+            } catch { log("Managed journal: \(error.localizedDescription)") }
+            do {
+                let jobs = try await api.managedJobs()
+                for job in jobs {
+                    do {
+                        try await managedRuntime.process(ManagedExecutionJob(intent: job.intent, repoPath: job.repoPath,
+                            taskContext: job.taskContext, enabled: job.enabled && managedExecutionEnabled),
+                            api: api, adapter: adapters.first(where: { $0.kind == "codex" }))
+                    } catch { log("Managed intent \(job.intent.id): \(error.localizedDescription)") }
+                }
+            } catch { log("Managed control: \(error.localizedDescription)") }
+            await stop.sleep(timing.sessionInterval)
         }
     }
 
@@ -433,6 +470,19 @@ public final class NodeLoop: @unchecked Sendable {
         stop: StopSignal,
         fatal: Locked<APIError?>
     ) async {
+        var session = session
+        if var binding = session.managedExecution {
+            if !managedExecutionEnabled {
+                binding = ManagedSessionBinding(state: binding.state, id: binding.id, runId: binding.runId,
+                    stageId: binding.stageId, generation: binding.generation, role: binding.role, stopRequested: true)
+            } else {
+                binding.resumeContext = try? await managedRuntime.resumeContext(binding, sessionRef: session.sessionRef)
+            }
+            session = NodeAgentSession(id: session.id, managedExecution: binding, dispatchId: session.dispatchId,
+                agentKind: session.agentKind, sessionRef: session.sessionRef, status: session.status,
+                lifecycle: session.lifecycle, occupiesExecutionSlot: session.occupiesExecutionSlot,
+                command: binding.stopRequested ? nil : session.command)
+        }
         if let deadline = rejectedUntil.current[session.id], deadline > Date() { return }
         guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else {
             // The integration was turned off on this Mac (or the app no longer
@@ -498,6 +548,13 @@ public final class NodeLoop: @unchecked Sendable {
                     )
                 }
             }
+        }
+        if let managed = session.managedExecution, managed.state != "terminal" {
+            do {
+                try await managedRuntime.observe(managed,
+                    state: report.status == "active" ? "running" : report.status == "idle" ? "waiting" : "unknown",
+                    sessionRef: session.sessionRef, model: report.model, api: api)
+            } catch { log("Managed observation: \(error.localizedDescription)") }
         }
         await self.uploadAgentSessionReport(
             report, for: session, reported: reported, awaitingReport: awaitingReport,
@@ -593,7 +650,7 @@ public final class NodeLoop: @unchecked Sendable {
             deliveredAt: command.deliveredAt, attachments: prepared
         )
         return NodeAgentSession(
-            id: session.id, dispatchId: session.dispatchId, agentKind: session.agentKind,
+            id: session.id, managedExecution: session.managedExecution, dispatchId: session.dispatchId, agentKind: session.agentKind,
             sessionRef: session.sessionRef, status: session.status, lifecycle: session.lifecycle,
             occupiesExecutionSlot: session.occupiesExecutionSlot, command: readyCommand,
             archiveInSource: session.archiveInSource, restoreInSource: session.restoreInSource,

@@ -18,6 +18,9 @@ public protocol AgentAdapter: Sendable {
     func resourceSnapshot() async -> AgentResourceSnapshot?
     /// Throws with a human-readable reason; the loop reports it as the failure.
     func launch(_ job: DispatchJob) async throws -> LaunchResult
+    /// Prepare a native thread only; the coordinator confirms its identity before the first turn.
+    func launchManaged(_ job: ManagedExecutionJob) async throws -> ManagedRuntimeReceipt
+    func startManagedTurn(_ job: ManagedExecutionJob, receipt: ManagedRuntimeReceipt) async throws
     /// Mirrors an already launched session and, when it is idle, delivers the
     /// one reply the server has queued for it.
     func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport
@@ -28,6 +31,12 @@ public protocol AgentAdapter: Sendable {
 }
 
 public extension AgentAdapter {
+    func startManagedTurn(_ job: ManagedExecutionJob, receipt: ManagedRuntimeReceipt) async throws {
+        throw LaunchError("Managed first turn is unsupported.")
+    }
+    func launchManaged(_ job: ManagedExecutionJob) async throws -> ManagedRuntimeReceipt {
+        throw LaunchError("This native adapter does not support managed execution.")
+    }
     func dispatchAvailability() async -> AgentDispatchAvailability { .ready }
 
     func resourceSnapshot() async -> AgentResourceSnapshot? { nil }

@@ -998,6 +998,10 @@ export function AgentSessionConsole({
                   </div>
                 )}
                 {selected.agentSessionId && sessionQuery.isLoading && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
+                {sessionQuery.data?.managedExecution && <p className="agent-session-muted">
+                  Hermes · {sessionQuery.data.managedExecution.role} · Run {sessionQuery.data.managedExecution.runId}
+                  {" · "}{sessionQuery.data.managedExecution.stageId} / {sessionQuery.data.managedExecution.generation}
+                </p>}
                 {sessionQuery.isError && <p className="inline-error">{localizedErrorText(sessionQuery.error, t)}</p>}
                 {sessionQuery.data?.messages.length === 0 && !outgoing && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
                 {!selected.agentSessionId && (

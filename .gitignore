@@ -61,3 +61,6 @@ playwright-report/
 tests/ui/.auth/
 tests/ui/**/*-darwin.png
 tests/ui/**/*-win32.png
+
+# Local supervised execution test scratch.
+.tmp-and232/

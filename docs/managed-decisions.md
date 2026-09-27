@@ -1,5 +1,7 @@
 # Managed decisions：人工批准门禁（AND-231）
 
+AND-232 adds a separate, default-off supervised execution control surface; see [managed-execution.md](managed-execution.md). The boundaries below describe the original ledger/decision APIs, whose recording and human-approval semantics remain unchanged.
+
 ## 边界
 
 这是持久 Run 之上的批准记录与页面，不是执行器。`/managed-decisions/:id` 可深链访问，未登录时在原链接完成正常登录；读取、查看原条目及讨论都不产生批准。

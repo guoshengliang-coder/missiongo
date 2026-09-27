@@ -1,5 +1,7 @@
 # Managed run ledger (AND-230)
 
+AND-232 adds a separate, default-off supervised execution control surface; see [managed-execution.md](managed-execution.md). The boundaries below describe the original ledger/decision APIs, whose recording and human-approval semantics remain unchanged.
+
 ## Delivered boundary
 
 This remains an **internal recording API**, not an execution API. AND-231 adds

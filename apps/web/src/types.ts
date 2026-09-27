@@ -474,6 +474,7 @@ export interface AgentSessionAttachment {
 }
 
 export interface AgentSession {
+  readonly managedExecution?: { id: string; runId: string; stageId: string; generation: number; role: string; state: string; stopRequested: boolean };
   readonly id: string;
   readonly dispatchId: string;
   readonly agentKind: "codex" | "claude_code" | "opencode";

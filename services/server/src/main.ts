@@ -71,6 +71,8 @@ if (!["127.0.0.1", "::1", "localhost"].includes(host) && hasCompleteAdminAccount
 const widgetPushServiceAccount = parseWidgetPushServiceAccount(process.env.WIDGET_FCM_SERVICE_ACCOUNT);
 
 const app = buildApp({
+  managedExecution: { enabled: process.env.MISSIONGO_MANAGED_EXECUTION === "1",
+    coordinatorClientIds: (process.env.MISSIONGO_COORDINATOR_CLIENT_IDS ?? "").split(",").map((v) => v.trim()).filter(Boolean) },
   databasePath,
   attachmentsPath,
   logger: true,

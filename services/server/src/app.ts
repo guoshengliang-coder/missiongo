@@ -56,6 +56,8 @@ import {
 } from "./agent-session-store.js";
 import { optionalName, parseAgentModels } from "./agent-settings.js";
 import { DispatchStore } from "./dispatch-store.js";
+import { ManagedExecutionStore } from "./managed-execution-store.js";
+import { registerManagedExecutionRoutes } from "./managed-execution-routes.js";
 import { registerManagedDecisionRoutes } from "./managed-decision-routes.js";
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
@@ -75,6 +77,7 @@ import { WidgetPushService, type WidgetPushServiceAccount } from "./widget-push.
 import { widgetSummary, type WidgetSummary, type WidgetSummarySession } from "./widget-summary.js";
 
 export interface BuildAppOptions {
+  readonly managedExecution?: { readonly enabled: boolean; readonly coordinatorClientIds: readonly string[] };
   readonly databasePath?: string;
   readonly logger?: FastifyServerOptions["logger"];
   readonly adminToken?: string;
@@ -805,6 +808,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       || path === "/api/v1/bootstrap"
       // A node presents its own credential, exactly as the SDK does, and has no
       // admin session to offer.
+      || path.startsWith("/api/v1/managed-execution/")
       || path.startsWith("/api/v1/node/")
       || (!options.adminToken && !options.adminAccount)
     ) return;
@@ -1397,10 +1401,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    * registered by an account and inherits that account's reach -- otherwise a
    * member's Mac could map a checkout to a product its owner cannot see.
    */
-  const requireNodeAccountPermission = (accountId: string, productId: string): void => {
+  const requireNodeAccountPermission = (accountId: string, productId: string, execute = false): void => {
     if (unauthenticatedDeployment) return;
     const account = accountStore.findActive(accountId);
-    if (!account || !accountStore.allows(account, productId, "view")) throw notFound("Product");
+    if (!account || !accountStore.allows(account, productId, "view")
+      || (execute && (!accountStore.allows(account, productId, "operate") || !accountStore.allows(account, productId, "ai")))) throw notFound("Product");
   };
 
   /** Only an administrator manages accounts. Everyone else is told there is nothing there. */
@@ -1870,6 +1875,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   ) => {
     const account = requireAccount(request);
     const session = agentSessionStore.getForAccount(account.id, sessionId);
+    if (operate && session.managedExecution) throw conflict("managed_session_control", "Use the scoped coordinator control for this managed session.");
     const dispatch = dispatchStore.getDispatch(account.id, session.dispatchId);
     const productIds: string[] = [];
     for (const itemKey of dispatch.itemKeys) {
@@ -1899,10 +1905,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
     return {
       ...session,
-      canReply: replyBlockedReason === undefined,
-      canResolveDelivery: productIds.every((productId) =>
+      canReply: !session.managedExecution && replyBlockedReason === undefined,
+      canResolveDelivery: !session.managedExecution && productIds.every((productId) =>
         accountStore.allows(account, productId, "operate") && accountStore.allows(account, productId, "ai")),
-      canAttach: replyBlockedReason === undefined && agentSessionStore.supportsAttachments(session.id),
+      canAttach: !session.managedExecution && replyBlockedReason === undefined && agentSessionStore.supportsAttachments(session.id),
       ...(replyBlockedReason ? { replyBlockedReason } : {}),
     };
   };
@@ -2185,6 +2191,38 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return node;
   };
 
+  registerManagedExecutionRoutes(app, {
+    db: store.database, enabled: options.managedExecution?.enabled === true,
+    coordinator: (request, capability) => {
+      const check = () => {
+        const principal = aiPrincipal(suppliedBearerToken(request));
+        if (!principal || !principal.scopes.includes(MISSIONGO_READ_SCOPE)
+          || (capability !== "view" && !principal.scopes.includes(MISSIONGO_WRITE_SCOPE))
+          || !options.managedExecution?.coordinatorClientIds.includes(principal.clientId)) {
+          throw new MissionGoError("coordinator_required", "An explicitly trusted coordinator authorization is required.", 403);
+        }
+        return principal;
+      };
+      check();
+      return (productId) => {
+        const principal = check();
+        const account = accountStore.findActive(principal.id);
+        if (!account || !accountStore.allows(account, productId, "view")
+          || (capability !== "view" && !accountStore.allows(account, productId, "operate"))
+          || (capability === "ai" && !accountStore.allows(account, productId, "ai"))) throw notFound("Managed product");
+        return account.id;
+      };
+    },
+    node: requireNode,
+    nodeAccess: (request, launch) => (productId) => {
+      const node = requireNode(request);
+      const account = accountStore.findActive(node.accountId);
+      if (!account || !accountStore.allows(account, productId, "view")
+        || (launch && (!accountStore.allows(account, productId, "operate") || !accountStore.allows(account, productId, "ai")))) throw notFound("Managed product");
+      return account.id;
+    },
+  });
+
   app.get("/api/v1/node/agent-sessions/:sessionId/attachments/:attachmentId/content", async (request, reply) => {
     const node = requireNode(request);
     const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
@@ -2272,11 +2310,33 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/node/agent-sessions", async (request) => {
     const node = requireNode(request);
+    if (!options.managedExecution?.enabled) {
+      const active = store.database.connection.prepare("SELECT id,generation FROM managed_execution_intents WHERE node_id=? AND ownership_held=1")
+        .all(node.nodeId) as { id: string; generation: number }[];
+      for (const intent of active) new ManagedExecutionStore(store.database).stopForNode(node, intent.id, intent.generation);
+    }
     const acceptsAttachments = request.headers["x-missiongo-chat-attachments"] === "1";
-    return { sessions: agentSessionStore.listForNode(node.nodeId).map((session) =>
-      !acceptsAttachments && session.command?.attachments?.length
+    return { sessions: agentSessionStore.listForNode(node.nodeId).map((session) => {
+      if (session.managedExecution) {
+        try {
+          new ManagedExecutionStore(store.database, options.managedExecution?.enabled === true).authorizeSessionInput((productId) => {
+            requireNodeAccountPermission(node.accountId, productId, true); return node.accountId;
+          }, node.nodeId, session.id, session.command?.id);
+        } catch (error) {
+          // Bound threads still need observation before first turn, but never input.
+          const starting = ["starting", "bound", "turn_starting"].includes(session.managedExecution.state)
+            && error instanceof Error && "code" in error && error.code === "input_not_ready";
+          if (!starting) new ManagedExecutionStore(store.database).stopForNode(node, session.managedExecution.id, session.managedExecution.generation);
+          return { id: session.id, dispatchId: session.dispatchId, agentKind: session.agentKind,
+            sessionRef: session.sessionRef, status: session.status, lifecycle: "keep", occupiesExecutionSlot: session.occupiesExecutionSlot,
+            managedExecution: { ...session.managedExecution,
+            stopRequested: session.managedExecution.stopRequested || !starting || !options.managedExecution?.enabled } };
+        }
+      }
+      return !acceptsAttachments && session.command?.attachments?.length
         ? { ...session, command: undefined }
-        : session) };
+        : session;
+    }) };
   });
 
   app.post(
@@ -2369,6 +2429,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const commandStatusValue = stringField(body, "commandStatus", false);
       if (commandStatusValue && !["delivering", "delivery_unknown", "delivered", "failed"].includes(commandStatusValue)) {
         throw invalidInput("commandStatus must be delivering, delivery_unknown, delivered, or failed.");
+      }
+      if (commandStatusValue === "delivering" && agentSessionStore.managedBinding(sessionId)) {
+        new ManagedExecutionStore(store.database, options.managedExecution?.enabled === true).authorizeSessionInput((productId) => {
+          requireNodeAccountPermission(node.accountId, productId, true); return node.accountId;
+        }, node.nodeId, sessionId, stringField(body, "commandId"));
       }
       const commandStatus = commandStatusValue as "delivering" | "delivery_unknown" | "delivered" | "failed" | undefined;
       if (body.sourceArchived !== undefined && typeof body.sourceArchived !== "boolean") {
