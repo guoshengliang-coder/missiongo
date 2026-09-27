@@ -1456,6 +1456,37 @@ export class MissionGoDatabase {
           .run(202609270536, new Date().toISOString());
       }
     });
+    this.transaction(() => {
+      if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609271508").get()) {
+        // AND-235: ordinary dispatch and managed execution are separate control
+        // paths. Retain run/generation fencing and every immutable evidence row.
+        // Dedicated paths are allocated and checked on the Node, not by repo alias.
+        this.connection.exec(`
+          DROP TRIGGER managed_manual_message;
+          DROP TRIGGER managed_manual_settings;
+          DROP TRIGGER managed_manual_restore;
+          DROP TRIGGER managed_manual_insert;
+          DROP TRIGGER managed_manual_start;
+          DROP INDEX managed_execution_node_owner;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202609271508, new Date().toISOString());
+      }
+    });
+    this.transaction(() => {
+      if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609271554").get()) {
+        // Delivery progress only: no ownership, observation or execution changes.
+        this.connection.exec(`
+          CREATE TABLE managed_session_poll_cursors (
+            node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+            after_session_id TEXT NOT NULL
+          ) STRICT;
+          CREATE INDEX idx_agent_sessions_node_id ON agent_sessions(node_id, id);
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202609271554, new Date().toISOString());
+      }
+    });
     this.connection.exec("PRAGMA optimize;");
   }
 }

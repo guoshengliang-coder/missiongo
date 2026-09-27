@@ -1,4 +1,3 @@
-import { executorConflictSql } from "./storage/execution-ownership-sql.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import { isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
@@ -577,15 +576,6 @@ export class AgentSessionStore {
   private requireManualSession(sessionId: string): void {
     if (this.managedBinding(sessionId)) throw conflict("managed_session_control", "Use the scoped coordinator control for a managed session.");
   }
-  private sessionStartBlocked(sessionId: string): boolean {
-    const row = this.database.connection.prepare(`SELECT s.id FROM agent_sessions s WHERE s.id=? AND (
-      ${executorConflictSql("s.node_id", "s.dispatch_id")})`).get(sessionId);
-    return Boolean(row);
-  }
-  private requireSessionStart(sessionId: string): void {
-    if (this.sessionStartBlocked(sessionId)) throw conflict("workspace_owned", "Another unresolved writer owns this executor.");
-  }
-
   createForDispatch(input: { dispatchId: string; nodeId: string; sessionRef: string }): string {
     const dispatch = this.database.connection
       .prepare("SELECT agent_kind FROM dispatches WHERE id = ? AND node_id = ?")
@@ -867,7 +857,6 @@ export class AgentSessionStore {
 
   setArchived(accountId: string, sessionId: string, archived: boolean): AgentSessionSnapshot {
     this.requireManualSession(sessionId);
-    if (!archived) this.requireSessionStart(sessionId);
     const session = this.database.connection
       .prepare(
         `SELECT s.archived_at, s.archive_source FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
@@ -937,7 +926,6 @@ export class AgentSessionStore {
    */
   requestSettings(accountId: string, sessionId: string, change: AgentRunSettings): AgentSessionSettings {
     this.requireManualSession(sessionId);
-    this.requireSessionStart(sessionId);
     const row = this.database.connection
       .prepare(
         `SELECT s.agent_kind, d.mode AS dispatch_mode, d.model AS dispatch_model, d.effort AS dispatch_effort,
@@ -1021,7 +1009,6 @@ export class AgentSessionStore {
 
   enqueue(accountId: string, sessionId: string, textValue: string, attachmentIds: readonly string[] = [], managedControl = false): AgentSessionCommand {
     if (!managedControl) this.requireManualSession(sessionId);
-    this.requireSessionStart(sessionId);
     const text = textValue.trim();
     if (!text && attachmentIds.length === 0) throw invalidInput("text or attachments are required.");
     if (text.length > MAX_COMMAND_LENGTH) throw invalidInput(`text must be ${MAX_COMMAND_LENGTH} characters or fewer.`);
@@ -1258,13 +1245,12 @@ export class AgentSessionStore {
   listForNode(nodeId: string): readonly NodeAgentSession[] {
     this.failStuckDeliveringCommands();
     const sourceArchiveBefore = new Date(Date.now() - SOURCE_ARCHIVE_POLL_MS).toISOString();
-    const rows = this.database.connection
-      .prepare(
-        `SELECT id, dispatch_id, agent_kind, agent_session_ref, status, last_error, updated_at,
+    const selection = `SELECT id, dispatch_id, agent_kind, agent_session_ref, status, last_error, updated_at,
                 archived_at, archive_source, archive_reason, source_archived_at, source_archive_error, source_restore_pending,
                 desired_settings_json, settings_revision, applied_settings_revision, settings_error_revision
          FROM agent_sessions s
          WHERE node_id = ?
+         AND EXISTS (SELECT 1 FROM managed_execution_intents i WHERE i.id=s.dispatch_id) = ?
          AND (EXISTS (SELECT 1 FROM managed_execution_intents i WHERE i.id=s.dispatch_id AND (i.ownership_held=1 OR (json_extract(i.snapshot_json,'$.stopRequested')=1 AND json_extract(i.snapshot_json,'$.cleanup') IS NULL)))
            OR archived_at IS NULL OR (archive_source = 'source' AND updated_at <= ?)
            -- Finished work archived by MissionGo still needs the Mac once: a
@@ -1288,14 +1274,34 @@ export class AgentSessionStore {
              AND source_archived_at IS NULL AND source_archive_error IS NULL)
            OR s.updated_at <= ?
          )
-         ORDER BY EXISTS (SELECT 1 FROM managed_execution_intents i WHERE i.id=s.dispatch_id AND i.ownership_held=1) DESC, archive_source = 'source', updated_at DESC LIMIT 100`,
-      )
-      .all(nodeId, sourceArchiveBefore, sourceArchiveBefore) as unknown as SessionRow[];
+         AND s.id > ?`;
+    const args = (managed: number, after: string) => [nodeId, managed, sourceArchiveBefore, sourceArchiveBefore, after];
+    const managedPage = this.database.connection.prepare(selection + " ORDER BY s.id LIMIT 100");
+    // Persist stable-ID progress across requests and restarts. BEGIN IMMEDIATE
+    // serializes selection/advancement across connections. Stop/status updates
+    // do not reset progress or move a held session ahead of unseen sessions.
+    const managedRows = this.database.transaction(() => {
+      const cursor = this.database.connection.prepare(
+        "SELECT after_session_id FROM managed_session_poll_cursors WHERE node_id=?",
+      ).get(nodeId) as { after_session_id: string } | undefined;
+      let page = managedPage.all(...args(1, cursor?.after_session_id ?? "")) as unknown as SessionRow[];
+      // Wrap only after exhausting the remainder; never duplicate within a page.
+      if (!page.length && cursor) page = managedPage.all(...args(1, "")) as unknown as SessionRow[];
+      if (page.length) this.database.connection.prepare(
+        `INSERT INTO managed_session_poll_cursors(node_id,after_session_id) VALUES (?,?)
+         ON CONFLICT(node_id) DO UPDATE SET after_session_id=excluded.after_session_id`,
+      ).run(nodeId, page[page.length - 1]!.id);
+      return page;
+    });
+    // Ordinary delivery keeps its independent bounded page and existing order.
+    const ordinaryRows = this.database.connection.prepare(selection +
+      " ORDER BY archive_source = 'source', updated_at DESC LIMIT 100")
+      .all(...args(0, "")) as unknown as SessionRow[];
+    const rows = [...managedRows, ...ordinaryRows];
     return rows.map((row) => {
       const managed = this.managedBinding(row.id);
-      const blocked = this.sessionStartBlocked(row.id);
       const pending = this.pendingCommand(row.id);
-      const command = pending?.kind === "interrupt" ? pending : blocked || (managed && (managed.stopRequested || !["running", "waiting"].includes(managed.state))) ? undefined : pending;
+      const command = pending?.kind === "interrupt" ? pending : (managed && (managed.stopRequested || !["running", "waiting"].includes(managed.state))) ? undefined : pending;
       const autoArchived = row.archive_reason === "auto";
       return {
         id: row.id,
@@ -1306,14 +1312,16 @@ export class AgentSessionStore {
         status: row.status,
         lifecycle: row.agent_kind === "claude_code" && !row.source_restore_pending
           && (Boolean(row.archived_at) || autoArchived || this.itemsCompleted(row.id)) ? "close" : "keep",
-        occupiesExecutionSlot: managed?.ownershipHeld === true || row.status === "active" || row.status === "stalled",
+        // Node uses this field for ordinary claim-next capacity. Managed
+        // ownership remains in managedExecution, including unknown/stop states.
+        occupiesExecutionSlot: !managed && !row.archived_at && (row.status === "active" || row.status === "stalled"),
         ...(command && command.status !== "delivery_unknown" ? { command: this.mapCommand(command) } : {}),
         ...(row.archive_source === "missiongo" && row.archived_at && row.agent_kind === "codex"
           && !row.source_archived_at && !row.source_archive_error
           ? { archiveInSource: true as const }
           : {}),
-        ...(!blocked && row.source_restore_pending ? { restoreInSource: true as const } : {}),
-        ...(!blocked && row.desired_settings_json && (row.settings_revision ?? 0) > 0
+        ...(row.source_restore_pending ? { restoreInSource: true as const } : {}),
+        ...(row.desired_settings_json && (row.settings_revision ?? 0) > 0
           ? {
               desiredSettings: {
                 ...(JSON.parse(row.desired_settings_json) as AgentRunSettings),
@@ -1333,8 +1341,9 @@ export class AgentSessionStore {
     // occupying one of the ten slots until the node could never claim again.
     const row = this.database.connection
       .prepare(
-        `SELECT COUNT(*) AS count FROM agent_sessions
-         WHERE node_id = ? AND status IN ('active', 'stalled') AND archived_at IS NULL`,
+        `SELECT COUNT(*) AS count FROM agent_sessions s
+         WHERE node_id = ? AND status IN ('active', 'stalled') AND archived_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM managed_execution_intents i WHERE i.id=s.dispatch_id)`,
       )
       .get(nodeId) as unknown as { count: number };
     return row.count;
@@ -1654,7 +1663,6 @@ export class AgentSessionStore {
         // lost.
         const reaped = current.status === "failed" && current.error === COMMAND_DELIVERY_TIMEOUT_ERROR;
         if (input.commandStatus === "delivering") {
-          if (current.kind !== "interrupt") this.requireSessionStart(input.sessionId);
           const managed = this.managedBinding(input.sessionId);
           if (managed && (managed.stopRequested || managed.state === "unknown" || managed.state === "terminal")) {
             throw conflict("execution_stopped", "Managed input permission is no longer active.");

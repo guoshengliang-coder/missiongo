@@ -1,4 +1,3 @@
-import { executorConflictSql } from "./storage/execution-ownership-sql.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import {
@@ -622,9 +621,6 @@ export class DispatchStore {
     if (input.itemKeys.length > 20) throw invalidInput("A dispatch can carry at most 20 work items.");
 
     const create = () => {
-      if (this.database.connection.prepare(`SELECT id FROM nodes n WHERE n.id=? AND ${executorConflictSql("n.id", "''")}`).get(input.nodeId)) {
-        throw conflict("workspace_owned", "An unresolved managed execution owns the supervised executor.");
-      }
       const node = this.getNode(input.accountId, input.nodeId);
       if (node.revokedAt) throw conflict("node_revoked", "This node was revoked.");
       if (!node.online) throw conflict("node_offline", "This node is not currently connected.");

@@ -3,6 +3,9 @@ import type { DatabaseSync } from "node:sqlite";
 /** Synthetic historical databases must not retain newer cross-table triggers. */
 export function beforeManagedExecution(connection: DatabaseSync): void {
   connection.exec(`
+    DROP TABLE managed_session_poll_cursors;
+    DROP INDEX idx_agent_sessions_node_id;
+    DELETE FROM schema_migrations WHERE version=202609271554;
     DROP TRIGGER IF EXISTS managed_manual_insert;
     DROP TRIGGER IF EXISTS managed_manual_start;
     DROP TRIGGER IF EXISTS managed_manual_reacquire;
@@ -21,5 +24,6 @@ export function beforeManagedExecution(connection: DatabaseSync): void {
     DROP TABLE managed_manual_reconciliations;
     ALTER TABLE dispatches DROP COLUMN execution_generation;
     DELETE FROM schema_migrations WHERE version=202609270536;
+    DELETE FROM schema_migrations WHERE version=202609271508;
   `);
 }

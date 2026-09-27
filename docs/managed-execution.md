@@ -24,17 +24,17 @@ AND-230 的 attempt 仍要求真实 executor identity。**意图不是虚构 att
 
 unknown 不会靠租约过期重新派发。协调者使用证据显式核对结果，terminal 仍保留所有权；独立 cleanup 观察才释放。证据是协调者记录的人工/原生核对引用，不是自动验证的后代进程证明。未启动取消、或失败且清理已核对的意图可在相同 input/role、ready/failed stage 下重试。意图 generation 独立按 stage 持久分配，不因无 attempt 的取消而复用；`attemptGeneration` 记录真实 ledger 代次，仅从 beginAttempt 的返回值取得，后续 ledger 操作使用该映射。旧代次不能写回新执行。成功 stage 的新输入需要新 stage。
 
-Node 在协调者私有 runtime 目录保存完整绑定、启动阶段、真实收据、观察序列和待确认载荷，目录权限 0700、文件 0600；在同目录写临时文件、fsync、rename，再 fsync 目录，不使用 worker worktree 保存收据。网络失败前后、服务端提交后 ACK 丢失及 Node 重启均重放同一观察载荷。首次 turn 必须等 bound 回报 ACK，再取得当前批准下的首 turn 许可；任何未确认的线程/turn 副作用都保留 unknown 占用，不能新启 writer。线程返回与本地落盘之间仍有不可原子化的崩溃窗口：此时启动前日志保证保守 unknown，但不能凭空恢复未收到的 session/model，也不声称原生副作用 exactly-once。
+Node 在协调者私有 runtime 目录保存完整绑定、启动阶段、真实收据、观察序列和待确认载荷，目录权限 0700、文件 0600；在同目录写临时文件、fsync、rename，再 fsync 目录，不使用 worker worktree 保存收据。网络失败前后、服务端提交后 ACK 丢失及 Node 重启均重放同一观察载荷。首次 turn 必须等 bound 回报 ACK，再取得当前批准下的首 turn 许可；任何未确认的线程/turn 副作用都保留 unknown 占用，不能为同一 Run 新启替代 writer。线程返回与本地落盘之间仍有不可原子化的崩溃窗口：此时启动前日志保证保守 unknown，但不能凭空恢复未收到的 session/model，也不声称原生副作用 exactly-once。
 
 观察用单意图持久单调 sequence 作为事件身份；相同事件重放原始 generation/state/session/model，不取新版本拼旧幂等键。HTTP 观察身份字段不做 trim，首尾空白直接拒绝。服务端事务中保存载荷摘要与原文，分别生成 begin/state 的 ledger key；重复事件返回确认，不重复 beginAttempt，也不覆盖较新的终态。复用序列但载荷不同、未提交且落后于已提交序列的观察均拒绝。terminal 下精确匹配冻结 generation/session/model 的新序列迟到观察可以归档并返回 terminal ACK；不改变原终态、结果或所有权，已释放旧占用时也不影响新执行占用。Node 核对 ACK 绑定后持久封存；封存前退出仍重放原 pending。新的同状态观察使用新序列。同步原生会话的生产者也经同一 outbox，不能绕回直接报告。
 
 ## 工作区和旧手动派单
 
-本切片以显式注册的 Node installation 为本地执行器所有权域，域内所有仓库路径、符号链接别名及共享 git common-dir 一律串行，不以用户路径或 mapping ID 分锁。不同账号、不同 installation 的历史会话不会阻塞此域。**跨 Node 的共享物理工作区不支持**：协调者必须拒绝把这种拓扑注册为 single_node_local；installation 身份和“不共享”证据属于可信注册前提，不能把任意账号自行声明的另一个 installation 当作服务器已经验证的另一台物理机器。本实现没有多机共享盘调度或全平台排他证明。
+托管所有权限制同一 Run 的未决执行；不同批次可以在各自独立 worktree 中并行，共享 git common-dir 不代表整机互斥。普通派单使用独立控制路径。**跨 Node 的共享物理工作区不支持**：协调者必须拒绝把这种拓扑注册为 single_node_local；installation 身份和“不共享”证据属于可信注册前提，不能把任意账号自行声明的另一个 installation 当作服务器已经验证的另一台物理机器。本实现没有多机共享盘调度或全平台排他证明。
 
-域内任何未解决的托管意图、manual queued/delivered/launched 或保留 delivered_at 的失败派单都会阻塞。idle、归档、时间经过都不等于结束。数据库触发器和入口检查使用同一所有权条件，覆盖派单、恢复、设置、输入和 queued 投递；未注册且没有托管占用的普通 manual 路径保持既有行为。外部终端或原生 UI 自行启动的 writer 不在这个服务器协议的排他证明内。
+未解决的托管意图（包括 unknown、stop）继续保留自身 ownership、generation 和证据，idle、归档、时间经过都不等于结束；它们不阻挡其他批次或普通派单、恢复、设置、输入及 queued 投递。普通 Node 容量只计算未归档的普通 active/stalled 会话，服务端立即领取、长轮询唤醒后检查和 Node 会话投影使用相同口径。外部终端或原生 UI 自行启动的 writer 不在这个服务器协议的控制范围内。
 
-旧 manual 先用 `GET /manual-dispatches/{id}` 读取当前 generation 和历史证据，再用 `POST /manual-dispatches/{id}/reconcile` 绑定 execution generation、精确 deliveredAt 和核对证据，待输入、未知投递、设置和恢复必须先解决。记录不可改写。旧 session 之后可以重新取得域内所有权并进入新 execution generation，历史审计保留；功能关闭也不永久禁止其输入/恢复/设置。新代次未核对前仍阻塞托管，不能复用旧证据解除新占用。
+旧 manual 的 `GET /manual-dispatches/{id}` 和 `POST /manual-dispatches/{id}/reconcile` 仍可读取和记录 execution generation、精确 deliveredAt 及核对证据，记录不可改写。普通会话重新执行时保留新 generation 和历史审计；旧 manual reconciliation 不再是其他托管批次或普通控制的启动前提，也不能复用旧证据解除新占用。
 
 相同仓库映射保存保留 repositoryRef；占用期间拒绝真实改删。启动时单独冻结映射、账号、Node 和路径，后续 jobs/收据不因配置保存丢失。每次仍查当前可信 Node、账号和产品权限；撤销权限会阻断控制，不扩大跨账号访问。
 
@@ -46,7 +46,9 @@ Node 根据注册仓库和固定算法建立每意图独立 detached worktree，
 
 线程级 config 对 missiongo 的关闭仅是配置请求，不是权限证明。managed 没有 MCP allowlist：thread-scoped 列表中的每个注册必须明确报告 runtimeStatus=disabled 且 tools={}；改名的 worktracker、未知/缺失状态、仍有工具、分页不完整均拒绝，disabled 条目即使叫 missiongo 也接受。启动及 resume 都核对，托管 active-turn 输入等待 idle 后走受检 resume，不走未经核对的 steering。manual 和全局配置不变。目标协议版本为 Codex 0.155.0-alpha.16.3；这些状态字段目前只有 fixture 覆盖，尚未取得该版本真实无凭据协议证据，启动和托管 resume 要求 initialize.userAgent 中精确匹配该版本，缺失/不同版本拒绝；这个版本回包形态本身也尚待实机核对。Hermes 必须核对 threadId 是否真正限定 runtime、配置和能力回包语义；无法证明则保持默认关闭并拒绝启用。未引用官方 main schema 作为本机证明。不声称阻断所有 shell 网络访问或用户另行给予的凭据。
 
-原生 session 关联现有 MissionGo 会话视图，显示 run/stage/generation/角色；真实 Node HTTP 投影携带相同绑定。持有占用或待停止的会话不因 idle/归档过滤消失。托管镜像包含 native thread/read 的用户、Agent、plan、可见工具和执行记录，不仅终态总结；加密 reasoning 字段不展示。沿用已有快照传输，能显示原生持久历史和当前可见输出，不是所有瞬时通知的无损事件捕获。超过既有单快照消息/文本上限时会拒绝报告并保留原生会话供检查，不能宣称全量无损。
+原生 session 关联现有 MissionGo 会话视图，显示 run/stage/generation/角色；真实 Node HTTP 投影携带相同绑定。持有占用或待停止的会话不因 idle/归档过滤消失。托管和普通会话每次各返回至多 100 条。托管页按稳定会话 ID 遍历，按 Node 在 SQLite 持久保存游标，选择与推进在同一写事务内；更新状态或请求停止不会重置排序。静态的 N 条合格托管会话从任意游标起至多在 `ceil(N/100)+1` 次成功轮询内覆盖；新增或重新合格的会话按 ID 位置进入本轮或下一轮，不要求清理 stop/unknown 来腾页。重启和并行连接共享进度，不同 Node 各自推进；响应丢失会在后续轮次重投，交付不是 ACK，也不授予新启动许可。持续无界新增时不承诺固定轮询次数或墙钟延迟。
+
+托管镜像包含 native thread/read 的用户、Agent、plan、可见工具和执行记录，不仅终态总结；加密 reasoning 字段不展示。沿用已有快照传输，能显示原生持久历史和当前可见输出，不是所有瞬时通知的无损事件捕获。超过既有单快照消息/文本上限时会拒绝报告并保留原生会话供检查，不能宣称全量无损。
 
 补充输入只能由协调者为精确 intent/generation 发起；需当前批准且处于 running/waiting。投递确认时再次检查功能开关、批准和绑定，关闭/撤销后旧 queued 输入也不能绕过。稳定 key 绑定输入，回放返回当前 command receipt；复用 AND-203 的 queued/delivering/delivery_unknown 控制与原生 client message ID。恢复线程时再次关闭 MissionGo MCP 并检查原生角色权限。手动会话控制入口拒绝托管输入/权限修改。stop 标志通过精确 session/当前 turn 请求原生 interrupt；返回 idle 只是原生观察，不释放所有权。原生 app 中的人工直接操作仍是此监督模型的信任边界。
 
