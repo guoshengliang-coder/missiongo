@@ -2,6 +2,27 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class ClaudeStreamSnapshotTests: XCTestCase {
+    func testRestoresHistoricalClaudeChoiceOnResume() {
+        let state = ClaudeHostState(status: "idle", sessionRef: "session-1", messages: [
+            AgentSessionMessage(sourceId: "q1", role: "agent", text: "Choose",
+                questions: [AgentSessionQuestion(title: "Ship?", options: ["Yes", "No"])]),
+            AgentSessionMessage(sourceId: "a1", role: "user", text: "Yes"),
+        ])
+        let snapshot = ClaudeStreamSnapshot(resuming: state, hostPid: 123)
+        XCTAssertEqual(snapshot.state.messages[0].questions?.first?.answered, "Yes")
+    }
+
+    func testMarksClaudeChoiceWhenVisibleReplyArrives() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.consume(["type": "assistant", "parent_tool_use_id": NSNull(),
+            "message": ["id": "q1", "content": [["type": "tool_use", "name": "AskUserQuestion",
+                "input": ["questions": [["question": "Ship?", "options": [["label": "Yes"], ["label": "No"]]]]]]]]])
+        snapshot.consume(["type": "user", "uuid": "a1", "origin": ["kind": "human"],
+            "parent_tool_use_id": NSNull(),
+            "message": ["role": "user", "content": [["type": "text", "text": "No"]]]])
+        XCTAssertEqual(snapshot.state.messages[0].questions?.first?.answered, "No")
+    }
+
     func testBuildsAStableConversationFromStreamJson() {
         var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
         snapshot.consume(["type": "system", "subtype": "init", "session_id": "session-1"])

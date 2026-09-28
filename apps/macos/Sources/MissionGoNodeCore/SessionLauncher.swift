@@ -659,6 +659,10 @@ public struct SessionLauncher: AgentAdapter {
 
     private func synchronize(_ session: NodeAgentSession, state: ClaudeHostState, statePath: String) async throws -> AgentSessionReport {
         var state = state
+        // A host already running during an app update may still write the old
+        // state format. Restore reliable choices on every read so its report
+        // cannot reopen settled cards in the server's saved transcript.
+        state.messages = AgentSessionAnswerTrace.markingAnswered(state.messages)
         if session.restoreInSource {
             if let hostPid = state.hostPid,
                ClaudeHostProcess.isClaudeHost(

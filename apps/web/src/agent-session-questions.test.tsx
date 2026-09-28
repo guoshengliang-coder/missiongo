@@ -59,4 +59,17 @@ describe("agent session questions", () => {
     expect(html).toContain("agent-session-question-input");
     expect(html).not.toContain("agent-session-options");
   });
+
+  it("shows a delivered choice as selected history rather than a new prompt", () => {
+    const html = render(
+      <AgentSessionQuestions
+        questions={[{ title: "是否继续？", options: ["继续", "停止"], answered: "继续" }]}
+        reply="" canReply onChange={() => undefined}
+      />,
+    );
+    expect(html).toContain('class="agent-session-question answered"');
+    expect(html).toContain("已回答");
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*class="selected"[^>]*>继续<\/button>/);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>停止<\/button>/);
+  });
 });

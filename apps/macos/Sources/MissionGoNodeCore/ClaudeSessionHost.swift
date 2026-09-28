@@ -320,6 +320,7 @@ public struct ClaudeStreamSnapshot: Sendable {
         resumed.turnActive = false
         resumed.turnStartedAt = nil
         resumed.thinkingStartedAt = nil
+        resumed.messages = AgentSessionAnswerTrace.markingAnswered(resumed.messages)
         self.state = resumed
         taskTitles = Dictionary(uniqueKeysWithValues: resumed.activities.map { ($0.id, $0.title) })
         taskStartedAt = Dictionary(uniqueKeysWithValues: resumed.activities.compactMap { activity in
@@ -616,6 +617,9 @@ public struct ClaudeStreamSnapshot: Sendable {
         } else {
             state.messages.append(message)
             if state.messages.count > 2_000 { state.messages.removeFirst(state.messages.count - 2_000) }
+        }
+        if message.role == "user" || message.questions?.isEmpty == false {
+            state.messages = AgentSessionAnswerTrace.markingAnswered(state.messages)
         }
     }
 

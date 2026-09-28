@@ -552,7 +552,7 @@ public enum CodexProtocol {
         return CodexThreadSnapshot(
             status: status,
             activeTurnId: activeTurnId,
-            messages: messages,
+            messages: AgentSessionAnswerTrace.markingAnswered(messages),
             activityAt: sourceActivityTimestamp(thread["updatedAt"] ?? thread["updated_at"]),
             model: thread["model"] as? String,
             reasoningEffort: thread["reasoningEffort"] as? String
