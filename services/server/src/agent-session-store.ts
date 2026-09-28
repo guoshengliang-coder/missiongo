@@ -50,6 +50,10 @@ export interface AgentSessionMessageInput {
     /** What the person picked, once the reply this question waited on was
      * delivered; absent while it is still open. */
     readonly answered?: string;
+    /** The ask is gone without an answer — OpenCode auto-approved or dismissed
+     * the request at the source. Settled history like `answered`, written by
+     * the server when a poll stops carrying the card (AND-239). */
+    readonly withdrawn?: boolean;
   }[];
 }
 
@@ -395,9 +399,10 @@ function hasQuestions(value: string | null | undefined): boolean {
     const parsed = JSON.parse(value) as unknown;
     // A question marked `answered` is settled history, not an open ask: an
     // answered card as the newest message must not read as waiting for a
-    // person (AND-227).
+    // person (AND-227). A `withdrawn` one is settled the same way (AND-239).
     return Array.isArray(parsed) && parsed.some(
-      (question) => !((question as { answered?: string }).answered),
+      (question) => !((question as { answered?: string }).answered)
+        && (question as { withdrawn?: boolean }).withdrawn !== true,
     );
   } catch {
     return false;
@@ -1434,13 +1439,14 @@ export class AgentSessionStore {
     } : undefined);
     const session = this.database.connection
       .prepare(
-        `SELECT id, dispatch_id, status, last_error, archived_at, archive_source, activities_json, turn_state_json, activity_at,
+        `SELECT id, dispatch_id, agent_kind, status, last_error, archived_at, archive_source, activities_json, turn_state_json, activity_at,
                 source_restore_pending
          FROM agent_sessions WHERE id = ? AND node_id = ?`,
       )
       .get(input.sessionId, input.nodeId) as unknown as {
         id: string;
         dispatch_id: string;
+        agent_kind: "codex" | "claude_code" | "opencode";
         source_restore_pending: number;
         status: AgentSessionStatus;
         last_error: string | null;
@@ -1636,6 +1642,31 @@ export class AgentSessionStore {
         );
         nextPosition += 1;
       });
+      // AND-239: an OpenCode poll appends a synthetic `permission-`/`form-`
+      // card for each request still pending and never resends one that
+      // stopped being — auto-approved at the source, or dismissed. Messages
+      // are kept forever, so such a card would wait for a person forever. A
+      // healthy poll carries every card still pending, so an open stored card
+      // it does not carry is no longer pending: settle it as withdrawn, the
+      // way a delivered answer settles one as answered (AND-227). A degraded
+      // report — the unavailable fallback carries no messages at all — says
+      // nothing about what is pending and settles nothing.
+      if (session.agent_kind === "opencode" && input.status !== "unavailable" && messages.length > 0) {
+        const reportedSources = new Set(messages.map((message) => message.sourceId));
+        const settleWithdrawn = this.database.connection.prepare(
+          "UPDATE agent_session_messages SET questions_json = ? WHERE session_id = ? AND source_id = ?",
+        );
+        for (const stored of storedMessages) {
+          const synthetic = stored.source_id.startsWith("permission-") || stored.source_id.startsWith("form-");
+          if (!synthetic || reportedSources.has(stored.source_id) || !hasQuestions(stored.questions_json)) continue;
+          const questions = JSON.parse(stored.questions_json!) as Array<Record<string, unknown>>;
+          settleWithdrawn.run(
+            JSON.stringify(questions.map((question) => ({ ...question, withdrawn: true }))),
+            input.sessionId,
+            stored.source_id,
+          );
+        }
+      }
       this.database.connection.prepare(
         `INSERT INTO agent_session_attention
           (session_id, message_hash, state, kind, reason, model, updated_at)

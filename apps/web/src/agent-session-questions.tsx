@@ -47,7 +47,7 @@ export function AgentSessionQuestions({
     <>
       {questions.map((question, index) => {
         const label = question.key ?? question.header ?? question.title;
-        const settled = question.answered !== undefined;
+        const settled = question.answered !== undefined || question.withdrawn === true;
         const disabled = !canReply || settled;
         const chosen = questionAnswerValue(reply, question);
         const typed = question.kind === "text" || question.kind === "number";
@@ -56,7 +56,8 @@ export function AgentSessionQuestions({
           <div key={`${label}-${index}`} className={`agent-session-question ${settled ? "answered" : ""}`.trim()}>
             {question.header && <small>{question.header}</small>}
             <strong>{question.title}</strong>
-            {settled && <small className="agent-session-question-answered">{t("agentSessionQuestionAnswered")}</small>}
+            {question.answered !== undefined && <small className="agent-session-question-answered">{t("agentSessionQuestionAnswered")}</small>}
+            {question.withdrawn === true && <small className="agent-session-question-answered">{t("agentSessionQuestionWithdrawn")}</small>}
             {question.detail && <p className="agent-session-question-detail">{question.detail}</p>}
             {question.kind === "boolean" ? (
               <div className="agent-session-options">
@@ -106,7 +107,7 @@ export function AgentSessionQuestions({
                   <input
                     className="agent-session-question-input"
                     type={question.kind === "number" ? "number" : "text"}
-                    value={settled ? question.answered : chosen}
+                    value={settled ? (question.answered ?? "") : chosen}
                     placeholder={question.placeholder ?? (custom ? t("agentSessionAnswerCustom") : undefined)}
                     disabled={disabled}
                     onChange={(event) => write(question, event.target.value)}

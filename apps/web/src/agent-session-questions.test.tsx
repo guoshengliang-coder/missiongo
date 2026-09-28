@@ -59,4 +59,19 @@ describe("agent session questions", () => {
     expect(html).toContain("agent-session-question-input");
     expect(html).not.toContain("agent-session-options");
   });
+
+  it("renders a withdrawn card as expired with disabled controls (AND-239)", () => {
+    const question: AgentSessionQuestion = {
+      title: "OpenCode 请求使用 bash",
+      options: ["允许一次", "始终允许", "拒绝"],
+      withdrawn: true,
+    };
+    const html = render(
+      <AgentSessionQuestions questions={[question]} reply="" canReply onChange={() => undefined} />,
+    );
+    expect(html).toContain("已失效");
+    expect(html).not.toContain("已回答");
+    expect(html).toContain("disabled=\"\"");
+    expect(html).not.toContain("class=\"selected\"");
+  });
 });

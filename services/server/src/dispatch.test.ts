@@ -1598,6 +1598,149 @@ describe("Claiming a dispatch on the node", () => {
     expect(detail.messages.at(-1)?.questions?.[0]).toMatchObject({ title: "选择范围", answered: "完整" });
   });
 
+  it("settles an OpenCode permission or form card a poll stops carrying (AND-239)", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "opencode");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "opencode", mode: "plan", itemKeys: [mission.itemKey] },
+    });
+    const dispatchId = created.json<{ id: string }>().id;
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}`, sessionRef: "ses_and_239" },
+    });
+    const sessionId = (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+    const snapshot = (status: string, messages: Array<Record<string, unknown>>) => app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status, messages },
+    });
+    const cardQuestions = async () => (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+    })).json<{ messages: Array<{ sourceId: string; questions?: Array<{ withdrawn?: boolean }> }> }>();
+    const permissionCard = {
+      sourceId: "permission-per_1", role: "agent", text: "OpenCode 请求使用 bash",
+      questions: [{ title: "OpenCode 请求使用 bash", options: ["允许一次", "始终允许", "拒绝"] }],
+    };
+    const formCard = {
+      sourceId: "form-frm_1", role: "agent", text: "发布确认",
+      questions: [{ title: "范围", options: ["小", "完整"] }],
+    };
+
+    // A healthy poll carries both cards while the requests are pending, and
+    // the open permission card asks for an answer.
+    expect((await snapshot("idle", [
+      { sourceId: "msg_1", role: "user", text: "处理它。" },
+      permissionCard,
+      formCard,
+    ])).statusCode).toBe(204);
+    let cards = await cardQuestions();
+    expect(cards.messages.find((m) => m.sourceId === "permission-per_1")?.questions?.[0]?.withdrawn).toBeUndefined();
+    expect(cards.messages.find((m) => m.sourceId === "form-frm_1")?.questions?.[0]?.withdrawn).toBeUndefined();
+    const waiting = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ needsAttention: boolean; attention: { kind?: string } }> }>().sessions[0]!;
+    expect(waiting.needsAttention).toBe(true);
+    expect(waiting.attention.kind).toBe("answer");
+
+    // The next poll no longer carries them — auto-approved or dismissed at
+    // the source — so the server settles both as withdrawn instead of
+    // leaving them waiting for a person forever.
+    expect((await snapshot("idle", [
+      { sourceId: "msg_1", role: "user", text: "处理它。" },
+      { sourceId: "msg_2", role: "agent", text: "已继续。" },
+    ])).statusCode).toBe(204);
+    cards = await cardQuestions();
+    expect(cards.messages.find((m) => m.sourceId === "permission-per_1")?.questions?.[0]?.withdrawn).toBe(true);
+    expect(cards.messages.find((m) => m.sourceId === "form-frm_1")?.questions?.[0]?.withdrawn).toBe(true);
+    const settled = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions?productId=${mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ needsAttention: boolean; attention: { kind?: string } }> }>().sessions[0]!;
+    expect(settled.attention.kind).not.toBe("answer");
+
+    // A degraded report — the unavailable fallback a failed sync sends, with
+    // no messages at all — settles nothing and resurrects nothing.
+    expect((await snapshot("unavailable", [])).statusCode).toBe(204);
+    cards = await cardQuestions();
+    expect(cards.messages.find((m) => m.sourceId === "permission-per_1")?.questions?.[0]?.withdrawn).toBe(true);
+  });
+
+  it("never settles cards of a non-OpenCode session by absence (AND-239)", async () => {
+    const { app, cookie, node, mission, dispatchId } = await queuedDispatch();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        status: "launched", sessionName: `Mac mini-${mission.itemKey}`,
+        sessionUrl: "https://claude.ai/code/session_and_239", sessionRef: "claude_and_239",
+      },
+    });
+    const sessionId = (await app.inject({
+      method: "GET",
+      url: "/api/v1/node/agent-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    })).json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
+
+    // A message whose source id merely looks like an OpenCode card keeps its
+    // open questions when a later poll stops carrying it: only OpenCode
+    // polls promise to carry every card still pending.
+    const carrying = { sourceId: "permission-per_1", role: "agent", text: "看起来像授权卡",
+      questions: [{ title: "OpenCode 请求使用 bash", options: ["允许一次", "始终允许", "拒绝"] }] };
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [{ sourceId: "msg_1", role: "user", text: "处理它。" }, carrying] },
+    })).statusCode).toBe(204);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [{ sourceId: "msg_1", role: "user", text: "处理它。" }] },
+    })).statusCode).toBe(204);
+    const detail = (await app.inject({
+      method: "GET",
+      url: `/api/v1/agent-sessions/${sessionId}`,
+      headers: { cookie },
+    })).json<{ messages: Array<{ sourceId: string; questions?: Array<{ withdrawn?: boolean }> }> }>();
+    expect(detail.messages.find((m) => m.sourceId === "permission-per_1")?.questions?.[0]?.withdrawn).toBeUndefined();
+  });
+
   it("hands a dispatch to a machine already waiting on a long poll", async () => {
     const { app, cookie } = await signedInApp();
     const node = await registeredNode(app);

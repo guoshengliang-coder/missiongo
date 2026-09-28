@@ -15,6 +15,7 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     var snapshotFailure: String?
     var snapshotMessages: [AgentSessionMessage] = []
     var choices: [OpenCodeChoice] = []
+    var choicesError: Error?
     var repliedForm: (formID: String, answer: [String: OpenCodeAnswerValue])?
     var repliedPermission: (requestID: String, decision: String)?
     var repliedPermissions: [(requestID: String, decision: String)] = []
@@ -25,6 +26,7 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     func setSnapshotStatus(_ status: String) { snapshotStatus = status }
     func setSnapshotFailure(_ failure: String) { snapshotFailure = failure }
     func setPromptError(_ error: Error?) { promptError = error }
+    func setChoicesError(_ error: Error?) { choicesError = error }
     func queueSnapshots(_ snapshots: [(status: String, messages: [AgentSessionMessage], failure: String?)]) {
         snapshotQueue = snapshots
     }
@@ -66,7 +68,10 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     func sessionInfo(id: String) async throws -> (agent: String?, model: OpenCodeModelRef?) { info }
     func setModel(id: String, model: OpenCodeModelRef) async throws { appliedModels.append(model) }
     func setAgent(id: String, agent: String) async throws { appliedAgents.append(agent) }
-    func pendingChoices(id: String) async throws -> [OpenCodeChoice] { choices }
+    func pendingChoices(id: String) async throws -> [OpenCodeChoice] {
+        if let choicesError { throw choicesError }
+        return choices
+    }
     func replyForm(id: String, formID: String, answer: [String: OpenCodeAnswerValue]) async throws {
         repliedForm = (formID, answer)
     }
@@ -102,6 +107,58 @@ final class OpenCodeTests: XCTestCase {
         let prompt = jsonObject(requests[1].body)
         XCTAssertEqual(prompt["text"] as? String, "Handle AND-1")
         XCTAssertEqual(prompt["delivery"] as? String, "queue")
+    }
+
+    /// AND-239: a poll that cannot ask what is pending must fail the mirror
+    /// instead of reporting an empty list — the server settles cards a healthy
+    /// poll stops carrying, so "could not ask" must never read as "none
+    /// pending".
+    func testSynchronizeFailsWhenPendingChoicesCannotBeAsked() async throws {
+        let control = StubOpenCodeControl(mcpStatus: "connected")
+        await control.setChoicesError(LaunchError("OpenCode 共享服务不可用。"))
+        do {
+            _ = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+                id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle"
+            ))
+            XCTFail("synchronize should have propagated the pendingChoices failure")
+        } catch {
+            // Expected: the sync fails and is retried, leaving stored cards alone.
+        }
+    }
+
+    /// AND-239: a 404 from the form/permission routes is a legitimate
+    /// "nothing pending" (a build without them); any other failure throws
+    /// rather than reading as an empty list.
+    func testPendingChoicesTreatsMissingRoutesAsEmptyAndOtherFailuresAsErrors() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let registration = home.appendingPathComponent(".local/state/opencode/service.json")
+        try FileManager.default.createDirectory(at: registration.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"url":"http://127.0.0.1:9999","password":"test","version":"2.0.14"}"#.utf8).write(to: registration)
+
+        StubURLProtocol.install { request, _ in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/session/ses_test/form"):
+                return .response(status: 404, body: #"{"message":"no such route"}"#)
+            case ("GET", "/api/session/ses_test/permission"):
+                return .response(status: 200, body: #"{"data":[]}"#)
+            default:
+                return .response(status: 404, body: #"{"message":"unexpected route"}"#)
+            }
+        }
+        let control = OpenCodeHTTPControl(home: home.path, session: StubURLProtocol.session())
+        let empty = try await control.pendingChoices(id: "ses_test")
+        XCTAssertEqual(empty, [])
+
+        StubURLProtocol.install { _, _ in
+            .response(status: 500, body: #"{"message":"boom"}"#)
+        }
+        do {
+            _ = try await control.pendingChoices(id: "ses_test")
+            XCTFail("pendingChoices should have thrown on a failing route")
+        } catch {
+            // Expected: a failed ask is not "nothing pending".
+        }
     }
 
     func testParsesV2McpAndVisibleMessagesWithoutReasoningOrTools() throws {
