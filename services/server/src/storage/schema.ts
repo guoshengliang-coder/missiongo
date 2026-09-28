@@ -52,6 +52,9 @@ export const INITIAL_SCHEMA = `
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
     nickname TEXT,
+    -- AND-247: the console's type size, one of three. On the account rather than
+    -- the browser, so the choice is the reader's and not the device's.
+    font_scale TEXT NOT NULL DEFAULT 'medium' CHECK (font_scale IN ('small', 'medium', 'large')),
     password_scrypt TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
     credentials_changed_at TEXT NOT NULL,

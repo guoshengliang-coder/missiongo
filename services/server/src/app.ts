@@ -41,6 +41,7 @@ import {
   AccountStore,
   accountDisplayName,
   normalizeEmail,
+  normalizeFontScale,
   type AccountSnapshot,
   type ProductCapability,
   type ProductPermission,
@@ -654,6 +655,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // The raw value, so the settings field can start empty rather than
     // pre-filled with the fallback, which a single Save would then make real.
     ...(account.nickname ? { nickname: account.nickname } : {}),
+    fontScale: account.fontScale,
     role: account.role,
   });
 
@@ -1024,7 +1026,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/auth/session", async (request, reply) => {
     if (!options.adminAccount && !options.adminToken) {
       return reply.header("cache-control", "no-store").send({
-        user: { id: "local-admin", username: "local-admin", displayName: "local-admin", role: "admin" },
+        user: { id: "local-admin", username: "local-admin", displayName: "local-admin", fontScale: "medium" as const, role: "admin" as const },
       });
     }
     const user = sessionUserResponse(request);
@@ -1058,7 +1060,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     reply.header("cache-control", "no-store");
 
     const user = !options.adminAccount && !options.adminToken
-      ? { id: "local-admin", username: "local-admin", displayName: "local-admin", role: "admin" as const }
+      ? { id: "local-admin", username: "local-admin", displayName: "local-admin", fontScale: "medium" as const, role: "admin" as const }
       : sessionUserResponse(request);
     if (!user) {
       return reply.status(401).send({
@@ -1196,6 +1198,30 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const account = accountStore.changeOwnNickname(
       current.id,
       nullableStringField(objectBodyOrEmpty(request.body), "nickname") ?? null,
+    );
+    return reply.header("cache-control", "no-store").send({ user: authenticatedUser(account) });
+  });
+
+  /**
+   * Change the type size the console is read at (AND-247).
+   *
+   * No current password, and no new cookie, for the same reason the nickname
+   * above needs neither: it is a display preference, it is resolved per response,
+   * and taking it over gains nothing.
+   */
+  app.post("/api/v1/auth/font-scale", async (request, reply) => {
+    if (!options.adminAccount) {
+      return reply.status(503).send({
+        type: "urn:missiongo:problem:authentication_unavailable",
+        title: "Administrator account login is not configured.",
+        status: 503,
+        code: "authentication_unavailable",
+      });
+    }
+    const current = requireAccount(request);
+    const account = accountStore.changeOwnFontScale(
+      current.id,
+      normalizeFontScale(stringField(objectBody(request.body), "fontScale")),
     );
     return reply.header("cache-control", "no-store").send({ user: authenticatedUser(account) });
   });

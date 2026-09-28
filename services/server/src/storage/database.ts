@@ -1543,6 +1543,28 @@ export class MissionGoDatabase {
           .run(202609281047, new Date().toISOString());
       }
     });
+    // AND-247: the console can be read at one of three type sizes, and the choice
+    // follows the account rather than the browser so it holds across devices.
+    // NOT NULL with a default, so every existing account keeps today's size and
+    // an older release reading this database simply ignores the column.
+    const fontScaleMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609281200")
+      .get() as unknown as { version: number } | undefined;
+    if (!fontScaleMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(accounts)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "font_scale")) {
+          this.connection.exec(
+            "ALTER TABLE accounts ADD COLUMN font_scale TEXT NOT NULL DEFAULT 'medium' CHECK (font_scale IN ('small', 'medium', 'large'));",
+          );
+        }
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609281200, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

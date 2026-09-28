@@ -29,7 +29,7 @@ describe("account settings view mode", () => {
 
     const html = renderAccountUi(
       <AccountSettings
-        user={{ id: "account-1", username: "person@example.com", displayName: "person", role: "member" }}
+        user={{ id: "account-1", username: "person@example.com", displayName: "person", fontScale: "medium", role: "member" }}
         products={[]}
         onLoggedOut={() => undefined}
       />,
@@ -57,7 +57,7 @@ describe("account settings view mode", () => {
 
     const html = renderAccountUi(
       <AccountManagement
-        user={{ id: "account-1", username: "admin@example.com", displayName: "admin", role: "admin" }}
+        user={{ id: "account-1", username: "admin@example.com", displayName: "admin", fontScale: "medium", role: "admin" }}
         products={[]}
       />,
       queryClient,

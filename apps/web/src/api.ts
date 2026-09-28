@@ -1,5 +1,6 @@
 import type { ManagedDecision, ManagedDecisionGuard } from "@missiongo/domain";
 import { attachmentPreviewPath, attachmentThumbnailPath } from "./attachment-thumbnail";
+import type { FontScale } from "./font-scale";
 import type {
   ActiveDispatch,
   ItemDispatchHandler,
@@ -62,6 +63,8 @@ export interface AuthenticatedUser {
   readonly displayName: string;
   /** The nickname as stored. Absent when none is set -- see account-nickname.ts. */
   readonly nickname?: string;
+  /** The console type size this account reads at (AND-247). */
+  readonly fontScale: FontScale;
   readonly role: AccountRole;
 }
 
@@ -269,6 +272,9 @@ export const api = {
   // No password: a nickname is a label on your comments, not what signs you in.
   changeNickname: (nickname: string | null) =>
     request<AuthSession>("/api/v1/auth/nickname", { method: "POST", body: JSON.stringify({ nickname }) }),
+  // No password either: the type size is a display preference, not a credential.
+  changeFontScale: (fontScale: FontScale) =>
+    request<AuthSession>("/api/v1/auth/font-scale", { method: "POST", body: JSON.stringify({ fontScale }) }),
   listAiAuthorizations: () =>
     request<{ authorizations: AiAuthorization[] }>("/api/v1/ai-authorizations"),
   revokeAiAuthorization: (authorizationId: string) =>
