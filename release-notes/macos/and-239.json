@@ -1,0 +1,6 @@
+{
+  "pullRequest": 193,
+  "items": [
+    { "key": "AND-239", "title": "OpenCode 自动放行的权限卡标记为已失效，不再停在待放行" }
+  ]
+}

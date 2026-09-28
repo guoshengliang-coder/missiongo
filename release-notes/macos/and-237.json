@@ -1,0 +1,6 @@
+{
+  "pullRequest": 189,
+  "items": [
+    { "key": "AND-237", "title": "控制台显示 Codex 授权状态并支持人工审批重试" }
+  ]
+}

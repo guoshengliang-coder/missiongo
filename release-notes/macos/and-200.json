@@ -1,0 +1,6 @@
+{
+  "pullRequest": 187,
+  "items": [
+    { "key": "AND-200", "title": "Claude Code 模型列表按第三方端点归并去重，并移除未映射的官方条目" }
+  ]
+}
