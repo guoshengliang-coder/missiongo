@@ -39,6 +39,19 @@ describe("MissionGo interface language", () => {
       .toBe("Reply to this Codex session…");
   });
 
+  // AND-236: a Codex or OpenCode turn reported as "Claude Code" told the user the
+  // wrong agent was running, so both running and waiting copy take the agent name.
+  it("names the running agent in the turn and waiting lines", () => {
+    expect(translate("zh-CN", "agentSessionTurnRunning", { agent: "Codex", duration: "1 分 20 秒" }))
+      .toBe("Codex 回合进行中 · 1 分 20 秒");
+    expect(translate("en", "agentSessionTurnRunning", { agent: "Codex", duration: "1m 20s" }))
+      .toBe("Codex turn running · 1m 20s");
+    expect(translate("zh-CN", "agentSessionWaitingForInput", { agent: "OpenCode" }))
+      .toBe("OpenCode 正在等待你的回复。");
+    expect(translate("en", "agentSessionWaitingForInput", { agent: "OpenCode" }))
+      .toBe("OpenCode is waiting for your reply.");
+  });
+
   it("explains queued replies and offers to cancel them for editing", () => {
     expect(translate("zh-CN", "agentSessionReplyQueued")).toBe("回复已排队，正在等待 Mac 接收");
     expect(translate("zh-CN", "agentSessionCancelAndEdit")).toBe("取消等待并编辑");

@@ -1752,6 +1752,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .quick-action-button, .capture-type, .type-filters button, .ai-console-toggle, .text-button { min-height: 44px; }
   .icon-button { width: 44px; height: 44px; }
   .refresh-button { width: 44px; min-height: 44px; }
+  .agent-console-topbar-refresh { width: 44px; min-height: 44px; }
   .product-switcher { height: 44px; }
   .row-more-menu > summary, .detail-more-menu > summary { width: 44px; min-height: 44px; }
   .item-row-main { min-height: 44px; }
