@@ -764,17 +764,60 @@ public enum ClaudeModelCatalog {
     /// The options in an `initialize` answer, nil when it carries no list.
     /// `default` is left out: the console offers its own "follow this
     /// machine's configuration", which is exactly what that entry means.
+    ///
+    /// Behind a third-party endpoint this list is a routing table rather
+    /// than a catalog: several aliases (`opus`, `sonnet`) can resolve to one
+    /// and the same model, and entries the endpoint never mapped still carry
+    /// their Anthropic ids and resolve to themselves — offering them invites
+    /// a choice the endpoint then rejects. So entries sharing a
+    /// `resolvedModel` collapse into one option, and once any alias resolves
+    /// to a custom model, entries that resolve to themselves and to an
+    /// Anthropic id are left out. With no custom mapping in the list nothing
+    /// is dropped: a first-party account keeps its full catalog, and an
+    /// older CLI without `resolvedModel` degrades to merging by id alone.
     public static func options(fromInitialize response: [String: Any]) -> [AgentModelOption]? {
         guard let models = response["models"] as? [[String: Any]] else { return nil }
-        return models.compactMap { model -> AgentModelOption? in
+        struct Entry {
+            let id: String
+            let label: String
+            let resolved: String?
+            let efforts: [String]
+        }
+        let entries: [Entry] = models.compactMap { model in
             guard let value = model["value"] as? String, !value.isEmpty, value != "default" else { return nil }
             let label = (model["displayName"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? value
-            return AgentModelOption(
+            return Entry(
                 id: value,
                 label: label,
+                resolved: (model["resolvedModel"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                 efforts: model["supportedEffortLevels"] as? [String] ?? []
             )
         }
+        let customMapped = entries.contains { entry in
+            guard let resolved = entry.resolved, resolved != entry.id else { return false }
+            return !isAnthropicModelId(resolved)
+        }
+        var merged: [AgentModelOption] = []
+        var positionByModel: [String: Int] = [:]
+        for entry in entries {
+            if customMapped, entry.resolved == entry.id, isAnthropicModelId(entry.id) { continue }
+            let model = entry.resolved ?? entry.id
+            guard let position = positionByModel[model] else {
+                positionByModel[model] = merged.count
+                merged.append(AgentModelOption(id: entry.id, label: entry.label, efforts: entry.efforts))
+                continue
+            }
+            let kept = merged[position]
+            let efforts = kept.efforts + entry.efforts.filter { !kept.efforts.contains($0) }
+            merged[position] = AgentModelOption(id: kept.id, label: kept.label, efforts: efforts)
+        }
+        return merged
+    }
+
+    /// A full Anthropic model id (`claude-opus-5-5`, `claude-fable-5-1[1m]`),
+    /// as opposed to the short aliases (`opus`) or a third-party model name.
+    static func isAnthropicModelId(_ value: String) -> Bool {
+        value.hasPrefix("claude-")
     }
 
     public static func save(_ options: [AgentModelOption], to path: String) throws {
