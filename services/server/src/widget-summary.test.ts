@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { widgetSummary, type WidgetSummarySession } from "./widget-summary.js";
 
 function session(id: string, overrides: Partial<WidgetSummarySession> = {}): WidgetSummarySession {
-  return { id, status: "idle", needsAttention: false, items: [{ productId: "p1" }], ...overrides };
+  return { id, status: "idle", needsAttention: false, unread: false, items: [{ productId: "p1" }], ...overrides };
 }
 
 describe("widgetSummary (AND-149)", () => {
@@ -11,16 +11,16 @@ describe("widgetSummary (AND-149)", () => {
 
   it("counts the way the console filters do and leaves archived conversations out", () => {
     const summary = widgetSummary([
-      session("a", { needsAttention: true }),
+      session("a", { needsAttention: true, unread: true }),
       session("b", { status: "active" }),
-      session("c", { status: "failed" }),
+      session("c", { status: "failed", unread: true }),
       session("d", { command: { status: "failed" } }),
-      session("e", { needsAttention: true, status: "active", archivedAt: "2026-09-22T00:00:00.000Z" }),
+      session("e", { needsAttention: true, unread: true, status: "active", archivedAt: "2026-09-22T00:00:00.000Z" }),
     ], new Map(), now);
 
     expect(summary).toEqual({
       generatedAt: "2026-09-23T04:00:00.000Z",
-      agent: { attention: 1, active: 1, failed: 2, attentionProductId: "p1", attentionSessionId: "a" },
+      agent: { attention: 1, unread: 2, active: 1, failed: 2, attentionProductId: "p1", attentionSessionId: "a", unreadProductId: "p1" },
       items: { ready: 0, readyProductId: null },
       attentionEntries: [
         {
@@ -96,10 +96,25 @@ describe("widgetSummary (AND-149)", () => {
     expect(summary.items).toEqual({ ready: 7, readyProductId: "p2" });
   });
 
+  it("routes the unread widget count by unread sessions, including abnormal ones", () => {
+    const summary = widgetSummary([
+      session("attention", { needsAttention: true, items: [{ productId: "p1" }] }),
+      session("unread", { unread: true, items: [{ productId: "p2" }, { productId: "p2" }] }),
+      session("failed", { unread: true, status: "failed", items: [{ productId: "p2" }] }),
+    ], new Map(), now);
+
+    expect(summary.agent.attention).toBe(1);
+    expect(summary.agent.unread).toBe(2);
+    expect(summary.agent.attentionProductId).toBe("p1");
+    expect(summary.agent.unreadProductId).toBe("p2");
+    expect(summary.attentionEntries).toHaveLength(1);
+  });
+
   it("has nowhere to send a tap when there is nothing to open", () => {
     const summary = widgetSummary([session("a")], new Map([["p1", 0]]), now);
 
     expect(summary.agent.attentionProductId).toBeNull();
+    expect(summary.agent.unreadProductId).toBeNull();
     expect(summary.items.readyProductId).toBeNull();
   });
 });

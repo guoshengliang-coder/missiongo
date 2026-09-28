@@ -1,10 +1,9 @@
 /**
- * What the Android home-screen widget shows (AND-149): the console's three
+ * What the Android home-screen widget shows: unread, working and failed
  * conversation counts and the item list's "ready" count, across every product
- * the account can see.
+ * the account can see. Attention remains available for push notifications.
  *
- * The counts use the console's own definitions (apps/web/src/agent-session-view.ts)
- * so a number on the widget is the number the person finds after tapping it.
+ * The counts use the console's own definitions (apps/web/src/agent-session-view.ts).
  * Archived conversations count for nothing, as they do in the console.
  */
 
@@ -12,6 +11,7 @@ export interface WidgetSummarySession {
   readonly id: string;
   readonly status: string;
   readonly needsAttention: boolean;
+  readonly unread: boolean;
   readonly archivedAt?: string;
   readonly command?: { readonly status: string };
   readonly items: readonly { readonly productId: string; readonly key?: string }[];
@@ -39,12 +39,15 @@ export interface WidgetSummary {
   readonly generatedAt: string;
   readonly agent: {
     readonly attention: number;
+    readonly unread: number;
     readonly active: number;
     readonly failed: number;
-    /** Where a tap lands: the product holding the most conversations that need the person. */
+    /** Where legacy attention links land. */
     readonly attentionProductId: string | null;
     /** Present only when exactly one conversation needs the person, so a tap can open it. */
     readonly attentionSessionId?: string;
+    /** Where the unread widget count leads; attention still drives push notifications. */
+    readonly unreadProductId: string | null;
   };
   readonly items: {
     readonly ready: number;
@@ -87,12 +90,19 @@ export function widgetSummary(
 ): WidgetSummary {
   const live = sessions.filter((session) => !session.archivedAt);
   const attention = live.filter((session) => session.needsAttention);
+  const unread = live.filter((session) => session.unread);
   const attentionByProduct = new Map<string, number>();
+  const unreadByProduct = new Map<string, number>();
   for (const session of attention) {
     // One conversation can cover several items from the same product; it is
     // still one conversation there.
     for (const productId of new Set(session.items.map((item) => item.productId))) {
       attentionByProduct.set(productId, (attentionByProduct.get(productId) ?? 0) + 1);
+    }
+  }
+  for (const session of unread) {
+    for (const productId of new Set(session.items.map((item) => item.productId))) {
+      unreadByProduct.set(productId, (unreadByProduct.get(productId) ?? 0) + 1);
     }
   }
   let ready = 0;
@@ -101,10 +111,12 @@ export function widgetSummary(
     generatedAt: now.toISOString(),
     agent: {
       attention: attention.length,
+      unread: unread.length,
       active: live.filter((session) => session.status === "active").length,
       failed: live.filter((session) => session.status === "failed" || session.command?.status === "failed").length,
       attentionProductId: busiest(attentionByProduct),
       ...(attention.length === 1 ? { attentionSessionId: attention[0]!.id } : {}),
+      unreadProductId: busiest(unreadByProduct),
     },
     items: {
       ready,

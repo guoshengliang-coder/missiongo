@@ -18,9 +18,9 @@
 
     <!-- Home-screen widget (AND-149). Terms match the web console and item list. -->
     <string name="widget_label">Agent 控制台</string>
-    <string name="widget_description">查看待我处理的 Agent 会话和待处理的条目</string>
+    <string name="widget_description">查看有未读消息的 Agent 会话和待处理的条目</string>
     <string name="widget_title">Agent 控制台</string>
-    <string name="widget_attention">待我处理</string>
+    <string name="widget_attention">未读消息</string>
     <string name="widget_active_count">%1$d 运行中</string>
     <string name="widget_failed_count">%1$d 异常</string>
     <string name="widget_status_separator">·</string>
@@ -57,7 +57,7 @@
     <!-- Launcher badge (AND-185). The carrier notification exists only to hold the
          number launchers draw on the icon; it is silent, and disappears at zero. -->
     <string name="badge_channel_name">图标角标</string>
-    <string name="badge_channel_description">在桌面图标上显示待我处理数量</string>
-    <string name="badge_carrier_title">%1$d 项待我处理</string>
-    <string name="badge_carrier_text">点按查看待你处理的会话</string>
+    <string name="badge_channel_description">在桌面图标上显示有未读消息的会话数</string>
+    <string name="badge_carrier_title">%1$d 个会话有未读消息</string>
+    <string name="badge_carrier_text">点按查看 Agent 会话</string>
 </resources>

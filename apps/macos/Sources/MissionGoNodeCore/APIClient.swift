@@ -1327,17 +1327,17 @@ public struct APIClient: Sendable {
         return try decode(response, operation: "读取本机信息")
     }
 
-    public func attentionCount() async throws -> Int {
-        struct Reply: Decodable { let attention: Int }
+    public func unreadCount() async throws -> Int {
+        struct Reply: Decodable { let unread: Int }
         let response = try await send(
             "GET", "/api/v1/node/attention-summary", body: Optional<String>.none, bearer: try nodeToken()
         )
-        try requireSuccess(response, operation: "读取待我处理数量")
-        let reply: Reply = try decode(response, operation: "读取待我处理数量")
-        guard reply.attention >= 0 else {
-            throw APIError.invalidResponse("待我处理数量不能为负数。")
+        try requireSuccess(response, operation: "读取未读会话数量")
+        let reply: Reply = try decode(response, operation: "读取未读会话数量")
+        guard reply.unread >= 0 else {
+            throw APIError.invalidResponse("未读会话数量不能为负数。")
         }
-        return reply.attention
+        return reply.unread
     }
 
     /// Sets this machine's nickname, or clears it with `nil`. The server answers

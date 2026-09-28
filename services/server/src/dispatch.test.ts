@@ -3926,16 +3926,18 @@ describe("Widget summary (AND-149)", () => {
     expect(await summary(app, cookie)).toMatchObject({
       agent: {
         attention: 1,
+        unread: 1,
         active: 0,
         failed: 0,
         attentionProductId: mission.productId,
         attentionSessionId: sessionId,
+        unreadProductId: mission.productId,
       },
       items: { ready: 3, readyProductId: other.productId },
     });
   });
 
-  it("gives every Mac the account's current cross-product attention count (AND-176)", async () => {
+  it("gives every Mac separate cross-product attention and unread counts", async () => {
     const { app, cookie } = await signedInApp();
     const first = await launchedCodexSession(app, cookie);
     const second = await launchedCodexSession(app, cookie, "Another GO", "OTH");
@@ -3943,7 +3945,7 @@ describe("Widget summary (AND-149)", () => {
       method: "GET", url: "/api/v1/node/attention-summary",
       headers: { authorization: `Bearer ${token}` },
     });
-    expect((await count(first.node.token)).json()).toEqual({ attention: 0 });
+    expect((await count(first.node.token)).json()).toEqual({ attention: 0, unread: 0 });
 
     for (const entry of [first, second]) {
       await snapshot(app, entry.node.token, entry.sessionId, [
@@ -3957,17 +3959,32 @@ describe("Widget summary (AND-149)", () => {
     const counted = await count(first.node.token);
     expect(counted.statusCode).toBe(200);
     expect(counted.headers["cache-control"]).toBe("no-store");
-    expect(counted.json()).toEqual({ attention: 2 });
-    expect((await count(second.node.token)).json()).toEqual({ attention: 2 });
+    expect(counted.json()).toEqual({ attention: 2, unread: 2 });
+    expect((await count(second.node.token)).json()).toEqual({ attention: 2, unread: 2 });
     expect((await summary(app, cookie)).agent.attention).toBe(2);
+    expect((await summary(app, cookie)).agent.unread).toBe(2);
 
-    for (const [entry, remaining] of [[first, 1], [second, 0]] as const) {
+    const listed = (await app.inject({
+      method: "GET", url: `/api/v1/agent-sessions?productId=${first.mission.productId}`,
+      headers: { cookie },
+    })).json<{ sessions: Array<{ id: string; unreadAt?: string }> }>().sessions;
+    const unreadAt = listed.find((session) => session.id === first.sessionId)?.unreadAt;
+    expect(unreadAt).toBeTruthy();
+    const read = await app.inject({
+      method: "POST", url: `/api/v1/dispatches/${first.dispatchId}/read`,
+      headers: { cookie }, payload: { through: unreadAt },
+    });
+    expect(read.statusCode).toBe(204);
+    expect((await count(first.node.token)).json()).toEqual({ attention: 2, unread: 1 });
+    expect((await summary(app, cookie)).agent).toMatchObject({ attention: 2, unread: 1 });
+
+    for (const [entry, remainingAttention, remainingUnread] of [[first, 1, 1], [second, 0, 0]] as const) {
       const archived = await app.inject({
         method: "PATCH", url: `/api/v1/agent-sessions/${entry.sessionId}`,
         headers: { cookie }, payload: { archived: true },
       });
       expect(archived.statusCode).toBe(200);
-      expect((await count(first.node.token)).json()).toEqual({ attention: remaining });
+      expect((await count(first.node.token)).json()).toEqual({ attention: remainingAttention, unread: remainingUnread });
     }
     expect((await app.inject({ method: "GET", url: "/api/v1/node/attention-summary", headers: { cookie } })).statusCode).toBe(401);
     expect((await count(loginToken(app))).statusCode).toBe(401);

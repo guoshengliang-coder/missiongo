@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   activityLabelKey,
   agentChatMessages,
-  agentAttentionCounts,
+  agentUnreadCounts,
   agentSessionDetailRefetchInterval,
   agentSessionDispatchFailed,
   agentSessionsRefetchInterval,
@@ -71,23 +71,23 @@ describe("agent session message view", () => {
     expect(formatAgentMessageTime(new Date(2026, 7, 31, 23, 59).toISOString(), "zh-CN", now)).toMatch(/8.*31.*23:59/);
   });
 
-  it("counts attention once globally and once per distinct product", () => {
+  it("counts unread sessions once globally and once per distinct product, including failed sessions", () => {
     const sessions = [
       {
         id: "cross-product",
-        needsAttention: true,
+        unread: true,
         items: [
           { productId: "product-1" },
           { productId: "product-1" },
           { productId: "product-2" },
         ],
       },
-      { id: "second", needsAttention: true, items: [{ productId: "product-1" }] },
-      { id: "settled", needsAttention: false, items: [{ productId: "product-2" }] },
-      { id: "archived", needsAttention: true, archivedAt: "2026-09-21T00:00:00Z", items: [{ productId: "product-2" }] },
+      { id: "second", unread: true, status: "failed", items: [{ productId: "product-1" }] },
+      { id: "settled", unread: false, needsAttention: true, items: [{ productId: "product-2" }] },
+      { id: "archived", unread: true, archivedAt: "2026-09-21T00:00:00Z", items: [{ productId: "product-2" }] },
     ] as unknown as AgentSessionSummary[];
 
-    const counts = agentAttentionCounts(sessions);
+    const counts = agentUnreadCounts(sessions);
     expect(counts.total).toBe(2);
     expect([...counts.byProduct]).toEqual([
       ["product-1", 2],
@@ -95,8 +95,8 @@ describe("agent session message view", () => {
     ]);
   });
 
-  it("opens on conversations needing attention by default", () => {
-    expect(DEFAULT_AGENT_SESSION_FILTER).toBe("attention");
+  it("opens on all non-failed conversations by default", () => {
+    expect(DEFAULT_AGENT_SESSION_FILTER).toBe("all");
     expect(DEFAULT_AGENT_KIND_FILTER).toBe("all");
   });
 

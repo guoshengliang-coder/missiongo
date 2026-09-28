@@ -51,7 +51,7 @@ internal object WidgetRefresher {
                     // The badge tracks the fetched count, so it appears only after a
                     // real summary -- never on a guess -- and a failed fetch above or
                     // below leaves the last number standing instead of flashing 0.
-                    LauncherBadge.apply(appContext, fetched.summary.attention)
+                    LauncherBadge.apply(appContext, fetched.summary.unread)
                     fetched
                 }
                 WidgetFetchResult.SignedOut -> {

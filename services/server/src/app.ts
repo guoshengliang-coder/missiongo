@@ -523,6 +523,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       id: session.id,
       status: session.status,
       needsAttention: session.needsAttention,
+      unread: session.unread,
       ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
       ...(session.command ? { command: { status: session.command.status } } : {}),
       items: session.items.map((item) => ({ productId: item.productId, key: item.key })),
@@ -2317,16 +2318,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return dispatchStore.describeSelf(node.nodeId, nodeProducts(node.accountId));
   });
 
-  // A Mac only holds its node credential. Give it the same all-product
-  // "needs attention" count as the console, scoped to its owner's current
-  // view permissions. Reading this never schedules AI classification.
+  // A Mac only holds its node credential. Return unread for its badges while
+  // retaining attention for older clients, scoped to the owner's view rights.
+  // Reading this never schedules AI classification.
   app.get("/api/v1/node/attention-summary", async (request, reply) => {
     reply.header("cache-control", "no-store");
     const node = requireNode(request);
     const account = accountStore.getAccount(node.accountId);
+    const sessions = visibleAgentSessionsFor(account).filter((session) => !session.archivedAt);
     return {
-      attention: visibleAgentSessionsFor(account)
-        .filter((session) => !session.archivedAt && session.needsAttention).length,
+      attention: sessions.filter((session) => session.needsAttention).length,
+      unread: sessions.filter((session) => session.unread).length,
     };
   });
 

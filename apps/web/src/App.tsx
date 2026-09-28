@@ -180,7 +180,7 @@ import { productBadgeColor } from "./product-color";
 import { SessionLink } from "./session-link";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
-import { agentAttentionCounts, agentSessionDispatchFailed, agentSessionsRefetchInterval } from "./agent-session-view";
+import { agentUnreadCounts, agentSessionDispatchFailed, agentSessionsRefetchInterval } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { useMediaQuery } from "./use-media-query";
@@ -992,7 +992,7 @@ export function App() {
     ),
   });
   const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
-  const attentionCounts = useMemo(() => agentAttentionCounts(allAgentSessions), [allAgentSessions]);
+  const unreadCounts = useMemo(() => agentUnreadCounts(allAgentSessions), [allAgentSessions]);
 
   useEffect(() => {
     const wasOpen = previousAgentConsoleOpenRef.current;
@@ -1322,8 +1322,8 @@ export function App() {
           <ProductSwitcher
             products={products}
             selectedProductId={selectedProductId}
-            attentionCounts={agentConsoleOpen && hasAnyAiPermission ? attentionCounts.byProduct : undefined}
-            attentionCountsLoaded={agentSessionsQuery.data !== undefined}
+            unreadCounts={agentConsoleOpen && hasAnyAiPermission ? unreadCounts.byProduct : undefined}
+            unreadCountsLoaded={agentSessionsQuery.data !== undefined}
             onSelect={(productId) => {
               agentConsoleMoreRef.current?.removeAttribute("open");
               setSelectedProductId(productId);
@@ -1338,10 +1338,10 @@ export function App() {
           />
           {agentConsoleOpen && agentSessionsQuery.data !== undefined && (
             <span
-              className="agent-console-total-attention agent-attention-badge"
-              aria-label={t("agentConsoleAttentionCount", { count: attentionCounts.total })}
-              title={t("agentConsoleAttentionCount", { count: attentionCounts.total })}
-            ><BellRing size={13} aria-hidden="true" />{attentionCounts.total}</span>
+              className="agent-console-total-unread agent-unread-badge"
+              aria-label={t("agentConsoleUnreadCount", { count: unreadCounts.total })}
+              title={t("agentConsoleUnreadCount", { count: unreadCounts.total })}
+            ><BellRing size={13} aria-hidden="true" />{unreadCounts.total}</span>
           )}
         </div>
         {hasAnyAiPermission && !agentConsoleOpen && (
@@ -1356,10 +1356,10 @@ export function App() {
             <span>{t("agentConsoleOpen")}</span>
             {agentSessionsQuery.data !== undefined && (
               <small
-                className="agent-attention-badge"
-                aria-label={t("agentConsoleAttentionCount", { count: attentionCounts.total })}
-                title={t("agentConsoleNeedsAttention")}
-              >{attentionCounts.total}</small>
+                className="agent-unread-badge"
+                aria-label={t("agentConsoleUnreadCount", { count: unreadCounts.total })}
+                title={t("agentConsoleUnreadCount", { count: unreadCounts.total })}
+              >{unreadCounts.total}</small>
             )}
           </button>
         )}
@@ -2154,14 +2154,14 @@ function ProductBadge({ product, size = 22 }: { product: Product; size?: number 
 function ProductSwitcher({
   products,
   selectedProductId,
-  attentionCounts,
-  attentionCountsLoaded,
+  unreadCounts,
+  unreadCountsLoaded,
   onSelect,
 }: {
   products: readonly Product[];
   selectedProductId: string;
-  attentionCounts: ReadonlyMap<string, number> | undefined;
-  attentionCountsLoaded: boolean;
+  unreadCounts: ReadonlyMap<string, number> | undefined;
+  unreadCountsLoaded: boolean;
   onSelect: (productId: string) => void;
 }) {
   const { t } = useI18n();
@@ -2239,14 +2239,14 @@ function ProductSwitcher({
       >
         <ProductBadge product={selected} />
         <span className="product-switcher-name">{selected.name}</span>
-        {attentionCounts && attentionCountsLoaded && (
+        {unreadCounts && unreadCountsLoaded && (
           <small
-            className="agent-attention-badge"
-            aria-label={t("agentConsoleAttentionCount", {
-              count: attentionCounts.get(selected.id) ?? 0,
+            className="agent-unread-badge"
+            aria-label={t("agentConsoleUnreadCount", {
+              count: unreadCounts.get(selected.id) ?? 0,
             })}
-            title={t("agentConsoleNeedsAttention")}
-          >{attentionCounts.get(selected.id) ?? 0}</small>
+            title={t("agentConsoleUnreadCount", { count: unreadCounts.get(selected.id) ?? 0 })}
+          >{unreadCounts.get(selected.id) ?? 0}</small>
         )}
         <ChevronDown size={14} aria-hidden="true" />
       </button>
@@ -2274,14 +2274,14 @@ function ProductSwitcher({
               {/* Named, because a bare `li > span` rule also caught the badge and
                   stretched it to fill the row. */}
               <span className="product-switcher-option"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
-              {attentionCounts && attentionCountsLoaded && (
+              {unreadCounts && unreadCountsLoaded && (
                 <span
-                  className="agent-attention-badge"
-                  aria-label={t("agentConsoleAttentionCount", {
-                    count: attentionCounts.get(product.id) ?? 0,
+                  className="agent-unread-badge"
+                  aria-label={t("agentConsoleUnreadCount", {
+                    count: unreadCounts.get(product.id) ?? 0,
                   })}
-                  title={t("agentConsoleNeedsAttention")}
-                >{attentionCounts.get(product.id) ?? 0}</span>
+                  title={t("agentConsoleUnreadCount", { count: unreadCounts.get(product.id) ?? 0 })}
+                >{unreadCounts.get(product.id) ?? 0}</span>
               )}
             </li>
           ))}
