@@ -258,6 +258,19 @@ export interface OutgoingReply {
   readonly commandId?: string;
 }
 
+const outgoingReplyStatusKeys = {
+  sending: "agentSessionSending",
+  queued: "agentSessionReplyQueued",
+  delivering: "agentSessionReplyDelivering",
+  delivered: "agentSessionReplyDelivered",
+  delivery_unknown: "agentSessionReplyDeliveryUnknown",
+  failed: "agentSessionReplyFailed",
+} as const satisfies Record<OutgoingReply["status"], string>;
+
+export function outgoingReplyStatusKey(status: OutgoingReply["status"]) {
+  return outgoingReplyStatusKeys[status];
+}
+
 const commandStatusOrder: Readonly<Record<AgentSessionCommand["status"], number>> = {
   queued: 0,
   delivering: 1,

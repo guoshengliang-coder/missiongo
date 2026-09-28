@@ -22,6 +22,7 @@ import {
   messageLabelKey,
   mergeAgentSessionSnapshot,
   outgoingReply,
+  outgoingReplyStatusKey,
   questionAnswerLabel,
   questionAnswerText,
   questionAnswerValue,
@@ -236,6 +237,12 @@ describe("agent session message view", () => {
       id: "command-1", kind: "message", text: "发布", status: "delivery_unknown",
       createdAt: "2026-09-21T00:00:00Z",
     })).toMatchObject({ status: "delivery_unknown", commandId: "command-1" });
+  });
+
+  it("labels a delivered reply as delivered while its mirror is still pending", () => {
+    expect(outgoingReplyStatusKey("delivered")).toBe("agentSessionReplyDelivered");
+    expect(outgoingReplyStatusKey("failed")).toBe("agentSessionReplyFailed");
+    expect(outgoingReplyStatusKey("delivery_unknown")).toBe("agentSessionReplyDeliveryUnknown");
   });
 
   it("protects only command updates that happen while a detail poll is in flight (AND-215)", () => {
