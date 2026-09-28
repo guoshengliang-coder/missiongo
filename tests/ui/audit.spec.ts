@@ -197,6 +197,36 @@ test.describe("row checkbox on a touch screen", () => {
   });
 });
 
+test.describe("item list alignment", () => {
+  test.use({ viewport: { width: 1920, height: 900 } });
+
+  test("aligns the desktop checkbox with the type icon", async ({ page }) => {
+    await page.goto(`/?product=${fixture.productId}&status=all`);
+    const row = page.locator(".item-row.has-select").first();
+    const checkbox = await row.locator(".item-select").boundingBox();
+    const icon = await row.locator(".type-icon").boundingBox();
+    expect(checkbox).not.toBeNull();
+    expect(icon).not.toBeNull();
+    expect(Math.abs(checkbox!.y + checkbox!.height / 2 - icon!.y - icon!.height / 2)).toBeLessThanOrEqual(1);
+  });
+
+  test("aligns the split list byline and source with the title", async ({ page }) => {
+    await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
+    await page.locator(".workspace.detail-open").evaluate((element: HTMLElement) => {
+      element.style.setProperty("--list-pane-width", "900px");
+    });
+    const row = page.locator(".item-row.has-select").first();
+    const title = await row.locator(".item-title").boundingBox();
+    const creator = await row.locator(".item-updated .item-creator").boundingBox();
+    const source = await row.locator(".item-context strong").first().boundingBox();
+    expect(title).not.toBeNull();
+    expect(creator).not.toBeNull();
+    expect(source).not.toBeNull();
+    expect(Math.abs(creator!.y - title!.y)).toBeLessThanOrEqual(2);
+    expect(Math.abs(source!.x - title!.x)).toBeLessThanOrEqual(1);
+  });
+});
+
 test.describe("the more button on a compact card", () => {
   test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
 

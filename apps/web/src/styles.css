@@ -592,7 +592,8 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 @media (hover: hover) { .agent-console-session:hover { background: var(--row-hover); } }
 .agent-console-session.active { background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--mint-dark); }
 .agent-console-session.unread .agent-console-session-copy strong { font-weight: 850; }
-.agent-console-unread-dot { width: 7px; height: 7px; align-self: center; background: var(--mint-dark); border-radius: 999px; }
+.agent-console-session-indicators { display: grid; justify-items: center; align-content: start; gap: 4px; }
+.agent-console-unread-dot { width: 7px; height: 7px; background: var(--mint-dark); border-radius: 999px; }
 .agent-console-status-icon { width: 16px; height: 16px; display: grid; place-items: center; color: var(--status-inbox-fg); }
 .agent-console-status-active { color: var(--status-progress-fg); }
 .agent-console-status-idle { color: var(--amber); }
@@ -656,23 +657,21 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-message { max-width: min(780px, 88%); padding: 11px 13px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: 0 2px 8px rgba(23,32,51,.03); }
 .agent-console-message-agent, .agent-console-message-plan { align-self: flex-start; border-top-left-radius: var(--radius-xs); }
 .agent-console-message-user { align-self: flex-end; background: var(--accent-bg); border-color: var(--accent-line); border-top-right-radius: var(--radius-xs); }
-.agent-console-message-outgoing { min-width: min(320px, 88%); }
-.agent-console-message-outgoing-sending,
-.agent-console-message-outgoing-queued,
-.agent-console-message-outgoing-delivering { color: var(--muted); background: var(--surface-sunken); border-style: dashed; }
-.agent-console-message-outgoing-failed { background: var(--danger-bg); border-color: var(--danger-line); }
+.agent-console-message-outgoing-failed .agent-console-message-delivery,
+.agent-console-message-outgoing-delivery_unknown .agent-console-message-delivery { color: var(--danger); }
 .agent-console-message-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: var(--text-xs); }
 .agent-console-message-meta small { font-size: inherit; font-weight: 750; }
 .agent-console-message-meta time { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.agent-console-send-spinner { flex: 0 0 auto; }
+.agent-console-queued-action { padding: 0; font-size: var(--text-xs); }
 .agent-console-message .markdown-text { margin-top: 5px; font-size: var(--text-sm); line-height: 1.6; }
 .agent-console-message-user .markdown-text { margin-top: 0; }
 .agent-console-message .markdown-text > :first-child { margin-top: 0; }
 .agent-console-message .markdown-text > :last-child { margin-bottom: 0; }
-.agent-console-message-delivery { display: flex; align-items: center; gap: 6px; margin-top: 7px; color: var(--muted); font-size: var(--text-xs); }
+.agent-console-message-delivery { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; color: var(--muted); font-size: var(--text-xs); }
 .agent-console-message-delivery > svg { flex: 0 0 auto; }
 .agent-console-message-delivery > span { min-width: 0; flex: 1; }
 .agent-console-message-delivery .text-button { flex: 0 0 auto; padding: 3px 5px; font-size: var(--text-xs); }
-.agent-console-message-outgoing-failed .agent-console-message-delivery { color: var(--danger); }
 .agent-console-activity { align-self: center; display: inline-flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 5px 0; padding: 7px 10px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); }
 .agent-console-activity-active { color: var(--status-progress-fg); background: var(--status-progress-bg); border-color: var(--accent-line); }
 .agent-console-activity-failed { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-line); }
@@ -744,6 +743,12 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-chat-icon-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 0; display: grid; place-items: center; }
 .agent-chat-draft-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .agent-chat-draft-files > span { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 5px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-inset); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.agent-chat-draft-files > .agent-chat-draft-file { width: min(236px, 100%); min-width: 0; padding: 4px 2px 4px 4px; gap: 7px; overflow: hidden; }
+.agent-chat-draft-file-preview { width: 52px; height: 48px; flex: 0 0 52px; display: grid; place-items: center; overflow: hidden; color: var(--muted); background: var(--tile-bg); border-radius: var(--radius-xs); }
+.agent-chat-draft-file-preview img { width: 100%; height: 100%; object-fit: cover; }
+.agent-chat-draft-file-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.agent-chat-draft-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-chat-draft-file-copy small { color: var(--muted); font-size: var(--text-xs); }
 .agent-chat-draft-files button { width: 44px; height: 44px; flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0; display: grid; place-items: center; }
 /* AND-234: anchors the shared drag overlay to the reply form. The overlay's
    sticky message assumes a tall capture dialog; this form is a couple of rows,
@@ -821,12 +826,12 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 /* The checkbox and the row's own button share the first cell rather than taking a
    column of their own: the list's grid is repeated at four breakpoints, and a new
    column would have to be threaded through every one of them. */
-.item-row-lead { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.item-row-lead { min-width: 0; display: flex; align-items: flex-start; gap: 10px; }
 /* The box is what you look at, the label is what you hit. A pointer that is a
    finger gets a 44px label in the touch block below, with negative margins that
    hand the row back all but the box's own 20px -- so the target is real and
    measured, and a mouse window keeps the same first column it always had. */
-.item-select-hit { flex: 0 0 auto; display: inline-grid; place-items: center; cursor: pointer; }
+.item-select-hit { flex: 0 0 auto; display: inline-grid; place-items: center; margin-top: 4px; cursor: pointer; }
 /* Drawn rather than left to the UA: the list's multi-select is its own control.
    `padding: 0` is load-bearing -- the blanket `input { padding: 0 12px }` above
    outranks `width` under border-box, and a 20px box rendered 28px wide. */
@@ -993,8 +998,9 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
   /* Beside the text rather than under it: with room to spare the row stays one
      item tall, and the tiles read as belonging to it. */
   .workspace.detail-open .item-media-strip { grid-column: 3; grid-row: 1 / -1; align-self: center; }
-  .workspace.detail-open .item-updated { grid-column: 2; grid-row: 1; justify-self: end; align-items: flex-end; text-align: right; }
+  .workspace.detail-open .item-updated { grid-column: 2; grid-row: 1; align-self: start; justify-self: end; align-items: flex-end; margin-top: 32px; text-align: right; }
   .workspace.detail-open .item-context { grid-column: 1; grid-row: 2; }
+  .workspace.detail-open .item-row.has-select .item-context { margin-left: 30px; }
   .workspace.detail-open .item-state { grid-column: 2; grid-row: 2; justify-self: end; }
   .workspace.detail-open .item-row-actions { display: none; }
   .workspace.detail-open .item-row.selected { background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--mint-dark); }
@@ -1034,7 +1040,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
   .workspace.detail-open .item-media-thumb { width: 72px; height: 84px; }
   .workspace.detail-open .item-context { grid-column: 1; grid-row: 3; }
   .workspace.detail-open .item-state { grid-column: 2; grid-row: 3; justify-self: end; }
-  .workspace.detail-open .item-updated { grid-column: 1 / -1; grid-row: 4; justify-self: end; align-items: flex-end; text-align: right; }
+  .workspace.detail-open .item-updated { grid-column: 1 / -1; grid-row: 4; justify-self: end; align-items: flex-end; margin-top: 0; text-align: right; }
 }
 .detail-pane { min-width: 0; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
 .detail-toolbar { z-index: 8; min-height: 62px; flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 9px 34px; background: var(--surface-strong); border-bottom: 1px solid var(--line); }
@@ -1648,7 +1654,6 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
      its top on the 28px icon's top rather than its middle. 4px is the half of
      the difference, and the label's own padding is the target -- a tap in it
      ticks the box, it never opens the row. */
-  .item-select-hit { margin-top: 4px; }
   /* Wrapping is allowed here, and it is safe now: the icon and the key are on the
      first flex line together, so a badge that wraps takes the second line alone.
      min-height holds the line at the icon's height either way. */
