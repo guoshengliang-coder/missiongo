@@ -66,12 +66,17 @@ export interface ValidatedUpload {
  * paths drifting apart on limits or accepted types.
  */
 export function validateUpload(encodedFilename: string, suppliedContentType: string, bytes: Buffer): ValidatedUpload {
+  return validateUploadMetadata(encodedFilename, suppliedContentType, bytes.length);
+}
+
+/** Validate an upload before its bytes have arrived, using the same browser limits. */
+export function validateUploadMetadata(encodedFilename: string, suppliedContentType: string, sizeBytes: number): ValidatedUpload {
   const filename = safeFilename(encodedFilename);
   const extension = extname(filename).toLowerCase();
   const rule = RULES[extension];
   if (!rule) throw invalidInput("Unsupported attachment extension.");
-  if (bytes.length < 1) throw invalidInput("Attachment cannot be empty.");
-  if (bytes.length > rule.maxBytes) throw invalidInput(`Attachment exceeds the ${rule.maxBytes / MEBIBYTE} MiB limit.`);
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 1) throw invalidInput("Attachment cannot be empty.");
+  if (sizeBytes > rule.maxBytes) throw invalidInput(`Attachment exceeds the ${rule.maxBytes / MEBIBYTE} MiB limit.`);
 
   const normalizedType = suppliedContentType.split(";", 1)[0]!.trim().toLowerCase();
   if (normalizedType && normalizedType !== "application/octet-stream" && !rule.acceptedContentTypes.includes(normalizedType)) {

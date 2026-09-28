@@ -1511,6 +1511,38 @@ export class MissionGoDatabase {
           .run(202609280604, new Date().toISOString());
       }
     });
+    this.transaction(() => {
+      if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609281047").get()) {
+        this.connection.exec(`
+          CREATE TABLE mcp_attachment_uploads (
+            upload_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            received_bytes INTEGER NOT NULL DEFAULT 0,
+            storage_filename TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            consumed_item_key TEXT,
+            attachment_id TEXT
+          ) STRICT;
+          CREATE INDEX idx_mcp_attachment_uploads_expiry ON mcp_attachment_uploads(expires_at);
+          CREATE TABLE mcp_attachment_commits (
+            idempotency_key TEXT PRIMARY KEY,
+            operation TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            item_key TEXT NOT NULL,
+            attachment_ids_json TEXT NOT NULL
+          ) STRICT;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202609281047, new Date().toISOString());
+      }
+    });
     this.connection.exec("PRAGMA optimize;");
   }
 }

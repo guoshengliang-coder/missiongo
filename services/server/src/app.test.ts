@@ -1,4 +1,4 @@
-import { createHash, scryptSync } from "node:crypto";
+import { createHash, randomUUID, scryptSync } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -228,11 +228,144 @@ describe("Commenting over MCP", () => {
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
       capabilities: {
-        writeTools: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item"],
+        writeTools: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "add_item_attachment"],
         canComment: true,
         canCreateItems: true,
       },
     });
+  });
+
+  it("creates an item with staged image and video atomically, then reads both surfaces", async () => {
+    const { app, call, writeToken, productId } = await commentingApp();
+    const image = await sharp({ create: { width: 2, height: 2, channels: 3, background: "red" } }).png().toBuffer();
+    const video = Buffer.from("small video fixture");
+    const uploads = [
+      { id: randomUUID(), filename: "screen.png", contentType: "image/png", bytes: image },
+      { id: randomUUID(), filename: "recording.mp4", contentType: "video/mp4", bytes: video },
+    ];
+    let sequence = 1;
+    for (const upload of uploads) {
+      const common = {
+        uploadId: upload.id, productId, filename: upload.filename, contentType: upload.contentType,
+        sizeBytes: upload.bytes.length, sha256: createHash("sha256").update(upload.bytes).digest("hex"),
+      };
+      const first = upload.bytes.subarray(0, Math.ceil(upload.bytes.length / 2));
+      const second = upload.bytes.subarray(first.length);
+      const chunk = (offsetBytes: number, bytes: Buffer) => call(writeToken, sequence++, "tools/call", {
+        name: "upload_attachment_chunk", arguments: { ...common, offsetBytes, dataBase64: bytes.toString("base64") },
+      });
+      expect((await chunk(0, first)).result?.structuredContent).toMatchObject({ receivedBytes: first.length, complete: false });
+      expect((await chunk(0, first)).result?.structuredContent).toMatchObject({ receivedBytes: first.length, complete: false });
+      expect((await chunk(first.length, second)).result?.structuredContent).toMatchObject({ complete: true });
+    }
+
+    const createArgs = {
+      productId, title: "Evidence", description: "Screenshot and recording", type: "bug", priority: "normal",
+      status: "ready", platform: "server", agentName: "Codex", idempotencyKey: "with-files-1",
+      attachmentUploadIds: uploads.map((upload) => upload.id),
+    };
+    const missing = await call(writeToken, sequence++, "tools/call", {
+      name: "create_item", arguments: { ...createArgs, attachmentUploadIds: [uploads[0]!.id, randomUUID()] },
+    });
+    expect(JSON.stringify(missing)).toMatch(/not found/i);
+    expect(app.missionGoStore.listWorkItems({ productId })).toHaveLength(1);
+
+    const created = await call(writeToken, sequence++, "tools/call", { name: "create_item", arguments: createArgs });
+    expect(created.result?.structuredContent).toMatchObject({ item: { key: "HG-2", attachments: [{ kind: "image" }, { kind: "video" }] } });
+    const retried = await call(writeToken, sequence++, "tools/call", { name: "create_item", arguments: createArgs });
+    expect(retried.result?.structuredContent).toMatchObject({ item: { key: "HG-2", attachments: [{ kind: "image" }, { kind: "video" }] } });
+    expect(JSON.stringify(await call(writeToken, sequence++, "tools/call", { name: "create_item",
+      arguments: { ...createArgs, title: "Different evidence" } }))).toMatch(/idempotency_conflict|different attachment arguments/);
+    expect(app.missionGoStore.listWorkItems({ productId })).toHaveLength(2);
+
+    const item = app.missionGoStore.getWorkItem("HG-2");
+    for (const [index, fixture] of uploads.entries()) {
+      const attachment = item.attachments[index]!;
+      const fromWeb = await app.inject({ method: "GET", url: `/api/v1/items/HG-2/attachments/${attachment.id}/content`,
+        headers: { authorization: "Bearer management-test-token" } });
+      expect(fromWeb.rawPayload).toEqual(fixture.bytes);
+      const fromMcp = await call(writeToken, sequence++, "tools/call", {
+        name: "get_attachment", arguments: { itemKey: "HG-2", attachmentId: attachment.id },
+      });
+      expect(fromMcp.result?.structuredContent).toMatchObject({ attachment: { filename: fixture.filename }, inline: true });
+    }
+  });
+
+  it("adds a log to an existing item once, with agent attribution and write scope", async () => {
+    const { app, call, readToken, writeToken, productId } = await commentingApp();
+    const bytes = Buffer.from("boot\nready\n");
+    const uploadId = randomUUID();
+    const stage = { uploadId, productId, filename: "runtime.log", contentType: "text/plain", sizeBytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"), offsetBytes: 0, dataBase64: bytes.toString("base64") };
+    expect(JSON.stringify(await call(readToken, 1, "tools/call", { name: "upload_attachment_chunk", arguments: stage })))
+      .toMatch(/does not include write access/);
+    expect((await call(writeToken, 2, "tools/call", { name: "upload_attachment_chunk", arguments: stage })).result?.structuredContent)
+      .toMatchObject({ complete: true });
+    const addArguments = { itemKey: "HG-1", uploadId, idempotencyKey: "add-log-1" };
+    expect(JSON.stringify(await call(readToken, 3, "tools/call", { name: "add_item_attachment", arguments: addArguments })))
+      .toMatch(/does not include write access/);
+    const added = await call(writeToken, 4, "tools/call", { name: "add_item_attachment", arguments: addArguments });
+    expect(added.result?.structuredContent).toMatchObject({ attachment: { kind: "log", filename: "runtime.log" }, statusChanged: false });
+    const retried = await call(writeToken, 5, "tools/call", { name: "add_item_attachment", arguments: addArguments });
+    expect(retried.result?.structuredContent).toEqual(added.result?.structuredContent);
+    expect(JSON.stringify(await call(writeToken, 5, "tools/call", { name: "add_item_attachment",
+      arguments: { ...addArguments, uploadId: randomUUID() } }))).toMatch(/idempotency_conflict|different attachment arguments/);
+    const context = await call(writeToken, 6, "tools/call", { name: "get_item_context", arguments: { itemKey: "HG-1" } });
+    expect(context.result?.structuredContent).toMatchObject({ attachmentCount: 1 });
+    const attachmentId = (added.result!.structuredContent as { attachment: { id: string } }).attachment.id;
+    const read = await call(writeToken, 7, "tools/call", { name: "get_attachment", arguments: { itemKey: "HG-1", attachmentId } });
+    expect(read.result?.structuredContent).toMatchObject({ text: "boot\nready\n" });
+    const timeline = (await app.inject({ method: "GET", url: "/api/v1/items/HG-1/timeline",
+      headers: { authorization: "Bearer management-test-token" } })).json<{ events: Array<{ eventType: string; actorKind: string }> }>().events;
+    expect(timeline.find((event) => event.eventType === "attachment_added")?.actorKind).toBe("agent");
+
+    const pdf = Buffer.from("%PDF-1.4\nfixture\n");
+    const pdfUploadId = randomUUID();
+    const pdfStage = { uploadId: pdfUploadId, productId, filename: "report.pdf", contentType: "application/pdf",
+      sizeBytes: pdf.length, sha256: createHash("sha256").update(pdf).digest("hex"),
+      offsetBytes: 0, dataBase64: pdf.toString("base64") };
+    expect((await call(writeToken, 8, "tools/call", { name: "upload_attachment_chunk", arguments: pdfStage })).result?.structuredContent)
+      .toMatchObject({ complete: true });
+    const pdfAdded = await call(writeToken, 9, "tools/call", { name: "add_item_attachment",
+      arguments: { itemKey: "HG-1", uploadId: pdfUploadId, idempotencyKey: "add-pdf-1" } });
+    const pdfId = (pdfAdded.result!.structuredContent as { attachment: { id: string } }).attachment.id;
+    const pdfRead = await call(writeToken, 10, "tools/call", { name: "get_attachment",
+      arguments: { itemKey: "HG-1", attachmentId: pdfId } });
+    expect(pdfRead.result?.structuredContent).toMatchObject({ representation: "original_file", inline: true });
+    expect(JSON.stringify(pdfRead.result?.content)).toContain(pdf.toString("base64"));
+  });
+
+  it("rejects mismatched bytes and cross-product staging without creating a file or item", async () => {
+    const { app, call, writeToken, productId } = await commentingApp();
+    const other = app.missionGoStore.createProduct({ name: "Private", keyPrefix: "PR" });
+    app.missionGoAccounts.replacePermissions("account-test-1", [
+      { productId, canView: true, canOperate: true, canUseAi: true },
+    ]);
+    const bytes = Buffer.from("test log");
+    const uploadId = randomUUID();
+    const base = { uploadId, productId, filename: "test.log", contentType: "text/plain", sizeBytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"), offsetBytes: 0,
+      dataBase64: bytes.toString("base64") };
+    expect(JSON.stringify(await call(writeToken, 1, "tools/call", { name: "upload_attachment_chunk",
+      arguments: { ...base, productId: other.id } }))).toMatch(/not permitted/);
+    expect(JSON.stringify(await call(writeToken, 2, "tools/call", { name: "upload_attachment_chunk",
+      arguments: { ...base, sha256: "0".repeat(64) } }))).toMatch(/upload_digest_mismatch|do not match sha256/);
+    expect((await call(writeToken, 3, "tools/call", { name: "upload_attachment_chunk", arguments: base })).result?.structuredContent)
+      .toMatchObject({ complete: true });
+    expect(JSON.stringify(await call(writeToken, 4, "tools/call", { name: "upload_attachment_chunk",
+      arguments: { ...base, filename: "changed.log" } }))).toMatch(/upload_id_conflict|different file metadata/);
+    expect(app.missionGoStore.listWorkItems({ productId })).toHaveLength(1);
+  });
+
+  it("accepts a maximum-size chunk through the MCP HTTP gateway", async () => {
+    const { call, writeToken, productId } = await commentingApp();
+    const bytes = Buffer.alloc(512 * 1024, 7);
+    const result = await call(writeToken, 1, "tools/call", { name: "upload_attachment_chunk", arguments: {
+      uploadId: randomUUID(), productId, filename: "capture.mp4", contentType: "video/mp4",
+      sizeBytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"),
+      offsetBytes: 0, dataBase64: bytes.toString("base64"),
+    } });
+    expect(result.result?.structuredContent).toMatchObject({ receivedBytes: bytes.length, complete: true });
   });
 
   describe("creating a derived item", () => {

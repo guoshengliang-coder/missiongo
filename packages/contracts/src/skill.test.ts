@@ -24,7 +24,7 @@ const skill = readFileSync(skillPath, "utf8");
  *
  * To update: bump MISSIONGO_SKILL_VERSION, run this test, and paste the actual digest.
  */
-const SKILL_CONTENT_DIGEST = "4da7933bafa850054e11bfd74cd3dca185803b7f9c8311e75c2fec82d928e20d";
+const SKILL_CONTENT_DIGEST = "27aebedc5cc80a294494019b13d99b8e395f6d31ecd8c779a4200589dc0ac43a";
 
 function skillBodyWithoutVersion(): string {
   return skill
@@ -51,7 +51,7 @@ describe("MissionGo Skill contract", () => {
     const published = new Set(MCP_TOOL_DEFINITIONS.map((tool) => tool.name));
     // Tool names are verb-prefixed, which keeps config keys such as `mcp_servers` out.
     const referenced = [...new Set(
-      [...skill.matchAll(/`((?:get|list|claim|append|submit|create|update|delete)_[a-z_]+)`/g)]
+      [...skill.matchAll(/`((?:get|list|claim|append|submit|create|update|delete|upload|add)_[a-z_]+)`/g)]
         .map((match) => match[1]),
     )];
 

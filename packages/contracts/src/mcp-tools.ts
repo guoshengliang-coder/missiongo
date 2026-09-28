@@ -26,6 +26,8 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "submit_development_complete", access: "write", purpose: "Record a verified merged PR and every affected release artifact." },
   { name: "submit_for_verification", access: "write", purpose: "Hand published work over for a person to verify, recording evidence for every required artifact." },
   { name: "create_item", access: "write", purpose: "Record a follow-up split off from another item, or an independent item in a product, after the user approved its content (including the product) in the session." },
+  { name: "upload_attachment_chunk", access: "write", purpose: "Stage a bounded chunk of a user-approved attachment in an authorized product." },
+  { name: "add_item_attachment", access: "write", purpose: "Attach a completed upload to a user-named work item without editing its fields." },
 ] as const satisfies readonly McpToolDefinition[];
 
 export interface ListItemsInput {
@@ -68,6 +70,8 @@ export interface CreateItemInput {
   readonly platform?: "android" | "macos" | "web" | "server" | "shared" | "other";
   readonly agentName?: string;
   readonly summary?: string;
+  /** Completed uploads staged in the same product and owned by this connection. */
+  readonly attachmentUploadIds?: readonly string[];
   readonly idempotencyKey: string;
 }
 
