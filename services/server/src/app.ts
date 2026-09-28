@@ -47,6 +47,7 @@ import {
 } from "./accounts-store.js";
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES, MEBIBYTE } from "./attachment-storage.js";
 import { AgentSessionAttachments, type AgentSessionAttachment } from "./agent-session-attachments.js";
+import { AgentApprovalStore, type AgentApproval } from "./agent-approval-store.js";
 import { BROWSER_UNREADABLE_IMAGE_TYPES, heicToJpeg } from "./image-decode.js";
 import { AiTitleService } from "./ai-title.js";
 import {
@@ -495,6 +496,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const dispatchStore = new DispatchStore(store.database);
   const agentSessionAttachments = new AgentSessionAttachments(store.database, options.attachmentsPath ?? "./data/attachments");
   const agentSessionStore = new AgentSessionStore(store.database, agentSessionAttachments);
+  const agentApprovalStore = new AgentApprovalStore(store.database);
   const accountStore = new AccountStore(store.database);
   const aiTitle = new AiTitleService(
     store.database,
@@ -1905,6 +1907,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
     return {
       ...session,
+      ...(session.agentKind === "codex" && agentApprovalStore.get(session.id)
+        ? { approval: agentApprovalStore.get(session.id) } : {}),
       canReply: !session.managedExecution && replyBlockedReason === undefined,
       canResolveDelivery: !session.managedExecution && productIds.every((productId) =>
         accountStore.allows(account, productId, "operate") && accountStore.allows(account, productId, "ai")),
@@ -1916,6 +1920,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/agent-sessions/:sessionId", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     return agentSessionResponse(loadAuthorizedAgentSession(request, sessionId));
+  });
+
+  app.post("/api/v1/agent-sessions/:sessionId/approvals/:approvalId/decision", async (request) => {
+    const { sessionId, approvalId } = request.params as { sessionId: string; approvalId: string };
+    const session = authorizedAgentSession(request, sessionId, true);
+    if (session.agentKind !== "codex") throw conflict("approval_not_codex", "Only Codex sessions have this approval path.");
+    const choice = stringField(objectBody(request.body), "decision");
+    if (choice !== "accept" && choice !== "decline") throw invalidInput("decision must be accept or decline.");
+    return { approval: agentApprovalStore.decide(sessionId, approvalId, choice) };
+  });
+
+  app.post("/api/v1/agent-sessions/:sessionId/approvals/:approvalId/retry", async (request) => {
+    const { sessionId, approvalId } = request.params as { sessionId: string; approvalId: string };
+    const session = authorizedAgentSession(request, sessionId, true);
+    if (session.agentKind !== "codex") throw conflict("approval_not_codex", "Only Codex sessions have this approval path.");
+    return { approval: agentApprovalStore.requestRetry(sessionId, approvalId) };
   });
 
   app.get("/api/v1/agent-sessions", async (request) => {
@@ -1942,6 +1962,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         });
         return {
           ...session,
+          ...(session.agentKind === "codex" && agentApprovalStore.get(session.id)
+            ? { approval: agentApprovalStore.get(session.id) } : {}),
           canReply: Boolean(session.agentSessionId) && replyBlockedReason === undefined,
           ...(replyBlockedReason ? { replyBlockedReason } : {}),
           canRetry: !session.archivedAt && !session.nodeRevoked && session.retryable && canOperate && canUseAi,
@@ -2333,9 +2355,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             stopRequested: session.managedExecution.stopRequested || !starting || !options.managedExecution?.enabled } };
         }
       }
+      const approvalControl = session.agentKind === "codex" ? agentApprovalStore.pendingForNode(session.id) : {};
       return !acceptsAttachments && session.command?.attachments?.length
-        ? { ...session, command: undefined }
-        : session;
+        ? { ...session, command: undefined, ...approvalControl }
+        : { ...session, ...approvalControl };
     }) };
   });
 
@@ -2470,6 +2493,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(body.clearSessionUrl === true ? { clearSessionUrl: true } : {}),
         ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
       });
+      if (body.approval !== undefined) {
+        const approval = objectBody(body.approval);
+        const kind = stringField(approval, "kind");
+        if (kind !== "manual" && kind !== "auto") throw invalidInput("approval kind must be manual or auto.");
+        agentApprovalStore.record(node.nodeId, sessionId, {
+          id: stringField(approval, "id")!, kind,
+          status: stringField(approval, "status")!, turnId: stringField(approval, "turnId")!,
+          action: stringField(approval, "action")!,
+          ...(stringField(approval, "reason", false) ? { reason: approval.reason as string } : {}),
+          startedAtMs: Number(approval.startedAtMs),
+        } satisfies AgentApproval);
+      }
+      if (body.approvalRetryId !== undefined) {
+        const status = stringField(body, "approvalRetryStatus");
+        if (status !== "delivering" && status !== "delivered" && status !== "restored" && status !== "failed") {
+          throw invalidInput("approvalRetryStatus must be delivering, delivered, restored or failed.");
+        }
+        agentApprovalStore.recordRetry(node.nodeId, sessionId, stringField(body, "approvalRetryId")!,
+          status, stringField(body, "approvalRetryError", false));
+      }
       scheduleAttentionClassification(sessionId);
       return reply.status(204).send();
     },

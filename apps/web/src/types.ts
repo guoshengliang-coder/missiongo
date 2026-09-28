@@ -494,6 +494,7 @@ export interface AgentSession {
   readonly activities: readonly AgentSessionActivity[];
   readonly turnState?: AgentSessionTurnState;
   readonly command?: AgentSessionCommand;
+  readonly approval?: AgentApproval;
   readonly canReply: boolean;
   readonly canResolveDelivery: boolean;
   readonly canAttach?: boolean;
@@ -528,6 +529,7 @@ export interface AgentSessionSummary {
   }[];
   readonly latestMessage?: Pick<AgentSessionMessage, "role" | "text">;
   readonly command?: AgentSessionCommand;
+  readonly approval?: AgentApproval;
   readonly activities: readonly AgentSessionActivity[];
   readonly turnState?: AgentSessionTurnState;
   readonly canReply: boolean;
@@ -552,6 +554,20 @@ export interface AgentSessionSummary {
   readonly unread: boolean;
   /** The unread clock value; marking read sends it back so later arrivals stay unread. */
   readonly unreadAt?: string;
+}
+
+export interface AgentApproval {
+  readonly id: string;
+  readonly kind: "manual" | "auto";
+  readonly status: string;
+  readonly turnId: string;
+  readonly action: string;
+  readonly reason?: string;
+  readonly startedAtMs: number;
+  readonly decision?: "accept" | "decline";
+  readonly retryId?: string;
+  readonly retryStatus?: "queued" | "delivering" | "delivered" | "restored" | "failed";
+  readonly retryError?: string;
 }
 
 export interface CreateDispatchInput {

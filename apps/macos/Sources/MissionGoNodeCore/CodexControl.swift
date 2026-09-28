@@ -34,9 +34,16 @@ public protocol CodexControl: Sendable {
     /// Fail closed for daemon restart: every loaded thread is treated as work
     /// that must not be interrupted, even when it is presently idle.
     func hasLoadedThreads(socketPath: String) async throws -> Bool
+    /// A dedicated subscription keeps approval requests visible to MissionGo.
+    func approvalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot?
+    func answerApproval(threadId: String, approvalId: String, decision: String) throws
 }
 
 public extension CodexControl {
+    func approvalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot? { nil }
+    func answerApproval(threadId: String, approvalId: String, decision: String) throws {
+        throw CodexControlError.rpc(method: "approval", message: "这个 Codex 控制器不支持控制台授权。")
+    }
     func readManagedThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId)
     }
@@ -76,6 +83,27 @@ public extension CodexControl {
     }
 
     func hasLoadedThreads(socketPath: String) async throws -> Bool { true }
+}
+
+public struct CodexApprovalSnapshot: Codable, Equatable, Sendable {
+    public let id: String
+    public let kind: String
+    public let status: String
+    public let turnId: String
+    public let action: String
+    public let reason: String?
+    public let startedAtMs: Int64
+
+    public init(id: String, kind: String, status: String, turnId: String, action: String,
+                reason: String? = nil, startedAtMs: Int64) {
+        self.id = id
+        self.kind = kind
+        self.status = status
+        self.turnId = turnId
+        self.action = action
+        self.reason = reason
+        self.startedAtMs = startedAtMs
+    }
 }
 
 /// Settings a person chose for a running thread, sent with `thread/resume`
@@ -612,20 +640,33 @@ public struct CodexAppServerControl: CodexControl {
     /// reply keeps the full `timeout` above.
     public let readTimeout: TimeInterval
     private let archiveCache: CodexArchiveCache
+    private let approvalMonitor: CodexApprovalMonitor
 
     public init(timeout: TimeInterval = 30, readTimeout: TimeInterval = 10) {
         self.timeout = timeout
         self.readTimeout = readTimeout
         archiveCache = CodexArchiveCache()
+        approvalMonitor = CodexApprovalMonitor()
     }
 
     public func startThread(_ request: CodexThreadRequest) async throws -> String {
         let timeout = self.timeout
-        return try await withCheckedThrowingContinuation { continuation in
+        let threadId: String = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result { try CodexAppServerControl.startThreadSync(request, timeout: timeout) })
             }
         }
+        approvalMonitor.watch(socketPath: request.socketPath, threadId: threadId)
+        return threadId
+    }
+
+    public func approvalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot? {
+        approvalMonitor.watch(socketPath: socketPath, threadId: threadId)
+        return approvalMonitor.snapshot(threadId: threadId)
+    }
+
+    public func answerApproval(threadId: String, approvalId: String, decision: String) throws {
+        try approvalMonitor.answer(threadId: threadId, approvalId: approvalId, decision: decision)
     }
 
     public func readManagedThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
@@ -966,6 +1007,177 @@ public struct CodexAppServerControl: CodexControl {
 
 }
 
+// MARK: - Approval observation
+
+/// One observer per Codex thread. App-server approval requests are live JSON-RPC
+/// requests, not part of thread/read. The observer owns the socket until the
+/// node stops polling this thread; an answer is sent only on that same socket.
+final class CodexApprovalMonitor: @unchecked Sendable {
+    private struct Watch {
+        var active = false
+        var lastTouched = Date()
+        var snapshot: CodexApprovalSnapshot?
+        var decision: (id: String, choice: String)?
+    }
+    private let watches = Locked<[String: Watch]>([:])
+
+    func watch(socketPath: String, threadId: String) {
+        let start = watches.withLock { state -> Bool in
+            var watch = state[threadId] ?? Watch()
+            watch.lastTouched = Date()
+            defer { state[threadId] = watch }
+            guard !watch.active else { return false }
+            watch.active = true
+            return true
+        }
+        guard start else { return }
+        DispatchQueue.global().async { [self] in run(socketPath: socketPath, threadId: threadId) }
+    }
+
+    func snapshot(threadId: String) -> CodexApprovalSnapshot? {
+        watches.current[threadId]?.snapshot
+    }
+
+    func stop(threadId: String) {
+        watches.withLock { state in
+            guard var watch = state[threadId] else { return }
+            watch.lastTouched = .distantPast
+            state[threadId] = watch
+        }
+    }
+
+    func answer(threadId: String, approvalId: String, decision: String) throws {
+        guard decision == "accept" || decision == "decline" else {
+            throw CodexControlError.invalidResponse(method: "approval decision")
+        }
+        let accepted = watches.withLock { state -> Bool in
+            guard var watch = state[threadId], watch.active,
+                  watch.snapshot?.id == approvalId,
+                  watch.snapshot?.kind == "manual",
+                  watch.snapshot?.status == "pending" else { return false }
+            if let queued = watch.decision, queued.id != approvalId || queued.choice != decision { return false }
+            watch.decision = (approvalId, decision)
+            state[threadId] = watch
+            return true
+        }
+        if !accepted { throw CodexControlError.rpc(method: "approval", message: "授权请求已失效或已有其他决定。") }
+    }
+
+    private func run(socketPath: String, threadId: String) {
+        var pending: [String: (id: Any, method: String, params: [String: Any])] = [:]
+        do {
+            let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: 2)
+            defer { connection.close() }
+            _ = try connection.call("initialize", CodexProtocol.initializeParams())
+            try connection.notify("initialized")
+            _ = try connection.call("thread/resume", ["threadId": threadId])
+            for message in connection.notifications {
+                observe(message, threadId: threadId, pending: &pending)
+            }
+            while true {
+                let current = watches.current[threadId]
+                guard let current, Date().timeIntervalSince(current.lastTouched) < 60 else { break }
+                if let decision = current.decision,
+                   let request = pending[decision.id] {
+                    let result: [String: Any]
+                    if request.method == "item/permissions/requestApproval" {
+                        result = ["permissions": decision.choice == "accept"
+                            ? (request.params["permissions"] as? [String: Any] ?? [:]) : [:], "scope": "turn"]
+                    } else {
+                        result = ["decision": decision.choice]
+                    }
+                    try connection.respond(id: request.id, result: result)
+                    pending.removeValue(forKey: decision.id)
+                    watches.withLock { state in
+                        guard var watch = state[threadId], watch.snapshot?.id == decision.id else { return }
+                        watch.snapshot = CodexApprovalSnapshot(
+                            id: decision.id, kind: "manual",
+                            status: decision.choice == "accept" ? "approved" : "denied",
+                            turnId: watch.snapshot!.turnId, action: watch.snapshot!.action,
+                            reason: watch.snapshot!.reason, startedAtMs: watch.snapshot!.startedAtMs
+                        )
+                        watch.decision = nil
+                        state[threadId] = watch
+                    }
+                }
+                do {
+                    let message = try connection.receive(timeout: 1)
+                    observe(message, threadId: threadId, pending: &pending)
+                } catch CodexControlError.timedOut { continue }
+            }
+        } catch { }
+        watches.withLock { state in
+            guard var watch = state[threadId] else { return }
+            if let old = watch.snapshot, old.kind == "manual", old.status == "pending" {
+                watch.snapshot = CodexApprovalSnapshot(id: old.id, kind: old.kind, status: "unavailable",
+                    turnId: old.turnId, action: old.action, reason: "Codex 授权连接已断开，请在 Codex 中核实。",
+                    startedAtMs: old.startedAtMs)
+            }
+            watch.active = false
+            watch.decision = nil
+            state[threadId] = watch
+        }
+    }
+
+    private func observe(_ message: [String: Any], threadId: String,
+                         pending: inout [String: (id: Any, method: String, params: [String: Any])]) {
+        guard let method = message["method"] as? String,
+              let params = message["params"] as? [String: Any],
+              params["threadId"] as? String == threadId else { return }
+        if ["item/commandExecution/requestApproval", "item/fileChange/requestApproval",
+            "item/permissions/requestApproval"].contains(method),
+           let rpcId = message["id"],
+           let turnId = params["turnId"] as? String,
+           let itemId = params["itemId"] as? String,
+           let startedAt = (params["startedAtMs"] as? NSNumber)?.int64Value {
+            let id = "\(turnId):\(itemId):\(startedAt)"
+            let reason = params["reason"] as? String
+            let action: String
+            switch method {
+            case "item/commandExecution/requestApproval": action = params["command"] as? String ?? reason ?? "执行命令"
+            case "item/fileChange/requestApproval": action = params["grantRoot"] as? String ?? reason ?? "修改文件"
+            default:
+                let data = try? JSONSerialization.data(withJSONObject: params["permissions"] ?? [:], options: [.sortedKeys])
+                action = data.flatMap { String(data: $0, encoding: .utf8) } ?? "申请额外权限"
+            }
+            pending[id] = (rpcId, method, params)
+            watches.withLock { state in
+                guard var watch = state[threadId] else { return }
+                watch.snapshot = CodexApprovalSnapshot(id: id, kind: "manual", status: "pending", turnId: turnId,
+                    action: String(action.prefix(4_000)), reason: reason, startedAtMs: startedAt)
+                state[threadId] = watch
+            }
+        } else if method == "item/autoApprovalReview/started" || method == "item/autoApprovalReview/completed",
+                  let id = params["reviewId"] as? String,
+                  let turnId = params["turnId"] as? String,
+                  let startedAt = (params["startedAtMs"] as? NSNumber)?.int64Value,
+                  let review = params["review"] as? [String: Any],
+                  let action = params["action"] as? [String: Any] {
+            let status = review["status"] as? String ?? "inProgress"
+            let kind = action["type"] as? String ?? "action"
+            let detail = (action["command"] as? String) ?? (action["target"] as? String)
+                ?? (action["toolName"] as? String) ?? (action["reason"] as? String) ?? kind
+            watches.withLock { state in
+                guard var watch = state[threadId] else { return }
+                watch.snapshot = CodexApprovalSnapshot(id: id, kind: "auto", status: status, turnId: turnId,
+                    action: String(detail.prefix(4_000)), reason: review["rationale"] as? String,
+                    startedAtMs: startedAt)
+                state[threadId] = watch
+            }
+        } else if method == "turn/completed" {
+            watches.withLock { state in
+                guard var watch = state[threadId], let old = watch.snapshot,
+                      old.kind == "manual", old.status == "pending",
+                      old.turnId == (params["turn"] as? [String: Any])?["id"] as? String else { return }
+                watch.snapshot = CodexApprovalSnapshot(id: old.id, kind: old.kind, status: "unavailable",
+                    turnId: old.turnId, action: old.action, reason: "授权请求已随回合结束失效。",
+                    startedAtMs: old.startedAtMs)
+                state[threadId] = watch
+            }
+        }
+    }
+}
+
 // MARK: - JSON-RPC over WebSocket over a Unix socket
 
 /// Just enough WebSocket for a local JSON-RPC client: text frames out (masked,
@@ -1036,6 +1248,14 @@ final class JSONRPCWebSocket {
 
     func notify(_ method: String) throws {
         try send(["jsonrpc": "2.0", "method": method])
+    }
+
+    fileprivate func respond(id: Any, result: [String: Any]) throws {
+        try send(["jsonrpc": "2.0", "id": id, "result": result])
+    }
+
+    fileprivate func receive(timeout: TimeInterval) throws -> [String: Any] {
+        try nextMessage(deadline: Date().addingTimeInterval(timeout), method: "approval events")
     }
 
     private func send(_ object: [String: Any]) throws {

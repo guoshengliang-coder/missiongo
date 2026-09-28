@@ -435,6 +435,37 @@ final class WebSocketFrameTests: XCTestCase {
 }
 
 final class CodexAppServerControlTests: XCTestCase {
+    func testApprovalObserverAnswersTheLiveRequestOnItsOwnSocket() throws {
+        let server = try FakeAppServer { message in
+            guard let method = message["method"] as? String, let id = message["id"] else { return [] }
+            let response: [String: Any] = ["jsonrpc": "2.0", "id": id, "result": [:]]
+            if method != "thread/resume" { return [response] }
+            return [response, ["jsonrpc": "2.0", "id": 900,
+                "method": "item/commandExecution/requestApproval", "params": [
+                    "threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1",
+                    "startedAtMs": 123, "command": "echo fixture"]]]
+        }
+        let monitor = CodexApprovalMonitor()
+        monitor.watch(socketPath: server.path, threadId: "thread-1")
+        defer { monitor.stop(threadId: "thread-1"); server.waitUntilDone() }
+        let deadline = Date().addingTimeInterval(3)
+        while monitor.snapshot(threadId: "thread-1")?.status != "pending" && Date() < deadline {
+            usleep(10_000)
+        }
+        let approval = try XCTUnwrap(monitor.snapshot(threadId: "thread-1"))
+        XCTAssertEqual(approval.action, "echo fixture")
+        try monitor.answer(threadId: "thread-1", approvalId: approval.id, decision: "accept")
+        while monitor.snapshot(threadId: "thread-1")?.status != "approved" && Date() < deadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(monitor.snapshot(threadId: "thread-1")?.status, "approved")
+        XCTAssertTrue(server.received.current.contains { text in
+            guard let message = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return false }
+            return (message["id"] as? Int) == 900
+                && (message["result"] as? [String: String])?["decision"] == "accept"
+        })
+    }
+
     private func request(socketPath: String) -> CodexThreadRequest {
         return CodexThreadRequest(
             socketPath: socketPath, cwd: "/Users/dev/repo",

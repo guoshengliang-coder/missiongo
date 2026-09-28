@@ -581,6 +581,15 @@ public struct CodexLauncher: AgentAdapter {
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         let snapshot = try await readSnapshot(session)
+        let approval = control.approvalSnapshot(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        if let decision = session.approvalDecision, approval?.id == decision.id,
+           approval?.status == "pending" {
+            // The observer sends the answer asynchronously on the request's
+            // original socket. A transient failure keeps the decision queued;
+            // a completed approval must never be re-labelled unavailable.
+            try? control.answerApproval(threadId: session.sessionRef, approvalId: decision.id,
+                decision: decision.choice)
+        }
         var model = snapshot.model
         var effort = snapshot.reasoningEffort
         var settingsRevision: Int?
@@ -601,10 +610,60 @@ public struct CodexLauncher: AgentAdapter {
                 settingsError = CodexFailure.explain(error)
             }
         }
-        let report = try await synchronize(session, snapshot: snapshot)
-        return report.reportingSettings(
+        var report = try await synchronize(session, snapshot: snapshot).reportingSettings(
             model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
         )
+        var retryId: String?
+        var retryStatus: String?
+        var retryError: String?
+        if let retry = session.approvalRetry, session.command == nil {
+            retryId = retry.id
+            if retry.status == "queued", approval?.kind == "auto",
+               approval?.status == "denied", approval?.id == retry.reviewId {
+                // Reserve before turn/start, as with an ordinary reply.
+                retryStatus = "delivering"
+            } else if retry.status == "delivering"
+                && snapshot.messages.contains(where: { $0.role == "user" && $0.sourceId == retry.id }) {
+                retryStatus = "delivered"
+            } else if retry.status == "delivering" && snapshot.status == "idle",
+                      approval?.status != "pending", approval?.status != "inProgress" {
+                do {
+                    try await control.sendMessage(
+                        socketPath: location.controlSocketPath, threadId: session.sessionRef,
+                        text: "用户已在 MissionGo 控制台明确要求对刚被自动审查拒绝的操作发起一次人工审批重试。请重新评估该操作；若仍需执行，只尝试一次，并把实际授权请求交给人审查。不要自动重复其他操作。",
+                        clientUserMessageId: retry.id,
+                        overrides: CodexTurnOverrides(settings: CodexModes.threadSettings(for: "default"))
+                    )
+                    retryStatus = "delivered"
+                    let deliveredMessages = ((try? await control.readThread(
+                        socketPath: location.controlSocketPath, threadId: session.sessionRef
+                    ))?.messages) ?? report.messages
+                    report = AgentSessionReport(status: "active", messages: report.messages,
+                        activityAt: report.activityAt, model: model, effort: effort, turnActive: true)
+                        .replacingMessages(deliveredMessages)
+                } catch {
+                    // A turn/start transport failure cannot prove whether the
+                    // new turn began. The stable message id is checked next poll.
+                    retryError = CodexFailure.explain(error)
+                    retryStatus = "delivering"
+                }
+            } else if retry.status == "delivered" && snapshot.status == "idle" {
+                if let originalMode = session.approvalReviewMode,
+                   let settings = CodexModes.threadSettings(for: originalMode) {
+                    do {
+                        _ = try await control.applySettings(socketPath: location.controlSocketPath,
+                            threadId: session.sessionRef, overrides: CodexTurnOverrides(settings: settings))
+                        retryStatus = "restored"
+                    } catch {
+                        retryError = CodexFailure.explain(error)
+                    }
+                } else {
+                    retryStatus = "restored"
+                }
+            }
+        }
+        return report.reportingApproval(approval, retryId: retryId,
+            retryStatus: retryStatus, retryError: retryError)
     }
 
     /// What a person chose for this thread, passed on every turn MissionGo
@@ -696,8 +755,19 @@ public struct CodexLauncher: AgentAdapter {
             return AgentSessionReport(
                 status: snapshot.status, messages: snapshot.messages,
                 sourceArchived: false, activityAt: snapshot.activityAt,
-                turnActive: snapshot.status == "active"
+                turnActive: snapshot.status == "active",
+                waitingForInput: control.approvalSnapshot(socketPath: location.controlSocketPath,
+                    threadId: session.sessionRef)?.status == "pending"
             )
+        }
+        if let approval = control.approvalSnapshot(socketPath: location.controlSocketPath,
+                threadId: session.sessionRef),
+           (approval.status == "pending" || approval.status == "inProgress") {
+            // Codex cannot accept same-turn steering while the turn is blocked
+            // at a permission prompt. Keep the reply queued until it resumes.
+            return AgentSessionReport(status: snapshot.status, messages: snapshot.messages,
+                sourceArchived: false, activityAt: snapshot.activityAt,
+                turnActive: snapshot.status == "active", waitingForInput: true)
         }
         // Codex can accept a turn while the HTTP report back to MissionGo is
         // lost. The stable client message id lets a restarted node recognize

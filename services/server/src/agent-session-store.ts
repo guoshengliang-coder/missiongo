@@ -191,6 +191,7 @@ export interface NodeAgentSession {
   readonly lifecycle: "keep" | "close";
   readonly occupiesExecutionSlot: boolean;
   readonly command?: AgentSessionCommand;
+  readonly approvalReviewMode?: string;
   /**
    * MissionGo archived this conversation -- automatically because its work
    * finished, or by a person (AND-129) -- so archive the Codex thread at the
@@ -222,6 +223,7 @@ interface SessionRow {
   source_archived_at?: string | null;
   source_archive_error?: string | null;
   source_restore_pending?: number;
+  approval_review_mode?: string;
   desired_settings_json?: string | null;
   settings_revision?: number;
   applied_settings_revision?: number;
@@ -1247,7 +1249,8 @@ export class AgentSessionStore {
     const sourceArchiveBefore = new Date(Date.now() - SOURCE_ARCHIVE_POLL_MS).toISOString();
     const selection = `SELECT id, dispatch_id, agent_kind, agent_session_ref, status, last_error, updated_at,
                 archived_at, archive_source, archive_reason, source_archived_at, source_archive_error, source_restore_pending,
-                desired_settings_json, settings_revision, applied_settings_revision, settings_error_revision
+                desired_settings_json, settings_revision, applied_settings_revision, settings_error_revision,
+                COALESCE(s.mode, (SELECT d.mode FROM dispatches d WHERE d.id=s.dispatch_id)) AS approval_review_mode
          FROM agent_sessions s
          WHERE node_id = ?
          AND EXISTS (SELECT 1 FROM managed_execution_intents i WHERE i.id=s.dispatch_id) = ?
@@ -1265,6 +1268,10 @@ export class AgentSessionStore {
            OR status IN ('active', 'stalled', 'unavailable') OR EXISTS (
              SELECT 1 FROM agent_session_commands c
              WHERE c.session_id = s.id AND c.status IN ('queued', 'delivering', 'delivery_unknown')
+           ) OR EXISTS (
+             SELECT 1 FROM agent_session_approvals a WHERE a.session_id = s.id
+             AND (a.decision IS NOT NULL AND a.status = 'pending'
+               OR a.retry_status IN ('queued', 'delivering', 'delivered'))
            ) OR s.settings_revision > MAX(s.applied_settings_revision, s.settings_error_revision)
            OR s.source_restore_pending = 1
            -- A source archive still owed goes out now, not after the idle cool-down.
@@ -1308,6 +1315,8 @@ export class AgentSessionStore {
         dispatchId: row.dispatch_id,
         ...(this.managedBinding(row.id) ? { managedExecution: this.managedBinding(row.id)! } : {}),
         agentKind: row.agent_kind,
+        ...(row.agent_kind === "codex" && row.approval_review_mode
+          ? { approvalReviewMode: row.approval_review_mode } : {}),
         sessionRef: row.agent_session_ref,
         status: row.status,
         lifecycle: row.agent_kind === "claude_code" && !row.source_restore_pending
