@@ -167,9 +167,9 @@ final class APIClientTests: XCTestCase {
         return APIClient(serverUrl: server, token: token, session: StubURLProtocol.session())
     }
 
-    func testAttentionCountUsesNodeCredentialAndReadsExactCount() async throws {
-        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":123}"#) }
-        let count = try await client().attentionCount()
+    func testUnreadCountUsesNodeCredentialAndReadsExactCount() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":7,"unread":123}"#) }
+        let count = try await client().unreadCount()
         XCTAssertEqual(count, 123)
 
         let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
@@ -178,14 +178,20 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(sent.request.value(forHTTPHeaderField: "Authorization"), "Bearer mgn_x")
     }
 
-    func testAttentionCountRejectsAnInvalidNumber() async throws {
-        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":-1}"#) }
+    func testUnreadCountRejectsAnInvalidNumber() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":7,"unread":-1}"#) }
         do {
-            _ = try await client().attentionCount()
-            XCTFail("A negative attention count must not reach the badge")
+            _ = try await client().unreadCount()
+            XCTFail("A negative unread count must not reach the badge")
         } catch let error as APIError {
             guard case .invalidResponse = error else { return XCTFail("Unexpected error: \(error)") }
         }
+    }
+
+    func testUnreadCountFallsBackWhileServerRollsOut() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":7}"#) }
+        let count = try await client().unreadCount()
+        XCTAssertEqual(count, 7)
     }
 
     // Every one of these was a real mismatch found by running the TypeScript

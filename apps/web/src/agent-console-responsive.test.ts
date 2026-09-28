@@ -102,15 +102,15 @@ describe("agent console responsive layout", () => {
     expect(consoleSource).not.toMatch(/className="danger-button"[\s\S]{0,250}agentConsoleStop/);
   });
 
-  it("renders attention badges from the all-product session feed", () => {
+  it("renders unread badges from the all-product session feed", () => {
     expect(appSource).toContain('queryFn: () => api.listAgentSessions()');
-    expect(appSource).toContain('className="agent-attention-badge"');
+    expect(appSource).toContain('className="agent-unread-badge"');
     expect(appSource).toContain("agentSessionsQuery.data !== undefined && (");
     expect(appSource).not.toContain('agentSessionsQuery.data === undefined ? "–"');
     expect(appSource).toContain(
-      "attentionCounts={agentConsoleOpen && hasAnyAiPermission ? attentionCounts.byProduct : undefined}",
+      "unreadCounts={agentConsoleOpen && hasAnyAiPermission ? unreadCounts.byProduct : undefined}",
     );
-    expect(appSource).toContain('className="agent-console-total-attention agent-attention-badge"');
+    expect(appSource).toContain('className="agent-console-total-unread agent-unread-badge"');
     expect(appSource).not.toContain('queryKey: ["agent-sessions", selectedProductId]');
   });
 

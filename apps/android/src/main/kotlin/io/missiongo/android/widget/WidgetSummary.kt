@@ -25,10 +25,12 @@ internal data class WidgetAttentionEntry(
  */
 internal data class WidgetSummary(
     val attention: Int,
+    val unread: Int,
     val active: Int,
     val failed: Int,
     val attentionProductId: String?,
     val attentionSessionId: String?,
+    val unreadProductId: String?,
     val ready: Int,
     val readyProductId: String?,
     val attentionEntries: List<WidgetAttentionEntry> = emptyList(),
@@ -38,10 +40,12 @@ internal data class WidgetSummary(
             "agent",
             JSONObject()
                 .put("attention", attention)
+                .put("unread", unread)
                 .put("active", active)
                 .put("failed", failed)
                 .put("attentionProductId", attentionProductId ?: JSONObject.NULL)
-                .put("attentionSessionId", attentionSessionId ?: JSONObject.NULL),
+                .put("attentionSessionId", attentionSessionId ?: JSONObject.NULL)
+                .put("unreadProductId", unreadProductId ?: JSONObject.NULL),
         )
         .put(
             "items",
@@ -58,10 +62,13 @@ internal data class WidgetSummary(
             val items = root.getJSONObject("items")
             return WidgetSummary(
                 attention = agent.getInt("attention"),
+                unread = agent.optInt("unread", agent.getInt("attention")),
                 active = agent.getInt("active"),
                 failed = agent.getInt("failed"),
                 attentionProductId = agent.stringOrNull("attentionProductId"),
                 attentionSessionId = agent.stringOrNull("attentionSessionId"),
+                unreadProductId = if (agent.has("unreadProductId")) agent.stringOrNull("unreadProductId")
+                    else agent.stringOrNull("attentionProductId"),
                 ready = items.getInt("ready"),
                 readyProductId = items.stringOrNull("readyProductId"),
                 attentionEntries = root.optJSONArray("attentionEntries")?.let(::parseEntries) ?: emptyList(),

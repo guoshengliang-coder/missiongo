@@ -19,7 +19,7 @@ struct MissionGoApp: App {
         } label: {
             HStack(spacing: 3) {
                 Image(systemName: model.menuBarSymbol)
-                if let count = model.attentionCount, count > 0 {
+                if let count = model.unreadCount, count > 0 {
                     Text(String(count))
                         .font(.system(size: 10, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
@@ -28,7 +28,7 @@ struct MissionGoApp: App {
                         .background(.red, in: Capsule())
                 }
             }
-            .accessibilityLabel(model.attentionCount.map { $0 > 0 ? "\(appLabel)，待我处理 \($0)" : appLabel } ?? appLabel)
+            .accessibilityLabel(model.unreadCount.map { $0 > 0 ? "\(appLabel)，未读会话 \($0)" : appLabel } ?? appLabel)
         }
         .menuBarExtraStyle(.window)
     }

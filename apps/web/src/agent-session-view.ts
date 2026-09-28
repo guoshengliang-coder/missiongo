@@ -30,7 +30,7 @@ export function agentChatMessages(
   ].sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
 }
 
-export const DEFAULT_AGENT_SESSION_FILTER = "attention" as const;
+export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;
 export const DEFAULT_AGENT_KIND_FILTER = "all" as const;
 export const MESSAGE_BOTTOM_THRESHOLD_PX = 48;
 export const AGENT_SESSIONS_CONSOLE_REFETCH_MS = 5_000;
@@ -153,12 +153,12 @@ type FilterableAgentSession = Pick<
   | "items"
 >;
 
-type AttentionCountableSession = Pick<
+type UnreadCountableSession = Pick<
   AgentSessionSummary,
-  "id" | "archivedAt" | "needsAttention" | "items"
+  "id" | "archivedAt" | "unread" | "items"
 >;
 
-export interface AgentAttentionCounts {
+export interface AgentUnreadCounts {
   readonly total: number;
   readonly byProduct: ReadonlyMap<string, number>;
 }
@@ -176,13 +176,13 @@ export function archivableVisibleSessionIds(
  * global badge, and once for each distinct product it reaches. Repeated items
  * from the same product must not inflate that product's badge.
  */
-export function agentAttentionCounts(
-  sessions: readonly AttentionCountableSession[],
-): AgentAttentionCounts {
+export function agentUnreadCounts(
+  sessions: readonly UnreadCountableSession[],
+): AgentUnreadCounts {
   const globalSessionIds = new Set<string>();
   const productSessionIds = new Map<string, Set<string>>();
   for (const session of sessions) {
-    if (session.archivedAt || !session.needsAttention) continue;
+    if (session.archivedAt || !session.unread) continue;
     globalSessionIds.add(session.id);
     for (const productId of new Set(session.items.map((item) => item.productId))) {
       const sessionIds = productSessionIds.get(productId) ?? new Set<string>();

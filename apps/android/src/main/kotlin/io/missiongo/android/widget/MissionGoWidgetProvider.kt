@@ -107,17 +107,17 @@ class MissionGoWidgetProvider : AppWidgetProvider() {
             renderRefreshPill(context, views, refreshing, failed, updatedAt)
 
             val summary = snapshot.summary
-            val hasAttention = (summary?.attention ?: 0) > 0
-            val attention = summary?.attention?.toString() ?: context.getString(R.string.widget_no_value)
+            val hasUnread = (summary?.unread ?: 0) > 0
+            val unread = summary?.unread?.toString() ?: context.getString(R.string.widget_no_value)
             // Two views per state rather than setTextColor: a colour set in code is
             // fixed when drawn, while one from resources follows the system into
             // and out of dark mode without waiting for the next refresh.
-            views.setTextViewText(R.id.widget_attention_count, attention)
-            views.setTextViewText(R.id.widget_attention_count_idle, attention)
-            views.setViewVisibility(R.id.widget_attention_count, visibleIf(hasAttention))
-            views.setViewVisibility(R.id.widget_attention_count_idle, visibleIf(!hasAttention))
-            views.setViewVisibility(R.id.widget_attention_chip, visibleIf(hasAttention))
-            views.setViewVisibility(R.id.widget_attention_chip_idle, visibleIf(!hasAttention))
+            views.setTextViewText(R.id.widget_attention_count, unread)
+            views.setTextViewText(R.id.widget_attention_count_idle, unread)
+            views.setViewVisibility(R.id.widget_attention_count, visibleIf(hasUnread))
+            views.setViewVisibility(R.id.widget_attention_count_idle, visibleIf(!hasUnread))
+            views.setViewVisibility(R.id.widget_attention_chip, visibleIf(hasUnread))
+            views.setViewVisibility(R.id.widget_attention_chip_idle, visibleIf(!hasUnread))
 
             when {
                 summary == null -> {
@@ -159,9 +159,9 @@ class MissionGoWidgetProvider : AppWidgetProvider() {
                     MainActivity.openFromWidget(
                         context,
                         MainActivity.WidgetTarget.Console(
-                            productId = summary?.attentionProductId,
-                            sessionId = summary?.attentionSessionId,
-                            attentionOnly = hasAttention,
+                            productId = summary?.unreadProductId,
+                            sessionId = null,
+                            attentionOnly = false,
                         ),
                     ),
                 ),

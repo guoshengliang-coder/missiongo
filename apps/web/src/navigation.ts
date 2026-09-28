@@ -92,9 +92,8 @@ export function agentConsoleUrl(
 const AGENT_CONSOLE_FILTERS: readonly AgentSessionFilter[] = ["attention", "active", "all", "failed", "archived"];
 
 /**
- * A link can open the console on one of its filters: the Android widget opens
- * it on "needs attention" (AND-149). It is read once, when the page loads; the
- * exit URL drops it, so the entries the console pushes afterwards do not carry
+ * An explicit link can open the console on one of its filters. It is read once
+ * when the page loads; the exit URL drops it, so later entries do not carry
  * it and a later restore follows whatever filter the person moved to.
  */
 export function agentConsoleFilterFromUrl(url: URL = new URL(window.location.href)): AgentSessionFilter | null {

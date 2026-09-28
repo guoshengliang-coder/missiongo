@@ -28,6 +28,7 @@ const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.m
   productId: string;
   keys: string[];
   detailKey: string;
+  snapshotTime: number;
 };
 
 for (const viewport of VIEWPORTS) {
@@ -42,6 +43,7 @@ for (const viewport of VIEWPORTS) {
 
       for (const pageUnderTest of PAGES) {
         test(pageUnderTest.name, async ({ page }) => {
+          await page.clock.setFixedTime(fixture.snapshotTime);
           await page.emulateMedia({ colorScheme: theme as "light" | "dark" });
           await page.goto(pageUnderTest.path(fixture));
           await page.waitForLoadState("networkidle");

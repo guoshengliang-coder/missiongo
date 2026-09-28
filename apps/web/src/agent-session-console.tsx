@@ -284,6 +284,7 @@ export function AgentSessionConsole({
   );
   const counts = useMemo(() => ({
     unread: agentSessions.filter((session) => !session.archivedAt && !isAbnormalAgentSession(session) && session.unread).length,
+    failedUnread: agentSessions.filter((session) => !session.archivedAt && isAbnormalAgentSession(session) && session.unread).length,
     attention: agentSessions.filter((session) => !session.archivedAt && session.needsAttention).length,
     active: agentSessions.filter((session) => !session.archivedAt && session.status === "active").length,
     all: agentSessions.filter((session) => !session.archivedAt && !isAbnormalAgentSession(session)).length,
@@ -695,7 +696,7 @@ export function AgentSessionConsole({
     { key: "attention", icon: BellRing, count: counts.attention, label: t("agentConsoleNeedsAttention") },
     { key: "active", icon: LoaderCircle, count: counts.active, label: t("agentConsoleActive") },
     { key: "all", icon: MessageSquare, count: counts.all, unread: counts.unread, label: t("agentConsoleAll") },
-    { key: "failed", icon: CircleAlert, count: counts.failed, label: t("agentConsoleFailed") },
+    { key: "failed", icon: CircleAlert, count: counts.failed, unread: counts.failedUnread, label: t("agentConsoleFailed") },
     { key: "archived", icon: Archive, count: counts.archived, label: t("agentConsoleArchived") },
   ];
 

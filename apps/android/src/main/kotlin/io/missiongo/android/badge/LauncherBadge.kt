@@ -18,8 +18,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * The number on the home-screen icon (AND-185): how many conversations wait
- * for the person, straight from the summary's `agent.attention`. One or more
+ * The number on the home-screen icon (AND-185, AND-249): how many unarchived
+ * conversations have unread messages, straight from `agent.unread`. One or more
  * draws the number, zero removes it, and a fetch that failed or never happened
  * leaves whatever is there alone -- the callers only reach this on a success.
  *
@@ -54,7 +54,7 @@ internal object LauncherBadge {
     @Volatile
     private var publisher: LatestCountPublisher? = null
 
-    /** Publishes [count]; zero cancels the carrier and tells the OEM launchers nothing waits. */
+    /** Publishes [count]; zero cancels the carrier and clears OEM launchers. */
     fun apply(context: Context, count: Int) {
         val appContext = context.applicationContext
         updateCarrier(appContext, count)
@@ -123,7 +123,7 @@ internal object LauncherBadge {
         PendingIntent.getActivity(
             context,
             CARRIER_REQUEST_CODE,
-            MainActivity.openFromWidget(context, MainActivity.WidgetTarget.Console(null, null, true)),
+            MainActivity.openFromWidget(context, MainActivity.WidgetTarget.Console(null, null, false)),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 

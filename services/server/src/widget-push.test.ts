@@ -29,6 +29,7 @@ function summaryOf(attention: number, now: string): WidgetSummary {
       id: `s${index}`,
       status: "idle",
       needsAttention: true,
+      unread: false,
       items: [{ productId: "p1", key: `AND-${index}` }],
       attention: { kind: "answer", revision: `r${index}` },
       latestMessageText: "x",
