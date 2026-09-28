@@ -12,6 +12,11 @@
 // `script-src 'self'`, which blocks inline scripts, and while this lived inline
 // production never showed dark mode at all (B12 in docs/ui-ue-review-2026-09.md).
 // The appearance-boot-script plugin in vite.config.ts hashes it and links it.
+//
+// AND-247 adds the type size to the same job: the account's choice is served by
+// bootstrap, but the last one this browser saw is replayed here so the first
+// paint is already at the right size. Medium is the base scale and needs no
+// attribute.
 (function () {
   var requested = new URLSearchParams(window.location.search).get("appearance");
   var explicit = requested === "light" || requested === "dark" ? requested : null;
@@ -22,4 +27,14 @@
   };
   apply();
   if (!explicit) query.addEventListener("change", apply);
+
+  var stored = null;
+  try {
+    stored = window.localStorage.getItem("missiongo.fontScale");
+  } catch {
+    stored = null;
+  }
+  if (stored === "small" || stored === "large") {
+    document.documentElement.dataset.fontScale = stored;
+  }
 })();
