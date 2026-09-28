@@ -575,13 +575,17 @@ export function AgentSessionConsole({
   const claudeBackgroundOnly = selected?.agentKind === "claude_code"
     && sessionStatus === "active" && turnState?.turnActive === false && !agentWaiting && activities.length > 0;
   const visualStatus = claudeBackgroundOnly || agentWaiting ? "idle" : sessionStatus;
+  // Every activity line names the agent that is actually running this session
+  // (AND-236): Codex and OpenCode report turns too, so the copy must not say
+  // "Claude Code" for them.
+  const agentName = selected ? agentLabel(selected, t) : "";
   const activityText = agentWaiting
-    ? t("agentSessionWaitingForInput")
+    ? t("agentSessionWaitingForInput", { agent: agentName })
     : claudeBackgroundOnly
       ? t("agentSessionWaitingBackground", { count: activities.length })
       : turnRunning
-        ? t("agentSessionTurnRunning", { duration: elapsed(turnState?.turnStartedAt, clock) ?? "–" })
-        : t(activityLabelKey(sessionStatus, command?.status === "queued"), { agent: selected ? agentLabel(selected, t) : "" });
+        ? t("agentSessionTurnRunning", { duration: elapsed(turnState?.turnStartedAt, clock) ?? "–", agent: agentName })
+        : t(activityLabelKey(sessionStatus, command?.status === "queued"), { agent: agentName });
 
   const markRead = useMutation({
     mutationFn: ({ dispatchId, through }: { dispatchId: string; through: string }) =>
