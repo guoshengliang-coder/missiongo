@@ -31,9 +31,11 @@ import {
   toggleQuestionOption,
   replyBlockedLabelKey,
   resolvedAgentSessionId,
+  sessionReplyDraft,
   shouldMarkRead,
   shouldResetMessageView,
   shouldScrollMessagesAfterChange,
+  withSessionReplyDraft,
 } from "./agent-session-view";
 import type { AgentSessionSummary } from "./types";
 
@@ -425,5 +427,40 @@ describe("agent session message view", () => {
     expect(answeredOptionSelected(multi, "大")).toBe(false);
     // A single-select answer containing the separator must not match a part.
     expect(answeredOptionSelected({ answered: "小、完整" }, "小")).toBe(false);
+  });
+});
+
+describe("reply drafts stay with one conversation (AND-252)", () => {
+  it("reads nothing for no session or for a conversation never written to", () => {
+    expect(sessionReplyDraft({}, "session-1")).toBe("");
+    expect(sessionReplyDraft({ "session-1": "Scope: Complete" }, null)).toBe("");
+    expect(sessionReplyDraft({ "session-1": "Scope: Complete" }, undefined)).toBe("");
+    expect(sessionReplyDraft({ "session-1": "Scope: Complete" }, "session-2")).toBe("");
+  });
+
+  it("keeps a session's picked answer out of every other session", () => {
+    let drafts: Readonly<Record<string, string>> = {};
+    drafts = withSessionReplyDraft(drafts, "session-1", "Scope: Complete\nRisk: No");
+    // Switching to session-2 shows its own (empty) draft, not session-1's.
+    expect(sessionReplyDraft(drafts, "session-2")).toBe("");
+    drafts = withSessionReplyDraft(drafts, "session-2", "Only here");
+    expect(sessionReplyDraft(drafts, "session-1")).toBe("Scope: Complete\nRisk: No");
+    expect(sessionReplyDraft(drafts, "session-2")).toBe("Only here");
+  });
+
+  it("applies a functional update against that session's own draft", () => {
+    const drafts = withSessionReplyDraft({ "session-2": "other" }, "session-1", "start");
+    const next = withSessionReplyDraft(drafts, "session-1", (current) => `${current}!`);
+    expect(sessionReplyDraft(next, "session-1")).toBe("start!");
+    expect(sessionReplyDraft(next, "session-2")).toBe("other");
+  });
+
+  it("drops an emptied draft and returns the same record when nothing changed", () => {
+    const drafts = { "session-1": "x", "session-2": "y" };
+    expect(withSessionReplyDraft(drafts, "session-1", "x")).toBe(drafts);
+    expect(withSessionReplyDraft(drafts, "session-3", "")).toBe(drafts);
+    const cleared = withSessionReplyDraft(drafts, "session-1", "");
+    expect(cleared).toEqual({ "session-2": "y" });
+    expect("session-1" in cleared).toBe(false);
   });
 });

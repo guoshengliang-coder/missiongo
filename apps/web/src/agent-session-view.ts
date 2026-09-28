@@ -525,6 +525,42 @@ export function answeredOptionSelected(
   return question.answered.split(QUESTION_VALUE_SEPARATOR).includes(option);
 }
 
+/**
+ * The reply box belongs to one conversation. A draft is kept under the session
+ * it was written for, so picking an option in one session and switching away
+ * leaves the next conversation's box empty instead of carrying the old answer
+ * across sessions and products (AND-252).
+ */
+export function sessionReplyDraft(
+  drafts: Readonly<Record<string, string>>,
+  sessionId: string | null | undefined,
+): string {
+  if (!sessionId) return "";
+  return drafts[sessionId] ?? "";
+}
+
+/**
+ * Store one session's draft without touching the others. An empty draft is
+ * dropped rather than kept as an empty key, and an unchanged draft returns the
+ * same record so React skips the re-render.
+ */
+export function withSessionReplyDraft(
+  drafts: Readonly<Record<string, string>>,
+  sessionId: string,
+  update: string | ((current: string) => string),
+): Readonly<Record<string, string>> {
+  const current = drafts[sessionId] ?? "";
+  const next = typeof update === "function" ? update(current) : update;
+  if (next === current) return drafts;
+  if (next === "") {
+    if (!(sessionId in drafts)) return drafts;
+    const remaining = { ...drafts };
+    delete remaining[sessionId];
+    return remaining;
+  }
+  return { ...drafts, [sessionId]: next };
+}
+
 export function messageLabelKey(
   role: AgentSessionMessage["role"],
   agentKind: AgentKind = "codex",
