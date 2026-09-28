@@ -335,6 +335,18 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(snapshot.activityAt, "2026-12-20T23:10:00.123Z")
     }
 
+    func testThreadReadRestoresAnsweredQuestionFromExistingTranscript() throws {
+        let snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+            "status": ["type": "idle"],
+            "turns": [["id": "turn-1", "items": [
+                ["id": "q1", "type": "agentMessage", "text": "Choose",
+                 "questions": [["title": "Scope", "options": ["Small", "Full"]]]],
+                ["id": "a1", "type": "userMessage", "content": [["type": "text", "text": "Full"]]],
+            ]]],
+        ]])
+        XCTAssertEqual(snapshot.messages[0].questions?.first?.answered, "Full")
+    }
+
     func testNormalizesCodexSourceActivityTimestamps() {
         XCTAssertEqual(
             CodexProtocol.sourceActivityTimestamp("2026-09-21T05:30:00Z"),
