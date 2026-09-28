@@ -723,7 +723,9 @@ public struct SessionLauncher: AgentAdapter {
             state.hostPid = nil
             state.idleSince = nil
             state.error = "关联工作条目已全部完成，会话进程已关闭；如需返工请重新派单。"
-            state.lastProgressAt = Date()
+            // Closing finished work is a system operation too: keep the
+            // progress clock at the conversation's last real activity so the
+            // closed session holds its place in the list (AND-238).
             try ClaudeHostFiles.write(state, to: statePath)
             return AgentSessionReport(
                 status: state.status,
