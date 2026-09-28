@@ -553,13 +553,17 @@ public struct ClaudeStreamSnapshot: Sendable {
         noteProgress()
     }
 
+    /// The two-hour idle release is something MissionGo does to a silent
+    /// session, not something the conversation did. It deliberately leaves the
+    /// progress clock alone: the node reports that clock as the session's
+    /// activityAt, and releasing a session must not look like new activity or
+    /// reorder the conversation list (AND-238).
     public mutating func markSuspended(_ message: String = "Claude Code 会话已空闲 2 小时，进程已挂起；发送下一条消息时会恢复。") {
         state.turnActive = false
         state.status = "suspended"
         state.hostPid = nil
         state.error = message
         state.idleSince = nil
-        noteProgress()
     }
 
     public mutating func markStalled() {

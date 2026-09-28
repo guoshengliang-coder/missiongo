@@ -447,6 +447,20 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         ))
     }
 
+    func testSuspendingASilentSessionIsNotConversationActivity() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        let contentAt = Date(timeIntervalSince1970: 1_700_000_000)
+        snapshot.noteProgress(at: contentAt)
+
+        snapshot.markSuspended()
+
+        XCTAssertEqual(snapshot.state.status, "suspended")
+        // The node reports this clock as the session's activityAt, and the idle
+        // release is a MissionGo system operation, not conversation content:
+        // it must leave the list time at the last real activity (AND-238).
+        XCTAssertEqual(snapshot.state.lastProgressAt, contentAt)
+    }
+
     func testResumingPreservesConversationAndAcknowledgements() {
         let message = AgentSessionMessage(sourceId: "m1", turnId: "m1", role: "agent", text: "done")
         let old = ClaudeHostState(
@@ -897,6 +911,36 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         )
         XCTAssertNil(state.hostPid)
         XCTAssertEqual(state.status, "suspended")
+    }
+
+    func testClosingFinishedWorkKeepsTheLastConversationTime() async throws {
+        let (_, root, sessionRef) = try fixture(status: "idle")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let statePath = ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
+        let contentAt = Date().addingTimeInterval(-2 * 60 * 60)
+        try ClaudeHostFiles.write(
+            ClaudeHostState(status: "idle", sessionRef: sessionRef, hostPid: 4242, lastProgressAt: contentAt),
+            to: statePath
+        )
+        let launcher = SessionLauncher(
+            environment: ShellEnvironment(path: "/usr/bin:/bin"),
+            hostExecutable: nil,
+            sessionsDirectory: root,
+            terminateHost: { pid, _ in pid == 4242 }
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "server-session",
+            agentKind: "claude_code",
+            sessionRef: sessionRef,
+            status: "idle",
+            lifecycle: "close"
+        ))
+
+        XCTAssertEqual(report.status, "suspended")
+        // Finishing the work closes the process by itself; that system
+        // operation must not move the conversation's activity time either
+        // (AND-238).
+        XCTAssertEqual(report.activityAt, SessionLauncher.activityTimestamp(contentAt))
     }
 }
 
