@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { affectsArtifact, inReleasedRange, matchCandidates, requiredArtifactsForFiles } from "./release-notices.mjs";
+import { affectsArtifact, inReleasedRange, matchCandidates, releaseCandidatesFromPages, requiredArtifactsForFiles } from "./release-notices.mjs";
 
 const a = "a".repeat(40);
 const b = "b".repeat(40);
@@ -76,4 +76,34 @@ test("waits for every related artifact across separate release batches", () => {
   assert.deepEqual(matchCandidates(receipt, candidate, resolve, ancestor).comments[0].releases.map((release) => release.artifact), ["macosApp", "web"]);
   receipt.publicEvidence.checks.macosApp = false;
   assert.deepEqual(matchCandidates(receipt, candidate, resolve, ancestor).comments, []);
+});
+
+test("collects every candidate page, including an empty page with a continuation", () => {
+  const page = (requestedBeforeSequence, candidates, nextBeforeSequence) => ({
+    requestedBeforeSequence, productId: "mission-go", candidates,
+    ...(nextBeforeSequence ? { nextBeforeSequence } : {}),
+  });
+  const first = { itemKey: "AND-75" };
+  const last = { itemKey: "AND-76" };
+  const pages = [page(null, [first], 100), page(100, [], 50), page(50, [last])];
+  assert.deepEqual(releaseCandidatesFromPages({ pages }).candidates, [first, last]);
+  assert.throws(() => releaseCandidatesFromPages({ pages: pages.slice(0, 2) }), /final page/);
+  assert.throws(() => releaseCandidatesFromPages({ pages: [pages[0], pages[2]] }), /cursor/);
+  assert.throws(() => releaseCandidatesFromPages({ pages: [pages[0], { ...pages[1], productId: "other" }, pages[2]] }), /products/);
+});
+
+test("proposes a separate handoff for every eligible item in the release", () => {
+  const receipt = {
+    schemaVersion: 1, deployedCommit: c,
+    current: { web: { version: c, commit: c, clean: true, ciPassed: true } },
+    publicEvidence: { checks: { web: true } },
+    changes: [{ artifact: "web", fromCommit: a, toCommit: c, eligibleForMatching: true }],
+  };
+  const candidates = ["AND-75", "AND-76"].map((itemKey) => ({
+    itemKey, pullRequestUrl: "https://github.com/owner/repo/pull/42", requiredArtifacts: ["web"],
+  }));
+  const ancestor = (older, newer) => [a, b, c].indexOf(older) <= [a, b, c].indexOf(newer);
+  const result = matchCandidates(receipt, candidates, () => ({ mergeCommit: b, files: ["services/server/src/app.ts"] }), ancestor);
+  assert.deepEqual(result.comments.map((comment) => comment.itemKey), ["AND-75", "AND-76"]);
+  assert.notEqual(result.comments[0].idempotencyKey, result.comments[1].idempotencyKey);
 });

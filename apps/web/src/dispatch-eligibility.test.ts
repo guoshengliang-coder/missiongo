@@ -7,6 +7,7 @@ import {
   isSelectable,
   dispatchModeHelpKey,
   dispatchModeLabelKey,
+  dispatchModeOrDefault,
   dispatchProblemKey,
   isDispatchable,
   nodeIneligibility,
@@ -41,6 +42,16 @@ const node = (overrides: Partial<DispatchNode> = {}): DispatchNode => ({
   online: true,
   createdAt: "2026-09-13T10:00:00Z",
   ...overrides,
+});
+
+describe("dispatch mode defaults (AND-250)", () => {
+  it("starts an unset OpenCode mode in Build while preserving a saved Plan choice", () => {
+    expect(dispatchModeOrDefault("opencode")).toBe("default");
+    expect(dispatchModeOrDefault("opencode", "plan")).toBe("plan");
+    expect(dispatchModeOrDefault("opencode", "unsupported")).toBe("default");
+    expect(dispatchModeOrDefault("claude_code")).toBe("bypassPermissions");
+    expect(dispatchModeOrDefault("codex")).toBe("plan");
+  });
 });
 
 describe("picking items to dispatch", () => {

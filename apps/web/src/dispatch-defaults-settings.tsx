@@ -6,7 +6,7 @@ import { DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo/domain";
 
 import { api } from "./api";
 import { effortLabelKey, effortOptions, groupModelsByProvider, modelsAcrossNodes } from "./agent-model-options";
-import { SUPPORTED_AGENT_KINDS, agentLabelKey, dispatchModeLabelKey } from "./dispatch-eligibility";
+import { SUPPORTED_AGENT_KINDS, agentLabelKey, dispatchModeLabelKey, dispatchModeOrDefault } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import type { DispatchDefaults } from "./types";
 
@@ -106,7 +106,7 @@ export function DispatchDefaultsSettings() {
               <legend>{label(agentLabelKey(kind), kind)}</legend>
               <div className="field-row">
                 <label>{t("dispatchMode")}
-                  <select value={current.mode ?? (kind === "claude_code" ? "bypassPermissions" : "plan")} onChange={(event) => updateAgent(kind, { mode: event.target.value })}>
+                  <select value={dispatchModeOrDefault(kind, current.mode)} onChange={(event) => updateAgent(kind, { mode: event.target.value })}>
                     {DISPATCH_MODES_BY_AGENT[kind].map((value) => (
                       <option key={value} value={value}>{label(dispatchModeLabelKey(kind, value), value)}</option>
                     ))}

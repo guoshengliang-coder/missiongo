@@ -86,8 +86,8 @@ Usage: scripts/deploy.sh --host <ssh host> --env-file <remote env file> [options
                           is skipped for those requests, since a certificate
                           issued for the hostname cannot match the IP.
   --notice-origin <url>   After deployment, print a JSON release receipt using
-                          read-only public checks. An AI release session can use
-                          it to notify verified work items through MissionGo MCP.
+                          read-only public checks. An authorized AI release
+                          session uses it to notify all verified work items.
 USAGE
   exit 1
 }
@@ -212,8 +212,8 @@ before_snapshot=""
 if [ -n "$notice_origin" ]; then
   before_snapshot="$(node scripts/release-receipt.mjs snapshot \
     --host "$host" --current-link "$current_link" --downloads-dir "$downloads_dir")" || {
-    echo "Warning: could not capture the previous release; no release notices can be derived." >&2
-    before_snapshot=""
+    echo "Cannot capture the previous release; stopping before deployment because release handoff cannot be verified." >&2
+    exit 1
   }
 fi
 
@@ -512,12 +512,14 @@ if [ "$verify" -eq 1 ]; then
   esac
 fi
 
-echo "==> Done"
-
-if [ -n "$notice_origin" ] && [ -n "$before_snapshot" ]; then
+if [ -n "$notice_origin" ]; then
   echo "==> Release notice receipt (JSON)"
   node scripts/release-receipt.mjs compare \
     --host "$host" --current-link "$current_link" --downloads-dir "$downloads_dir" \
-    --before-json "$before_snapshot" --origin "$notice_origin" || \
-    echo "Warning: release receipt unavailable; do not send published-version comments." >&2
+    --before-json "$before_snapshot" --origin "$notice_origin" || {
+    echo "Deployment finished, but the release receipt is unavailable; do not advance work items." >&2
+    exit 1
+  }
 fi
+
+echo "==> Done"

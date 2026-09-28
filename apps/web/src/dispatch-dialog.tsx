@@ -23,6 +23,7 @@ import {
   agentLabelKey,
   dispatchModeHelpKey,
   dispatchModeLabelKey,
+  dispatchModeOrDefault,
   dispatchProblemKey,
   dispatchStatusLabelKey,
   nodeIneligibility,
@@ -31,9 +32,6 @@ import {
 import { SessionLink } from "./session-link";
 import { useI18n } from "./i18n";
 import type { Dispatch, DispatchNode, Product, WorkItem } from "./types";
-
-/** The account owner chose unattended dispatch; hard deny rules remain on the Mac node. */
-const DEFAULT_MODE = "bypassPermissions";
 
 /**
  * Says why a machine cannot take this batch, in words that name the fix.
@@ -92,7 +90,7 @@ export function DispatchDialog({
   const { formatTime, t } = useI18n();
   const queryClient = useQueryClient();
   const [agentKind, setAgentKind] = useState<AgentKind>("claude_code");
-  const [mode, setMode] = useState<string>(DEFAULT_MODE);
+  const [mode, setMode] = useState<string>(dispatchModeOrDefault("claude_code"));
   const [nodeId, setNodeId] = useState("");
   // Empty means "as configured on the Mac" (AND-130).
   const [model, setModel] = useState("");
@@ -129,7 +127,7 @@ export function DispatchDialog({
       : agentKind;
     const saved = defaults.agents[kind] ?? {};
     setAgentKind(kind);
-    if (saved.mode && DISPATCH_MODES_BY_AGENT[kind].includes(saved.mode)) setMode(saved.mode);
+    setMode(dispatchModeOrDefault(kind, saved.mode));
     setModel(saved.model ?? "");
     setEffort(saved.effort ?? "");
     if (defaults.nodeId) setNodeId(defaults.nodeId);
@@ -350,10 +348,9 @@ export function DispatchDialog({
               const next = event.target.value as AgentKind;
               const saved = defaultsQuery.data?.agents[next] ?? {};
               setAgentKind(next);
-              // Each agent has its own modes; the one selected may not exist there.
+              // A mode from the previous agent is not a preference for this one.
               // Models are per agent too, so start from that agent's saved default.
-              const preferred = saved.mode ?? mode;
-              setMode(DISPATCH_MODES_BY_AGENT[next].includes(preferred) ? preferred : DISPATCH_MODES_BY_AGENT[next][0] ?? "");
+              setMode(dispatchModeOrDefault(next, saved.mode));
               setModel(saved.model ?? "");
               setEffort(saved.effort ?? "");
             }}
