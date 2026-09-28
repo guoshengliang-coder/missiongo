@@ -145,18 +145,22 @@ is something it is not.
 
 #### Work-item release notices
 
-When an AI session deploys a release and should notify its work items, add
-`--notice-origin https://<public-host>` to `scripts/deploy.sh`. This performs
+When an authorized AI session deploys a release, add
+`--notice-origin https://<public-host>` to `scripts/deploy.sh` and complete the
+MissionGo release handoff before reporting the release workflow finished. This performs
 read-only checks after the deployment: `/health` must report the deployed
 commit; the public Android APK and macOS ZIP must match their server-side
 SHA-256; the macOS update manifest and Android SDK POM must match the live
 files. The final JSON line is a release receipt with the previous and current
 source commits, versions, and verification flags for changed artifacts.
 
-The receipt is evidence, not a comment. The release session follows
+The receipt is evidence, not a comment. A receipt failure is reported as a
+deployment command failure even if the software is already live; do not advance
+work items without it. The release session follows
 `skills/missiongo/SKILL.md` to select the one product it is releasing, page
-`list_release_candidates`, and save the tool result and receipt in temporary
-JSON files outside the checkout. It then runs:
+`list_release_candidates` to the end (including through empty pages), and save
+all pages with their request cursors and the receipt in temporary JSON files
+outside the checkout. It then runs:
 
 ```sh
 node scripts/release-notices.mjs --receipt <receipt.json> --candidates <candidates.json>
@@ -170,7 +174,9 @@ comment and status handoff; it never writes to MissionGo. The OAuth-connected
 AI reads each matched item fully, calls `append_comment`, then calls the narrow
 `submit_for_verification` tool. Unknown source commits, failed public checks,
 incomplete artifact sets and first releases without a baseline leave the item
-in `development_complete`. Only a person decides whether verification passed.
+in `development_complete`. The scan covers every candidate in the product,
+not only the item that prompted the release. Report every skipped candidate and
+the reason. Only a person decides whether verification passed.
 
 #### Going back
 

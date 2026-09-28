@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 完整读取条目、评论、领取、创建条目及上传附件，并在 PR 合并和发布核实后推进状态。不修改条目正文与字段，不删除条目，不决定验收。
-version: 5.12.0
+version: 5.13.0
 ---
 
 # MissionGo 条目读取与评论
@@ -380,14 +380,14 @@ AI 每小时能建的条目有上限：衍生条目按来源条目计，独立�
 
 ## 发布后状态交接与版本回写
 
-用户让你执行一次发布或处理某次已经完成的发布时，可以为**这次发布实际包含且所有相关产物均已发布**的开发完成条目追加发布评论，并推到待验证。这不是验收。没有被核实发布的条目不能写「已发布」。普通条目的读取与分析仍遵守用户给出的编号范围；这一节是发布任务专用的范围规则。
+用户让你执行一次发布或处理某次已经完成的发布时，**必须完成本节的发布交接核对**，不能只处理触发发布的那一条或会话里提到的条目。只为**这次发布实际包含且所有相关产物均已发布**的开发完成条目追加发布评论，并推到待验证。这不是验收。没有被核实发布的条目不能写「已发布」。普通条目的读取与分析仍遵守用户给出的编号范围；这一节是发布任务专用的范围规则。若发布已完成但凭据或授权缺失，如实报告未能交接，不能把部署成功当作条目交接成功。
 
 1. 先按本 Skill 调用 `get_current_account`。必须有 `canComment: true`。用户或本仓库的发布流程须明确给出目标产品；如果从仓库的 `product.json.name` 与 `list_products` 的名称匹配，只有唯一匹配才可继续。不能因为账号可访问全部产品就扫全部产品。
-2. 正常部署使用 `scripts/deploy.sh --notice-origin <公网 origin>`。脚本在真正部署结束后打印一行 JSON 发布凭据。它记录部署前后实际线上产物的版本与来源提交，并按产物类型核验：Web/Server 要核对公网健康响应中的来源提交和实际下载的前端产物哈希；Android SDK 才核对 SDK POM 与下载文件哈希。不同产品不得套用不存在的产物检查。没有这份凭据、凭据中的 `verified` 为 false、或 `eligibleForMatching` 为 false 时，不能声称该产物已发布。构建脚本本地成功和 `released.json` 更新都不等于上线。首次发布或旧版本来源未知时，自动关联会跳过。
-3. 只对第 1 步限定的产品调用 `list_release_candidates`，从 `beforeSequence` 缺省值开始，按 `nextBeforeSequence` 读到结束。它只给出开发完成条目的编号、PR URL 和必需产物，不给出正文。不得从条目描述、评论、提交标题或日志里扩展候选编号。
-4. 把发布凭据和候选结果写入工作区外的临时 JSON 文件，运行 `node scripts/release-notices.mjs --receipt <文件> --candidates <文件>`。脚本通过 `gh` 核实 PR 已合并、属于当前仓库，重新按 PR 文件路径算必需产物，并核实**每一个**必需产物当前公开可用、来源提交包含 PR；还要求本次至少发布了一个相关产物。多个产物可在不同发布批次完成。脚本只提出评论和状态交接参数，不写 MissionGo。任何命令失败、关联不明或结果为空都停在人工核对，不猜。
+2. 正常部署使用 `scripts/deploy.sh --notice-origin <公网 origin>`。脚本在真正部署结束后打印一行 JSON 发布凭据。它记录部署前后实际线上产物的版本与来源提交，并按产物类型核验：Web/Server 核对公网 `/health` 报告的来源提交；Android App 和 macOS App 核对公开下载文件的哈希；Android SDK 核对公开 POM 的哈希。不同产品不得套用不存在的产物检查。没有这份凭据、相关 `changes` 中的 `verified` 或 `eligibleForMatching` 为 false 时，不能声称该产物已发布。构建脚本本地成功和 `released.json` 更新都不等于上线。首次发布或旧版本来源未知时，自动关联会跳过。
+3. 只对第 1 步限定的产品调用 `list_release_candidates`，从 `beforeSequence` 缺省值开始，按 `nextBeforeSequence` 读到结束，**即使某页 `candidates` 为空也继续**。它只给出开发完成条目的编号、PR URL 和必需产物，不给出正文。不得从条目描述、评论、提交标题或日志里扩展候选编号。记录每次请求的游标，第一页记为 `requestedBeforeSequence: null`，后续页记为实际传入的 `beforeSequence`。
+4. 把发布凭据和**所有候选页**写入工作区外的临时 JSON 文件。候选文件为 `{ "pages": [{ "requestedBeforeSequence": null, "productId": "...", "candidates": [...], "nextBeforeSequence": 123 }, { "requestedBeforeSequence": 123, "productId": "...", "candidates": [...] }] }`；末页没有 `nextBeforeSequence`。运行 `node scripts/release-notices.mjs --receipt <文件> --candidates <文件>`。脚本先拒绝分页不完整或跨产品的输入，再通过 `gh` 核实 PR 已合并、属于当前仓库，重新按 PR 文件路径算必需产物，并核实**每一个**必需产物当前公开可用、来源提交包含 PR；还要求本次至少发布了一个相关产物。多个产物可在不同发布批次完成。脚本只提出评论和状态交接参数，不写 MissionGo。任何命令失败、关联不明或结果为空都停在人工核对，不猜。
 5. 对脚本提出的每个条目，仍逐条完整执行「读取流程」：确认当前状态仍是开发完成，最近一次开发完成事件的 PR URL 和必需产物与候选结果相同，读完所有附件。只有全部成立、`capabilities.canComment` 为 true 且 `writeTools` 包含 `submit_for_verification` 时，先按脚本给出的 `text`、`summary` 和稳定 `idempotencyKey` 调用 `append_comment`（`bodyKind: "free"`），加上真实的 `agentName`；再用 `pullRequestUrl`、`releases`、`deployedCommit`、`receiptDigest` 和独立的 `transitionIdempotencyKey` 调用 `submit_for_verification`。重试复用各自原键。
-6. 评论只说正式发布了哪些产物及其版本、来源提交、关联 PR，并提示在这些版本验证。Web/Server 以线上来源提交作为核验版本；若产品同时展示 tag，可一并说明，但不得用 tag 代替线上提交校验。评论不得声称验收通过、已经安装到用户设备、或所有环境都已更新。报告实际推进了哪些条目，哪些被跳过及原因。现有待验证条目保持原状态，不做历史回填。
+6. 评论只说正式发布了哪些产物及其版本、来源提交、关联 PR，并提示在这些版本验证。Web/Server 以线上来源提交作为核验版本；若产品同时展示 tag，可一并说明，但不得用 tag 代替线上提交校验。评论不得声称验收通过、已经安装到用户设备、或所有环境都已更新。逐条处理脚本提出的**所有**评论，不因本次部署由某一条触发而提前结束；报告实际推进了哪些条目，哪些被跳过及原因。现有待验证条目保持原状态，不做历史回填。
 
 ## 输出格式
 

@@ -1,4 +1,4 @@
-import { AGENT_KINDS, CLAUDE_CODE_MODES, CODEX_MODES, OPENCODE_MODES, DISPATCH_STATUSES, isCodexThreadLink, type AgentKind } from "@missiongo/domain";
+import { AGENT_KINDS, CLAUDE_CODE_MODES, CODEX_MODES, OPENCODE_MODES, DISPATCH_MODES_BY_AGENT, DISPATCH_STATUSES, isCodexThreadLink, type AgentKind } from "@missiongo/domain";
 
 import type { MessageKey } from "./i18n";
 import type { DispatchNode, Product, WorkItemStatus } from "./types";
@@ -11,6 +11,15 @@ import type { DispatchNode, Product, WorkItemStatus } from "./types";
  */
 export function isDispatchable(status: WorkItemStatus): boolean {
   return status === "ready";
+}
+
+/** A saved mode belongs to its agent; an unset OpenCode mode starts in Build. */
+export function dispatchModeOrDefault(agentKind: AgentKind, savedMode?: string): string {
+  const modes = DISPATCH_MODES_BY_AGENT[agentKind];
+  if (savedMode && modes.includes(savedMode)) return savedMode;
+  if (agentKind === "claude_code") return "bypassPermissions";
+  if (agentKind === "opencode") return "default";
+  return modes[0] ?? "";
 }
 
 /**
