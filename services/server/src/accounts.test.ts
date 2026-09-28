@@ -1108,6 +1108,39 @@ describe("Nicknames", () => {
   });
 });
 
+describe("Console font size (AND-247)", () => {
+  const setFontScale = (app: FastifyInstance, cookie: string, fontScale: unknown) =>
+    app.inject({ method: "POST", url: "/api/v1/auth/font-scale", headers: { cookie }, payload: { fontScale } });
+  const session = (app: FastifyInstance, cookie: string) =>
+    app.inject({ method: "GET", url: "/api/v1/auth/session", headers: { cookie } });
+
+  it("defaults to medium and carries the choice to another browser", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    expect((await session(app, memberCookie)).json()).toMatchObject({ user: { fontScale: "medium" } });
+
+    const other = await signIn(app, "member@example.com", MEMBER_PASSWORD);
+    const response = await setFontScale(app, memberCookie, "large");
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ user: { fontScale: "large" } });
+    // The account holds it, not the browser: another session sees the choice.
+    expect((await session(app, other)).json()).toMatchObject({ user: { fontScale: "large" } });
+  });
+
+  it("refuses a size off the list and keeps the stored one", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    expect((await setFontScale(app, memberCookie, "huge")).statusCode).toBe(400);
+    expect((await setFontScale(app, memberCookie, 115)).statusCode).toBe(400);
+    expect((await session(app, memberCookie)).json()).toMatchObject({ user: { fontScale: "medium" } });
+  });
+
+  it("keeps every session signed in: a size is not a credential", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    const other = await signIn(app, "member@example.com", MEMBER_PASSWORD);
+    await setFontScale(app, memberCookie, "small");
+    expect((await session(app, other)).statusCode).toBe(200);
+  });
+});
+
 describe("Listing and revoking AI authorizations", () => {
   /** Mint a token and record it, the way the OAuth exchange does. */
   function authorize(app: FastifyInstance, accountId: string, clientId = "mgc_test_client") {

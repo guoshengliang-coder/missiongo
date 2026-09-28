@@ -40,10 +40,13 @@ import {
   Rocket,
   RotateCcw,
   Search,
+  Settings,
   Settings2,
   Sparkles,
   Trash2,
+  Type as TypeIcon,
   Undo2,
+  UserRound,
   Video,
   WifiOff,
   X,
@@ -118,6 +121,8 @@ import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
 import { AccountSettings, ProductAccessSettings } from "./account-settings";
+import { DisplaySettings } from "./display-settings";
+import { applyFontScale, readStoredFontScale, storeFontScale } from "./font-scale";
 import { mayAdministerProduct } from "./product-permissions";
 import { DispatchDefaultsSettings } from "./dispatch-defaults-settings";
 import { NodeSettings } from "./node-settings";
@@ -436,10 +441,9 @@ export function App() {
   const [typeFilter, setTypeFilter] = useState<WorkItemType | "all">(initialFilters.type);
   const [search, setSearch] = useState(initialFilters.search);
   const [captureOpen, setCaptureOpen] = useState(false);
-  const [productOpen, setProductOpen] = useState(false);
-  const [connectionOpen, setConnectionOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
   const [downloadsOpen, setDownloadsOpen] = useState(false);
-  const [agentsOpen, setAgentsOpen] = useState(false);
   const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [agentSessionId, setAgentSessionId] = useState<string | null>(agentSessionIdFromUrl);
@@ -461,6 +465,12 @@ export function App() {
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [notice, setNotice] = useState<string | null>(null);
+
+  /** One entry point for every panel the settings dialog holds. */
+  const openSettings = (tab: SettingsTab) => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  };
   const [selectedItemKeys, setSelectedItemKeys] = useState<ReadonlySet<string>>(() => new Set());
   /**
    * The batch the dispatch dialog is about, captured when it opens.
@@ -956,6 +966,18 @@ export function App() {
   const selectedProduct = products.find((product) => product.id === selectedProductId);
   const selectedProductCanUseAi = productAllowsAi(selectedProduct);
   const hasAnyAiPermission = products.some(productAllowsAi);
+
+  // The account's type size is the source of truth (AND-247). The boot script
+  // already replayed this browser's cached copy before the first paint; once
+  // bootstrap answers, a choice made on another device wins and the cache
+  // catches up, so the next load starts at the right size.
+  const serverFontScale = bootstrapQuery.data?.user.fontScale;
+  useEffect(() => {
+    if (serverFontScale && serverFontScale !== readStoredFontScale()) {
+      applyFontScale(serverFontScale);
+      storeFontScale(serverFontScale);
+    }
+  }, [serverFontScale]);
   // One all-product feed drives every attention badge as well as the selected
   // product's console. Product switching is then a local filter, not another
   // request, and the header counts keep updating while the console is closed.
@@ -1454,25 +1476,15 @@ export function App() {
             setDownloadsOpen(true);
           }}
         ><Download size={15} /> {t("downloadsEntry")}</button>
-        {hasAnyAiPermission && (
-          <button
-            className="text-button add-product"
-            onClick={() => {
-              closeSidebar();
-              setAgentsOpen(true);
-            }}
-          ><Bot size={15} /> {t("agentManagementEntry")}</button>
-        )}
-        <button className="text-button add-product" onClick={() => setProductOpen(true)}><Settings2 size={15} /> {t("manageProductsEntry")}</button>
         <div className="sidebar-utilities">
           <LanguageSwitch sidebar />
           <button
             className="text-button sidebar-utility-button"
             onClick={() => {
               closeSidebar();
-              setConnectionOpen(true);
+              openSettings("account");
             }}
-          ><Settings2 size={15} /> {t("connectionSettings")}</button>
+          ><Settings size={15} /> {t("settingsEntry")}</button>
         </div>
       </aside>
       {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => closeSidebar()} aria-label={t("closeNavigation")} />}
@@ -1719,7 +1731,7 @@ export function App() {
             }}
             onOpenAgents={() => {
               setStartWorkItem(null);
-              setAgentsOpen(true);
+              openSettings("agents");
             }}
           />
         </Modal>
@@ -1808,49 +1820,38 @@ export function App() {
           />
         </Modal>
       )}
-      {productOpen && (
-        <Modal title={t("manageProducts")} subtitle={t("productManagementHelp")} onClose={() => setProductOpen(false)} wide>
-          <ProductManager
-            products={products}
-            {...(bootstrapQuery.data ? { user: bootstrapQuery.data.user } : {})}
-            selectedProductId={selectedProductId}
-            onSelectProduct={(product) => {
-              setSelectedProductId(product.id);
-              clearItemPage();
-            }}
-          />
-        </Modal>
-      )}
-      {agentsOpen && hasAnyAiPermission && (
-        <Modal title={t("nodeSettings")} subtitle={t("nodeSettingsHelp")} onClose={() => setAgentsOpen(false)} wide scrolls>
-          <NodeSettings products={products} />
-          <DispatchDefaultsSettings />
-        </Modal>
-      )}
-      {downloadsOpen && (
-        <Modal title={t("downloadsTitle")} subtitle={t("downloadsSubtitle")} onClose={() => setDownloadsOpen(false)}>
-          <DownloadsPanel />
-        </Modal>
-      )}
-      {connectionOpen && (
-        <Modal title={t("accountSettings")} subtitle={t("accountSettingsHelp")} onClose={() => setConnectionOpen(false)}>
+      {settingsOpen && (
+        <Modal title={t("settingsEntry")} subtitle={t("settingsSubtitle")} onClose={() => setSettingsOpen(false)} wide scrolls>
           {/* The shell can be on screen from cache before the session is known,
               so the panel waits for the real user rather than inventing one. */}
           {!bootstrapQuery.data ? (
             <div className="centered-state"><LoaderCircle className="spin" size={22} /></div>
           ) : (
-          <AccountSettings
-            user={bootstrapQuery.data.user}
-            products={bootstrapQuery.data.products}
-            onLoggedOut={() => {
-              // Before the reload, not after: the cache on disk holds this
-              // account's work items, and a restore on the next start would
-              // paint them for whoever opens the app next.
-              clearPersistedQueryCache();
-              window.location.reload();
-            }}
-          />
+            <SettingsDialog
+              tab={settingsTab}
+              onTabChange={setSettingsTab}
+              user={bootstrapQuery.data.user}
+              products={bootstrapQuery.data.products}
+              canUseAi={hasAnyAiPermission}
+              selectedProductId={selectedProductId}
+              onSelectProduct={(product) => {
+                setSelectedProductId(product.id);
+                clearItemPage();
+              }}
+              onLoggedOut={() => {
+                // Before the reload, not after: the cache on disk holds this
+                // account's work items, and a restore on the next start would
+                // paint them for whoever opens the app next.
+                clearPersistedQueryCache();
+                window.location.reload();
+              }}
+            />
           )}
+        </Modal>
+      )}
+      {downloadsOpen && (
+        <Modal title={t("downloadsTitle")} subtitle={t("downloadsSubtitle")} onClose={() => setDownloadsOpen(false)}>
+          <DownloadsPanel />
         </Modal>
       )}
       {notice && <div className="toast" role="status"><Check size={16} /> {notice}<button onClick={() => setNotice(null)} aria-label={t("dismiss")}><X size={14} /></button></div>}
@@ -4434,6 +4435,86 @@ function AttachmentCard({
         </MediaLightbox>
       )}
     </article>
+  );
+}
+
+type SettingsTab = "account" | "agents" | "products" | "display";
+
+/**
+ * Everything that used to be its own sidebar entry, behind one "Settings".
+ *
+ * The tabs follow the same permissions the separate entries did rather than a
+ * new rule: agent management appears only where a product allows AI, and the
+ * account panel still narrows itself to "my account" for a member. A tab can
+ * vanish between renders (the last AI product is archived), so the panel drawn
+ * is always one the tab list still offers.
+ */
+function SettingsDialog({
+  tab,
+  onTabChange,
+  user,
+  products,
+  canUseAi,
+  selectedProductId,
+  onSelectProduct,
+  onLoggedOut,
+}: {
+  tab: SettingsTab;
+  onTabChange: (tab: SettingsTab) => void;
+  user: AuthenticatedUser;
+  products: readonly Product[];
+  canUseAi: boolean;
+  selectedProductId: string;
+  onSelectProduct: (product: Product) => void;
+  onLoggedOut: () => void;
+}) {
+  const { t } = useI18n();
+  const tabs: ReadonlyArray<{ id: SettingsTab; label: string; icon: ReactNode }> = [
+    { id: "account", label: t("accountSettings"), icon: <UserRound size={16} /> },
+    ...(canUseAi ? [{ id: "agents" as const, label: t("agentManagementEntry"), icon: <Bot size={16} /> }] : []),
+    { id: "products", label: t("manageProductsEntry"), icon: <Settings2 size={16} /> },
+    { id: "display", label: t("displaySettings"), icon: <TypeIcon size={16} /> },
+  ];
+  const active: SettingsTab = tabs.some((entry) => entry.id === tab) ? tab : "account";
+
+  return (
+    <div className="settings-dialog">
+      <nav className="settings-tabs" role="tablist" aria-label={t("settingsEntry")}>
+        {tabs.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            role="tab"
+            aria-selected={active === entry.id}
+            className={active === entry.id ? "settings-tab selected" : "settings-tab"}
+            onClick={() => onTabChange(entry.id)}
+          >
+            {entry.icon}
+            <span>{entry.label}</span>
+          </button>
+        ))}
+      </nav>
+      <div className="settings-content">
+        {active === "account" && (
+          <AccountSettings user={user} products={products} onLoggedOut={onLoggedOut} />
+        )}
+        {active === "agents" && canUseAi && (
+          <>
+            <NodeSettings products={products} />
+            <DispatchDefaultsSettings />
+          </>
+        )}
+        {active === "products" && (
+          <ProductManager
+            products={products}
+            user={user}
+            selectedProductId={selectedProductId}
+            onSelectProduct={onSelectProduct}
+          />
+        )}
+        {active === "display" && <DisplaySettings user={user} />}
+      </div>
+    </div>
   );
 }
 

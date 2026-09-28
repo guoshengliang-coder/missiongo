@@ -15,6 +15,27 @@ export const MAX_PASSWORD_LENGTH = 1_024;
  * name the server would then refuse.
  */
 export const MAX_ACCOUNT_NICKNAME_LENGTH = 40;
+/**
+ * The console's type size (AND-247).
+ *
+ * Three named steps rather than a free number or a percentage: the setting is
+ * one multiplier over the whole type scale, and a name is what a reader can pick
+ * without having to guess what "115%" will look like.
+ */
+export const FONT_SCALES = ["small", "medium", "large"] as const;
+export type FontScale = (typeof FONT_SCALES)[number];
+export const DEFAULT_FONT_SCALE: FontScale = "medium";
+
+export function isFontScale(value: unknown): value is FontScale {
+  return typeof value === "string" && (FONT_SCALES as readonly string[]).includes(value);
+}
+
+/** A font size on its way into the table, or a 400 for anything off the list. */
+export function normalizeFontScale(value: unknown): FontScale {
+  if (!isFontScale(value)) throw invalidInput("Font size must be small, medium or large.");
+  return value;
+}
+
 /** How stale "last used" is allowed to get, so reading does not cost a write every time. */
 export const AI_AUTHORIZATION_TOUCH_INTERVAL_MS = 5 * 60_000;
 
@@ -72,6 +93,8 @@ export interface AccountSnapshot {
   readonly email: string;
   /** What this account calls itself. Absent means "use the address". */
   readonly nickname?: string;
+  /** The console's type size for this account. Always one of the three. */
+  readonly fontScale: FontScale;
   readonly role: AccountRole;
   /** Set when the account is suspended. Its sessions and AI tokens stop working. */
   readonly disabledAt?: string;
@@ -89,6 +112,7 @@ interface AccountRow {
   id: string;
   email: string;
   nickname: string | null;
+  font_scale: string;
   password_scrypt: string;
   role: AccountRole;
   credentials_changed_at: string;
@@ -383,6 +407,21 @@ export class AccountStore {
     const row = this.row(accountId);
     if (!row || row.disabled_at) throw notFound("Account");
     this.writeNickname(accountId, normalizeNickname(nickname), new Date().toISOString());
+    return this.getAccount(accountId);
+  }
+
+  /**
+   * Change the type size you read the console at.
+   *
+   * Like the nickname and unlike the address, no password and no credential
+   * stamp: it is a display preference, and nobody is signed out over how large
+   * they like their text. Storing it on the account rather than the browser is
+   * the point of the item -- the same reader gets the same size on every device.
+   */
+  changeOwnFontScale(accountId: string, fontScale: FontScale): AccountSnapshot {
+    const row = this.row(accountId);
+    if (!row || row.disabled_at) throw notFound("Account");
+    this.writeFontScale(accountId, normalizeFontScale(fontScale), new Date().toISOString());
     return this.getAccount(accountId);
   }
 
@@ -757,6 +796,12 @@ export class AccountStore {
     if (Number(changes.changes) === 0) throw notFound("Authorization");
   }
 
+  private writeFontScale(accountId: string, fontScale: FontScale, now: string): void {
+    this.database.connection
+      .prepare("UPDATE accounts SET font_scale = ?, updated_at = ? WHERE id = ?")
+      .run(fontScale, now, accountId);
+  }
+
   private writeNickname(accountId: string, nickname: string | null, now: string): void {
     // No UNIQUE on the column, so there is no conflict to catch here -- which is
     // the whole difference from writeEmail below.
@@ -799,6 +844,9 @@ function mapAccount(row: AccountRow): AccountSnapshot {
     id: row.id,
     email: row.email,
     ...(row.nickname ? { nickname: row.nickname } : {}),
+    // The column's CHECK keeps this on the list; a value that somehow is not
+    // falls back rather than handing an unknown size to the console.
+    fontScale: isFontScale(row.font_scale) ? row.font_scale : DEFAULT_FONT_SCALE,
     role: row.role,
     ...(row.disabled_at ? { disabledAt: row.disabled_at } : {}),
     credentialsChangedAt: row.credentials_changed_at,

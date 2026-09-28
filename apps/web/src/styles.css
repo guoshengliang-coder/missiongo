@@ -86,14 +86,18 @@
   --tile-video: #38445a;
   --viewer-bg: #0b101b;
 
-  --text-xs: 11px;
-  --text-sm: 12px;
-  --text-md: 13px;
-  --text-base: 14px;
-  --text-lg: 15px;
-  --text-xl: 18px;
-  --text-2xl: 23px;
-  --text-3xl: 27px;
+  /* One multiplier over the whole type scale, so the size setting (AND-247)
+     rescales text and nothing else. Medium is 1 and needs no attribute, which
+     is why the base rule keeps today's numbers as the calc operands. */
+  --text-scale: 1;
+  --text-xs: calc(11px * var(--text-scale));
+  --text-sm: calc(12px * var(--text-scale));
+  --text-md: calc(13px * var(--text-scale));
+  --text-base: calc(14px * var(--text-scale));
+  --text-lg: calc(15px * var(--text-scale));
+  --text-xl: calc(18px * var(--text-scale));
+  --text-2xl: calc(23px * var(--text-scale));
+  --text-3xl: calc(27px * var(--text-scale));
 
   --radius-xs: 6px;
   --radius-sm: 8px;
@@ -116,6 +120,13 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
 }
+
+/* The reader's type size, chosen in Settings (AND-247). It scales the type
+   tokens only: spacing, radii and control heights stay put, so the largest
+   step does not reflow the layout into a different shape. Set on the root
+   before first paint by the appearance bootstrap, from the same cached value. */
+:root[data-font-scale="small"] { --text-scale: 0.9; }
+:root[data-font-scale="large"] { --text-scale: 1.15; }
 
 /* Dark redefines the tokens only. Nothing below this block asks which theme
    it is in, so a component styled through the tokens follows automatically.
@@ -1464,6 +1475,22 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   border-top: 1px solid var(--line);
 }
 .privacy-note { display: flex; align-items: center; gap: 6px; margin: -3px 0 0; color: var(--muted); font-size: var(--text-sm); }
+/* One sidebar entry now holds the account, agent, product and display panels
+   (AND-247). A left tab column keeps four headings readable; below the two-pane
+   breakpoint it becomes a scrolling row so each panel keeps the full width. */
+.settings-dialog { display: grid; grid-template-columns: 178px minmax(0, 1fr); gap: 20px; align-items: start; }
+.settings-tabs { display: flex; flex-direction: column; gap: 3px; position: sticky; top: 0; }
+.settings-tab { display: flex; align-items: center; gap: 9px; padding: 9px 11px; color: var(--muted); background: transparent; border: 0; border-radius: var(--radius-md); font-size: var(--text-sm); font-weight: 650; text-align: left; cursor: pointer; }
+.settings-tab.selected { color: var(--ink); background: var(--surface-sunken); }
+.settings-content { min-width: 0; }
+.display-settings { display: flex; flex-direction: column; gap: 12px; }
+.font-scale-options { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.font-scale-option { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 14px; color: var(--ink-2); background: var(--surface-field); border: 1px solid var(--line-dark); border-radius: var(--radius-md); font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
+.font-scale-option.selected { color: var(--accent-text-strong); background: var(--accent-bg); border-color: var(--accent-line); }
+.font-scale-option:disabled { cursor: default; opacity: 0.72; }
+/* Drawn at the chosen size on purpose: it is the one thing that shows what the
+   setting did, without the reader having to go and find some body text. */
+.font-scale-preview { margin: 0; padding: 12px 14px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-base); line-height: 1.6; }
 .account-panel { display: flex; flex-direction: column; gap: 16px; }
 .account-identity { display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
 .account-identity > span { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 auto; color: var(--navy); background: var(--mint); border-radius: var(--radius-md); }
@@ -2223,4 +2250,13 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 @media (forced-colors: active) {
   .icon-button, .refresh-button, .product-switcher, .row-more-menu > summary, .detail-more-menu > summary { border: 1px solid ButtonText; }
   .nav-item.active, .type-filters button.active, .agent-console-filter.active, .capture-type.active { outline: 2px solid Highlight; outline-offset: -2px; }
+}
+
+/* The settings dialog's left tab column becomes a scrolling row on narrow
+   screens, so the panel keeps the full width of the sheet (AND-247). Placed
+   last on purpose: the responsive tests read the first block at a breakpoint. */
+@media (max-width: 1023px) {
+  .settings-dialog { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .settings-tabs { position: static; flex-direction: row; overflow-x: auto; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .settings-tab { white-space: nowrap; }
 }
