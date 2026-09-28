@@ -141,6 +141,7 @@ export interface UpdateWorkItemInput {
 export interface CreateAttachmentMetadataInput {
   readonly itemKey: string;
   readonly attribution?: EventAttribution;
+  readonly actorKind?: ActorKind;
   readonly kind: AttachmentKind;
   readonly filename: string;
   readonly storageFilename: string;

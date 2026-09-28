@@ -17,9 +17,9 @@ describe("MCP tool catalog", () => {
   });
 
   it("publishes the release candidate read tool, commenting, the three status changes, and derived items", () => {
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(13);
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(15);
     expect(MCP_TOOL_DEFINITIONS.filter((tool) => tool.access === "write").map((tool) => tool.name))
-      .toEqual(["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item"]);
+      .toEqual(["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "add_item_attachment"]);
     expect(findMcpTool("get_item_context")?.access).toBe("read");
     // Deciding an item is finished, paused or abandoned is the user's, so no
     // tool for it exists at any tier.

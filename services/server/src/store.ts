@@ -1041,7 +1041,7 @@ export class MissionGoStore {
           .run(input.feedbackDraftId, input.clientAttachmentId, id, input.contentSha256, now);
       }
       this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
-      this.insertEvent(item.id, "attachment_added", "human", null, null, {
+      this.insertEvent(item.id, "attachment_added", input.actorKind ?? "human", null, null, {
         attachmentId: id,
         kind: input.kind,
         displayNumber,
