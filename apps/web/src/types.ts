@@ -420,6 +420,10 @@ export interface AgentSessionQuestion {
    * disable and the chosen option stays highlighted, so an answered card no
    * longer reads as a fresh ask (AND-227). */
   readonly answered?: string;
+  /** The ask disappeared without an answer — OpenCode auto-approved or
+   * dismissed it at the source. Settled history like `answered`: the controls
+   * disable and the card reads as expired, not as a fresh ask (AND-239). */
+  readonly withdrawn?: boolean;
 }
 
 export interface AgentSessionActivity {

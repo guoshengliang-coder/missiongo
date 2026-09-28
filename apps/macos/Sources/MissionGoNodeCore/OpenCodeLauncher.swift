@@ -625,6 +625,15 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         return object
     }
 
+    /// A route a build may simply not have: 404 means "not there" and reads
+    /// as an empty answer, while any other failure propagates. Used by
+    /// pendingChoices, where a failed ask must not read as "nothing pending"
+    /// (AND-239).
+    private func callAbsentOk(_ method: String, _ path: String) async throws -> [String: Any]? {
+        do { return try await call(method, path) }
+        catch let error as OpenCodeHTTPError where error.status == 404 { return nil }
+    }
+
     public func health() async throws -> String {
         let info = try await call("GET", "/api/info")
         guard let version = info["version"] as? String,
@@ -774,13 +783,16 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
 
     public func pendingChoices(id: String) async throws -> [OpenCodeChoice] {
         var choices: [OpenCodeChoice] = []
-        // A build without these routes answers 404; a pending choice is then
-        // simply not collected instead of failing the whole mirror.
-        if let forms = try? await call("GET", "/api/session/\(encoded(id))/form"),
+        // A build without these routes answers 404, which legitimately reads
+        // as "nothing pending". Any other failure must throw instead of
+        // reading as an empty list: the server settles cards a healthy poll
+        // stops carrying (AND-239), so a poll that could not ask must fail
+        // the mirror rather than report a "nothing pending" it cannot know.
+        if let forms = try await callAbsentOk("GET", "/api/session/\(encoded(id))/form"),
            let entries = forms["data"] as? [[String: Any]] {
             choices.append(contentsOf: entries.compactMap(OpenCodeProtocol.formChoice))
         }
-        if let permissions = try? await call("GET", "/api/session/\(encoded(id))/permission"),
+        if let permissions = try await callAbsentOk("GET", "/api/session/\(encoded(id))/permission"),
            let entries = permissions["data"] as? [[String: Any]] {
             choices.append(contentsOf: entries.compactMap(OpenCodeProtocol.permissionChoice))
         }
@@ -927,8 +939,10 @@ public struct OpenCodeLauncher: AgentAdapter {
         // A pending choice is not in the message log: OpenCode blocks on a form
         // or a permission endpoint until it is answered there. Attach the
         // pending ones so the console can show what is being asked, with the
-        // controls to answer it.
-        let choices = (try? await control.pendingChoices(id: session.sessionRef)) ?? []
+        // controls to answer it. A failure here fails the sync — the server
+        // settles cards a poll stops carrying (AND-239), so a poll that could
+        // not ask must not report a "nothing pending" it cannot know.
+        let choices = try await control.pendingChoices(id: session.sessionRef)
         let messages = snapshot.messages + choices.map(\.message)
         // The settings a person sees and changes: what the session runs with
         // now, and any change waiting for an idle moment. Failing to read the
@@ -1047,7 +1061,10 @@ public struct OpenCodeLauncher: AgentAdapter {
         var deliveredStatus = snapshot.status
         var deliveredWaiting = waitingForInput
         if let refreshed = try? await control.snapshot(id: session.sessionRef) {
-            let refreshedChoices = (try? await control.pendingChoices(id: session.sessionRef)) ?? []
+            // A re-read that cannot re-ask falls back to this poll's earlier
+            // answer, never to "none": settling by absence (AND-239) would
+            // otherwise read the fallback as if every card had been cleared.
+            let refreshedChoices = (try? await control.pendingChoices(id: session.sessionRef)) ?? choices
             deliveredMessages = refreshed.messages + refreshedChoices.map(\.message) + answeredTrace
             deliveredStatus = refreshed.status
             deliveredWaiting = !refreshedChoices.isEmpty
