@@ -32,7 +32,7 @@ export default async function globalSetup() {
 
   mkdirSync(`${here}/.auth`, { recursive: true });
   writeFileSync(`${here}/.auth/state.json`, JSON.stringify({ cookies, origins: [] }, null, 2));
-  writeFileSync(`${here}/.auth/fixture.json`, JSON.stringify({ productId: fixture.productId, keys: fixture.keys, detailKey: fixture.detailKey }, null, 2));
+  writeFileSync(`${here}/.auth/fixture.json`, JSON.stringify({ productId: fixture.productId, keys: fixture.keys, detailKey: fixture.detailKey, snapshotTime: fixture.snapshotTime }, null, 2));
 
   globalThis.missiongoFixtureStop = fixture.stop;
   process.env.MISSIONGO_UI_FIXTURE_DATA = fixture.dataDirectory;

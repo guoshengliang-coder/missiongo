@@ -102,7 +102,7 @@ export async function startFixtureServer() {
     if (!cookie) throw new Error("Fixture login returned no session cookie.");
 
     const fixture = await seedFixture({ baseUrl: `http://127.0.0.1:${SERVER_PORT}`, cookie });
-    return { cookie, stop, dataDirectory, ...fixture };
+    return { cookie, stop, dataDirectory, snapshotTime: Date.now(), ...fixture };
   } catch (error) {
     stop();
     throw new Error(`${error.message}\n\nServer output:\n${log.join("")}`, { cause: error });
