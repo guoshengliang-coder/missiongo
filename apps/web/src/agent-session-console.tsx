@@ -44,6 +44,7 @@ import {
   messageLabelKey,
   mergeAgentSessionSnapshot,
   outgoingReply,
+  outgoingReplyStatusKey,
   replyBlockedLabelKey,
   replyMirrorArrived,
   resolvedAgentSessionId,
@@ -201,17 +202,6 @@ function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof u
   if (command.status === "delivered") return t("agentSessionReplyDelivered");
   if (command.status === "failed") return t("agentSessionReplyFailed");
   return t("agentSessionReplyCancelled");
-}
-
-function outgoingReplyStatusLabel(
-  status: "sending" | "queued" | "delivering" | "delivered" | "delivery_unknown" | "failed",
-  t: ReturnType<typeof useI18n>["t"],
-): string {
-  if (status === "sending") return t("agentSessionSending");
-  if (status === "queued") return t("agentSessionReplyQueued");
-  if (status === "delivering") return t("agentSessionReplyDelivering");
-  if (status === "delivery_unknown") return t("agentSessionReplyDeliveryUnknown");
-  return t("agentSessionReplyFailed");
 }
 
 export function AgentSessionConsole({
@@ -1121,8 +1111,10 @@ export function AgentSessionConsole({
                     <footer className="agent-console-message-delivery" role="status">
                       {outgoing.status === "failed" || outgoing.status === "delivery_unknown"
                         ? <CircleAlert size={14} />
+                        : outgoing.status === "delivered"
+                        ? <CircleCheck size={14} />
                         : <LoaderCircle className="spin" size={14} />}
-                      <span>{outgoingReplyStatusLabel(outgoing.status, t)}{outgoing.error ? `: ${outgoing.error}` : ""}</span>
+                      <span>{t(outgoingReplyStatusKey(outgoing.status))}{outgoing.error ? `: ${outgoing.error}` : ""}</span>
                       {outgoing.status === "queued" && outgoing.commandId && selected.canReply && (
                         <button
                           type="button"
