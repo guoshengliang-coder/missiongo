@@ -188,6 +188,12 @@ final class APIClientTests: XCTestCase {
         }
     }
 
+    func testUnreadCountFallsBackWhileServerRollsOut() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":7}"#) }
+        let count = try await client().unreadCount()
+        XCTAssertEqual(count, 7)
+    }
+
     // Every one of these was a real mismatch found by running the TypeScript
     // daemon against the server: the endpoints answer 201 and 204, and a
     // 200-only check turned a success into a reported failure.

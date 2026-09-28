@@ -1328,16 +1328,18 @@ public struct APIClient: Sendable {
     }
 
     public func unreadCount() async throws -> Int {
-        struct Reply: Decodable { let unread: Int }
+        struct Reply: Decodable { let unread: Int?; let attention: Int? }
         let response = try await send(
             "GET", "/api/v1/node/attention-summary", body: Optional<String>.none, bearer: try nodeToken()
         )
         try requireSuccess(response, operation: "读取未读会话数量")
         let reply: Reply = try decode(response, operation: "读取未读会话数量")
-        guard reply.unread >= 0 else {
+        // An updated app can start before the server rollout. Older servers
+        // supply only attention; use it until unread becomes available.
+        guard let count = reply.unread ?? reply.attention, count >= 0 else {
             throw APIError.invalidResponse("未读会话数量不能为负数。")
         }
-        return reply.unread
+        return count
     }
 
     /// Sets this machine's nickname, or clears it with `nil`. The server answers
