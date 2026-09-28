@@ -320,6 +320,66 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertEqual(saved, options)
     }
 
+    func testMergesAliasesResolvingToTheSameCustomModelAndDropsUnmappedAnthropicEntries() {
+        // What a third-party endpoint reports (AND-200): the aliases are all
+        // mapped to custom models, and the unmapped Fable entry keeps its
+        // Anthropic id — it would be offered and then rejected by the endpoint.
+        let options = ClaudeModelCatalog.options(fromInitialize: [
+            "models": [
+                ["value": "default", "resolvedModel": "glm-5.3[1m]", "displayName": "Default (recommended)"],
+                ["value": "opus", "resolvedModel": "glm-5.3", "displayName": "glm-5.3",
+                 "supportedEffortLevels": ["low", "medium", "high"]],
+                ["value": "claude-fable-5-1[1m]", "resolvedModel": "claude-fable-5-1[1m]", "displayName": "Fable",
+                 "supportedEffortLevels": ["low", "high"]],
+                ["value": "sonnet", "resolvedModel": "glm-5.3", "displayName": "glm-5.3",
+                 "supportedEffortLevels": ["xhigh", "max"]],
+                ["value": "haiku", "resolvedModel": "glm-5.3-flash", "displayName": "glm-5.3-flash",
+                 "supportedEffortLevels": ["low", "medium"]],
+            ],
+        ])
+        XCTAssertEqual(options, [
+            AgentModelOption(id: "opus", label: "glm-5.3", efforts: ["low", "medium", "high", "xhigh", "max"]),
+            AgentModelOption(id: "haiku", label: "glm-5.3-flash", efforts: ["low", "medium"]),
+        ])
+    }
+
+    func testKeepsTheFullCatalogWhenNoAliasIsCustomMapped() {
+        // A first-party account: every entry resolves to an Anthropic model,
+        // so nothing is dropped and nothing collapses.
+        let options = ClaudeModelCatalog.options(fromInitialize: [
+            "models": [
+                ["value": "opus", "resolvedModel": "claude-opus-5-5", "displayName": "Opus",
+                 "supportedEffortLevels": ["low", "high"]],
+                ["value": "claude-fable-5-1[1m]", "resolvedModel": "claude-fable-5-1[1m]", "displayName": "Fable",
+                 "supportedEffortLevels": ["low", "high"]],
+                ["value": "haiku", "resolvedModel": "claude-haiku-4-5", "displayName": "Haiku"],
+            ],
+        ])
+        XCTAssertEqual(options, [
+            AgentModelOption(id: "opus", label: "Opus", efforts: ["low", "high"]),
+            AgentModelOption(id: "claude-fable-5-1[1m]", label: "Fable", efforts: ["low", "high"]),
+            AgentModelOption(id: "haiku", label: "Haiku"),
+        ])
+    }
+
+    func testMergesDuplicateIdsWhenTheCatalogCarriesNoResolvedModel() {
+        // An older CLI without `resolvedModel`: same behavior as before, bar
+        // collapsing entries that share an id.
+        let options = ClaudeModelCatalog.options(fromInitialize: [
+            "models": [
+                ["value": "glm-5.3[1m]", "displayName": "glm-5.3[1m]", "supportedEffortLevels": ["low", "high"]],
+                ["value": "Fable", "displayName": "Fable"],
+                ["value": "glm-5.3[1m]", "displayName": "glm-5.3[1m]", "supportedEffortLevels": ["xhigh"]],
+                ["value": "glm-5.3-flash[1m]", "displayName": "glm-5.3-flash[1m]"],
+            ],
+        ])
+        XCTAssertEqual(options, [
+            AgentModelOption(id: "glm-5.3[1m]", label: "glm-5.3[1m]", efforts: ["low", "high", "xhigh"]),
+            AgentModelOption(id: "Fable", label: "Fable"),
+            AgentModelOption(id: "glm-5.3-flash[1m]", label: "glm-5.3-flash[1m]"),
+        ])
+    }
+
     func testASettingsChangeBecomesOneControlRequestPerPart() {
         var ids = ["r1", "r2", "r3"].makeIterator()
         var change = ClaudeSettingsChange(
