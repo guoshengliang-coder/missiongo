@@ -113,7 +113,7 @@ export async function startFixtureServer() {
 export const PAGES = [
   { name: "list", path: (f) => `/?product=${f.productId}&status=all` },
   { name: "detail", path: (f) => `/?product=${f.productId}&status=all&item=${f.detailKey}` },
-  { name: "agent-console", path: (f) => `/?product=${f.productId}&agent=1` },
+  { name: "agent-console", path: (f) => `/?product=${f.productId}&console=agent` },
 ];
 
 /** Widths from docs/design-system.md §5.6, one per shell the layout can take. */
