@@ -48,11 +48,13 @@ import {
   replyBlockedLabelKey,
   replyMirrorArrived,
   resolvedAgentSessionId,
+  sessionReplyDraft,
   shouldMarkRead,
   shouldResetMessageView,
   shouldScrollMessagesAfterChange,
   type AgentKindFilter,
   type AgentSessionFilter,
+  withSessionReplyDraft,
 } from "./agent-session-view";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { AgentSessionQuickSettings } from "./agent-session-settings";
@@ -236,7 +238,7 @@ export function AgentSessionConsole({
   const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [search, setSearch] = useState("");
-  const [reply, setReply] = useState("");
+  const [replyDrafts, setReplyDrafts] = useState<Readonly<Record<string, string>>>({});
   const [clock, setClock] = useState(Date.now);
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 15_000);
@@ -342,6 +344,22 @@ export function AgentSessionConsole({
   }, [conversationOpen, onSelectSession, selectedId, selectedSessionId]);
 
   const selected = sessions.find((session) => session.id === selectedId);
+  // The reply box belongs to the conversation it is written for: its draft is
+  // kept under that session's agentSessionId, so an answer picked here never
+  // follows you into another session or another product (AND-252). The key is
+  // the id the reply is actually sent to, and it is unique per conversation.
+  const replySessionId = selected?.agentSessionId ?? null;
+  const reply = sessionReplyDraft(replyDrafts, replySessionId);
+  const setReplyFor = useCallback((
+    sessionId: string | null,
+    update: string | ((current: string) => string),
+  ) => {
+    if (!sessionId) return;
+    setReplyDrafts((current) => withSessionReplyDraft(current, sessionId, update));
+  }, []);
+  const setReply = useCallback((update: string | ((current: string) => string)) => {
+    setReplyFor(replySessionId, update);
+  }, [replySessionId, setReplyFor]);
   useEffect(() => {
     setReplyFiles([]);
     setReplyFileError(null);
@@ -387,7 +405,7 @@ export function AgentSessionConsole({
       }
     },
     onSuccess: (created, input) => {
-      setReply("");
+      setReplyFor(input.sessionId, "");
       setReplyFiles([]);
       setReplyFileError(null);
       queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current
@@ -477,7 +495,7 @@ export function AgentSessionConsole({
     mutationFn: ({ sessionId, commandId }: { sessionId: string; commandId: string; text: string }) =>
       api.cancelAgentSessionCommand(sessionId, commandId),
     onSuccess: async (_command, input) => {
-      if (selectedId === input.sessionId) setReply(input.text);
+      setReplyFor(input.sessionId, input.text);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
@@ -490,7 +508,7 @@ export function AgentSessionConsole({
     }) => api.resolveAgentSessionDelivery(sessionId, commandId, outcome),
     onSuccess: async (_command, input) => {
       if (input.outcome === "not_received") {
-        setReply(input.text);
+        setReplyFor(input.sessionId, input.text);
         setDismissedCommandId(input.commandId);
       }
       await Promise.all([
