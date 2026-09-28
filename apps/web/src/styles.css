@@ -671,6 +671,10 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-background li { margin-top: 4px; }
 .agent-console-background li small { margin-left: 8px; color: var(--muted); }
 .agent-console-background li button, .agent-session-background li button { margin-left: 8px; }
+.agent-console-approval { align-self: center; width: min(680px, 92%); padding: 12px; border: 1px solid var(--accent-line); border-radius: var(--radius-md); background: var(--status-progress-bg); overflow-wrap: anywhere; }
+.agent-console-approval p { margin: 8px 0; white-space: pre-wrap; }
+.agent-console-approval small { color: var(--muted); }
+.agent-console-approval-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
 .agent-console-dispatch-state { align-self: center; max-width: 520px; display: grid; justify-items: center; gap: 7px; padding: 18px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-lg); text-align: center; }
 .agent-console-dispatch-state strong { color: var(--ink); font-size: var(--text-sm); }
 .agent-console-dispatch-state p { margin: 0; font-size: var(--text-xs); }

@@ -508,6 +508,26 @@ export function AgentSessionConsole({
       ]);
     },
   });
+  const decideApproval = useMutation({
+    mutationFn: ({ sessionId, approvalId, decision }: { sessionId: string; approvalId: string; decision: "accept" | "decline" }) =>
+      api.decideAgentApproval(sessionId, approvalId, decision),
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agent-session", selected?.agentSessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
+      ]);
+    },
+  });
+  const retryApproval = useMutation({
+    mutationFn: ({ sessionId, approvalId }: { sessionId: string; approvalId: string }) =>
+      api.retryAgentApproval(sessionId, approvalId),
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agent-session", selected?.agentSessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
+      ]);
+    },
+  });
   const submittedCommand = send.isSuccess && send.variables?.sessionId === selected?.agentSessionId
     ? send.data
     : undefined;
@@ -537,6 +557,7 @@ export function AgentSessionConsole({
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
+  const approval = sessionQuery.data?.approval ?? selected?.approval;
   // A turn in progress reads as running for every agent that reports one —
   // Claude's own instrumentation, Codex mapping its active thread, OpenCode
   // reporting an active session without a pending question (AND-223).
@@ -1163,6 +1184,52 @@ export function AgentSessionConsole({
                 )}
                 {(sessionQuery.data?.lastError ?? selected.lastError) && (
                   <p className="inline-error">{sessionQuery.data?.lastError ?? selected.lastError}</p>
+                )}
+                {approval && (
+                  <section className="agent-console-approval" role="alert" aria-label={t("agentApprovalTitle") }>
+                    <strong>{approval.kind === "auto" ? t("agentApprovalAutoTitle") : t("agentApprovalTitle")}</strong>
+                    <p>{approval.action}</p>
+                    <small>{approval.status === "inProgress" ? t("agentApprovalReviewing")
+                      : approval.status === "pending" ? t("agentApprovalWaiting")
+                        : approval.status === "denied" ? t("agentApprovalDenied")
+                          : approval.status === "approved" ? t("agentApprovalApproved") : approval.status}</small>
+                    {approval.reason && <small>{approval.reason}</small>}
+                    {approval.kind === "manual" && approval.status === "pending" && selected.canReply
+                      && selected.agentSessionId && (
+                      <div className="agent-console-approval-actions">
+                        <button type="button" className="primary-button"
+                          disabled={Boolean(approval.decision) || decideApproval.isPending}
+                          onClick={() => decideApproval.mutate({ sessionId: selected.agentSessionId!, approvalId: approval.id, decision: "accept" })}>
+                          {t("agentApprovalAccept")}
+                        </button>
+                        <button type="button" className="text-button"
+                          disabled={Boolean(approval.decision) || decideApproval.isPending}
+                          onClick={() => decideApproval.mutate({ sessionId: selected.agentSessionId!, approvalId: approval.id, decision: "decline" })}>
+                          {t("agentApprovalDecline")}
+                        </button>
+                        {approval.decision && <small>{t("agentApprovalDecisionQueued")}</small>}
+                      </div>
+                    )}
+                    {approval.kind === "auto" && approval.status === "denied" && selected.canReply
+                      && selected.agentSessionId && (
+                      <div className="agent-console-approval-actions">
+                        <button type="button" className="primary-button"
+                          disabled={Boolean(approval.retryId) || retryApproval.isPending}
+                          onClick={() => retryApproval.mutate({ sessionId: selected.agentSessionId!, approvalId: approval.id })}>
+                          {t("agentApprovalRetryManual")}
+                        </button>
+                        {approval.retryStatus && <small>{t("agentApprovalRetryStatus")}: {t(({
+                          queued: "agentApprovalRetryQueued", delivering: "agentApprovalRetryDelivering",
+                          delivered: "agentApprovalRetryDelivered", restored: "agentApprovalRetryRestored",
+                          failed: "agentApprovalRetryFailed",
+                        } as const)[approval.retryStatus])}</small>}
+                        {approval.retryError && <small>{approval.retryError}</small>}
+                      </div>
+                    )}
+                    {(decideApproval.isError || retryApproval.isError) && (
+                      <p className="inline-error">{localizedErrorText(decideApproval.error ?? retryApproval.error, t)}</p>
+                    )}
+                  </section>
                 )}
                 {selected.agentSessionId && !sessionQuery.isLoading && !sessionQuery.isError && (
                   <div className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">

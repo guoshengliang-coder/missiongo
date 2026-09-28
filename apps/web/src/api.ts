@@ -487,6 +487,14 @@ export const api = {
     request<{ dispatches: Dispatch[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/dispatches`),
   getAgentSession: (sessionId: string) =>
     request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}`),
+  decideAgentApproval: (sessionId: string, approvalId: string, decision: "accept" | "decline") =>
+    request(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}/decision`, {
+      method: "POST", body: JSON.stringify({ decision }),
+    }),
+  retryAgentApproval: (sessionId: string, approvalId: string) =>
+    request(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}/retry`, {
+      method: "POST", body: JSON.stringify({}),
+    }),
   listAgentSessions: (productId?: string) =>
     request<{ sessions: AgentSessionSummary[] }>(
       `/api/v1/agent-sessions${productId ? `?productId=${encodeURIComponent(productId)}` : ""}`,

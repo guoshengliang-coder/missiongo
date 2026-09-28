@@ -1487,6 +1487,30 @@ export class MissionGoDatabase {
           .run(202609271554, new Date().toISOString());
       }
     });
+    this.transaction(() => {
+      if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609280604").get()) {
+        this.connection.exec(`
+          CREATE TABLE IF NOT EXISTS agent_session_approvals (
+            session_id TEXT PRIMARY KEY REFERENCES agent_sessions(id) ON DELETE CASCADE,
+            approval_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('manual', 'auto')),
+            status TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            reason TEXT,
+            started_at_ms INTEGER NOT NULL,
+            decision TEXT CHECK (decision IN ('accept', 'decline')),
+            retry_id TEXT,
+            retry_review_id TEXT,
+            retry_status TEXT CHECK (retry_status IN ('queued', 'delivering', 'delivered', 'restored', 'failed')),
+            retry_error TEXT,
+            updated_at TEXT NOT NULL
+          ) STRICT;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202609280604, new Date().toISOString());
+      }
+    });
     this.connection.exec("PRAGMA optimize;");
   }
 }

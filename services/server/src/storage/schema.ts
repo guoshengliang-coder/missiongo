@@ -320,8 +320,7 @@ export const INITIAL_SCHEMA = `
   ) STRICT;
 
   -- The conversation attached to a launched controllable dispatch. MissionGo
-  -- only mirrors user-visible messages and queues replies; approvals stay in
-  -- the agent's own surface.
+  -- mirrors user-visible messages and queues replies and scoped approvals.
   CREATE TABLE IF NOT EXISTS agent_sessions (
     id TEXT PRIMARY KEY,
     dispatch_id TEXT NOT NULL UNIQUE REFERENCES dispatches(id) ON DELETE CASCADE,
@@ -404,6 +403,25 @@ export const INITIAL_SCHEMA = `
     delivered_at TEXT,
     delivering_at TEXT,
     cancelled_at TEXT
+  ) STRICT;
+
+  -- The latest Codex permission request or automatic review for a session.
+  -- Decisions are separate from chat commands and cannot change work-item state.
+  CREATE TABLE IF NOT EXISTS agent_session_approvals (
+    session_id TEXT PRIMARY KEY REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    approval_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('manual', 'auto')),
+    status TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT,
+    started_at_ms INTEGER NOT NULL,
+    decision TEXT CHECK (decision IN ('accept', 'decline')),
+    retry_id TEXT,
+    retry_review_id TEXT,
+    retry_status TEXT CHECK (retry_status IN ('queued', 'delivering', 'delivered', 'restored', 'failed')),
+    retry_error TEXT,
+    updated_at TEXT NOT NULL
   ) STRICT;
 
   CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_session_one_queued_command
