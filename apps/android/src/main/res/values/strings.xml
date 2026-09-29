@@ -16,6 +16,15 @@
     <string name="webview_outdated_message">MissionGo 需要 Android System WebView %2$d 或以上版本，这台手机目前是 %1$d。请更新后重新打开。</string>
     <string name="update_webview">去更新</string>
 
+    <!-- Self-update (AND-258). The page decides that an update exists and shows
+         its notes; these are the native half: the download and the installer. -->
+    <string name="update_downloading">正在下载新版本 %1$s…</string>
+    <string name="update_download_failed">下载更新失败：%1$s</string>
+    <string name="update_verify_failed">更新包校验不通过，已丢弃下载的文件。</string>
+    <string name="update_allow_install">请先允许 MissionGo「安装未知应用」，然后重新下载。</string>
+    <string name="update_unavailable">更新信息有问题，已取消下载。</string>
+    <string name="update_no_installer">这台手机没有可用的安装器。</string>
+
     <!-- Home-screen widget (AND-149). Terms match the web console and item list. -->
     <string name="widget_label">Agent 控制台</string>
     <string name="widget_description">查看有未读消息的 Agent 会话和待处理的条目</string>

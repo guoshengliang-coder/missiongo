@@ -1,5 +1,6 @@
 package io.missiongo.android
 
+import android.app.AlertDialog
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -8,6 +9,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -29,6 +31,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -40,9 +43,15 @@ import io.missiongo.feedback.MissionGo
 import io.missiongo.feedback.WebViewFilePicker
 import io.missiongo.feedback.WebViewSupport
 import io.missiongo.android.push.WidgetPushRegistrar
+import io.missiongo.android.update.ApkUpdate
 import io.missiongo.android.widget.WidgetRefresher
 import android.content.Context
 import android.widget.Toast
+import java.io.File
+import java.net.URL
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
@@ -79,6 +88,14 @@ class MainActivity : ComponentActivity() {
      * history goes once the new page has loaded.
      */
     private var clearHistoryOnLoad = false
+
+    // AND-258: the self-update download. One at a time -- the page's dialog stays
+    // up so a failed attempt can be retried, and two threads writing the same
+    // cache file would race.
+    private val updateExecutor: Executor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "missiongo-update").apply { isDaemon = true }
+    }
+    @Volatile private var updateRunning = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -342,6 +359,36 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+
+        /**
+         * The installed app's version, for the page's update check (AND-258).
+         * The WebView cannot read the APK's versionCode for itself -- it is a
+         * manifest attribute, not a JavaScript-visible value -- so the shell
+         * reports it. A shell too old to have this method simply has no update
+         * check, which is the right answer for it.
+         */
+        @JavascriptInterface
+        fun appVersion(): String = JSONObject()
+            .put("versionName", BuildConfig.VERSION_NAME)
+            .put("versionCode", BuildConfig.VERSION_CODE)
+            .toString()
+
+        /**
+         * Downloads the APK the page named and opens the system installer
+         * (AND-258). Only a path is taken from the page: the URL is rebuilt on
+         * this app's own endpoint, the path and digest are re-checked here, and
+         * the digest is verified again after the download.
+         */
+        @JavascriptInterface
+        fun downloadAndInstall(downloadPath: String, sha256: String, versionName: String) {
+            runOnUiThread {
+                if (!isMissionGoPage()) {
+                    Log.w(TAG, "Ignored an update request from ${webView.url}")
+                    return@runOnUiThread
+                }
+                startUpdate(downloadPath, sha256, versionName)
+            }
+        }
     }
 
     private fun isMissionGoPage(): Boolean {
@@ -381,6 +428,96 @@ class MainActivity : ComponentActivity() {
                 getString(R.string.feedback_failed, error.message ?: getString(R.string.unknown_error)),
                 Toast.LENGTH_LONG,
             ).show()
+        }
+    }
+
+    /**
+     * AND-258: downloads the APK the page asked for, then hands it to the system
+     * installer. The progress dialog is native because the page cannot keep one
+     * across a download that outlives its own state; the page keeps its own
+     * dialog up so a failed attempt can be retried.
+     */
+    private fun startUpdate(downloadPath: String, sha256: String, versionName: String) {
+        if (updateRunning) return
+        if (!ApkUpdate.isAllowedDownloadPath(downloadPath) || !ApkUpdate.isHexDigest(sha256)) {
+            Log.w(TAG, "Ignored an update request with an unexpected path or digest")
+            Toast.makeText(this, getString(R.string.update_unavailable), Toast.LENGTH_LONG).show()
+            return
+        }
+        val url = runCatching { URL(BuildConfig.MISSIONGO_ENDPOINT.trimEnd('/') + downloadPath) }.getOrNull()
+        if (url == null) {
+            Toast.makeText(this, getString(R.string.update_unavailable), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val destination = File(File(cacheDir, UPDATE_DIRECTORY), UPDATE_FILE)
+        destination.parentFile?.mkdirs()
+
+        updateRunning = true
+        val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            isIndeterminate = true
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.update_downloading, versionName))
+            .setView(progress)
+            .setCancelable(false)
+            .create()
+        dialog.show()
+
+        updateExecutor.execute {
+            val result = ApkUpdate.download(url, sha256, destination) { copied, total ->
+                runOnUiThread {
+                    if (total > 0) {
+                        progress.isIndeterminate = false
+                        progress.progress = ((copied * 100) / total).toInt().coerceIn(0, 100)
+                    }
+                }
+            }
+            runOnUiThread {
+                updateRunning = false
+                dialog.dismiss()
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                when (result) {
+                    is ApkUpdate.Result.Success -> installApk(result.file)
+                    ApkUpdate.Result.DigestMismatch ->
+                        Toast.makeText(this, getString(R.string.update_verify_failed), Toast.LENGTH_LONG).show()
+                    is ApkUpdate.Result.Failed ->
+                        Toast.makeText(this, getString(R.string.update_download_failed, result.reason), Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    /**
+     * Opens the system installer for [file]. From API 26 the app also needs the
+     * "install unknown apps" grant, on top of REQUEST_INSTALL_PACKAGES in the
+     * manifest; without it, send the person to the system screen that grants it
+     * rather than failing silently.
+     */
+    private fun installApk(file: File) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            Toast.makeText(this, getString(R.string.update_allow_install), Toast.LENGTH_LONG).show()
+            runCatching {
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            }
+            return
+        }
+        val uri = runCatching { FileProvider.getUriForFile(this, "$packageName.fileprovider", file) }.getOrNull()
+        if (uri == null) {
+            Toast.makeText(this, getString(R.string.update_unavailable), Toast.LENGTH_LONG).show()
+            return
+        }
+        // The installer reads the APK through the FileProvider; ACTION_VIEW is
+        // what every device this app runs on answers for a package archive.
+        val install = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            startActivity(install)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, getString(R.string.update_no_installer), Toast.LENGTH_LONG).show()
         }
     }
 
@@ -563,6 +700,12 @@ class MainActivity : ComponentActivity() {
 
         private const val PUSH_PREFERENCES = "missiongo_push"
         private const val KEY_ASKED_NOTIFICATIONS = "asked_notifications"
+
+        // AND-258: where the downloaded APK waits for the installer. One fixed
+        // name: a newer download replaces the previous one, which is what the
+        // FileProvider below is scoped to.
+        private const val UPDATE_DIRECTORY = "updates"
+        private const val UPDATE_FILE = "missiongo-update.apk"
 
         private const val EXTRA_WIDGET_TARGET = "io.missiongo.android.extra.WIDGET_TARGET"
         private const val EXTRA_PRODUCT_ID = "io.missiongo.android.extra.PRODUCT_ID"

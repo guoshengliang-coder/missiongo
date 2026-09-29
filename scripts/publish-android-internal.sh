@@ -17,6 +17,12 @@ DOWNLOAD_DIRECTORY="$REPOSITORY_ROOT/apps/web/public/downloads"
 LATEST_APK="$DOWNLOAD_DIRECTORY/missiongo-android-latest.apk"
 TEMPORARY_APK="$DOWNLOAD_DIRECTORY/.missiongo-android-latest.apk.tmp"
 RELEASE_METADATA="$DOWNLOAD_DIRECTORY/missiongo-android-latest.release"
+# The public half an installed Android app reads to decide whether it is out of
+# date. Separate from the .release beside it on purpose: that one carries
+# source_commit and source_dirty and is kept out of the web image by
+# .dockerignore, so it can never answer this question. Mirrors the macOS
+# client's missiongo-macos-latest.json, which publish-macos.sh writes.
+UPDATE_MANIFEST="$DOWNLOAD_DIRECTORY/missiongo-android-latest.json"
 GRADLE_PROPERTIES="$GRADLE_ROOT/gradle.properties"
 MISSIONGO_CONFIG_DIRECTORY="${XDG_CONFIG_HOME:-"${HOME:?}/.config"}/missiongo"
 PRODUCTION_ENV_FILE="$MISSIONGO_CONFIG_DIRECTORY/production.env"
@@ -103,14 +109,45 @@ trap - EXIT HUP INT TERM
 # which version the fixed-name APK holds, so scripts/deploy.sh can publish it
 # under a versioned name instead of guessing one. Kept out of the Docker context
 # by .dockerignore, so it is never served from /downloads/.
+#
+# Computed once and written to both files below, so the record a deploy checks
+# and the manifest an installed app updates from can never disagree about this
+# build.
+SHA256=$(shasum -a 256 "$LATEST_APK" | awk '{print $1}')
+SIZE=$(wc -c < "$LATEST_APK" | tr -d ' ')
+
 cat > "$RELEASE_METADATA" <<METADATA
 version_name=$VERSION_NAME
 version_code=$VERSION_CODE
 build_timestamp=$BUILD_TIMESTAMP
 source_commit=$SOURCE_COMMIT
 source_dirty=$SOURCE_DIRTY
-sha256=$(shasum -a 256 "$LATEST_APK" | awk '{print $1}')
+sha256=$SHA256
 METADATA
+
+# The public half: only what an installed app needs to decide whether to update,
+# to check what it downloaded, and to say what changed. No source_commit, no
+# source_dirty -- this file is served at /downloads/ and build provenance does
+# not belong there. `versionCode` is the epoch-seconds number Gradle stamps into
+# the APK, which is the only monotonic comparison available: two APKs can carry
+# the same version name after a republish, and the name is enough only until
+# then. scripts/release-notes.mjs refuses to print notes while a change under the
+# app or the SDK it compiles in has no declaration, so a published manifest can
+# never omit an update the build actually contains.
+RELEASE_NOTES=$(node "$REPOSITORY_ROOT/scripts/release-notes.mjs" --artifact androidApp --to "$SOURCE_COMMIT")
+
+cat > "$UPDATE_MANIFEST" <<MANIFEST
+{
+  "version": "$VERSION_NAME",
+  "versionCode": $VERSION_CODE,
+  "sha256": "$SHA256",
+  "size": $SIZE,
+  "buildTimestamp": "$BUILD_TIMESTAMP",
+  "releaseNotes": $RELEASE_NOTES,
+  "downloadPath": "/downloads/missiongo-android-latest.apk"
+}
+MANIFEST
+chmod 0644 "$UPDATE_MANIFEST"
 
 cd "$REPOSITORY_ROOT"
 npm run build:web

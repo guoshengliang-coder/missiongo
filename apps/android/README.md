@@ -71,6 +71,18 @@ npm run publish:android-internal
 
 生产环境的下载文件由宿主机反向代理从自己的目录提供，`scripts/deploy.sh` 会在部署时把本次快照携带的 APK 发布到那里并原子切换软链接。因此请先执行上面的发布命令，再执行部署；否则部署会把过期的 APK 当作最新版发布出去。详见[部署说明](../../deploy/README.md)。
 
+## 检查更新（AND-258）
+
+App 在每次冷启动（进程重启、网页重新加载）时检查一次有没有新版本，发现新版本就弹出对话框，列出这次发布包含的条目，点「下载并安装」后由原生下载 APK、校验 SHA-256，再交给系统安装器。
+
+- 版本信息来源是 `/downloads/missiongo-android-latest.json`，由 `npm run publish:android-internal` 生成、随 Web 镜像发布。`versionCode`（发布时的 epoch 秒）是新旧比较的唯一依据，因为同名重发时版本名不会变。`scripts/deploy.sh` 会核对清单的 `sha256` 与要发布的 APK 一致，并在不发布 APK 时把线上清单原样带过去，避免两者指向不同的构建。
+- 检查与对话框在网页里（`apps/web/src/android-update.ts`、`AndroidUpdateNotice.tsx`），因为网页随部署更新，改文案和更新内容不用重发 APK；网页做不到的下载、校验和安装通过 `MissionGoAndroid` 桥接交给原生（`src/main/kotlin/io/missiongo/android/update/ApkUpdate.kt`）。
+- 原生只接受 `/downloads/` 下的 `.apk` 路径，并把它拼到自己配置的源站上，清单无法把下载指向别的域名；下载边下边算 SHA-256，不匹配就删除文件。
+- API 26 起还需要用户在系统设置里允许「安装未知应用」；未授权时会跳到系统设置页，允许后重新点一次「下载并安装」即可。
+- 更新内容取自 `release-notes/android/` 的声明，与 macOS 客户端同一套生成器（`scripts/release-notes.mjs`）。改动 `apps/android` 或它编译进来的 `sdks/android-feedback/missiongo-feedback` 却没有声明时，发布脚本会拒绝执行。
+- 已知窗口：部署时 APK 是在容器重启之后才发布到宿主机目录的，两者之间有几秒钟不一致；在这期间点安装会因为摘要不符失败，重试即可。
+
+
 ## 应用身份
 
 正式 App 的 applicationId 是 `io.missiongo.android`，名称取自 `@string/app_name`，图标与 `apps/web/public/icon.svg` 同源。这些值在 `product.json` 里声明一次，`npm run check` 会校验各处没有跑偏。
