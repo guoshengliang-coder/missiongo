@@ -1353,6 +1353,7 @@ export function AgentSessionConsole({
                   <AutoGrowTextarea
                     rows={1}
                     maximumHeight={240}
+                    submitOnEnter
                     value={reply}
                     onChange={(event) => {
                       setReply(event.target.value);
