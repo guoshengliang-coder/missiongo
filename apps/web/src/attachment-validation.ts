@@ -14,6 +14,8 @@ export const FILE_LIMITS_MIB: Readonly<Record<string, number>> = {
   csv: 10,
   json: 10,
   pdf: 20,
+  html: 10,
+  zip: 100,
 };
 
 export type AttachmentValidation =

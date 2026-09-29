@@ -48,7 +48,7 @@ export interface WorkItemEnvironment {
 export interface WorkItemAttachment {
   readonly id: string;
   readonly itemKey: string;
-  readonly kind: "image" | "video" | "log" | "document";
+  readonly kind: "image" | "video" | "log" | "document" | "archive";
   readonly displayNumber: number;
   readonly filename: string;
   readonly contentType: string;
