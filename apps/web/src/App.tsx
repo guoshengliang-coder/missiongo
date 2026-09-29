@@ -1023,7 +1023,7 @@ export function App() {
   }, [agentConsoleOpen, queryClient]);
 
   useEffect(() => {
-    if (products.length > 0 || !agentConsoleOpen) return;
+    if (!bootstrapQuery.isSuccess || products.length > 0 || !agentConsoleOpen) return;
     setNotice(t("agentConsoleUnavailableLink"));
     const current = typeof history.state === "object" && history.state
       ? history.state as Record<string, unknown>
@@ -1039,7 +1039,7 @@ export function App() {
     setAgentConsoleOpen(false);
     setAgentSessionId(null);
     setAgentConversationOpen(false);
-  }, [agentConsoleOpen, products.length, t]);
+  }, [agentConsoleOpen, bootstrapQuery.isSuccess, products.length, t]);
 
   useEffect(() => {
     if (products.length === 0) return;
