@@ -31,6 +31,7 @@ import {
   toggleQuestionOption,
   replyBlockedLabelKey,
   resolvedAgentSessionId,
+  sessionCountsAsUnread,
   sessionReplyDraft,
   shouldMarkRead,
   shouldResetMessageView,
@@ -99,11 +100,12 @@ describe("agent session message view", () => {
     expect(formatAgentMessageTime(new Date(2026, 7, 31, 23, 59).toISOString(), "zh-CN", now)).toMatch(/8.*31.*23:59/);
   });
 
-  it("counts unread sessions once globally and once per distinct product, including failed sessions", () => {
+  it("counts unread sessions once globally and once per distinct product, including failed but not running ones", () => {
     const sessions = [
       {
         id: "cross-product",
         unread: true,
+        status: "idle",
         items: [
           { productId: "product-1" },
           { productId: "product-1" },
@@ -112,7 +114,8 @@ describe("agent session message view", () => {
       },
       { id: "second", unread: true, status: "failed", items: [{ productId: "product-1" }] },
       { id: "settled", unread: false, needsAttention: true, items: [{ productId: "product-2" }] },
-      { id: "archived", unread: true, archivedAt: "2026-09-21T00:00:00Z", items: [{ productId: "product-2" }] },
+      { id: "archived", unread: true, status: "idle", archivedAt: "2026-09-21T00:00:00Z", items: [{ productId: "product-2" }] },
+      { id: "running", unread: true, status: "active", items: [{ productId: "product-1" }] },
     ] as unknown as AgentSessionSummary[];
 
     const counts = agentUnreadCounts(sessions);
@@ -121,6 +124,14 @@ describe("agent session message view", () => {
       ["product-1", 2],
       ["product-2", 1],
     ]);
+  });
+
+  it("counts unread as waiting, not as still running (AND-260)", () => {
+    expect(sessionCountsAsUnread({ unread: true, status: "idle" })).toBe(true);
+    expect(sessionCountsAsUnread({ unread: true, status: "stalled" })).toBe(true);
+    expect(sessionCountsAsUnread({ unread: true, status: "failed" })).toBe(true);
+    expect(sessionCountsAsUnread({ unread: true, status: "active" })).toBe(false);
+    expect(sessionCountsAsUnread({ unread: false, status: "idle" })).toBe(false);
   });
 
   it("opens on all non-failed conversations by default", () => {
@@ -172,6 +183,9 @@ describe("agent session message view", () => {
     expect(agentSessionMatches(healthy, "all", "all", "")).toBe(true);
     expect(agentSessionMatches(healthy, "failed", "all", "")).toBe(false);
     expect(agentSessionMatches({ ...healthy, unread: false }, "unread", "all", "")).toBe(false);
+    // AND-260: the unread list holds what the badge counted, so a running
+    // conversation with unread messages is not in it.
+    expect(agentSessionMatches({ ...healthy, status: "active" as const }, "unread", "all", "")).toBe(false);
   });
 
   it("calls a dispatch failed when the session behind it never got going (AND-180)", () => {

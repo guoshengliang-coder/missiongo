@@ -16,11 +16,13 @@ describe("widgetSummary (AND-149)", () => {
       session("c", { status: "failed", unread: true }),
       session("d", { command: { status: "failed" } }),
       session("e", { needsAttention: true, unread: true, status: "active", archivedAt: "2026-09-22T00:00:00.000Z" }),
+      // AND-260: unread while still running is chatter, not something waiting.
+      session("f", { status: "active", unread: true }),
     ], new Map(), now);
 
     expect(summary).toEqual({
       generatedAt: "2026-09-23T04:00:00.000Z",
-      agent: { attention: 1, unread: 2, active: 1, failed: 2, attentionProductId: "p1", attentionSessionId: "a", unreadProductId: "p1" },
+      agent: { attention: 1, unread: 2, active: 2, failed: 2, attentionProductId: "p1", attentionSessionId: "a", unreadProductId: "p1" },
       items: { ready: 0, readyProductId: null },
       attentionEntries: [
         {
@@ -101,6 +103,7 @@ describe("widgetSummary (AND-149)", () => {
       session("attention", { needsAttention: true, items: [{ productId: "p1" }] }),
       session("unread", { unread: true, items: [{ productId: "p2" }, { productId: "p2" }] }),
       session("failed", { unread: true, status: "failed", items: [{ productId: "p2" }] }),
+      session("running", { unread: true, status: "active", items: [{ productId: "p2" }] }),
     ], new Map(), now);
 
     expect(summary.agent.attention).toBe(1);

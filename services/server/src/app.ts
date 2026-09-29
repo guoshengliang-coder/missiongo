@@ -54,6 +54,7 @@ import { BROWSER_UNREADABLE_IMAGE_TYPES, heicToJpeg } from "./image-decode.js";
 import { AiTitleService } from "./ai-title.js";
 import {
   AgentSessionStore,
+  agentSessionCountsAsUnread,
   type AgentMessageRole,
   type AgentSessionStatus,
 } from "./agent-session-store.js";
@@ -2355,7 +2356,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const sessions = visibleAgentSessionsFor(account).filter((session) => !session.archivedAt);
     return {
       attention: sessions.filter((session) => session.needsAttention).length,
-      unread: sessions.filter((session) => session.unread).length,
+      unread: sessions.filter(agentSessionCountsAsUnread).length,
     };
   });
 
@@ -2367,7 +2368,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const node = requireNode(request);
     const account = accountStore.getAccount(node.accountId);
     const sessions = visibleAgentSessionsFor(account)
-      .filter((session) => session.unread && !session.archivedAt)
+      .filter((session) => !session.archivedAt && agentSessionCountsAsUnread(session))
       .sort((left, right) => {
         const activity = Date.parse(right.activityAt) - Date.parse(left.activityAt);
         return activity || left.id.localeCompare(right.id);
