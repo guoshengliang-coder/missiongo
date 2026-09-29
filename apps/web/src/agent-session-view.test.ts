@@ -55,6 +55,32 @@ describe("agent session message view", () => {
     expect(agentChatMessages(messages, attached)[0]?.attachmentData).toEqual([attachment]);
     expect(agentChatMessages(messages, attached, "command-1").map((message) => message.text)).toEqual(["I see it"]);
   });
+
+  it("drops a card whose ask went away but keeps answered history (AND-239)", () => {
+    const messages = [
+      { id: "gone", sourceId: "permission-per_1", role: "agent" as const,
+        text: "OpenCode 需要你授权后才能继续。", occurredAt: "2026-09-25T01:00:00Z",
+        questions: [{ title: "OpenCode 请求使用 bash", options: ["允许一次"], withdrawn: true }] },
+      { id: "answered", sourceId: "permission-per_2", role: "agent" as const,
+        text: "OpenCode 需要你授权后才能继续。", occurredAt: "2026-09-25T01:00:01Z",
+        questions: [{ title: "OpenCode 请求使用 bash", options: ["允许一次"], answered: "允许一次" }] },
+      { id: "mixed", sourceId: "form-frm_1", role: "agent" as const,
+        text: "OpenCode 想请你确认以下问题。", occurredAt: "2026-09-25T01:00:02Z",
+        questions: [
+          { title: "自动放行的字段", options: ["继续"], withdrawn: true },
+          { title: "仍需确认的字段", options: ["继续"] },
+        ] },
+      { id: "plain", sourceId: "plain", role: "agent" as const,
+        text: "没有卡片的消息", occurredAt: "2026-09-25T01:00:03Z" },
+    ];
+    const shown = agentChatMessages(messages, []);
+    expect(shown.map((message) => message.text)).toEqual([
+      "OpenCode 需要你授权后才能继续。",
+      "OpenCode 想请你确认以下问题。",
+      "没有卡片的消息",
+    ]);
+    expect(shown[0]?.questions?.[0]?.answered).toBe("允许一次");
+  });
   it("pauses in a hidden page and backs off repeated polling failures", () => {
     expect(agentSessionsRefetchInterval(true)).toBe(5_000);
     expect(agentSessionsRefetchInterval(false)).toBe(60_000);

@@ -13,6 +13,22 @@ import type {
 
 export type AgentChatMessage = AgentSessionMessage & { readonly attachmentData?: readonly AgentSessionAttachment[] };
 
+/** A question the console still draws: an open ask, or an answered card kept
+ *  as settled history. A `withdrawn` one is neither — the request stopped
+ *  being pending without anybody answering (OpenCode auto-approved or
+ *  dismissed it at the source), so drawing it would be a dead card that reads
+ *  as an expired ask (AND-239). */
+export function visibleQuestions(questions: readonly AgentSessionQuestion[]): AgentSessionQuestion[] {
+  return questions.filter((question) => question.withdrawn !== true);
+}
+
+/** True when a message exists only for a card that went away: it carried
+ *  questions and every one is withdrawn, so nothing is left to show. The
+ *  message is dropped whole — its text was the permission ask itself. */
+export function isWithdrawnCard(message: { readonly questions?: readonly AgentSessionQuestion[] }): boolean {
+  return (message.questions?.length ?? 0) > 0 && visibleQuestions(message.questions!).length === 0;
+}
+
 /** Show the user's original text and files once, even when an agent mirrors the local-file prompt. */
 export function agentChatMessages(
   messages: readonly AgentSessionMessage[],
@@ -21,8 +37,9 @@ export function agentChatMessages(
 ): AgentChatMessage[] {
   const hidden = new Set(attachmentMessages.map((message) => message.commandId));
   return [
-    ...messages.filter((message) => message.role !== "user" || ![...hidden].some((id) =>
-      message.sourceId === id || message.text.includes(`[MissionGo attachment command ${id}]`))),
+    ...messages.filter((message) => !isWithdrawnCard(message)
+      && (message.role !== "user" || ![...hidden].some((id) =>
+        message.sourceId === id || message.text.includes(`[MissionGo attachment command ${id}]`)))),
     ...attachmentMessages.filter((message) => message.commandId !== outgoingCommandId)
       .map((message) => ({ id: `attachment-${message.commandId}`, sourceId: message.commandId,
         role: "user" as const, text: message.text, occurredAt: message.createdAt,

@@ -2,7 +2,7 @@ import { useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./api";
-import { formatAgentMessageTime, replyBlockedLabelKey } from "./agent-session-view";
+import { formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey } from "./agent-session-view";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
@@ -100,7 +100,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                 <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>
               )}
               <div className="agent-session-messages" ref={messagesRef}>
-                {session.data.messages.map((message) => (
+                {session.data.messages.filter((message) => !isWithdrawnCard(message)).map((message) => (
                   <article key={message.id} className={`agent-session-message agent-session-message-${message.role}`}>
                     <header className="agent-session-message-meta">
                       <small>{messageLabel(message.role, session.data.agentKind, t)}</small>

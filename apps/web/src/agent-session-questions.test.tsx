@@ -73,18 +73,29 @@ describe("agent session questions", () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>停止<\/button>/);
   });
 
-  it("renders a withdrawn card as expired with disabled controls (AND-239)", () => {
-    const question: AgentSessionQuestion = {
+  it("drops a withdrawn card instead of drawing a dead ask (AND-239)", () => {
+    const withdrawn: AgentSessionQuestion = {
       title: "OpenCode 请求使用 bash",
       options: ["允许一次", "始终允许", "拒绝"],
       withdrawn: true,
     };
     const html = render(
-      <AgentSessionQuestions questions={[question]} reply="" canReply onChange={() => undefined} />,
+      <AgentSessionQuestions questions={[withdrawn]} reply="" canReply onChange={() => undefined} />,
     );
-    expect(html).toContain("已失效");
-    expect(html).not.toContain("已回答");
-    expect(html).toContain("disabled=\"\"");
-    expect(html).not.toContain("class=\"selected\"");
+    expect(html).toBe("");
+  });
+
+  it("keeps the live question when one of several went away (AND-239)", () => {
+    const html = render(
+      <AgentSessionQuestions
+        questions={[
+          { title: "已自动放行的字段", options: ["继续"], withdrawn: true },
+          { title: "仍需确认的字段", options: ["继续", "停止"] },
+        ]}
+        reply="" canReply onChange={() => undefined}
+      />,
+    );
+    expect(html).toContain("仍需确认的字段");
+    expect(html).not.toContain("已自动放行的字段");
   });
 });

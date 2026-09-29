@@ -421,8 +421,8 @@ export interface AgentSessionQuestion {
    * longer reads as a fresh ask (AND-227). */
   readonly answered?: string;
   /** The ask disappeared without an answer — OpenCode auto-approved or
-   * dismissed it at the source. Settled history like `answered`: the controls
-   * disable and the card reads as expired, not as a fresh ask (AND-239). */
+   * dismissed it at the source. Not drawn at all: the console drops the card
+   * rather than leaving a dead ask that reads as still waiting (AND-239). */
   readonly withdrawn?: boolean;
 }
 

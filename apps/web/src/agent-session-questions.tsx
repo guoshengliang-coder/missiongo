@@ -4,6 +4,7 @@ import {
   questionAnswerValue,
   questionAnswerValues,
   toggleQuestionOption,
+  visibleQuestions,
 } from "./agent-session-view";
 import { useI18n } from "./i18n";
 import type { AgentSessionQuestion } from "./types";
@@ -20,7 +21,9 @@ import type { AgentSessionQuestion } from "./types";
  *
  * A question marked `answered` is settled history: the controls disable and
  * the chosen option stays highlighted, so scrolling back no longer reads as a
- * fresh ask (AND-227).
+ * fresh ask (AND-227). A `withdrawn` one is not drawn at all — the ask went
+ * away without an answer, so there is nothing for a person to settle and no
+ * card to show (AND-239).
  */
 export function AgentSessionQuestions({
   questions,
@@ -39,15 +42,16 @@ export function AgentSessionQuestions({
   onPick?: () => void;
 }) {
   const { t } = useI18n();
-  const count = questions.length;
+  const shown = visibleQuestions(questions);
+  const count = shown.length;
   const write = (question: AgentSessionQuestion, value: string) =>
     onChange(questionAnswerText(reply, question, value, count));
 
   return (
     <>
-      {questions.map((question, index) => {
+      {shown.map((question, index) => {
         const label = question.key ?? question.header ?? question.title;
-        const settled = question.answered !== undefined || question.withdrawn === true;
+        const settled = question.answered !== undefined;
         const disabled = !canReply || settled;
         const chosen = questionAnswerValue(reply, question);
         const typed = question.kind === "text" || question.kind === "number";
@@ -57,7 +61,6 @@ export function AgentSessionQuestions({
             {question.header && <small>{question.header}</small>}
             <strong>{question.title}</strong>
             {question.answered !== undefined && <small className="agent-session-question-answered">{t("agentSessionQuestionAnswered")}</small>}
-            {question.withdrawn === true && <small className="agent-session-question-answered">{t("agentSessionQuestionWithdrawn")}</small>}
             {question.detail && <p className="agent-session-question-detail">{question.detail}</p>}
             {question.kind === "boolean" ? (
               <div className="agent-session-options">
