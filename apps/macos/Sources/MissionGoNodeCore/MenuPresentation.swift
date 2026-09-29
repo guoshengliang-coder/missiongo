@@ -520,6 +520,7 @@ public enum DispatchPresentation {
         switch agentKind {
         case "claude_code": return "Claude Code"
         case "codex": return "Codex"
+        case "opencode": return "OpenCode"
         case "hermes": return "Hermes"
         default: return agentKind
         }

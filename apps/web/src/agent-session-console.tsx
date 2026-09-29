@@ -192,7 +192,7 @@ function dispatchVersion(dispatch: Dispatch): string {
   ].filter(Boolean).join(" / ") || "unknown";
 }
 
-function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof useI18n>["t"]): string {
+function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof useI18n>["t"], agentName: string): string {
   if (command.kind === "interrupt") {
     if (command.status === "queued") return t("agentSessionStopQueued");
     if (command.status === "delivering") return t("agentSessionStopDelivering");
@@ -202,7 +202,9 @@ function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof u
   }
   if (command.status === "queued") return t("agentSessionReplyQueued");
   if (command.status === "delivering") return t("agentSessionReplyDelivering");
-  if (command.status === "delivery_unknown") return t("agentSessionReplyDeliveryUnknown");
+  // The reply may have reached any agent the console runs, so the line names
+  // this session's own one rather than saying Codex (AND-253).
+  if (command.status === "delivery_unknown") return t("agentSessionReplyDeliveryUnknown", { agent: agentName });
   if (command.status === "delivered") return t("agentSessionReplyDelivered");
   if (command.status === "failed") return t("agentSessionReplyFailed");
   return t("agentSessionReplyCancelled");
@@ -1168,13 +1170,15 @@ export function AgentSessionConsole({
                     {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
                     <footer className="agent-console-message-delivery" role="alert">
                       <CircleAlert size={14} />
-                      <span>{t(outgoingReplyStatusKey(outgoing.status))}{outgoing.error ? `: ${outgoing.error}` : ""}</span>
+                      <span>{outgoing.status === "delivery_unknown"
+                        ? t("agentSessionReplyDeliveryUnknown", { agent: agentName })
+                        : t(outgoingReplyStatusKey(outgoing.status))}{outgoing.error ? `: ${outgoing.error}` : ""}</span>
                       {outgoing.status === "delivery_unknown" && outgoing.commandId
                         && sessionQuery.data?.canResolveDelivery && (
                         <>
                           <button type="button" className="text-button" disabled={resolveDelivery.isPending}
                             onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "received", text: outgoing.text })}>
-                            {t("agentSessionReplyConfirmReceived")}
+                            {t("agentSessionReplyConfirmReceived", { agent: agentName })}
                           </button>
                           <button type="button" className="text-button" disabled={resolveDelivery.isPending}
                             onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "not_received", text: outgoing.text })}>
@@ -1298,7 +1302,7 @@ export function AgentSessionConsole({
               {command?.kind === "interrupt" && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>
-                    {commandStatusLabel(command, t)}
+                    {commandStatusLabel(command, t, agentName)}
                     {command.error ? `: ${command.error}` : ""}
                   </span>
                 </div>

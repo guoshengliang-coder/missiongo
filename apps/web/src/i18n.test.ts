@@ -39,6 +39,20 @@ describe("MissionGo interface language", () => {
       .toBe("Reply to this Codex session…");
   });
 
+  // AND-253: the unconfirmed-delivery line and its confirm button said Codex on
+  // every session, so an OpenCode reply the Mac could not confirm read as if
+  // Codex had been asked.
+  it("names the session's own agent in the unconfirmed-delivery copy", () => {
+    expect(translate("zh-CN", "agentSessionReplyDeliveryUnknown", { agent: "OpenCode" }))
+      .toBe("送达结果未确认，请先在 OpenCode 会话中核实，再决定是否重发。");
+    expect(translate("zh-CN", "agentSessionReplyConfirmReceived", { agent: "OpenCode" }))
+      .toBe("已在 OpenCode 收到");
+    expect(translate("en", "agentSessionReplyDeliveryUnknown", { agent: "Claude Code" }))
+      .toBe("Delivery is unconfirmed. Check this Claude Code conversation before sending again.");
+    expect(translate("en", "agentSessionReplyConfirmReceived", { agent: "Codex" }))
+      .toBe("I found it in Codex");
+  });
+
   // AND-236: a Codex or OpenCode turn reported as "Claude Code" told the user the
   // wrong agent was running, so both running and waiting copy take the agent name.
   it("names the running agent in the turn and waiting lines", () => {
