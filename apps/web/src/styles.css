@@ -766,6 +766,10 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-chat-draft-file-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .agent-chat-draft-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-chat-draft-file-copy small { color: var(--muted); font-size: var(--text-xs); }
+/* A picture or a video is shown as its own thumbnail with no name to stretch
+   the row; the chip hugs the preview and the remove button, at the same height
+   as every other chip (AND-243). */
+.agent-chat-draft-files > .agent-chat-draft-file.agent-chat-draft-file-media { width: auto; padding-right: 0; }
 .agent-chat-draft-files button { width: 44px; height: 44px; flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0; display: grid; place-items: center; }
 /* AND-234: anchors the shared drag overlay to the reply form. The overlay's
    sticky message assumes a tall capture dialog; this form is a couple of rows,

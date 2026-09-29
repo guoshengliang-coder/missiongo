@@ -57,6 +57,7 @@ import {
   withSessionReplyDraft,
 } from "./agent-session-view";
 import { AgentSessionQuestions } from "./agent-session-questions";
+import { DraftChatFile } from "./agent-chat-draft-file";
 import { AgentSessionQuickSettings } from "./agent-session-settings";
 import { sessionTitle } from "./agent-session-title";
 import { agentLabelKey } from "./dispatch-eligibility";
@@ -72,69 +73,6 @@ import { useFileDropZone } from "./file-drop";
 import { useMediaQuery } from "./use-media-query";
 
 const CHAT_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf";
-
-function DraftChatFile({ file, disabled, onRemove }: { file: File; disabled: boolean; onRemove: () => void }) {
-  const { t } = useI18n();
-  const [thumbnail, setThumbnail] = useState<string | null>(null);
-  const [imageFailed, setImageFailed] = useState(false);
-  const imageFile = file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|heic)$/i.test(file.name);
-  const videoFile = file.type.startsWith("video/") || /\.(mp4|mov|webm)$/i.test(file.name);
-  const extension = file.name.split(".").pop()?.toUpperCase() ?? "FILE";
-
-  useEffect(() => {
-    setThumbnail(null);
-    setImageFailed(false);
-    if (!imageFile && !videoFile) return;
-    const url = URL.createObjectURL(file);
-    if (imageFile) {
-      setThumbnail(url);
-      return () => URL.revokeObjectURL(url);
-    }
-
-    let active = true;
-    const video = document.createElement("video");
-    video.preload = "auto";
-    video.muted = true;
-    video.playsInline = true;
-    video.onloadeddata = () => {
-      if (!active) return;
-      try {
-        const canvas = document.createElement("canvas");
-        const scale = Math.min(1, 144 / video.videoWidth, 90 / video.videoHeight);
-        canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
-        canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
-        const context = canvas.getContext("2d");
-        if (!context) return;
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        setThumbnail(canvas.toDataURL("image/jpeg", 0.8));
-      } catch {
-        // Unsupported codecs and frame extraction errors keep the video icon.
-      }
-    };
-    video.src = url;
-    return () => {
-      active = false;
-      video.removeAttribute("src");
-      video.load();
-      URL.revokeObjectURL(url);
-    };
-  }, [file, imageFile, videoFile]);
-
-  return <span className="agent-chat-draft-file" title={file.name}>
-    <span className="agent-chat-draft-file-preview">
-      {thumbnail && !imageFailed
-        ? <img src={thumbnail} alt="" onError={() => setImageFailed(true)} />
-        : imageFile ? <ImageIcon size={20} aria-hidden="true" />
-        : videoFile ? <Video size={20} aria-hidden="true" />
-        : <FileText size={20} aria-hidden="true" />}
-    </span>
-    <span className="agent-chat-draft-file-copy">
-      <span className="agent-chat-draft-file-name">{file.name}</span>
-      <small>{extension}</small>
-    </span>
-    <button type="button" disabled={disabled} aria-label={t("agentChatRemoveFile", { filename: file.name })} onClick={onRemove}><X size={14} /></button>
-  </span>;
-}
 
 function ChatAttachments({ sessionId, attachments }: { sessionId: string; attachments: readonly AgentSessionAttachment[] }) {
   const { t } = useI18n();
@@ -1207,7 +1145,7 @@ export function AgentSessionConsole({
                     {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
                       && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} />}
                     {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
-                      {send.variables.files.map((file, index) => <span key={`${file.name}-${index}`}>{file.name}</span>)}
+                      {send.variables.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
                     </div> : null}
                     {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
                     <footer className="agent-console-message-delivery" role="alert">
