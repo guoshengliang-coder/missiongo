@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What the installer is allowed to read through this app's FileProvider
+  (AND-258). Only the directory the update download writes to: the APK is handed
+  over as a content URI, so the installer can read that one file without the app
+  exposing a filesystem path or its whole cache.
+-->
+<paths>
+    <cache-path
+        name="updates"
+        path="updates/" />
+</paths>

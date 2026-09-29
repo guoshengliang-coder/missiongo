@@ -188,6 +188,7 @@ fi
 
 local_apk="apps/web/public/downloads/missiongo-android-latest.apk"
 local_apk_meta="apps/web/public/downloads/missiongo-android-latest.release"
+local_apk_manifest="apps/web/public/downloads/missiongo-android-latest.json"
 apk_link="${downloads_dir}/missiongo-android-latest.apk"
 local_maven="apps/web/public/maven"
 local_macos_zip="apps/web/public/downloads/missiongo-macos-latest.zip"
@@ -276,6 +277,25 @@ if [ "$publish_apk" -eq 1 ]; then
   fi
 
   apk_name="MissionGo-Android-${apk_version_name}-${apk_version_code}.apk"
+
+  # The manifest an installed app reads to decide whether it is out of date
+  # (AND-258). Unlike the APK it ships in the web image, so it has to describe
+  # the same build the host proxy is about to serve: a manifest naming a
+  # different APK makes every app offer an update it cannot install, because the
+  # digest of what it downloads will not match.
+  [ -s "$local_apk_manifest" ] || {
+    echo "No update manifest beside the APK: ${local_apk_manifest}" >&2
+    echo "Run npm run publish:android-internal to rebuild and record it." >&2
+    exit 1
+  }
+  apk_manifest_sha="$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' "$local_apk_manifest" | head -n 1)"
+  if [ "$local_sha" != "$apk_manifest_sha" ]; then
+    echo "The Android update manifest names a different build than the APK beside it." >&2
+    echo "  apk      ${local_sha}" >&2
+    echo "  manifest ${apk_manifest_sha}" >&2
+    echo "Run npm run publish:android-internal to rebuild and record it." >&2
+    exit 1
+  fi
 fi
 
 # The macOS client is served from the web image, unlike the APK: the host proxy
@@ -386,6 +406,22 @@ if [ ! -s "$local_macos_zip" ]; then
       { [ ! -s '${current_link}/${local_macos_meta}' ] || sudo cp -a '${current_link}/${local_macos_meta}' '${target}/apps/web/public/downloads/'; } && \
       { [ ! -s '${current_link}/${local_macos_manifest}' ] || sudo cp -a '${current_link}/${local_macos_manifest}' '${target}/apps/web/public/downloads/'; }; \
     else echo '    nothing to carry over: the live release has no macOS client either'; fi"
+fi
+
+# The Android update manifest rides with the APK that is actually being served,
+# not with the snapshot alone. When this deploy does not publish an APK -- a
+# checkout without one, or an explicit --no-publish-apk -- the manifest the live
+# APK belongs to has to keep serving; otherwise the image would advertise the
+# build this checkout happened to carry while the host still serves the previous
+# one, and every app would be offered an update whose download fails its digest.
+if [ "$publish_apk" -eq 0 ]; then
+  echo "==> Carrying the Android update manifest over from the live release"
+  remote "if [ -s '${current_link}/${local_apk_manifest}' ]; then \
+      sudo mkdir -p '${target}/apps/web/public/downloads' && \
+      sudo cp -a '${current_link}/${local_apk_manifest}' '${target}/apps/web/public/downloads/'; \
+    else \
+      sudo rm -f '${target}/${local_apk_manifest}'; \
+    fi"
 fi
 
 # Written after the push so --delete cannot remove it, and inside the snapshot so

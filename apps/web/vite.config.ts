@@ -8,6 +8,11 @@ import react from "@vitejs/plugin-react";
 
 const repositoryRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const androidDownloadPath = "/downloads/missiongo-android-latest.apk";
+// Keep in sync with ANDROID_UPDATE_MANIFEST_PATH in apps/web/src/android-update.ts,
+// UPDATE_MANIFEST in scripts/publish-android-internal.sh, and the location block in
+// deploy/nginx-container.conf; scripts/check-android-contract.mjs compares the four.
+const androidManifestPath = "/downloads/missiongo-android-latest.json";
+const androidManifestFilePath = resolve(repositoryRoot, "apps/web/public/downloads/missiongo-android-latest.json");
 const skillDownloadPath = "/downloads/missiongo-skill/SKILL.md";
 const skillSourcePath = resolve(repositoryRoot, "skills/missiongo/SKILL.md");
 const sdkIntegrationDownloadPath = "/downloads/missiongo-android-sdk/INTEGRATION.md";
@@ -77,27 +82,39 @@ function macosDownload(): Plugin {
 }
 
 function androidDownloadHeaders(): Plugin {
+  const middleware = (request: IncomingMessage, response: ServerResponse, next: () => void): void => {
+    const path = request.url?.split("?", 1)[0];
+    if (path === androidManifestPath) {
+      // The manifest an installed app checks for a newer build. Same 404
+      // reasoning as the macOS manifest above: without this the SPA fallback
+      // answers 200 with index.html, and the app parses HTML as JSON and
+      // reports a broken server, which is not what is wrong.
+      if (!existsSync(androidManifestFilePath)) {
+        response.statusCode = 404;
+        response.setHeader("Content-Type", "text/plain; charset=utf-8");
+        response.end("missiongo-android-latest.json has not been built. Run: npm run publish:android-internal\n");
+        return;
+      }
+      response.setHeader("Content-Type", "application/json");
+      response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      response.end(readFileSync(androidManifestFilePath));
+      return;
+    }
+    if (path === androidDownloadPath) {
+      response.setHeader("Content-Type", "application/vnd.android.package-archive");
+      response.setHeader("Content-Disposition", 'attachment; filename="missiongo-android-latest.apk"');
+      response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    }
+    next();
+  };
+
   return {
-    name: "missiongo-android-download-headers",
+    name: "missiongo-android-download",
     configureServer(server) {
-      server.middlewares.use((request, response, next) => {
-        if (request.url?.split("?", 1)[0] === androidDownloadPath) {
-          response.setHeader("Content-Type", "application/vnd.android.package-archive");
-          response.setHeader("Content-Disposition", 'attachment; filename="missiongo-android-latest.apk"');
-          response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-        }
-        next();
-      });
+      server.middlewares.use(middleware);
     },
     configurePreviewServer(server) {
-      server.middlewares.use((request, response, next) => {
-        if (request.url?.split("?", 1)[0] === androidDownloadPath) {
-          response.setHeader("Content-Type", "application/vnd.android.package-archive");
-          response.setHeader("Content-Disposition", 'attachment; filename="missiongo-android-latest.apk"');
-          response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-        }
-        next();
-      });
+      server.middlewares.use(middleware);
     },
   };
 }

@@ -13,6 +13,10 @@
          ROM, where an undeclared-but-unused permission is simply ignored. -->
     <uses-permission android:name="com.hihonor.android.launcher.permission.CHANGE_BADGE" />
     <uses-permission android:name="com.huawei.android.launcher.permission.CHANGE_BADGE" />
+    <!-- AND-258: lets the app open the system installer for the APK it downloaded.
+         The person still has to allow installs from MissionGo in system settings;
+         this only declares the capability, it does not grant it. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name="io.missiongo.android.MissionGoApplication"
@@ -79,5 +83,20 @@
         <receiver
             android:name="io.missiongo.android.push.DismissReceiver"
             android:exported="false" />
+
+        <!-- AND-258: the downloaded APK goes to the system installer as a content
+             URI from here, so the installer reads exactly the file this app
+             chose and nothing else in the app's storage. A subclass of androidx's
+             FileProvider because the feedback SDK already declares that class
+             with its own authority; see UpdateFileProvider. -->
+        <provider
+            android:name="io.missiongo.android.update.UpdateFileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

@@ -240,6 +240,14 @@ to guess: an APK with no metadata, or metadata whose sha256 no longer matches
 the APK because something rebuilt it directly, stops the deploy **before**
 anything is pushed, with `npm run publish:android-internal` as the fix.
 
+Beside the metadata, the same command writes `missiongo-android-latest.json` —
+what an installed app reads to decide whether it is out of date (AND-258). It
+ships in the web image rather than in the host downloads directory, so a normal
+deploy updates it. The deploy refuses a manifest whose `sha256` does not match
+the APK it is about to publish, and when this deploy publishes no APK it carries
+the live manifest over instead, so the manifest and the APK the host serves can
+never describe different builds.
+
 `--downloads-dir` names that directory, defaulting to `/srv/missiongo/releases`.
 Pass `--no-publish-apk` for a deployment that serves the download from the image
 instead.
@@ -278,16 +286,18 @@ The zip does not travel between worktrees. `deploy.sh` prints the version
 `released.json` records when it carries the live client over, so this is not
 left to be noticed by hand.
 
-The update manifest's `releaseNotes` is built by `scripts/macos-release-notes.mjs`
-over the range `released.json` records to `HEAD`. Only PRs that declare
-themselves under `release-notes/macos/` are published, so the alert shows the
+The update manifest's `releaseNotes` is built by `scripts/release-notes.mjs`
+over the range `released.json` records to `HEAD` (`--artifact macosApp` for this
+client, `androidApp` for the APK). Only PRs that declare
+themselves under `release-notes/<client>/` are published, so the alert shows the
 Chinese titles a person wrote instead of the English PR subject. A declaration
 is an `items` array of `{ key, title }` (`title` in Chinese); an empty `items`
 array is how a PR says it is internal and must not be listed. A merged PR that
-changed `apps/macos/` without a declaration makes the script fail and name it, so
-a release cannot silently drop an update -- fill the note in afterwards with a
-`pullRequest` field naming the PR it belongs to. A version-only release commit
-needs no declaration.
+changed `apps/macos/` (or, for the Android client, `apps/android/` or
+`sdks/android-feedback/missiongo-feedback/`) without a declaration makes the
+script fail and name it, so a release cannot silently drop an update -- fill the
+note in afterwards with a `pullRequest` field naming the PR it belongs to. A
+version-only release commit needs no declaration.
 
 ### Restricting the origin to a CDN
 
