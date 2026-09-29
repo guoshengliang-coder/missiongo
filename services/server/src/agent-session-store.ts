@@ -188,7 +188,7 @@ export interface AgentSessionSettings {
    * machine reported no custom endpoint configured.
    */
   readonly modelEndpoint?: string;
-  /** What the dispatch asked for; absent means the Mac's own configuration. */
+  /** Latest model choice, including a running-session change; absent means the Mac's own configuration. */
   readonly requestedModel?: string;
   readonly requestedEffort?: string;
   /** A change a person asked for that the Mac has not confirmed yet. */
@@ -273,6 +273,7 @@ function nodeAgentModels(agentsJson: string, agentKind: AgentKind) {
 
 function sessionSettings(row: SessionSettingsColumns, open: boolean): AgentSessionSettings {
   const desired = row.desired_settings_json ? JSON.parse(row.desired_settings_json) as AgentRunSettings : undefined;
+  const requestedModel = desired?.model ?? row.dispatch_model;
   const revision = row.settings_revision ?? 0;
   const settled = Math.max(row.applied_settings_revision ?? 0, row.settings_error_revision ?? 0);
   return {
@@ -280,7 +281,9 @@ function sessionSettings(row: SessionSettingsColumns, open: boolean): AgentSessi
     ...(row.session_model ? { model: row.session_model } : {}),
     ...(row.session_model_endpoint ? { modelEndpoint: row.session_model_endpoint } : {}),
     ...(row.session_effort ? { effort: row.session_effort } : {}),
-    ...(row.dispatch_model ? { requestedModel: row.dispatch_model } : {}),
+    // Running changes retain earlier requested fields, so a later effort or
+    // mode change must not make the picker jump back to the dispatch's model.
+    ...(requestedModel ? { requestedModel } : {}),
     ...(row.dispatch_effort ? { requestedEffort: row.dispatch_effort } : {}),
     ...(desired && revision > settled ? { pending: { ...desired, revision } } : {}),
     ...(row.settings_error && (row.settings_error_revision ?? 0) >= (row.applied_settings_revision ?? 0)
