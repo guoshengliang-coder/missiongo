@@ -1141,6 +1141,50 @@ describe("Console font size (AND-247)", () => {
   });
 });
 
+describe("Agent console chat font size (AND-254)", () => {
+  const setConsoleFontScale = (app: FastifyInstance, cookie: string, consoleFontScale: unknown) =>
+    app.inject({ method: "POST", url: "/api/v1/auth/console-font-scale", headers: { cookie }, payload: { consoleFontScale } });
+  const session = (app: FastifyInstance, cookie: string) =>
+    app.inject({ method: "GET", url: "/api/v1/auth/session", headers: { cookie } });
+
+  it("defaults to medium and carries the choice to another browser", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    expect((await session(app, memberCookie)).json()).toMatchObject({ user: { consoleFontScale: "medium" } });
+
+    const other = await signIn(app, "member@example.com", MEMBER_PASSWORD);
+    const response = await setConsoleFontScale(app, memberCookie, "large");
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ user: { consoleFontScale: "large" } });
+    // The account holds it, not the browser: another session sees the choice.
+    expect((await session(app, other)).json()).toMatchObject({ user: { consoleFontScale: "large" } });
+  });
+
+  it("is a separate setting from the console-wide size", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    await app.inject({ method: "POST", url: "/api/v1/auth/font-scale", headers: { cookie: memberCookie }, payload: { fontScale: "large" } });
+    expect((await session(app, memberCookie)).json())
+      .toMatchObject({ user: { fontScale: "large", consoleFontScale: "medium" } });
+
+    await setConsoleFontScale(app, memberCookie, "small");
+    expect((await session(app, memberCookie)).json())
+      .toMatchObject({ user: { fontScale: "large", consoleFontScale: "small" } });
+  });
+
+  it("refuses a size off the list and keeps the stored one", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    expect((await setConsoleFontScale(app, memberCookie, "huge")).statusCode).toBe(400);
+    expect((await setConsoleFontScale(app, memberCookie, 115)).statusCode).toBe(400);
+    expect((await session(app, memberCookie)).json()).toMatchObject({ user: { consoleFontScale: "medium" } });
+  });
+
+  it("keeps every session signed in: a size is not a credential", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    const other = await signIn(app, "member@example.com", MEMBER_PASSWORD);
+    await setConsoleFontScale(app, memberCookie, "small");
+    expect((await session(app, other)).statusCode).toBe(200);
+  });
+});
+
 describe("Listing and revoking AI authorizations", () => {
   /** Mint a token and record it, the way the OAuth exchange does. */
   function authorize(app: FastifyInstance, accountId: string, clientId = "mgc_test_client") {

@@ -122,7 +122,7 @@ import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
 import { AccountSettings, ProductAccessSettings } from "./account-settings";
 import { DisplaySettings } from "./display-settings";
-import { applyFontScale, readStoredFontScale, storeFontScale } from "./font-scale";
+import { applyConsoleFontScale, applyFontScale, readStoredConsoleFontScale, readStoredFontScale, storeConsoleFontScale, storeFontScale } from "./font-scale";
 import { mayAdministerProduct } from "./product-permissions";
 import { DispatchDefaultsSettings } from "./dispatch-defaults-settings";
 import { NodeSettings } from "./node-settings";
@@ -978,6 +978,15 @@ export function App() {
       storeFontScale(serverFontScale);
     }
   }, [serverFontScale]);
+  // Same contract for the chat body's own size (AND-254): the boot script
+  // replayed the cached copy, and the account repairs it once bootstrap answers.
+  const serverConsoleFontScale = bootstrapQuery.data?.user.consoleFontScale;
+  useEffect(() => {
+    if (serverConsoleFontScale && serverConsoleFontScale !== readStoredConsoleFontScale()) {
+      applyConsoleFontScale(serverConsoleFontScale);
+      storeConsoleFontScale(serverConsoleFontScale);
+    }
+  }, [serverConsoleFontScale]);
   // One all-product feed drives every attention badge as well as the selected
   // product's console. Product switching is then a local filter, not another
   // request, and the header counts keep updating while the console is closed.

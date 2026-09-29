@@ -57,4 +57,13 @@ describe("MissionGo interface language", () => {
     expect(translate("zh-CN", "agentSessionCancelAndEdit")).toBe("取消等待并编辑");
     expect(translate("en", "agentSessionReplyCancelled")).toBe("Queued reply cancelled");
   });
+
+  // AND-254: the chat body's size is a second setting, so it must not be named
+  // like the console-wide one in either language.
+  it("names the console-wide size and the chat body's size separately", () => {
+    expect(translate("zh-CN", "fontSize")).toBe("字体大小");
+    expect(translate("zh-CN", "consoleFontSize")).toBe("Agent 控制台聊天字号");
+    expect(translate("en", "consoleFontSize")).toBe("Agent console chat text size");
+    expect(translate("zh-CN", "consoleFontSizeHelp")).toContain("互不影响");
+  });
 });

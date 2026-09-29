@@ -65,6 +65,8 @@ export interface AuthenticatedUser {
   readonly nickname?: string;
   /** The console type size this account reads at (AND-247). */
   readonly fontScale: FontScale;
+  /** The Agent console chat body's own size, chosen independently of fontScale (AND-254). */
+  readonly consoleFontScale: FontScale;
   readonly role: AccountRole;
 }
 
@@ -275,6 +277,9 @@ export const api = {
   // No password either: the type size is a display preference, not a credential.
   changeFontScale: (fontScale: FontScale) =>
     request<AuthSession>("/api/v1/auth/font-scale", { method: "POST", body: JSON.stringify({ fontScale }) }),
+  // The chat body's size is a second, independent preference (AND-254).
+  changeConsoleFontScale: (consoleFontScale: FontScale) =>
+    request<AuthSession>("/api/v1/auth/console-font-scale", { method: "POST", body: JSON.stringify({ consoleFontScale }) }),
   listAiAuthorizations: () =>
     request<{ authorizations: AiAuthorization[] }>("/api/v1/ai-authorizations"),
   revokeAiAuthorization: (authorizationId: string) =>

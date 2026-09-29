@@ -55,6 +55,10 @@ export const INITIAL_SCHEMA = `
     -- AND-247: the console's type size, one of three. On the account rather than
     -- the browser, so the choice is the reader's and not the device's.
     font_scale TEXT NOT NULL DEFAULT 'medium' CHECK (font_scale IN ('small', 'medium', 'large')),
+    -- AND-254: the Agent console's chat body has its own size, independent of
+    -- font_scale above, so the transcript can be read at a different size from
+    -- the rest of the console in either direction.
+    console_font_scale TEXT NOT NULL DEFAULT 'medium' CHECK (console_font_scale IN ('small', 'medium', 'large')),
     password_scrypt TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
     credentials_changed_at TEXT NOT NULL,

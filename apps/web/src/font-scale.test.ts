@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  applyConsoleFontScale,
   applyFontScale,
+  CONSOLE_FONT_SCALE_STORAGE_KEY,
   DEFAULT_FONT_SCALE,
   FONT_SCALE_STORAGE_KEY,
   isFontScale,
   parseFontScale,
+  readStoredConsoleFontScale,
   readStoredFontScale,
+  storeConsoleFontScale,
   storeFontScale,
 } from "./font-scale";
 
@@ -74,5 +78,40 @@ describe("the cached type size", () => {
     expect(readStoredFontScale()).toBe("medium");
     // Writing to a blocked store must not throw: the server holds the real value.
     expect(() => storeFontScale("large")).not.toThrow();
+  });
+});
+
+describe("the Agent console chat body's own type size (AND-254)", () => {
+  it("puts the choice on its own root attribute, apart from the console-wide one", () => {
+    const dataset = stubDocument();
+    applyFontScale("large");
+    applyConsoleFontScale("small");
+    expect(dataset.fontScale).toBe("large");
+    expect(dataset.consoleFontScale).toBe("small");
+    applyConsoleFontScale("medium");
+    expect(dataset.consoleFontScale).toBe("medium");
+  });
+
+  it("keeps its cached copy apart from the console-wide one", () => {
+    const store = stubStorage();
+    storeFontScale("large");
+    storeConsoleFontScale("small");
+    expect(store.get(FONT_SCALE_STORAGE_KEY)).toBe("large");
+    expect(store.get(CONSOLE_FONT_SCALE_STORAGE_KEY)).toBe("small");
+    // Two settings, so reading one never reports the other.
+    expect(readStoredFontScale()).toBe("large");
+    expect(readStoredConsoleFontScale()).toBe("small");
+  });
+
+  it("falls back to medium for junk, and when storage is unreadable", () => {
+    stubStorage({ [CONSOLE_FONT_SCALE_STORAGE_KEY]: "huge" });
+    expect(readStoredConsoleFontScale()).toBe("medium");
+
+    vi.stubGlobal("localStorage", {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); },
+    });
+    expect(readStoredConsoleFontScale()).toBe("medium");
+    expect(() => storeConsoleFontScale("large")).not.toThrow();
   });
 });

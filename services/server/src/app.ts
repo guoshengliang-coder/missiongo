@@ -40,6 +40,7 @@ import sharp from "sharp";
 import {
   AccountStore,
   accountDisplayName,
+  normalizeConsoleFontScale,
   normalizeEmail,
   normalizeFontScale,
   type AccountSnapshot,
@@ -657,6 +658,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // pre-filled with the fallback, which a single Save would then make real.
     ...(account.nickname ? { nickname: account.nickname } : {}),
     fontScale: account.fontScale,
+    consoleFontScale: account.consoleFontScale,
     role: account.role,
   });
 
@@ -1027,7 +1029,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/auth/session", async (request, reply) => {
     if (!options.adminAccount && !options.adminToken) {
       return reply.header("cache-control", "no-store").send({
-        user: { id: "local-admin", username: "local-admin", displayName: "local-admin", fontScale: "medium" as const, role: "admin" as const },
+        user: { id: "local-admin", username: "local-admin", displayName: "local-admin", fontScale: "medium" as const, consoleFontScale: "medium" as const, role: "admin" as const },
       });
     }
     const user = sessionUserResponse(request);
@@ -1061,7 +1063,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     reply.header("cache-control", "no-store");
 
     const user = !options.adminAccount && !options.adminToken
-      ? { id: "local-admin", username: "local-admin", displayName: "local-admin", fontScale: "medium" as const, role: "admin" as const }
+      ? { id: "local-admin", username: "local-admin", displayName: "local-admin", fontScale: "medium" as const, consoleFontScale: "medium" as const, role: "admin" as const }
       : sessionUserResponse(request);
     if (!user) {
       return reply.status(401).send({
@@ -1223,6 +1225,31 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const account = accountStore.changeOwnFontScale(
       current.id,
       normalizeFontScale(stringField(objectBody(request.body), "fontScale")),
+    );
+    return reply.header("cache-control", "no-store").send({ user: authenticatedUser(account) });
+  });
+
+  /**
+   * Change the type size the Agent console's chat body is read at (AND-254).
+   *
+   * Its own route rather than a second field on the one above: the two settings
+   * are independent, and a request that carries only the chat size must not have
+   * to restate the console-wide one. Same posture as font-scale -- a display
+   * preference, no password, no new cookie.
+   */
+  app.post("/api/v1/auth/console-font-scale", async (request, reply) => {
+    if (!options.adminAccount) {
+      return reply.status(503).send({
+        type: "urn:missiongo:problem:authentication_unavailable",
+        title: "Administrator account login is not configured.",
+        status: 503,
+        code: "authentication_unavailable",
+      });
+    }
+    const current = requireAccount(request);
+    const account = accountStore.changeOwnConsoleFontScale(
+      current.id,
+      normalizeConsoleFontScale(stringField(objectBody(request.body), "consoleFontScale")),
     );
     return reply.header("cache-control", "no-store").send({ user: authenticatedUser(account) });
   });

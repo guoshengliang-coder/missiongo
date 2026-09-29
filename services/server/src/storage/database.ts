@@ -1565,6 +1565,29 @@ export class MissionGoDatabase {
           .run(202609281200, new Date().toISOString());
       });
     }
+    // AND-254: the Agent console's chat body gets a type size of its own,
+    // separate from the console-wide one AND-247 added, so the two can be chosen
+    // independently. NOT NULL with a default, so every existing account keeps
+    // today's size and an older release reading this database simply ignores the
+    // column -- scripts/rollback.sh reverts code and not schema.
+    const consoleFontScaleMigration = this.connection
+      .prepare("SELECT version FROM schema_migrations WHERE version = 202609290130")
+      .get() as unknown as { version: number } | undefined;
+    if (!consoleFontScaleMigration) {
+      this.transaction(() => {
+        const columns = this.connection
+          .prepare("PRAGMA table_info(accounts)")
+          .all() as unknown as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "console_font_scale")) {
+          this.connection.exec(
+            "ALTER TABLE accounts ADD COLUMN console_font_scale TEXT NOT NULL DEFAULT 'medium' CHECK (console_font_scale IN ('small', 'medium', 'large'));",
+          );
+        }
+        this.connection
+          .prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(202609290130, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }
