@@ -13,10 +13,10 @@
 // production never showed dark mode at all (B12 in docs/ui-ue-review-2026-09.md).
 // The appearance-boot-script plugin in vite.config.ts hashes it and links it.
 //
-// AND-247 adds the type size to the same job: the account's choice is served by
-// bootstrap, but the last one this browser saw is replayed here so the first
-// paint is already at the right size. Medium is the base scale and needs no
-// attribute.
+// AND-247 and AND-254 add two type sizes to the same job: the account's choices
+// are served by bootstrap, but the last ones this browser saw are replayed here
+// so the first paint is already at the right sizes. Medium is the base scale and
+// needs no attribute.
 (function () {
   var requested = new URLSearchParams(window.location.search).get("appearance");
   var explicit = requested === "light" || requested === "dark" ? requested : null;
@@ -28,13 +28,21 @@
   apply();
   if (!explicit) query.addEventListener("change", apply);
 
-  var stored = null;
-  try {
-    stored = window.localStorage.getItem("missiongo.fontScale");
-  } catch {
-    stored = null;
-  }
-  if (stored === "small" || stored === "large") {
-    document.documentElement.dataset.fontScale = stored;
-  }
+  // AND-247 and AND-254 keep two type sizes on the account -- the console's and
+  // the Agent console chat body's -- and the last value this browser saw is
+  // replayed here so the first paint is already at the right size in both.
+  // Medium is the base scale and needs no attribute.
+  var replay = function (storageKey, dataKey) {
+    var stored = null;
+    try {
+      stored = window.localStorage.getItem(storageKey);
+    } catch {
+      stored = null;
+    }
+    if (stored === "small" || stored === "large") {
+      document.documentElement.dataset[dataKey] = stored;
+    }
+  };
+  replay("missiongo.fontScale", "fontScale");
+  replay("missiongo.consoleFontScale", "consoleFontScale");
 })();
