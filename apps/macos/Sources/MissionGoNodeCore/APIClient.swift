@@ -10,6 +10,34 @@ import zlib
 
 // MARK: - Wire types
 
+public struct UnreadSessionPreview: Decodable, Equatable, Sendable, Identifiable {
+    public struct Item: Decodable, Equatable, Sendable {
+        public let key: String
+        public let productId: String
+    }
+
+    public let sessionId: String
+    public let agentKind: String
+    public let nodeName: String
+    public let activityAt: String
+    public let title: String
+    public let items: [Item]
+
+    public var id: String { sessionId }
+}
+
+public struct UnreadSessionsSnapshot: Decodable, Equatable, Sendable {
+    public let totalUnread: Int
+    public let sessions: [UnreadSessionPreview]
+
+    public func validate() throws {
+        guard totalUnread >= 0, totalUnread == sessions.count,
+              Set(sessions.map(\.sessionId)).count == sessions.count,
+              sessions.allSatisfy({ !$0.sessionId.isEmpty && !$0.items.isEmpty })
+        else { throw APIError.invalidResponse("未读会话列表与数量不一致。") }
+    }
+}
+
 public struct AgentSkillSnapshot: Codable, Equatable, Sendable {
     public let localVersion: String?
     public let expectedVersion: String?
@@ -1340,6 +1368,16 @@ public struct APIClient: Sendable {
             throw APIError.invalidResponse("未读会话数量不能为负数。")
         }
         return count
+    }
+
+    public func unreadSessions() async throws -> UnreadSessionsSnapshot {
+        let response = try await send(
+            "GET", "/api/v1/node/unread-sessions", body: Optional<String>.none, bearer: try nodeToken()
+        )
+        try requireSuccess(response, operation: "读取未读会话")
+        let snapshot: UnreadSessionsSnapshot = try decode(response, operation: "读取未读会话")
+        try snapshot.validate()
+        return snapshot
     }
 
     /// Sets this machine's nickname, or clears it with `nil`. The server answers

@@ -259,7 +259,7 @@ export function AgentSessionConsole({
   // The conversation the person clicked. Only that one counts as read; merely
   // opening the console or changing a filter never selects or reads a row.
   // (conversationOpen cannot tell: it only ever turns true on the one-pane layout.)
-  const [openedSessionId, setOpenedSessionId] = useState<string | null>(null);
+  const [openedSessionId, setOpenedSessionId] = useState<string | null>(selectedSessionId);
   const [selectedForArchive, setSelectedForArchive] = useState<Set<string>>(new Set());
   const [bulkArchiveMessage, setBulkArchiveMessage] = useState<string | null>(null);
   const [healthNode, setHealthNode] = useState("all");
@@ -269,6 +269,7 @@ export function AgentSessionConsole({
   // The item a dispatch chip opened a preview of (AND-159). A preview, not a
   // page: reading what the session is working on must not walk away from it.
   const [previewItemKey, setPreviewItemKey] = useState<string | null>(null);
+  const [unavailableSessionId, setUnavailableSessionId] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const observedSessionRef = useRef<string | null>(null);
   const conversationOpenRef = useRef(false);
@@ -277,23 +278,27 @@ export function AgentSessionConsole({
   const unseenMessageIdsRef = useRef(new Set<string>());
   const hasSessionsError = sessionsError !== null && sessionsError !== undefined;
 
-  const sessions = useMemo(
+  const productSessions = useMemo(
     () => allSessions.filter((session) => session.items.some((item) => item.productId === productId)),
     [allSessions, productId],
   );
-  const agentSessions = useMemo(
-    () => sessions.filter((session) => agentFilter === "all" || session.agentKind === agentFilter),
-    [agentFilter, sessions],
+  const sessions = filter === "unread" ? allSessions : productSessions;
+  const productAgentSessions = useMemo(
+    () => productSessions.filter((session) => agentFilter === "all" || session.agentKind === agentFilter),
+    [agentFilter, productSessions],
   );
   const counts = useMemo(() => ({
-    unread: agentSessions.filter((session) => !session.archivedAt && !isAbnormalAgentSession(session) && session.unread).length,
-    failedUnread: agentSessions.filter((session) => !session.archivedAt && isAbnormalAgentSession(session) && session.unread).length,
-    attention: agentSessions.filter((session) => !session.archivedAt && session.needsAttention).length,
-    active: agentSessions.filter((session) => !session.archivedAt && session.status === "active").length,
-    all: agentSessions.filter((session) => !session.archivedAt && !isAbnormalAgentSession(session)).length,
-    failed: agentSessions.filter((session) => !session.archivedAt && isAbnormalAgentSession(session)).length,
-    archived: agentSessions.filter((session) => session.archivedAt).length,
-  }), [agentSessions]);
+    unread: allSessions.filter((session) => !session.archivedAt && session.unread
+      && (agentFilter === "all" || session.agentKind === agentFilter)).length,
+    productUnread: productAgentSessions.filter((session) => !session.archivedAt
+      && !isAbnormalAgentSession(session) && session.unread).length,
+    failedUnread: productAgentSessions.filter((session) => !session.archivedAt && isAbnormalAgentSession(session) && session.unread).length,
+    attention: productAgentSessions.filter((session) => !session.archivedAt && session.needsAttention).length,
+    active: productAgentSessions.filter((session) => !session.archivedAt && session.status === "active").length,
+    all: productAgentSessions.filter((session) => !session.archivedAt && !isAbnormalAgentSession(session)).length,
+    failed: productAgentSessions.filter((session) => !session.archivedAt && isAbnormalAgentSession(session)).length,
+    archived: productAgentSessions.filter((session) => session.archivedAt).length,
+  }), [agentFilter, allSessions, productAgentSessions]);
   const visibleSessions = useMemo(
     () => byLatestActivity(sessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search))),
     [agentFilter, filter, search, sessions],
@@ -307,9 +312,15 @@ export function AgentSessionConsole({
   // navigation handlers remain responsible for leaving it (AND-147).
   const selectedId = resolvedAgentSessionId(
     selectedSessionId,
-    sessions.map((session) => session.id),
+    allSessions.map((session) => session.id),
     sessionsLoaded,
   );
+
+  useEffect(() => {
+    if (!sessionsLoaded || !selectedSessionId) return;
+    const linked = allSessions.find((session) => session.id === selectedSessionId);
+    if (!linked || linked.archivedAt) setUnavailableSessionId(selectedSessionId);
+  }, [allSessions, selectedSessionId, sessionsLoaded]);
 
   useEffect(() => {
     const update = () => setDocumentVisible(document.visibilityState === "visible");
@@ -344,7 +355,7 @@ export function AgentSessionConsole({
     onSelectSession(selectedId, conversationOpen && Boolean(selectedId));
   }, [conversationOpen, onSelectSession, selectedId, selectedSessionId]);
 
-  const selected = sessions.find((session) => session.id === selectedId);
+  const selected = allSessions.find((session) => session.id === selectedId);
   // The reply box belongs to the conversation it is written for: its draft is
   // kept under that session's agentSessionId, so an answer picked here never
   // follows you into another session or another product (AND-252). The key is
@@ -617,7 +628,7 @@ export function AgentSessionConsole({
   const selectedUnreadAt = selected?.unread ? selected.unreadAt : undefined;
   const markReadRetry = markRead.isError && !markRead.isPending;
   useEffect(() => {
-    if (!selected || !shouldMarkRead(selected, openedSessionId === selected.id, documentVisible)) return;
+    if (!selected || selected.archivedAt || !shouldMarkRead(selected, openedSessionId === selected.id, documentVisible)) return;
     markReadMutate({ dispatchId: selected.dispatchId, through: selected.unreadAt });
     // Keyed on the unread clock, not the object: each poll returns a new one.
     // A failed attempt rejoins through the last dependency once the retries
@@ -702,7 +713,8 @@ export function AgentSessionConsole({
   };
   const chooseFilter = (next: AgentSessionFilter) => {
     setFilter(next);
-    if (selectedId && !sessions.some((session) => session.id === selectedId
+    const nextSessions = next === "unread" ? allSessions : productSessions;
+    if (selectedId && !nextSessions.some((session) => session.id === selectedId
       && agentSessionMatches(session, next, agentFilter, search))) onSelectSession(null, false);
   };
   const chooseAgent = (next: AgentKindFilter) => {
@@ -712,9 +724,10 @@ export function AgentSessionConsole({
   };
 
   const filters: Array<{ key: AgentSessionFilter; icon: typeof BellRing; count: number; unread?: number; label: string }> = [
+    { key: "unread", icon: MessageSquare, count: counts.unread, label: t("agentConsoleUnread") },
     { key: "attention", icon: BellRing, count: counts.attention, label: t("agentConsoleNeedsAttention") },
     { key: "active", icon: LoaderCircle, count: counts.active, label: t("agentConsoleActive") },
-    { key: "all", icon: MessageSquare, count: counts.all, unread: counts.unread, label: t("agentConsoleAll") },
+    { key: "all", icon: MessageSquare, count: counts.all, unread: counts.productUnread, label: t("agentConsoleAll") },
     { key: "failed", icon: CircleAlert, count: counts.failed, unread: counts.failedUnread, label: t("agentConsoleFailed") },
     { key: "archived", icon: Archive, count: counts.archived, label: t("agentConsoleArchived") },
   ];
@@ -746,6 +759,7 @@ export function AgentSessionConsole({
       </aside>
 
       <section className="agent-console-list" aria-label={t("agentConsoleSessions")}>
+        {unavailableSessionId && <p className="inline-error" role="alert">{t("agentConsoleUnavailableLink")}</p>}
         <div className="agent-console-mobile-filters" aria-label={t("agentConsoleFilters")}>
           {filters.map(({ key, count, unread, label }) => (
             <button key={key} type="button" className={filter === key ? "active" : ""} aria-pressed={filter === key} onClick={() => chooseFilter(key)}>
@@ -901,6 +915,7 @@ export function AgentSessionConsole({
                   className={`agent-console-session ${session.id === selectedId ? "active" : ""} ${session.unread ? "unread" : ""}`}
                   aria-pressed={bulkMode && selectable ? checked : undefined}
                   onClick={() => {
+                    setUnavailableSessionId(null);
                     if (bulkMode) {
                       if (selectable) {
                         setSelectedForArchive((current) => {

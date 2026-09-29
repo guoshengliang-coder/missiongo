@@ -96,7 +96,7 @@ export function formatAgentMessageTime(value: string, locale: string, now = new 
   return `${calendarDate} ${time}`;
 }
 
-export type AgentSessionFilter = "attention" | "active" | "all" | "failed" | "archived";
+export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived";
 export type AgentKindFilter = "all" | AgentKind;
 
 export function isAbnormalAgentSession(session: Pick<AgentSessionSummary, "status" | "command">): boolean {
@@ -164,6 +164,7 @@ type FilterableAgentSession = Pick<
   | "status"
   | "command"
   | "needsAttention"
+  | "unread"
   | "nodeName"
   | "sessionName"
   | "latestMessage"
@@ -224,6 +225,7 @@ export function agentSessionMatches(
   } else if (session.archivedAt) return false;
   if (agentFilter !== "all" && session.agentKind !== agentFilter) return false;
   if (filter === "attention" && !session.needsAttention) return false;
+  if (filter === "unread" && !session.unread) return false;
   if (filter === "active" && session.status !== "active") return false;
   if (filter === "failed" && !isAbnormalAgentSession(session)) return false;
   if (filter === "all" && isAbnormalAgentSession(session)) return false;

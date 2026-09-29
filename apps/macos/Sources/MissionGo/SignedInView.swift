@@ -1,75 +1,460 @@
+import AppKit
 import MissionGoNodeCore
 import SwiftUI
 
 struct SignedInView: View {
     @EnvironmentObject private var model: AppModel
-    let credential: NodeCredential
-
+    @Environment(\.openWindow) private var openWindow
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HeaderView(credential: credential)
-            Divider()
-            AgentsSection()
-            Divider()
-            RepositoriesSection()
-            Divider()
-            DispatchesSection()
-            Divider()
-            FooterView()
-        }
-    }
-}
-
-private struct HeaderView: View {
-    @EnvironmentObject private var model: AppModel
-    let credential: NodeCredential
-
-    var body: some View {
-        let summary = ConnectionSummary.summarize(model.loopState)
-        VStack(alignment: .leading, spacing: 4) {
-            MachineNameRow()
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Circle()
-                    .fill(color(summary.tone))
-                    .frame(width: 8, height: 8)
-                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
-                Text(summary.text)
-                    .font(.callout)
-                    .lineLimit(4)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 32, height: 32)
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+                Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "应用")
+                    .font(.headline)
+                Text("·")
+                    .foregroundStyle(.secondary)
+                Text(model.machineName)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(model.machineName)
+                Spacer(minLength: 0)
             }
-            // The retry story has to be visible, not inferred: the loops do
-            // retry on their own, but a person staring at a red "offline"
-            // cannot tell that from a hung app (AND-177). A revoked
-            // credential never gets the button — only logging in again fixes
-            // that, and a retry here would just fail the same way.
-            if model.loopState.connection == .offline {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    WrappingCaption(text: "每 30 秒自动重试，也可立即重试。")
-                    Button("重新连接") { model.reconnect() }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                        .help("立即重试连接服务器，并刷新资料和最近派单")
-                    Spacer(minLength: 0)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color(nsColor: .textBackgroundColor))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    UnreadSection()
+                    AgentStatusSection()
+                    VersionStatusSection()
                 }
             }
-            // The version rides along with the server: both answer "what is
-            // this Mac running against", and the top of the menu is where
-            // somebody looks for that.
-            Text("\(ServerAddress.displayHost(credential.serverUrl)) · \(AppVersionLabel.text(model.appVersion))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
+            .frame(maxHeight: min(620, max(160, (NSScreen.main?.visibleFrame.height ?? 800) - 120)))
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            HStack(spacing: 7) {
+                let summary = ConnectionSummary.summarize(model.loopState)
+                Circle()
+                    .fill(connectionColor(summary.tone))
+                    .frame(width: 7, height: 7)
+                Text("\(model.machineName) \(summary.text)")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(summary.text)
+                Spacer(minLength: 0)
+                if model.loopState.connection == .offline {
+                    Button("重新连接") { model.reconnect() }
+                        .font(.caption)
+                        .help("连接失败时也会每 30 秒自动重试")
+                }
+                Button { openWindow(id: "local-settings") } label: {
+                    Image(systemName: "gearshape")
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.plain)
+                .help("本机设置")
+                .accessibilityLabel("本机设置")
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 43)
+            .background(Color(nsColor: .textBackgroundColor))
         }
     }
 
-    private func color(_ tone: ConnectionSummary.Tone) -> Color {
+    private func connectionColor(_ tone: ConnectionSummary.Tone) -> Color {
         switch tone {
         case .good: return .green
         case .pending: return .yellow
         case .bad: return .red
         case .idle: return .gray
+        }
+    }
+}
+
+private struct MenuGroup<Content: View>: View {
+    let title: String
+    let symbol: String
+    let trailing: AnyView?
+    let content: Content
+
+    init(title: String, symbol: String, trailing: AnyView? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.symbol = symbol
+        self.trailing = trailing
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                Image(systemName: symbol).frame(width: 16)
+                Text(title).font(.caption.weight(.semibold))
+                Spacer(minLength: 4)
+                trailing
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 37)
+            .background(Color(nsColor: .controlBackgroundColor))
+            content
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .textBackgroundColor))
+        }
+    }
+}
+
+private struct UnreadSection: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        MenuGroup(title: "未读会话", symbol: "bubble.left", trailing: AnyView(
+            Group {
+                if let count = model.unreadCount {
+                    Text(String(count))
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.mint.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                        .accessibilityLabel("未读会话 \(count) 条")
+                }
+            }
+        )) {
+            if let error = model.unreadError {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                    Button("重试") { model.refreshUnreadSessions() }.font(.caption)
+                }
+            } else if model.unreadCount == nil {
+                ProgressView("正在读取未读会话…").controlSize(.small)
+            } else if model.unreadSessions.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("这台 Mac 已就绪").font(.subheadline.weight(.medium))
+                    Text("没有未读会话").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 8)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(model.unreadSessions) { session in
+                            Button { model.openUnreadSession(session) } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(session.title)
+                                        .font(.subheadline.weight(.medium))
+                                        .lineLimit(1)
+                                    HStack(spacing: 3) {
+                                        Text(agentName(session.agentKind))
+                                        Text("·")
+                                        Text(session.nodeName)
+                                        Text("·")
+                                        if let date = sessionDate(session.activityAt) {
+                                            Text(date, style: .relative)
+                                        }
+                                        Spacer(minLength: 0)
+                                        Image(systemName: "arrow.up.right")
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 57, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help(session.title)
+                            .accessibilityLabel("\(session.title)，\(agentName(session.agentKind))，\(session.nodeName)，\(relativeTime(session.activityAt))，在 Web 打开会话")
+                            Divider()
+                        }
+                    }
+                }
+                .frame(height: min(CGFloat(model.unreadSessions.count) * 58, 232))
+                Button("在 Web 查看全部 \(model.unreadCount ?? 0) 条 ↗") { model.openAllUnread() }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .frame(maxWidth: .infinity, minHeight: 32)
+            }
+        }
+    }
+
+    private func agentName(_ kind: String) -> String {
+        switch kind {
+        case "claude_code": return "Claude Code"
+        case "codex": return "Codex"
+        case "opencode": return "OpenCode"
+        default: return kind
+        }
+    }
+
+    private func sessionDate(_ value: String) -> Date? {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return parser.date(from: value)
+    }
+
+    private func relativeTime(_ value: String) -> String {
+        guard let date = sessionDate(value) else { return "时间未知" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+private struct AgentStatusSection: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    private var readyCount: Int {
+        LocalAgent.allCases.filter { agent in
+            guard let state = model.integrationStates[agent.rawValue] else { return false }
+            return state.version != nil && state.issue == nil
+        }.count
+    }
+
+    var body: some View {
+        MenuGroup(title: "Agent 状态", symbol: "cpu", trailing: AnyView(
+            HStack(spacing: 6) {
+                Text("\(readyCount) 个就绪").foregroundStyle(.secondary)
+                Button("重新检查") { model.checkAllIntegrations() }
+                    .disabled(model.integrationStates.isEmpty || model.checkingAllIntegrations || !model.checkingIntegrations.isEmpty)
+            }.font(.caption)
+        )) {
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(LocalAgent.allCases, id: \.rawValue) { agent in
+                    let state = model.integrationStates[agent.rawValue]
+                    let checking = model.checkingIntegrations.contains(agent)
+                    let ready = state?.version != nil && state?.issue == nil
+                    HStack(spacing: 7) {
+                        AgentMark(agent: agent)
+                        Text(agent.title).font(.subheadline.weight(.medium))
+                        Spacer(minLength: 4)
+                        Circle().fill(ready ? Color.green : (state == nil ? Color.gray : Color.orange))
+                            .frame(width: 6, height: 6)
+                        Text(checking ? "检查中" : ready ? "就绪" : state == nil ? "未启用" : "需处理")
+                        if let version = model.detectedAgentVersions[agent.rawValue] ?? state?.version {
+                            Text("· \(version)")
+                        }
+                    }
+                    .font(.caption)
+                    .accessibilityElement(children: .combine)
+                    if let issue = state?.issue, !checking {
+                        Text(issue)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("查看处理方法") {
+                            UserDefaults.standard.set("Agent", forKey: "localSettingsTab")
+                            openWindow(id: "local-settings")
+                        }
+                        .font(.caption)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct AgentMark: View {
+    let agent: LocalAgent
+
+    var body: some View {
+        Group {
+            if let url = Bundle.module.url(forResource: agent.rawValue, withExtension: "png"),
+               let image = NSImage(contentsOf: url) {
+                Image(nsImage: image)
+                    .resizable()
+                    .renderingMode(.template)
+                    .foregroundStyle(color)
+            } else {
+                Image(systemName: "cpu")
+                    .foregroundStyle(color)
+            }
+        }
+        .frame(width: 19, height: 19)
+        .accessibilityHidden(true)
+    }
+
+    private var color: Color {
+        switch agent {
+        case .claudeCode: return .orange
+        case .codex: return .indigo
+        case .openCode: return .primary
+        }
+    }
+}
+
+private struct VersionStatusSection: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        MenuGroup(title: "版本与更新", symbol: "shippingbox", trailing: AnyView(
+            Button("检查客户端更新") { model.checkForUpdates() }
+                .font(.caption)
+                .disabled(model.updateState.isBusy || updateChecking || model.appVersion == nil)
+        )) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Skill")
+                    Spacer()
+                    Text(model.integrationStates.isEmpty ? "未启用" : (model.skillSync?.summary ?? "未检查"))
+                        .foregroundStyle(.secondary)
+                    if !model.integrationStates.isEmpty, case .synced? = model.skillSync {
+                        Text("· 自动同步").foregroundStyle(.secondary)
+                    }
+                }
+                if let reason = model.skillSync?.failureReason {
+                    Text(reason).font(.caption).foregroundStyle(.orange)
+                    Text("可在 Agent 状态点击重新检查重试。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Divider()
+                HStack {
+                    Text("Mac 客户端")
+                    Spacer()
+                    Text(model.appVersion ?? "开发构建")
+                    Text("· \(updateLabel)")
+                }
+                .foregroundStyle(.secondary)
+                if case let .available(update) = model.updateState {
+                    Button("查看 \(update.version) 的更新内容") { model.showAvailableUpdate() }
+                        .font(.caption)
+                }
+                if case let .failed(_, reason) = model.updateState {
+                    Text(reason).font(.caption).foregroundStyle(.orange)
+                }
+                if let notice = model.updateNotice {
+                    Text(notice).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+        }
+    }
+
+    private var updateLabel: String {
+        switch model.updateState {
+        case .unavailable: return "无版本信息"
+        case .current: return "已是最新"
+        case .checking: return "检查中"
+        case .available: return "发现更新"
+        case .downloading: return "下载中"
+        case .installing: return "安装中"
+        case .failed: return "检查失败"
+        }
+    }
+
+    private var updateChecking: Bool {
+        if case .checking = model.updateState { return true }
+        return false
+    }
+}
+
+struct LocalSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    @AppStorage("localSettingsTab") private var selectedTab = Tab.device.rawValue
+
+    private enum Tab: String, CaseIterable {
+        case device = "设备"
+        case agent = "Agent"
+        case repositories = "仓库"
+
+        var symbol: String {
+            switch self {
+            case .device: return "laptopcomputer"
+            case .agent: return "cpu"
+            case .repositories: return "folder"
+            }
+        }
+    }
+
+    private var tab: Tab { Tab(rawValue: selectedTab) ?? .device }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 9) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 31, height: 31)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.machineName).font(.headline).lineLimit(1)
+                        Text("这台 Mac").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Divider().padding(.vertical, 8)
+                ForEach(Tab.allCases, id: \.self) { option in
+                    Button {
+                        selectedTab = option.rawValue
+                        if option == .device { model.refreshDispatches() }
+                    } label: {
+                        Label(option.rawValue, systemImage: option.symbol)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 7)
+                            .padding(.horizontal, 9)
+                    }
+                    .buttonStyle(.plain)
+                    .background(tab == option ? Color.accentColor.opacity(0.14) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 7))
+                    .accessibilityAddTraits(tab == option ? .isSelected : [])
+                }
+                Spacer()
+                Text("MissionGo for macOS")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(18)
+            .frame(width: 180)
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(tab.rawValue).font(.title2.weight(.semibold))
+                    switch tab {
+                    case .device:
+                        MachineNameRow()
+                        if let server = model.consoleUrl {
+                            Text("服务：\(ServerAddress.displayHost(server))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Divider()
+                        DispatchesSection()
+                        Divider()
+                        FooterView()
+                    case .agent:
+                        Text("管理允许在这台 Mac 上执行任务的客户端。")
+                            .foregroundStyle(.secondary)
+                        IntegrationRow(agent: .claudeCode)
+                        Divider()
+                        IntegrationRow(agent: .codex)
+                        Divider()
+                        IntegrationRow(agent: .openCode)
+                        Divider()
+                        Button(model.importingPath ? "正在导入终端 PATH…" : "导入终端 PATH…") {
+                            model.importShellPath()
+                        }
+                        .disabled(model.importingPath || !model.checkingIntegrations.isEmpty)
+                    case .repositories:
+                        RepositoriesSection()
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(28)
+            }
+        }
+        .frame(minWidth: 580, minHeight: 440)
+        .onAppear {
+            model.refreshProfile()
+            model.refreshDispatches()
         }
     }
 }
@@ -159,124 +544,6 @@ private struct MachineNameRow: View {
     }
 }
 
-private struct AgentsSection: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            WrappingCaption(text: "按需启用客户端；未启用时不会检查登录、运行命令或写入 Skill。升级后的首次使用也需要启用。")
-            IntegrationRow(agent: .claudeCode)
-            IntegrationRow(agent: .codex)
-            IntegrationRow(agent: .openCode)
-            Button(model.importingPath ? "正在导入命令路径…" : "自定义安装：导入终端 PATH…") { model.importShellPath() }
-                .buttonStyle(.borderless)
-                .font(.caption)
-                .disabled(model.importingPath || !model.checkingIntegrations.isEmpty)
-            if let skill = model.skillSync {
-                SkillRow(status: skill)
-            }
-            UpdateRow()
-        }
-    }
-}
-
-/// The missiongo Skill every dispatched session relies on. A failure gets its
-/// whole reason, wrapped and selectable, and a way to try again now (AND-47).
-private struct SkillRow: View {
-    @EnvironmentObject private var model: AppModel
-    let status: SkillSyncStatus
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("missiongo Skill")
-                    .font(.caption)
-                Spacer()
-                if status == .syncing {
-                    ProgressView().controlSize(.mini)
-                }
-                Text(status.summary)
-                    .font(.caption)
-                    .foregroundColor(status.failureReason == nil ? .secondary : .orange)
-            }
-            if let reason = status.failureReason {
-                WrappingCaption(text: reason, color: .orange)
-                WrappingCaption(text: "已启用的客户端会稍后自动重试，也可点击对应客户端的「重新检查」。")
-            }
-        }
-    }
-}
-
-/// Client updates, beside the agents it checks on. The version itself is in
-/// the header (AND-53). The row stays visible so a person can check on demand,
-/// in addition to the startup and six-hour checks.
-private struct UpdateRow: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("MissionGo")
-                    .font(.caption)
-                Spacer()
-                detail
-            }
-            if case let .failed(_, reason) = model.updateState {
-                WrappingCaption(text: reason, color: .orange)
-            }
-            if let notice = model.updateNotice {
-                WrappingCaption(text: notice)
-            }
-        }
-    }
-
-    @ViewBuilder private var detail: some View {
-        switch model.updateState {
-        case .unavailable:
-            Button("检测更新") { model.checkForUpdates() }
-                .buttonStyle(.borderless)
-                .font(.caption)
-        case let .current(version):
-            HStack(spacing: 6) {
-                Text(version).font(.caption).foregroundColor(.secondary)
-                Button("检测更新") { model.checkForUpdates() }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
-            }
-        case .checking:
-            progress("正在检查更新…")
-        case let .available(update):
-            HStack(spacing: 6) {
-                Text(update.current).font(.caption).foregroundColor(.secondary)
-                Button("查看 \(update.version)") { model.showAvailableUpdate() }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
-                Button("检测更新") { model.checkForUpdates() }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
-            }
-        case let .downloading(update):
-            progress("正在下载 \(update.version)…")
-        case let .installing(update):
-            progress("正在安装 \(update.version)…")
-        case let .failed(current, _):
-            HStack(spacing: 6) {
-                Text(current).font(.caption).foregroundColor(.orange)
-                Button("重试") { model.checkForUpdates() }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
-            }
-        }
-    }
-
-    private func progress(_ text: String) -> some View {
-        HStack(spacing: 6) {
-            ProgressView().controlSize(.mini)
-            Text(text).font(.caption).foregroundColor(.secondary)
-        }
-    }
-}
-
 private struct IntegrationRow: View {
     @EnvironmentObject private var model: AppModel
     @State private var copied = false
@@ -295,25 +562,36 @@ private struct IntegrationRow: View {
         let checking = model.checkingIntegrations.contains(agent)
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(agent.title)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(agent.title)
+                        .font(.subheadline.weight(.medium))
+                    Text(checking ? "检查中…" : state == nil ? "已停用" : state?.issue == nil ? "本机已安装" : "需处理")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 if checking {
                     ProgressView().controlSize(.mini)
                 }
-                Text(checking ? "检查中…" : (state?.version ?? (state == nil ? "未启用" : "已暂停")))
-                    .foregroundColor(state?.issue == nil ? .secondary : .orange)
-                Button(state == nil ? "启用…" : "重新检查") { model.checkIntegration(agent) }
-                    .buttonStyle(.borderless)
-                    .disabled(!model.checkingIntegrations.isEmpty || model.importingPath)
-                    .help("检查登录并同步该客户端的 missiongo Skill；不会检查另一个客户端。")
-                if state != nil {
-                    Button("停用") { model.disableIntegration(agent) }
-                        .buttonStyle(.borderless)
-                }
+                Toggle("启用 \(agent.title)", isOn: Binding(
+                    get: { model.integrationStates[agent.rawValue] != nil },
+                    set: { enabled in
+                        if enabled { model.checkIntegration(agent) }
+                        else { model.disableIntegration(agent) }
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .disabled(!model.checkingIntegrations.isEmpty || model.importingPath)
+                .help("关闭后，此 Agent 不再参与登录检测、派单和 Skill 同步。")
             }
             if !checking, let hint = state?.issue {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     WrappingCaption(text: hint)
+                    Button("重新检查") { model.checkIntegration(agent) }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .disabled(!model.checkingIntegrations.isEmpty || model.importingPath)
                     if let command {
                         Button {
                             model.copyToClipboard(command)
@@ -342,6 +620,7 @@ private struct IntegrationRow: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
     }
 }
 

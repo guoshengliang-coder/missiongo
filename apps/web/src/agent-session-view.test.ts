@@ -153,7 +153,7 @@ describe("agent session message view", () => {
 
   it("keeps abnormal conversations out of all while retaining them in failed", () => {
     const base = {
-      id: "session-1", agentKind: "codex", needsAttention: false,
+      id: "session-1", agentKind: "codex", needsAttention: false, unread: true,
       nodeName: "Mac mini", items: [{ key: "AND-1", title: "First item", productId: "product-1" }],
     } as unknown as AgentSessionSummary;
     for (const abnormal of [
@@ -166,10 +166,12 @@ describe("agent session message view", () => {
       expect(isAbnormalAgentSession(abnormal)).toBe(true);
       expect(agentSessionMatches(abnormal, "all", "all", "")).toBe(false);
       expect(agentSessionMatches(abnormal, "failed", "all", "")).toBe(true);
+      expect(agentSessionMatches(abnormal, "unread", "all", "")).toBe(true);
     }
     const healthy = { ...base, status: "idle" as const };
     expect(agentSessionMatches(healthy, "all", "all", "")).toBe(true);
     expect(agentSessionMatches(healthy, "failed", "all", "")).toBe(false);
+    expect(agentSessionMatches({ ...healthy, unread: false }, "unread", "all", "")).toBe(false);
   });
 
   it("calls a dispatch failed when the session behind it never got going (AND-180)", () => {

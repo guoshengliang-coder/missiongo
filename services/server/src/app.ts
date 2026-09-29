@@ -2359,6 +2359,32 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     };
   });
 
+  // The menu badge and its rows come from one permission-filtered snapshot.
+  // A node may see its owner's conversations, but no transcript or session
+  // control data is needed to choose one in the browser.
+  app.get("/api/v1/node/unread-sessions", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    const node = requireNode(request);
+    const account = accountStore.getAccount(node.accountId);
+    const sessions = visibleAgentSessionsFor(account)
+      .filter((session) => session.unread && !session.archivedAt)
+      .sort((left, right) => {
+        const activity = Date.parse(right.activityAt) - Date.parse(left.activityAt);
+        return activity || left.id.localeCompare(right.id);
+      });
+    return {
+      totalUnread: sessions.length,
+      sessions: sessions.map((session) => ({
+        sessionId: session.id,
+        agentKind: session.agentKind,
+        nodeName: session.nodeName,
+        activityAt: session.activityAt,
+        title: session.sessionName?.trim() || session.items.map((item) => item.key).join("、"),
+        items: session.items.map((item) => ({ key: item.key, productId: item.productId })),
+      })),
+    };
+  });
+
   app.put("/api/v1/node/repos", async (request) => {
     const node = requireNode(request);
     const body = objectBody(request.body);

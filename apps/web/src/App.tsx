@@ -997,7 +997,7 @@ export function App() {
   const agentSessionsQuery = useQuery({
     queryKey: ["agent-sessions"],
     queryFn: () => api.listAgentSessions(),
-    enabled: bootstrapQuery.isSuccess && hasAnyAiPermission,
+    enabled: bootstrapQuery.isSuccess && products.length > 0,
     refetchInterval: (query) => agentSessionsRefetchInterval(
       agentConsoleOpen,
       documentVisible,
@@ -1005,6 +1005,13 @@ export function App() {
     ),
   });
   const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
+  useEffect(() => {
+    if (!agentConsoleOpen || !agentSessionId) return;
+    const linked = allAgentSessions.find((session) => session.id === agentSessionId);
+    if (!linked || linked.items.some((item) => item.productId === selectedProductId)) return;
+    const productId = linked.items[0]?.productId;
+    if (productId) setSelectedProductId(productId);
+  }, [agentConsoleOpen, agentSessionId, allAgentSessions, selectedProductId]);
   const unreadCounts = useMemo(() => agentUnreadCounts(allAgentSessions), [allAgentSessions]);
 
   useEffect(() => {
@@ -1016,7 +1023,8 @@ export function App() {
   }, [agentConsoleOpen, queryClient]);
 
   useEffect(() => {
-    if (products.length === 0 || hasAnyAiPermission || !agentConsoleOpen) return;
+    if (!bootstrapQuery.isSuccess || products.length > 0 || !agentConsoleOpen) return;
+    setNotice(t("agentConsoleUnavailableLink"));
     const current = typeof history.state === "object" && history.state
       ? history.state as Record<string, unknown>
       : {};
@@ -1031,7 +1039,7 @@ export function App() {
     setAgentConsoleOpen(false);
     setAgentSessionId(null);
     setAgentConversationOpen(false);
-  }, [agentConsoleOpen, hasAnyAiPermission, products.length]);
+  }, [agentConsoleOpen, bootstrapQuery.isSuccess, products.length, t]);
 
   useEffect(() => {
     if (products.length === 0) return;
@@ -1335,7 +1343,7 @@ export function App() {
           <ProductSwitcher
             products={products}
             selectedProductId={selectedProductId}
-            unreadCounts={agentConsoleOpen && hasAnyAiPermission ? unreadCounts.byProduct : undefined}
+            unreadCounts={agentConsoleOpen && products.length > 0 ? unreadCounts.byProduct : undefined}
             unreadCountsLoaded={agentSessionsQuery.data !== undefined}
             onSelect={(productId) => {
               agentConsoleMoreRef.current?.removeAttribute("open");
@@ -1357,7 +1365,7 @@ export function App() {
             ><BellRing size={13} aria-hidden="true" />{unreadCounts.total}</span>
           )}
         </div>
-        {hasAnyAiPermission && !agentConsoleOpen && (
+        {products.length > 0 && !agentConsoleOpen && (
           <button
             type="button"
             className="ai-console-toggle"

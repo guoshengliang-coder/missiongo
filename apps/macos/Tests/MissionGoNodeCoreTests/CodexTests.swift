@@ -471,11 +471,18 @@ final class CodexAppServerControlTests: XCTestCase {
             usleep(10_000)
         }
         XCTAssertEqual(monitor.snapshot(threadId: "thread-1")?.status, "approved")
-        XCTAssertTrue(server.received.current.contains { text in
-            guard let message = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return false }
-            return (message["id"] as? Int) == 900
-                && (message["result"] as? [String: String])?["decision"] == "accept"
-        })
+        func serverReceivedAnswer() -> Bool {
+            server.received.current.contains { text in
+                guard let message = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return false }
+                return (message["id"] as? Int) == 900
+                    && (message["result"] as? [String: String])?["decision"] == "accept"
+            }
+        }
+        let deliveryDeadline = Date().addingTimeInterval(3)
+        while !serverReceivedAnswer() && Date() < deliveryDeadline {
+            usleep(10_000)
+        }
+        XCTAssertTrue(serverReceivedAnswer())
     }
 
     private func request(socketPath: String) -> CodexThreadRequest {
