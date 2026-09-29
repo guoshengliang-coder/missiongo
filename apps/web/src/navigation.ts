@@ -89,7 +89,7 @@ export function agentConsoleUrl(
   return `${next.pathname}${next.search}${next.hash}`;
 }
 
-const AGENT_CONSOLE_FILTERS: readonly AgentSessionFilter[] = ["attention", "active", "all", "failed", "archived"];
+const AGENT_CONSOLE_FILTERS: readonly AgentSessionFilter[] = ["unread", "attention", "active", "all", "failed", "archived"];
 
 /**
  * An explicit link can open the console on one of its filters. It is read once

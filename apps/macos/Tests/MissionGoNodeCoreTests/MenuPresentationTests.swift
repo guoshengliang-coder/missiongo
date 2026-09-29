@@ -38,6 +38,35 @@ final class ServerAddressTests: XCTestCase {
     }
 }
 
+final class ConsoleDeepLinkTests: XCTestCase {
+    func testSessionLinkUsesTheCurrentOriginAndExactSessionId() {
+        let url = ConsoleDeepLink.session(
+            serverUrl: "https://example.test:8443", sessionId: "session /? 42", productId: "product-1"
+        )
+        XCTAssertEqual(url?.host, "example.test")
+        XCTAssertEqual(url?.port, 8443)
+        XCTAssertEqual(URLComponents(url: url!, resolvingAgainstBaseURL: false)?.queryItems,
+                       [URLQueryItem(name: "console", value: "agent"),
+                        URLQueryItem(name: "session", value: "session /? 42"),
+                        URLQueryItem(name: "product", value: "product-1")])
+    }
+
+    func testAllUnreadLinkOpensTheRealFilter() {
+        let url = ConsoleDeepLink.unread(serverUrl: "https://example.test")
+        XCTAssertEqual(url?.absoluteString, "https://example.test/?console=agent&consoleFilter=unread")
+    }
+}
+
+final class UnreadBadgeLabelTests: XCTestCase {
+    func testBadgeCapsOnlyItsVisibleLabel() {
+        XCTAssertNil(UnreadBadgeLabel.text(nil))
+        XCTAssertNil(UnreadBadgeLabel.text(0))
+        XCTAssertEqual(UnreadBadgeLabel.text(3), "3")
+        XCTAssertEqual(UnreadBadgeLabel.text(99), "99")
+        XCTAssertEqual(UnreadBadgeLabel.text(100), "99+")
+    }
+}
+
 final class NodeNicknameTests: XCTestCase {
     func testTrimsWhatItKeeps() {
         XCTAssertEqual(NodeNickname.validate("  二号机 \n"), .success("二号机"))

@@ -19,8 +19,8 @@ struct MissionGoApp: App {
         } label: {
             HStack(spacing: 3) {
                 Image(systemName: model.menuBarSymbol)
-                if let count = model.unreadCount, count > 0 {
-                    Text(String(count))
+                if let label = UnreadBadgeLabel.text(model.unreadCount) {
+                    Text(label)
                         .font(.system(size: 10, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 4)
@@ -31,6 +31,12 @@ struct MissionGoApp: App {
             .accessibilityLabel(model.unreadCount.map { $0 > 0 ? "\(appLabel)，未读会话 \($0)" : appLabel } ?? appLabel)
         }
         .menuBarExtraStyle(.window)
+
+        Window("本机设置", id: "local-settings") {
+            LocalSettingsView()
+                .environmentObject(model)
+        }
+        .defaultSize(width: 724, height: 510)
     }
 }
 
@@ -217,7 +223,7 @@ struct MenuContentView: View {
 
     /// One width for the menu and for the window: the content is written to be
     /// read at this width, and nothing here reflows usefully at another.
-    static let width: CGFloat = 380
+    static let width: CGFloat = 390
 
     /// Off only for the throwaway copy the main window measures before opening:
     /// that copy is not a menu anyone opened.
@@ -234,8 +240,8 @@ struct MenuContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             case .signedOut, .signingIn:
                 SignedOutView()
-            case let .signedIn(credential):
-                SignedInView(credential: credential)
+            case .signedIn:
+                SignedInView()
             }
         }
         .padding(14)

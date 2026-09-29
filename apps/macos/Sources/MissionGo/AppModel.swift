@@ -107,15 +107,19 @@ final class AppModel: ObservableObject {
     @Published private(set) var dispatchesError: String?
     @Published private(set) var unreadCount: Int? {
         didSet {
-            NSApplication.shared.dockTile.badgeLabel = unreadCount.flatMap { $0 > 0 ? String($0) : nil }
+            NSApplication.shared.dockTile.badgeLabel = UnreadBadgeLabel.text(unreadCount)
         }
     }
+    @Published private(set) var unreadSessions: [UnreadSessionPreview] = []
+    @Published private(set) var unreadError: String?
     @Published private(set) var claude: ClaudeCodeStatus = .checking
     @Published private(set) var codex: CodexStatus = .checking
     /// The Skill row: nil until the first sync starts.
     @Published private(set) var skillSync: SkillSyncStatus?
     @Published private(set) var integrationStates: [String: LocalIntegrations.State] = [:]
+    @Published private(set) var detectedAgentVersions: [String: String] = [:]
     @Published private(set) var checkingIntegrations: Set<LocalAgent> = []
+    @Published private(set) var checkingAllIntegrations = false
     @Published private(set) var importingPath = false
     @Published private(set) var launchAtLogin = LaunchAtLogin()
     /// The client's own version, and whether a newer one is published.
@@ -243,6 +247,8 @@ final class AppModel: ObservableObject {
         unreadTask?.cancel()
         unreadTask = nil
         unreadCount = nil
+        unreadSessions = []
+        unreadError = nil
         stopLoop()
         for agent in checkingIntegrations { integrations.disable(agent) }
         checkingIntegrations.removeAll()
@@ -295,22 +301,37 @@ final class AppModel: ObservableObject {
     private func startUnreadUpdates(_ credential: NodeCredential) {
         unreadTask?.cancel()
         unreadCount = nil
+        unreadSessions = []
+        unreadError = nil
         unreadTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                do {
-                    let count = try await APIClient(
-                        serverUrl: credential.serverUrl, token: credential.token
-                    ).unreadCount()
-                    guard !Task.isCancelled, self.credential == credential else { return }
-                    self.unreadCount = count
-                } catch {
-                    guard !Task.isCancelled, self.credential == credential else { return }
-                    self.unreadCount = nil
-                    if self.isRevoked(error) { return }
-                }
+                await self.loadUnreadSessions(credential)
                 try? await Task.sleep(nanoseconds: UInt64(Self.unreadRefreshInterval * 1_000_000_000))
             }
+        }
+    }
+
+    func refreshUnreadSessions() {
+        guard let credential else { return }
+        Task { await loadUnreadSessions(credential) }
+    }
+
+    private func loadUnreadSessions(_ credential: NodeCredential) async {
+        do {
+            let snapshot = try await APIClient(
+                serverUrl: credential.serverUrl, token: credential.token
+            ).unreadSessions()
+            guard !Task.isCancelled, self.credential == credential else { return }
+            unreadSessions = snapshot.sessions
+            unreadCount = snapshot.totalUnread
+            unreadError = nil
+        } catch {
+            guard !Task.isCancelled, self.credential == credential else { return }
+            unreadSessions = []
+            unreadCount = nil
+            unreadError = error.localizedDescription
+            _ = isRevoked(error)
         }
     }
 
@@ -537,6 +558,7 @@ final class AppModel: ObservableObject {
     func menuDidOpen() {
         refreshLaunchAtLogin()
         guard credential != nil else { return }
+        refreshUnreadSessions()
         let now = Date()
         if let last = lastOpenRefresh, now.timeIntervalSince(last) < AppModel.openRefreshThrottle {
             startMenuTimer()
@@ -596,6 +618,7 @@ final class AppModel: ObservableObject {
 
     func disableIntegration(_ agent: LocalAgent) {
         integrations.disable(agent)
+        detectedAgentVersions.removeValue(forKey: agent.rawValue)
         if checkingIntegrations.contains(agent) { skillSync = nil }
         refreshIntegrationStates()
     }
@@ -603,8 +626,22 @@ final class AppModel: ObservableObject {
     /// The only path that checks client login or enables an integration. A
     /// heartbeat may later refresh the Skill for enabled clients, but it never
     /// invokes this permission/login flow. Each client is independent.
-    func checkIntegration(_ agent: LocalAgent) {
-        guard let credential, let environment, checkingIntegrations.isEmpty, !importingPath else { return }
+    func checkAllIntegrations() {
+        guard !checkingAllIntegrations, checkingIntegrations.isEmpty else { return }
+        let enabled = LocalAgent.allCases.filter { integrations.state(for: $0) != nil }
+        guard !enabled.isEmpty else { return }
+        checkingAllIntegrations = true
+        Task {
+            defer { checkingAllIntegrations = false }
+            for agent in enabled {
+                if let check = checkIntegration(agent) { await check.value }
+            }
+        }
+    }
+
+    @discardableResult
+    func checkIntegration(_ agent: LocalAgent) -> Task<Void, Never>? {
+        guard let credential, let environment, checkingIntegrations.isEmpty, !importingPath else { return nil }
         if integrations.state(for: agent) == nil {
             let alert = NSAlert()
             if agent == .claudeCode {
@@ -623,18 +660,18 @@ final class AppModel: ObservableObject {
             let response = alert.runModal()
             if agent == .claudeCode, response == .alertFirstButtonReturn {
                 openFullDiskAccessSettings()
-                return
+                return nil
             }
             let proceed: NSApplication.ModalResponse = agent == .claudeCode
                 ? .alertSecondButtonReturn
                 : .alertFirstButtonReturn
-            guard response == proceed else { return }
+            guard response == proceed else { return nil }
         }
         let access = integrations
         let attempt = access.begin(agent)
         checkingIntegrations.insert(agent)
         refreshIntegrationStates()
-        Task {
+        return Task {
             defer {
                 checkingIntegrations.remove(agent)
                 refreshIntegrationStates()
@@ -674,6 +711,7 @@ final class AppModel: ObservableObject {
                     issue = error.localizedDescription
                 }
             }
+            detectedAgentVersions[agent.rawValue] = version.isEmpty ? nil : version
             if let issue {
                 access.finish(agent, attempt: attempt, version: nil, issue: issue)
                 return
@@ -1029,6 +1067,21 @@ final class AppModel: ObservableObject {
 
     func open(_ urlString: String) {
         guard let url = URL(string: urlString) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func openUnreadSession(_ session: UnreadSessionPreview) {
+        guard let credential,
+              let url = ConsoleDeepLink.session(
+                serverUrl: credential.serverUrl,
+                sessionId: session.sessionId,
+                productId: session.items.first?.productId
+              ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func openAllUnread() {
+        guard let credential, let url = ConsoleDeepLink.unread(serverUrl: credential.serverUrl) else { return }
         NSWorkspace.shared.open(url)
     }
 

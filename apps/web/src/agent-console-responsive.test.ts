@@ -108,7 +108,7 @@ describe("agent console responsive layout", () => {
     expect(appSource).toContain("agentSessionsQuery.data !== undefined && (");
     expect(appSource).not.toContain('agentSessionsQuery.data === undefined ? "–"');
     expect(appSource).toContain(
-      "unreadCounts={agentConsoleOpen && hasAnyAiPermission ? unreadCounts.byProduct : undefined}",
+      "unreadCounts={agentConsoleOpen && products.length > 0 ? unreadCounts.byProduct : undefined}",
     );
     expect(appSource).toContain('className="agent-console-total-unread agent-unread-badge"');
     expect(appSource).not.toContain('queryKey: ["agent-sessions", selectedProductId]');

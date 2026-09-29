@@ -3964,6 +3964,21 @@ describe("Widget summary (AND-149)", () => {
     expect((await summary(app, cookie)).agent.attention).toBe(2);
     expect((await summary(app, cookie)).agent.unread).toBe(2);
 
+    const preview = await app.inject({
+      method: "GET", url: "/api/v1/node/unread-sessions",
+      headers: { authorization: `Bearer ${first.node.token}` },
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.headers["cache-control"]).toBe("no-store");
+    expect(preview.json()).toMatchObject({
+      totalUnread: 2,
+      sessions: expect.arrayContaining([
+        expect.objectContaining({ sessionId: first.sessionId, agentKind: "codex" }),
+        expect.objectContaining({ sessionId: second.sessionId, agentKind: "codex" }),
+      ]),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/v1/node/unread-sessions", headers: { cookie } })).statusCode).toBe(401);
+
     const listed = (await app.inject({
       method: "GET", url: `/api/v1/agent-sessions?productId=${first.mission.productId}`,
       headers: { cookie },
@@ -3976,6 +3991,10 @@ describe("Widget summary (AND-149)", () => {
     });
     expect(read.statusCode).toBe(204);
     expect((await count(first.node.token)).json()).toEqual({ attention: 2, unread: 1 });
+    expect((await app.inject({ method: "GET", url: "/api/v1/node/unread-sessions",
+      headers: { authorization: `Bearer ${first.node.token}` } })).json().sessions.map(
+      (session: { sessionId: string }) => session.sessionId,
+    )).toEqual([second.sessionId]);
     expect((await summary(app, cookie)).agent).toMatchObject({ attention: 2, unread: 1 });
 
     for (const [entry, remainingAttention, remainingUnread] of [[first, 1, 1], [second, 0, 0]] as const) {
@@ -3986,6 +4005,8 @@ describe("Widget summary (AND-149)", () => {
       expect(archived.statusCode).toBe(200);
       expect((await count(first.node.token)).json()).toEqual({ attention: remainingAttention, unread: remainingUnread });
     }
+    expect((await app.inject({ method: "GET", url: "/api/v1/node/unread-sessions",
+      headers: { authorization: `Bearer ${first.node.token}` } })).json()).toMatchObject({ totalUnread: 0, sessions: [] });
     expect((await app.inject({ method: "GET", url: "/api/v1/node/attention-summary", headers: { cookie } })).statusCode).toBe(401);
     expect((await count(loginToken(app))).statusCode).toBe(401);
   });

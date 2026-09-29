@@ -71,6 +71,40 @@ public enum ServerAddress {
 
 // MARK: - Nickname
 
+public enum UnreadBadgeLabel {
+    public static func text(_ count: Int?) -> String? {
+        guard let count, count > 0 else { return nil }
+        return count > 99 ? "99+" : String(count)
+    }
+}
+
+public enum ConsoleDeepLink {
+    public static func session(serverUrl: String, sessionId: String, productId: String?) -> URL? {
+        guard !sessionId.isEmpty else { return nil }
+        var query = [
+            URLQueryItem(name: "console", value: "agent"),
+            URLQueryItem(name: "session", value: sessionId)
+        ]
+        if let productId { query.append(URLQueryItem(name: "product", value: productId)) }
+        return make(serverUrl: serverUrl, query: query)
+    }
+
+    public static func unread(serverUrl: String) -> URL? {
+        make(serverUrl: serverUrl, query: [
+            URLQueryItem(name: "console", value: "agent"),
+            URLQueryItem(name: "consoleFilter", value: "unread")
+        ])
+    }
+
+    private static func make(serverUrl: String, query: [URLQueryItem]) -> URL? {
+        guard case let .success(origin) = ServerAddress.validate(serverUrl),
+              var components = URLComponents(string: origin) else { return nil }
+        components.path = "/"
+        components.queryItems = query
+        return components.url
+    }
+}
+
 public enum NodeNickname {
     /// The server's limit, counted the way it counts: JavaScript string length,
     /// i.e. UTF-16 code units, so an emoji takes two.

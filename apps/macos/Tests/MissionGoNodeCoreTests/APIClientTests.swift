@@ -178,6 +178,25 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(sent.request.value(forHTTPHeaderField: "Authorization"), "Bearer mgn_x")
     }
 
+    func testUnreadSessionsUseOneConsistentNodeSnapshot() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"totalUnread":1,"sessions":[{"sessionId":"s1","agentKind":"codex","nodeName":"M5","activityAt":"2026-09-29T00:00:00.000Z","title":"AND-257","items":[{"key":"AND-257","productId":"p1"}]}]}"#) }
+        let snapshot = try await client().unreadSessions()
+        XCTAssertEqual(snapshot.totalUnread, 1)
+        XCTAssertEqual(snapshot.sessions.first?.sessionId, "s1")
+        XCTAssertEqual(StubURLProtocol.recorded.first?.request.url?.path, "/api/v1/node/unread-sessions")
+        XCTAssertEqual(StubURLProtocol.recorded.first?.request.value(forHTTPHeaderField: "Authorization"), "Bearer mgn_x")
+    }
+
+    func testUnreadSessionsRejectACountThatDisagreesWithRows() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"totalUnread":2,"sessions":[]}"#) }
+        do {
+            _ = try await client().unreadSessions()
+            XCTFail("A mismatched badge and list must not be displayed")
+        } catch let error as APIError {
+            guard case .invalidResponse = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+    }
+
     func testUnreadCountRejectsAnInvalidNumber() async throws {
         StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":7,"unread":-1}"#) }
         do {

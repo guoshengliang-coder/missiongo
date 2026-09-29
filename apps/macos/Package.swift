@@ -16,7 +16,7 @@ let package = Package(
         // Everything that talks to the server or runs a process lives here, with
         // no SwiftUI, so all of it can be tested without launching the app.
         .target(name: "MissionGoNodeCore"),
-        .executableTarget(name: "MissionGo", dependencies: ["MissionGoNodeCore"]),
+        .executableTarget(name: "MissionGo", dependencies: ["MissionGoNodeCore"], resources: [.process("Resources")]),
         .executableTarget(name: "MissionGoClaudeHost", dependencies: ["MissionGoNodeCore"]),
         .testTarget(name: "MissionGoNodeCoreTests", dependencies: ["MissionGoNodeCore"]),
     ]
