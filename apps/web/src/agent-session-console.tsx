@@ -48,6 +48,7 @@ import {
   replyBlockedLabelKey,
   replyMirrorArrived,
   resolvedAgentSessionId,
+  sessionCountsAsUnread,
   sessionReplyDraft,
   shouldMarkRead,
   shouldResetMessageView,
@@ -287,12 +288,14 @@ export function AgentSessionConsole({
     () => productSessions.filter((session) => agentFilter === "all" || session.agentKind === agentFilter),
     [agentFilter, productSessions],
   );
+  // AND-260: every unread number here counts what is waiting, not what a still
+  // running conversation is saying, so it matches the list the filter opens.
   const counts = useMemo(() => ({
-    unread: allSessions.filter((session) => !session.archivedAt && session.unread
+    unread: allSessions.filter((session) => !session.archivedAt && sessionCountsAsUnread(session)
       && (agentFilter === "all" || session.agentKind === agentFilter)).length,
     productUnread: productAgentSessions.filter((session) => !session.archivedAt
-      && !isAbnormalAgentSession(session) && session.unread).length,
-    failedUnread: productAgentSessions.filter((session) => !session.archivedAt && isAbnormalAgentSession(session) && session.unread).length,
+      && !isAbnormalAgentSession(session) && sessionCountsAsUnread(session)).length,
+    failedUnread: productAgentSessions.filter((session) => !session.archivedAt && isAbnormalAgentSession(session) && sessionCountsAsUnread(session)).length,
     attention: productAgentSessions.filter((session) => !session.archivedAt && session.needsAttention).length,
     active: productAgentSessions.filter((session) => !session.archivedAt && session.status === "active").length,
     all: productAgentSessions.filter((session) => !session.archivedAt && !isAbnormalAgentSession(session)).length,

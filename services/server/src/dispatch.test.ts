@@ -4011,6 +4011,35 @@ describe("Widget summary (AND-149)", () => {
     expect((await count(loginToken(app))).statusCode).toBe(401);
   });
 
+  it("leaves a conversation that is still running out of the unread counts (AND-260)", async () => {
+    const { app, cookie } = await signedInApp();
+    const running = await launchedCodexSession(app, cookie);
+    const waiting = await launchedCodexSession(app, cookie, "Another GO", "OTH");
+    const report = (token: string, sessionId: string, status: string, text: string) => app.inject({
+      method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { status, messages: [{ sourceId: "m1", role: "agent", text }] },
+    });
+    expect((await report(running.node.token, running.sessionId, "active", "Working on it.")).statusCode).toBe(204);
+    expect((await report(waiting.node.token, waiting.sessionId, "idle", "Stopped and waiting.")).statusCode).toBe(204);
+
+    // The running conversation is unread and active; the badge, the menu rows
+    // and the widget all count only the one that stopped.
+    expect((await app.inject({
+      method: "GET", url: "/api/v1/node/attention-summary",
+      headers: { authorization: `Bearer ${running.node.token}` },
+    })).json()).toEqual({ attention: 0, unread: 1 });
+    expect((await app.inject({
+      method: "GET", url: "/api/v1/node/unread-sessions",
+      headers: { authorization: `Bearer ${running.node.token}` },
+    })).json()).toMatchObject({
+      totalUnread: 1,
+      sessions: [expect.objectContaining({ sessionId: waiting.sessionId })],
+    });
+    expect((await summary(app, cookie)).agent).toMatchObject({ unread: 1, active: 1 });
+  });
+
   it("does not spend an AI call on a conversation still waiting to be classified", async () => {
     const provider = vi.fn(async () => new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({ needsAttention: false, kind: "none", reason: "Done." }) } }],

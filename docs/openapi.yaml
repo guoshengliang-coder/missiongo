@@ -1173,8 +1173,11 @@ paths:
       description: >-
         The macOS menu-bar and Dock badge count (AND-176, AND-249). Returns
         unarchived Agent conversations with unread messages across products the
-        node owner's account can currently view. The legacy attention count
-        remains for older clients. Reading does not schedule AI classification.
+        node owner's account can currently view. A conversation that is still
+        running does not count (AND-260): its messages arrive unread while it
+        works, and the badge is for what has stopped and is waiting. The legacy
+        attention count remains for older clients. Reading does not schedule AI
+        classification.
       security:
         - nodeBearerAuth: []
       responses:
@@ -1200,9 +1203,11 @@ paths:
         every product the account can view: unread, working and failed Agent
         conversation counts and the number of ready items. The attention count
         and entries remain for push notifications. Archived conversations count
-        for nothing; unread failed conversations count as unread. Polling never
-        schedules attention classification. Product ids select the landing
-        product because the web views are per product.
+        for nothing; unread failed conversations count as unread, while an unread
+        conversation that is still running does not (AND-260) -- the number is
+        what has stopped and is waiting. Polling never schedules attention
+        classification. Product ids select the landing product because the web
+        views are per product.
       security:
         - adminSessionCookie: []
       responses:

@@ -7,6 +7,8 @@
  * Archived conversations count for nothing, as they do in the console.
  */
 
+import { agentSessionCountsAsUnread } from "./agent-session-store.js";
+
 export interface WidgetSummarySession {
   readonly id: string;
   readonly status: string;
@@ -90,7 +92,9 @@ export function widgetSummary(
 ): WidgetSummary {
   const live = sessions.filter((session) => !session.archivedAt);
   const attention = live.filter((session) => session.needsAttention);
-  const unread = live.filter((session) => session.unread);
+  // AND-260: the unread number is what is waiting, so a still-running
+  // conversation's chatter does not raise it.
+  const unread = live.filter((session) => agentSessionCountsAsUnread(session));
   const attentionByProduct = new Map<string, number>();
   const unreadByProduct = new Map<string, number>();
   for (const session of attention) {

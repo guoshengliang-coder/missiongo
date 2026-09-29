@@ -104,6 +104,21 @@ export function isAbnormalAgentSession(session: Pick<AgentSessionSummary, "statu
 }
 
 /**
+ * AND-260: what the number on an icon counts. A conversation that is still
+ * running keeps producing messages that arrive unread, and counting those is
+ * why the badge never went quiet -- an unread conversation that is still
+ * `active` is noise until it stops. Every other unread conversation counts:
+ * idle, stalled, suspended, unavailable and failed ones are all waiting on a
+ * person. The unread filter uses the same rule, so the list behind a badge
+ * holds exactly what the badge counted.
+ */
+export function sessionCountsAsUnread(
+  session: Pick<AgentSessionSummary, "unread" | "status">,
+): boolean {
+  return session.unread && session.status !== "active";
+}
+
+/**
  * Whether the session behind a dispatch never got going (AND-180).
  *
  * A dispatch that launched keeps status "sent to X" for good, so when the
@@ -173,7 +188,7 @@ type FilterableAgentSession = Pick<
 
 type UnreadCountableSession = Pick<
   AgentSessionSummary,
-  "id" | "archivedAt" | "unread" | "items"
+  "id" | "archivedAt" | "unread" | "status" | "items"
 >;
 
 export interface AgentUnreadCounts {
@@ -200,7 +215,7 @@ export function agentUnreadCounts(
   const globalSessionIds = new Set<string>();
   const productSessionIds = new Map<string, Set<string>>();
   for (const session of sessions) {
-    if (session.archivedAt || !session.unread) continue;
+    if (session.archivedAt || !sessionCountsAsUnread(session)) continue;
     globalSessionIds.add(session.id);
     for (const productId of new Set(session.items.map((item) => item.productId))) {
       const sessionIds = productSessionIds.get(productId) ?? new Set<string>();
@@ -225,7 +240,7 @@ export function agentSessionMatches(
   } else if (session.archivedAt) return false;
   if (agentFilter !== "all" && session.agentKind !== agentFilter) return false;
   if (filter === "attention" && !session.needsAttention) return false;
-  if (filter === "unread" && !session.unread) return false;
+  if (filter === "unread" && !sessionCountsAsUnread(session)) return false;
   if (filter === "active" && session.status !== "active") return false;
   if (filter === "failed" && !isAbnormalAgentSession(session)) return false;
   if (filter === "all" && isAbnormalAgentSession(session)) return false;

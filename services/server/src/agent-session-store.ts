@@ -161,6 +161,20 @@ export interface AgentSessionListItem {
   readonly unreadAt?: string;
 }
 
+/**
+ * AND-260: what the number on an icon counts. A conversation that is still
+ * running keeps producing messages that arrive unread, and counting those is
+ * why the badge never went quiet -- an unread conversation that is still
+ * `active` is noise until it stops. Every other unread conversation counts:
+ * idle, stalled, suspended, unavailable and failed ones are all waiting on a
+ * person.
+ */
+export function agentSessionCountsAsUnread(
+  session: { readonly unread: boolean; readonly status: string },
+): boolean {
+  return session.unread && session.status !== "active";
+}
+
 export interface AgentSessionSettings {
   /** The mode in effect: the last change the Mac confirmed, else the dispatch's. */
   readonly mode: string;
