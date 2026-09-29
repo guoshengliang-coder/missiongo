@@ -178,6 +178,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                     <AutoGrowTextarea
                       rows={1}
                       maximumHeight={240}
+                      submitOnEnter
                       value={reply}
                       onChange={(event) => setReply(event.target.value)}
                       placeholder={t("agentSessionReplyPlaceholder", {
