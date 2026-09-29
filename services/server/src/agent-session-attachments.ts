@@ -48,6 +48,11 @@ export class AgentSessionAttachments {
   async upload(sessionId: string, accountId: string, encodedFilename: string, contentType: string, bytes: Buffer): Promise<AgentSessionAttachment> {
     await this.pruneDrafts();
     const validated = validateUpload(encodedFilename, contentType, bytes);
+    const kind = validated.rule.kind;
+    // Work-item handoff files are not part of the agent chat attachment surface.
+    if (kind === "archive" || validated.extension === ".html") {
+      throw invalidInput("Unsupported agent session attachment extension.");
+    }
     const count = this.database.connection.prepare(
       "SELECT COUNT(*) AS count FROM agent_session_attachments WHERE session_id = ? AND account_id = ? AND command_id IS NULL",
     ).get(sessionId, accountId) as unknown as { count: number };
@@ -64,13 +69,13 @@ export class AgentSessionAttachments {
         `INSERT INTO agent_session_attachments
           (id, session_id, account_id, command_id, filename, storage_filename, kind, content_type, size_bytes, sha256, created_at)
          VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(id, sessionId, accountId, validated.filename, storageFilename, validated.rule.kind,
+      ).run(id, sessionId, accountId, validated.filename, storageFilename, kind,
         validated.contentType, bytes.length, sha256, createdAt);
     } catch (error) {
       await unlink(path).catch(() => undefined);
       throw error;
     }
-    return { id, filename: validated.filename, kind: validated.rule.kind,
+    return { id, filename: validated.filename, kind,
       contentType: validated.contentType, sizeBytes: bytes.length, sha256, createdAt };
   }
 

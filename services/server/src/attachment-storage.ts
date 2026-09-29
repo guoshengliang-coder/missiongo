@@ -38,7 +38,19 @@ const RULES: Readonly<Record<string, AttachmentRule>> = {
   ".md": { kind: "document", contentType: "text/markdown", acceptedContentTypes: ["text/markdown", "text/plain", "text/x-markdown"], maxBytes: 10 * MEBIBYTE },
   ".csv": { kind: "document", contentType: "text/csv", acceptedContentTypes: ["text/csv", "text/plain", "application/csv"], maxBytes: 10 * MEBIBYTE },
   ".pdf": { kind: "document", contentType: "application/pdf", acceptedContentTypes: ["application/pdf"], maxBytes: 20 * MEBIBYTE },
+  ".html": { kind: "document", contentType: "text/html", acceptedContentTypes: ["text/html"], maxBytes: 10 * MEBIBYTE },
+  ".zip": { kind: "archive", contentType: "application/zip", acceptedContentTypes: ["application/zip", "application/x-zip-compressed"], maxBytes: MAX_ATTACHMENT_BYTES },
 };
+
+/** A ZIP can start with a local entry, an empty archive, or a spanning marker. */
+export function validateZipSignature(bytes: Uint8Array): void {
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b
+    || !((bytes[2] === 0x03 && bytes[3] === 0x04)
+    || (bytes[2] === 0x05 && bytes[3] === 0x06)
+    || (bytes[2] === 0x07 && bytes[3] === 0x08))) {
+    throw invalidInput("ZIP attachment content does not match its filename.");
+  }
+}
 
 function safeFilename(encodedFilename: string): string {
   let filename: string;
@@ -66,7 +78,9 @@ export interface ValidatedUpload {
  * paths drifting apart on limits or accepted types.
  */
 export function validateUpload(encodedFilename: string, suppliedContentType: string, bytes: Buffer): ValidatedUpload {
-  return validateUploadMetadata(encodedFilename, suppliedContentType, bytes.length);
+  const validated = validateUploadMetadata(encodedFilename, suppliedContentType, bytes.length);
+  if (validated.extension === ".zip") validateZipSignature(bytes);
+  return validated;
 }
 
 /** Validate an upload before its bytes have arrived, using the same browser limits. */

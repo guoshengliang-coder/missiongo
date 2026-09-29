@@ -1565,6 +1565,55 @@ export class MissionGoDatabase {
           .run(202609281200, new Date().toISOString());
       });
     }
+    // AND-255: archive is a separate attachment kind. SQLite cannot widen a
+    // table CHECK in place, so preserve existing rows and their display numbers.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609290140").get()) {
+      this.connection.exec("PRAGMA foreign_keys = OFF;");
+      try {
+        this.transaction(() => {
+          this.connection.exec(`
+            CREATE TABLE work_item_attachments_new (
+              id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+              kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'log', 'document', 'archive')),
+              display_number INTEGER NOT NULL CHECK (display_number > 0),
+              original_filename TEXT NOT NULL,
+              storage_filename TEXT NOT NULL UNIQUE,
+              content_type TEXT NOT NULL,
+              size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+              created_at TEXT NOT NULL
+            ) STRICT;
+            INSERT INTO work_item_attachments_new
+              SELECT id, item_id, kind, display_number, original_filename, storage_filename, content_type, size_bytes, created_at
+              FROM work_item_attachments;
+            DROP TABLE work_item_attachments;
+            ALTER TABLE work_item_attachments_new RENAME TO work_item_attachments;
+            CREATE UNIQUE INDEX idx_work_item_attachments_item_kind_number
+              ON work_item_attachments(item_id, kind, display_number);
+            CREATE INDEX idx_work_item_attachments_item_created
+              ON work_item_attachments(item_id, created_at);
+
+            CREATE TABLE work_item_attachment_counters_new (
+              item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+              kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'log', 'document', 'archive')),
+              next_number INTEGER NOT NULL CHECK (next_number > 0),
+              PRIMARY KEY (item_id, kind)
+            ) STRICT;
+            INSERT INTO work_item_attachment_counters_new
+              SELECT item_id, kind, next_number FROM work_item_attachment_counters;
+            DROP TABLE work_item_attachment_counters;
+            ALTER TABLE work_item_attachment_counters_new RENAME TO work_item_attachment_counters;
+          `);
+          if (this.connection.prepare("PRAGMA foreign_key_check").all().length > 0) {
+            throw new Error("Rebuilding the attachment tables broke a foreign key.");
+          }
+          this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+            .run(202609290140, new Date().toISOString());
+        });
+      } finally {
+        this.connection.exec("PRAGMA foreign_keys = ON;");
+      }
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

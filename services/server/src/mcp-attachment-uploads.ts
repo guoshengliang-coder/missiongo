@@ -3,7 +3,7 @@ import { closeSync, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, r
 import { extname } from "node:path";
 
 import { conflict, invalidInput, notFound } from "./errors.js";
-import { validateUploadMetadata, type AttachmentStorage } from "./attachment-storage.js";
+import { validateUploadMetadata, validateZipSignature, type AttachmentStorage } from "./attachment-storage.js";
 import type { MissionGoStore } from "./store.js";
 import type { AttachmentRecord, CreateDerivedWorkItemInput, EventAttribution } from "./types.js";
 
@@ -17,7 +17,7 @@ interface UploadRow {
   product_id: string;
   filename: string;
   content_type: string;
-  kind: "image" | "video" | "log" | "document";
+  kind: "image" | "video" | "log" | "document" | "archive";
   size_bytes: number;
   sha256: string;
   received_bytes: number;
@@ -164,6 +164,11 @@ export class McpAttachmentUploads {
           }
           const received = row.received_bytes + bytes.length;
           if (received === row.size_bytes) {
+            if (row.kind === "archive") {
+              const signature = Buffer.alloc(4);
+              readSync(fd, signature, 0, 4, 0);
+              validateZipSignature(signature);
+            }
             const hash = createHash("sha256");
             const block = Buffer.alloc(MCP_UPLOAD_CHUNK_BYTES);
             for (let offset = 0; offset < received; offset += block.length) {

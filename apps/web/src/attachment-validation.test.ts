@@ -9,6 +9,17 @@ describe("validateAttachment", () => {
     expect(validateAttachment({ name: "notes.md", size: 10 * mib })).toEqual({ valid: true });
     expect(validateAttachment({ name: "export.csv", size: 10 * mib })).toEqual({ valid: true });
     expect(validateAttachment({ name: "report.pdf", size: 20 * mib })).toEqual({ valid: true });
+    expect(validateAttachment({ name: "prototype.html", size: 10 * mib })).toEqual({ valid: true });
+    expect(validateAttachment({ name: "prototype.zip", size: 100 * mib })).toEqual({ valid: true });
+  });
+
+  it("reports the HTML and ZIP limits", () => {
+    expect(validateAttachment({ name: "prototype.html", size: 10 * mib + 1 })).toEqual({
+      valid: false, reason: "too-large", limitMiB: 10,
+    });
+    expect(validateAttachment({ name: "prototype.zip", size: 100 * mib + 1 })).toEqual({
+      valid: false, reason: "too-large", limitMiB: 100,
+    });
   });
 
   it("reports the PDF size limit instead of treating PDFs as unsupported", () => {

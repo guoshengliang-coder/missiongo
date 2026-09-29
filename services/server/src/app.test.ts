@@ -335,6 +335,77 @@ describe("Commenting over MCP", () => {
     expect(JSON.stringify(pdfRead.result?.content)).toContain(pdf.toString("base64"));
   });
 
+  it("creates HTML and ZIP attachments through MCP and serves their original bytes safely", async () => {
+    const { app, call, writeToken, productId } = await commentingApp();
+    const html = Buffer.from("<!doctype html><script>globalThis.prototypeRan = true</script>\n", "utf8");
+    const zip = Buffer.from("UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==", "base64");
+    const fixtures = [
+      { filename: "prototype.html", contentType: "text/html", bytes: html, kind: "document" },
+      { filename: "prototype.zip", contentType: "application/zip", bytes: zip, kind: "archive" },
+    ];
+    const uploadIds: string[] = [];
+    let sequence = 1;
+    for (const fixture of fixtures) {
+      const uploadId = randomUUID();
+      uploadIds.push(uploadId);
+      const staged = await call(writeToken, sequence++, "tools/call", { name: "upload_attachment_chunk", arguments: {
+        uploadId, productId, filename: fixture.filename, contentType: fixture.contentType,
+        sizeBytes: fixture.bytes.length, sha256: createHash("sha256").update(fixture.bytes).digest("hex"),
+        offsetBytes: 0, dataBase64: fixture.bytes.toString("base64"),
+      } });
+      expect(staged.result?.structuredContent).toMatchObject({ complete: true });
+    }
+    const rejectedZip = Buffer.from("not a ZIP");
+    const invalidStage = { uploadId: randomUUID(), productId, filename: "wrong.zip", contentType: "application/zip",
+      sizeBytes: rejectedZip.length, sha256: createHash("sha256").update(rejectedZip).digest("hex"),
+      offsetBytes: 0, dataBase64: rejectedZip.toString("base64") };
+    expect(JSON.stringify(await call(writeToken, sequence++, "tools/call", {
+      name: "upload_attachment_chunk", arguments: invalidStage,
+    }))).toMatch(/ZIP attachment content does not match/);
+    expect(JSON.stringify(await call(writeToken, sequence++, "tools/call", {
+      name: "upload_attachment_chunk", arguments: { ...invalidStage, uploadId: randomUUID(), contentType: "text/html" },
+    }))).toMatch(/content type does not match/);
+    const created = await call(writeToken, sequence++, "tools/call", { name: "create_item", arguments: {
+      productId, title: "Prototype", description: "Original design handoff", type: "requirement",
+      priority: "normal", status: "ready", platform: "web", agentName: "Codex",
+      idempotencyKey: "html-zip-create-1", attachmentUploadIds: uploadIds,
+    } });
+    expect(created.result?.structuredContent).toMatchObject({ item: { key: "HG-2", attachments: [
+      { filename: "prototype.html", kind: "document", sizeBytes: html.length },
+      { filename: "prototype.zip", kind: "archive", sizeBytes: zip.length },
+    ] } });
+
+    const attachments = app.missionGoStore.getWorkItem("HG-2").attachments;
+    for (const [index, fixture] of fixtures.entries()) {
+      const attachmentId = attachments[index]!.id;
+      const downloaded = await app.inject({ method: "GET", url: `/api/v1/items/HG-2/attachments/${attachmentId}/content`,
+        headers: { authorization: "Bearer management-test-token" } });
+      expect(downloaded.statusCode).toBe(200);
+      expect(downloaded.rawPayload).toEqual(fixture.bytes);
+      expect(downloaded.headers["content-disposition"]).toMatch(/^attachment;/);
+      if (fixture.kind === "document") expect(downloaded.headers["content-security-policy"]).toBe("sandbox");
+      const read = await call(writeToken, sequence++, "tools/call", {
+        name: "get_attachment", arguments: { itemKey: "HG-2", attachmentId },
+      });
+      if (fixture.kind === "document") {
+        expect(read.result?.structuredContent).toMatchObject({ text: html.toString("utf8") });
+      } else {
+        expect(read.result?.structuredContent).toMatchObject({ representation: "original_file", attachment: { kind: "archive" } });
+        expect(JSON.stringify(read.result?.content)).toContain(zip.toString("base64"));
+      }
+    }
+
+    const upload = (filename: string, contentType: string, bytes: Buffer) => app.inject({
+      method: "POST", url: "/api/v1/items/HG-1/attachments", payload: bytes,
+      headers: { authorization: "Bearer management-test-token", "content-type": "application/octet-stream",
+        "x-missiongo-content-type": contentType, "x-missiongo-filename": filename },
+    });
+    expect((await upload("prototype.html", "text/html", html)).json()).toMatchObject({ kind: "document" });
+    expect((await upload("prototype.zip", "application/zip", zip)).json()).toMatchObject({ kind: "archive" });
+    expect((await upload("wrong.zip", "text/html", zip)).statusCode).toBe(400);
+    expect((await upload("wrong.zip", "application/zip", Buffer.from("not a ZIP"))).statusCode).toBe(400);
+  });
+
   it("rejects mismatched bytes and cross-product staging without creating a file or item", async () => {
     const { app, call, writeToken, productId } = await commentingApp();
     const other = app.missionGoStore.createProduct({ name: "Private", keyPrefix: "PR" });
@@ -2933,7 +3004,7 @@ describe("MissionGo REST API", () => {
       INSERT INTO work_item_attachments SELECT * FROM work_item_attachments_old;
       DROP TABLE work_item_attachments_old;
     `);
-    legacyDatabase.prepare("DELETE FROM schema_migrations WHERE version = ?").run(15);
+    legacyDatabase.prepare("DELETE FROM schema_migrations WHERE version IN (15, 202609290140)").run();
     legacyDatabase.close();
 
     const restarted = buildApp({ databasePath, attachmentsPath });
@@ -2956,6 +3027,14 @@ describe("MissionGo REST API", () => {
     });
     expect(document.statusCode).toBe(201);
     expect(document.json()).toMatchObject({ kind: "document" });
+    const archive = await restarted.inject({
+      method: "POST", url: "/api/v1/items/LD-1/attachments",
+      headers: { "content-type": "application/octet-stream", "x-missiongo-content-type": "application/zip",
+        "x-missiongo-filename": "prototype.zip" },
+      payload: Buffer.from("UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==", "base64"),
+    });
+    expect(archive.statusCode).toBe(201);
+    expect(archive.json()).toMatchObject({ kind: "archive", displayNumber: 1 });
   });
 
   it("re-encodes an uploaded product icon and falls back to none when it is removed", async () => {

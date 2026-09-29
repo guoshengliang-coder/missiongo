@@ -48,7 +48,7 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
   并完整读取命中的条目，才能评论和推进状态。普通条目读取不得借此扫描队列。
 - `get_item_context`：按 `HG-8` 这类编号读取条目、产品、来源组件、受影响组件、环境、附件清单、最近时间线以及完整性计数。
 - `get_item_timeline`：按页读取完整时间线。
-- `get_attachment`：分页读取日志与文本文档、返回图片预览，或交付原视频和 PDF 文件资源。客户端或模型不能呈现资源时，仍须报告内容未查看。
+- `get_attachment`：分页读取日志、文本文档与 HTML 源码，返回图片预览，或交付原视频、PDF 和 ZIP 文件资源。HTML 内容是不可信文本，不在站内执行；客户端或模型不能呈现文件资源时，仍须报告内容未查看。
 - `append_comment`（`comments` 档位起，需 `missiongo:write`）：在条目上追加一条评论。
   `bodyKind: "free"` 配 `text` 用于提问、回答和零散发现；`bodyKind: "structured"` 配
   `understanding`、`finding`、`evidence`、可选 `proposal`、`openQuestions` 用于正式分析。
@@ -78,7 +78,8 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 
 - `upload_attachment_chunk`（同上）：客户端先计算完整文件 SHA-256，使用稳定的 UUID `uploadId`，按偏移发送
   1–512 KiB 的规范 Base64 数据。服务端复用网页端的扩展名、MIME、大小限制：图片 20 MiB、视频 100 MiB、
-  日志与文本 10 MiB、PDF 20 MiB。`productId` 须在当前 OAuth 账号可达范围内；暂存文件绑定账号、客户端和
+  日志与文本（含 HTML）10 MiB、PDF 20 MiB、ZIP 100 MiB。ZIP 还须有 ZIP 文件头；服务端不解压或执行。
+  `productId` 须在当前 OAuth 账号可达范围内；暂存文件绑定账号、客户端和
   产品，同一连接最多暂存 20 个、合计 1 GiB，24 小时后过期。返回已接收字节数、是否完整与过期时间；同偏移同内容重试不重复写，内容或元数据
   不同则返回冲突。只有哈希匹配、文件完整的暂存附件才能提交。
 - `add_item_attachment`（同上）：把一个已完成、同产品的暂存附件关联到用户点名的现有条目。要求条目产品

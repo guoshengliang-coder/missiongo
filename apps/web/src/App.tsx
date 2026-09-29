@@ -260,7 +260,7 @@ const REPORT_COPY = {
 // person wrote or exported, and belongs beside the report rather than in
 // the diagnostics panel.
 const LOG_FILE_EXTENSIONS = new Set(["log"]);
-const DOCUMENT_FILE_EXTENSIONS = new Set(["md", "txt", "csv", "json", "pdf"]);
+const DOCUMENT_FILE_EXTENSIONS = new Set(["md", "txt", "csv", "json", "pdf", "html"]);
 const VIDEO_FILE_EXTENSIONS = new Set(["mp4", "mov", "webm"]);
 
 function fileExtension(file: File): string {
@@ -273,6 +273,10 @@ function isDiagnosticFile(file: File): boolean {
 
 function isDocumentFile(file: File): boolean {
   return DOCUMENT_FILE_EXTENSIONS.has(fileExtension(file));
+}
+
+function isArchiveFile(file: File): boolean {
+  return fileExtension(file) === "zip";
 }
 
 /** Images and videos: the attachments that are shown rather than read. */
@@ -2802,6 +2806,7 @@ function DetailPane({
   const sdkDiagnostics = diagnosticsFromEvent(createdEvent);
   const logAttachments = item.attachments.filter((attachment) => attachment.kind === "log");
   const documentAttachments = item.attachments.filter((attachment) => attachment.kind === "document");
+  const archiveAttachments = item.attachments.filter((attachment) => attachment.kind === "archive");
   const mediaAttachments = item.attachments.filter(isMediaAttachment);
   // The newest hand-off, whatever status the item is in, so the detail says
   // where the work went even for a finished item (AND-217). The server orders
@@ -2955,6 +2960,13 @@ function DetailPane({
                 itemKey={item.key}
                 attachments={documentAttachments}
                 title={t("documentAttachments")}
+              />
+            )}
+            {archiveAttachments.length > 0 && (
+              <AttachmentSection
+                itemKey={item.key}
+                attachments={archiveAttachments}
+                title={t("archiveAttachments")}
               />
             )}
             <DiagnosticDetails
@@ -3608,13 +3620,16 @@ function WorkItemFields({
   const attachmentOverflow = files.length + diagnosticSlots > attachmentLimit;
   const existingLogAttachments = existingAttachments.filter((attachment) => attachment.kind === "log");
   const existingDocumentAttachments = existingAttachments.filter((attachment) => attachment.kind === "document");
+  const existingArchiveAttachments = existingAttachments.filter((attachment) => attachment.kind === "archive");
   const existingMediaAttachments = existingAttachments.filter(isMediaAttachment);
   const selectedLogFiles = files.filter(isDiagnosticFile);
   const selectedDocumentFiles = files.filter(isDocumentFile);
-  const selectedMediaFiles = files.filter((file) => !isDiagnosticFile(file) && !isDocumentFile(file));
-  const withMediaFiles = (next: readonly File[]) => [...selectedLogFiles, ...selectedDocumentFiles, ...next];
-  const withDocumentFiles = (next: readonly File[]) => [...selectedLogFiles, ...next, ...selectedMediaFiles];
-  const withLogFiles = (next: readonly File[]) => [...next, ...selectedDocumentFiles, ...selectedMediaFiles];
+  const selectedArchiveFiles = files.filter(isArchiveFile);
+  const selectedMediaFiles = files.filter((file) => !isDiagnosticFile(file) && !isDocumentFile(file) && !isArchiveFile(file));
+  const withMediaFiles = (next: readonly File[]) => [...selectedLogFiles, ...selectedDocumentFiles, ...selectedArchiveFiles, ...next];
+  const withDocumentFiles = (next: readonly File[]) => [...selectedLogFiles, ...next, ...selectedArchiveFiles, ...selectedMediaFiles];
+  const withArchiveFiles = (next: readonly File[]) => [...selectedLogFiles, ...selectedDocumentFiles, ...next, ...selectedMediaFiles];
+  const withLogFiles = (next: readonly File[]) => [...next, ...selectedDocumentFiles, ...selectedArchiveFiles, ...selectedMediaFiles];
   const reportCopy = REPORT_COPY[draft.type];
   const showsBugFields = draft.type === "bug";
   const platformRequired = draft.type === "bug" || draft.type === "task";
@@ -3749,13 +3764,40 @@ function WorkItemFields({
             remaining={remainingAttachments}
             showCamera={false}
             showSelectedFiles
-            accept=".md,.txt,.csv,.json,.pdf,text/markdown,text/plain,text/csv,application/json,application/pdf"
-            allowedExtensions={["md", "txt", "csv", "json", "pdf"]}
+            accept=".md,.txt,.csv,.json,.pdf,.html,text/markdown,text/plain,text/csv,application/json,application/pdf,text/html"
+            allowedExtensions={["md", "txt", "csv", "json", "pdf", "html"]}
             buttonLabel={t("add")}
           />
         </div>
         {existingItemKey && existingDocumentAttachments.length > 0 && (
           <div className="attachment-grid compact-attachment-grid">{existingDocumentAttachments.map((attachment) => (
+            <AttachmentCard
+              key={attachment.id}
+              itemKey={existingItemKey}
+              attachment={attachment}
+              onDelete={onDeleteExistingAttachment}
+              onReplaced={onExistingAttachmentReplaced}
+              deleting={deletingExistingAttachmentId === attachment.id}
+            />
+          ))}</div>
+        )}
+      </section>
+      <section className="attachment-picker-block capture-attachment-block">
+        <div className="capture-attachment-heading">
+          <div className="capture-attachment-copy"><strong><FieldLabel>{t("archiveAttachments")}</FieldLabel></strong><p>{t("archiveAttachmentsHelp")}</p></div>
+          <FilePicker
+            files={selectedArchiveFiles}
+            onFiles={(nextArchiveFiles) => onFiles(withArchiveFiles(nextArchiveFiles))}
+            remaining={remainingAttachments}
+            showCamera={false}
+            showSelectedFiles
+            accept=".zip,application/zip,application/x-zip-compressed"
+            allowedExtensions={["zip"]}
+            buttonLabel={t("add")}
+          />
+        </div>
+        {existingItemKey && existingArchiveAttachments.length > 0 && (
+          <div className="attachment-grid compact-attachment-grid">{existingArchiveAttachments.map((attachment) => (
             <AttachmentCard
               key={attachment.id}
               itemKey={existingItemKey}
@@ -4009,7 +4051,7 @@ function FilePicker({
   disabled = false,
   showSelectedFiles = true,
   showCamera = true,
-  accept = "image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.md,.txt,.csv,.json,.pdf",
+  accept = "image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.md,.txt,.csv,.json,.pdf,.html,.zip",
   allowedExtensions,
   buttonLabel,
 }: {
@@ -4366,16 +4408,17 @@ function AttachmentCard({
     }
   };
 
-  const Icon = attachment.kind === "image" ? ImageIcon : attachment.kind === "video" ? Video : FileText;
+  const Icon = attachment.kind === "image" ? ImageIcon : attachment.kind === "video" ? Video : attachment.kind === "archive" ? Archive : FileText;
   return (
     <article ref={cardRef} className={`attachment-card attachment-${attachment.kind}`}>
       <div className="attachment-preview">
         {referenceLabel && <small className="media-number-badge">{referenceLabel}</small>}
-        {!shouldLoad && attachment.kind !== "image" && (
+        {!shouldLoad && attachment.kind !== "image" && attachment.kind !== "archive" && (
           <button type="button" className="attachment-load-button" onClick={() => setPreviewRequested(true)}>
             <Icon size={22} /> {t("loadPreview")}
           </button>
         )}
+        {attachment.kind === "archive" && <span><Archive size={22} /> ZIP</span>}
         {isImage && !thumbnailUrl && !thumbnailQuery.isLoading && !thumbnailQuery.isError && <span><ImageIcon size={22} /></span>}
         {isImage && thumbnailQuery.isLoading && <span><LoaderCircle className="spin" size={18} /> {t("attachmentLoading")}</span>}
         {isImage && thumbnailQuery.isError && <button type="button" className="attachment-load-button attachment-error" onClick={() => void thumbnailQuery.refetch()}>{t("retryAttachment")}</button>}

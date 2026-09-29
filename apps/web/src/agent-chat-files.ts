@@ -1,5 +1,8 @@
 import { validateAttachment } from "./attachment-validation";
 
+// Work-item handoff files do not expand the agent chat attachment surface.
+const CHAT_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "heic", "mp4", "mov", "webm", "log", "txt", "json", "md", "csv", "pdf"] as const;
+
 export type ChatFileRejection =
   | { readonly reason: "too-many" }
   | { readonly reason: "unsupported"; readonly filename: string }
@@ -19,7 +22,7 @@ export function mergeChatFiles(
   const next = [...current, ...incoming];
   if (next.length > limit) return { files: [...current], rejection: { reason: "too-many" } };
   for (const file of next) {
-    const validation = validateAttachment(file);
+    const validation = validateAttachment(file, CHAT_EXTENSIONS);
     if (validation.valid) continue;
     return validation.reason === "unsupported"
       ? { files: [...current], rejection: { reason: "unsupported", filename: file.name } }

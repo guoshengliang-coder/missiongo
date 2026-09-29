@@ -3326,7 +3326,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const attachment = store.getAttachmentRecord(requireItemPermission(request, itemKey), attachmentId);
     const path = attachmentStorage.resolveStoredFile(attachment.storageFilename);
     const details = await stat(path);
-    const disposition = attachment.kind === "log" ? "attachment" : "inline";
+    const disposition = attachment.kind === "log" || attachment.kind === "archive" || attachment.contentType === "text/html"
+      ? "attachment" : "inline";
     const encodedFilename = encodeURIComponent(attachment.filename).replaceAll("'", "%27");
     const rangeHeader = request.headers.range;
     const range = rangeHeader ? requestedByteRange(rangeHeader, details.size) : undefined;
@@ -3346,6 +3347,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .header("cache-control", "private, no-store")
       .header("accept-ranges", "bytes")
       .header("x-content-type-options", "nosniff");
+    if (attachment.contentType === "text/html") reply.header("content-security-policy", "sandbox");
     if (range) reply.header("content-range", `bytes ${range.start}-${range.end}/${details.size}`);
     return reply.send(createReadStream(path, range));
   });
