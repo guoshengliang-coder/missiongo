@@ -754,41 +754,24 @@ public struct ClaudeStreamSnapshot: Sendable {
 
 /// The models Claude Code offers, for the heartbeat.
 ///
-/// Listing them means starting `claude`, and starting it runs the user's
-/// SessionStart hooks; a heartbeat every 30 seconds must not do that. Every
-/// session's `initialize` answer already carries the list, so the host saves
-/// it and the heartbeat reads the saved copy.
+/// A live session and a safe-mode catalog probe both obtain this list from the
+/// CLI's `initialize` response. The host saves its answer as a last-known copy.
 public enum ClaudeModelCatalog {
-    static let allEfforts = ["low", "medium", "high", "xhigh", "max"]
-
-    /// Until a session has run on this machine: the aliases Claude Code has
-    /// long accepted, so the console has something to offer on day one.
-    public static let fallback: [AgentModelOption] = [
-        AgentModelOption(id: "opus", label: "Opus", efforts: allEfforts),
-        AgentModelOption(id: "sonnet", label: "Sonnet", efforts: allEfforts),
-        AgentModelOption(id: "haiku", label: "Haiku"),
-    ]
-
     /// The options in an `initialize` answer, nil when it carries no list.
     /// `default` is left out: the console offers its own "follow this
     /// machine's configuration", which is exactly what that entry means.
     ///
-    /// Behind a third-party endpoint this list is a routing table rather
-    /// than a catalog: several aliases (`opus`, `sonnet`) can resolve to one
-    /// and the same model, and entries the endpoint never mapped still carry
-    /// their Anthropic ids and resolve to themselves — offering them invites
-    /// a choice the endpoint then rejects. So entries sharing a
-    /// `resolvedModel` collapse into one option, and once any alias resolves
-    /// to a custom model, entries that resolve to themselves and to an
-    /// Anthropic id are left out. With no custom mapping in the list nothing
-    /// is dropped: a first-party account keeps its full catalog, and an
-    /// older CLI without `resolvedModel` degrades to merging by id alone.
+    /// `initialize.models` is the CLI's picker, including gateway models.
+    /// Different values can resolve to the same backend while remaining
+    /// distinct choices with different effort support. The display name can
+    /// also repeat. Preserve both cases; only repeated values are folded.
+    /// In particular, an Anthropic-looking id may be served by a gateway and
+    /// must not be hidden merely because another choice has a custom mapping.
     public static func options(fromInitialize response: [String: Any]) -> [AgentModelOption]? {
         guard let models = response["models"] as? [[String: Any]] else { return nil }
         struct Entry {
             let id: String
             let label: String
-            let resolved: String?
             let efforts: [String]
         }
         let entries: [Entry] = models.compactMap { model in
@@ -797,21 +780,14 @@ public enum ClaudeModelCatalog {
             return Entry(
                 id: value,
                 label: label,
-                resolved: (model["resolvedModel"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                 efforts: model["supportedEffortLevels"] as? [String] ?? []
             )
         }
-        let customMapped = entries.contains { entry in
-            guard let resolved = entry.resolved, resolved != entry.id else { return false }
-            return !isAnthropicModelId(resolved)
-        }
         var merged: [AgentModelOption] = []
-        var positionByModel: [String: Int] = [:]
+        var positionById: [String: Int] = [:]
         for entry in entries {
-            if customMapped, entry.resolved == entry.id, isAnthropicModelId(entry.id) { continue }
-            let model = entry.resolved ?? entry.id
-            guard let position = positionByModel[model] else {
-                positionByModel[model] = merged.count
+            guard let position = positionById[entry.id] else {
+                positionById[entry.id] = merged.count
                 merged.append(AgentModelOption(id: entry.id, label: entry.label, efforts: entry.efforts))
                 continue
             }
@@ -822,21 +798,20 @@ public enum ClaudeModelCatalog {
         return merged
     }
 
-    /// A full Anthropic model id (`claude-opus-5-5`, `claude-fable-5-1[1m]`),
-    /// as opposed to the short aliases (`opus`) or a third-party model name.
-    static func isAnthropicModelId(_ value: String) -> Bool {
-        value.hasPrefix("claude-")
-    }
-
     public static func save(_ options: [AgentModelOption], to path: String) throws {
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: path).deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
         try ClaudeHostFiles.write(options, to: path)
     }
 
-    /// The saved list, or the fallback when no session has saved one yet.
+    /// The saved list, or no choices when there is no usable saved catalog.
     public static func load(from path: String) -> [AgentModelOption] {
         guard let data = FileManager.default.contents(atPath: path),
               let options = try? JSONDecoder().decode([AgentModelOption].self, from: data)
-        else { return fallback }
+        else { return [] }
         return options
     }
 }

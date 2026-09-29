@@ -6,7 +6,7 @@ import { DISPATCH_MODES_BY_AGENT } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
 import { reportAndroidBackDepth } from "./android-bridge";
-import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider } from "./agent-model-options";
+import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel } from "./agent-model-options";
 import { dispatchModeLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import { backDepthFromState, QUICK_SETTINGS_HISTORY_MARKER } from "./navigation";
@@ -178,12 +178,12 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           {groupModelsByProvider((models ?? []).filter((entry) => entry.id !== modelValue)).map((group) => (
             group.provider === null
               ? group.models.map((entry) => (
-                <option key={entry.id} value={entry.id}>{entry.label}</option>
+                <option key={entry.id} value={entry.id}>{modelDisplayLabel(entry, models ?? [])}</option>
               ))
               : (
                 <optgroup key={group.provider} label={group.provider}>
                   {group.models.map((entry) => (
-                    <option key={entry.id} value={entry.id}>{entry.label}</option>
+                  <option key={entry.id} value={entry.id}>{modelDisplayLabel(entry, models ?? [])}</option>
                   ))}
                 </optgroup>
               )

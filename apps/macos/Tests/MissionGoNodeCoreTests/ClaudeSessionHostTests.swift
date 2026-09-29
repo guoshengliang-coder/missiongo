@@ -330,21 +330,76 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: root) }
         let launcher = SessionLauncher(
-            environment: ShellEnvironment(path: "/usr/bin:/bin"), hostExecutable: nil, sessionsDirectory: root
+            environment: ShellEnvironment(path: "/usr/bin:/bin"), hostExecutable: nil, sessionsDirectory: root,
+            modelProbe: { _ in nil }
         )
-        // No session has run yet: the long-standing aliases.
+        // No successful probe or session: do not advertise guessed aliases.
         let fallback = await launcher.availableModels()
-        XCTAssertEqual(fallback?.map(\.id), ["opus", "sonnet", "haiku"])
-        XCTAssertEqual(fallback?.last?.efforts, [])
+        XCTAssertEqual(fallback, [])
         try ClaudeModelCatalog.save(try XCTUnwrap(options), to: ClaudeHostStore.modelsCachePath(root: root))
         let saved = await launcher.availableModels()
-        XCTAssertEqual(saved, options)
+        XCTAssertEqual(saved?.map(\.id), options?.map(\.id))
+        XCTAssertTrue(saved?.allSatisfy { $0.label.contains("列表未更新") } ?? false)
     }
 
-    func testMergesAliasesResolvingToTheSameCustomModelAndDropsUnmappedAnthropicEntries() {
-        // What a third-party endpoint reports (AND-200): the aliases are all
-        // mapped to custom models, and the unmapped Fable entry keeps its
-        // Anthropic id — it would be offered and then rejected by the endpoint.
+    func testCatalogProbeReadsOnlyTheMatchingInitializeResponse() throws {
+        let requestId = "catalog-1"
+        let unrelated = try JSONSerialization.data(withJSONObject: [
+            "type": "control_response", "response": [
+                "request_id": "other", "subtype": "success",
+                "response": ["models": [["value": "wrong", "displayName": "Wrong"]]],
+            ],
+        ])
+        XCTAssertNil(ClaudeModelProbe.options(fromLine: unrelated, requestId: requestId))
+        let answer = try JSONSerialization.data(withJSONObject: [
+            "type": "control_response", "response": [
+                "request_id": requestId, "subtype": "success",
+                "response": ["models": [
+                    ["value": "default", "displayName": "Default"],
+                    ["value": "opus", "displayName": "DeepSeek V4.1 Flash"],
+                    ["value": "company-fable", "displayName": "Fable 5 (company)"],
+                    ["value": "sonnet", "displayName": "DeepSeek V4.1 Flash"],
+                ]],
+            ],
+        ])
+        XCTAssertEqual(ClaudeModelProbe.options(fromLine: answer, requestId: requestId)?.map(\.id),
+                       ["opus", "company-fable", "sonnet"])
+    }
+
+    func testLiveCatalogProbeDiagnostic() throws {
+        guard ProcessInfo.processInfo.environment["MISSIONGO_TEST_LIVE_CLAUDE_MODEL_PROBE"] == "1" else {
+            throw XCTSkip("Requires a configured local Claude CLI")
+        }
+        let options = ClaudeModelProbe.fetch(environment: ShellEnvironment.resolve())
+        XCTAssertFalse(try XCTUnwrap(options).isEmpty)
+    }
+
+    func testCatalogRefreshesWithoutStartingWorkAndMarksAnOlderList() async throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("mg-models-\(UUID().uuidString)").path
+        let root = "\(parent)/ClaudeSessions"
+        try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: parent) }
+        let result = Locked<[AgentModelOption]?>([AgentModelOption(id: "first", label: "First")])
+        let launcher = SessionLauncher(
+            environment: ShellEnvironment(path: "/usr/bin:/bin"), hostExecutable: nil,
+            sessionsDirectory: root, modelProbe: { _ in result.current },
+            modelCacheTTL: 0, modelProbeRetryInterval: 0
+        )
+        let first = await launcher.availableModels()
+        XCTAssertEqual(first?.map(\.id), ["first"])
+        XCTAssertEqual(ClaudeModelCatalog.load(from: ClaudeHostStore.modelsCachePath(root: root)), first)
+        result.withLock { $0 = [AgentModelOption(id: "second", label: "Second")] }
+        let second = await launcher.availableModels()
+        XCTAssertEqual(second?.map(\.id), ["second"])
+        result.withLock { $0 = nil }
+        let stale = await launcher.availableModels()
+        XCTAssertEqual(stale?.map(\.id), ["second"])
+        XCTAssertEqual(stale?.first?.label, "Second（列表未更新）")
+    }
+
+    func testKeepsPickerChoicesWithDistinctIdsEvenWhenNamesOrRoutesMatch() {
+        // A gateway can serve an Anthropic-looking id, and several aliases
+        // with the same label can differ in the effort levels they support.
         let options = ClaudeModelCatalog.options(fromInitialize: [
             "models": [
                 ["value": "default", "resolvedModel": "glm-5.3[1m]", "displayName": "Default (recommended)"],
@@ -359,7 +414,9 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
             ],
         ])
         XCTAssertEqual(options, [
-            AgentModelOption(id: "opus", label: "glm-5.3", efforts: ["low", "medium", "high", "xhigh", "max"]),
+            AgentModelOption(id: "opus", label: "glm-5.3", efforts: ["low", "medium", "high"]),
+            AgentModelOption(id: "claude-fable-5-1[1m]", label: "Fable", efforts: ["low", "high"]),
+            AgentModelOption(id: "sonnet", label: "glm-5.3", efforts: ["xhigh", "max"]),
             AgentModelOption(id: "haiku", label: "glm-5.3-flash", efforts: ["low", "medium"]),
         ])
     }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { agentModels, effortLabelKey, effortOptions, modelsAcrossNodes, reconcileChoice } from "./agent-model-options";
+import { agentModels, effortLabelKey, effortOptions, modelDisplayLabel, modelsAcrossNodes, reconcileChoice } from "./agent-model-options";
 import type { DispatchNode } from "./types";
 
 const models = [
@@ -58,6 +58,19 @@ describe("Model and effort choices (AND-130)", () => {
     ]);
     // A Mac that reported no list at all is still the older client.
     expect(agentModels(node("old"), "codex")).toBeUndefined();
+  });
+
+  it("distinguishes separate Claude choices that display the same name (AND-200)", () => {
+    const choices = [
+      { id: "opus", label: "DeepSeek V4.1 Flash", efforts: ["low"] },
+      { id: "sonnet", label: "DeepSeek V4.1 Flash", efforts: ["high"] },
+      { id: "company-fable", label: "Fable 5 (company)", efforts: [] },
+    ];
+    expect(choices.map((entry) => modelDisplayLabel(entry, choices))).toEqual([
+      "DeepSeek V4.1 Flash (opus)",
+      "DeepSeek V4.1 Flash (sonnet)",
+      "Fable 5 (company)",
+    ]);
   });
 
   it("names known efforts and leaves others as they are", () => {

@@ -6,7 +6,7 @@ import { AGENT_KINDS, DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo
 
 import { api, ApiError } from "./api";
 import { localizedErrorText } from "./error-text";
-import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, reconcileChoice } from "./agent-model-options";
+import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, reconcileChoice } from "./agent-model-options";
 import { NODE_LIST_REFETCH_MS } from "./node-install";
 import {
   ACTIVE_DISPATCHES_QUERY_KEY,
@@ -381,12 +381,12 @@ export function DispatchDialog({
             {groupModelsByProvider(models ?? []).map((group) => (
               group.provider === null
                 ? group.models.map((entry) => (
-                  <option key={entry.id} value={entry.id}>{entry.label}</option>
+                  <option key={entry.id} value={entry.id}>{modelDisplayLabel(entry, models ?? [])}</option>
                 ))
                 : (
                   <optgroup key={group.provider} label={group.provider}>
                     {group.models.map((entry) => (
-                      <option key={entry.id} value={entry.id}>{entry.label}</option>
+                      <option key={entry.id} value={entry.id}>{modelDisplayLabel(entry, models ?? [])}</option>
                     ))}
                   </optgroup>
                 )
