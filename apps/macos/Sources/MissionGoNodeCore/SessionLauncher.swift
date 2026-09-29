@@ -25,8 +25,8 @@ public protocol AgentAdapter: Sendable {
     /// one reply the server has queued for it.
     func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport
     /// The models a dispatch may choose for this agent, for the heartbeat.
-    /// nil for an adapter that cannot take a model at all; it must never start
-    /// the agent itself just to find out, since that runs the user's hooks.
+    /// nil for an adapter that cannot take a model at all. Any CLI probe must
+    /// disable the user's hooks and must not send a model request.
     func availableModels() async -> [AgentModelOption]?
 }
 
@@ -191,6 +191,10 @@ public struct SessionLauncher: AgentAdapter {
     let hostExecutable: String?
     let sessionsDirectory: String
     let terminateHost: @Sendable (Int32, String?) async -> Bool
+    let modelProbe: @Sendable (ShellEnvironment) async -> [AgentModelOption]?
+    let modelCache: ModelListCache
+    let modelProbeRetryInterval: TimeInterval
+    let lastModelProbe = Locked<Date?>(nil)
 
     public init(
         environment: ShellEnvironment,
@@ -202,7 +206,10 @@ public struct SessionLauncher: AgentAdapter {
         sessionsDirectory: String? = nil,
         terminateHost: @escaping @Sendable (Int32, String?) async -> Bool = {
             await ClaudeHostProcess.terminateGroupAndWait($0, configPath: $1)
-        }
+        },
+        modelProbe: (@Sendable (ShellEnvironment) async -> [AgentModelOption]?)? = nil,
+        modelCacheTTL: TimeInterval = 2 * 60,
+        modelProbeRetryInterval: TimeInterval = 30
     ) {
         self.environment = environment
         self.run = run ?? Commands.runner(environment: environment)
@@ -212,6 +219,15 @@ public struct SessionLauncher: AgentAdapter {
         self.hostExecutable = hostExecutable
         self.sessionsDirectory = sessionsDirectory ?? ClaudeHostStore.defaultRoot(home: home)
         self.terminateHost = terminateHost
+        self.modelProbe = modelProbe ?? { environment in
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().async {
+                    continuation.resume(returning: ClaudeModelProbe.fetch(environment: environment))
+                }
+            }
+        }
+        self.modelCache = ModelListCache(ttl: modelCacheTTL)
+        self.modelProbeRetryInterval = modelProbeRetryInterval
     }
 
     /// `~/Library/Logs/MissionGo`, where Console.app looks for an app's logs.
@@ -384,9 +400,31 @@ public struct SessionLauncher: AgentAdapter {
         return await Preflight.claudeVersion(run: run)
     }
 
-    /// Read from what the last session's host saved; never by starting `claude`.
+    /// Refresh from this machine's CLI without a work turn. A failed probe
+    /// exposes a clearly marked last-known list instead of silently treating
+    /// an old catalog as current.
     public func availableModels() async -> [AgentModelOption]? {
-        return ClaudeModelCatalog.load(from: ClaudeHostStore.modelsCachePath(root: sessionsDirectory))
+        if let fresh = modelCache.fresh() { return fresh }
+        let now = Date()
+        let shouldProbe = lastModelProbe.withLock { last -> Bool in
+            if let last, now.timeIntervalSince(last) < modelProbeRetryInterval { return false }
+            last = now
+            return true
+        }
+        if shouldProbe, let options = await modelProbe(environment) {
+            modelCache.store(options)
+            try? ClaudeModelCatalog.save(options, to: ClaudeHostStore.modelsCachePath(root: sessionsDirectory))
+            return options
+        }
+        let path = ClaudeHostStore.modelsCachePath(root: sessionsDirectory)
+        let previous = modelCache.last ?? (FileManager.default.fileExists(atPath: path)
+            ? ClaudeModelCatalog.load(from: path) : [])
+        return previous.map { option in
+            AgentModelOption(
+                id: option.id, label: "\(option.label)（列表未更新）", provider: option.provider,
+                efforts: option.efforts, defaultEffort: option.defaultEffort, isDefault: option.isDefault
+            )
+        }
     }
 
     public func launch(_ job: DispatchJob) async throws -> LaunchResult {

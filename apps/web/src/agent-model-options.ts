@@ -97,6 +97,12 @@ export function groupModelsByProvider(models: readonly NodeAgentModel[]): readon
   return groups.map((group) => index.get(group.provider ?? "") ?? group);
 }
 
+/** Keep distinct CLI choices legible when several aliases share a name. */
+export function modelDisplayLabel(model: NodeAgentModel, models: readonly NodeAgentModel[]): string {
+  const duplicate = models.some((other) => other.id !== model.id && other.label === model.label);
+  return duplicate ? `${model.label} (${model.id})` : model.label;
+}
+
 const EFFORT_LABEL_KEYS = {
   none: "effortNone",
   minimal: "effortMinimal",

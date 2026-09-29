@@ -5,7 +5,7 @@ import { Check, CirclePause, LoaderCircle } from "lucide-react";
 import { DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo/domain";
 
 import { api } from "./api";
-import { effortLabelKey, effortOptions, groupModelsByProvider, modelsAcrossNodes } from "./agent-model-options";
+import { effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, modelsAcrossNodes } from "./agent-model-options";
 import { SUPPORTED_AGENT_KINDS, agentLabelKey, dispatchModeLabelKey, dispatchModeOrDefault } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import type { DispatchDefaults } from "./types";
@@ -121,12 +121,12 @@ export function DispatchDefaultsSettings() {
                     {groupModelsByProvider(models).map((group) => (
                       group.provider === null
                         ? group.models.map((model) => (
-                          <option key={model.id} value={model.id}>{model.label}</option>
+                          <option key={model.id} value={model.id}>{modelDisplayLabel(model, models)}</option>
                         ))
                         : (
                           <optgroup key={group.provider} label={group.provider}>
                             {group.models.map((model) => (
-                              <option key={model.id} value={model.id}>{model.label}</option>
+                              <option key={model.id} value={model.id}>{modelDisplayLabel(model, models)}</option>
                             ))}
                           </optgroup>
                         )
