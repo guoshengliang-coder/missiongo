@@ -799,6 +799,11 @@ public enum ClaudeModelCatalog {
     }
 
     public static func save(_ options: [AgentModelOption], to path: String) throws {
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: path).deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
         try ClaudeHostFiles.write(options, to: path)
     }
 

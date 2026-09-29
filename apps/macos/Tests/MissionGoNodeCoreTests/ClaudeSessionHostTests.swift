@@ -375,9 +375,10 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
     }
 
     func testCatalogRefreshesWithoutStartingWorkAndMarksAnOlderList() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("mg-models-\(UUID().uuidString)").path
-        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(atPath: root) }
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("mg-models-\(UUID().uuidString)").path
+        let root = "\(parent)/ClaudeSessions"
+        try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: parent) }
         let result = Locked<[AgentModelOption]?>([AgentModelOption(id: "first", label: "First")])
         let launcher = SessionLauncher(
             environment: ShellEnvironment(path: "/usr/bin:/bin"), hostExecutable: nil,
@@ -386,6 +387,7 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         )
         let first = await launcher.availableModels()
         XCTAssertEqual(first?.map(\.id), ["first"])
+        XCTAssertEqual(ClaudeModelCatalog.load(from: ClaudeHostStore.modelsCachePath(root: root)), first)
         result.withLock { $0 = [AgentModelOption(id: "second", label: "Second")] }
         let second = await launcher.availableModels()
         XCTAssertEqual(second?.map(\.id), ["second"])
