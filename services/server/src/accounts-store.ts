@@ -36,6 +36,22 @@ export function normalizeFontScale(value: unknown): FontScale {
   return value;
 }
 
+/**
+ * The Agent console chat body's own size (AND-254).
+ *
+ * The same three steps as FONT_SCALES, but a separate column: the setting is a
+ * second preference, not a scaled copy of the first, so the transcript can be
+ * read larger than the rest of the console or smaller without moving the other
+ * choice. Medium is the base and leaves today's rendering unchanged.
+ */
+export const DEFAULT_CONSOLE_FONT_SCALE: FontScale = "medium";
+
+/** A chat body size on its way into the table, or a 400 for anything off the list. */
+export function normalizeConsoleFontScale(value: unknown): FontScale {
+  if (!isFontScale(value)) throw invalidInput("Console chat font size must be small, medium or large.");
+  return value;
+}
+
 /** How stale "last used" is allowed to get, so reading does not cost a write every time. */
 export const AI_AUTHORIZATION_TOUCH_INTERVAL_MS = 5 * 60_000;
 
@@ -95,6 +111,8 @@ export interface AccountSnapshot {
   readonly nickname?: string;
   /** The console's type size for this account. Always one of the three. */
   readonly fontScale: FontScale;
+  /** The Agent console chat body's own type size, chosen independently of fontScale. */
+  readonly consoleFontScale: FontScale;
   readonly role: AccountRole;
   /** Set when the account is suspended. Its sessions and AI tokens stop working. */
   readonly disabledAt?: string;
@@ -113,6 +131,7 @@ interface AccountRow {
   email: string;
   nickname: string | null;
   font_scale: string;
+  console_font_scale: string;
   password_scrypt: string;
   role: AccountRole;
   credentials_changed_at: string;
@@ -422,6 +441,21 @@ export class AccountStore {
     const row = this.row(accountId);
     if (!row || row.disabled_at) throw notFound("Account");
     this.writeFontScale(accountId, normalizeFontScale(fontScale), new Date().toISOString());
+    return this.getAccount(accountId);
+  }
+
+  /**
+   * Change how large the Agent console's chat body reads (AND-254).
+   *
+   * A second column rather than a value derived from fontScale: the two settings
+   * are independent, so this one is stored and validated on its own. Like the
+   * console-wide size it is a display preference, so no password and no
+   * credential stamp.
+   */
+  changeOwnConsoleFontScale(accountId: string, consoleFontScale: FontScale): AccountSnapshot {
+    const row = this.row(accountId);
+    if (!row || row.disabled_at) throw notFound("Account");
+    this.writeConsoleFontScale(accountId, normalizeConsoleFontScale(consoleFontScale), new Date().toISOString());
     return this.getAccount(accountId);
   }
 
@@ -802,6 +836,12 @@ export class AccountStore {
       .run(fontScale, now, accountId);
   }
 
+  private writeConsoleFontScale(accountId: string, consoleFontScale: FontScale, now: string): void {
+    this.database.connection
+      .prepare("UPDATE accounts SET console_font_scale = ?, updated_at = ? WHERE id = ?")
+      .run(consoleFontScale, now, accountId);
+  }
+
   private writeNickname(accountId: string, nickname: string | null, now: string): void {
     // No UNIQUE on the column, so there is no conflict to catch here -- which is
     // the whole difference from writeEmail below.
@@ -847,6 +887,9 @@ function mapAccount(row: AccountRow): AccountSnapshot {
     // The column's CHECK keeps this on the list; a value that somehow is not
     // falls back rather than handing an unknown size to the console.
     fontScale: isFontScale(row.font_scale) ? row.font_scale : DEFAULT_FONT_SCALE,
+    // A second value on the same list; a junk column falls back rather than
+    // handing an unknown size to the console.
+    consoleFontScale: isFontScale(row.console_font_scale) ? row.console_font_scale : DEFAULT_CONSOLE_FONT_SCALE,
     role: row.role,
     ...(row.disabled_at ? { disabledAt: row.disabled_at } : {}),
     credentialsChangedAt: row.credentials_changed_at,

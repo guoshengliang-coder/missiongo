@@ -90,6 +90,16 @@
      rescales text and nothing else. Medium is 1 and needs no attribute, which
      is why the base rule keeps today's numbers as the calc operands. */
   --text-scale: 1;
+  /* AND-254: the Agent console chat body reads at a size of its own. Same
+     ladder and same three steps, a second multiplier, so neither setting moves
+     the other. The chat body's token is derived here rather than inside the
+     chat scope because a custom property resolves its var() where it is
+     declared: the :root --text-sm above already carries --text-scale and cannot
+     follow a different multiplier further down. Everything inside a message
+     (headings, code, tables) sizes in em against this token, so the whole body
+     follows. */
+  --console-text-scale: 1;
+  --console-text-sm: calc(12px * var(--console-text-scale));
   --text-xs: calc(11px * var(--text-scale));
   --text-sm: calc(12px * var(--text-scale));
   --text-md: calc(13px * var(--text-scale));
@@ -127,6 +137,11 @@
    before first paint by the appearance bootstrap, from the same cached value. */
 :root[data-font-scale="small"] { --text-scale: 0.9; }
 :root[data-font-scale="large"] { --text-scale: 1.15; }
+
+/* The Agent console chat body's own size, chosen separately in Settings
+   (AND-254). Medium is the base and needs no attribute, exactly as above. */
+:root[data-console-font-scale="small"] { --console-text-scale: 0.9; }
+:root[data-console-font-scale="large"] { --console-text-scale: 1.15; }
 
 /* Dark redefines the tokens only. Nothing below this block asks which theme
    it is in, so a component styled through the tokens follows automatically.
@@ -664,7 +679,9 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-message-meta time { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .agent-console-send-spinner { flex: 0 0 auto; }
 .agent-console-queued-action { padding: 0; font-size: var(--text-xs); }
-.agent-console-message .markdown-text { margin-top: 5px; font-size: var(--text-sm); line-height: 1.6; }
+/* The chat body reads at its own size (AND-254), not at the console-wide one:
+   --console-text-sm is the same ladder multiplied by --console-text-scale. */
+.agent-console-message .markdown-text { margin-top: 5px; font-size: var(--console-text-sm); line-height: 1.6; }
 .agent-console-message-user .markdown-text { margin-top: 0; }
 .agent-console-message .markdown-text > :first-child { margin-top: 0; }
 .agent-console-message .markdown-text > :last-child { margin-bottom: 0; }
@@ -1490,6 +1507,10 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .settings-tab.selected { color: var(--ink); background: var(--surface-sunken); }
 .settings-content { min-width: 0; }
 .display-settings { display: flex; flex-direction: column; gap: 12px; }
+/* One size setting each: the console-wide one and the Agent console chat body's
+   own (AND-254). The rule between them is what says they are two settings. */
+.font-scale-group { display: flex; flex-direction: column; gap: 12px; }
+.font-scale-group + .font-scale-group { margin-top: 6px; padding-top: 18px; border-top: 1px solid var(--line); }
 .font-scale-options { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .font-scale-option { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 14px; color: var(--ink-2); background: var(--surface-field); border: 1px solid var(--line-dark); border-radius: var(--radius-md); font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
 .font-scale-option.selected { color: var(--accent-text-strong); background: var(--accent-bg); border-color: var(--accent-line); }
@@ -1497,6 +1518,9 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 /* Drawn at the chosen size on purpose: it is the one thing that shows what the
    setting did, without the reader having to go and find some body text. */
 .font-scale-preview { margin: 0; padding: 12px 14px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-base); line-height: 1.6; }
+/* The chat group's preview is drawn at the chat body's own size (AND-254), so
+   that line shows what its setting did rather than the console-wide size. */
+.font-scale-preview.console-chat { font-size: var(--console-text-sm); }
 .account-panel { display: flex; flex-direction: column; gap: 16px; }
 .account-identity { display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
 .account-identity > span { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 auto; color: var(--navy); background: var(--mint); border-radius: var(--radius-md); }
