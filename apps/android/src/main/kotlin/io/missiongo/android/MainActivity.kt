@@ -195,12 +195,18 @@ class MainActivity : ComponentActivity() {
      *
      * The bars' icons follow the theme, because the platform default left them
      * white on the light background: the clock and battery all but vanished.
+     *
+     * Which insets the page keeps clear of, and why the cutout's sides are not
+     * among them, is [webViewPadding]'s (AND-259).
      */
     private fun fitInsideSystemBars(content: View) {
         ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
-            val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
-            view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, keyboard.bottom))
+            val padding = webViewPadding(
+                systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).toSideInsets(),
+                cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout()).toSideInsets(),
+                keyboardBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom,
+            )
+            view.setPadding(padding.left, padding.top, padding.right, padding.bottom)
             WindowInsetsCompat.CONSUMED
         }
         val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
