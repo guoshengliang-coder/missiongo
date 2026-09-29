@@ -1,0 +1,7 @@
+{
+  "pullRequest": 213,
+  "items": [
+    { "key": "AND-259", "title": "折叠屏横屏左右空白" },
+    { "key": "AND-253", "title": "OpenCode 会话回复投递未确认时显示对应 Agent 名称" }
+  ]
+}
