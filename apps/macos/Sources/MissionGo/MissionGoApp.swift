@@ -73,8 +73,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// The menu's content in a normal window, for everyone who cannot or does not
 /// know to use the menu-bar icon.
+/// The Dock fallback has the same chrome as the menu-bar popover. It can be
+/// dismissed with Escape or a click elsewhere and reopened from the Dock.
+private final class MenuFallbackWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    override func cancelOperation(_ sender: Any?) {
+        close()
+    }
+}
+
 @MainActor
-final class MainWindowController: NSObject {
+final class MainWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     /// The content's natural height, as last measured.
     private var measuredHeight: CGFloat?
@@ -111,20 +122,25 @@ final class MainWindowController: NSObject {
         // under it. A throwaway copy of the content is measured instead, so the
         // window opens at the right height rather than jumping to it.
         measuredHeight = Self.probeContentHeight()
-        let window = NSWindow(
+        let window = MenuFallbackWindow(
             contentRect: NSRect(
                 origin: .zero,
                 size: NSSize(width: MenuContentView.width, height: fittedHeight(on: NSScreen.main))
             ),
-            // Not resizable: the window is exactly as tall as what it shows, so
-            // there is nothing to drag open but blank space.
-            styleMask: [.titled, .closable, .miniaturizable],
+            // This is the same menu surface opened from the Dock. Native title
+            // bar controls added a second header and obscured the visual groups.
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
         window.title = "MissionGo"
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.isMovableByWindowBackground = true
         window.contentView = content
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.center()
         self.window = window
         fitToContent()
@@ -184,6 +200,10 @@ final class MainWindowController: NSObject {
         }
         window.setFrame(frame, display: true)
     }
+
+    func windowDidResignKey(_ notification: Notification) {
+        window?.close()
+    }
 }
 
 /// What the main window shows: the menu's content at its natural height,
@@ -205,6 +225,9 @@ private struct MainWindowContent: View {
                     }
                 )
         }
+        .background(MenuPalette.canvas)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(MenuPalette.divider, lineWidth: 1))
         .onPreferenceChange(ContentHeightKey.self, perform: onHeight)
         .environmentObject(AppModel.shared)
     }

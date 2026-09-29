@@ -2,31 +2,56 @@ import AppKit
 import MissionGoNodeCore
 import SwiftUI
 
+enum MenuPalette {
+    private static func adaptive(_ light: NSColor, _ dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        })
+    }
+
+    static let canvas = adaptive(NSColor(srgbRed: 246 / 255, green: 249 / 255, blue: 248 / 255, alpha: 1),
+                                 NSColor(srgbRed: 28 / 255, green: 34 / 255, blue: 35 / 255, alpha: 1))
+    static let surface = adaptive(.white, NSColor(srgbRed: 37 / 255, green: 43 / 255, blue: 44 / 255, alpha: 1))
+    static let groupHeader = adaptive(NSColor(srgbRed: 237 / 255, green: 243 / 255, blue: 242 / 255, alpha: 1),
+                                      NSColor(srgbRed: 46 / 255, green: 57 / 255, blue: 56 / 255, alpha: 1))
+    static let divider = adaptive(NSColor(srgbRed: 220 / 255, green: 230 / 255, blue: 228 / 255, alpha: 1),
+                                  NSColor(srgbRed: 67 / 255, green: 77 / 255, blue: 76 / 255, alpha: 1))
+    static let sectionText = adaptive(NSColor(srgbRed: 66 / 255, green: 93 / 255, blue: 98 / 255, alpha: 1), .white)
+    static let secondaryText = adaptive(NSColor(srgbRed: 99 / 255, green: 115 / 255, blue: 123 / 255, alpha: 1),
+                                        NSColor(srgbRed: 183 / 255, green: 195 / 255, blue: 195 / 255, alpha: 1))
+    static let action = adaptive(NSColor(srgbRed: 22 / 255, green: 107 / 255, blue: 80 / 255, alpha: 1),
+                                 NSColor(srgbRed: 113 / 255, green: 224 / 255, blue: 183 / 255, alpha: 1))
+    static let badge = adaptive(NSColor(srgbRed: 104 / 255, green: 223 / 255, blue: 178 / 255, alpha: 1),
+                                NSColor(srgbRed: 57 / 255, green: 154 / 255, blue: 122 / 255, alpha: 1))
+}
+
 struct SignedInView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 11) {
                 Image(nsImage: NSApp.applicationIconImage)
                     .resizable()
                     .interpolation(.high)
                     .frame(width: 32, height: 32)
                     .clipShape(RoundedRectangle(cornerRadius: 9))
                 Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "应用")
-                    .font(.headline)
+                    .font(.system(size: 16, weight: .medium))
                 Text("·")
                     .foregroundStyle(.secondary)
                 Text(model.machineName)
-                    .font(.subheadline)
+                    .font(.system(size: 12))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(model.machineName)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color(nsColor: .textBackgroundColor))
+            .padding(.top, 10)
+            .padding(.bottom, 11)
+            .background(MenuPalette.canvas)
+            .overlay(alignment: .bottom) { MenuPalette.divider.frame(height: 1) }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
@@ -36,7 +61,7 @@ struct SignedInView: View {
                 }
             }
             .frame(maxHeight: min(620, max(160, (NSScreen.main?.visibleFrame.height ?? 800) - 120)))
-            .background(Color(nsColor: .controlBackgroundColor))
+            .background(MenuPalette.canvas)
 
             HStack(spacing: 7) {
                 let summary = ConnectionSummary.summarize(model.loopState)
@@ -64,13 +89,15 @@ struct SignedInView: View {
             }
             .padding(.horizontal, 12)
             .frame(minHeight: 43)
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(MenuPalette.canvas)
+            .overlay(alignment: .top) { MenuPalette.divider.frame(height: 1) }
         }
+        .background(MenuPalette.canvas)
     }
 
     private func connectionColor(_ tone: ConnectionSummary.Tone) -> Color {
         switch tone {
-        case .good: return .green
+        case .good: return MenuPalette.action
         case .pending: return .yellow
         case .bad: return .red
         case .idle: return .gray
@@ -81,12 +108,14 @@ struct SignedInView: View {
 private struct MenuGroup<Content: View>: View {
     let title: String
     let symbol: String
+    let meta: String?
     let trailing: AnyView?
     let content: Content
 
-    init(title: String, symbol: String, trailing: AnyView? = nil, @ViewBuilder content: () -> Content) {
+    init(title: String, symbol: String, meta: String? = nil, trailing: AnyView? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
         self.symbol = symbol
+        self.meta = meta
         self.trailing = trailing
         self.content = content()
     }
@@ -95,18 +124,24 @@ private struct MenuGroup<Content: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 7) {
                 Image(systemName: symbol).frame(width: 16)
-                Text(title).font(.caption.weight(.semibold))
+                Text(title).font(.system(size: 12, weight: .semibold))
+                if let meta {
+                    Text(meta).font(.system(size: 11)).foregroundStyle(MenuPalette.secondaryText)
+                        .padding(.leading, 4)
+                }
                 Spacer(minLength: 4)
                 trailing
             }
+            .foregroundStyle(MenuPalette.sectionText)
             .padding(.horizontal, 12)
             .frame(minHeight: 37)
-            .background(Color(nsColor: .controlBackgroundColor))
+            .background(MenuPalette.groupHeader)
+            .overlay(alignment: .top) { MenuPalette.divider.frame(height: 1) }
+            .overlay(alignment: .bottom) { MenuPalette.divider.frame(height: 1) }
             content
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: .textBackgroundColor))
+                .background(MenuPalette.surface)
+                .overlay(alignment: .bottom) { MenuPalette.divider.frame(height: 1) }
         }
     }
 }
@@ -121,8 +156,9 @@ private struct UnreadSection: View {
                     Text(String(count))
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Color.mint.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                        .frame(minWidth: 25, minHeight: 25)
+                        .foregroundStyle(Color(red: 16 / 255, green: 87 / 255, blue: 67 / 255))
+                        .background(MenuPalette.badge, in: RoundedRectangle(cornerRadius: 8))
                         .accessibilityLabel("未读会话 \(count) 条")
                 }
             }
@@ -132,15 +168,17 @@ private struct UnreadSection: View {
                     Text(error).font(.caption).foregroundStyle(.orange)
                     Button("重试") { model.refreshUnreadSessions() }.font(.caption)
                 }
+                .padding(12)
             } else if model.unreadCount == nil {
                 ProgressView("正在读取未读会话…").controlSize(.small)
+                    .padding(12)
             } else if model.unreadSessions.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("这台 Mac 已就绪").font(.subheadline.weight(.medium))
                     Text("没有未读会话").font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 8)
+                .padding(12)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -162,16 +200,17 @@ private struct UnreadSection: View {
                                         Image(systemName: "arrow.up.right")
                                     }
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(MenuPalette.secondaryText)
                                     .lineLimit(1)
                                 }
+                                .padding(.horizontal, 12)
                                 .frame(maxWidth: .infinity, minHeight: 57, alignment: .leading)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .help(session.title)
                             .accessibilityLabel("\(session.title)，\(agentName(session.agentKind))，\(session.nodeName)，\(relativeTime(session.activityAt))，在 Web 打开会话")
-                            Divider()
+                            MenuPalette.divider.frame(height: 1)
                         }
                     }
                 }
@@ -179,8 +218,9 @@ private struct UnreadSection: View {
                 Button("在 Web 查看全部 \(model.unreadCount ?? 0) 条 ↗") { model.openAllUnread() }
                     .buttonStyle(.plain)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.green)
-                    .frame(maxWidth: .infinity, minHeight: 32)
+                    .foregroundStyle(MenuPalette.action)
+                    .frame(maxWidth: .infinity, minHeight: 34)
+                    .overlay(alignment: .top) { MenuPalette.divider.frame(height: 1) }
             }
         }
     }
@@ -220,12 +260,13 @@ private struct AgentStatusSection: View {
     }
 
     var body: some View {
-        MenuGroup(title: "Agent 状态", symbol: "cpu", trailing: AnyView(
-            HStack(spacing: 6) {
-                Text("\(readyCount) 个就绪").foregroundStyle(.secondary)
-                Button("重新检查") { model.checkAllIntegrations() }
-                    .disabled(model.integrationStates.isEmpty || model.checkingAllIntegrations || !model.checkingIntegrations.isEmpty)
-            }.font(.caption)
+        MenuGroup(title: "Agent 状态", symbol: "cpu", meta: "\(readyCount) 个就绪", trailing: AnyView(
+            Button("重新检查") { model.checkAllIntegrations() }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(MenuPalette.action)
+                .frame(minHeight: 30)
+                .disabled(model.integrationStates.isEmpty || model.checkingAllIntegrations || !model.checkingIntegrations.isEmpty)
         )) {
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(LocalAgent.allCases, id: \.rawValue) { agent in
@@ -236,14 +277,15 @@ private struct AgentStatusSection: View {
                         AgentMark(agent: agent)
                         Text(agent.title).font(.subheadline.weight(.medium))
                         Spacer(minLength: 4)
-                        Circle().fill(ready ? Color.green : (state == nil ? Color.gray : Color.orange))
+                        Circle().fill(ready ? MenuPalette.action : (state == nil ? Color.gray : Color.orange))
                             .frame(width: 6, height: 6)
                         Text(checking ? "检查中" : ready ? "就绪" : state == nil ? "未启用" : "需处理")
                         if let version = model.detectedAgentVersions[agent.rawValue] ?? state?.version {
                             Text("· \(version)")
                         }
                     }
-                    .font(.caption)
+                    .font(.system(size: 11))
+                    .frame(minHeight: 32)
                     .accessibilityElement(children: .combine)
                     if let issue = state?.issue, !checking {
                         Text(issue)
@@ -258,6 +300,8 @@ private struct AgentStatusSection: View {
                     }
                 }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
         }
     }
 }
@@ -297,32 +341,39 @@ private struct VersionStatusSection: View {
     var body: some View {
         MenuGroup(title: "版本与更新", symbol: "shippingbox", trailing: AnyView(
             Button("检查客户端更新") { model.checkForUpdates() }
-                .font(.caption)
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(MenuPalette.action)
+                .frame(minHeight: 30)
                 .disabled(model.updateState.isBusy || updateChecking || model.appVersion == nil)
         )) {
             VStack(alignment: .leading, spacing: 6) {
-                HStack {
+                HStack(spacing: 7) {
+                    Image(systemName: "book.closed").frame(width: 19)
                     Text("Skill")
                     Spacer()
                     Text(model.integrationStates.isEmpty ? "未启用" : (model.skillSync?.summary ?? "未检查"))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MenuPalette.secondaryText)
                     if !model.integrationStates.isEmpty, case .synced? = model.skillSync {
-                        Text("· 自动同步").foregroundStyle(.secondary)
+                        Text("· 自动同步").foregroundStyle(MenuPalette.secondaryText)
                     }
                 }
+                .frame(minHeight: 32)
                 if let reason = model.skillSync?.failureReason {
                     Text(reason).font(.caption).foregroundStyle(.orange)
                     Text("可在 Agent 状态点击重新检查重试。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Divider()
-                HStack {
+                HStack(spacing: 7) {
+                    Image(systemName: "laptopcomputer").frame(width: 19)
                     Text("Mac 客户端")
                     Spacer()
                     Text(model.appVersion ?? "开发构建")
+                        .foregroundStyle(MenuPalette.secondaryText)
                     Text("· \(updateLabel)")
+                        .foregroundStyle(MenuPalette.secondaryText)
                 }
-                .foregroundStyle(.secondary)
+                .frame(minHeight: 32)
                 if case let .available(update) = model.updateState {
                     Button("查看 \(update.version) 的更新内容") { model.showAvailableUpdate() }
                         .font(.caption)
@@ -335,6 +386,8 @@ private struct VersionStatusSection: View {
                 }
             }
             .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
         }
     }
 
