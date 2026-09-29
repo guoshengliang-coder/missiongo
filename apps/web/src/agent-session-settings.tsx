@@ -14,8 +14,8 @@ import type { AgentSessionSummary } from "./types";
 
 /**
  * Mode, model and effort of one conversation, under the reply box (AND-158).
- * Each select shows what is in effect -- what the Mac confirmed, or what is
- * still on its way -- and a pick applies immediately: these are one-click,
+ * The model select keeps the person's choice separate from the model id the
+ * Mac reports (a Claude alias can resolve to a different id). A pick applies immediately: these are one-click,
  * one-click-back changes, so the only confirmation is the pending note that
  * appears while the Mac has not answered (AND-130's revision handshake).
  */
@@ -100,8 +100,14 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
     return key ? t(key) : value;
   };
   const endpointNote = settings.modelEndpoint ? ` · ${t("customModelEndpoint", { host: settings.modelEndpoint })}` : "";
-  const shownModel = settings.model
-    ?? (settings.requestedModel ? `${settings.requestedModel}（${t("agentSettingsRequested")}）` : t("dispatchModelLocal"));
+  const requestedModel = settings.pending?.model ?? settings.requestedModel ?? "";
+  // A refused change leaves the request in the server's history. Show the
+  // Mac's previous value in the picker so the person can choose that code
+  // again; keep the failed request visible in the separate details and error.
+  const modelValue = settings.error && !settings.pending ? settings.model ?? "" : requestedModel;
+  const selectedModel = models?.find((entry) => entry.id === modelValue);
+  const selectedModelLabel = selectedModel ? modelDisplayLabel(selectedModel, models ?? []) : modelValue || t("dispatchModelLocal");
+  const modelDetails = `${t("agentSettingsSelectedModel")}: ${requestedModel || t("dispatchModelLocal")} · ${t("agentSettingsReportedModel")}: ${settings.model ?? t("agentSettingsModelUnreported")}${endpointNote}`;
   const shownEffort = settings.effort
     ? effortLabel(settings.effort)
     : settings.requestedEffort
@@ -120,7 +126,6 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   // effect yet. If the Mac refuses it, the note turns into the error and the
   // selects fall back to what is confirmed.
   const modeValue = settings.pending?.mode ?? settings.mode;
-  const modelValue = settings.pending?.model ?? settings.model ?? "";
   const effortValue = settings.pending?.effort ?? settings.effort ?? "";
   const changeMode = (mode: string) => {
     if (mode !== modeValue) apply.mutate({ mode });
@@ -138,8 +143,9 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
     return (
       <div className="agent-session-quick-settings">
         <p className="agent-session-quick-settings-summary">
-          {modeLabel(settings.mode)} · {shownModel}{endpointNote} · {shownEffort}
+          {modeLabel(settings.mode)} · {shownEffort}
         </p>
+        <p className="agent-session-settings-note">{modelDetails}</p>
         {settings.pending && <p className="agent-session-settings-note">{t("agentSettingsPending", { change: pendingText })}</p>}
         {settings.error && <p className="agent-session-settings-note error">{t("agentSettingsError", { error: settings.error })}</p>}
       </div>
@@ -164,17 +170,16 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           className="agent-settings-model"
           aria-label={t("dispatchModel")}
           value={modelValue}
-          title={`${shownModel}${endpointNote}`}
+          title={modelDetails}
           disabled={apply.isPending || !models}
           onChange={(event) => {
             const model = event.target.value;
             if (model && model !== modelValue) apply.mutate({ model });
           }}
         >
-          {/* The current value as an option, so a model the list does not know
-              (the resolved id the agent reported) never blanks the select. */}
-          {modelValue && <option value={modelValue}>{shownModel}{endpointNote}</option>}
-          {!modelValue && <option value="">{shownModel}{endpointNote}</option>}
+          {/* The option's label describes its value, including while a change
+              is pending and the Mac still reports the previous model. */}
+          <option value={modelValue}>{selectedModelLabel}</option>
           {groupModelsByProvider((models ?? []).filter((entry) => entry.id !== modelValue)).map((group) => (
             group.provider === null
               ? group.models.map((entry) => (
@@ -221,6 +226,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
         </div>
         {apply.isPending && <LoaderCircle className="spin" size={13} aria-hidden="true" />}
       </div>
+      <p className="agent-session-settings-note">{modelDetails}</p>
       {settings.pending && <p className="agent-session-settings-note">{t("agentSettingsPending", { change: pendingText })}</p>}
       {settings.error && <p className="agent-session-settings-note error">{t("agentSettingsError", { error: settings.error })}</p>}
       {apply.isError && (

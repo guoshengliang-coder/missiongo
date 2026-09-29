@@ -3808,9 +3808,19 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     await change({ model: "gpt-5.5-mini", effort: "low" });
     await report({ settingsRevision: 2, settingsError: "set_model failed" });
     const failed = await listSettings();
-    expect(failed).toMatchObject({ error: "set_model failed", mode: "default" });
+    expect(failed).toMatchObject({ error: "set_model failed", mode: "default", requestedModel: "gpt-5.5-mini" });
     expect(failed.pending).toBeUndefined();
     expect(await nodeSession()).toBeUndefined();
+
+    // The selected code remains distinct from the Mac's reported id after a
+    // successful change and after a later change that only touches effort.
+    await change({ model: "gpt-5.5-mini" });
+    await report({ model: "gpt-5.5", settingsRevision: 3 });
+    expect(await listSettings()).toMatchObject({ requestedModel: "gpt-5.5-mini", model: "gpt-5.5" });
+    await change({ effort: "medium" });
+    expect(await listSettings()).toMatchObject({ requestedModel: "gpt-5.5-mini", pending: { revision: 4 } });
+    await report({ settingsRevision: 4 });
+    expect(await listSettings()).toMatchObject({ requestedModel: "gpt-5.5-mini", model: "gpt-5.5" });
   });
 
   it("refuses to change a running session on a Mac whose client cannot", async () => {
