@@ -4122,6 +4122,60 @@ describe("Server-side command timeout and alerting (AND-184, AND-203)", () => {
     await enqueueReply(app, cookie, sessionId, "Try again.");
   });
 
+  it("names the unconfirmed session's own agent when the node reports no error text", async () => {
+    // AND-253: the fallback the server writes used to say Codex on every
+    // session, so an OpenCode delivery the Mac reported without its own copy
+    // read "无法确认 Codex 是否收到这条回复".
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await heartbeat(app, node.token, "opencode");
+    const mission = await readyItem(app, cookie, "Mission GO", "AND");
+    await app.inject({
+      method: "PUT",
+      url: `/api/v1/nodes/${node.nodeId}/repos`,
+      headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/Users/dev/Projects/missiongo" }] },
+    });
+    const dispatchId = (await app.inject({
+      method: "POST",
+      url: "/api/v1/dispatches",
+      headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "opencode", mode: "plan", itemKeys: [mission.itemKey] },
+    })).json<{ id: string }>().id;
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionRef: randomUUID() },
+    });
+    const sessionId = (await app.inject({
+      method: "GET",
+      url: `/api/v1/items/${mission.itemKey}/dispatches`,
+      headers: { cookie },
+    })).json<{ dispatches: Array<{ agentSessionId: string }> }>().dispatches[0]!.agentSessionId;
+
+    const commandId = await enqueueReply(app, cookie, sessionId);
+    for (const commandStatus of ["delivering", "delivery_unknown"]) {
+      const reported = await app.inject({
+        method: "POST",
+        url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+        headers: { authorization: `Bearer ${node.token}` },
+        payload: { status: "active", messages: [], commandId, commandStatus },
+      });
+      expect(reported.statusCode).toBe(204);
+    }
+
+    const session = await listedSession(app, cookie, mission.productId, sessionId);
+    expect(session.command).toMatchObject({ status: "delivery_unknown" });
+    expect(session.command?.error).toContain("OpenCode");
+    expect(session.command?.error).not.toContain("Codex");
+  });
+
   it("points out a reply queued far longer than a turn without failing it", async () => {
     const { app, cookie, databasePath } = await signedInApp();
     const { mission, sessionId } = await launchedCodexSession(app, cookie);

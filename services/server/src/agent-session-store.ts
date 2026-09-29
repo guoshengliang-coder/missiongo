@@ -502,8 +502,26 @@ export const COMMAND_QUEUED_ALERT_MS = 180 * 60 * 1_000;
 /** Stamped on a delivery the server stopped waiting for; also its alert marker. */
 export const COMMAND_DELIVERY_TIMEOUT_ERROR =
   "Mac 认领回复后 30 分钟没有报告投递结果，MissionGo 已自动标记失败。请重新发送或检查该 Mac。";
-export const COMMAND_DELIVERY_UNKNOWN_ERROR =
-  "无法确认 Codex 是否收到这条回复。请先在 Codex 会话中核实，再选择已收到或未收到；MissionGo 不会自动重发。";
+/** What the console, the Mac menu and the timeline call each agent. */
+const AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  codex: "Codex",
+  claude_code: "Claude Code",
+  opencode: "OpenCode",
+  hermes: "Hermes",
+};
+export function agentDisplayName(agentKind: string): string {
+  return AGENT_DISPLAY_NAMES[agentKind] ?? "AI";
+}
+/**
+ * Written on a reply whose delivery the Mac could not confirm, when the Mac's
+ * own report carried no text. The Mac usually supplies its own, already
+ * agent-aware copy, so this is the fallback; it names the session's own agent
+ * instead of Codex, which is what an OpenCode session used to read (AND-253).
+ */
+export function commandDeliveryUnknownError(agentKind: string): string {
+  const agent = agentDisplayName(agentKind);
+  return `无法确认 ${agent} 是否收到这条回复。请先在 ${agent} 会话中核实，再选择已收到或未收到；MissionGo 不会自动重发。`;
+}
 
 /**
  * Why a pending reply deserves attention, or undefined when it does not. A
@@ -518,6 +536,7 @@ export function stuckCommandReason(
     created_at: string;
     delivering_at: string | null;
   },
+  agentKind: string,
   now = Date.now(),
 ): string | undefined {
   if (command.status === "delivering") {
@@ -526,7 +545,9 @@ export function stuckCommandReason(
       ? COMMAND_DELIVERY_TIMEOUT_ERROR
       : undefined;
   }
-  if (command.status === "delivery_unknown") return command.error || COMMAND_DELIVERY_UNKNOWN_ERROR;
+  if (command.status === "delivery_unknown") {
+    return command.error || commandDeliveryUnknownError(agentKind);
+  }
   if (command.status === "queued") {
     const since = Date.parse(command.created_at);
     return Number.isFinite(since) && now - since >= COMMAND_QUEUED_ALERT_MS
@@ -798,7 +819,7 @@ export class AgentSessionStore {
       // a turn, is a fault the transcript cannot express (AND-184). Override the
       // message-derived attention so the console shows it; deliberately without a
       // revision, so nobody can dismiss a condition that is still true.
-      const stuckReason = command ? stuckCommandReason(command) : undefined;
+      const stuckReason = command ? stuckCommandReason(command, row.agent_kind) : undefined;
       // So is a session reading "running" on a Mac nobody has heard from in
       // half an hour (AND-221) — same discipline, still true until the Mac
       // reports again, so it cannot be dismissed either.
@@ -1120,7 +1141,7 @@ export class AgentSessionStore {
       throw conflict("agent_reply_delivering", "A reply is already being delivered; try stopping again shortly.");
     }
     if (pending?.status === "delivery_unknown") {
-      throw conflict("agent_reply_delivery_unknown", "Confirm the earlier reply in Codex before stopping this session.");
+      throw conflict("agent_reply_delivery_unknown", "Confirm the earlier reply before stopping this session.");
     }
     // Claude Code and Codex interrupts name the exact turn they may cut off, so
     // a stop needs a visible turn identifier first. OpenCode interrupts the
@@ -1210,27 +1231,29 @@ export class AgentSessionStore {
     return this.mapCommand({ ...command, status: "cancelled", cancelled_at: now });
   }
 
-  /** Release an uncertain reply only after the account holder checks Codex. */
+  /** Release an uncertain reply only after the account holder checks the agent. */
   resolveDeliveryUnknown(
     accountId: string, sessionId: string, commandId: string, outcome: "received" | "not_received",
   ): AgentSessionCommand {
     const command = this.database.connection.prepare(
       `SELECT c.id, c.kind, c.text, c.turn_id, c.status, c.error, c.created_at,
-              c.delivered_at, c.delivering_at, c.cancelled_at, s.dispatch_id
+              c.delivered_at, c.delivering_at, c.cancelled_at, s.dispatch_id, s.agent_kind
        FROM agent_session_commands c
        JOIN agent_sessions s ON s.id = c.session_id
        JOIN dispatches d ON d.id = s.dispatch_id
        WHERE c.id = ? AND c.session_id = ? AND d.account_id = ?`,
-    ).get(commandId, sessionId, accountId) as unknown as (CommandRow & { dispatch_id: string }) | undefined;
+    ).get(commandId, sessionId, accountId) as unknown as
+      (CommandRow & { dispatch_id: string; agent_kind: string }) | undefined;
     if (!command) throw notFound("Agent session command");
     if (command.kind !== "message" || command.status !== "delivery_unknown") {
       throw conflict("agent_reply_not_unconfirmed", "Only a reply awaiting delivery confirmation can be resolved.");
     }
     const now = new Date().toISOString();
     const status = outcome === "received" ? "delivered" : "cancelled";
+    const agent = agentDisplayName(command.agent_kind);
     const error = outcome === "received"
-      ? "用户在 Codex 核实已收到这条回复。"
-      : "用户在 Codex 核实未收到；可手动重新发送。";
+      ? `用户在 ${agent} 核实已收到这条回复。`
+      : `用户在 ${agent} 核实未收到；可手动重新发送。`;
     this.database.transaction(() => {
       const changed = this.database.connection.prepare(
         `UPDATE agent_session_commands
@@ -1738,7 +1761,7 @@ export class AgentSessionStore {
             .run(
               input.commandStatus,
               input.commandStatus === "delivery_unknown"
-                ? input.commandError?.slice(0, 2_000) || COMMAND_DELIVERY_UNKNOWN_ERROR
+                ? input.commandError?.slice(0, 2_000) || commandDeliveryUnknownError(session.agent_kind)
                 : input.commandError?.slice(0, 2_000) || null,
               input.commandStatus === "delivered" ? now : null,
               input.commandId,
@@ -1835,7 +1858,7 @@ export class AgentSessionStore {
       `UPDATE agent_session_commands SET status = 'delivery_unknown', error = ?
        WHERE status = 'delivering' AND COALESCE(delivering_at, created_at) <= ?
          AND session_id IN (SELECT id FROM agent_sessions WHERE agent_kind = 'codex')`,
-    ).run(COMMAND_DELIVERY_UNKNOWN_ERROR, cutoff);
+    ).run(commandDeliveryUnknownError("codex"), cutoff);
     const changed = this.database.connection.prepare(
       `UPDATE agent_session_commands SET status = 'failed', error = ?
        WHERE status = 'delivering' AND COALESCE(delivering_at, created_at) <= ?`,

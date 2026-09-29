@@ -65,6 +65,9 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
   });
   const command = session.data?.command;
   const canReply = session.data?.canReply === true;
+  // A reply can go to any agent the console runs, so the delivery lines name
+  // this session's own one instead of saying Codex (AND-253).
+  const agentName = session.data ? messageLabel("agent", session.data.agentKind, t) : "";
   const pending = command?.status === "queued" || command?.status === "delivering"
     || command?.status === "delivery_unknown";
   const submit = (event: FormEvent) => {
@@ -142,7 +145,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                   <span>
                     {command.status === "queued" && t("agentSessionReplyQueued")}
                     {command.status === "delivering" && t("agentSessionReplyDelivering")}
-                    {command.status === "delivery_unknown" && t("agentSessionReplyDeliveryUnknown")}
+                    {command.status === "delivery_unknown" && t("agentSessionReplyDeliveryUnknown", { agent: agentName })}
                     {command.status === "delivered" && t("agentSessionReplyDelivered")}
                     {command.status === "failed" && t("agentSessionReplyFailed")}
                     {command.status === "cancelled" && t("agentSessionReplyCancelled")}
@@ -162,7 +165,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                     <>
                       <button type="button" className="text-button" disabled={resolveDelivery.isPending}
                         onClick={() => resolveDelivery.mutate({ commandId: command.id, outcome: "received" })}>
-                        {t("agentSessionReplyConfirmReceived")}
+                        {t("agentSessionReplyConfirmReceived", { agent: agentName })}
                       </button>
                       <button type="button" className="text-button" disabled={resolveDelivery.isPending}
                         onClick={() => resolveDelivery.mutate({ commandId: command.id, outcome: "not_received" })}>

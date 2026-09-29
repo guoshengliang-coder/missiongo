@@ -292,6 +292,7 @@ final class DispatchPresentationTests: XCTestCase {
     func testNamesTheAgentAndTheModeItWasDispatchedWith() {
         XCTAssertEqual(DispatchPresentation.agentLabel("claude_code"), "Claude Code")
         XCTAssertEqual(DispatchPresentation.agentLabel("codex"), "Codex")
+        XCTAssertEqual(DispatchPresentation.agentLabel("opencode"), "OpenCode")
         XCTAssertEqual(DispatchPresentation.agentLabel("hermes"), "Hermes")
         XCTAssertEqual(DispatchPresentation.modeLabel("plan"), "计划")
         XCTAssertEqual(DispatchPresentation.modeLabel("acceptEdits"), "自动接受编辑")
