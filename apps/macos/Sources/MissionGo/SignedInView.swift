@@ -6,13 +6,13 @@ struct SignedInView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openWindow) private var openWindow
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: "paperplane.fill")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.green)
-                    .frame(width: 31, height: 31)
-                    .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 32, height: 32)
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
                 Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "应用")
                     .font(.headline)
                 Text("·")
@@ -24,8 +24,9 @@ struct SignedInView: View {
                     .help(model.machineName)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color(nsColor: .textBackgroundColor))
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
@@ -35,6 +36,7 @@ struct SignedInView: View {
                 }
             }
             .frame(maxHeight: min(620, max(160, (NSScreen.main?.visibleFrame.height ?? 800) - 120)))
+            .background(Color(nsColor: .controlBackgroundColor))
 
             HStack(spacing: 7) {
                 let summary = ConnectionSummary.summarize(model.loopState)
@@ -60,7 +62,9 @@ struct SignedInView: View {
                 .help("本机设置")
                 .accessibilityLabel("本机设置")
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 43)
+            .background(Color(nsColor: .textBackgroundColor))
         }
     }
 
@@ -95,15 +99,15 @@ private struct MenuGroup<Content: View>: View {
                 Spacer(minLength: 4)
                 trailing
             }
-            .padding(.horizontal, 10)
-            .frame(minHeight: 36)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 37)
             .background(Color(nsColor: .controlBackgroundColor))
             content
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .textBackgroundColor))
         }
-        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.primary.opacity(0.08)))
     }
 }
 
@@ -118,7 +122,7 @@ private struct UnreadSection: View {
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
-                        .background(Color.green.opacity(0.17), in: RoundedRectangle(cornerRadius: 7))
+                        .background(Color.mint.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
                         .accessibilityLabel("未读会话 \(count) 条")
                 }
             }
@@ -161,7 +165,7 @@ private struct UnreadSection: View {
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                                 }
-                                .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                                .frame(maxWidth: .infinity, minHeight: 57, alignment: .leading)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
@@ -375,8 +379,17 @@ struct LocalSettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(model.machineName).font(.headline).lineLimit(1)
-                Text("这台 Mac").font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 9) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 31, height: 31)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.machineName).font(.headline).lineLimit(1)
+                        Text("这台 Mac").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 Divider().padding(.vertical, 8)
                 ForEach(Tab.allCases, id: \.self) { option in
                     Button {
@@ -394,6 +407,9 @@ struct LocalSettingsView: View {
                     .accessibilityAddTraits(tab == option ? .isSelected : [])
                 }
                 Spacer()
+                Text("MissionGo for macOS")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .padding(18)
             .frame(width: 180)
@@ -546,25 +562,36 @@ private struct IntegrationRow: View {
         let checking = model.checkingIntegrations.contains(agent)
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(agent.title)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(agent.title)
+                        .font(.subheadline.weight(.medium))
+                    Text(checking ? "检查中…" : state == nil ? "已停用" : state?.issue == nil ? "本机已安装" : "需处理")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 if checking {
                     ProgressView().controlSize(.mini)
                 }
-                Text(checking ? "检查中…" : (state?.version ?? (state == nil ? "未启用" : "已暂停")))
-                    .foregroundColor(state?.issue == nil ? .secondary : .orange)
-                Button(state == nil ? "启用…" : "重新检查") { model.checkIntegration(agent) }
-                    .buttonStyle(.borderless)
-                    .disabled(!model.checkingIntegrations.isEmpty || model.importingPath)
-                    .help("检查登录并同步该客户端的 missiongo Skill；不会检查另一个客户端。")
-                if state != nil {
-                    Button("停用") { model.disableIntegration(agent) }
-                        .buttonStyle(.borderless)
-                }
+                Toggle("启用 \(agent.title)", isOn: Binding(
+                    get: { model.integrationStates[agent.rawValue] != nil },
+                    set: { enabled in
+                        if enabled { model.checkIntegration(agent) }
+                        else { model.disableIntegration(agent) }
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .disabled(!model.checkingIntegrations.isEmpty || model.importingPath)
+                .help("关闭后，此 Agent 不再参与登录检测、派单和 Skill 同步。")
             }
             if !checking, let hint = state?.issue {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     WrappingCaption(text: hint)
+                    Button("重新检查") { model.checkIntegration(agent) }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .disabled(!model.checkingIntegrations.isEmpty || model.importingPath)
                     if let command {
                         Button {
                             model.copyToClipboard(command)
@@ -593,6 +620,7 @@ private struct IntegrationRow: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
     }
 }
 

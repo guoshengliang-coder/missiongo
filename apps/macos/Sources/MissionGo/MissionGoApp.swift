@@ -229,6 +229,11 @@ struct MenuContentView: View {
     /// that copy is not a menu anyone opened.
     var tracksOpening = true
 
+    private var contentPadding: CGFloat {
+        if case .signedIn = model.phase { return 0 }
+        return 14
+    }
+
     var body: some View {
         Group {
             switch model.phase {
@@ -244,7 +249,7 @@ struct MenuContentView: View {
                 SignedInView()
             }
         }
-        .padding(14)
+        .padding(contentPadding)
         .frame(width: MenuContentView.width)
         .onAppear { if tracksOpening { model.menuDidOpen() } }
         .onDisappear { if tracksOpening { model.menuDidClose() } }
