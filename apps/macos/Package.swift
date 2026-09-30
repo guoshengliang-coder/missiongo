@@ -19,5 +19,7 @@ let package = Package(
         .executableTarget(name: "MissionGo", dependencies: ["MissionGoNodeCore"], resources: [.process("Resources")]),
         .executableTarget(name: "MissionGoClaudeHost", dependencies: ["MissionGoNodeCore"]),
         .testTarget(name: "MissionGoNodeCoreTests", dependencies: ["MissionGoNodeCore"]),
+        // Render actual SwiftUI content in AppKit windows with offline fixtures.
+        .testTarget(name: "MissionGoUITests", dependencies: ["MissionGo", "MissionGoNodeCore"]),
     ]
 )
