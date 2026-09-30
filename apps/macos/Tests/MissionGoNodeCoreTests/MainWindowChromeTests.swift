@@ -81,13 +81,21 @@ final class MainWindowChromeTests: XCTestCase {
             try XCTUnwrap(controller.window.standardWindowButton(.miniaturizeButton)).performClick(nil)
         }
         // AppKit completes miniaturization asynchronously.
-        for _ in 0..<30 {
+        for _ in 0..<100 {
             if await MainActor.run(body: { controller.window.isMiniaturized }) { break }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         await MainActor.run {
             XCTAssertTrue(controller.window.isMiniaturized)
             controller.show()
+        }
+        // Deminiaturization also completes asynchronously on macOS 15; an
+        // immediate assertion only happened to work on the development Mac.
+        for _ in 0..<100 {
+            if await MainActor.run(body: { !controller.window.isMiniaturized }) { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        await MainActor.run {
             XCTAssertFalse(controller.window.isMiniaturized)
             XCTAssertTrue(controller.window.isVisible)
             controller.window.close()
