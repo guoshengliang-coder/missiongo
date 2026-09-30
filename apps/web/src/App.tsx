@@ -491,6 +491,10 @@ export function App() {
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
   const previousAgentConsoleOpenRef = useRef(agentConsoleOpen);
+  // The console aligns the selected product with the open session once
+  // (AND-263). This ref holds the session id that alignment already ran for,
+  // so the 5s refetch or a manual switch never bounces the user back.
+  const agentConsoleProductAlignedRef = useRef<string | null>(null);
 
   useEffect(() => {
     const update = () => setDocumentVisible(document.visibilityState === "visible");
@@ -592,6 +596,8 @@ export function App() {
     }
     syncBackDepth();
     setAgentSessionId(sessionId);
+    // A freshly opened session gets one alignment pass (AND-263).
+    agentConsoleProductAlignedRef.current = null;
     setAgentConversationOpen(agentConsoleSinglePane);
     setAgentConsoleBulkMode(false);
     setAgentConsoleOpen(true);
@@ -644,6 +650,8 @@ export function App() {
     }
     syncBackDepth();
     setAgentSessionId(sessionId);
+    // Re-selecting a session starts a fresh alignment pass (AND-263).
+    agentConsoleProductAlignedRef.current = null;
     setAgentConversationOpen(conversation);
   };
 
@@ -1007,10 +1015,17 @@ export function App() {
   const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
   useEffect(() => {
     if (!agentConsoleOpen || !agentSessionId) return;
+    // Align once per session (AND-263). Without the ref guard this effect
+    // re-ran on every 5s refetch and on every selectedProductId change,
+    // bouncing the user back to the session's product right after a switch.
+    if (agentConsoleProductAlignedRef.current === agentSessionId) return;
     const linked = allAgentSessions.find((session) => session.id === agentSessionId);
-    if (!linked || linked.items.some((item) => item.productId === selectedProductId)) return;
-    const productId = linked.items[0]?.productId;
-    if (productId) setSelectedProductId(productId);
+    if (!linked) return;
+    agentConsoleProductAlignedRef.current = agentSessionId;
+    if (!linked.items.some((item) => item.productId === selectedProductId)) {
+      const productId = linked.items[0]?.productId;
+      if (productId) setSelectedProductId(productId);
+    }
   }, [agentConsoleOpen, agentSessionId, allAgentSessions, selectedProductId]);
   const unreadCounts = useMemo(() => agentUnreadCounts(allAgentSessions), [allAgentSessions]);
 
@@ -1347,6 +1362,11 @@ export function App() {
             unreadCountsLoaded={agentSessionsQuery.data !== undefined}
             onSelect={(productId) => {
               agentConsoleMoreRef.current?.removeAttribute("open");
+              // A manual pick wins over session alignment (AND-263): mark the
+              // open session as aligned so the refetch loop never bounces back.
+              if (agentConsoleOpen && agentSessionId) {
+                agentConsoleProductAlignedRef.current = agentSessionId;
+              }
               setSelectedProductId(productId);
               setAgentConsoleBulkMode(false);
               // A filter chosen for one product says nothing about the next one,
