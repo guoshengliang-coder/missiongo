@@ -29,7 +29,7 @@ async function seed() {
     description: "Fails on launch",
     environment: { platform: "other" },
   });
-  return { directory, store, item };
+  return { directory, store, product, item };
 }
 
 describe("work-item event attribution", () => {
@@ -210,9 +210,55 @@ describe("work-item event attribution", () => {
       .toThrow();
     expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["web", "web"] })).toThrow();
     // Runtime input validation must also guard callers that do not use the MCP schema.
-    expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["unknown" as "web"] })).toThrow();
+    expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["unknown"] })).toThrow();
     expect(store.getWorkItem(item.key).status).toBe("in_progress");
     expect(store.getTimeline(item.key).filter((event) => event.toStatus === "development_complete")).toHaveLength(0);
+  });
+
+  it("records the artifacts a product declares, not a server-wide list (AND-276)", async () => {
+    const { store, product, item } = await seed();
+    // A product that declares none falls back to MissionGo's historical four.
+    expect(product.releaseArtifacts).toEqual(["web", "androidApp", "androidSdk", "macosApp"]);
+
+    const updated = store.setProductReleaseArtifacts(product.id, ["web", "gateway", "connector"]);
+    expect(updated.releaseArtifacts).toEqual(["web", "gateway", "connector"]);
+
+    store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+    const base = { itemKey: item.key, pullRequestUrl: "https://github.com/owner/repo/pull/42", idempotencyKey: "and-276" };
+    // Declared artifacts are accepted; a default the product dropped is not.
+    expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["androidApp"] })).toThrow(/declared list/);
+    expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["gatway"] })).toThrow(/declared list/);
+    expect(store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["web", "gateway", "connector"] }).status)
+      .toBe("development_complete");
+
+    // Verification must cover every recorded artifact, and only those.
+    const verification = { itemKey: item.key, pullRequestUrl: base.pullRequestUrl, deployedCommit: "a".repeat(40), receiptDigest: "b".repeat(64) };
+    expect(() => store.submitForVerification({ ...verification, releases: [
+      { artifact: "web", version: "1", sourceCommit: "a".repeat(40) },
+    ], idempotencyKey: "partial" })).toThrow(/every required artifact/);
+    expect(() => store.submitForVerification({ ...verification, releases: [
+      { artifact: "web", version: "1", sourceCommit: "a".repeat(40) },
+      { artifact: "gateway", version: "1", sourceCommit: "a".repeat(40) },
+      { artifact: "connector", version: "1", sourceCommit: "a".repeat(40) },
+      { artifact: "macosApp", version: "1", sourceCommit: "a".repeat(40) },
+    ], idempotencyKey: "extra" })).toThrow(/every required artifact/);
+    expect(store.submitForVerification({ ...verification, releases: [
+      { artifact: "web", version: "1", sourceCommit: "a".repeat(40) },
+      { artifact: "gateway", version: "1", sourceCommit: "a".repeat(40) },
+      { artifact: "connector", version: "1", sourceCommit: "a".repeat(40) },
+    ], idempotencyKey: "complete" }).status).toBe("pending_verification");
+  });
+
+  it("rejects a product artifact list that is empty or malformed", async () => {
+    const { store, product } = await seed();
+    expect(() => store.setProductReleaseArtifacts(product.id, [])).toThrow(/between 1 and/);
+    expect(() => store.setProductReleaseArtifacts(product.id, ["web", "web"])).toThrow(/unique identifiers/);
+    expect(() => store.setProductReleaseArtifacts(product.id, ["1bad"])).toThrow(/unique identifiers/);
+    expect(() => store.setProductReleaseArtifacts(product.id, ["x".repeat(41)])).toThrow(/unique identifiers/);
+    // Resetting restores the default rather than leaving a product with none.
+    expect(store.setProductReleaseArtifacts(product.id, ["gateway"]).releaseArtifacts).toEqual(["gateway"]);
+    expect(store.setProductReleaseArtifacts(product.id, null).releaseArtifacts).toEqual(["web", "androidApp", "androidSdk", "macosApp"]);
   });
 
   it("keeps the handover summary's own length limit, which is twice a transition note's", async () => {

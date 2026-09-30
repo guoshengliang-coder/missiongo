@@ -1990,6 +1990,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Component"
+  /api/v1/products/{productId}/release-artifacts:
+    parameters:
+      - $ref: "#/components/parameters/ProductId"
+    put:
+      operationId: setProductReleaseArtifacts
+      summary: Replace a product's declared release artifacts (AND-276)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetReleaseArtifactsRequest"
+      responses:
+        "200":
+          description: The product with its updated release artifacts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
   /api/v1/items:
     get:
       operationId: listItems
@@ -3484,7 +3503,7 @@ components:
           items: { $ref: "#/components/schemas/ProductPermission" }
     Product:
       type: object
-      required: [id, keyPrefix, name, createdAt, updatedAt, hasIcon]
+      required: [id, keyPrefix, name, createdAt, updatedAt, hasIcon, releaseArtifacts]
       properties:
         id: { type: string }
         keyPrefix: { type: string, pattern: "^[A-Z][A-Z0-9]{1,9}$" }
@@ -3504,6 +3523,15 @@ components:
             Whether an icon has been uploaded. The image itself is not inlined
             here; fetch it from GET /api/v1/products/{productId}/icon, which the
             browser can cache. False means the generated badge is used.
+        releaseArtifacts:
+          type: array
+          minItems: 1
+          items: { type: string, pattern: "^[A-Za-z][A-Za-z0-9_-]{0,39}$" }
+          description: >-
+            Release artifact identifiers this product declares (AND-276). A
+            development-complete handover may only name these, and a verified
+            release must cover every one recorded. Defaults to the built-in
+            web, androidApp, androidSdk and macosApp when none are declared.
         access:
           type: object
           required: [canOperate, canUseAi]
@@ -3521,6 +3549,19 @@ components:
       properties:
         name: { type: string, minLength: 1 }
         keyPrefix: { type: string, pattern: "^[A-Za-z][A-Za-z0-9]{1,9}$" }
+    SetReleaseArtifactsRequest:
+      type: object
+      required: [artifacts]
+      description: >-
+        The product's release artifact identifiers (AND-276). Send an array of
+        1-20 unique identifiers, or null to reset to the built-in defaults.
+      properties:
+        artifacts:
+          nullable: true
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { type: string, pattern: "^[A-Za-z][A-Za-z0-9_-]{0,39}$" }
     ComponentKind:
       enum: [android, macos, web, server, shared, other]
     Component:

@@ -1336,6 +1336,14 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .component-add-cancel { min-height: 32px; color: var(--muted); background: var(--surface-strong); }
 .component-add-row { align-items: end; }
 .component-add-row .primary-button { height: 42px; white-space: nowrap; }
+.release-artifact-list { display: flex; flex-direction: column; gap: 8px; }
+.release-artifact-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; background: var(--surface-inset); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.release-artifact-row code { font-size: var(--text-sm); font-weight: 700; }
+.release-artifact-row .text-button { color: var(--muted); }
+.release-artifact-add { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; margin-top: 12px; }
+.release-artifact-add input { height: 38px; }
+.release-artifact-add .primary-button { height: 42px; white-space: nowrap; }
+.release-artifact-add .text-button { white-space: nowrap; }
 .capture-form, .product-form, .login-form { display: flex; flex-direction: column; gap: 15px; }
 .capture-form { position: relative; }
 .ai-title-field { display: flex; align-items: flex-end; gap: 8px; }

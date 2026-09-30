@@ -3213,6 +3213,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   /**
+   * Replace a product's declared release artifacts (AND-276). This is what lets
+   * a service, a static site or a standalone component be registered, matched
+   * and verified apart, instead of the server knowing only MissionGo's four.
+   * `{ artifacts: null }` resets the product to the defaults; `operate` matches
+   * the other workspace-shaping settings on this route.
+   */
+  app.put("/api/v1/products/:productId/release-artifacts", async (request) => {
+    const { productId } = request.params as { productId: string };
+    requireProductPermission(request, productId, "operate");
+    const body = objectBody(request.body);
+    const artifacts = body.artifacts === null ? null : stringArrayField(body, "artifacts");
+    if (artifacts === undefined) throw invalidInput("artifacts must be an array of strings or null.");
+    return store.setProductReleaseArtifacts(productId, artifacts);
+  });
+
+  /**
    * One page of the item list plus its summary. Shared by `/items` and by
    * `/bootstrap`, so the first screen a cold start renders cannot drift from the
    * one every later filter change fetches.

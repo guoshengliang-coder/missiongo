@@ -15,6 +15,11 @@ const ARTIFACT_NAMES = {
   macosApp: "macOS App",
 };
 
+/** Display name for an artifact; a product-specific identifier stands for itself. */
+function artifactName(artifact) {
+  return ARTIFACT_NAMES[artifact] ?? artifact;
+}
+
 export function affectsArtifact(path, artifact) {
   if (path.includes("/test/") || path.includes("/tests/") || /(?:\.test\.|\.spec\.|Tests\/)/.test(path)) return false;
   if (artifact === "web") return /^(apps\/web\/|services\/|packages\/|deploy\/)/.test(path);
@@ -76,7 +81,7 @@ function currentRelease(receipt, artifact) {
 }
 
 export function proposedComment(candidate, releases, receipt) {
-  const version = releases.map((release) => `${ARTIFACT_NAMES[release.artifact]} ${release.version}`).join("、");
+  const version = releases.map((release) => `${artifactName(release.artifact)} ${release.version}`).join("、");
   const key = createHash("sha256")
     .update(`${candidate.itemKey}\n${candidate.pullRequestUrl}\n${JSON.stringify(releases)}`)
     .digest("hex");
@@ -85,7 +90,7 @@ export function proposedComment(candidate, releases, receipt) {
     itemKey: candidate.itemKey,
     bodyKind: "free",
     summary: `${version} 已正式发布，可开始验证`,
-    text: `${version} 已正式发布。关联 PR：${candidate.pullRequestUrl}。各产物来源提交：${releases.map((release) => `${ARTIFACT_NAMES[release.artifact]} ${release.sourceCommit}`).join("；")}。请在这些版本验证本条目；这条通知不代表验收通过。`,
+    text: `${version} 已正式发布。关联 PR：${candidate.pullRequestUrl}。各产物来源提交：${releases.map((release) => `${artifactName(release.artifact)} ${release.sourceCommit}`).join("；")}。请在这些版本验证本条目；这条通知不代表验收通过。`,
     idempotencyKey: `release-notice:${key}`,
     transitionIdempotencyKey: `release-handoff:${key}`,
     pullRequestUrl: candidate.pullRequestUrl,

@@ -334,6 +334,11 @@ export const api = {
     }),
   removeProductIcon: (productId: string) =>
     request<Product>(`/api/v1/products/${encodeURIComponent(productId)}/icon`, { method: "DELETE" }),
+  setProductReleaseArtifacts: (productId: string, artifacts: readonly string[] | null) =>
+    request<Product>(`/api/v1/products/${encodeURIComponent(productId)}/release-artifacts`, {
+      method: "PUT",
+      body: JSON.stringify({ artifacts }),
+    }),
   listComponents: (productId: string, options: { includeArchived?: boolean } = {}) =>
     request<Component[]>(
       `/api/v1/products/${encodeURIComponent(productId)}/components${options.includeArchived ? "?includeArchived=true" : ""}`,

@@ -28,6 +28,9 @@ import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { MissionGoDatabase } from "./storage/database.js";
 import {
   COMPONENT_KINDS,
+  DEFAULT_RELEASE_ARTIFACTS,
+  MAX_RELEASE_ARTIFACTS,
+  isReleaseArtifactId,
   type AttachmentRecord,
   type ClaimWorkItemInput,
   type SubmitDevelopmentCompleteInput,
@@ -72,6 +75,8 @@ interface ProductRow {
   archived_at: string | null;
   icon_png: string | null;
   created_by_account_id: string | null;
+  /** JSON array of declared release artifacts, or NULL to use the defaults. */
+  release_artifacts: string | null;
 }
 
 interface ComponentRow {
@@ -203,6 +208,40 @@ function isOneOf<T extends string>(value: string, choices: readonly T[]): value 
   return choices.includes(value as T);
 }
 
+/**
+ * Read a product's declared release artifacts (AND-276). A NULL column means the
+ * product declared none, so the historical four apply. A stored list passed
+ * {@link normalizedReleaseArtifacts} on the way in; anything malformed falls back
+ * to the defaults rather than taking the product listing down.
+ */
+function parseReleaseArtifacts(value: string | null): readonly string[] {
+  if (!value) return [...DEFAULT_RELEASE_ARTIFACTS];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((entry) => typeof entry === "string" && isReleaseArtifactId(entry))) {
+      return parsed as string[];
+    }
+  } catch {
+    // Fall through to the defaults.
+  }
+  return [...DEFAULT_RELEASE_ARTIFACTS];
+}
+
+/**
+ * Validate an artifact list a product is about to declare, or that an agent
+ * recorded at handover. Reused by the store method and the product-settings
+ * route so both reject the same shapes.
+ */
+function normalizedReleaseArtifacts(input: readonly string[]): readonly string[] {
+  if (input.length === 0 || input.length > MAX_RELEASE_ARTIFACTS) {
+    throw invalidInput(`A product needs between 1 and ${MAX_RELEASE_ARTIFACTS} release artifacts.`);
+  }
+  if (new Set(input).size !== input.length || input.some((artifact) => !isReleaseArtifactId(artifact))) {
+    throw invalidInput("Release artifacts must be unique identifiers of 1-40 letters, digits, hyphens or underscores, starting with a letter.");
+  }
+  return [...input];
+}
+
 function parseEnvironment(value: string | null): WorkItemEnvironment | undefined {
   if (value === null) return undefined;
   return JSON.parse(value) as WorkItemEnvironment;
@@ -258,7 +297,7 @@ export class MissionGoStore {
     const rows = this.database.connection
       .prepare(
         `SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at, icon_png,
-                created_by_account_id
+                created_by_account_id, release_artifacts
          FROM products${options.includeArchived ? "" : " WHERE archived_at IS NULL"}
          ORDER BY archived_at IS NOT NULL, name`,
       )
@@ -300,6 +339,16 @@ export class MissionGoStore {
     this.database.connection
       .prepare("UPDATE products SET icon_png = ?, updated_at = ? WHERE id = ?")
       .run(pngBase64, new Date().toISOString(), productId);
+    return this.getProduct(productId);
+  }
+
+  /** Replace a product's declared release artifacts, or `null` to reset to the defaults. */
+  setProductReleaseArtifacts(productId: string, artifacts: readonly string[] | null): ProductSnapshot {
+    this.getProduct(productId);
+    const stored = artifacts === null ? null : JSON.stringify(normalizedReleaseArtifacts(artifacts));
+    this.database.connection
+      .prepare("UPDATE products SET release_artifacts = ?, updated_at = ? WHERE id = ?")
+      .run(stored, new Date().toISOString(), productId);
     return this.getProduct(productId);
   }
 
@@ -1338,14 +1387,14 @@ export class MissionGoStore {
     const pullRequestUrl = requiredText(input.pullRequestUrl, "Pull request URL");
     if (pullRequestUrl.length > 500) throw invalidInput("Pull request URL must be 500 characters or fewer.");
     if (!pullRequestUrl.startsWith("https://")) throw invalidInput("Pull request URL must be an https:// address.");
-    const allowedArtifacts = ["web", "androidApp", "androidSdk", "macosApp"];
-    if (input.requiredArtifacts.length > allowedArtifacts.length
-      || new Set(input.requiredArtifacts).size !== input.requiredArtifacts.length
-      || input.requiredArtifacts.some((artifact) => !allowedArtifacts.includes(artifact))) {
+    const requiredArtifacts = [...input.requiredArtifacts];
+    if (requiredArtifacts.length > MAX_RELEASE_ARTIFACTS
+      || new Set(requiredArtifacts).size !== requiredArtifacts.length
+      || requiredArtifacts.some((artifact) => !isReleaseArtifactId(artifact))) {
       throw invalidInput("Required release artifacts must be a unique list of known artifacts.");
     }
     const noReleaseReason = input.noReleaseReason?.trim();
-    if (input.requiredArtifacts.length === 0) {
+    if (requiredArtifacts.length === 0) {
       if (!noReleaseReason || noReleaseReason.length > 4_000) {
         throw invalidInput("An empty artifact list needs a no-release reason of 1 to 4,000 characters.");
       }
@@ -1366,6 +1415,15 @@ export class MissionGoStore {
       if (item.status !== "in_progress") {
         throw conflict("item_not_ready_for_development_complete", "Only an in-progress work item can be marked development complete.");
       }
+      // A nonempty list must name artifacts this product actually declares; an
+      // unknown or misspelled identifier would otherwise sit in the release
+      // queue forever, matching no published artifact.
+      if (requiredArtifacts.length > 0) {
+        const declared = this.getProduct(item.product_id).releaseArtifacts;
+        if (requiredArtifacts.some((artifact) => !declared.includes(artifact))) {
+          throw invalidInput("Required release artifacts must come from the product's declared list.");
+        }
+      }
       const now = new Date().toISOString();
       this.applyTransition(
         item,
@@ -1375,7 +1433,7 @@ export class MissionGoStore {
         summary,
         now,
         input.attribution ?? {},
-        { pullRequestUrl, requiredArtifacts: [...input.requiredArtifacts].sort(),
+        { pullRequestUrl, requiredArtifacts: [...requiredArtifacts].sort(),
           ...(noReleaseReason ? { noReleaseReason } : {}) },
       );
       const result = this.getWorkItem(item.item_key);
@@ -1408,7 +1466,7 @@ export class MissionGoStore {
       if (handover?.payload.pullRequestUrl !== pullRequestUrl || !Array.isArray(required) || required.length === 0
         || releases.length !== required.length
         || new Set(releases.map((release) => release.artifact)).size !== releases.length
-        || releases.some((release) => !required.includes(release.artifact)
+        || releases.some((release) => !isReleaseArtifactId(release.artifact) || !required.includes(release.artifact)
           || !release.version.trim() || release.version.length > 100
           || !/^[0-9a-f]{40}$/.test(release.sourceCommit))) {
         throw invalidInput("Release evidence does not cover the recorded merged PR and every required artifact.");
@@ -1707,7 +1765,7 @@ export class MissionGoStore {
     return this.database.connection
       .prepare(
         `SELECT id, key_prefix, name, next_item_sequence, created_at, updated_at, archived_at, icon_png,
-                created_by_account_id
+                created_by_account_id, release_artifacts
          FROM products WHERE id = ?`,
       )
       .get(productId) as unknown as ProductRow | undefined;
@@ -1909,6 +1967,7 @@ export class MissionGoStore {
       ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
       ...(row.created_by_account_id ? { createdByAccountId: row.created_by_account_id } : {}),
       hasIcon: Boolean(row.icon_png),
+      releaseArtifacts: parseReleaseArtifacts(row.release_artifacts),
     };
   }
 

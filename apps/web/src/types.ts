@@ -84,6 +84,12 @@ export interface Product {
    * delay the first paint. False means the generated badge is used.
    */
   readonly hasIcon: boolean;
+  /**
+   * Release artifact identifiers this product declares (AND-276), read from
+   * `list_products`. A product with none configured reports the defaults, so
+   * this is always a usable list.
+   */
+  readonly releaseArtifacts: readonly string[];
 }
 
 export const COMPONENT_KINDS = ["android", "macos", "web", "server", "shared", "other"] as const;

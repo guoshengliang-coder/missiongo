@@ -42,6 +42,13 @@ export interface ProductSnapshot {
    * `false` means the product draws its generated badge instead.
    */
   readonly hasIcon: boolean;
+  /**
+   * Release artifact identifiers this product declares (AND-276). Agents read
+   * them from `list_products` and may only record these as required artifacts.
+   * Falls back to {@link DEFAULT_RELEASE_ARTIFACTS} when the product declares
+   * none, so products configured before this column existed keep working.
+   */
+  readonly releaseArtifacts: readonly string[];
 }
 
 export interface ComponentSnapshot {
@@ -301,7 +308,35 @@ export interface ClaimWorkItemInput {
   readonly idempotencyKey: string;
 }
 
-export type ReleaseArtifact = "web" | "androidApp" | "androidSdk" | "macosApp";
+/**
+ * A release artifact identifier (AND-276). Products declare their own set, so
+ * this is deliberately not a closed union: a service, a static site and a
+ * standalone component must each be registerable, matchable and verifiable
+ * apart. MissionGo's own artifacts happen to be the four defaults below, but
+ * that is product configuration, not a server-side fact.
+ */
+export type ReleaseArtifact = string;
+
+/**
+ * The artifacts every product starts with when it declares none of its own.
+ * These are MissionGo's historical set; keeping them as the fallback preserves
+ * items handed over before products could configure a list.
+ */
+export const DEFAULT_RELEASE_ARTIFACTS = ["web", "androidApp", "androidSdk", "macosApp"] as const;
+
+/** Upper bound on one product's declared artifacts, matching the MCP schema. */
+export const MAX_RELEASE_ARTIFACTS = 20;
+
+/**
+ * Shape a product may declare and an agent may submit. Letters, digits, hyphen
+ * and underscore, starting with a letter, 1-40 characters. The existing four
+ * (camelCase) pass, and the loose set leaves room for `gateway` or `connector`.
+ */
+export const RELEASE_ARTIFACT_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
+
+export function isReleaseArtifactId(value: string): boolean {
+  return RELEASE_ARTIFACT_ID_PATTERN.test(value);
+}
 
 export interface SubmitDevelopmentCompleteInput {
   readonly itemKey: string;
