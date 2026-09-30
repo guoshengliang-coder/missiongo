@@ -1637,6 +1637,29 @@ export class MissionGoDatabase {
         this.connection.exec("PRAGMA foreign_keys = ON;");
       }
     }
+    // AND-265: only known integration-disable fallbacks are eligible for clock
+    // recovery. Do not guess from observed_at/legacy occurred_at: wait for an
+    // authoritative source timestamp in the next healthy node report.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609300121").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609300121").get()) return;
+        this.connection.exec(`
+          ALTER TABLE agent_sessions ADD COLUMN activity_repair_pending INTEGER NOT NULL DEFAULT 0
+            CHECK (activity_repair_pending IN (0, 1));
+          UPDATE agent_sessions SET activity_repair_pending = 1
+          WHERE status = 'unavailable' AND last_error IN (
+            'Codex 集成已停用；不会读取或回复现有会话。',
+            'Claude Code 集成已停用；不会读取或回复现有会话。',
+            'OpenCode 集成已停用；不会读取或回复现有会话。',
+            '本机已停用 codex 集成，会话暂不同步；重新启用后会自动恢复。',
+            '本机已停用 claude_code 集成，会话暂不同步；重新启用后会自动恢复。',
+            '本机已停用 opencode 集成，会话暂不同步；重新启用后会自动恢复。'
+          );
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+          .run(202609300121, new Date().toISOString());
+      });
+    }
     // AND-267: file-specific capabilities reuse the existing staged uploads.
     if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609300152").get()) {
       this.transaction(() => {

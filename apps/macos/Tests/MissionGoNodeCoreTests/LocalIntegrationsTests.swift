@@ -16,6 +16,11 @@ private struct AccessTestAdapter: AgentAdapter {
         if fail { throw LaunchError("access denied", retryAfterSeconds: retryable ? 30 : nil) }
         return LaunchResult(sessionName: "test", sessionUrl: nil, logPath: nil)
     }
+
+    func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        calls.withLock { $0.append("synchronize") }
+        return AgentSessionReport(status: "idle", messages: [])
+    }
 }
 
 final class LocalIntegrationsTests: XCTestCase {
@@ -60,6 +65,54 @@ final class LocalIntegrationsTests: XCTestCase {
         _ = try await adapter.launch(job)
         XCTAssertEqual(base.calls.current, ["launch:plan"])
         XCTAssertEqual(restored.state(for: .claudeCode)?.version, "2.1")
+    }
+
+    func testExistingAdapterSeesLaterPersistedConsentAndDisable() async throws {
+        let saved = defaults()
+        let observer = LocalIntegrations(defaults: saved)
+        let base = AccessTestAdapter(kind: "codex", fail: false)
+        let adapter = ConsentedAgentAdapter(agent: .codex, base: base, access: observer)
+        let session = NodeAgentSession(id: "session", agentKind: "codex", sessionRef: "thread", status: "idle")
+        XCTAssertNil(observer.state(for: .codex))
+        let writer = LocalIntegrations(defaults: saved)
+        writer.finish(.codex, attempt: writer.begin(.codex), version: "1.0")
+        _ = try await adapter.synchronize(session)
+        XCTAssertEqual(base.calls.current, ["synchronize"])
+        writer.disable(.codex)
+        do { _ = try await adapter.synchronize(session); XCTFail("disabled synchronization") } catch {}
+        XCTAssertEqual(base.calls.current, ["synchronize"])
+    }
+
+    func testIndependentOwnersPreserveOtherClientsAndRejectStaleCompletion() {
+        let saved = defaults()
+        let first = LocalIntegrations(defaults: saved)
+        let second = LocalIntegrations(defaults: saved)
+        first.finish(.codex, attempt: first.begin(.codex), version: "1.0")
+        second.finish(.claudeCode, attempt: second.begin(.claudeCode), version: "2.0")
+        XCTAssertEqual(first.state(for: .codex)?.version, "1.0")
+        XCTAssertEqual(first.state(for: .claudeCode)?.version, "2.0")
+        let attempt = first.begin(.codex)
+        second.disable(.codex)
+        first.finish(.codex, attempt: attempt, version: "stale")
+        XCTAssertNil(LocalIntegrations(defaults: saved).state(for: .codex))
+        XCTAssertEqual(second.state(for: .claudeCode)?.version, "2.0")
+    }
+
+    func testMalformedClientRecordCannotDisableOtherClientsAfterRestart() async throws {
+        let saved = defaults()
+        let attempt = UUID()
+        let records: [String: Any] = [
+            "codex": ["attempt": attempt.uuidString, "version": "1.0"],
+            "opencode": ["attempt": "incompatible-record", "version": 42]
+        ]
+        saved.set(try JSONSerialization.data(withJSONObject: records), forKey: "localIntegrations.v1")
+        let restored = LocalIntegrations(defaults: saved)
+        XCTAssertEqual(restored.state(for: .codex)?.version, "1.0")
+        XCTAssertNil(restored.state(for: .openCode))
+        let base = AccessTestAdapter(kind: "codex", fail: false)
+        let adapter = ConsentedAgentAdapter(agent: .codex, base: base, access: restored)
+        _ = try await adapter.synchronize(NodeAgentSession(id: "session", agentKind: "codex", sessionRef: "thread", status: "idle"))
+        XCTAssertEqual(base.calls.current, ["synchronize"])
     }
 
     func testFailurePausesAcrossRestartsAndSubsequentDispatchesDoNotRetry() async {

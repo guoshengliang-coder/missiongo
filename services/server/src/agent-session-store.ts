@@ -929,7 +929,7 @@ export class AgentSessionStore {
     this.database.connection
       .prepare(
         `UPDATE agent_sessions
-         SET archived_at = ?, archive_source = ?, updated_at = ?, activity_at = ?,
+         SET archived_at = ?, archive_source = ?, updated_at = ?, activity_at = ?, activity_repair_pending = 0,
              auto_archive_suppressed = CASE WHEN ? = 0 AND archive_reason = 'auto' THEN 1 ELSE auto_archive_suppressed END,
              archive_reason = NULL,
              source_archive_error = NULL,
@@ -1083,7 +1083,7 @@ export class AgentSessionStore {
         .run(id, sessionId, accountId, text, now);
       this.attachments?.bind(sessionId, accountId, id, attachmentIds);
       this.database.connection
-        .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
+        .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ?, activity_repair_pending = 0 WHERE id = ?")
         .run(now, now, sessionId);
       this.database.connection
         .prepare(
@@ -1194,7 +1194,7 @@ export class AgentSessionStore {
         )
         .run(id, sessionId, accountId, "停止当前任务", turnId, now);
       this.database.connection
-        .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
+        .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ?, activity_repair_pending = 0 WHERE id = ?")
         .run(now, now, sessionId);
     });
     return {
@@ -1235,7 +1235,7 @@ export class AgentSessionStore {
         throw conflict("agent_reply_changed", "The queued reply changed before it could be cancelled.");
       }
       this.database.connection
-        .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?")
+        .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ?, activity_repair_pending = 0 WHERE id = ?")
         .run(now, now, sessionId);
       this.database.connection
         .prepare(
@@ -1280,7 +1280,7 @@ export class AgentSessionStore {
         commandId, sessionId);
       if (changed.changes !== 1) throw conflict("agent_reply_changed", "The reply changed before it was confirmed.");
       this.database.connection.prepare(
-        "UPDATE agent_sessions SET updated_at = ?, activity_at = ? WHERE id = ?",
+        "UPDATE agent_sessions SET updated_at = ?, activity_at = ?, activity_repair_pending = 0 WHERE id = ?",
       ).run(now, now, sessionId);
       autoArchiveFinishedDispatches(this.database, [command.dispatch_id], now);
     });
@@ -1480,7 +1480,7 @@ export class AgentSessionStore {
     const session = this.database.connection
       .prepare(
         `SELECT id, dispatch_id, agent_kind, status, last_error, archived_at, archive_source, activities_json, turn_state_json, activity_at,
-                source_restore_pending
+                source_restore_pending, activity_repair_pending, created_at
          FROM agent_sessions WHERE id = ? AND node_id = ?`,
       )
       .get(input.sessionId, input.nodeId) as unknown as {
@@ -1495,6 +1495,8 @@ export class AgentSessionStore {
         activities_json: string;
         turn_state_json: string;
         activity_at: string;
+        activity_repair_pending: number;
+        created_at: string;
       } | undefined;
     if (!session) throw notFound("Agent session");
     // A turn state an agent did not report means "not reported this time",
@@ -1551,24 +1553,73 @@ export class AgentSessionStore {
     const archiveChanged = sourceArchived === true
       ? !session.archived_at || session.archive_source === null
       : sourceArchived === false && session.archive_source === "source";
-    const activityChanged = session.status !== input.status
-      || session.last_error !== error
+    // AND-265: unavailable is a mirror/connection state, not conversation
+    // progress. Keep the last task snapshot through an empty error fallback,
+    // so receiving it again on recovery also cannot make an old session new.
+    const healthy = input.status !== "unavailable";
+    const nextActivitiesJson = !healthy && activities.length === 0 ? session.activities_json : activitiesJson;
+    const command = input.commandId && input.commandStatus
+      ? this.database.connection.prepare("SELECT status FROM agent_session_commands WHERE id = ? AND session_id = ?")
+        .get(input.commandId, input.sessionId) as { status: string } | undefined
+      : undefined;
+    const activityChanged = (healthy && session.status !== "unavailable" && session.status !== input.status)
       || messagesChanged
-      || session.activities_json !== activitiesJson
-      || session.turn_state_json !== turnStateJson
-      || archiveChanged
-      || Boolean(input.commandId && input.commandStatus);
-    const nextActivityAt = activityChanged ? sourceActivityAt ?? now : session.activity_at;
+      || (healthy && (session.activities_json !== nextActivitiesJson
+        || session.turn_state_json !== turnStateJson
+        || (sourceActivityAt !== undefined && Date.parse(sourceActivityAt) > Date.parse(session.activity_at))
+        || archiveChanged
+        || (command !== undefined && command.status !== input.commandStatus)));
+    let nextActivityAt = activityChanged
+      ? new Date(Math.max(Date.parse(session.activity_at) || 0, Date.parse(sourceActivityAt ?? now))).toISOString()
+      : session.activity_at;
+    let repairPending = session.activity_repair_pending;
+    if (repairPending && healthy) {
+      // The migration only flags known integration-error reports. Legacy
+      // occurred_at can be a poll-time fallback, so never use it as evidence.
+      // Recover lazily from the node's actual source clock (or a source-dated
+      // report that includes the latest stored message), protecting later user
+      // operations with their durable timestamps.
+      const latestStored = storedMessages.reduce<typeof storedMessages[number] | undefined>(
+        (latest, message) => !latest || message.position > latest.position ? message : latest, undefined,
+      );
+      const latestSourceMessage = latestStored
+        ? messages.find((message) => message.sourceId === latestStored.source_id)?.sourceOccurredAt
+        : undefined;
+      const sourceClock = sourceActivityAt ?? (input.status !== "active" && activities.length === 0 ? latestSourceMessage : undefined);
+      if (sourceClock) {
+        const userClock = this.database.connection.prepare(`
+          SELECT MAX(stamp) AS stamp FROM (
+            SELECT created_at AS stamp FROM agent_session_commands WHERE session_id = ?
+            UNION ALL SELECT cancelled_at FROM agent_session_commands WHERE session_id = ?
+            UNION ALL SELECT delivered_at FROM agent_session_commands WHERE session_id = ?
+          )
+        `).get(input.sessionId, input.sessionId, input.sessionId) as { stamp: string | null };
+        const progressState = JSON.parse(turnStateJson) as AgentSessionTurnState;
+        const taskTimes = (JSON.parse(nextActivitiesJson) as AgentSessionActivity[]).map((activity) => activity.startedAt);
+        const stamps = [sourceClock, session.created_at, session.archived_at, userClock.stamp,
+          progressState.turnStartedAt, progressState.lastOutputAt, progressState.thinkingStartedAt, ...taskTimes,
+          ...messages.map((message) => message.sourceOccurredAt)];
+        nextActivityAt = new Date(Math.max(...stamps
+          .filter((stamp): stamp is string => Boolean(stamp) && Number.isFinite(Date.parse(stamp!)))
+          .map((stamp) => Date.parse(stamp)))).toISOString();
+        repairPending = 0;
+      } else if (activityChanged) {
+        // Fresh progress supersedes the polluted clock; no historical time is
+        // invented for a source that does not provide one.
+        nextActivityAt = now;
+        repairPending = 0;
+      }
+    }
     const unreadEvent = snapshotMakesUnread(session.status, input.status, messages, storedBySource);
     this.database.transaction(() => {
       this.database.connection
         .prepare(
           `UPDATE agent_sessions
            SET status = ?, last_error = ?, activities_json = ?, turn_state_json = ?, updated_at = ?,
-               activity_at = ?
+               activity_at = ?, activity_repair_pending = ?
            WHERE id = ?`,
         )
-        .run(input.status, error, activitiesJson, turnStateJson, now, nextActivityAt, input.sessionId);
+        .run(input.status, error, nextActivitiesJson, turnStateJson, now, nextActivityAt, repairPending, input.sessionId);
       if (unreadEvent) {
         this.database.connection
           .prepare("UPDATE dispatches SET unread_at = ? WHERE id = ?")
