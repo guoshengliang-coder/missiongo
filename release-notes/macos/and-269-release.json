@@ -1,0 +1,9 @@
+{
+  "pullRequest": 218,
+  "items": [
+    {
+      "key": "AND-269",
+      "title": "修复 Claude 会话进度和模型名称显示"
+    }
+  ]
+}
