@@ -28,6 +28,7 @@ import { api } from "./api";
 import { AgentIcon } from "./agent-icons";
 import {
   activityLabelKey,
+  approvalNeedsAction,
   agentChatMessages,
   agentSessionDetailRefetchInterval,
   agentSessionMatches,
@@ -583,7 +584,7 @@ export function AgentSessionConsole({
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
-  const approval = sessionQuery.data?.approval ?? selected?.approval;
+  const approval = sessionQuery.data ? sessionQuery.data.approval : selected?.approval;
   // A turn in progress reads as running for every agent that reports one —
   // Claude's own instrumentation, Codex mapping its active thread, OpenCode
   // reporting an active session without a pending question (AND-223).
@@ -1226,7 +1227,7 @@ export function AgentSessionConsole({
                 {(sessionQuery.data?.lastError ?? selected.lastError) && (
                   <p className="inline-error">{sessionQuery.data?.lastError ?? selected.lastError}</p>
                 )}
-                {approval && (
+                {approval && approvalNeedsAction(approval) && (
                   <section className="agent-console-approval" role="alert" aria-label={t("agentApprovalTitle") }>
                     <strong>{approval.kind === "auto" ? t("agentApprovalAutoTitle") : t("agentApprovalTitle")}</strong>
                     <p>{approval.action}</p>

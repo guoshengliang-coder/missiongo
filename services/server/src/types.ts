@@ -306,8 +306,9 @@ export type ReleaseArtifact = "web" | "androidApp" | "androidSdk" | "macosApp";
 export interface SubmitDevelopmentCompleteInput {
   readonly itemKey: string;
   readonly pullRequestUrl: string;
-  /** Release paths touched by the merged PR, independently checked at release. */
+  /** Empty only when the merged PR needs no release and noReleaseReason is given. */
   readonly requiredArtifacts: readonly ReleaseArtifact[];
+  readonly noReleaseReason?: string;
   readonly summary?: string;
   readonly attribution?: EventAttribution;
   readonly idempotencyKey: string;

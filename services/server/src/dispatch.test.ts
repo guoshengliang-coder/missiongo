@@ -3983,8 +3983,10 @@ describe("Widget summary (AND-149)", () => {
     expect(preview.json()).toMatchObject({
       totalUnread: 2,
       sessions: expect.arrayContaining([
-        expect.objectContaining({ sessionId: first.sessionId, agentKind: "codex" }),
-        expect.objectContaining({ sessionId: second.sessionId, agentKind: "codex" }),
+        expect.objectContaining({ sessionId: first.sessionId, agentKind: "codex",
+          items: [{ key: first.mission.itemKey, productId: first.mission.productId, title: "AND work" }] }),
+        expect.objectContaining({ sessionId: second.sessionId, agentKind: "codex",
+          items: [{ key: second.mission.itemKey, productId: second.mission.productId, title: "OTH work" }] }),
       ]),
     });
     expect((await app.inject({ method: "GET", url: "/api/v1/node/unread-sessions", headers: { cookie } })).statusCode).toBe(401);

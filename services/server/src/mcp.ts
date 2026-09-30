@@ -259,7 +259,7 @@ export function createMissionGoMcpServer(
       title: "List development-complete work awaiting a verified release",
       description:
         "For one authorized product, list development-complete items whose handover records a pull request and "
-        + "required artifacts. The release client must verify all current public artifacts and the item before writing.",
+        + "nonempty required artifacts. Explicit no-release work is excluded. The release client must verify all current public artifacts and the item before writing.",
       inputSchema: z.object({
         productId: z.string().min(1),
         limit: z.number().int().min(1).max(100).default(50),
@@ -280,7 +280,7 @@ export function createMissionGoMcpServer(
           .find((event) => event.toStatus === "development_complete" && event.eventType === "status_changed");
         const pullRequestUrl = handover?.payload.pullRequestUrl;
         const requiredArtifacts = handover?.payload.requiredArtifacts;
-        return typeof pullRequestUrl === "string" && pullRequestUrl.startsWith("https://") && Array.isArray(requiredArtifacts)
+        return typeof pullRequestUrl === "string" && pullRequestUrl.startsWith("https://") && Array.isArray(requiredArtifacts) && requiredArtifacts.length > 0
           ? [{ itemKey: item.key, pullRequestUrl, requiredArtifacts }]
           : [];
       });
@@ -604,24 +604,35 @@ export function createMissionGoMcpServer(
       title: "Record merged work as development complete",
       description:
         "Move an in-progress item to development complete only after checking the PR is merged with "
-        + "`gh pr view <url> --json state,mergedAt`, and enumerate every release artifact affected by its files. "
-        + "Write the completion comment first. This does not mean any artifact is published.",
+        + "`gh pr view <url> --json state,mergedAt`, with required repository checks passing. Enumerate artifacts using "
+        + "the current product repository's actual diff and release rules, never another repository's path mapping. "
+        + "Explicit no-release work may use requiredArtifacts: [] only with noReleaseReason explaining scope, evidence "
+        + "and verification. Unknown release requirements stay in progress. Write the completion comment first. "
+        + "No-release work waits for a person to arrange verification; this tool never proves publication or acceptance.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
         pullRequestUrl: z.string().min(1).max(500).startsWith("https://"),
-        requiredArtifacts: z.array(z.enum(["web", "androidApp", "androidSdk", "macosApp"])).min(1).max(4),
+        requiredArtifacts: z.array(z.enum(["web", "androidApp", "androidSdk", "macosApp"])).max(4),
+        noReleaseReason: z.string().trim().min(1).max(4_000).optional(),
         summary: z.string().min(1).max(4_000).optional(),
         idempotencyKey: z.string().min(1).max(200),
+      }).superRefine((input, ctx) => {
+        if (input.requiredArtifacts.length === 0 && !input.noReleaseReason) {
+          ctx.addIssue({ code: "custom", path: ["noReleaseReason"], message: "An empty artifact list needs an explicit no-release reason." });
+        } else if (input.requiredArtifacts.length > 0 && input.noReleaseReason !== undefined) {
+          ctx.addIssue({ code: "custom", path: ["noReleaseReason"], message: "A no-release reason cannot accompany required release artifacts." });
+        }
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, pullRequestUrl, requiredArtifacts, summary, idempotencyKey }, ctx) => {
+    async ({ itemKey, pullRequestUrl, requiredArtifacts, noReleaseReason, summary, idempotencyKey }, ctx) => {
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
       const item = store.submitDevelopmentComplete({
         itemKey: requireItemAccess(ctx, store, itemKey),
         pullRequestUrl,
         requiredArtifacts,
+        ...(noReleaseReason ? { noReleaseReason } : {}),
         ...(summary ? { summary } : {}),
         attribution: {
           accountId: access.accountId,
@@ -631,7 +642,9 @@ export function createMissionGoMcpServer(
       });
       return textResult(
         { item, statusChanged: true },
-        `${item.key} is development complete and awaits a verified release.`,
+        requiredArtifacts.length > 0
+          ? `${item.key} is development complete and awaits a verified release.`
+          : `${item.key} is development complete, requires no release, and awaits a person arranging verification.`,
       );
     },
   );

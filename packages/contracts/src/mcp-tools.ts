@@ -23,7 +23,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "get_attachment", access: "read", purpose: "Obtain controlled access to one work item attachment." },
   { name: "append_comment", access: "write", purpose: "Add one comment to a work item without changing anything a person wrote." },
   { name: "claim_item", access: "write", purpose: "Take a ready work item into progress." },
-  { name: "submit_development_complete", access: "write", purpose: "Record a verified merged PR and every affected release artifact." },
+  { name: "submit_development_complete", access: "write", purpose: "Record a verified merged PR and its release requirements, or an explicit reason no release is needed." },
   { name: "submit_for_verification", access: "write", purpose: "Hand published work over for a person to verify, recording evidence for every required artifact." },
   { name: "create_item", access: "write", purpose: "Record a follow-up split off from another item, or an independent item in a product, after the user approved its content (including the product) in the session." },
   { name: "upload_attachment_chunk", access: "write", purpose: "Stage a bounded chunk of a user-approved attachment in an authorized product." },

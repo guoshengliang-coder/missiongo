@@ -187,6 +187,17 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(StubURLProtocol.recorded.first?.request.value(forHTTPHeaderField: "Authorization"), "Bearer mgn_x")
     }
 
+    func testUnreadSessionItemsCarryTitlesAndSupportOlderServers() throws {
+        let withTitles = #"{"sessionId":"s","agentKind":"codex","nodeName":"M5","activityAt":"now","title":"M5-AND-270,273","items":[{"key":"AND-270","productId":"p","title":"会话标题"},{"key":"AND-273","productId":"p","title":"同步状态"}]}"#
+        let current = try JSONDecoder().decode(UnreadSessionPreview.self, from: Data(withTitles.utf8))
+        XCTAssertEqual(current.items.map(\.label), ["AND-270 · 会话标题", "AND-273 · 同步状态"])
+        let legacy = #"{"key":"AND-270","productId":"p"}"#
+        let old = try JSONDecoder().decode(UnreadSessionPreview.Item.self, from: Data(legacy.utf8))
+        XCTAssertEqual(old.label, "AND-270")
+        let blank = #"{"key":"AND-270","productId":"p","title":"  "}"#
+        XCTAssertEqual(try JSONDecoder().decode(UnreadSessionPreview.Item.self, from: Data(blank.utf8)).label, "AND-270")
+    }
+
     func testUnreadSessionsRejectACountThatDisagreesWithRows() async throws {
         StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"totalUnread":2,"sessions":[]}"#) }
         do {

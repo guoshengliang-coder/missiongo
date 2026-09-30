@@ -12,7 +12,7 @@ final class MainWindowLayoutTests: XCTestCase {
             ["sessionId": "preview-\(index)", "agentKind": "codex", "nodeName": "UI preview",
              "activityAt": "2026-09-30T08:00:00.000Z",
              "title": "窗口布局验证：长会话标题 \(index)",
-             "items": [["key": "TEST-1", "productId": "preview"]]]
+             "items": [["key": "TEST-1", "productId": "preview", "title": "主线新增条目标题：长文本应完整换行并能滚动查看"]]]
         }
         let data = try JSONSerialization.data(withJSONObject: ["totalUnread": sessionCount, "sessions": sessions])
         return try JSONDecoder().decode(UnreadSessionsSnapshot.self, from: data)

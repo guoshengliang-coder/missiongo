@@ -21,6 +21,9 @@ enum MenuPalette {
                                         NSColor(srgbRed: 183 / 255, green: 195 / 255, blue: 195 / 255, alpha: 1))
     static let action = adaptive(NSColor(srgbRed: 22 / 255, green: 107 / 255, blue: 80 / 255, alpha: 1),
                                  NSColor(srgbRed: 113 / 255, green: 224 / 255, blue: 183 / 255, alpha: 1))
+    // The design system's --warn-text colors, readable on menu surfaces.
+    static let warning = adaptive(NSColor(srgbRed: 116 / 255, green: 77 / 255, blue: 14 / 255, alpha: 1),
+                                  NSColor(srgbRed: 240 / 255, green: 194 / 255, blue: 110 / 255, alpha: 1))
     static let badge = adaptive(NSColor(srgbRed: 104 / 255, green: 223 / 255, blue: 178 / 255, alpha: 1),
                                 NSColor(srgbRed: 57 / 255, green: 154 / 255, blue: 122 / 255, alpha: 1))
 }
@@ -208,33 +211,7 @@ private struct UnreadSection: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(model.unreadSessions) { session in
-                        Button { model.openUnreadSession(session) } label: {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(session.title)
-                                    .font(.subheadline.weight(.medium))
-                                    .lineLimit(1)
-                                HStack(spacing: 3) {
-                                    Text(agentName(session.agentKind))
-                                    Text("·")
-                                    Text(session.nodeName)
-                                    Text("·")
-                                    if let date = sessionDate(session.activityAt) {
-                                        Text(date, style: .relative)
-                                    }
-                                    Spacer(minLength: 0)
-                                    Image(systemName: "arrow.up.right")
-                                }
-                                .font(.caption)
-                                .foregroundStyle(MenuPalette.secondaryText)
-                                .lineLimit(1)
-                            }
-                            .padding(.horizontal, 12)
-                            .frame(maxWidth: .infinity, minHeight: 57, alignment: .leading)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help(session.title)
-                        .accessibilityLabel("\(session.title)，\(agentName(session.agentKind))，\(session.nodeName)，\(relativeTime(session.activityAt))，在 Web 打开会话")
+                        UnreadSessionCard(session: session) { model.openUnreadSession(session) }
                         MenuPalette.divider.frame(height: 1)
                     }
                 }
@@ -246,28 +223,6 @@ private struct UnreadSection: View {
                     .overlay(alignment: .top) { MenuPalette.divider.frame(height: 1) }
             }
         }
-    }
-
-    private func agentName(_ kind: String) -> String {
-        switch kind {
-        case "claude_code": return "Claude Code"
-        case "codex": return "Codex"
-        case "opencode": return "OpenCode"
-        default: return kind
-        }
-    }
-
-    private func sessionDate(_ value: String) -> Date? {
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return parser.date(from: value)
-    }
-
-    private func relativeTime(_ value: String) -> String {
-        guard let date = sessionDate(value) else { return "时间未知" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
 
@@ -382,19 +337,18 @@ private struct VersionStatusSection: View {
                     Image(systemName: "book.closed").frame(width: 19)
                     Text("Skill")
                     Spacer()
-                    Text(model.integrationStates.isEmpty ? "未启用" : (model.skillSync?.summary ?? "未检查"))
+                    Text(model.integrationStates.isEmpty ? "未启用" : "按 Agent 展示")
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.trailing)
                         .foregroundStyle(MenuPalette.secondaryText)
-                    if !model.integrationStates.isEmpty, case .synced? = model.skillSync {
-                        Text("· 自动同步").foregroundStyle(MenuPalette.secondaryText)
-                    }
                 }
                 .frame(minHeight: 32)
-                if let reason = model.skillSync?.failureReason {
-                    Text(reason).font(.caption).foregroundStyle(.orange)
-                    Text("可在 Agent 状态点击重新检查重试。")
-                        .font(.caption).foregroundStyle(.secondary)
+                ForEach(LocalAgent.allCases.filter { model.integrationStates[$0.rawValue] != nil }, id: \.rawValue) { agent in
+                    AgentSkillRow(
+                        agent: agent, skill: model.skillSync[agent.rawValue],
+                        expectedVersion: model.loopState.expectedSkillVersion,
+                        retrying: !model.checkingIntegrations.isEmpty
+                    ) { model.retrySkill(agent) }
                 }
                 HStack(spacing: 7) {
                     Image(systemName: "laptopcomputer").frame(width: 19)

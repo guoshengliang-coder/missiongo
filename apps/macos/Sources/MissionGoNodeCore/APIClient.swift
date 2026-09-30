@@ -14,6 +14,12 @@ public struct UnreadSessionPreview: Decodable, Equatable, Sendable, Identifiable
     public struct Item: Decodable, Equatable, Sendable {
         public let key: String
         public let productId: String
+        public let title: String?
+
+        public var label: String {
+            guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { return key }
+            return "\(key) · \(title)"
+        }
     }
 
     public let sessionId: String
@@ -43,12 +49,14 @@ public struct AgentSkillSnapshot: Codable, Equatable, Sendable {
     public let expectedVersion: String?
     public let syncState: String
     public let checkedAt: String?
+    public let reason: String?
 
-    public init(localVersion: String? = nil, expectedVersion: String? = nil, syncState: String, checkedAt: String? = nil) {
+    public init(localVersion: String? = nil, expectedVersion: String? = nil, syncState: String, checkedAt: String? = nil, reason: String? = nil) {
         self.localVersion = localVersion
         self.expectedVersion = expectedVersion
         self.syncState = syncState
         self.checkedAt = checkedAt
+        self.reason = reason
     }
 }
 
