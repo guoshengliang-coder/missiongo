@@ -174,6 +174,53 @@ describe("Commenting over MCP", () => {
     expect(moved?.payload).toMatchObject({ pullRequestUrl: "https://github.com/owner/repo/pull/42", requiredArtifacts: ["web"] });
   });
 
+  it("accepts explicit no-release work without putting it in the release queue", async () => {
+    const { app, call, readToken, writeToken, productId } = await commentingApp();
+    await app.inject({
+      method: "POST", url: "/api/v1/items/HG-1/transitions",
+      headers: { authorization: "Bearer management-test-token" },
+      payload: { to: "ready", reason: "triaged" },
+    });
+    await call(writeToken, 1, "tools/call", {
+      name: "claim_item", arguments: { itemKey: "HG-1", agentId: "codex", idempotencyKey: "claim-no-release" },
+    });
+    const base = { itemKey: "HG-1", pullRequestUrl: "https://github.com/owner/repo/pull/42", requiredArtifacts: [], idempotencyKey: "no-release" };
+    const reason = "Only tests and test-worker protection changed; no distributed runtime artifact changes.";
+    const readOnly = await call(readToken, 2, "tools/call", {
+      name: "submit_development_complete", arguments: { ...base, noReleaseReason: reason },
+    });
+    expect(JSON.stringify(readOnly)).toMatch(/does not include write access/);
+    for (const invalidArguments of [base, { ...base, noReleaseReason: "   " }, { ...base, noReleaseReason: "x".repeat(4_001) },
+      { ...base, requiredArtifacts: ["web"], noReleaseReason: reason }]) {
+      const rejected = await call(writeToken, 3, "tools/call", { name: "submit_development_complete", arguments: invalidArguments });
+      expect(rejected.result?.structuredContent).toBeUndefined();
+    }
+    const handed = await call(writeToken, 4, "tools/call", {
+      name: "submit_development_complete", arguments: { ...base, noReleaseReason: reason },
+    });
+    expect(handed.result?.structuredContent).toMatchObject({ item: { status: "development_complete" }, statusChanged: true });
+    expect(JSON.stringify(handed)).not.toMatch(/awaits a verified release/);
+    const events = (await app.inject({
+      method: "GET", url: "/api/v1/items/HG-1/timeline", headers: { authorization: "Bearer management-test-token" },
+    })).json<{ events: Array<{ toStatus?: string; payload: Record<string, unknown> }> }>().events;
+    expect(events.filter((event) => event.toStatus === "development_complete")).toMatchObject([
+      { payload: { requiredArtifacts: [], noReleaseReason: reason } },
+    ]);
+    const candidates = await call(readToken, 5, "tools/call", {
+      name: "list_release_candidates", arguments: { productId, limit: 1 },
+    });
+    // Filtering an entire page must preserve its cursor, so later release work is not lost.
+    expect(candidates.result?.structuredContent).toMatchObject({ candidates: [], nextBeforeSequence: 1 });
+    const published = await call(writeToken, 6, "tools/call", {
+      name: "submit_for_verification", arguments: {
+        itemKey: "HG-1", pullRequestUrl: base.pullRequestUrl,
+        releases: [{ artifact: "web", version: "abc", sourceCommit: "a".repeat(40) }],
+        deployedCommit: "a".repeat(40), receiptDigest: "b".repeat(64), idempotencyKey: "fake-release",
+      },
+    });
+    expect(JSON.stringify(published)).toMatch(/every required artifact/);
+  });
+
   it("lists only development-complete items with a recorded pull request as release candidates", async () => {
     const { app, call, readToken, writeToken, productId } = await commentingApp();
     const empty = await call(readToken, 1, "tools/call", {
