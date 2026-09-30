@@ -5,10 +5,10 @@ import Security
 /// What this machine keeps between launches: where the server is, and the
 /// credential that identifies the machine to it.
 ///
-/// Only the node credential (`mgn_`) is ever stored. The login token (`mgai_`)
-/// from the browser sign-in is used once to register and then dropped: it
-/// expires in 30 days and cannot be revoked on its own, while the node
-/// credential is long-lived and can be revoked from the console.
+/// The node credential (`mgn_`) and unfinished device login are stored here.
+/// A browser login token (`mgai_`) is checkpointed only until node registration
+/// and credential saving complete, then the temporary entry is deleted. Both
+/// tokens remain in the Keychain rather than preferences or plaintext files.
 public struct NodeCredential: Codable, Equatable, Sendable {
     public let serverUrl: String
     public let nodeId: String
@@ -93,6 +93,19 @@ public struct KeychainCredentialStore: CredentialStore {
         let created = UUID().uuidString.lowercased()
         try write(Data(created.utf8), account: KeychainCredentialStore.installationAccount)
         return created
+    }
+
+    public func loadPendingLogin(allowInteraction: Bool = false) throws -> PendingDeviceLogin? {
+        guard let data = try read(account: "pending-device-login", allowInteraction: allowInteraction) else { return nil }
+        return try JSONDecoder().decode(PendingDeviceLogin.self, from: data)
+    }
+
+    public func savePendingLogin(_ pending: PendingDeviceLogin) throws {
+        try write(JSONEncoder().encode(pending), account: "pending-device-login")
+    }
+
+    public func deletePendingLogin() throws {
+        try delete(account: "pending-device-login")
     }
 
     // MARK: Keychain plumbing

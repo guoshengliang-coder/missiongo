@@ -31,9 +31,16 @@ struct SignedOutView: View {
             if model.phase == .signingIn {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("请在浏览器中完成登录…")
+                    Text(model.loginStatus)
                     Spacer()
                     Button("取消") { model.cancelSignIn() }
+                }
+                if let pending = model.deviceLogin {
+                    Text(pending.userCode).font(.title2.monospaced()).textSelection(.enabled)
+                    Text(pending.verificationUri.absoluteString).font(.caption).textSelection(.enabled)
+                    Text("请在浏览器核对验证码并授权。退出后重新打开客户端可继续此次登录。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("打开验证页面") { model.reopenDeviceLogin() }
                 }
             } else {
                 Button {

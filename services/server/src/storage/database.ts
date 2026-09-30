@@ -1673,6 +1673,29 @@ export class MissionGoDatabase {
           .run(202609300152, new Date().toISOString());
       });
     }
+    // AND-275: pending device login survives service restarts; codes are hashed.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609301342").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE oauth_device_requests (
+            device_hash TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            user_hash TEXT NOT NULL UNIQUE,
+            consent_proof TEXT NOT NULL,
+            scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json)),
+            expires_at INTEGER NOT NULL,
+            interval_ms INTEGER NOT NULL,
+            next_poll_at INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'consumed')),
+            user_json TEXT CHECK (user_json IS NULL OR json_valid(user_json)),
+            credentials_at INTEGER
+          ) STRICT;
+          CREATE INDEX idx_oauth_device_expiry ON oauth_device_requests(expires_at);
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+          .run(202609301342, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

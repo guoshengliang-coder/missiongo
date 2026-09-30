@@ -72,8 +72,10 @@ import {
   MISSIONGO_NODE_SCOPE,
   MISSIONGO_WRITE_SCOPE,
   MissionGoOAuthProvider,
+  parseRequestedScopes,
   type OAuthAuthorizationInput,
 } from "./oauth.js";
+import { DEVICE_GRANT, DeviceAuthorizationStore, DeviceGrantError } from "./device-authorization.js";
 import { MissionGoStore } from "./store.js";
 import { COMMENT_BODY_KINDS, COMPONENT_KINDS, type ComponentKind } from "./types.js";
 import type { FeedbackLogEntry, SdkPrincipal } from "./types.js";
@@ -454,6 +456,7 @@ function oauthLoginPage(
   scopes: readonly string[],
   writeTools: McpWriteTier,
   invalidCredentials = false,
+  device?: { userCode: string; proof: string },
 ): string {
   const writes = scopes.includes(MISSIONGO_WRITE_SCOPE) && writeTools !== "none";
   const writeGrant = "<strong>发表评论、领取待处理任务、在 PR 合并后标记开发完成，并在相关产物核实发布后推到待验证</strong>。"
@@ -476,7 +479,7 @@ function oauthLoginPage(
   <link rel="stylesheet" href="/oauth/login.css">
 </head>
 <body><main class="card">
-  <div class="mark">🚀</div><p class="eyebrow">${writes ? "AI 读写授权" : "AI 读取授权"}</p><h1 class="title">连接 MissionGo</h1>
+  <div class="mark">🚀</div><p class="eyebrow">${device ? "设备登录授权" : writes ? "AI 读写授权" : "AI 读取授权"}</p><h1 class="title">连接 MissionGo</h1>
   <p class="copy"><span class="client">${escapedHtml(clientName)}</span> 请求以下权限。首次连接请验证账号。授权后它读到的范围，就是你这个账号的产品权限。</p>
   <ul class="scopes">
     <li>读取你有权限查看的 MissionGo 内容</li>
@@ -484,11 +487,14 @@ function oauthLoginPage(
     ${scopes.includes(MISSIONGO_NODE_SCOPE) ? `<li>${nodeGrant}</li>` : ""}
   </ul>
   ${invalidCredentials ? '<p class="error">邮箱或密码不正确，请重新输入。</p>' : ""}
-  <form method="post" action="/oauth/authorize">
+  ${device ? `<p class="copy">请核对客户端显示的验证码：</p><p class="device-code">${escapedHtml(device.userCode)}</p><p class="copy">只有你正在登录的设备才能获得这次授权。</p>` : ""}
+  <form method="post" action="${device ? "/oauth/device" : "/oauth/authorize"}">
+    ${device ? `<input type="hidden" name="user_code" value="${escapedHtml(device.userCode)}"><input type="hidden" name="proof" value="${escapedHtml(device.proof)}">` : ""}
     <input type="hidden" name="request" value="${escapedHtml(requestToken)}">
     <label for="username">邮箱</label><input id="username" name="username" type="email" autocomplete="username" required autofocus>
     <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required>
     <button type="submit">确认并连接</button>
+    ${device ? '<button class="secondary" type="submit" name="decision" value="deny" formnovalidate>拒绝授权</button>' : ""}
   </form>
   <p class="note">密码只用于本次验证，不会交给 AI。${scopeNote}</p>
 </main></body></html>`;
@@ -502,6 +508,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const agentSessionStore = new AgentSessionStore(store.database, agentSessionAttachments);
   const agentApprovalStore = new AgentApprovalStore(store.database);
   const accountStore = new AccountStore(store.database);
+  const deviceAuthorizations = new DeviceAuthorizationStore(store.database);
   const aiTitle = new AiTitleService(
     store.database,
     options.adminAccount?.sessionSecret ?? options.adminToken ?? "local-development-only",
@@ -904,7 +911,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.get("/oauth/login.css", async (_request, reply) => reply
       .header("cache-control", "public, max-age=3600")
       .type("text/css; charset=utf-8")
-      .send(`*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f3ed;color:#172033;font-family:system-ui,-apple-system,"PingFang SC",sans-serif;padding:20px}.card{width:min(100%,440px);background:#fff;border:1px solid #dedbd2;border-radius:24px;padding:32px;box-shadow:0 20px 55px rgba(23,32,51,.12)}.mark{display:grid;place-items:center;width:54px;height:54px;border-radius:17px;background:#61dfb3;font-size:27px}.eyebrow{margin:24px 0 8px;color:#72798a;font-size:13px;font-weight:700}.title{margin:0;font-size:30px;line-height:1.15}.copy{color:#697183;line-height:1.65}.scopes{margin:0 0 4px;padding-left:20px;color:#697183;line-height:1.7;font-size:14px}.scopes strong{color:#172033}.client{font-weight:700;color:#172033}.error{padding:11px 13px;border-radius:12px;background:#fff0f0;color:#ad2e2e;font-size:14px}label{display:block;margin:18px 0 7px;font-size:14px;font-weight:700}input{width:100%;height:48px;border:1px solid #cbc8c0;border-radius:12px;padding:0 13px;font:inherit}button{width:100%;height:50px;margin-top:24px;border:0;border-radius:13px;background:#172033;color:#fff;font:inherit;font-weight:750;cursor:pointer}.note{margin:16px 0 0;color:#7a8190;font-size:12px;line-height:1.55}@media(max-width:520px){.card{padding:24px;border-radius:20px}.title{font-size:27px}}`));
+      .send(`:root{--surface-sunken:#f4f3ee;--ink:#172033;--line:#deddd6;--text-2xl:23px;--radius-md:11px}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f3ed;color:#172033;font-family:system-ui,-apple-system,"PingFang SC",sans-serif;padding:20px}.card{width:min(100%,440px);background:#fff;border:1px solid #dedbd2;border-radius:24px;padding:32px;box-shadow:0 20px 55px rgba(23,32,51,.12)}.mark{display:grid;place-items:center;width:54px;height:54px;border-radius:17px;background:#61dfb3;font-size:27px}.eyebrow{margin:24px 0 8px;color:#72798a;font-size:13px;font-weight:700}.title{margin:0;font-size:30px;line-height:1.15}.copy{color:#697183;line-height:1.65}.scopes{margin:0 0 4px;padding-left:20px;color:#697183;line-height:1.7;font-size:14px}.scopes strong{color:#172033}.client{font-weight:700;color:#172033}.error{padding:11px 13px;border-radius:12px;background:#fff0f0;color:#ad2e2e;font-size:14px}label{display:block;margin:18px 0 7px;font-size:14px;font-weight:700}input{width:100%;height:48px;border:1px solid #cbc8c0;border-radius:12px;padding:0 13px;font:inherit}button{width:100%;height:50px;margin-top:24px;border:0;border-radius:13px;background:#172033;color:#fff;font:inherit;font-weight:750;cursor:pointer}.device-code{font:700 var(--text-2xl) ui-monospace,monospace;letter-spacing:1px;white-space:nowrap;text-align:center;padding:12px;border-radius:var(--radius-md);background:var(--surface-sunken)}button.secondary{background:var(--surface-sunken);color:var(--ink);border:1px solid var(--line);margin-top:12px}.note{margin:16px 0 0;color:#7a8190;font-size:12px;line-height:1.55}@media(max-width:520px){.card{padding:24px;border-radius:20px}.title{font-size:27px}}`));
 
     app.get("/.well-known/oauth-protected-resource/mcp", async (_request, reply) => reply
       .header("cache-control", "public, max-age=300")
@@ -923,7 +930,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         token_endpoint: `${publicOrigin}/oauth/token`,
         registration_endpoint: `${publicOrigin}/oauth/register`,
         response_types_supported: ["code"],
-        grant_types_supported: ["authorization_code"],
+        device_authorization_endpoint: `${publicOrigin}/oauth/device_authorization`,
+        grant_types_supported: ["authorization_code", DEVICE_GRANT],
         code_challenge_methods_supported: ["S256"],
         token_endpoint_auth_methods_supported: ["none"],
         scopes_supported: [...MISSIONGO_SUPPORTED_SCOPES],
@@ -933,7 +941,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       try {
         const body = objectBody(request.body);
         const redirectUris = stringArrayField(body, "redirect_uris") ?? [];
-        const client = oauthProvider.registerClient({
+        const deviceOnly = Array.isArray(body.grant_types) && body.grant_types.length === 1 && body.grant_types[0] === DEVICE_GRANT;
+        // Existing MCP clients may also advertise refresh_token. Preserve the
+        // prior authorization-code registration behavior for those clients.
+        if (deviceOnly && (redirectUris.length > 0 || (body.token_endpoint_auth_method && body.token_endpoint_auth_method !== "none"))) {
+          throw new Error("invalid_client_metadata");
+        }
+        const client = deviceOnly ? oauthProvider.registerDeviceClient(typeof body.client_name === "string" ? body.client_name : undefined) : oauthProvider.registerClient({
           redirectUris,
           ...(typeof body.client_name === "string" ? { clientName: body.client_name } : {}),
           ...(typeof body.token_endpoint_auth_method === "string" ? { tokenEndpointAuthMethod: body.token_endpoint_auth_method } : {}),
@@ -943,8 +957,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           client_name: client.name,
           redirect_uris: client.redirectUris,
           token_endpoint_auth_method: "none",
-          grant_types: ["authorization_code"],
-          response_types: ["code"],
+          grant_types: deviceOnly ? [DEVICE_GRANT] : ["authorization_code"],
+          response_types: deviceOnly ? [] : ["code"],
           client_id_issued_at: Math.floor(Date.now() / 1_000),
         });
       } catch {
@@ -952,6 +966,76 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           error: "invalid_client_metadata",
           error_description: "The client registration metadata is invalid.",
         });
+      }
+    });
+
+    // Limit creation separately from password failures; prune stale IP buckets.
+    const deviceStarts = new Map<string, { count: number; resetAt: number }>();
+    app.post("/oauth/device_authorization", async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      const now = Date.now();
+      for (const [ip, bucket] of deviceStarts) if (bucket.resetAt <= now) deviceStarts.delete(ip);
+      const bucket = deviceStarts.get(request.ip) ?? { count: 0, resetAt: now + 60_000 };
+      if (bucket.count >= 30 || deviceStarts.size >= 10_000) return reply.status(429).send({ error: "temporarily_unavailable" });
+      bucket.count += 1;
+      deviceStarts.set(request.ip, bucket);
+      try {
+        const form = new URLSearchParams(typeof request.body === "string" ? request.body : "");
+        const client = oauthProvider.deviceClient(form.get("client_id") ?? "");
+        const scopes = parseRequestedScopes(form.get("scope") ?? undefined);
+        return reply.send(deviceAuthorizations.begin(client.id, scopes, publicOrigin, now));
+      } catch (error) {
+        const code = error instanceof Error && ["invalid_client", "invalid_scope", "temporarily_unavailable"].includes(error.message)
+          ? error.message : "invalid_request";
+        return reply.status(400).send({ error: code });
+      }
+    });
+
+    const devicePage = (content: string) => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>设备登录</title><link rel="stylesheet" href="/oauth/login.css"></head><body><main class="card">${content}</main></body></html>`;
+    const deviceUnavailable = () => devicePage('<h1 class="title">登录请求不可用</h1><p class="copy">验证码无效、已过期或已处理。请回到客户端查看状态，必要时重新发起登录。</p>');
+    app.get("/oauth/device", async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      if (loginIsRateLimited(request, reply, Date.now())) return reply;
+      reply.type("text/html; charset=utf-8");
+      const userCode = singleQueryValue((request.query as Record<string, unknown>).user_code);
+      if (!userCode) return reply.send(devicePage('<h1 class="title">设备登录</h1><form method="get" action="/oauth/device"><label for="user_code">客户端显示的验证码</label><input id="user_code" name="user_code" autocomplete="off" required><button>继续</button></form>'));
+      try {
+        const row = deviceAuthorizations.verification(userCode);
+        const client = oauthProvider.deviceClient(row.client_id);
+        return reply.send(oauthLoginPage(client.name, "", JSON.parse(row.scopes_json) as string[], writeTools, false, { userCode, proof: row.consent_proof }));
+      } catch {
+        recordLoginFailure(request, Date.now());
+        return reply.status(400).send(deviceUnavailable());
+      }
+    });
+
+    app.post("/oauth/device", async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      const now = Date.now();
+      if (loginIsRateLimited(request, reply, now)) return reply;
+      reply.type("text/html; charset=utf-8");
+      const form = new URLSearchParams(typeof request.body === "string" ? request.body : "");
+      const userCode = form.get("user_code") ?? "";
+      const proof = form.get("proof") ?? "";
+      try {
+        const row = deviceAuthorizations.verification(userCode, now);
+        if (!hasBearerToken(`Bearer ${proof}`, row.consent_proof)) throw new DeviceGrantError("invalid_request");
+        const client = oauthProvider.deviceClient(row.client_id);
+        if (form.get("decision") === "deny") {
+          deviceAuthorizations.decide(userCode, proof, undefined, undefined, now);
+          return reply.send(devicePage('<h1 class="title">已拒绝授权</h1><p class="copy">可以关闭此页面，客户端会显示拒绝状态。</p>'));
+        }
+        const account = accountStore.verifyCredentials(form.get("username")?.trim() ?? "", form.get("password") ?? "");
+        if (!account) {
+          recordLoginFailure(request, now);
+          return reply.status(401).send(oauthLoginPage(client.name, "", JSON.parse(row.scopes_json) as string[], writeTools, true, { userCode, proof }));
+        }
+        deviceAuthorizations.decide(userCode, proof, { id: account.id, username: account.email, role: account.role }, accountStore.credentialsStamp(account), now);
+        loginFailures.delete(request.ip);
+        return reply.send(devicePage('<h1 class="title">授权完成</h1><p class="copy">可以关闭此页面，回到客户端等待登录完成。</p>'));
+      } catch {
+        recordLoginFailure(request, now);
+        return reply.status(400).send(deviceUnavailable());
       }
     });
 
@@ -1022,7 +1106,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.post("/oauth/token", async (request, reply) => {
       const form = new URLSearchParams(typeof request.body === "string" ? request.body : "");
       try {
-        const issued = oauthProvider.exchangeCode({
+        const isDevice = form.get("grant_type") === DEVICE_GRANT;
+        const issued = isDevice ? deviceAuthorizations.poll(form.get("device_code") ?? "", form.get("client_id") ?? "", (row) => {
+          const user = JSON.parse(row.user_json!) as AdminSessionUser;
+          const account = accountStore.resolveActive(user.id, row.credentials_at!);
+          if (!account) throw new DeviceGrantError("access_denied");
+          const token = oauthProvider.issueDeviceToken(row.client_id, JSON.parse(row.scopes_json) as string[],
+            { id: account.id, username: account.email, role: account.role }, row.credentials_at!);
+          accountStore.recordAiAuthorization({
+            tokenId: token.claims.tokenId, accountId: token.claims.id, clientId: token.claims.clientId,
+            scopes: token.claims.scopes, issuedAt: token.claims.issuedAt, expiresAt: token.claims.expiresAt,
+          });
+          return token;
+        }) : oauthProvider.exchangeCode({
           grantType: form.get("grant_type") ?? "",
           code: form.get("code") ?? "",
           clientId: form.get("client_id") ?? "",
@@ -1032,7 +1128,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         // Recorded here rather than inside the provider: the provider mints and
         // signs, the database is this layer's business. From now on this
         // authorization can be listed and cut off on its own.
-        accountStore.recordAiAuthorization({
+        if (!isDevice) accountStore.recordAiAuthorization({
           tokenId: issued.claims.tokenId,
           accountId: issued.claims.id,
           clientId: issued.claims.clientId,
@@ -1046,7 +1142,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           expires_in: issued.expiresIn,
           scope: issued.scope,
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof DeviceGrantError) return reply.header("cache-control", "no-store").status(400).send({ error: error.message });
         return reply.header("cache-control", "no-store").status(400).send({
           error: "invalid_grant",
           error_description: "The authorization code is invalid, expired, or already used.",

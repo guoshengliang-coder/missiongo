@@ -66,6 +66,8 @@ final class AppModel: ObservableObject {
     }
 
     private enum DefaultsKey {
+        static let credentialUnavailable = "credentialUnavailable"
+        static let pendingLoginCancelled = "pendingLoginCancelled"
         static let serverOverride = "serverURLOverride"
         static let revokedNotice = "lastSessionRevoked"
         static let importedPath = "explicitlyImportedCLIPath"
@@ -84,6 +86,8 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var phase: Phase = .starting
     @Published private(set) var loginError: String?
+    @Published private(set) var deviceLogin: PendingDeviceLogin?
+    @Published private(set) var loginStatus = "正在准备登录…"
     @Published private(set) var showsRevokedNotice: Bool
     @Published private(set) var serverOverride: String?
     @Published private(set) var loopState = NodeLoopState()
@@ -131,6 +135,8 @@ final class AppModel: ObservableObject {
     // MARK: Private state
 
     private let store = KeychainCredentialStore()
+    private let credentialAccess = AsyncCredentialAccess()
+    private var loginGeneration = 0
     private let integrations = LocalIntegrations()
     private let candidateSnapshot = MappedRepositorySnapshot()
     private let defaults = UserDefaults.standard
@@ -165,6 +171,16 @@ final class AppModel: ObservableObject {
     }
 
     #if DEBUG
+    /// Offline device-login fixture for layout checks; no network or Keychain I/O.
+    init(previewDeviceLogin: PendingDeviceLogin) {
+        isPreview = true
+        showsRevokedNotice = false
+        serverOverride = previewDeviceLogin.serverUrl
+        phase = .signingIn
+        deviceLogin = previewDeviceLogin
+        loginStatus = "等待浏览器授权…"
+    }
+
     /// A read-only UI fixture. It never starts the node loop, reads credentials,
     /// or refreshes an integration; release builds do not include this path.
     init(previewCredential: NodeCredential, unread: UnreadSessionsSnapshot, agentVersions: [String: String]) {
@@ -250,7 +266,12 @@ final class AppModel: ObservableObject {
             self.environment = environment
             let credential: NodeCredential?
             do {
-                credential = try store.loadCredential(allowInteraction: false)
+                if defaults.bool(forKey: DefaultsKey.credentialUnavailable) {
+                    credential = nil
+                } else {
+                    let store = self.store
+                    credential = try await credentialAccess.run { try store.loadCredential(allowInteraction: false) }
+                }
             } catch {
                 credential = nil
                 loginError = "未自动读取登录凭据：\(error.localizedDescription)。请点击登录后按系统提示授权。"
@@ -258,6 +279,23 @@ final class AppModel: ObservableObject {
             if let credential {
                 enterSignedIn(credential)
             } else {
+                if loginError == nil, !defaults.bool(forKey: DefaultsKey.pendingLoginCancelled) {
+                    let store = self.store
+                    do {
+                        if let pending = try await credentialAccess.run(operation: { try store.loadPendingLogin() }) {
+                            if pending.isExpired || pending.serverUrl != loginServerUrl {
+                                defaults.set(true, forKey: DefaultsKey.pendingLoginCancelled)
+                                try await credentialAccess.run { try store.deletePendingLogin() }
+                            } else {
+                                phase = .signedOut
+                                beginDeviceSignIn(resuming: pending)
+                                return
+                            }
+                        }
+                    } catch {
+                        loginError = "未能恢复登录：\(error.localizedDescription)"
+                    }
+                }
                 phase = .signedOut
             }
         }
@@ -274,6 +312,10 @@ final class AppModel: ObservableObject {
     }
 
     private func leaveSignedIn(revoked: Bool) {
+        loginGeneration += 1
+        loginTask?.cancel()
+        loginTask = nil
+        let generation = loginGeneration
         unreadTask?.cancel()
         unreadTask = nil
         unreadCount = nil
@@ -285,12 +327,17 @@ final class AppModel: ObservableObject {
         refreshIntegrationStates()
         updateTimer?.cancel()
         updateTimer = nil
-        do {
-            // The installation id stays: logging in again finds the same machine
-            // with its mappings and history.
-            try store.deleteCredential()
-        } catch {
-            loginError = error.localizedDescription
+        // Persist the signed-out intent before a possibly stuck delete. A late
+        // completion or a restart must never resurrect this credential.
+        defaults.set(true, forKey: DefaultsKey.credentialUnavailable)
+        defaults.set(true, forKey: DefaultsKey.pendingLoginCancelled)
+        let store = self.store
+        let access = credentialAccess
+        Task {
+            do { try await access.run { try store.deleteCredential(); try store.deletePendingLogin() } }
+            catch {
+                if generation == loginGeneration { loginError = "已退出登录，但未能清理钥匙串：\(error.localizedDescription)" }
+            }
         }
         showsRevokedNotice = revoked
         defaults.set(revoked, forKey: DefaultsKey.revokedNotice)
@@ -525,47 +572,116 @@ final class AppModel: ObservableObject {
     }
 
     func signIn() {
-        guard phase == .signedOut, let serverUrl = loginServerUrl else { return }
+        guard phase == .signedOut, loginServerUrl != nil else { return }
+        beginDeviceSignIn(resuming: nil)
+    }
+
+    private func beginDeviceSignIn(resuming initial: PendingDeviceLogin?) {
+        guard let serverUrl = loginServerUrl else { return }
+        loginGeneration += 1
+        let generation = loginGeneration
+        loginTask?.cancel()
         loginError = nil
+        loginStatus = "正在准备登录…"
         phase = .signingIn
+        deviceLogin = initial
         let store = self.store
+        let access = credentialAccess
         loginTask = Task {
             do {
-                let installationId = try store.installationId()
-                let login = OAuthLogin(serverUrl: serverUrl) { url in
-                    let opened = await MainActor.run { NSWorkspace.shared.open(url) }
-                    if !opened {
-                        throw OAuthLoginError.invalidResponse("无法打开默认浏览器，请检查系统的默认浏览器设置。")
-                    }
+                let installationId = try await access.run { try store.installationId() }
+                let login = DeviceLogin(serverUrl: serverUrl)
+                var pending = initial
+                if pending == nil, !defaults.bool(forKey: DefaultsKey.pendingLoginCancelled) {
+                    pending = try await access.run { try store.loadPendingLogin(allowInteraction: true) }
+                    if pending?.isExpired == true || pending?.serverUrl != serverUrl { pending = nil }
                 }
-                let credential = try await login.run(
-                    installationId: installationId,
-                    name: MachineIdentity.defaultName(),
-                    hostname: MachineIdentity.hostname()
-                )
-                // Cancelled after the browser already finished: the person asked to
-                // stop, so the new credential is not kept.
-                guard !Task.isCancelled else { return }
-                try store.saveCredential(credential)
+                if pending == nil {
+                    // Finish deleting any cancelled/expired request before storing
+                    // its replacement. Keychain operations never overlap.
+                    try await access.run { try store.deletePendingLogin() }
+                    let started = try await login.begin()
+                    try Task.checkCancellation()
+                    try await access.run { try store.savePendingLogin(started) }
+                    pending = started
+                }
+                try Task.checkCancellation()
+                guard generation == loginGeneration else { return }
+                defaults.set(false, forKey: DefaultsKey.pendingLoginCancelled)
+                let current = pending!
+                deviceLogin = current
+                loginStatus = "等待浏览器授权…"
+                if initial == nil { reopenDeviceLogin() }
+                let credential = try await login.complete(current, installationId: installationId,
+                    name: MachineIdentity.defaultName(), hostname: MachineIdentity.hostname(), checkpoint: { pending in
+                        try Task.checkCancellation()
+                        try await access.run { try store.savePendingLogin(pending) }
+                    }, status: { [weak self] message in
+                        await self?.updateLoginStatus(message, generation: generation)
+                    })
+                try Task.checkCancellation()
+                guard generation == loginGeneration else { return }
+                // Suppress auto-login after a timed-out or cancelled save, even if
+                // Security.framework writes the value after our deadline.
+                defaults.set(true, forKey: DefaultsKey.credentialUnavailable)
+                try await access.run { try store.saveCredential(credential) }
+                try Task.checkCancellation()
+                guard generation == loginGeneration else { return }
+                defaults.set(false, forKey: DefaultsKey.credentialUnavailable)
+                defaults.set(true, forKey: DefaultsKey.pendingLoginCancelled)
                 showsRevokedNotice = false
                 defaults.set(false, forKey: DefaultsKey.revokedNotice)
+                deviceLogin = nil
                 enterSignedIn(credential)
+                // Best effort cleanup cannot turn a successful login into failure.
+                do { try await access.run { try store.deletePendingLogin() } }
+                catch {
+                    if generation == loginGeneration { loginError = "已登录，但未能清理临时授权：\(error.localizedDescription)" }
+                }
             } catch is CancellationError {
-                if phase == .signingIn { phase = .signedOut }
+                if generation == loginGeneration, phase == .signingIn { phase = .signedOut }
             } catch {
-                if phase == .signingIn {
+                if generation == loginGeneration, phase == .signingIn {
                     phase = .signedOut
                     loginError = error.localizedDescription
+                    deviceLogin = nil
+                    // Terminal protocol failures need a new request. Network
+                    // and Keychain failures keep the checkpoint for retry.
+                    if error is OAuthLoginError {
+                        defaults.set(true, forKey: DefaultsKey.pendingLoginCancelled)
+                    } else if let apiError = error as? APIError,
+                              case let .http(_, status, _) = apiError, status == 401 || status == 403 {
+                        defaults.set(true, forKey: DefaultsKey.pendingLoginCancelled)
+                    }
                 }
             }
-            loginTask = nil
+            if generation == loginGeneration { loginTask = nil }
+        }
+    }
+
+    private func updateLoginStatus(_ message: String, generation: Int) {
+        guard generation == loginGeneration else { return }
+        loginStatus = message
+    }
+
+    func reopenDeviceLogin() {
+        guard let pending = deviceLogin else { return }
+        if !NSWorkspace.shared.open(pending.verificationUriComplete) {
+            loginError = "无法打开默认浏览器。请在任意浏览器打开验证网址并输入验证码。"
         }
     }
 
     func cancelSignIn() {
+        loginGeneration += 1
         loginTask?.cancel()
         loginTask = nil
+        deviceLogin = nil
+        defaults.set(true, forKey: DefaultsKey.pendingLoginCancelled)
         if phase == .signingIn { phase = .signedOut }
+        // The durable cancelled flag prevents a late checkpoint being resumed.
+        let store = self.store
+        let access = credentialAccess
+        Task { try? await access.run { try store.deletePendingLogin() } }
     }
 
     func confirmSignOut() {
