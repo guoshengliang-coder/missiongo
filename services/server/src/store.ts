@@ -1333,16 +1333,24 @@ export class MissionGoStore {
     });
   }
 
-  /** Record the merged PR and the complete set of release artifacts it touches. */
+  /** Record merged work, separating an explicit no-release decision from missing evidence. */
   submitDevelopmentComplete(input: SubmitDevelopmentCompleteInput): WorkItemSnapshot {
     const pullRequestUrl = requiredText(input.pullRequestUrl, "Pull request URL");
     if (pullRequestUrl.length > 500) throw invalidInput("Pull request URL must be 500 characters or fewer.");
     if (!pullRequestUrl.startsWith("https://")) throw invalidInput("Pull request URL must be an https:// address.");
     const allowedArtifacts = ["web", "androidApp", "androidSdk", "macosApp"];
-    if (input.requiredArtifacts.length === 0 || input.requiredArtifacts.length > allowedArtifacts.length
+    if (input.requiredArtifacts.length > allowedArtifacts.length
       || new Set(input.requiredArtifacts).size !== input.requiredArtifacts.length
       || input.requiredArtifacts.some((artifact) => !allowedArtifacts.includes(artifact))) {
-      throw invalidInput("Required release artifacts must be a nonempty unique list of known artifacts.");
+      throw invalidInput("Required release artifacts must be a unique list of known artifacts.");
+    }
+    const noReleaseReason = input.noReleaseReason?.trim();
+    if (input.requiredArtifacts.length === 0) {
+      if (!noReleaseReason || noReleaseReason.length > 4_000) {
+        throw invalidInput("An empty artifact list needs a no-release reason of 1 to 4,000 characters.");
+      }
+    } else if (input.noReleaseReason !== undefined) {
+      throw invalidInput("A no-release reason cannot accompany required release artifacts.");
     }
     const summary = input.summary?.trim();
     if (summary && summary.length > 4_000) throw invalidInput("Summary must be 4,000 characters or fewer.");
@@ -1367,7 +1375,8 @@ export class MissionGoStore {
         summary,
         now,
         input.attribution ?? {},
-        { pullRequestUrl, requiredArtifacts: [...input.requiredArtifacts].sort() },
+        { pullRequestUrl, requiredArtifacts: [...input.requiredArtifacts].sort(),
+          ...(noReleaseReason ? { noReleaseReason } : {}) },
       );
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
@@ -1396,7 +1405,7 @@ export class MissionGoStore {
         .find((event) => event.eventType === "status_changed" && event.toStatus === "development_complete");
       const required = handover?.payload.requiredArtifacts;
       const releases = input.releases;
-      if (handover?.payload.pullRequestUrl !== pullRequestUrl || !Array.isArray(required)
+      if (handover?.payload.pullRequestUrl !== pullRequestUrl || !Array.isArray(required) || required.length === 0
         || releases.length !== required.length
         || new Set(releases.map((release) => release.artifact)).size !== releases.length
         || releases.some((release) => !required.includes(release.artifact)

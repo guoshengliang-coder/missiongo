@@ -169,6 +169,52 @@ describe("work-item event attribution", () => {
     }).status).toBe("pending_verification");
   });
 
+  it("records no-release work with a reason, retries once, and leaves verification to a person", async () => {
+    const { store, item } = await seed();
+    store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+    const input = {
+      itemKey: item.key,
+      pullRequestUrl: "https://github.com/owner/repo/pull/42",
+      requiredArtifacts: [],
+      noReleaseReason: "  Only JVM tests and test-worker protection changed; runtime code is unchanged.  ",
+      attribution: { accountId: "account-1", clientId: "client-9" },
+      idempotencyKey: "no-release",
+    };
+    expect(store.submitDevelopmentComplete(input).status).toBe("development_complete");
+    expect(store.submitDevelopmentComplete(input).status).toBe("development_complete");
+    const events = store.getTimeline(item.key).filter((event) => event.toStatus === "development_complete");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      actorKind: "agent", accountId: "account-1", clientId: "client-9",
+      payload: { requiredArtifacts: [], noReleaseReason: input.noReleaseReason.trim() },
+    });
+    expect(() => store.submitForVerification({
+      itemKey: item.key, pullRequestUrl: input.pullRequestUrl, releases: [],
+      deployedCommit: "a".repeat(40), receiptDigest: "b".repeat(64), idempotencyKey: "fake-release",
+    })).toThrowError(/every required artifact/);
+    expect(store.getWorkItem(item.key).status).toBe("development_complete");
+    expect(store.transitionWorkItem({ itemKey: item.key, to: "pending_verification", actor: "human", reason: "manual_override", note: "Review the merged test-only change." }).status)
+      .toBe("pending_verification");
+  });
+
+  it("rejects unknown, duplicate, unexplained empty, and contradictory release requirements", async () => {
+    const { store, item } = await seed();
+    store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+    const base = { itemKey: item.key, pullRequestUrl: "https://github.com/owner/repo/pull/42", idempotencyKey: "invalid-release" };
+    for (const noReleaseReason of [undefined, "", "   ", "x".repeat(4_001)]) {
+      expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: [], noReleaseReason })).toThrow();
+    }
+    expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["web"], noReleaseReason: "Only tests" }))
+      .toThrow();
+    expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["web", "web"] })).toThrow();
+    // Runtime input validation must also guard callers that do not use the MCP schema.
+    expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["unknown" as "web"] })).toThrow();
+    expect(store.getWorkItem(item.key).status).toBe("in_progress");
+    expect(store.getTimeline(item.key).filter((event) => event.toStatus === "development_complete")).toHaveLength(0);
+  });
+
   it("keeps the handover summary's own length limit, which is twice a transition note's", async () => {
     // Both travel to the timeline as `note`, so a cap written into the shared
     // path would quietly halve this one. The agent's summary is allowed 4,000.
