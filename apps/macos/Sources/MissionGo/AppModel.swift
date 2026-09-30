@@ -114,8 +114,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var unreadError: String?
     @Published private(set) var claude: ClaudeCodeStatus = .checking
     @Published private(set) var codex: CodexStatus = .checking
-    /// The Skill row: nil until the first sync starts.
-    @Published private(set) var skillSync: SkillSyncStatus?
+    @Published private(set) var skillSync: [String: AgentSkillSnapshot] = [:]
+    private var skillSyncTracker = AgentSkillSync()
     @Published private(set) var integrationStates: [String: LocalIntegrations.State] = [:]
     @Published private(set) var detectedAgentVersions: [String: String] = [:]
     @Published private(set) var checkingIntegrations: Set<LocalAgent> = []
@@ -276,7 +276,8 @@ final class AppModel: ObservableObject {
         dispatchesError = nil
         claude = .checking
         codex = .checking
-        skillSync = nil
+        skillSync = [:]
+        skillSyncTracker = AgentSkillSync()
         updateNotice = nil
         // The version is a property of this build, not of the session, so it
         // stays; anything in flight does not.
@@ -346,6 +347,9 @@ final class AppModel: ObservableObject {
         latestProducts = nil
         lastSeenLaunchId = nil
         loopState = NodeLoopState()
+        let skillTracker = AgentSkillSync()
+        skillSyncTracker = skillTracker
+        skillSync = [:]
 
         // A loop runs once; every login gets a fresh one.
         var timing = NodeLoop.Timing()
@@ -367,48 +371,39 @@ final class AppModel: ObservableObject {
             detectRepoCandidates: { snapshot.candidates },
             timing: timing,
             skillReadiness: { agentKind, expectedVersion in
-                let checkedAt = ISO8601DateFormatter().string(from: Date())
-                guard let expectedVersion else {
-                    return AgentSkillSnapshot(syncState: "unknown", checkedAt: checkedAt)
+                guard let agent = LocalAgent(rawValue: agentKind),
+                      let consent = access.state(for: agent), consent.version != nil else {
+                    return AgentSkillSnapshot(expectedVersion: expectedVersion, syncState: "missing")
                 }
-                guard let agent = LocalAgent(rawValue: agentKind) else {
-                    return AgentSkillSnapshot(expectedVersion: expectedVersion, syncState: "missing", checkedAt: checkedAt)
+                // A foreground retry owns its result until it finishes.
+                if let current = skillTracker.snapshots[agentKind], current.syncState == "syncing" {
+                    return current
                 }
-                guard access.state(for: agent)?.version != nil else {
-                    return AgentSkillSnapshot(
-                        expectedVersion: expectedVersion, syncState: "missing", checkedAt: checkedAt
-                    )
-                }
-                let target = SkillSync.target(
-                    for: agent,
-                    home: Paths.homeDirectory(),
-                    codexHome: codexHome
+                let target = SkillSync.target(for: agent, home: Paths.homeDirectory(), codexHome: codexHome)
+                let attempt = skillTracker.begin(
+                    agentKind, localVersion: SkillSync.localVersion(at: target), expectedVersion: expectedVersion
                 )
-                if SkillSync.localVersion(at: target) == expectedVersion {
-                    return AgentSkillSnapshot(
-                        localVersion: expectedVersion, expectedVersion: expectedVersion,
-                        syncState: "ready", checkedAt: checkedAt
+                let result: AgentSkillSnapshot
+                if let expectedVersion {
+                    result = await SkillSync.check(
+                        serverUrl: credential.serverUrl, target: target, expectedVersion: expectedVersion,
+                        shouldApply: {
+                            access.isCurrent(agent, attempt: consent.attempt)
+                                && skillTracker.isCurrent(agentKind, attempt: attempt)
+                        }
+                    )
+                } else {
+                    result = AgentSkillSnapshot(
+                        localVersion: SkillSync.localVersion(at: target), syncState: "unknown"
                     )
                 }
-                do {
-                    let outcome = try await SkillSync.run(
-                        serverUrl: credential.serverUrl,
-                        targets: [target],
-                        expectedVersion: expectedVersion,
-                        shouldApply: { access.state(for: agent)?.version != nil }
-                    )
-                    let local = SkillSync.localVersion(at: target)
-                    let ready = outcome.failures.isEmpty && local == expectedVersion
-                    return AgentSkillSnapshot(
-                        localVersion: local, expectedVersion: expectedVersion,
-                        syncState: ready ? "ready" : "failed", checkedAt: checkedAt
-                    )
-                } catch {
-                    return AgentSkillSnapshot(
-                        localVersion: SkillSync.localVersion(at: target), expectedVersion: expectedVersion,
-                        syncState: "failed", checkedAt: checkedAt
+                guard access.isCurrent(agent, attempt: consent.attempt) else {
+                    return skillTracker.finish(
+                        agentKind, attempt: attempt,
+                        snapshot: AgentSkillSnapshot(expectedVersion: expectedVersion, syncState: "missing")
                     )
                 }
+                return skillTracker.finish(agentKind, attempt: attempt, snapshot: result)
             }
         )
         loopStatesTask = Task { [weak self] in
@@ -433,6 +428,7 @@ final class AppModel: ObservableObject {
     /// started are never touched.
     private func stopLoop() {
         loopGeneration += 1
+        skillSyncTracker.invalidateAll()
         loop = nil
         loopTask?.cancel()
         loopTask = nil
@@ -454,6 +450,7 @@ final class AppModel: ObservableObject {
     private func apply(_ state: NodeLoopState) {
         refreshIntegrationStates()
         loopState = state
+        refreshSkillStates()
         // The heartbeat carries the mapping, so a change made in the console
         // shows up here within one beat. Only a changed snapshot is applied, so
         // an unchanged one cannot overwrite a save made from the menu since.
@@ -619,7 +616,8 @@ final class AppModel: ObservableObject {
     func disableIntegration(_ agent: LocalAgent) {
         integrations.disable(agent)
         detectedAgentVersions.removeValue(forKey: agent.rawValue)
-        if checkingIntegrations.contains(agent) { skillSync = nil }
+        skillSyncTracker.remove(agent.rawValue)
+        refreshSkillStates()
         refreshIntegrationStates()
     }
 
@@ -669,6 +667,9 @@ final class AppModel: ObservableObject {
         }
         let access = integrations
         let attempt = access.begin(agent)
+        let skillTracker = skillSyncTracker
+        skillTracker.remove(agent.rawValue)
+        refreshSkillStates()
         checkingIntegrations.insert(agent)
         refreshIntegrationStates()
         return Task {
@@ -717,20 +718,72 @@ final class AppModel: ObservableObject {
                 return
             }
             let target = SkillSync.target(for: agent, home: Paths.homeDirectory(), codexHome: CodexLocation(environment: environment).codexHome)
-            skillSync = .syncing
-            do {
-                let outcome = try await SkillSync.run(serverUrl: credential.serverUrl, targets: [target], shouldApply: {
+            let syncAttempt = skillTracker.begin(
+                agent.rawValue, localVersion: SkillSync.localVersion(at: target),
+                expectedVersion: loopState.expectedSkillVersion
+            )
+            refreshSkillStates()
+            let result = await SkillSync.check(
+                serverUrl: credential.serverUrl, target: target,
+                expectedVersion: loopState.expectedSkillVersion,
+                shouldApply: {
                     access.isCurrent(agent, attempt: attempt)
-                })
-                guard access.isCurrent(agent, attempt: attempt), self.credential == credential else { return }
-                skillSync = .outcome(outcome)
-                access.finish(agent, attempt: attempt, version: outcome.failures.isEmpty ? version : nil,
-                              issue: skillSync?.failureReason)
-            } catch {
-                guard access.isCurrent(agent, attempt: attempt), self.credential == credential else { return }
-                skillSync = .failed(reason: error.localizedDescription)
-                access.finish(agent, attempt: attempt, version: nil, issue: error.localizedDescription)
+                        && skillTracker.isCurrent(agent.rawValue, attempt: syncAttempt)
+                }
+            )
+            guard access.isCurrent(agent, attempt: attempt), self.credential == credential,
+                  self.skillSyncTracker === skillTracker else {
+                skillTracker.finish(agent.rawValue, attempt: syncAttempt, snapshot: AgentSkillSnapshot(syncState: "missing"))
+                return
             }
+            skillTracker.finish(agent.rawValue, attempt: syncAttempt, snapshot: result)
+            refreshSkillStates()
+            access.finish(agent, attempt: attempt, version: result.syncState == "ready" ? version : nil,
+                          issue: result.reason)
+        }
+    }
+
+    private func refreshSkillStates() {
+        skillSync = skillSyncTracker.snapshots.filter { key, _ in
+            LocalAgent(rawValue: key).flatMap { integrations.state(for: $0) } != nil
+        }
+    }
+
+    /// Retry just the Skill for an enabled client; paused integrations retain
+    /// the explicit foreground login/permission check.
+    func retrySkill(_ agent: LocalAgent) {
+        guard let credential, let environment, checkingIntegrations.isEmpty,
+              skillSync[agent.rawValue]?.syncState != "syncing" else { return }
+        guard let consent = integrations.state(for: agent), consent.version != nil else {
+            checkIntegration(agent)
+            return
+        }
+        let tracker = skillSyncTracker
+        let target = SkillSync.target(for: agent, home: Paths.homeDirectory(), codexHome: CodexLocation(environment: environment).codexHome)
+        let attempt = tracker.begin(
+            agent.rawValue, localVersion: SkillSync.localVersion(at: target),
+            expectedVersion: loopState.expectedSkillVersion
+        )
+        refreshSkillStates()
+        let access = integrations
+        let expected = loopState.expectedSkillVersion
+        Task {
+            let result = await SkillSync.check(
+                serverUrl: credential.serverUrl, target: target, expectedVersion: expected,
+                shouldApply: {
+                    access.isCurrent(agent, attempt: consent.attempt)
+                        && tracker.isCurrent(agent.rawValue, attempt: attempt)
+                }
+            )
+            guard self.credential == credential, self.skillSyncTracker === tracker,
+                  access.isCurrent(agent, attempt: consent.attempt) else {
+                tracker.finish(agent.rawValue, attempt: attempt, snapshot: AgentSkillSnapshot(syncState: "missing"))
+                refreshSkillStates()
+                return
+            }
+            tracker.finish(agent.rawValue, attempt: attempt, snapshot: result)
+            refreshSkillStates()
+            loop?.retryNow()
         }
     }
 

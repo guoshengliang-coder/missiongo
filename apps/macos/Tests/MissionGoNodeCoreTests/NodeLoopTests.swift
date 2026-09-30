@@ -380,6 +380,23 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertEqual(api.reports.current.first?.1.status, .launched)
     }
 
+    func testSkillFailureStillReachesMenuWhenHeartbeatFails() async throws {
+        let api = FakeAPI(claims: [], heartbeat: .failure(URLError(.notConnectedToInternet)))
+        let adapter = FakeAdapter(outcome: .success(LaunchResult(sessionName: "Unused", sessionUrl: nil, sessionRef: "unused", logPath: nil)))
+        let loop = NodeLoop(
+            api: api, adapters: [adapter], fallbackNodeName: "M", timing: fastTiming(),
+            skillReadiness: { _, _ in
+                AgentSkillSnapshot(localVersion: "5.14.0", expectedVersion: "5.15.0",
+                                   syncState: "failed", reason: "fixture write failure")
+            }, log: { _ in }
+        )
+        let task = Task { try await loop.run() }
+        await waitUntil { loop.currentState.agents.first?.skill?.reason == "fixture write failure" }
+        task.cancel()
+        try await task.value
+        XCTAssertEqual(loop.currentState.agents.first?.skill?.localVersion, "5.14.0")
+    }
+
     func testMissingAgentIsDetectedAgainOnTheNextHeartbeat() async throws {
         let api = FakeAPI(claims: [])
         let adapter = RecoveringAdapter()
