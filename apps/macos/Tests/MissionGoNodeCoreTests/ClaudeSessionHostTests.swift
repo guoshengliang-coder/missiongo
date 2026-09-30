@@ -2,6 +2,75 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class ClaudeStreamSnapshotTests: XCTestCase {
+    func testGatewayMessageIdReuseDoesNotMoveNewRepliesIntoOldBubbles() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        func frame(_ uuid: String, _ text: String, _ timestamp: String) -> [String: Any] {
+            ["type": "assistant", "uuid": uuid, "timestamp": timestamp,
+             "message": ["id": "msg_gateway", "content": [["type": "text", "text": text]]]]
+        }
+        snapshot.consume(frame("frame-1", "First reply", "2026-09-30T01:00:00.000Z"))
+        snapshot.recordUserMessage(id: "user-2", text: "Continue")
+        let reply = frame("frame-2", "New reply", "2026-09-30T02:00:00.000Z")
+        snapshot.consume(reply)
+        snapshot.consume(reply)
+        XCTAssertEqual(snapshot.state.messages.map(\.text), ["First reply", "Continue", "New reply"])
+        XCTAssertEqual(snapshot.state.messages.last?.occurredAt, "2026-09-30T02:00:00.000Z")
+        XCTAssertEqual(snapshot.state.messages.last?.turnId, "user-2")
+    }
+
+    func testBlockingLimitCannotBeReportedAsSuccessfulIdleTurn() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.consume(["type": "assistant", "uuid": "error-frame", "error": "invalid_request",
+            "message": ["id": "synthetic", "model": "<synthetic>",
+                "content": [["type": "text", "text": "Prompt is too long"]]]])
+        snapshot.consume(["type": "result", "subtype": "success", "is_error": true,
+            "terminal_reason": "blocking_limit"])
+        XCTAssertFalse(snapshot.state.turnActive)
+        XCTAssertEqual(snapshot.state.status, "idle")
+        XCTAssertTrue(snapshot.state.error?.contains("上下文超出模型限制") == true)
+        snapshot.recordUserMessage(id: "next", text: "Continue")
+        XCTAssertNil(snapshot.state.error)
+    }
+
+    func testErrorResultWithoutAssistantErrorHasAVisibleReason() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.consume(["type": "result", "subtype": "success", "is_error": true])
+        XCTAssertNotNil(snapshot.state.error)
+        snapshot.consume(["type": "result", "subtype": "error_during_execution", "terminal_reason": "aborted_streaming"])
+        XCTAssertNil(snapshot.state.error)
+    }
+
+    func testCompactionProgressUpdatesOneCardAndReportsFailures() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        let start: [String: Any] = ["type": "system", "subtype": "status", "status": "compacting"]
+        snapshot.consume(start)
+        snapshot.consume(start)
+        XCTAssertEqual(snapshot.state.messages.count, 1)
+        XCTAssertTrue(snapshot.state.messages[0].text.contains("正在自动压缩"))
+        snapshot.consume(["type": "system", "subtype": "status", "compact_result": "failed", "compact_error": "too_few_groups"])
+        XCTAssertEqual(snapshot.state.messages.count, 1)
+        XCTAssertTrue(snapshot.state.messages[0].text.contains("消息分组不足"))
+        snapshot.consume(start)
+        snapshot.consume(["type": "system", "subtype": "compact_boundary"])
+        snapshot.consume(["type": "system", "subtype": "status", "compact_result": "success"])
+        XCTAssertEqual(snapshot.state.messages.count, 2)
+        XCTAssertEqual(snapshot.state.messages[1].text, "上下文自动压缩完成。")
+        XCTAssertTrue(snapshot.state.activities.isEmpty)
+    }
+
+    func testEstimatedThinkingTokensCountDeltasRatherThanCumulativeTotals() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.recordUserMessage(id: "u1", text: "Inspect")
+        snapshot.consume(["type": "system", "subtype": "thinking_tokens", "estimated_tokens": 4, "estimated_tokens_delta": 4])
+        snapshot.consume(["type": "system", "subtype": "thinking_tokens", "estimated_tokens": 9, "estimated_tokens_delta": 5])
+        snapshot.consume(["type": "system", "subtype": "thinking_tokens", "estimated_tokens": 2, "estimated_tokens_delta": 2])
+        XCTAssertEqual(snapshot.state.thinkingTokens, 11)
+        snapshot.consume(["type": "result", "subtype": "success"])
+        snapshot.recordUserMessage(id: "u2", text: "Continue")
+        snapshot.consume(["type": "system", "subtype": "thinking_tokens", "estimated_tokens": 8])
+        XCTAssertEqual(snapshot.state.thinkingTokens, 8)
+    }
+
     func testRestoresHistoricalClaudeChoiceOnResume() {
         let state = ClaudeHostState(status: "idle", sessionRef: "session-1", messages: [
             AgentSessionMessage(sourceId: "q1", role: "agent", text: "Choose",
@@ -73,13 +142,14 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertTrue(snapshot.initialized)
         XCTAssertEqual(snapshot.state.status, "idle")
         XCTAssertNil(snapshot.state.error)
-        XCTAssertEqual(snapshot.state.messages.count, 3)
+        XCTAssertEqual(snapshot.state.messages.count, 4)
         XCTAssertEqual(snapshot.state.messages[0].role, "user")
         XCTAssertEqual(snapshot.state.messages[0].occurredAt, "2026-09-22T01:02:03.000Z")
-        XCTAssertEqual(snapshot.state.messages[1].text, "First finding.\nSecond finding.")
+        XCTAssertEqual(snapshot.state.messages[1].text, "First finding.")
+        XCTAssertEqual(snapshot.state.messages[2].text, "Second finding.")
         XCTAssertEqual(snapshot.state.messages[1].occurredAt, "2026-09-22T01:02:04.000Z")
         XCTAssertEqual(snapshot.state.messages[1].turnId, "user-1")
-        XCTAssertEqual(snapshot.state.messages[2].questions, [AgentSessionQuestion(title: "Ship it?", options: ["Yes", "No"])])
+        XCTAssertEqual(snapshot.state.messages[3].questions, [AgentSessionQuestion(title: "Ship it?", options: ["Yes", "No"])])
     }
 
     /// AND-210: a text block that is only whitespace used to mirror as a

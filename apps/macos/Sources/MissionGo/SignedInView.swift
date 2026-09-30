@@ -28,6 +28,7 @@ enum MenuPalette {
 struct SignedInView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openWindow) private var openWindow
+    @State private var showingConnectionError = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 11) {
@@ -74,10 +75,31 @@ struct SignedInView: View {
                     .truncationMode(.tail)
                     .help(summary.text)
                 Spacer(minLength: 0)
-                if model.loopState.connection == .offline {
+                if let error = model.loopState.lastError {
+                    Button("详情") { showingConnectionError = true }
+                        .font(.caption)
+                        .popover(isPresented: $showingConnectionError) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("连接与接口错误").font(.headline)
+                                ScrollView {
+                                    Text(error).font(.system(.body, design: .monospaced))
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .frame(maxHeight: 300)
+                                Button("复制错误") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(error, forType: .string)
+                                }
+                            }
+                            .padding(16)
+                            .frame(width: 420)
+                        }
+                }
+                if model.loopState.connection == .offline || model.loopState.connection == .degraded {
                     Button("重新连接") { model.reconnect() }
                         .font(.caption)
-                        .help("连接失败时也会每 30 秒自动重试")
+                        .help("自动重试中；点击可立即重试")
                 }
                 Button { openWindow(id: "local-settings") } label: {
                     Image(systemName: "gearshape")

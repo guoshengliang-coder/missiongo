@@ -27,6 +27,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "submit_for_verification", access: "write", purpose: "Hand published work over for a person to verify, recording evidence for every required artifact." },
   { name: "create_item", access: "write", purpose: "Record a follow-up split off from another item, or an independent item in a product, after the user approved its content (including the product) in the session." },
   { name: "upload_attachment_chunk", access: "write", purpose: "Stage a bounded chunk of a user-approved attachment in an authorized product." },
+  { name: "prepare_attachment_upload", access: "write", purpose: "Authorize direct raw-byte upload for one user-approved file without passing bytes through model context." },
   { name: "add_item_attachment", access: "write", purpose: "Attach a completed upload to a user-named work item without editing its fields." },
 ] as const satisfies readonly McpToolDefinition[];
 

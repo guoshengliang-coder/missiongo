@@ -24,7 +24,7 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 | 档位 | 开放的工具 |
 |---|---|
 | `none` | 无。工具清单与只读部署完全一致 |
-| `comments` | `append_comment`、`claim_item`、`submit_development_complete`、`submit_for_verification`、`create_item`、`upload_attachment_chunk`、`add_item_attachment` |
+| `comments` | `append_comment`、`claim_item`、`submit_development_complete`、`submit_for_verification`、`create_item`、`upload_attachment_chunk`、`prepare_attachment_upload`、`add_item_attachment` |
 
 只有两级：写入面限于评论、三条受限状态流转、创建条目与关联附件。
 
@@ -82,6 +82,17 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
   `productId` 须在当前 OAuth 账号可达范围内；暂存文件绑定账号、客户端和
   产品，同一连接最多暂存 20 个、合计 1 GiB，24 小时后过期。返回已接收字节数、是否完整与过期时间；同偏移同内容重试不重复写，内容或元数据
   不同则返回冲突。只有哈希匹配、文件完整的暂存附件才能提交。
+- `prepare_attachment_upload`（同上）：提供稳定上传 UUID、产品、文件名、MIME、完整大小与 SHA-256，先占用现有暂存配额，
+  返回限定该文件、最长 15 分钟（不超过原 OAuth 授权寿命）的随机上传凭据；服务端只存其 SHA-256。
+  `PUT /api/v1/mcp-attachment-uploads/:uploadId?offsetBytes=N` 接收 1–512 KiB 原始 `application/octet-stream` 字节，
+  Authorization Bearer 头携带文件凭据。该凭据不能调用 MCP、读数据或关联附件，不接受 Cookie 或普通账号 Token 作为替代。
+  每次 PUT 实时检查账号凭证戳、启用状态、原 OAuth 授权撤销与产品 AI 权限；跨上传 ID、过期或已消费凭据被拒绝。
+  暂存仍绑定原账号、OAuth 客户端及产品，关联仍由原客户端通过 MCP 完成。元数据不同、错序、重复块内容不同、
+  最终哈希不符均拒绝；同偏移同内容安全重试。重新 prepare 同一 UUID 返回进度并轮换凭据，以便断点续传。
+  原有暂存的 24 小时寿命不延长。只在部署开启 `comments` 且本次 OAuth 具有写权限时提供此工具及字节入口。
+  公共辅助脚本 `/downloads/missiongo-upload.mjs` 支持 `inspect <file>` 和 `upload <file> <private-spec.json>`，
+  文件仅在本地脚本中读入，不经过模型输出；不含登录功能或长期账号凭据。上传 spec 需保存为工作区外的 `0600` 临时文件。
+
 - `add_item_attachment`（同上）：把一个已完成、同产品的暂存附件关联到用户点名的现有条目。要求条目产品
   权限及稳定幂等键；只增加附件和 Agent 事件，不改条目字段或状态。网页端与 MCP 读取共用附件记录。
 

@@ -1,8 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { extname } from "node:path";
 
-import { conflict, invalidInput, notFound } from "./errors.js";
+import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { validateUploadMetadata, validateZipSignature, type AttachmentStorage } from "./attachment-storage.js";
 import type { MissionGoStore } from "./store.js";
 import type { AttachmentRecord, CreateDerivedWorkItemInput, EventAttribution } from "./types.js";
@@ -25,11 +25,24 @@ interface UploadRow {
   expires_at: string;
   consumed_item_key: string | null;
   attachment_id: string | null;
+  direct_token_hash: string | null;
+  direct_expires_at: string | null;
+  direct_credentials_at: number | null;
+  direct_authorization_id: string | null;
 }
 
 interface Owner {
   readonly accountId: string;
   readonly clientId: string;
+}
+
+interface UploadMetadata {
+  readonly uploadId: string;
+  readonly productId: string;
+  readonly filename: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+  readonly sha256: string;
 }
 
 export class McpAttachmentUploads {
@@ -87,18 +100,56 @@ export class McpAttachmentUploads {
     readonly offsetBytes: number;
     readonly dataBase64: string;
   }, owner: Owner): { uploadId: string; receivedBytes: number; complete: boolean; expiresAt: string } {
-    this.cleanupExpired();
-    // The browser sends a URL-encoded filename header; MCP supplies a plain
-    // filename. Encode it before applying the exact same validation rules.
-    const validated = validateUploadMetadata(encodeURIComponent(input.filename), input.contentType, input.sizeBytes);
-    if (!/^[0-9a-f]{64}$/i.test(input.sha256)) throw invalidInput("sha256 must be a 64-character hex digest.");
-    if (!Number.isSafeInteger(input.offsetBytes) || input.offsetBytes < 0) throw invalidInput("offsetBytes is invalid.");
     if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.dataBase64)) {
       throw invalidInput("dataBase64 must be canonical base64.");
     }
     const bytes = Buffer.from(input.dataBase64, "base64");
-    if (bytes.length < 1 || bytes.length > MCP_UPLOAD_CHUNK_BYTES || bytes.toString("base64") !== input.dataBase64) {
-      throw invalidInput("Upload chunk must contain 1 to 512 KiB of canonical base64 data.");
+    if (bytes.toString("base64") !== input.dataBase64) throw invalidInput("dataBase64 must be canonical base64.");
+    return this.writeBytes(input, bytes, owner);
+  }
+
+  /** Reserve the existing upload/quota before issuing a file-specific capability. */
+  prepareDirect(input: UploadMetadata, owner: Owner, authorization: {
+    credentialsAt: number; tokenId: string; expiresAt: number;
+  }) {
+    const expiresAt = new Date(Math.min(Date.now() + 15 * 60_000, authorization.expiresAt * 1000)).toISOString();
+    if (Date.parse(expiresAt) <= Date.now()) throw invalidInput("The MCP authorization has expired.");
+    const result = this.writeBytes({ ...input, offsetBytes: 0 }, Buffer.alloc(0), owner, true);
+    const uploadToken = randomBytes(32).toString("base64url");
+    this.store.database.connection.prepare(`UPDATE mcp_attachment_uploads SET direct_token_hash = ?,
+      direct_expires_at = ?, direct_credentials_at = ?, direct_authorization_id = ? WHERE upload_id = ?`)
+      .run(createHash("sha256").update(uploadToken).digest("hex"), expiresAt,
+        authorization.credentialsAt, authorization.tokenId, input.uploadId);
+    return { ...result, filename: input.filename, sizeBytes: input.sizeBytes, sha256: input.sha256.toLowerCase(),
+      uploadToken, tokenExpiresAt: expiresAt, chunkBytes: MCP_UPLOAD_CHUNK_BYTES };
+  }
+
+  directAccess(uploadId: string, token: string) {
+    const row = this.upload(uploadId);
+    const digest = createHash("sha256").update(token).digest();
+    if (!row?.direct_token_hash || !timingSafeEqual(Buffer.from(row.direct_token_hash, "hex"), digest)
+      || !row.direct_expires_at || row.direct_expires_at <= new Date().toISOString()
+      || row.expires_at <= new Date().toISOString() || row.consumed_item_key
+      || row.direct_credentials_at === null || !row.direct_authorization_id) {
+      throw new MissionGoError("upload_authorization_required", "A valid, unexpired file upload capability is required.", 401);
+    }
+    return { row, owner: { accountId: row.account_id, clientId: row.client_id },
+      productId: row.product_id, credentialsAt: row.direct_credentials_at, tokenId: row.direct_authorization_id };
+  }
+
+  stageDirect(uploadId: string, token: string, offsetBytes: number, bytes: Buffer) {
+    const { row, owner } = this.directAccess(uploadId, token);
+    return this.writeBytes({ uploadId, productId: row.product_id, filename: row.filename,
+      contentType: row.content_type, sizeBytes: row.size_bytes, sha256: row.sha256, offsetBytes }, bytes, owner);
+  }
+
+  private writeBytes(input: UploadMetadata & { readonly offsetBytes: number }, bytes: Buffer, owner: Owner, reserveOnly = false) {
+    this.cleanupExpired();
+    const validated = validateUploadMetadata(encodeURIComponent(input.filename), input.contentType, input.sizeBytes);
+    if (!/^[0-9a-f]{64}$/i.test(input.sha256)) throw invalidInput("sha256 must be a 64-character hex digest.");
+    if (!Number.isSafeInteger(input.offsetBytes) || input.offsetBytes < 0) throw invalidInput("offsetBytes is invalid.");
+    if ((!reserveOnly && bytes.length < 1) || bytes.length > MCP_UPLOAD_CHUNK_BYTES) {
+      throw invalidInput("Upload chunk must contain 1 to 512 KiB of data.");
     }
     if (input.offsetBytes + bytes.length > input.sizeBytes) throw invalidInput("Upload chunk exceeds declared file size.");
     mkdirSync(this.storage.rootPath, { recursive: true, mode: 0o700 });
@@ -148,6 +199,8 @@ export class McpAttachmentUploads {
           const actual = statSync(path).size;
           if (actual < row.received_bytes) throw conflict("upload_file_short", "Staged file is incomplete; start again.");
           if (actual > row.received_bytes) ftruncateSync(fd, row.received_bytes);
+          if (reserveOnly) return { uploadId: input.uploadId, receivedBytes: row.received_bytes,
+            complete: row.received_bytes === row.size_bytes, expiresAt: row.expires_at };
           if (input.offsetBytes < row.received_bytes && input.offsetBytes + bytes.length <= row.received_bytes) {
             const previous = Buffer.alloc(bytes.length);
             readSync(fd, previous, 0, bytes.length, input.offsetBytes);

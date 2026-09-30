@@ -47,6 +47,7 @@ import {
   type ProductCapability,
   type ProductPermission,
 } from "./accounts-store.js";
+import { McpAttachmentUploads, MCP_UPLOAD_CHUNK_BYTES } from "./mcp-attachment-uploads.js";
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES, MEBIBYTE } from "./attachment-storage.js";
 import { AgentSessionAttachments, type AgentSessionAttachment } from "./agent-session-attachments.js";
 import { AgentApprovalStore, type AgentApproval } from "./agent-approval-store.js";
@@ -586,6 +587,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   }
   const attachmentStorage = new AttachmentStorage(options.attachmentsPath ?? "./data/attachments");
+  const mcpUploads = new McpAttachmentUploads(store, attachmentStorage);
   const publicOrigin = new URL(options.publicOrigin ?? "http://127.0.0.1").origin;
   const writeTools: McpWriteTier = options.writeTools ?? "none";
   const mcpHandler = options.adminAccount
@@ -806,6 +808,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (
       !path.startsWith("/api/v1/")
       || path.startsWith("/api/v1/sdk/")
+      // Only this exact route accepts a file-specific capability, never an account token.
+      || /^\/api\/v1\/mcp-attachment-uploads\/[0-9a-f-]{36}$/i.test(path)
       || path === "/api/v1/auth/login"
       || path === "/api/v1/auth/session"
       || path === "/api/v1/auth/logout"
@@ -866,6 +870,30 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       code: "internal_error",
     });
   });
+
+  app.put<{ Params: { uploadId: string }; Querystring: { offsetBytes?: string } }>(
+    "/api/v1/mcp-attachment-uploads/:uploadId",
+    { bodyLimit: MCP_UPLOAD_CHUNK_BYTES },
+    async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      if (!options.adminAccount || writeTools !== "comments") {
+        throw new MissionGoError("upload_unavailable", "Direct attachment uploads are not enabled.", 403);
+      }
+      const access = mcpUploads.directAccess(request.params.uploadId, suppliedBearerToken(request));
+      const account = accountStore.resolveActive(access.owner.accountId, access.credentialsAt);
+      if (!account || accountStore.aiAuthorizationRevoked(access.tokenId)
+        || !accountStore.allows(account, access.productId, "ai")) {
+        throw new MissionGoError("upload_access_revoked", "The upload authorization is no longer permitted.", 403);
+      }
+      if (!Buffer.isBuffer(request.body)
+        || request.headers["content-type"]?.split(";", 1)[0]?.trim() !== "application/octet-stream") {
+        throw invalidInput("Upload raw application/octet-stream bytes.");
+      }
+      const offset = request.query.offsetBytes;
+      if (!offset || !/^(0|[1-9][0-9]*)$/.test(offset)) throw invalidInput("offsetBytes is required and must be a non-negative integer.");
+      return mcpUploads.stageDirect(request.params.uploadId, suppliedBearerToken(request), Number(offset), request.body);
+    },
+  );
 
   // A running deployment has to be able to say which commit it is. The only
   // record used to be a timestamped directory name on the host, so "what is
@@ -1338,6 +1366,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             resource: new URL(`${publicOrigin}/mcp`),
             extra: {
               accountId: principal.id,
+              credentialsAt: principal.credentialsAt,
+              tokenId: principal.tokenId,
               username: principal.username,
               displayName: principal.displayName,
               role: principal.role,
