@@ -20,6 +20,7 @@ const product: Product = {
   createdAt: "2026-09-20T00:00:00.000Z",
   updatedAt: "2026-09-20T00:00:00.000Z",
   hasIcon: false,
+  releaseArtifacts: ["web", "androidApp", "androidSdk", "macosApp"],
   access: { canOperate: true, canUseAi: true },
 };
 

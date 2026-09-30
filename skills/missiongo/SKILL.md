@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 完整读取条目、评论、领取、创建条目及上传附件，并在 PR 合并和发布核实后推进状态。不修改条目正文与字段，不删除条目，不决定验收。
-version: 5.16.0
+version: 5.17.0
 ---
 
 # MissionGo 条目读取与评论
@@ -294,6 +294,7 @@ PR 在哪、未核实到合并」，让用户自己决定。漏推的代价是�
    - **需要发布**：列出完整且不重复的 `requiredArtifacts`，不传 `noReleaseReason`。
    - **明确无需发布**：传 `requiredArtifacts: []` 和非空 `noReleaseReason`，写清改动范围、无需发布的依据和验证方式。纯单测、文档或测试进程工具通常属于此类，但必须核对是否影响分发产物；不能只凭文件名或用户未要求部署就判为无需发布。
    - **无法判断**：留在处理中，评论说明缺少的映射或证据。未知情况不能用空列表表示。
+   先调用 `list_products` 读取该产品的 `releaseArtifacts`，`requiredArtifacts` 只能取其中已声明的标识；服务端会拒绝产品未声明的产物，`submit_for_verification` 的 `releases` 也必须覆盖本次登记的每一个。
    产物映射只适用于它所属的产品与仓库。`scripts/release-notices.mjs` 是 MissionGo 仓库的实现示例，只有确认当前仓库存在且路径规则适用时才能使用；不得借用其他仓库的脚本。脚本缺失或匹配结果为空都不证明无需发布，仍须检查实际改动。工具尚不支持该产品的产物类型时，也不得省略或冒用其他类型。
 3. 告诉用户要把哪一条标记开发完成、依据哪个 PR，以及是否需要发布。确认本次连接的 `writeTools` 包含 `submit_development_complete` 后调用，带 https `pullRequestUrl`、上述发布要求和稳定的 `idempotencyKey`。
 4. 报告条目已进入开发完成。需要发布的条目仍须经过发布核验；明确无需发布的条目由用户基于合并提交和测试证据安排验证，不进入发布候选队列，也不伪造发布凭据调用 `submit_for_verification`。两类都不等于验收通过。

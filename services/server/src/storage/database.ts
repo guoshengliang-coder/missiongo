@@ -1696,6 +1696,31 @@ export class MissionGoDatabase {
           .run(202609301342, new Date().toISOString());
       });
     }
+    // AND-276: a product declares which release artifacts it has, instead of the
+    // server hard-coding MissionGo's four. The column stays NULL for a product
+    // that has declared none, which keeps the historical defaults and every item
+    // handed over before this shipped.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610011200").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610011200").get()) return;
+        this.connection.exec(`
+          ALTER TABLE products ADD COLUMN release_artifacts TEXT
+            CHECK (release_artifacts IS NULL OR json_valid(release_artifacts));
+        `);
+        // Hermes GO publishes a static web bundle, a gateway service and a
+        // standalone connector; MissionGo's four defaults cannot express that.
+        // Guarded by prefix and name, so a workspace without this product (and a
+        // fresh database) is untouched and every other product keeps the default.
+        this.connection
+          .prepare(
+            `UPDATE products SET release_artifacts = ?
+             WHERE key_prefix = 'HG' AND name = 'Hermes GO' AND release_artifacts IS NULL`,
+          )
+          .run(JSON.stringify(["web", "gateway", "connector"]));
+        this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+          .run(202610011200, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

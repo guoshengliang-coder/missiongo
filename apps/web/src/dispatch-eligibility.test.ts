@@ -29,6 +29,7 @@ const product = (access?: Product["access"]): Product => ({
   createdAt: "2026-09-13T10:00:00Z",
   updatedAt: "2026-09-13T10:00:00Z",
   hasIcon: false,
+  releaseArtifacts: ["web", "androidApp", "androidSdk", "macosApp"],
   ...(access ? { access } : {}),
 });
 

@@ -40,7 +40,8 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
   Skill 版本 `skill.expectedVersion`；已配置公开地址时同时返回 `skill.updateUrl`。
   `account.username` 始终是登录邮箱，`account.displayName` 是该账号的昵称（未设置时为邮箱 `@` 前
   的部分）——昵称是自述标签，不构成身份，确认连的是哪个账号要看 `username`。
-- `list_products`：读取可见产品。
+- `list_products`：读取可见产品。每个产品带 `releaseArtifacts`，即该产品声明的发布产物标识（AND-276）：
+  一个服务、静态站点或独立组件可以各自登记，`submit_development_complete` 只能登记其中已声明的标识。
 - `list_components`：读取某个产品的一层组件。
 - `list_items`：按产品、状态或类型分页查找条目。
 - `list_release_candidates`：只在经授权的一个产品内分页返回「开发完成」条目的编号、PR URL 与必需产物。
@@ -60,11 +61,14 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 - `claim_item`（`comments` 档位起，需 `missiongo:write`）：把「待处理」的条目领为「处理中」。
   不需要租约——状态本身就是锁，只有待处理的条目能被领取。
 - `submit_development_complete`（同上）：把「处理中」推到「开发完成」，记录 https PR 地址和完整、不重复的
-  `requiredArtifacts`。Skill 须先核实 PR 已合并、仓库检查通过，并按当前产品仓库的实际 diff、构建和发布规则确定产物，不得套用其他仓库的路径映射。
+  `requiredArtifacts`。产物标识按产品声明（AND-276）：先读 `list_products` 的 `releaseArtifacts`，只能登记其中的标识；
+  产品未声明时沿用 `web`、`androidApp`、`androidSdk`、`macosApp`。Skill 须先核实 PR 已合并、仓库检查通过，
+  并按当前产品仓库的实际 diff、构建和发布规则确定产物，不得套用其他仓库的路径映射。
   明确无需发布时允许 `requiredArtifacts: []`，但必须同时提供非空、最多 4,000 字符的 `noReleaseReason`，说明范围、依据和验证方式；非空产物列表不能同时带这个字段。原因随状态事件保存。
   无法判断发布要求时仍留在处理中，空匹配不能作为无需发布的证明。明确无需发布的条目进入开发完成后由用户安排验证；当前自动交接工具仅处理实际发布，不伪造发布凭据。旧服务端拒绝新参数时须升级，不能虚填产物。
 - `submit_for_verification`（同上）：只把「开发完成」推到「待验证」，要求 PR 地址与前次交接一致，
-  `releases` 恰好覆盖非空的全部必需产物，并记录 `deployedCommit` 和 `receiptDigest`。发布会话先核实公开产物并写评论。
+  `releases` 恰好覆盖非空的全部必需产物（沿用交接时记录的标识，产品之后改动清单不影响已交接的条目），
+  并记录 `deployedCommit` 和 `receiptDigest`。发布会话先核实公开产物并写评论。
   服务端不能独立访问 GitHub 或公网下载来证明这些证据，所以外部核实仍是 Skill 的责任。
 
 - `create_item`（同上）：`sourceItemKey` 与 `productId` 必须且只能给一个。给 `sourceItemKey` 时拆出一条

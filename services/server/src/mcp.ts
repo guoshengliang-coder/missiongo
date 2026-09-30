@@ -9,7 +9,7 @@ import { z } from "zod";
 import type { AttachmentStorage } from "./attachment-storage.js";
 import { McpAttachmentUploads, MCP_UPLOAD_CHUNK_BYTES } from "./mcp-attachment-uploads.js";
 import { MISSIONGO_WRITE_SCOPE } from "./oauth.js";
-import { COMMENT_BODY_KINDS } from "./types.js";
+import { COMMENT_BODY_KINDS, MAX_RELEASE_ARTIFACTS, RELEASE_ARTIFACT_ID_PATTERN } from "./types.js";
 import type { MissionGoStore } from "./store.js";
 
 const DEFAULT_LOG_CHUNK_BYTES = 32 * 1024;
@@ -197,7 +197,7 @@ export function createMissionGoMcpServer(
     "list_products",
     {
       title: "List MissionGo products",
-      description: "List products available in this private MissionGo workspace.",
+      description: "List products available in this private MissionGo workspace. Each product carries the release artifact identifiers it declares, which submit_development_complete may record.",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -604,15 +604,16 @@ export function createMissionGoMcpServer(
       title: "Record merged work as development complete",
       description:
         "Move an in-progress item to development complete only after checking the PR is merged with "
-        + "`gh pr view <url> --json state,mergedAt`, with required repository checks passing. Enumerate artifacts using "
-        + "the current product repository's actual diff and release rules, never another repository's path mapping. "
+        + "`gh pr view <url> --json state,mergedAt`, with required repository checks passing. "
+        + "Enumerate artifacts using the current product repository's actual diff and release rules, never another "
+        + "repository's path mapping, and pick identifiers from the product's `releaseArtifacts` in list_products. "
         + "Explicit no-release work may use requiredArtifacts: [] only with noReleaseReason explaining scope, evidence "
         + "and verification. Unknown release requirements stay in progress. Write the completion comment first. "
         + "No-release work waits for a person to arrange verification; this tool never proves publication or acceptance.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
         pullRequestUrl: z.string().min(1).max(500).startsWith("https://"),
-        requiredArtifacts: z.array(z.enum(["web", "androidApp", "androidSdk", "macosApp"])).max(4),
+        requiredArtifacts: z.array(z.string().regex(RELEASE_ARTIFACT_ID_PATTERN)).max(MAX_RELEASE_ARTIFACTS),
         noReleaseReason: z.string().trim().min(1).max(4_000).optional(),
         summary: z.string().min(1).max(4_000).optional(),
         idempotencyKey: z.string().min(1).max(200),
@@ -653,15 +654,15 @@ export function createMissionGoMcpServer(
     "submit_for_verification",
     {
       title: "Hand published work over for verification",
-      description: "Only after independently checking the merged PR, verified release receipt and every required public artifact, move a development-complete item to pending verification. Read the item fully and write a release comment first. The receipt digest and artifact versions are recorded for audit; the server cannot itself verify GitHub or public downloads.",
+      description: "Only after independently checking the merged PR, verified release receipt and every required public artifact, move a development-complete item to pending verification. Read the item fully and write a release comment first. Artifacts must match the identifiers recorded at handover. The receipt digest and artifact versions are recorded for audit; the server cannot itself verify GitHub or public downloads.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
         pullRequestUrl: z.string().min(1).max(500).startsWith("https://"),
         releases: z.array(z.object({
-          artifact: z.enum(["web", "androidApp", "androidSdk", "macosApp"]),
+          artifact: z.string().regex(RELEASE_ARTIFACT_ID_PATTERN),
           version: z.string().min(1).max(100),
           sourceCommit: z.string().regex(/^[0-9a-f]{40}$/),
-        })).min(1).max(4),
+        })).min(1).max(MAX_RELEASE_ARTIFACTS),
         deployedCommit: z.string().regex(/^[0-9a-f]{40}$/),
         receiptDigest: z.string().regex(/^[0-9a-f]{64}$/),
         idempotencyKey: z.string().min(1).max(200),
