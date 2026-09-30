@@ -2411,7 +2411,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         nodeName: session.nodeName,
         activityAt: session.activityAt,
         title: session.sessionName?.trim() || session.items.map((item) => item.key).join("、"),
-        items: session.items.map((item) => ({ key: item.key, productId: item.productId })),
+        items: session.items.map((item) => ({ key: item.key, productId: item.productId, title: item.title })),
       })),
     };
   });

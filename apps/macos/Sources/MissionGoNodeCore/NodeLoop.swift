@@ -843,6 +843,9 @@ public final class NodeLoop: @unchecked Sendable {
             ))
         }
         skillReadyAgents.withLock { $0 = readyKinds }
+        // Local sync results belong in the menu even if the following
+        // heartbeat request fails.
+        update { $0.agents = reports }
         return reports
     }
 

@@ -1,6 +1,7 @@
 import type { AgentKind } from "@missiongo/domain";
 
 import type {
+  AgentApproval,
   AgentSession,
   AgentSessionAttachment,
   AgentSessionCommand,
@@ -618,4 +619,11 @@ export function activityLabelKey(status: AgentSessionStatus, replyQueued = false
   if (status === "stalled") return "agentSessionActivityStalled";
   if (status === "failed") return "agentSessionActivityFailed";
   return replyQueued ? "agentSessionActivityUnavailableQueued" : "agentSessionActivityUnavailable";
+}
+
+/** Keep the intervention panel for work a person still needs to act on. */
+export function approvalNeedsAction(approval: AgentApproval | undefined): boolean {
+  if (!approval) return false;
+  if (approval.kind === "manual") return approval.status === "pending" && !approval.decision;
+  return approval.status === "denied" && (!approval.retryId || approval.retryStatus === "failed");
 }
