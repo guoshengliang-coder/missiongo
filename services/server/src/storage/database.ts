@@ -1660,6 +1660,19 @@ export class MissionGoDatabase {
           .run(202609300121, new Date().toISOString());
       });
     }
+    // AND-267: file-specific capabilities reuse the existing staged uploads.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202609300152").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          ALTER TABLE mcp_attachment_uploads ADD COLUMN direct_token_hash TEXT;
+          ALTER TABLE mcp_attachment_uploads ADD COLUMN direct_expires_at TEXT;
+          ALTER TABLE mcp_attachment_uploads ADD COLUMN direct_credentials_at INTEGER;
+          ALTER TABLE mcp_attachment_uploads ADD COLUMN direct_authorization_id TEXT;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+          .run(202609300152, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

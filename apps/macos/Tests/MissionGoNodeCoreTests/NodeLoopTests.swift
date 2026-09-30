@@ -192,6 +192,7 @@ private func fastTiming() -> NodeLoop.Timing {
     var timing = NodeLoop.Timing()
     timing.heartbeatInterval = 0.05
     timing.claimInterval = 0.01
+    timing.claimFailureInterval = 0.01
     timing.agentUnavailableInterval = 0.01
     timing.resultRetryDelay = 0.01
     return timing
@@ -487,6 +488,45 @@ final class NodeLoopTests: XCTestCase {
             status: .failed, error: "本机没有 codex 的适配器。",
             failureCode: "unknown", failureStage: "readiness"
         ))
+    }
+
+    func testClaimHTTPErrorSurvivesSuccessfulHeartbeatAndRecoversOnSuccessfulClaim() async throws {
+        let api = FakeAPI(claims: Array(repeating: .failure(APIError.http(
+            operation: "claim-next", status: 502, detail: "Bad Gateway"
+        )), count: 100))
+        var timing = fastTiming()
+        timing.claimFailureInterval = 0.02
+        let adapter = FakeAdapter(outcome: .success(LaunchResult(sessionName: "test", sessionUrl: nil, logPath: nil)))
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac", timing: timing, log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { loop.currentState.connection == .degraded }
+        let beatCount = api.heartbeats.current.count
+        await waitUntil { api.heartbeats.current.count > beatCount }
+        XCTAssertEqual(loop.currentState.connection, .degraded)
+        XCTAssertTrue(loop.currentState.lastError?.contains("HTTP 502") == true)
+        XCTAssertNil(loop.currentState.requestErrors["上报心跳出错"])
+        api.queue.withLock { $0 = [.success(nil)] }
+        loop.retryNow()
+        await waitUntil { loop.currentState.connection == .online && loop.currentState.lastError == nil }
+        task.cancel()
+        try await task.value
+    }
+
+    func testClaimSuccessCannotEraseAnUnrecoveredHeartbeatFailure() async throws {
+        let api = FakeAPI(claims: [], heartbeat: .failure(APIError.http(
+            operation: "heartbeat", status: 500, detail: "server problem"
+        )))
+        let adapter = FakeAdapter(outcome: .success(LaunchResult(sessionName: "test", sessionUrl: nil, logPath: nil)))
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac", timing: fastTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { api.calls.current.filter { $0.hasPrefix("claim:") }.count >= 3 }
+        XCTAssertEqual(loop.currentState.connection, .degraded)
+        XCTAssertTrue(loop.currentState.lastError?.contains("heartbeat") == true)
+        api.heartbeatResult.withLock { $0 = .success(HeartbeatReply(repos: [])) }
+        loop.retryNow()
+        await waitUntil { loop.currentState.connection == .online }
+        task.cancel()
+        try await task.value
     }
 
     func testNetworkErrorsKeepTheLoopRunning() async throws {
