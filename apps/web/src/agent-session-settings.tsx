@@ -80,7 +80,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   }, []);
   const queryClient = useQueryClient();
   const settings = session.settings;
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, enabled: settings.adjustable && Boolean(session.agentSessionId) });
+  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, enabled: Boolean(session.nodeId) });
   const models = agentModels(nodesQuery.data?.nodes.find((node) => node.id === session.nodeId), session.agentKind);
 
   const apply = useMutation({
@@ -103,11 +103,13 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   const requestedModel = settings.pending?.model ?? settings.requestedModel ?? "";
   // A refused change leaves the request in the server's history. Show the
   // Mac's previous value in the picker so the person can choose that code
-  // again; keep the failed request visible in the separate details and error.
+  // again; the error explains why the requested change was refused.
   const modelValue = settings.error && !settings.pending ? settings.model ?? "" : requestedModel;
-  const selectedModel = models?.find((entry) => entry.id === modelValue);
-  const selectedModelLabel = selectedModel ? modelDisplayLabel(selectedModel, models ?? []) : modelValue || t("dispatchModelLocal");
-  const modelDetails = `${t("agentSettingsSelectedModel")}: ${requestedModel || t("dispatchModelLocal")} · ${t("agentSettingsReportedModel")}: ${settings.model ?? t("agentSettingsModelUnreported")}${endpointNote}`;
+  const modelLabel = (id: string | undefined) => {
+    const entry = models?.find((option) => option.id === id);
+    return entry ? modelDisplayLabel(entry, models ?? []) : id || t("dispatchModelLocal");
+  };
+  const selectedModelLabel = modelLabel(modelValue);
   const shownEffort = settings.effort
     ? effortLabel(settings.effort)
     : settings.requestedEffort
@@ -116,7 +118,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   const pendingText = settings.pending
     ? [
         settings.pending.mode ? modeLabel(settings.pending.mode) : null,
-        settings.pending.model ?? null,
+        settings.pending.model ? modelLabel(settings.pending.model) : null,
         settings.pending.effort ? effortLabel(settings.pending.effort) : null,
       ].filter(Boolean).join(" · ")
     : "";
@@ -145,7 +147,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
         <p className="agent-session-quick-settings-summary">
           {modeLabel(settings.mode)} · {shownEffort}
         </p>
-        <p className="agent-session-settings-note">{modelDetails}</p>
+        <p className="agent-session-settings-note" title={selectedModelLabel}>{modelLabel(settings.model ?? settings.requestedModel)}{endpointNote}</p>
         {settings.pending && <p className="agent-session-settings-note">{t("agentSettingsPending", { change: pendingText })}</p>}
         {settings.error && <p className="agent-session-settings-note error">{t("agentSettingsError", { error: settings.error })}</p>}
       </div>
@@ -170,15 +172,14 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           className="agent-settings-model"
           aria-label={t("dispatchModel")}
           value={modelValue}
-          title={modelDetails}
+          title={selectedModelLabel}
           disabled={apply.isPending || !models}
           onChange={(event) => {
             const model = event.target.value;
             if (model && model !== modelValue) apply.mutate({ model });
           }}
         >
-          {/* The option's label describes its value, including while a change
-              is pending and the Mac still reports the previous model. */}
+          {/* Use the same catalog labels as dispatch, including pending picks. */}
           <option value={modelValue}>{selectedModelLabel}</option>
           {groupModelsByProvider((models ?? []).filter((entry) => entry.id !== modelValue)).map((group) => (
             group.provider === null
@@ -226,7 +227,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
         </div>
         {apply.isPending && <LoaderCircle className="spin" size={13} aria-hidden="true" />}
       </div>
-      <p className="agent-session-settings-note">{modelDetails}</p>
+      {endpointNote && <p className="agent-session-settings-note">{t("customModelEndpoint", { host: settings.modelEndpoint! })}</p>}
       {settings.pending && <p className="agent-session-settings-note">{t("agentSettingsPending", { change: pendingText })}</p>}
       {settings.error && <p className="agent-session-settings-note error">{t("agentSettingsError", { error: settings.error })}</p>}
       {apply.isError && (

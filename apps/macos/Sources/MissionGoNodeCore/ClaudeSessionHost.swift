@@ -299,6 +299,7 @@ public struct ClaudeStreamSnapshot: Sendable {
     public private(set) var state: ClaudeHostState
     public private(set) var initialized = false
     private var visibleUserMessageIds = Set<String>()
+    private var compactionMessageId: String?
     private var taskTitles: [String: String] = [:]
     private var taskStartedAt: [String: String] = [:]
 
@@ -370,7 +371,9 @@ public struct ClaudeStreamSnapshot: Sendable {
                   let content = message["content"] as? [[String: Any]]
             else { return }
             startTurnIfNeeded()
-            let sourceId = (message["id"] as? String) ?? (value["uuid"] as? String) ?? UUID().uuidString
+            // Gateways may reuse the API message id for every response. The
+            // stream event UUID identifies each complete content frame instead.
+            let sourceId = (value["uuid"] as? String) ?? (message["id"] as? String) ?? UUID().uuidString
             let turnId = (value["user_message_uuid"] as? String) ?? latestTurnId() ?? sourceId
             let text = content.compactMap { block -> String? in
                 guard block["type"] as? String == "text" else { return nil }
@@ -386,11 +389,8 @@ public struct ClaudeStreamSnapshot: Sendable {
                 // The server refuses a message whose text is blank (AND-210), so
                 // blocks that are only whitespace join into nothing here rather
                 // than into a newline that poisons the whole snapshot.
-                let combinedText = [previous?.text, text]
-                    .compactMap { $0 }
-                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                    .joined(separator: "\n")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                // Replaying a frame updates it; it must not append its text twice.
+                let combinedText = text
                 upsert(AgentSessionMessage(
                     sourceId: sourceId,
                     turnId: turnId,
@@ -405,7 +405,11 @@ public struct ClaudeStreamSnapshot: Sendable {
             state.status = "active"
             state.idleSince = nil
             state.turnActive = true
-            state.error = nil
+            if value["error"] as? String != nil || value["isApiErrorMessage"] as? Bool == true {
+                state.error = Self.executionError(text)
+            } else {
+                state.error = nil
+            }
             return
         }
         if type == "result" {
@@ -419,11 +423,22 @@ public struct ClaudeStreamSnapshot: Sendable {
             let terminalReason = value["terminal_reason"] as? String
             // interrupt() currently ends a turn with this SDK result. It is a
             // completed cancellation, not a broken session.
-            if subtype == "error_during_execution", terminalReason != "aborted_streaming" {
-                let errors = value["errors"] as? [String]
-                state.error = errors?.joined(separator: "\n") ?? "Claude Code 当前回合执行失败。"
+            if terminalReason != "aborted_streaming",
+               value["is_error"] as? Bool == true || subtype?.hasPrefix("error") == true || terminalReason == "blocking_limit" {
+                let errors = (value["errors"] as? [String] ?? []).filter { !$0.isEmpty }
+                if !errors.isEmpty {
+                    state.error = Self.executionError(errors.joined(separator: "\n"))
+                } else if state.error == nil {
+                    state.error = terminalReason == "blocking_limit"
+                        ? "Claude Code 当前回合已达到限制，未完成。"
+                        : "Claude Code 当前回合执行失败。"
+                }
             } else {
                 state.error = nil
+            }
+            if compactionMessageId != nil {
+                showCompaction("上下文压缩已随当前回合结束。")
+                compactionMessageId = nil
             }
         }
     }
@@ -635,11 +650,35 @@ public struct ClaudeStreamSnapshot: Sendable {
 
     private mutating func consumeSystemEvent(_ value: [String: Any]) {
         guard let subtype = value["subtype"] as? String else { return }
+        if subtype == "status", value["status"] as? String == "compacting" {
+            if compactionMessageId == nil { compactionMessageId = "compaction-\(UUID().uuidString)" }
+            showCompaction("正在自动压缩上下文，完成后会继续。")
+            return
+        }
+        if subtype == "compact_boundary" || subtype == "status" && value["compact_result"] as? String == "success" {
+            if compactionMessageId != nil {
+                showCompaction("上下文自动压缩完成。")
+                compactionMessageId = nil
+            }
+            return
+        }
+        if subtype == "status", value["compact_result"] as? String == "failed" {
+            if compactionMessageId == nil { compactionMessageId = "compaction-\(UUID().uuidString)" }
+            let reason = value["compact_error"] as? String ?? "未知原因"
+            let detail = reason == "too_few_groups" ? "可压缩的消息分组不足（too_few_groups）" : reason
+            showCompaction("上下文自动压缩失败：\(detail)。如果随后出现上下文超限，请先处理该错误再继续。")
+            compactionMessageId = nil
+            return
+        }
         if subtype == "thinking_tokens" {
             startTurnIfNeeded()
             if state.thinkingStartedAt == nil { state.thinkingStartedAt = Self.timestampNow() }
-            state.thinkingTokens += max(0, (value["thinking_tokens"] as? Int)
-                ?? (value["tokens"] as? Int) ?? (value["count"] as? Int) ?? 0)
+            if let delta = (value["estimated_tokens_delta"] as? Int)
+                ?? (value["thinking_tokens"] as? Int) ?? (value["tokens"] as? Int) ?? (value["count"] as? Int) {
+                state.thinkingTokens += max(0, delta)
+            } else if let estimate = value["estimated_tokens"] as? Int {
+                state.thinkingTokens = max(state.thinkingTokens, estimate)
+            }
             return
         }
         if subtype == "task_started", let id = value["task_id"] as? String {
@@ -706,6 +745,23 @@ public struct ClaudeStreamSnapshot: Sendable {
             state.thinkingDurationSeconds += max(0, Int(Date().timeIntervalSince(date)))
         }
         state.thinkingStartedAt = nil
+    }
+
+    private mutating func showCompaction(_ text: String) {
+        guard let id = compactionMessageId else { return }
+        let previous = state.messages.first { $0.sourceId == id }
+        upsert(AgentSessionMessage(
+            sourceId: id, turnId: previous?.turnId ?? latestTurnId(), role: "agent", text: text,
+            occurredAt: previous?.occurredAt ?? Self.timestampNow()
+        ))
+        state.lastOutputAt = Self.timestampNow()
+    }
+
+    private static func executionError(_ text: String) -> String {
+        if text.localizedCaseInsensitiveContains("prompt is too long") {
+            return "上下文超出模型限制，当前回合未完成（Prompt is too long）。"
+        }
+        return text.isEmpty ? "Claude Code 当前回合执行失败。" : text
     }
 
     private static func timestampNow() -> String {
