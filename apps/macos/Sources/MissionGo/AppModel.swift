@@ -137,6 +137,9 @@ final class AppModel: ObservableObject {
     private let bundleServerUrl = Bundle.main.object(forInfoDictionaryKey: "MissionGoServerURL") as? String
     private var environment: ShellEnvironment?
     private var started = false
+    #if DEBUG
+    private var isPreview = false
+    #endif
     private var loginTask: Task<Void, Never>?
     private var loopTask: Task<Void, Never>?
     private var loopStatesTask: Task<Void, Never>?
@@ -160,6 +163,30 @@ final class AppModel: ObservableObject {
         serverOverride = UserDefaults.standard.string(forKey: DefaultsKey.serverOverride)
         refreshIntegrationStates()
     }
+
+    #if DEBUG
+    /// A read-only UI fixture. It never starts the node loop, reads credentials,
+    /// or refreshes an integration; release builds do not include this path.
+    init(previewCredential: NodeCredential, unread: UnreadSessionsSnapshot, agentVersions: [String: String]) {
+        isPreview = true
+        showsRevokedNotice = false
+        serverOverride = nil
+        phase = .signedIn(previewCredential)
+        unreadCount = unread.totalUnread
+        unreadSessions = unread.sessions
+        detectedAgentVersions = agentVersions
+        loopState.connection = .online
+        loopState.expectedSkillVersion = "5.15.0"
+        for (agent, version) in agentVersions {
+            let state = ["attempt": UUID().uuidString, "version": version]
+            if let data = try? JSONSerialization.data(withJSONObject: state),
+               let integration = try? JSONDecoder().decode(LocalIntegrations.State.self, from: data) {
+                integrationStates[agent] = integration
+            }
+            skillSync[agent] = AgentSkillSnapshot(localVersion: "5.15.0", expectedVersion: "5.15.0", syncState: "ready")
+        }
+    }
+    #endif
 
     // MARK: Derived
 
@@ -203,6 +230,9 @@ final class AppModel: ObservableObject {
     /// Called once at launch, before the menu is ever opened: a Mac that comes
     /// up at login has to go online without anyone clicking the icon.
     func start() {
+        #if DEBUG
+        guard !isPreview else { return }
+        #endif
         guard !started else { return }
         started = true
         // Before any network call: the menu should be able to say which version
@@ -553,6 +583,9 @@ final class AppModel: ObservableObject {
     // MARK: Menu open / close
 
     func menuDidOpen() {
+        #if DEBUG
+        guard !isPreview else { return }
+        #endif
         refreshLaunchAtLogin()
         guard credential != nil else { return }
         refreshUnreadSessions()
@@ -936,6 +969,9 @@ final class AppModel: ObservableObject {
     }
 
     func refreshProfile() {
+        #if DEBUG
+        guard !isPreview else { return }
+        #endif
         guard let credential else { return }
         Task {
             do {
@@ -953,6 +989,9 @@ final class AppModel: ObservableObject {
     }
 
     func refreshDispatches() {
+        #if DEBUG
+        guard !isPreview else { return }
+        #endif
         guard let credential else { return }
         Task {
             do {

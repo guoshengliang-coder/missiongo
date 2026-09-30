@@ -36,10 +36,4 @@ final class WindowSizingTests: XCTestCase {
         XCTAssertEqual(MainWindowSizing.contentHeight(measuredHeight: 900, availableHeight: 0), 900)
     }
 
-    func testIgnoresRoundingSizedChanges() {
-        XCTAssertFalse(MainWindowSizing.needsResize(from: 400, to: 400.4))
-        XCTAssertFalse(MainWindowSizing.needsResize(from: 400, to: 400.5))
-        XCTAssertTrue(MainWindowSizing.needsResize(from: 400, to: 401))
-        XCTAssertTrue(MainWindowSizing.needsResize(from: 401, to: 400))
-    }
 }

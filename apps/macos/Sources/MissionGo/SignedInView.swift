@@ -30,7 +30,7 @@ enum MenuPalette {
 
 struct SignedInView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openLocalSettings) private var openLocalSettings
     @State private var showingConnectionError = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -57,14 +57,18 @@ struct SignedInView: View {
             .background(MenuPalette.canvas)
             .overlay(alignment: .bottom) { MenuPalette.divider.frame(height: 1) }
 
-            ScrollView {
+            ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 8) {
                     UnreadSection()
                     AgentStatusSection()
                     VersionStatusSection()
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Overlay scrollers need a gutter; legacy scrollers already
+                // reduce the viewport. Never force the old 390pt document
+                // into that narrower viewport (AND-271).
+                .padding(.trailing, 16)
             }
-            .frame(maxHeight: min(620, max(160, (NSScreen.main?.visibleFrame.height ?? 800) - 120)))
             .background(MenuPalette.canvas)
 
             HStack(spacing: 7) {
@@ -104,7 +108,7 @@ struct SignedInView: View {
                         .font(.caption)
                         .help("自动重试中；点击可立即重试")
                 }
-                Button { openWindow(id: "local-settings") } label: {
+                Button { openLocalSettings() } label: {
                     Image(systemName: "gearshape")
                         .frame(width: 30, height: 30)
                 }
@@ -173,7 +177,6 @@ private struct MenuGroup<Content: View>: View {
 
 private struct UnreadSection: View {
     @EnvironmentObject private var model: AppModel
-    @State private var rowsHeight: CGFloat = 58
 
     var body: some View {
         MenuGroup(title: "未读会话", symbol: "bubble.left", trailing: AnyView(
@@ -206,19 +209,12 @@ private struct UnreadSection: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(model.unreadSessions) { session in
-                            UnreadSessionCard(session: session) { model.openUnreadSession(session) }
-                            MenuPalette.divider.frame(height: 1)
-                        }
+                VStack(spacing: 0) {
+                    ForEach(model.unreadSessions) { session in
+                        UnreadSessionCard(session: session) { model.openUnreadSession(session) }
+                        MenuPalette.divider.frame(height: 1)
                     }
-                    .background(GeometryReader { geometry in
-                        Color.clear.preference(key: UnreadRowsHeight.self, value: geometry.size.height)
-                    })
                 }
-                .frame(height: min(max(rowsHeight, 58), 260))
-                .onPreferenceChange(UnreadRowsHeight.self) { rowsHeight = $0 }
                 Button("在 Web 查看全部 \(model.unreadCount ?? 0) 条 ↗") { model.openAllUnread() }
                     .buttonStyle(.plain)
                     .font(.caption.weight(.semibold))
@@ -230,14 +226,9 @@ private struct UnreadSection: View {
     }
 }
 
-private struct UnreadRowsHeight: PreferenceKey {
-    static let defaultValue: CGFloat = 58
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
 private struct AgentStatusSection: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openLocalSettings) private var openLocalSettings
 
     private var readyCount: Int {
         LocalAgent.allCases.filter { agent in
@@ -260,15 +251,22 @@ private struct AgentStatusSection: View {
                     let state = model.integrationStates[agent.rawValue]
                     let checking = model.checkingIntegrations.contains(agent)
                     let ready = state?.version != nil && state?.issue == nil
-                    HStack(spacing: 7) {
+                    HStack(alignment: .top, spacing: 7) {
                         AgentMark(agent: agent)
                         Text(agent.title).font(.subheadline.weight(.medium))
                         Spacer(minLength: 4)
-                        Circle().fill(ready ? MenuPalette.action : (state == nil ? Color.gray : Color.orange))
-                            .frame(width: 6, height: 6)
-                        Text(checking ? "检查中" : ready ? "就绪" : state == nil ? "未启用" : "需处理")
-                        if let version = model.detectedAgentVersions[agent.rawValue] ?? state?.version {
-                            Text("· \(version)")
+                        VStack(alignment: .trailing, spacing: 3) {
+                            HStack(spacing: 5) {
+                                Circle().fill(ready ? MenuPalette.action : (state == nil ? Color.gray : Color.orange))
+                                    .frame(width: 6, height: 6)
+                                Text(checking ? "检查中" : ready ? "就绪" : state == nil ? "未启用" : "需处理")
+                            }
+                            if let version = model.detectedAgentVersions[agent.rawValue] ?? state?.version {
+                                Text(version)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .multilineTextAlignment(.trailing)
+                                    .textSelection(.enabled)
+                            }
                         }
                     }
                     .font(.system(size: 11))
@@ -281,7 +279,7 @@ private struct AgentStatusSection: View {
                             .fixedSize(horizontal: false, vertical: true)
                         Button("查看处理方法") {
                             UserDefaults.standard.set("Agent", forKey: "localSettingsTab")
-                            openWindow(id: "local-settings")
+                            openLocalSettings()
                         }
                         .font(.caption)
                     }
@@ -340,6 +338,8 @@ private struct VersionStatusSection: View {
                     Text("Skill")
                     Spacer()
                     Text(model.integrationStates.isEmpty ? "未启用" : "按 Agent 展示")
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.trailing)
                         .foregroundStyle(MenuPalette.secondaryText)
                 }
                 .frame(minHeight: 32)
@@ -357,6 +357,8 @@ private struct VersionStatusSection: View {
                     Text(model.appVersion ?? "开发构建")
                         .foregroundStyle(MenuPalette.secondaryText)
                     Text("· \(updateLabel)")
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.trailing)
                         .foregroundStyle(MenuPalette.secondaryText)
                 }
                 .frame(minHeight: 32)

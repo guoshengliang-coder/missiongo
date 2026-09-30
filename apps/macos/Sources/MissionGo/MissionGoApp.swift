@@ -6,43 +6,52 @@ import SwiftUI
 @main
 struct MissionGoApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @ObservedObject private var model = AppModel.shared
-
-    private var appLabel: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "应用"
-    }
-
     var body: some Scene {
-        MenuBarExtra {
-            MenuContentView()
-                .environmentObject(model)
-        } label: {
-            HStack(spacing: 3) {
-                Image(systemName: model.menuBarSymbol)
-                if let label = UnreadBadgeLabel.text(model.unreadCount) {
-                    Text(label)
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 4)
-                        .frame(minWidth: 14, minHeight: 14)
-                        .background(.red, in: Capsule())
-                }
-            }
-            .accessibilityLabel(model.unreadCount.map { $0 > 0 ? "\(appLabel)，未读会话 \($0)" : appLabel } ?? appLabel)
-        }
-        .menuBarExtraStyle(.window)
-
-        Window("本机设置", id: "local-settings") {
+        // A Settings scene does not open a window at signed-in startup. All
+        // explicit settings actions below reuse the same AppKit window.
+        Settings {
             LocalSettingsView()
-                .environmentObject(model)
+                .environmentObject(AppModel.shared)
         }
-        .defaultSize(width: 724, height: 510)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("本机设置…") { delegate.showLocalSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
+        }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let mainWindow = MainWindowController()
+    private let model: AppModel
+
+    override convenience init() {
+        self.init(model: .shared)
+    }
+
+    init(model: AppModel) {
+        self.model = model
+        super.init()
+    }
+
+    private(set) lazy var mainWindow: MainWindowController = {
+        let content = NSHostingView(rootView: MenuContentView()
+            .environmentObject(model)
+            .environment(\.openLocalSettings, { [weak self] in self?.showLocalSettings() }))
+        // AppKit owns the size. Letting the hosting view resize the window from
+        // every SwiftUI layout caused a constraint feedback loop on macOS 26.
+        if #available(macOS 13.3, *) { content.sizingOptions = [] }
+        return MainWindowController(
+            title: Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "应用",
+            contentView: content,
+            onOpen: { [model] in model.menuDidOpen() },
+            onClose: { [model] in model.menuDidClose() }
+        )
+    }()
+    private(set) var settingsWindow: NSWindow?
+    private(set) var statusItem: NSStatusItem?
+    private var statusObservation: AnyCancellable?
     private var phaseObservation: AnyCancellable?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -52,16 +61,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = item
+        item.button?.target = self
+        item.button?.action = #selector(showMainWindow)
+        statusObservation = model.objectWillChange.sink { [weak self] in
+            // Published values have not been assigned until after this signal.
+            DispatchQueue.main.async { self?.updateStatusItem() }
+        }
+        updateStatusItem()
         // When signed out, open the same content as a normal window so the
         // sign-in action is immediately visible. Signed-in startup stays quiet.
-        phaseObservation = AppModel.shared.$phase
+        phaseObservation = model.$phase
             .removeDuplicates()
             .sink { [mainWindow] phase in
                 if phase == .signedOut { mainWindow.show() }
             }
         // Started here rather than from a view: the machine has to go online at
         // login even if nobody ever opens the menu.
-        AppModel.shared.start()
+        model.start()
+    }
+
+    func showLocalSettings() {
+        let window: NSWindow
+        if let existing = settingsWindow {
+            window = existing
+        } else {
+            let content = NSHostingView(rootView: LocalSettingsView().environmentObject(model))
+            if #available(macOS 13.3, *) { content.sizingOptions = [] }
+            window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 724, height: 510),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                              backing: .buffered, defer: false)
+            window.title = "本机设置"
+            window.contentView = content
+            window.contentMinSize = NSSize(width: 580, height: 440)
+            window.isReleasedWhenClosed = false
+            window.center()
+            settingsWindow = window
+        }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showMainWindow() {
+        mainWindow.show()
+    }
+
+    private func updateStatusItem() {
+        guard let button = statusItem?.button else { return }
+        let label = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "应用"
+        button.image = NSImage(systemSymbolName: model.menuBarSymbol, accessibilityDescription: label)
+        button.image?.isTemplate = true
+        button.imagePosition = .imageLeading
+        button.title = UnreadBadgeLabel.text(model.unreadCount).map { " \($0)" } ?? ""
+        let description = model.unreadCount.map { $0 > 0 ? "\(label)，未读会话 \($0)" : label } ?? label
+        button.toolTip = description
+        button.setAccessibilityLabel(description)
     }
 
     /// Double-clicking the app again while it runs is how people look for it.
@@ -71,205 +127,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// The menu's content in a normal window, for everyone who cannot or does not
-/// know to use the menu-bar icon.
-/// The Dock fallback has the same chrome as the menu-bar popover. It can be
-/// dismissed with Escape or a click elsewhere and reopened from the Dock.
-private final class MenuFallbackWindow: NSWindow {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-
-    override func cancelOperation(_ sender: Any?) {
-        close()
-    }
+private struct OpenLocalSettingsKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
 }
 
-@MainActor
-final class MainWindowController: NSObject, NSWindowDelegate {
-    private var window: NSWindow?
-    /// The content's natural height, as last measured.
-    private var measuredHeight: CGFloat?
-    private var fitScheduled = false
-    private var isFitting = false
-
-    func show() {
-        let window = self.window ?? makeWindow()
-        self.window = window
-        // Reopening from the Dock is how a minimized window comes back.
-        if MainWindowChrome.shouldDeminiaturize(isMiniaturized: window.isMiniaturized) {
-            window.deminiaturize(nil)
-        }
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func makeWindow() -> NSWindow {
-        let content = NSHostingView(
-            rootView: MainWindowContent { [weak self] height in
-                // Never inside the layout pass that reported it: see below.
-                DispatchQueue.main.async { self?.contentDidMeasure(height) }
-            }
-        )
-        // The window is sized by this controller, never by the hosting view.
-        // Left to its default, the hosting view resizes the window to the content
-        // on every layout, the new size invalidates the layout again, and AppKit
-        // eventually aborts the app for exceeding its own limit on constraint
-        // passes in one display cycle — which is how this window crashed on
-        // macOS 26. Instead the content reports its height, and the window takes
-        // it once, after the layout pass, and only when it actually changed; the
-        // content's height does not depend on the window's, so nothing loops.
-        if #available(macOS 13.3, *) {
-            content.sizingOptions = []
-        }
-        // Not `content.fittingSize`: with sizingOptions emptied above, the hosting
-        // view answers zero, and the window opened as a title bar with nothing
-        // under it. A throwaway copy of the content is measured instead, so the
-        // window opens at the right height rather than jumping to it.
-        measuredHeight = Self.probeContentHeight()
-        let window = MenuFallbackWindow(
-            contentRect: NSRect(
-                origin: .zero,
-                size: NSSize(width: MenuContentView.width, height: fittedHeight(on: NSScreen.main))
-            ),
-            // `.titled` is what makes the close/zoom/minimize buttons exist
-            // (AND-262). The visible title bar it used to bring — a second
-            // header over the visual groups — is traded away with the hidden,
-            // transparent title bar set below, keeping the one-header look the
-            // old `.borderless` mask had.
-            styleMask: [.titled, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "MissionGo"
-        window.titleVisibility = MainWindowChrome.titleVisibilityHidden ? .hidden : .visible
-        window.titlebarAppearsTransparent = MainWindowChrome.titlebarAppearsTransparent
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = true
-        window.isMovableByWindowBackground = true
-        window.contentView = content
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.center()
-        self.window = window
-        fitToContent()
-        return window
-    }
-
-    /// The content's height measured off-screen, or nil when it answers nothing.
-    private static func probeContentHeight() -> CGFloat? {
-        let probe = NSHostingController(
-            rootView: MenuContentView(tracksOpening: false)
-                .environmentObject(AppModel.shared)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, MainWindowContent.titleBarClearance)
-        )
-        let height = probe.sizeThatFits(
-            in: NSSize(width: MenuContentView.width, height: CGFloat.greatestFiniteMagnitude)
-        ).height
-        return height.isFinite && height > 0 ? height : nil
-    }
-
-    private func contentDidMeasure(_ height: CGFloat) {
-        guard height.isFinite, height > 0 else { return }
-        measuredHeight = height
-        // Several reports in one pass become one resize.
-        guard !fitScheduled else { return }
-        fitScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            self?.fitScheduled = false
-            self?.fitToContent()
-        }
-    }
-
-    private func fittedHeight(on screen: NSScreen?) -> CGFloat {
-        return MainWindowSizing.contentHeight(
-            measuredHeight: measuredHeight,
-            availableHeight: (screen ?? NSScreen.main)?.visibleFrame.height
-        )
-    }
-
-    /// Makes the window exactly as tall as its content, keeping its top edge
-    /// where it is, the way a window grows or shrinks downward, and on screen.
-    private func fitToContent() {
-        guard let window, !isFitting else { return }
-        isFitting = true
-        defer { isFitting = false }
-        let screen = window.screen ?? NSScreen.main
-        let target = fittedHeight(on: screen)
-        let current = window.contentRect(forFrameRect: window.frame).height
-        guard MainWindowSizing.needsResize(from: current, to: target) else { return }
-        var frame = window.frameRect(
-            forContentRect: NSRect(origin: .zero, size: NSSize(width: MenuContentView.width, height: target))
-        )
-        frame.origin.x = window.frame.minX
-        frame.origin.y = window.frame.maxY - frame.height
-        if let visible = screen?.visibleFrame {
-            if frame.maxY > visible.maxY { frame.origin.y = visible.maxY - frame.height }
-            if frame.minY < visible.minY { frame.origin.y = visible.minY }
-        }
-        window.setFrame(frame, display: true)
-    }
-
-    func windowDidResignKey(_ notification: Notification) {
-        // Minimizing resigns key too; without this check the minimize button
-        // would close the window instead of parking it in the Dock.
-        if !MainWindowChrome.closesOnResignKey(isMiniaturized: window?.isMiniaturized == true) { return }
-        window?.close()
-    }
-}
-
-/// What the main window shows: the menu's content at its natural height,
-/// reporting that height. The ScrollView only matters once the window has
-/// stopped at its share of the screen; below that the window fits the content
-/// and there is nothing to scroll. The height is taken from the content inside
-/// the ScrollView, which is as tall as it wants to be, not from the ScrollView,
-/// which is as tall as the window.
-private struct MainWindowContent: View {
-    /// The traffic lights sit on top of this content (`.fullSizeContentView`),
-    /// so the content starts below them. The probe in MainWindowController
-    /// pads the same way, keeping both heights one measurement.
-    static let titleBarClearance: CGFloat = MainWindowChrome.titleBarClearance
-
-    let onHeight: (CGFloat) -> Void
-
-    var body: some View {
-        ScrollView {
-            MenuContentView()
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, Self.titleBarClearance)
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: ContentHeightKey.self, value: proxy.size.height)
-                    }
-                )
-        }
-        .background(MenuPalette.canvas)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(MenuPalette.divider, lineWidth: 1))
-        .onPreferenceChange(ContentHeightKey.self, perform: onHeight)
-        .environmentObject(AppModel.shared)
-    }
-}
-
-private struct ContentHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+extension EnvironmentValues {
+    var openLocalSettings: () -> Void {
+        get { self[OpenLocalSettingsKey.self] }
+        set { self[OpenLocalSettingsKey.self] = newValue }
     }
 }
 
 struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel
-
-    /// One width for the menu and for the window: the content is written to be
-    /// read at this width, and nothing here reflows usefully at another.
-    static let width: CGFloat = 390
-
-    /// Off only for the throwaway copy the main window measures before opening:
-    /// that copy is not a menu anyone opened.
-    var tracksOpening = true
 
     private var contentPadding: CGFloat {
         if case .signedIn = model.phase { return 0 }
@@ -286,15 +156,18 @@ struct MenuContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             case .signedOut, .signingIn:
-                SignedOutView()
+                ScrollView(.vertical) {
+                    SignedOutView()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.trailing, 16)
+                }
             case .signedIn:
                 SignedInView()
             }
         }
         .padding(contentPadding)
-        .frame(width: MenuContentView.width)
-        .onAppear { if tracksOpening { model.menuDidOpen() } }
-        .onDisappear { if tracksOpening { model.menuDidClose() } }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(MenuPalette.canvas)
     }
 }
 

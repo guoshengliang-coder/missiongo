@@ -1,52 +1,59 @@
-import Foundation
+import AppKit
 
-/// The chrome of the main window, as data so it can be asserted without a screen.
-///
-/// The window used to be `.borderless`, which is why it had no close, zoom or
-/// minimize buttons at all (AND-262). `.titled` is what makes the traffic lights
-/// exist, but a titled window also brings a visible title bar — a second header
-/// stacked over the content's own header. The two are reconciled with a hidden,
-/// transparent title bar: the buttons stay, the second header does not.
-///
-/// These are values rather than AppKit calls so a test can hold them still. The
-/// button count itself is a property of `.titled` and cannot be asserted here;
-/// what this pins down is the configuration that produces it.
-public enum MainWindowChrome {
-    /// `.titled` makes the close/zoom/minimize buttons exist. `.fullSizeContentView`
-    /// lets the content run under them, so the window keeps the one-header look
-    /// the old borderless mask had.
-    public static let styleMask: StyleMask = [.titled, .fullSizeContentView]
+/// A normal window shared by the Dock and menu-bar entry points. Use AppKit's
+/// actual window configuration rather than a second, test-only style mask.
+@MainActor
+public final class MainWindowController: NSObject, NSWindowDelegate {
+    public let window: NSWindow
+    private let onOpen: () -> Void
+    private let onClose: () -> Void
 
-    /// The title bar is hidden rather than removed: the buttons live in it.
-    public static let titleVisibilityHidden = true
-    public static let titlebarAppearsTransparent = true
-
-    /// The traffic lights are drawn over the content (`.fullSizeContentView`), so
-    /// the content starts below them. The height probe pads by the same amount,
-    /// keeping the measured height and the drawn height one measurement.
-    public static let titleBarClearance: CGFloat = 28
-
-    /// Whether resigning key should dismiss the window.
-    ///
-    /// Resigning key is how this window goes away when you click elsewhere, but
-    /// minimizing resigns key as well — without this distinction the minimize
-    /// button closes the window instead of parking it in the Dock.
-    public static func closesOnResignKey(isMiniaturized: Bool) -> Bool {
-        return !isMiniaturized
+    public init(title: String, contentView: NSView, onOpen: @escaping () -> Void = {}, onClose: @escaping () -> Void = {}) {
+        self.onOpen = onOpen
+        self.onClose = onClose
+        let height = MainWindowSizing.contentHeight(measuredHeight: nil, availableHeight: NSScreen.main?.visibleFrame.height)
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: height),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+        window.title = title
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        // Content stays below the native title bar: neither scrolling nor
+        // rounded SwiftUI clipping can cover the traffic lights.
+        window.contentView = contentView
+        window.contentMinSize = NSSize(width: 390, height: min(260, height))
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.center()
     }
 
-    /// Whether reopening should un-minimize rather than showing nothing.
-    public static func shouldDeminiaturize(isMiniaturized: Bool) -> Bool {
-        return isMiniaturized
+    public func show() {
+        let wasVisible = window.isVisible && !window.isMiniaturized
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        } else if !wasVisible {
+            onOpen()
+        }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// Options, in the style of `NSWindow.StyleMask`, so the assertion reads as
-    /// plainly as the call site it stands for.
-    public struct StyleMask: OptionSet, Equatable {
-        public let rawValue: Int
-        public init(rawValue: Int) { self.rawValue = rawValue }
-
-        public static let titled = StyleMask(rawValue: 1 << 0)
-        public static let fullSizeContentView = StyleMask(rawValue: 1 << 1)
+    public func windowWillClose(_ notification: Notification) {
+        onClose()
     }
+
+    public func windowDidMiniaturize(_ notification: Notification) {
+        onClose()
+    }
+
+    public func windowDidDeminiaturize(_ notification: Notification) {
+        onOpen()
+    }
+
+    // Resigning key deliberately does not close the window. A settings window,
+    // an external link, or another application must not dismiss the main UI.
 }
