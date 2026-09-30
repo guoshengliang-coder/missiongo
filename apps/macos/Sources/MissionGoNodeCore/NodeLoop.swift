@@ -36,6 +36,8 @@ public struct NodeLoopState: Equatable, Sendable {
         case connecting
         /// The last request reached the server.
         case online
+        /// The server answered, but at least one operation failed.
+        case degraded
         /// The last request did not; the loop keeps trying.
         case offline
         /// The credential was refused. Terminal: the app has to log in again.
@@ -45,6 +47,9 @@ public struct NodeLoopState: Equatable, Sendable {
 
     public var connection: Connection = .connecting
     public var lastError: String?
+    /// Cleared only by recovery of the operation that failed.
+    public var requestErrors: [String: String] = [:]
+    var unreachableOperations: Set<String> = []
     public var lastHeartbeatAt: Date?
     public var agents: [DetectedAgent] = []
     public var repos: [RepoMapping] = []
@@ -145,6 +150,8 @@ public final class NodeLoop: @unchecked Sendable {
         /// inside it waits this long — measured at 813ms of the delay when this was
         /// a full second.
         public var claimInterval: TimeInterval = 0.25
+        /// Failed polls back off instead of making four failing requests a second.
+        public var claimFailureInterval: TimeInterval = 3
         /// A locally unavailable agent cannot become claimable because the
         /// server answered. Probe slowly instead of spawning a health command
         /// four times a second while every adapter is paused.
@@ -305,9 +312,8 @@ public final class NodeLoop: @unchecked Sendable {
                         beat = try await self.api.heartbeat(agents: agents, repoCandidates: candidates)
                     }
                     self.noteReposChanged(beat.repos)
+                    self.noteSuccess("上报心跳出错")
                     self.update {
-                        $0.connection = .online
-                        $0.lastError = nil
                         $0.lastHeartbeatAt = Date()
                         $0.agents = agents
                         $0.repos = beat.repos
@@ -346,6 +352,7 @@ public final class NodeLoop: @unchecked Sendable {
     }
 
     private func claimLoop(stop: StopSignal, fatal: Locked<APIError?>) async {
+        let failures = Locked(0)
         while !stop.isStopped {
             guard hasExecutionCapacity() else {
                 await stop.sleep(timing.claimInterval)
@@ -363,10 +370,8 @@ public final class NodeLoop: @unchecked Sendable {
                         availableAgentKinds: availableAgentKinds
                     ) {
                         self.capacity.withLock { $0.reservations[request.dispatchId] = Date() }
-                        self.update {
-                            $0.connection = .online
-                            $0.lastError = nil
-                        }
+                        failures.withLock { $0 = 0 }
+                        self.noteSuccess("拉取派单出错")
                         let startedAt = Date()
                         let (report, logPath) = await self.launchDispatch(request)
                         if report.status != .launched {
@@ -388,16 +393,18 @@ public final class NodeLoop: @unchecked Sendable {
                             throw error
                         }
                     } else {
-                        self.update {
-                            $0.connection = .online
-                            $0.lastError = nil
-                        }
+                        failures.withLock { $0 = 0 }
+                        self.noteSuccess("拉取派单出错")
                     }
                 } catch {
+                    failures.withLock { $0 = min($0 + 1, 5) }
                     self.handle(error, what: "拉取派单出错", stop: stop, fatal: fatal)
                 }
             }
-            await stop.sleep(timing.claimInterval)
+            let count = failures.current
+            let delay = count == 0 ? timing.claimInterval
+                : min(30, timing.claimFailureInterval * pow(2, Double(count - 1)))
+            await stop.sleep(delay)
         }
     }
 
@@ -428,8 +435,17 @@ public final class NodeLoop: @unchecked Sendable {
             await shielded {
                 do {
                     let sessions = try await self.api.listAgentSessions()
+                    self.noteSuccess("同步 Agent 会话出错")
                     self.reconcileCapacity(sessions)
                     let live = Set(sessions.map(\.id))
+                    self.update { value in
+                        let current = Set(sessions.map { "同步 Agent 会话 \($0.id) 出错" })
+                        for key in value.requestErrors.keys where key.hasPrefix("同步 Agent 会话 ") && !current.contains(key) {
+                            value.requestErrors.removeValue(forKey: key)
+                            value.unreachableOperations.remove(key)
+                        }
+                        Self.refreshConnection(&value)
+                    }
                     awaitingReport.withLock { value in value = value.filter { live.contains($0.key) } }
                     // One agent kind must not wait on another (AND-220): a
                     // half-dead Codex daemon used to hold back every Claude
@@ -593,12 +609,14 @@ public final class NodeLoop: @unchecked Sendable {
         }
         do {
             try await self.api.reportAgentSession(sessionId: session.id, report: report)
+            self.noteSuccess("同步 Agent 会话 \(session.id) 出错")
             _ = rejectedUntil.withLock { $0.removeValue(forKey: session.id) }
         } catch {
             if let apiError = error as? APIError,
                case let .http(_, status, _) = apiError,
                (400..<500).contains(status) {
                 rejectedUntil.withLock { $0[session.id] = Date().addingTimeInterval(60) }
+                self.handle(error, what: "同步 Agent 会话 \(session.id) 出错", stop: stop, fatal: fatal)
                 self.log("同步 Agent 会话 \(session.id) 被拒绝（HTTP \(status)）；该会话 60 秒后重试，其余会话继续同步：\(error.localizedDescription)")
                 return
             }
@@ -735,12 +753,33 @@ public final class NodeLoop: @unchecked Sendable {
         }
         let message = "\(what)：\(error.localizedDescription)"
         log(message)
-        update {
-            if $0.connection != .credentialRevoked {
-                $0.connection = .offline
+        update { value in
+            guard value.connection != .credentialRevoked else { return }
+            value.requestErrors[what] = message
+            if let apiError = error as? APIError, case .network = apiError {
+                value.unreachableOperations.insert(what)
+            } else {
+                value.unreachableOperations.remove(what)
             }
-            $0.lastError = message
+            Self.refreshConnection(&value)
         }
+    }
+
+    private func noteSuccess(_ operation: String) {
+        update { value in
+            guard value.connection != .credentialRevoked else { return }
+            value.requestErrors.removeValue(forKey: operation)
+            value.unreachableOperations.remove(operation)
+            Self.refreshConnection(&value)
+        }
+    }
+
+    private static func refreshConnection(_ value: inout NodeLoopState) {
+        guard value.connection != .credentialRevoked else { return }
+        let messages = value.requestErrors.sorted { $0.key < $1.key }.map(\.value)
+        value.lastError = messages.isEmpty ? nil : messages.joined(separator: "\n\n")
+        value.connection = !value.unreachableOperations.isEmpty ? .offline
+            : messages.isEmpty ? .online : .degraded
     }
 
     // MARK: Steps

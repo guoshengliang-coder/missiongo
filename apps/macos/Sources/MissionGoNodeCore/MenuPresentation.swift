@@ -169,6 +169,8 @@ public struct ConnectionSummary: Equatable, Sendable {
         switch state.connection {
         case .online:
             return ConnectionSummary(text: "在线", tone: .good)
+        case .degraded:
+            return ConnectionSummary(text: "接口异常：\(state.lastError ?? "原因未知")", tone: .pending)
         case .connecting:
             return ConnectionSummary(text: "连接中", tone: .pending)
         case .offline:
@@ -191,7 +193,7 @@ public enum MenuBarSymbol {
         switch connection {
         case .online: return "paperplane.circle.fill"
         case .connecting, .none: return "paperplane.circle"
-        case .offline, .credentialRevoked, .stopped: return "exclamationmark.circle"
+        case .degraded, .offline, .credentialRevoked, .stopped: return "exclamationmark.circle"
         }
     }
 }

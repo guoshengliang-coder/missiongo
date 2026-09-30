@@ -1,5 +1,5 @@
 import { createHash, randomUUID, scryptSync } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -13,6 +13,10 @@ import { parseFeedbackLog } from "@missiongo/domain";
 
 import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
 import { buildApp } from "./app.js";
+// @ts-expect-error The published, dependency-free CLI is JavaScript.
+import { inspectFile, uploadFile } from "../../../apps/web/public/downloads/missiongo-upload.mjs";
+import { readAiAccessToken } from "./admin-auth.js";
+
 
 const apps: FastifyInstance[] = [];
 const temporaryDirectories: string[] = [];
@@ -228,11 +232,143 @@ describe("Commenting over MCP", () => {
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
       capabilities: {
-        writeTools: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "add_item_attachment"],
+        writeTools: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment"],
         canComment: true,
         canCreateItems: true,
       },
     });
+  });
+
+  it("uploads a 794 KB JPEG and a limit-sized ZIP without passing file bytes through MCP", async () => {
+    const { app, call, writeToken, productId } = await commentingApp();
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-direct-files-"));
+    temporaryDirectories.push(directory);
+    const jpeg = await sharp({ create: { width: 2, height: 2, channels: 3, background: "red" } }).jpeg().toBuffer();
+    const files = [
+      { filename: "screen.jpg", bytes: Buffer.concat([jpeg, Buffer.alloc(794_572 - jpeg.length)]) },
+      { filename: "bundle.zip", bytes: Buffer.alloc(100 * 1024 * 1024) },
+    ];
+    files[1]!.bytes.writeUInt32LE(0x04034b50);
+    let sequence = 1;
+    for (const file of files) {
+      const path = join(directory, file.filename);
+      await writeFile(path, file.bytes);
+      const metadata = await inspectFile(path);
+      const uploadId = randomUUID();
+      const prepared = await call(writeToken, sequence++, "tools/call", {
+        name: "prepare_attachment_upload", arguments: { ...metadata, uploadId, productId },
+      });
+      expect(prepared.result?.isError).not.toBe(true);
+      const spec = prepared.result?.structuredContent as Record<string, unknown>;
+      expect(spec).toMatchObject({ uploadId, receivedBytes: 0, complete: false, chunkBytes: 512 * 1024 });
+      expect(spec.uploadUrl).toBe(`https://missiongo.test/api/v1/mcp-attachment-uploads/${uploadId}`);
+      let lostResponse = false;
+      const result = await uploadFile(path, spec, {
+        retryDelayMs: 0,
+        fetchImpl: async (url: URL, options: RequestInit) => {
+          const response = await app.inject({ method: "PUT", url: url.pathname + url.search,
+            headers: options.headers as Record<string, string>, payload: options.body as Buffer });
+          // Simulate the server committing a chunk whose response never reached the script.
+          if (!lostResponse) { lostResponse = true; throw new Error("lost response"); }
+          return new Response(response.body, { status: response.statusCode });
+        },
+      });
+      expect(result).toEqual({ uploadId, receivedBytes: file.bytes.length, complete: true });
+      expect(app.missionGoStore.getWorkItem("HG-1").attachments).toHaveLength(sequence === 2 ? 0 : 1);
+      const added = await call(writeToken, sequence++, "tools/call", {
+        name: "add_item_attachment", arguments: { itemKey: "HG-1", uploadId, idempotencyKey: uploadId },
+      });
+      expect(added.result?.isError).not.toBe(true);
+      const attachment = app.missionGoStore.getWorkItem("HG-1").attachments.at(-1)!;
+      expect(attachment.sizeBytes).toBe(file.bytes.length);
+      const stored = app.missionGoStore.getAttachmentRecord("HG-1", attachment.id);
+      expect((await inspectFile(join(directory, file.filename))).sha256).toBe(metadata.sha256);
+      // Committed bytes are preserved; the ordinary API still returns the original file.
+      const read = await app.inject({ method: "GET", url: `/api/v1/items/HG-1/attachments/${attachment.id}/content`,
+        headers: { authorization: "Bearer management-test-token" } });
+      expect(createHash("sha256").update(read.rawPayload).digest("hex")).toBe(metadata.sha256);
+      expect(stored.filename).toBe(file.filename);
+      const replay = await app.inject({ method: "PUT", url: `/api/v1/mcp-attachment-uploads/${uploadId}?offsetBytes=0`,
+        headers: { authorization: `Bearer ${spec.uploadToken}`, "content-type": "application/octet-stream" }, payload: Buffer.from("x") });
+      expect(replay.statusCode).toBe(401);
+    }
+  });
+
+  it("guards direct upload preparation, ownership, digest, expiry and resume", async () => {
+    const { app, call, writeToken, readToken, productId } = await commentingApp();
+    const bytes = Buffer.alloc(512 * 1024 + 17, 7);
+    const uploadId = randomUUID();
+    const args = { uploadId, productId, filename: "trace.log", contentType: "text/plain",
+      sizeBytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+    const prepare = (token = writeToken, data = args) => call(token, 1, "tools/call", { name: "prepare_attachment_upload", arguments: data });
+    expect(JSON.stringify(await prepare(readToken))).toMatch(/write access/);
+    expect(JSON.stringify(await prepare(writeToken, { ...args, filename: "bad.exe" }))).toMatch(/Unsupported/);
+    expect(JSON.stringify(await prepare(writeToken, { ...args, sizeBytes: 10 * 1024 * 1024 + 1 }))).toMatch(/limit/);
+    const first = (await prepare()).result?.structuredContent as Record<string, unknown>;
+    const put = (token: unknown, offset: number, data: Buffer, id = uploadId) => app.inject({ method: "PUT",
+      url: `/api/v1/mcp-attachment-uploads/${id}?offsetBytes=${offset}`,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" }, payload: data });
+    expect((await put(writeToken, 0, bytes.subarray(0, 2))).statusCode).toBe(401);
+    expect((await put(first.uploadToken, 0, bytes, randomUUID())).statusCode).toBe(413);
+    expect((await put(first.uploadToken, 0, bytes.subarray(0, 2), randomUUID())).statusCode).toBe(401);
+    expect((await put(first.uploadToken, 1, bytes.subarray(0, 2))).statusCode).toBe(409);
+    expect((await put(first.uploadToken, 0, bytes.subarray(0, 512 * 1024))).json()).toMatchObject({ receivedBytes: 512 * 1024, complete: false });
+    const resumed = (await prepare()).result?.structuredContent as Record<string, unknown>;
+    expect(resumed.receivedBytes).toBe(512 * 1024);
+    expect((await put(first.uploadToken, 0, bytes.subarray(0, 2))).statusCode).toBe(401);
+    expect((await put(resumed.uploadToken, 512 * 1024, Buffer.alloc(17, 8))).statusCode).toBe(409);
+    expect((await put(resumed.uploadToken, 512 * 1024, bytes.subarray(512 * 1024))).json()).toMatchObject({ complete: true });
+    const admin = testAdminAccount();
+    const account = app.missionGoAccounts.getAccount(admin.id);
+    const otherClient = createAiAccessToken(admin, { id: admin.id, username: admin.username, role: "admin" },
+      app.missionGoAccounts.credentialsStamp(account), "another-client", ["missiongo:read", "missiongo:write"]).token;
+    expect(JSON.stringify(await prepare(otherClient))).toMatch(/Attachment upload/);
+    expect(JSON.stringify(await call(otherClient, 2, "tools/call", { name: "add_item_attachment",
+      arguments: { itemKey: "HG-1", uploadId, idempotencyKey: "other-client" } }))).toMatch(/Attachment upload/);
+    app.missionGoStore.database.connection.prepare("UPDATE mcp_attachment_uploads SET direct_expires_at = ? WHERE upload_id = ?")
+      .run("2000-01-01T00:00:00.000Z", uploadId);
+    expect((await put(resumed.uploadToken, 0, bytes.subarray(0, 2))).statusCode).toBe(401);
+    expect(JSON.stringify(await call(writeToken, 3, "tools/call", { name: "get_item_context", arguments: { itemKey: "HG-1" } })))
+      .not.toContain("trace.log");
+  });
+
+  it("rechecks live OAuth revocation, account credentials and product access on raw-byte requests", async () => {
+    const { app, call, writeToken, productId } = await commentingApp();
+    const uploadId = randomUUID();
+    const args = { uploadId, productId, filename: "trace.log", contentType: "text/plain", sizeBytes: 1,
+      sha256: createHash("sha256").update("x").digest("hex") };
+    const prepared = await call(writeToken, 1, "tools/call", { name: "prepare_attachment_upload", arguments: args });
+    const spec = prepared.result?.structuredContent as Record<string, unknown>;
+    const put = () => app.inject({ method: "PUT", url: `/api/v1/mcp-attachment-uploads/${uploadId}?offsetBytes=0`,
+      headers: { authorization: `Bearer ${spec.uploadToken}`, "content-type": "application/octet-stream" }, payload: Buffer.from("x") });
+    const db = app.missionGoStore.database.connection;
+    const claims = readAiAccessToken(testAdminAccount(), writeToken)!;
+    app.missionGoAccounts.recordAiAuthorization({ tokenId: claims.tokenId, accountId: claims.id, clientId: claims.clientId,
+      scopes: claims.scopes, issuedAt: claims.issuedAt, expiresAt: claims.expiresAt });
+    app.missionGoAccounts.revokeAiAuthorization(claims.id, claims.tokenId);
+    expect((await put()).statusCode).toBe(403);
+    db.prepare("UPDATE ai_authorizations SET revoked_at = NULL WHERE id = ?").run(claims.tokenId);
+    db.prepare("UPDATE accounts SET credentials_changed_at = ? WHERE id = ?").run("2000-01-01T00:00:00.000Z", claims.id);
+    expect((await put()).statusCode).toBe(403);
+    db.prepare("UPDATE accounts SET credentials_changed_at = ? WHERE id = ?").run(new Date(claims.credentialsAt).toISOString(), claims.id);
+    db.prepare("UPDATE accounts SET role = 'member' WHERE id = ?").run(claims.id);
+    expect((await put()).statusCode).toBe(403);
+    expect(JSON.stringify(await call(writeToken, 2, "tools/call", { name: "prepare_attachment_upload", arguments: args })))
+      .toMatch(/not permitted/);
+    db.prepare("UPDATE accounts SET role = 'admin', disabled_at = ? WHERE id = ?").run(new Date().toISOString(), claims.id);
+    expect((await put()).statusCode).toBe(403);
+  });
+
+  it("does not open the raw-byte endpoint when write tools are disabled", async () => {
+    const { app, call, writeToken, productId } = await commentingApp("none");
+    const uploadId = randomUUID();
+    const result = await call(writeToken, 1, "tools/call", { name: "prepare_attachment_upload", arguments: {
+      uploadId, productId, filename: "x.log", contentType: "text/plain", sizeBytes: 1, sha256: "0".repeat(64),
+    } });
+    expect(result.error ?? result.result?.isError).toBeTruthy();
+    const put = await app.inject({ method: "PUT", url: `/api/v1/mcp-attachment-uploads/${uploadId}?offsetBytes=0`,
+      headers: { authorization: "Bearer anything", "content-type": "application/octet-stream" }, payload: Buffer.from("x") });
+    expect(put.statusCode).toBe(403);
   });
 
   it("creates an item with staged image and video atomically, then reads both surfaces", async () => {

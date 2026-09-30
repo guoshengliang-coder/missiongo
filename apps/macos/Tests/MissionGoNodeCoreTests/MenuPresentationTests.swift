@@ -113,6 +113,8 @@ final class ConnectionPresentationTests: XCTestCase {
 
     func testSummarizesEachConnectionState() {
         XCTAssertEqual(ConnectionSummary.summarize(state(.online)), ConnectionSummary(text: "在线", tone: .good))
+        XCTAssertEqual(ConnectionSummary.summarize(state(.degraded, error: "claim-next 失败（HTTP 502）")),
+                       ConnectionSummary(text: "接口异常：claim-next 失败（HTTP 502）", tone: .pending))
         XCTAssertEqual(ConnectionSummary.summarize(state(.connecting)), ConnectionSummary(text: "连接中", tone: .pending))
         XCTAssertEqual(
             ConnectionSummary.summarize(state(.offline, error: "上报心跳出错：无法连接 a.example（URLError.timedOut）")),

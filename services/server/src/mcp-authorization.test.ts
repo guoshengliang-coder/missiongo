@@ -144,7 +144,7 @@ describe("MCP write-tool authorization", () => {
     // claiming, leases, and status transitions. Naming the members explicitly
     // means a new tool has to be placed on purpose rather than by where it
     // happened to be pasted.
-    expect(toolNamesInTier("comments")).toEqual(["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "add_item_attachment"]);
+    expect(toolNamesInTier("comments")).toEqual(["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment"]);
   });
 });
 
