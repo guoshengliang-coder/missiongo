@@ -1,0 +1,13 @@
+{
+  "pullRequest": 227,
+  "items": [
+    {
+      "key": "AND-275",
+      "title": "macOS 登录改用 Device Flow，支持重启续接"
+    },
+    {
+      "key": "AND-274",
+      "title": "钥匙串操作移到后台，超时后显示恢复提示"
+    }
+  ]
+}
