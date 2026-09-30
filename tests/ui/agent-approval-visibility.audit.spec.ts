@@ -63,6 +63,9 @@ test("only shows Codex authorization when a person must intervene", async ({ pag
   await expect(page.locator("body")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   for (const viewport of [{ name: "phone", width: 375, height: 812 }, { name: "desktop", width: 1440, height: 900 }]) {
+    // Crossing the console layout breakpoint changes browser history. Resize
+    // outside the app so its pending history.back cannot race the next link.
+    await page.goto("about:blank");
     for (const theme of ["light", "dark"] as const) {
       await page.setViewportSize(viewport);
       await page.emulateMedia({ colorScheme: theme });
