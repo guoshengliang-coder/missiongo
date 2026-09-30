@@ -161,7 +161,29 @@ export class MissionGoOAuthProvider {
     };
   }
 
+  registerDeviceClient(clientName?: string): RegisteredClient {
+    const name = clientName?.trim().slice(0, 120) || "Device client";
+    return { id: `mgd_${signedValue({ version: 1, name }, this.account.sessionSecret)}`, name, redirectUris: [] };
+  }
+
+  deviceClient(clientId: string): RegisteredClient {
+    if (!clientId.startsWith("mgd_")) throw new Error("invalid_client");
+    const payload = readSignedValue<{ version?: number; name?: string }>(clientId.slice(4), this.account.sessionSecret);
+    if (payload?.version !== 1 || typeof payload.name !== "string") throw new Error("invalid_client");
+    return { id: clientId, name: payload.name, redirectUris: [] };
+  }
+
+  issueDeviceToken(clientId: string, scopes: readonly string[], user: AdminSessionUser, credentialsAt: number, now = Date.now()): OAuthTokenResult {
+    this.deviceClient(clientId);
+    const granted = parseRequestedScopes(scopes.join(" "));
+    const issued = createAiAccessToken(this.account, user, credentialsAt, clientId, granted, now);
+    return { accessToken: issued.token, claims: issued.claims, expiresIn: AI_ACCESS_SESSION_SECONDS, scope: granted.join(" ") };
+  }
+
   private readClient(clientId: string): RegisteredClient | undefined {
+    if (clientId.startsWith("mgd_")) {
+      try { return this.deviceClient(clientId); } catch { return undefined; }
+    }
     if (!clientId.startsWith("mgc_")) return undefined;
     const payload = readSignedValue<Partial<ClientRegistrationPayload>>(clientId.slice(4), this.account.sessionSecret);
     if (
