@@ -67,7 +67,10 @@ describe("agent console responsive layout", () => {
   });
 
   it("keeps replies below the textarea with the quick settings row (AND-158)", () => {
-    expect(styles).toContain(".agent-console-reply form { display: grid; gap: 9px; }");
+    // Matched by its own properties rather than the whole declaration: the row
+    // gains columns from other work (AND-268), and pinning the exact string
+    // turned those into failures here.
+    expect(styles).toMatch(/\.agent-console-reply form \{[^}]*display: grid;[^}]*gap: 9px;/);
     expect(styles).toContain(".agent-console-reply-actions { display: flex;");
     expect(consoleSource).toContain("<AgentSessionQuickSettings session={selected} />");
     // The quick replies this row used to hold are gone by decision; their keys
