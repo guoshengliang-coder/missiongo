@@ -25,17 +25,32 @@ public final class LocalIntegrations: @unchecked Sendable {
     }
 
     private static let key = "localIntegrations.v1"
+    private static let storageLock = Locked(())
     private let defaults: UserDefaults
-    private let states: Locked<[String: State]>
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        let saved = defaults.data(forKey: Self.key)
-            .flatMap { try? JSONDecoder().decode([String: State].self, from: $0) } ?? [:]
-        states = Locked(saved)
     }
 
-    public func state(for agent: LocalAgent) -> State? { states.current[agent.rawValue] }
+    public func state(for agent: LocalAgent) -> State? {
+        Self.storageLock.withLock { _ in load()[agent.rawValue] }
+    }
+
+    /// Read consent at the point of use, rather than freezing an empty startup
+    /// snapshot for the lifetime of an upgraded/restarted app. A second owner
+    /// of these preferences must also see a later explicit enable or disable.
+    /// Decode clients independently: one incompatible record cannot disable
+    /// every other client.
+    private func load() -> [String: State] {
+        guard let data = defaults.data(forKey: Self.key),
+              let entries = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return entries.reduce(into: [:]) { result, entry in
+            guard JSONSerialization.isValidJSONObject(entry.value),
+                  let data = try? JSONSerialization.data(withJSONObject: entry.value),
+                  let state = try? JSONDecoder().decode(State.self, from: data) else { return }
+            result[entry.key] = state
+        }
+    }
 
     /// Persist the pause *before* touching protected resources. A denial, crash
     /// or quit while a system prompt is open must not cause a retry at next login.
@@ -72,9 +87,10 @@ public final class LocalIntegrations: @unchecked Sendable {
     public func disable(_ agent: LocalAgent) { update { $0.removeValue(forKey: agent.rawValue) } }
 
     private func update(_ edit: (inout [String: State]) -> Void) {
-        states.withLock {
-            edit(&$0)
-            if let data = try? JSONEncoder().encode($0) { defaults.set(data, forKey: Self.key) }
+        Self.storageLock.withLock { _ in
+            var states = load()
+            edit(&states)
+            if let data = try? JSONEncoder().encode(states) { defaults.set(data, forKey: Self.key) }
         }
     }
 }
@@ -144,7 +160,7 @@ public struct ConsentedAgentAdapter: AgentAdapter {
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         guard access.state(for: agent) != nil else {
-            throw LaunchError("\(agent.title) 集成已停用；不会读取或回复现有会话。")
+            throw LaunchError("\(agent.title) 本地集成未启用，会话暂不同步；请在 MissionGo 菜单中启用或重新检查。")
         }
         return try await base.synchronize(session)
     }
