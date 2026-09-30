@@ -95,6 +95,10 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     func show() {
         let window = self.window ?? makeWindow()
         self.window = window
+        // Reopening from the Dock is how a minimized window comes back.
+        if MainWindowChrome.shouldDeminiaturize(isMiniaturized: window.isMiniaturized) {
+            window.deminiaturize(nil)
+        }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -127,13 +131,18 @@ final class MainWindowController: NSObject, NSWindowDelegate {
                 origin: .zero,
                 size: NSSize(width: MenuContentView.width, height: fittedHeight(on: NSScreen.main))
             ),
-            // This is the same menu surface opened from the Dock. Native title
-            // bar controls added a second header and obscured the visual groups.
-            styleMask: [.borderless],
+            // `.titled` is what makes the close/zoom/minimize buttons exist
+            // (AND-262). The visible title bar it used to bring — a second
+            // header over the visual groups — is traded away with the hidden,
+            // transparent title bar set below, keeping the one-header look the
+            // old `.borderless` mask had.
+            styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "MissionGo"
+        window.titleVisibility = MainWindowChrome.titleVisibilityHidden ? .hidden : .visible
+        window.titlebarAppearsTransparent = MainWindowChrome.titlebarAppearsTransparent
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
@@ -153,6 +162,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             rootView: MenuContentView(tracksOpening: false)
                 .environmentObject(AppModel.shared)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, MainWindowContent.titleBarClearance)
         )
         let height = probe.sizeThatFits(
             in: NSSize(width: MenuContentView.width, height: CGFloat.greatestFiniteMagnitude)
@@ -202,6 +212,9 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        // Minimizing resigns key too; without this check the minimize button
+        // would close the window instead of parking it in the Dock.
+        if !MainWindowChrome.closesOnResignKey(isMiniaturized: window?.isMiniaturized == true) { return }
         window?.close()
     }
 }
@@ -213,12 +226,18 @@ final class MainWindowController: NSObject, NSWindowDelegate {
 /// the ScrollView, which is as tall as it wants to be, not from the ScrollView,
 /// which is as tall as the window.
 private struct MainWindowContent: View {
+    /// The traffic lights sit on top of this content (`.fullSizeContentView`),
+    /// so the content starts below them. The probe in MainWindowController
+    /// pads the same way, keeping both heights one measurement.
+    static let titleBarClearance: CGFloat = MainWindowChrome.titleBarClearance
+
     let onHeight: (CGFloat) -> Void
 
     var body: some View {
         ScrollView {
             MenuContentView()
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, Self.titleBarClearance)
                 .background(
                     GeometryReader { proxy in
                         Color.clear.preference(key: ContentHeightKey.self, value: proxy.size.height)
