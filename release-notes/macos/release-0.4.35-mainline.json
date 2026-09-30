@@ -1,0 +1,17 @@
+{
+  "pullRequest": 222,
+  "items": [
+    {
+      "key": "AND-273",
+      "title": "macOS Skill 后台同步结果未更新界面状态"
+    },
+    {
+      "key": "AND-272",
+      "title": "优化 codex 授权绿色提示块的显示逻辑"
+    },
+    {
+      "key": "AND-270",
+      "title": "会话条目展示增加标题"
+    }
+  ]
+}

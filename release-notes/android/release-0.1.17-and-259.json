@@ -1,0 +1,13 @@
+{
+  "pullRequest": 213,
+  "items": [
+    {
+      "key": "AND-259",
+      "title": "折叠屏横竖屏切换UI适配问题"
+    },
+    {
+      "key": "AND-253",
+      "title": "opencode 任务提示 codex 及失败原因"
+    }
+  ]
+}
