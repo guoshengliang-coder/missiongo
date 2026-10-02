@@ -736,6 +736,66 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(snapshot.reasoningEffort, "high")
     }
 
+    func testFailureMetadataAndPrivateDetailsAreBoundedBeforeUpload() throws {
+        let snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+            "status": ["type": "idle"], "turns": [["id": "turn-1", "status": "failed", "items": [],
+            "error": ["message": "Provider failed token=private-value https://example.invalid/private /Users/fixture/private.log user@example.invalid",
+                      "codexErrorInfo": ["httpConnectionFailed": ["httpStatusCode": 401]],
+                      "additionalDetails": "Never upload this request body"]]]
+        ]])
+        XCTAssertEqual(snapshot.failure?.code, "codex_unauthorized")
+        XCTAssertEqual(snapshot.failure?.httpStatusCode, 401)
+        XCTAssertEqual(snapshot.failure?.turnId, "turn-1")
+        let detail = try XCTUnwrap(snapshot.failure?.detail)
+        for privateValue in ["private-value", "example.invalid", "/Users/", "request body"] {
+            XCTAssertFalse(detail.contains(privateValue), detail)
+        }
+        XCTAssertEqual(CodexSessionFailure.redact(String(repeating: "x", count: 3000)).count, 2000)
+        XCTAssertFalse(CodexSessionFailure.redact(#""Cookie":"session=fixture-secret""#).contains("fixture-secret"))
+    }
+
+    func testHistoricalFailuresDoNotPoisonNewerTurns() throws {
+        let failed: [String: Any] = ["id": "old", "status": "failed", "items": [],
+            "error": ["message": "Old failure", "codexErrorInfo": "usageLimitExceeded"]]
+        for (threadStatus, turnStatus) in [("active", "inProgress"), ("idle", "completed"), ("notLoaded", "completed"), ("idle", "interrupted")] {
+            let snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+                "status": ["type": threadStatus], "turns": [failed, ["id": "new", "status": turnStatus, "items": []]]
+            ]])
+            XCTAssertNil(snapshot.failure)
+            XCTAssertNotEqual(snapshot.status, "failed")
+        }
+        let noReason = try CodexProtocol.threadSnapshot(fromRead: ["thread": ["status": ["type": "systemError"], "turns": []]])
+        XCTAssertEqual(noReason.failure?.code, "codex_turn_failed")
+        XCTAssertNil(noReason.failure?.detail)
+    }
+
+    func testStructuredCodexTypesChooseRecoveryWithoutGuessingFromMessageText() {
+        let mappings = ["contextWindowExceeded": "codex_context_window_exceeded", "sessionBudgetExceeded": "codex_session_budget_exceeded",
+            "usageLimitExceeded": "codex_usage_limit_exceeded", "rateLimitExceeded": "codex_rate_limit_exceeded",
+            "internalServerError": "codex_server_error", "unauthorized": "codex_unauthorized",
+            "badRequest": "codex_bad_request", "sandboxError": "codex_sandbox_error", "tooManyDenials": "codex_policy_denied",
+            "other": "codex_turn_failed", "futureType": "codex_turn_failed"]
+        for (info, code) in mappings {
+            XCTAssertEqual(CodexSessionFailure.fromTurn(["error": ["message": "network quota auth", "codexErrorInfo": info]]).code, code)
+        }
+        for info in ["httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected", "responseTooManyFailedAttempts"] {
+            XCTAssertEqual(CodexSessionFailure.fromTurn(["error": ["codexErrorInfo": [info: ["httpStatusCode": 502]]]]).code, "codex_server_error")
+            XCTAssertEqual(CodexSessionFailure.fromTurn(["error": ["codexErrorInfo": [info: ["httpStatusCode": 429]]]]).code, "codex_rate_limit_exceeded")
+            XCTAssertEqual(CodexSessionFailure.fromTurn(["error": ["codexErrorInfo": [info: [:]]]]).code, "codex_connection_failed")
+        }
+    }
+
+    func testFailedLatestTurnIsNotLostWhenCodexThreadIsIdle() throws {
+        for status in ["idle", "notLoaded", "systemError"] {
+            let snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+                "status": ["type": status],
+                "turns": [["id": "turn-failed", "status": "failed", "items": [],
+                           "error": ["message": "Context limit", "codexErrorInfo": "contextWindowExceeded"]]]
+            ]])
+            XCTAssertEqual(snapshot.status, "failed", status)
+        }
+    }
+
     func testSaysTheChatGPTAppIsNotRunningWhenNothingListens() async throws {
         let path = try shortTemporaryDirectory() + "/missing.sock"
         do {
@@ -1361,6 +1421,30 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(report.messages.map(\.sourceId), ["a1", "command-1"])
         XCTAssertEqual(report.status, "active")
         XCTAssertEqual(report.turnActive, true)
+    }
+
+    func testFailedCodexTurnReportsReasonAndKeepsDeliveryUnknown() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+            "status": ["type": "systemError"], "turns": [["id": "turn-failed", "status": "failed", "items": [],
+                "error": ["message": "Context limit token=private-value", "codexErrorInfo": "contextWindowExceeded"]]]
+        ]])
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        for command in [nil, AgentSessionCommand(id: "pending", text: "Continue", status: "queued"),
+                        AgentSessionCommand(id: "unknown", text: "Continue", status: "delivering")] {
+            let report = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed", command: command))
+            XCTAssertEqual(report.failure?.code, "codex_context_window_exceeded")
+            XCTAssertFalse(report.error?.contains("private-value") == true)
+            XCTAssertTrue(control.replies.current.isEmpty)
+            if command?.status == "delivering" { XCTAssertEqual(report.commandStatus, "delivery_unknown") }
+            let decoded = try JSONDecoder().decode(AgentSessionReport.self, from: JSONEncoder().encode(report.replacingMessages([])))
+            XCTAssertEqual(decoded.failure, report.failure)
+        }
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [])
+        let recovered = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed"))
+        XCTAssertNil(recovered.failure)
+        XCTAssertNil(recovered.error)
     }
 
     /// AND-223: Codex maps its active thread onto the turn state the console

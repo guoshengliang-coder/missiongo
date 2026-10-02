@@ -167,3 +167,10 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 4. **动效令牌**：`--duration-fast` 120ms / `--duration-base` 200ms / `--ease-standard`，并统一遵守 `prefers-reduced-motion`。
 5. **跨端令牌导出**：由同一份令牌源生成 CSS 变量、Android `colors.xml`（含 `values-night`）以及 macOS 的 Asset Catalog 颜色，品牌色不再各写一份。
 6. **统一术语表**：状态、类型、派单阶段的中英文案由 `packages/domain` 导出，三端共用，禁止各端另写。
+
+### Codex 会话失败卡（HG-193）
+
+失败原因、恢复指引、稳定错误标识放在一张 `--danger-*` 令牌卡内，替代重复的通用失败活动行。
+中英文摘要从 i18n 读取；原始技术文本只放在可展开、可复制的纯文本详情中，不解析 Markdown/HTML。
+触屏上「查看详情」与「复制诊断」均常驻，点击区域至少 44px；复制失败提示展开后手动选取。
+详情长行可以换行，不撑宽会话窗格。后续回合运行或成功时卡片消失，旧列表缓存不得使它复现。

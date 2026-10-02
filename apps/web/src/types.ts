@@ -1,4 +1,4 @@
-import type { AgentKind, DispatchStatus } from "@missiongo/domain";
+import type { AgentKind, DispatchStatus, CodexSessionFailure } from "@missiongo/domain";
 
 export const ITEM_TYPES = ["bug", "requirement", "idea", "task", "note"] as const;
 export type WorkItemType = (typeof ITEM_TYPES)[number];
@@ -490,6 +490,7 @@ export interface AgentSession {
   readonly agentKind: "codex" | "claude_code" | "opencode";
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
+  readonly failure?: CodexSessionFailure;
   readonly updatedAt: string;
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
@@ -518,6 +519,7 @@ export interface AgentSessionSummary {
   readonly agentKind: AgentKind;
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
+  readonly failure?: CodexSessionFailure;
   readonly updatedAt: string;
   /** Last user-visible activity; unlike updatedAt, unchanged mirror polls do not move it. */
   readonly activityAt?: string;

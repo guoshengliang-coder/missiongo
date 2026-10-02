@@ -152,6 +152,7 @@ public struct CodexAppliedSettings: Equatable, Sendable {
 }
 
 public struct CodexThreadSnapshot: Equatable, Sendable {
+    public let failure: CodexSessionFailure?
     public let status: String
     public let activeTurnId: String?
     public let messages: [AgentSessionMessage]
@@ -168,8 +169,10 @@ public struct CodexThreadSnapshot: Equatable, Sendable {
         archived: Bool = false,
         activityAt: String? = nil,
         model: String? = nil,
-        reasoningEffort: String? = nil
+        reasoningEffort: String? = nil,
+        failure: CodexSessionFailure? = nil
     ) {
+        self.failure = failure
         self.status = status
         self.activeTurnId = activeTurnId
         self.messages = messages
@@ -469,7 +472,7 @@ public enum CodexProtocol {
             throw CodexControlError.invalidResponse(method: "thread/read")
         }
         let type = (thread["status"] as? [String: Any])?["type"] as? String
-        let status: String
+        var status: String
         switch type {
         case "active": status = "active"
         case "idle": status = "idle"
@@ -482,6 +485,13 @@ public enum CodexProtocol {
         }
 
         let turns = thread["turns"] as? [[String: Any]] ?? []
+        // A failed turn may leave a healthy-but-idle or unloaded thread. Only
+        // the latest turn counts; an old failure must not poison a later run.
+        let latest = turns.last
+        if ["idle", "notLoaded"].contains(type ?? ""), latest?["status"] as? String == "failed" { status = "failed" }
+        let failure = status == "failed" ? CodexSessionFailure.fromTurn(
+            latest?["status"] as? String == "failed" ? latest : nil
+        ) : nil
         let activeTurnId = turns.last(where: { $0["status"] as? String == "inProgress" })?["id"] as? String
         var messages: [AgentSessionMessage] = []
         for turn in turns {
@@ -555,7 +565,8 @@ public enum CodexProtocol {
             messages: AgentSessionAnswerTrace.markingAnswered(messages),
             activityAt: sourceActivityTimestamp(thread["updatedAt"] ?? thread["updated_at"]),
             model: thread["model"] as? String,
-            reasoningEffort: thread["reasoningEffort"] as? String
+            reasoningEffort: thread["reasoningEffort"] as? String,
+            failure: failure
         )
     }
 

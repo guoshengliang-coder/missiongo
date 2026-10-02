@@ -218,3 +218,29 @@ Developer ID 发行版不会因此自动降级。两种模式都保留隔离属�
 
 - 服务端不会看到机器上跑了什么命令，也不记录会话内容；它只知道启动成功与否和会话地址（Codex 是会话 ID）。
 - 没有定时和无人值守：每一次派单都是人在控制台点的。
+
+## Codex 失败原因与恢复（HG-193）
+
+会话失败卡以 Codex 最新回合的结构化 `codexErrorInfo` 分类，显示中英文原因、稳定错误标识、
+恢复指引、「查看详情」和「复制诊断」。不根据原始报错中的关键词猜测故障类型。线程即使是
+`idle` 或 `notLoaded`，最新回合为 `failed` 时仍显示失败；后续运行或成功回合清除当前失败卡。
+历史失败不会覆盖新回合，消息投递未知仍沿用人工核对流程，不自动重发。
+
+Mac 节点只读取 `error.message`、允许的错误类型、回合 ID 和 HTTP 状态；不上传
+`additionalDetails`、原始请求/响应对象或加密推理。上传前移除常见凭据、URL、私有路径、邮箱和
+IP，详情限制为 2,000 字符。服务端存储与前端复制再次脱敏。自由文本脱敏不能证明任意报错
+绝无私人内容，仍应避免在错误消息里放入用户正文。上游未提供原因时，界面明确说明原因缺失，
+提示到 Mac 的 Codex 中核对；旧节点可继续上报原有 `error`，其内容只进入展开的诊断。
+
+稳定标识：`codex_context_window_exceeded`（上下文）、`codex_session_budget_exceeded`（会话预算）、
+`codex_usage_limit_exceeded`（额度）、`codex_rate_limit_exceeded`（频率限制）、`codex_unauthorized`
+（模型服务授权）、`codex_server_error`（模型服务）、`codex_connection_failed`（模型连接）、
+`codex_bad_request`（请求）、`codex_sandbox_error`（沙箱）、`codex_policy_denied`（策略/权限）、
+`codex_turn_failed`（未分类）。旧节点无原因时显示 `codex_failure_detail_unavailable`。
+标识发布后保持含义，不复用于其他条件。
+
+核验：Swift Codex 测试覆盖最新回合分类、未知类型、后续成功、上传前脱敏及投递未知不重发；
+服务端测试覆盖接口权限、结构化错误往返、旧节点、清除及排序；浏览器测试覆盖手机浅深色、中英文、
+详情展开、复制失败的手动恢复、排队消息保留及后续成功清除。
+正式验证仍需更新 MissionGo Mac 客户端和 Web/Server 后，在真实 Mac 上触发一次可控失败，
+用 Android WebView 查看原因并复制诊断。自动化和页面截图不证明历史会话的失败根因已查明。

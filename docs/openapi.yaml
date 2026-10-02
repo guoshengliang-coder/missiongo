@@ -2575,7 +2575,7 @@ components:
                       "type": "boolean"
                     "state":
                       "type": "string"
-          "description": "Existing AgentSessionSnapshot mirror, including optional commands, questions, attachments and archive metadata."
+          "description": "Existing AgentSessionSnapshot mirror, including optional commands, questions, attachments and archive metadata. Codex failed sessions may include failure {code, detail?, turnId?, httpStatusCode?}; detail is bounded and redacted. Legacy lastError remains a plain diagnostic string."
         "attempt":
           "anyOf":
             -

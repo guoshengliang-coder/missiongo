@@ -663,7 +663,7 @@ public struct CodexLauncher: AgentAdapter {
             }
         }
         return report.reportingApproval(approval, retryId: retryId,
-            retryStatus: retryStatus, retryError: retryError)
+            retryStatus: retryStatus, retryError: retryError).reportingFailure(snapshot.failure)
     }
 
     /// What a person chose for this thread, passed on every turn MissionGo

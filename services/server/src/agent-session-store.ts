@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
+import { sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
 import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
 import type { AgentSessionAttachment, AgentSessionAttachments } from "./agent-session-attachments.js";
@@ -98,6 +98,7 @@ export interface AgentSessionSnapshot {
   readonly agentKind: "codex" | "claude_code" | "opencode";
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
+  readonly failure?: CodexSessionFailure;
   readonly updatedAt: string;
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
@@ -125,6 +126,7 @@ export interface AgentSessionListItem {
   readonly status: AgentSessionStatus;
   readonly turnState?: AgentSessionTurnState;
   readonly lastError?: string;
+  readonly failure?: CodexSessionFailure;
   readonly updatedAt: string;
   readonly activityAt: string;
   readonly archivedAt?: string;
@@ -680,7 +682,7 @@ export class AgentSessionStore {
       status: offlineDegradedStatus(
         row.status, row.node_last_seen_at, Boolean(row.node_revoked_at),
       ).status,
-      ...(row.last_error ? { lastError: row.last_error } : {}),
+      ...sessionErrorFields(row.last_error),
       updatedAt: row.updated_at,
       ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
       ...(row.archive_source ? { archivedSource: row.archive_source } : {}),
@@ -858,7 +860,7 @@ export class AgentSessionStore {
         ...(row.session_id && this.managedBinding(row.session_id) ? { managedExecution: this.managedBinding(row.session_id)! } : {}),
         agentKind: row.agent_kind,
         status,
-        ...(lastError ? { lastError } : {}),
+        ...sessionErrorFields(lastError),
         updatedAt,
         activityAt,
         ...(archivedAt ? { archivedAt } : {}),
@@ -1411,6 +1413,7 @@ export class AgentSessionStore {
     activities?: readonly AgentSessionActivity[];
     turnState?: AgentSessionTurnState;
     error?: string;
+    failure?: CodexSessionFailure;
     commandId?: string;
     commandStatus?: "delivering" | "delivery_unknown" | "delivered" | "failed";
     commandError?: string;
@@ -1509,7 +1512,7 @@ export class AgentSessionStore {
       : {};
     const turnStateJson = JSON.stringify({ ...storedTurnState, ...incomingTurnState });
     const sourceActivityAt = normalizedSourceTimestamp(input.activityAt, now, "activityAt");
-    const error = input.error?.slice(0, 2_000) || null;
+    const error = storedSessionError(input.error, input.status === "failed" ? input.failure : undefined);
     const sessionUrl = input.sessionUrl?.trim();
     if (sessionUrl && input.clearSessionUrl) {
       throw invalidInput("Cannot set and clear session URL in one report.");
