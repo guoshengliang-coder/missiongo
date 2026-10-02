@@ -30,16 +30,11 @@ export function AgentSessionQuestions({
   reply,
   canReply,
   onChange,
-  onPick,
 }: {
   questions: readonly AgentSessionQuestion[];
   reply: string;
   canReply: boolean;
   onChange: (next: string) => void;
-  /** Called when a listed option is picked: the reply box below has the new
-   * text, and a small viewport may not show it — the caller scrolls so the
-   * pick has a visible effect (AND-218). */
-  onPick?: () => void;
 }) {
   const { t } = useI18n();
   const shown = visibleQuestions(questions);
@@ -74,7 +69,7 @@ export function AgentSessionQuestions({
                       type="button"
                       disabled={disabled}
                       className={selected ? "selected" : ""}
-                      onClick={() => { write(question, option); onPick?.(); }}
+                      onClick={() => write(question, option)}
                     >{option}</button>
                   );
                 })}
@@ -99,7 +94,6 @@ export function AgentSessionQuestions({
                             onChange(question.multiSelect
                               ? toggleQuestionOption(reply, question, option, count)
                               : questionAnswerText(reply, question, option, count));
-                            onPick?.();
                           }}
                         >{option}</button>
                       );
