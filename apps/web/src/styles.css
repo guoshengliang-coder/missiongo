@@ -2309,3 +2309,20 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .settings-tabs { position: static; flex-direction: row; overflow-x: auto; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
   .settings-tab { white-space: nowrap; }
 }
+
+/* HG-193: diagnostics are plain text, bounded to the conversation pane. */
+.agent-console-failure {
+  padding: 12px;
+  border: 1px solid var(--danger-line);
+  border-radius: var(--radius-md);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: var(--text-base);
+}
+.agent-console-failure p { margin: 8px 0; }
+.agent-console-failure small { color: var(--muted); }
+.agent-console-failure-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.agent-console-failure-actions details { flex: 1 1 180px; min-width: 0; }
+.agent-console-failure summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+.agent-console-failure .text-button { min-height: 44px; }
+.agent-console-failure pre { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); font-size: var(--text-sm); }

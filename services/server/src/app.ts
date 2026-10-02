@@ -9,6 +9,7 @@ import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, ty
 
 import {
   AGENT_KINDS,
+  parseCodexSessionFailure,
   formatFeedbackLog,
   TRANSITION_REASONS,
   WORK_ITEM_PRIORITIES,
@@ -2658,6 +2659,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(typeof body.thinkingTokens === "number" ? { thinkingTokens: body.thinkingTokens } : {}),
         ...(typeof body.thinkingDurationSeconds === "number" ? { thinkingDurationSeconds: body.thinkingDurationSeconds } : {}),
       };
+      const failure = body.failure === undefined ? undefined : parseCodexSessionFailure(body.failure);
+      if (body.failure !== undefined && !failure) throw invalidInput("failure must contain a supported Codex error code and optional string detail.");
       const commandStatusValue = stringField(body, "commandStatus", false);
       if (commandStatusValue && !["delivering", "delivery_unknown", "delivered", "failed"].includes(commandStatusValue)) {
         throw invalidInput("commandStatus must be delivering, delivery_unknown, delivered, or failed.");
@@ -2685,6 +2688,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         activities,
         turnState,
         ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
+        ...(failure ? { failure } : {}),
         ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),
         ...(commandStatus ? { commandStatus } : {}),
         ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),

@@ -4312,3 +4312,37 @@ describe("Server-side command timeout and alerting (AND-184, AND-203)", () => {
     await enqueueReply(app, cookie, sessionId, "Next message.");
   });
 });
+
+describe("Codex failure diagnostics (HG-193)", () => {
+  it("round trips allowlisted failures through node, detail and list, then clears them on recovery", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, sessionId } = await launchedCodexSession(app, cookie);
+    const snapshot = (payload: unknown, token = node.token) => app.inject({ method: "POST",
+      url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${token}` }, payload });
+    const failure = { code: "codex_connection_failed", detail: "Stream disconnected token=private-value /Users/fixture/private.log", turnId: "t1", httpStatusCode: 502 };
+    const otherNode = await registeredNode(app, "Other node");
+    expect((await snapshot({ status: "failed", messages: [], failure }, otherNode.token)).statusCode).toBe(404);
+    expect((await snapshot({ status: "failed", messages: [], failure: { code: "unrecognized", detail: "x" } })).statusCode).toBe(400);
+    expect((await snapshot({ status: "failed", messages: [], failure })).statusCode).toBe(204);
+    const detail = await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } });
+    const list = await app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie } });
+    for (const response of [detail, list]) {
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("codex_connection_failed");
+      expect(response.body).not.toContain("private-value");
+      expect(response.body).not.toContain("/Users/fixture/");
+      expect(response.body).not.toContain("codex_turn_failure");
+    }
+    expect(detail.json()).toMatchObject({ failure: { code: "codex_connection_failed", turnId: "t1", httpStatusCode: 502 } });
+    expect((await snapshot({ status: "active", messages: [], failure })).statusCode).toBe(204);
+    const recovered = (await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } })).json();
+    expect(recovered.failure).toBeUndefined();
+    expect(recovered.lastError).toBeUndefined();
+    // Old nodes and old plain-text rows do not need a schema migration.
+    expect((await snapshot({ status: "failed", messages: [], error: "Old node token=private-value" })).statusCode).toBe(204);
+    const legacy = (await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } })).json();
+    expect(legacy.lastError).toBe("Old node [redacted]");
+    expect(legacy.failure).toBeUndefined();
+  });
+});

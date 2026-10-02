@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 
 import { api } from "./api";
+import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
 import { AgentIcon } from "./agent-icons";
 import {
   activityLabelKey,
@@ -1224,9 +1225,14 @@ export function AgentSessionConsole({
                     ))}</ul>
                   </section>
                 )}
-                {(sessionQuery.data?.lastError ?? selected.lastError) && (
-                  <p className="inline-error">{sessionQuery.data?.lastError ?? selected.lastError}</p>
-                )}
+                {selected.agentKind === "codex" && sessionStatus === "failed" ? (
+                  <AgentSessionFailureNotice status={sessionStatus}
+                    failure={sessionQuery.data ? sessionQuery.data.failure : selected.failure}
+                    legacyError={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
+                ) : (selected.agentKind !== "codex" || (sessionStatus !== "idle" && sessionStatus !== "active"))
+                  && (sessionQuery.data ? sessionQuery.data.lastError : selected.lastError) ? (
+                  <p className="inline-error">{sessionQuery.data ? sessionQuery.data.lastError : selected.lastError}</p>
+                ) : null}
                 {approval && approvalNeedsAction(approval) && (
                   <section className="agent-console-approval" role="alert" aria-label={t("agentApprovalTitle") }>
                     <strong>{approval.kind === "auto" ? t("agentApprovalAutoTitle") : t("agentApprovalTitle")}</strong>
@@ -1273,7 +1279,8 @@ export function AgentSessionConsole({
                     )}
                   </section>
                 )}
-                {selected.agentSessionId && !sessionQuery.isLoading && !sessionQuery.isError && (
+                {selected.agentSessionId && !sessionQuery.isLoading && !sessionQuery.isError
+                  && !(selected.agentKind === "codex" && sessionStatus === "failed") && (
                   <div className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
                     <SessionStatusIcon status={visualStatus} />
                     <span>{activityText}</span>

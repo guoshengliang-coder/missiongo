@@ -156,3 +156,16 @@ it("an older message alone cannot repair a running session's newer task progress
   snapshot({ status: "active", messages: [message], activities, activityAt: time(1) });
   expect(row()).toMatchObject({ activity_at: time(2), activity_repair_pending: 0 });
 });
+
+it("structured failure detail refreshes do not reorder the conversation; recovery clears the error", () => {
+  const { store, sessionId, snapshot, row } = fixture();
+  vi.setSystemTime(time(3));
+  snapshot({ status: "failed", messages: [message], failure: { code: "codex_turn_failed", detail: "First failure" } });
+  vi.setSystemTime(time(10));
+  snapshot({ status: "failed", messages: [message], failure: { code: "codex_turn_failed", detail: "More detail" } });
+  expect(row().activity_at).toBe(time(3));
+  expect(store.getForAccount("owner", sessionId).failure?.detail).toBe("More detail");
+  snapshot({ status: "idle", messages: [message] });
+  expect(store.getForAccount("owner", sessionId).failure).toBeUndefined();
+  expect(row().last_error).toBeNull();
+});

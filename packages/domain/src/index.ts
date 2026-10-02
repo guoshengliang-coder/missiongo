@@ -1,4 +1,5 @@
 export * from "./dispatch.js";
+export * from "./codex-session-failure.js";
 export * from "./execution.js";
 export * from "./managed-run.js";
 export * from "./managed-decision.js";
