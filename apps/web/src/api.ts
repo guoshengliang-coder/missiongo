@@ -362,6 +362,10 @@ export const api = {
     if (options.beforeSequence) params.set("beforeSequence", String(options.beforeSequence));
     return request<WorkItemListPage>(`/api/v1/items?${params}`);
   },
+  transferItem: (itemKey: string, targetProductId: string, idempotencyKey: string) =>
+    request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transfer`, {
+      method: "POST", body: JSON.stringify({ targetProductId, idempotencyKey }),
+    }),
   getItem: (itemKey: string) => request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}`),
   createItem: (input: CreateWorkItemInput) =>
     request<WorkItem>("/api/v1/items", { method: "POST", body: JSON.stringify(input) }),

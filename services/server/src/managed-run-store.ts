@@ -55,6 +55,7 @@ export class ManagedRunStore {
         if (!this.db.connection.prepare("SELECT id FROM work_items WHERE item_key = ? AND product_id = ?").get(key, scope.productId)) {
           throw notFound("Scoped work item");
         }
+        this.assertNotTransferred(key);
       }
       const run: ManagedRun = { id: randomUUID(), accountId: actor.accountId, scope, scopeDigest: digest(scope),
         version: 1, createdAt: new Date().toISOString() };
@@ -190,6 +191,7 @@ export class ManagedRunStore {
     const payloadDigest = digest(payload);
     return this.db.transaction(() => {
       const run = this.getRun(actor, input.runId);
+      for (const key of run.scope.itemKeys) this.assertNotTransferred(key);
       if (run.scope.contractRevision !== input.contractRevision || run.scopeDigest !== input.scopeDigest) {
         throw conflict("scope_changed", "Frozen scope or contract revision differs.");
       }
@@ -202,6 +204,11 @@ export class ManagedRunStore {
       this.recordEvent(actor, run.id, run.version + 1, operation, targetId, idempotencyKey, payloadDigest, result);
       return result;
     });
+  }
+
+  private assertNotTransferred(key: string): void {
+    if (this.db.connection.prepare(`SELECT 1 FROM item_transfers t JOIN work_items w ON w.id = t.source_item_id
+      WHERE w.item_key = ?`).get(key)) throw conflict("item_transferred", "This item was transferred and is permanently read-only.");
   }
 
   private requireProduct(actor: ManagedRunActor, productId: string): void {

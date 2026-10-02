@@ -2326,3 +2326,14 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-console-failure summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
 .agent-console-failure .text-button { min-height: 44px; }
 .agent-console-failure pre { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); font-size: var(--text-sm); }
+
+/* Transfers use the existing dialog and surface tokens. */
+.transfer-form { display: grid; gap: 14px; }
+.transfer-form p { color: var(--muted); line-height: 1.7; margin: 0; }
+.transfer-form h3 { margin: 0; }
+.transfer-form select { width: 100%; min-height: 44px; }
+.transfer-banner { padding: 16px; margin-bottom: 16px; border: 1px solid var(--line); background: var(--surface-sunken); border-radius: var(--radius-md); }
+.transfer-banner p { margin: 0 0 8px; color: var(--muted); }
+.transfer-banner .text-button { min-height: 44px; }
+.transfer-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.transfer-actions button { min-height: 44px; }

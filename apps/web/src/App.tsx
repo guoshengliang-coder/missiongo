@@ -1,3 +1,4 @@
+import { localizedErrorText } from "./error-text";
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
 import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoginForm } from "./login-form";
@@ -2527,6 +2528,55 @@ function ActiveMediaPreview({ itemKey, attachment }: { itemKey: string; attachme
   );
 }
 
+function TransferItemDialog({ item, onClose }: { item: WorkItem; onClose: () => void }) {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const productsQuery = useQuery({ queryKey: ["products"], queryFn: () => api.listProducts() });
+  const products = (productsQuery.data ?? []).filter((p) => p.id !== item.productId && !p.archivedAt && p.access?.canOperate);
+  const source = productsQuery.data?.find((p) => p.id === item.productId);
+  const [targetId, setTargetId] = useState("");
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
+  const [confirming, setConfirming] = useState(false);
+  const target = products.find((p) => p.id === targetId);
+  const mutation = useMutation({
+    mutationFn: () => api.transferItem(item.key, targetId, requestId),
+    onSuccess: async (updated) => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      const url = new URL(window.location.href);
+      url.search = "";
+      url.searchParams.set("product", updated.productId);
+      url.searchParams.set("item", updated.key);
+      window.location.assign(url.toString());
+    },
+  });
+  return <Modal title={t("transferItem")} subtitle={item.key} onClose={mutation.isPending ? () => {} : onClose}>
+    <div className="transfer-form">
+      {confirming && target ? <>
+        <h3>{t("transferConfirm", { key: item.key, project: target.name })}</h3>
+        <p>{t("transferConfirmHelp")}</p>
+      </> : <>
+        <p>{t("transferHelp")}</p>
+        <label htmlFor="transfer-target">{t("transferTarget")}</label>
+        <select id="transfer-target" value={targetId} disabled={productsQuery.isLoading || mutation.isPending}
+          onChange={(event) => { setTargetId(event.target.value); setRequestId(crypto.randomUUID()); mutation.reset(); }}>
+          <option value="">{t("transferChoose")}</option>
+          {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        {productsQuery.isSuccess && !products.length && <p role="status">{t("transferNoTargets")}</p>}
+      </>}
+      {productsQuery.isError && <InlineError message={localizedErrorText(productsQuery.error, t)} />}
+      {mutation.isError && <InlineError message={localizedErrorText(mutation.error, t)} />}
+      <div className="transfer-actions">
+        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => { if (confirming) setConfirming(false); else onClose(); }}>{confirming ? t("transferBack") : t("cancel")}</button>
+        <button type="button" className="primary-button" disabled={!target || !source?.access?.canOperate || mutation.isPending}
+          onClick={() => { if (confirming) mutation.mutate(); else setConfirming(true); }}>
+          {mutation.isPending ? t("transferBusy") : confirming ? t("transferItem") : t("transferNext")}
+        </button>
+      </div>
+    </div>
+  </Modal>;
+}
+
 function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   item: WorkItem;
   onEdit: () => void;
@@ -2535,13 +2585,14 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
 }) {
   const queryClient = useQueryClient();
   const { statusLabel, t, transitionLabel } = useI18n();
-  const actions = TRANSITIONS[item.status];
+  const actions = item.transferred ? [] : TRANSITIONS[item.status];
   const primaryAction = actions[0];
   // Destructive last, whatever order the table lists them in.
   const secondaryActions = actions.slice(1).filter((action) => action.tone !== "danger");
   const destructiveActions = actions.slice(1).filter((action) => action.tone === "danger");
-  const manualTargets = manualMoves(item.status);
+  const manualTargets = item.transferred ? [] : manualMoves(item.status);
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
+  const [transferring, setTransferring] = useState(false);
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
   const mutation = useMutation({
     mutationFn: ({ action, note }: { action: TransitionAction; note?: string }) =>
@@ -2582,6 +2633,8 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
     };
   }, []);
 
+  if (item.transferred) return null;
+
   return (
     <>
     <details className="detail-more-menu row-more-menu" ref={moreActionsRef}>
@@ -2589,6 +2642,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
         {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <MoreVertical size={16} />}
       </summary>
       <div className="detail-more-menu-popover">
+        <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}>{t("transferItem")}</button>
         {primaryAction && (
           <button
             type="button"
@@ -2661,6 +2715,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
     </details>
     {/* Outside the menu on purpose: a closed <details> hides everything but its
         <summary>, and a <dialog> under a hidden ancestor never paints. */}
+    {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
     {noteAction && (
       <Modal
         title={t(transitionNoteCopy(noteAction.to).title)}
@@ -2742,6 +2797,7 @@ function DetailPane({
     enabled: Boolean(item?.productId),
   });
   const [editing, setEditing] = useState(false);
+  const [transferring, setTransferring] = useState(false);
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
 
   useEffect(() => {
@@ -2831,10 +2887,10 @@ function DetailPane({
     else if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else transitionMutation.mutate({ action });
   };
-  const actions = TRANSITIONS[item.status];
+  const actions = item.transferred ? [] : TRANSITIONS[item.status];
   const primaryAction = actions[0];
   const secondaryActions = actions.slice(1);
-  const manualTargets = manualMoves(item.status);
+  const manualTargets = item.transferred ? [] : manualMoves(item.status);
   const sourceComponent = componentsQuery.data?.find((component) => component.id === item.sourceComponentId);
   const affectedComponents = (componentsQuery.data ?? []).filter((component) => item.affectedComponentIds.includes(component.id));
   const environment = environmentFields(item.environment, t);
@@ -2880,10 +2936,11 @@ function DetailPane({
             </button>
           )}
           <RefreshButton refreshing={itemQuery.isFetching || timelineQuery.isFetching} onRefresh={refreshItem} />
-          <button className="secondary-button" onClick={() => setEditing(true)}>{t("edit")}</button>
+          <button className="secondary-button" disabled={item.transferred} onClick={() => setEditing(true)}>{t("edit")}</button>
           <details className="detail-more-menu" ref={moreActionsRef}>
             <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={19} /></summary>
             <div className="detail-more-menu-popover">
+              {!item.transferred && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}>{t("transferItem")}</button>}
               {secondaryActions.length === 0 && manualTargets.length === 0 && <span>{t("noMoreActions")}</span>}
               {secondaryActions.filter((action) => action.tone !== "danger").map((action) => (
                 <button
@@ -2935,6 +2992,11 @@ function DetailPane({
         </div>
       </div>
       <div className="detail-scroll">
+        {(item.transferred || item.transferredFrom) && <div className="transfer-banner" role="status">
+          {item.transferred && <p>{t("transferReadOnly")}</p>}
+          {item.transferredTo && <button type="button" className="text-button" onClick={() => onOpenItem(item.transferredTo!.key)}>{t("transferDestination", { key: item.transferredTo.key })}</button>}
+          {item.transferredFrom && <button type="button" className="text-button" onClick={() => onOpenItem(item.transferredFrom!.key)}>{t("transferSource", { key: item.transferredFrom.key })}</button>}
+        </div>}
         <>
             {/* Between the toolbar and the title: who the work was last handed
                 to, which the toolbar's chip used to squeeze in and only for an
@@ -3045,7 +3107,7 @@ function DetailPane({
                 <small>{t("newestFirst")}</small>
               </header>
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
-              <form
+              {!item.transferred && <form
                 className="comment-form"
                 onSubmit={(formEvent) => {
                   formEvent.preventDefault();
@@ -3064,7 +3126,7 @@ function DetailPane({
                 <button type="submit" className="secondary-button" disabled={!commentDraft.trim() || commentMutation.isPending}>
                   {t("postComment")}
                 </button>
-              </form>
+              </form>}
               <div className="timeline">
                 {groupTimeline(timelineQuery.data?.events ?? []).map(({ id, event, count, filenames }) => (
                   <div
@@ -3073,6 +3135,7 @@ function DetailPane({
                   >
                     <span className="timeline-dot" />
                     <div>
+                      {event.historySourceKey && <span className="timeline-tag">{t("transferHistory", { key: event.historySourceKey })}</span>}
                       <strong>
                         {event.eventType === "status_changed"
                           ? `${event.fromStatus ? statusLabel(event.fromStatus) : t("status")} → ${event.toStatus ? statusLabel(event.toStatus) : t("updated")}`
@@ -3098,6 +3161,9 @@ function DetailPane({
                           the case this is here for; a handover carries the agent's
                           summary in the same field and is worth reading too. */}
                       {event.eventType === "status_changed" && <StatusNoteLine payload={event.payload} />}
+                      {["item_transferred_in", "item_transferred_out"].includes(event.eventType) && Array.isArray(event.payload.clearedComponents) && event.payload.clearedComponents.length > 0 && (
+                        <p>{t("transferClearedComponents", { names: event.payload.clearedComponents.flatMap((c: unknown) => c && typeof c === "object" && "name" in c && typeof c.name === "string" ? [c.name] : []).join("、") })}</p>
+                      )}
                       {/* Which machine took it, with what. The batch is named too:
                           one session handles all of it, so the other keys explain
                           work that will appear on this item's branch. */}
@@ -3120,6 +3186,7 @@ function DetailPane({
                       {event.eventType === "comment_added" && (
                         <CommentBody
                           payload={event.payload}
+                          readOnly={Boolean(item.transferred)}
                           onWithdraw={() => {
                             if (window.confirm(t("withdrawCommentConfirm"))) withdrawMutation.mutate(event.id);
                           }}
@@ -3132,7 +3199,8 @@ function DetailPane({
             </section>
         </>
       </div>
-      {editing && (
+      {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
+      {editing && !item.transferred && (
         <Modal title={t("editItem", { key: item.key })} subtitle={t("editItemHelp")} onClose={() => setEditing(false)}>
           <EditItemForm
             item={item}
@@ -3282,8 +3350,10 @@ function commentHeading(event: WorkItemEvent, analysisLabel: string, commentLabe
 function CommentBody({
   payload,
   onWithdraw,
+  readOnly = false,
 }: {
   readonly payload: Readonly<Record<string, unknown>>;
+  readonly readOnly?: boolean;
   readonly onWithdraw: () => void;
 }) {
   const { t } = useI18n();
@@ -3317,7 +3387,7 @@ function CommentBody({
     );
   }
 
-  const withdrawButton = (
+  const withdrawButton = !readOnly && (
     /* Withdrawing is the person's alone: an agent that could take its own
        words back could erase the record of having said them. */
     <button type="button" className="comment-withdraw" onClick={onWithdraw}>{t("withdrawComment")}</button>

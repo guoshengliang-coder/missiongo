@@ -100,6 +100,10 @@ export type WorkItemCreator =
   };
 
 export interface WorkItemSnapshot {
+  /** A migrated original is permanently read-only. */
+  readonly transferred?: boolean;
+  readonly transferredFrom?: { readonly key: string; readonly productId: string };
+  readonly transferredTo?: { readonly key: string; readonly productId: string };
   readonly id: string;
   readonly key: string;
   readonly productId: string;

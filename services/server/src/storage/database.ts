@@ -1721,6 +1721,24 @@ export class MissionGoDatabase {
           .run(202610011200, new Date().toISOString());
       });
     }
+    // AND-278: immutable originals and explicit historical provenance.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610020245").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE item_transfers (
+            source_item_id TEXT PRIMARY KEY REFERENCES work_items(id),
+            target_item_id TEXT NOT NULL UNIQUE REFERENCES work_items(id),
+            account_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            CHECK (source_item_id != target_item_id)
+          ) STRICT;
+          ALTER TABLE work_item_events ADD COLUMN history_source_key TEXT;
+          ALTER TABLE work_item_comments ADD COLUMN history_source_key TEXT;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+          .run(202610020245, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

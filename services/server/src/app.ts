@@ -1,3 +1,4 @@
+import { transferWorkItem } from "./item-transfer.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
@@ -1223,7 +1224,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       user,
       products,
       productId: product.id,
-      ...workItemListPage(query, product.id),
+      ...workItemListPage(query, product.id, request),
       components: store.listComponents(product.id, { includeArchived: true }),
     });
   });
@@ -3237,7 +3238,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    * `/bootstrap`, so the first screen a cold start renders cannot drift from the
    * one every later filter change fetches.
    */
-  function workItemListPage(query: Record<string, unknown>, productId: string) {
+  function workItemListPage(query: Record<string, unknown>, productId: string, request: FastifyRequest) {
     const limit = typeof query.limit === "string" ? Number(query.limit) : undefined;
     const beforeSequence = typeof query.beforeSequence === "string" ? Number(query.beforeSequence) : undefined;
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
@@ -3260,7 +3261,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ? sequenceFromItemKey(items.at(-1)?.key)
       : undefined;
     return {
-      items: withCreatorNames(items),
+      items: withCreatorNames(items.map((item) => withTransferReferences(request, item))),
       summary: store.getWorkItemListSummary({
         productId,
         ...(typeof query.type === "string" ? { type: query.type as never } : {}),
@@ -3275,7 +3276,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const productId = typeof query.productId === "string" ? query.productId : undefined;
     if (!productId) throw invalidInput("productId is required.");
     requireProductPermission(request, productId);
-    return workItemListPage(query, productId);
+    return workItemListPage(query, productId, request);
   });
 
   app.post("/api/v1/items", async (request, reply) => {
@@ -3303,7 +3304,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/items/:itemKey", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
-    return withCreatorNames([store.getWorkItem(requireItemPermission(request, itemKey))])[0];
+    return withCreatorNames([withTransferReferences(request, store.getWorkItem(requireItemPermission(request, itemKey)))])[0];
+  });
+
+  function withTransferReferences(request: FastifyRequest, item: ReturnType<MissionGoStore["getWorkItem"]>) {
+    return { ...item, ...store.transferReferences(item.key, (id) => bearerAuthorized(request)
+      || accountStore.allows(requireAccount(request), id, "view")) };
+  }
+
+  app.post("/api/v1/items/:itemKey/transfer", async (request) => {
+    const accountId = requireAccountId(request);
+    const { itemKey } = request.params as { itemKey: string };
+    const key = requireItemPermission(request, itemKey, "operate");
+    const body = objectBody(request.body);
+    const targetProductId = stringField(body, "targetProductId")!;
+    requireProductPermission(request, targetProductId, "operate");
+    const item = transferWorkItem(store, attachmentStorage, {
+      itemKey: key, targetProductId, accountId, idempotencyKey: stringField(body, "idempotencyKey")!,
+    });
+    return withCreatorNames([withTransferReferences(request, item)])[0];
   });
 
   app.patch("/api/v1/items/:itemKey", async (request) => {
