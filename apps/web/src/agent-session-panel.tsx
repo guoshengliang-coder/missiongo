@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./api";
@@ -33,7 +33,6 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [reply, setReply] = useState("");
-  const messagesRef = useRef<HTMLDivElement>(null);
   const session = useQuery({
     queryKey: ["agent-session", sessionId],
     queryFn: () => api.getAgentSession(sessionId),
@@ -102,7 +101,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               {session.data.messages.length === 0 && (
                 <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>
               )}
-              <div className="agent-session-messages" ref={messagesRef}>
+              <div className="agent-session-messages">
                 {session.data.messages.filter((message) => !isWithdrawnCard(message)).map((message) => (
                   <article key={message.id} className={`agent-session-message agent-session-message-${message.role}`}>
                     <header className="agent-session-message-meta">
@@ -116,7 +115,6 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                         reply={reply}
                         canReply={canReply}
                         onChange={setReply}
-                        onPick={() => messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: "smooth" })}
                       />
                     )}
                   </article>
