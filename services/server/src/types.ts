@@ -270,6 +270,7 @@ export interface FreeCommentBody {
 export type CommentBody = StructuredCommentBody | FreeCommentBody;
 
 export interface WorkItemCommentSnapshot extends EventAttribution {
+  readonly historySourceKey?: string;
   readonly id: string;
   readonly itemKey: string;
   readonly actorKind: ActorKind;
@@ -366,6 +367,7 @@ export interface WithdrawCommentInput {
 }
 
 export interface WorkItemEventSnapshot extends EventAttribution {
+  readonly historySourceKey?: string;
   readonly id: string;
   readonly itemKey: string;
   readonly eventType: string;

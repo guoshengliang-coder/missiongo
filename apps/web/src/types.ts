@@ -107,6 +107,10 @@ export interface Component {
 }
 
 export interface WorkItem {
+  /** A migrated original is permanently read-only. */
+  readonly transferred?: boolean;
+  readonly transferredFrom?: { readonly key: string; readonly productId: string };
+  readonly transferredTo?: { readonly key: string; readonly productId: string };
   readonly id: string;
   readonly key: string;
   readonly productId: string;
@@ -154,6 +158,7 @@ export type WorkItemCreator =
   };
 
 export interface WorkItemEvent {
+  readonly historySourceKey?: string;
   readonly id: string;
   readonly itemKey: string;
   readonly eventType: string;
@@ -175,6 +180,7 @@ export interface WorkItemEvent {
 export type CommentBodyKind = "structured" | "free";
 
 export interface WorkItemComment {
+  readonly historySourceKey?: string;
   readonly id: string;
   readonly itemKey: string;
   readonly actorKind: ActorKind;

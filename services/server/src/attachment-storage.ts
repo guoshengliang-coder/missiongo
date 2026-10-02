@@ -121,7 +121,7 @@ export class AttachmentStorage {
     feedbackUpload?: { readonly draftId: string; readonly clientAttachmentId: string },
     attribution?: EventAttribution,
   ): Promise<AttachmentRecord> {
-    store.getWorkItem(itemKey);
+    store.assertWorkItemWritable(itemKey);
     const { filename, extension, rule, contentType } = validateUpload(encodedFilename, suppliedContentType, bytes);
 
     const contentSha256 = feedbackUpload ? createHash("sha256").update(bytes).digest("hex") : undefined;
@@ -180,6 +180,7 @@ export class AttachmentStorage {
     bytes: Buffer,
     attribution?: EventAttribution,
   ): Promise<AttachmentRecord> {
+    store.assertWorkItemWritable(itemKey);
     const { filename, extension, rule, contentType } = validateUpload(encodedFilename, suppliedContentType, bytes);
 
     await mkdir(this.rootPath, { recursive: true, mode: 0o700 });
@@ -212,13 +213,14 @@ export class AttachmentStorage {
   }
 
   async remove(store: MissionGoStore, itemKey: string, attachmentId: string, attribution?: EventAttribution): Promise<AttachmentRecord> {
-    const attachment = store.getAttachmentRecord(itemKey, attachmentId);
+    store.assertWorkItemWritable(itemKey);
+    const attachment = store.deleteAttachmentMetadata(itemKey, attachmentId, attribution);
     const path = this.resolveStoredFile(attachment.storageFilename);
     await unlink(path).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
     await this.removeDecodedPreview(attachment.storageFilename);
-    return store.deleteAttachmentMetadata(itemKey, attachmentId, attribution);
+    return attachment;
   }
 
   /**

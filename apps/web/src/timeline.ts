@@ -26,7 +26,8 @@ export function groupTimeline(events: readonly WorkItemEvent[]): readonly Timeli
     const previous = entries.at(-1);
     const mergeable = MERGEABLE_EVENTS.has(event.eventType)
       && previous?.event.eventType === event.eventType
-      && previous.event.actorKind === event.actorKind;
+      && previous.event.actorKind === event.actorKind
+      && previous.event.historySourceKey === event.historySourceKey;
     if (mergeable && previous) {
       const filename = eventFilename(event);
       entries[entries.length - 1] = {

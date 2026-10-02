@@ -2112,6 +2112,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkItem"
+  /api/v1/items/{itemKey}/transfer:
+    post:
+      summary: Transfer an item to another project, with a new key and an immutable original.
+      operationId: transferWorkItem
+      security:
+        - adminSessionCookie: []
+      description: >-
+        Human session only, with operation permission on both projects. The target
+        must be active and different. Queued or running AI work blocks transfer.
+        Preserves status, creator, content, environment, independent attachment
+        copies, comments (including withdrawal state) and business history.
+        Clears component associations; derivation and execution relationships stay
+        with the original. The original becomes cancelled and permanently read-only.
+        Historical entries have historySourceKey and cannot supply a new release
+        handover. Target project members can read all copied material.
+        Uses a database transaction and a caller-supplied idempotency key; repeating
+        the same key and arguments returns the same item. Changed arguments conflict.
+      parameters:
+        - { name: itemKey, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetProductId, idempotencyKey]
+              properties:
+                targetProductId: { type: string }
+                idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        "200":
+          description: The new item, including transfer links the caller may read.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Same or archived target, immutable original, active execution, or idempotency conflict.
   /api/v1/items/{itemKey}/transitions:
     parameters:
       - $ref: "#/components/parameters/WorkItemKey"
@@ -3608,10 +3647,22 @@ components:
         metadata:
           type: object
           additionalProperties: { type: string }
+    ItemTransferReference:
+      type: object
+      required: [key, productId]
+      description: Returned only when the reader can view the other project.
+      properties:
+        key: { type: string }
+        productId: { type: string }
     WorkItem:
       type: object
       required: [id, key, productId, affectedComponentIds, type, priority, status, title, description, diagnosticSummary, attachments, createdAt, updatedAt]
       properties:
+        transferred:
+          type: boolean
+          description: A transferred original is permanently read-only, regardless of destination visibility.
+        transferredFrom: { $ref: "#/components/schemas/ItemTransferReference" }
+        transferredTo: { $ref: "#/components/schemas/ItemTransferReference" }
         id: { type: string }
         key: { type: string }
         productId: { type: string }
@@ -3869,6 +3920,9 @@ components:
       type: object
       required: [id, itemKey, eventType, actorKind, payload, createdAt]
       properties:
+        historySourceKey:
+          type: string
+          description: Historical provenance copied during transfer; preserves original author and timestamp.
         id: { type: string }
         itemKey: { type: string }
         eventType: { type: string }
@@ -3907,6 +3961,9 @@ components:
       type: object
       required: [id, itemKey, actorKind, bodyKind, body, createdAt]
       properties:
+        historySourceKey:
+          type: string
+          description: Historical provenance copied during transfer; preserves original author and timestamp.
         id: { type: string }
         itemKey: { type: string }
         actorKind: { enum: [human, agent, system] }

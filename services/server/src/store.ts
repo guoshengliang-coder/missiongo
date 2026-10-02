@@ -109,6 +109,7 @@ interface WorkItemRow {
 }
 
 interface EventRow {
+  history_source_key: string | null;
   id: string;
   item_key: string;
   event_type: string;
@@ -124,6 +125,7 @@ interface EventRow {
 }
 
 interface CommentRow {
+  history_source_key: string | null;
   id: string;
   actor_kind: ActorKind;
   account_id: string | null;
@@ -261,6 +263,32 @@ export class MissionGoStore {
 
   constructor(databasePath: string) {
     this.database = new MissionGoDatabase(databasePath);
+  }
+
+  private isTransferred(itemId: string): boolean {
+    return Boolean(this.database.connection.prepare("SELECT 1 FROM item_transfers WHERE source_item_id = ?").get(itemId));
+  }
+
+  assertWorkItemWritable(itemKey: string): void {
+    const item = this.getWorkItemRow(itemKey.toUpperCase());
+    if (!item) throw notFound("Work item");
+    if (this.isTransferred(item.id)) throw conflict("item_transferred", "This item was transferred and is permanently read-only.");
+  }
+
+  transferReferences(itemKey: string, canView: (productId: string) => boolean): Pick<WorkItemSnapshot, "transferredFrom" | "transferredTo"> {
+    const item = this.getWorkItemRow(itemKey.toUpperCase());
+    if (!item) throw notFound("Work item");
+    const reference = (direction: "source" | "target") => {
+      const other = direction === "source" ? "target" : "source";
+      const row = this.database.connection.prepare(`
+        SELECT w.item_key AS key, w.product_id AS productId FROM item_transfers t
+        JOIN work_items w ON w.id = t.${other}_item_id WHERE t.${direction}_item_id = ?
+      `).get(item.id) as { key: string; productId: string } | undefined;
+      return row && canView(row.productId) ? row : undefined;
+    };
+    const to = reference("source");
+    const from = reference("target");
+    return { ...(to ? { transferredTo: to } : {}), ...(from ? { transferredFrom: from } : {}) };
   }
 
   close(): void {
@@ -783,6 +811,7 @@ export class MissionGoStore {
       const repeated = this.getIdempotentResult<WorkItemSnapshot>(idempotencyKey, operation);
       if (repeated) return repeated;
 
+      if (sourceKey) this.assertWorkItemWritable(sourceKey);
       const source = sourceKey ? this.getWorkItemRow(sourceKey) : undefined;
       if (sourceKey && !source) throw notFound("Work item");
       const productId = source?.product_id ?? input.productId!;
@@ -904,7 +933,7 @@ export class MissionGoStore {
     // Comments and edits deliberately do not change that position.
     const entryOrder = `COALESCE((
       SELECT MAX(e.rowid) FROM work_item_events e
-      WHERE e.item_id = work_items.id AND e.event_type IN ('item_created', 'status_changed')
+      WHERE e.item_id = work_items.id AND e.event_type IN ('item_created', 'status_changed', 'item_transferred_in') AND e.history_source_key IS NULL
         AND e.to_status = work_items.status
     ), 0)`;
     if (input.beforeSequence !== undefined) {
@@ -964,6 +993,7 @@ export class MissionGoStore {
   }
 
   updateWorkItem(itemKey: string, input: UpdateWorkItemInput): WorkItemSnapshot {
+    this.assertWorkItemWritable(itemKey);
     const current = this.getWorkItemRow(itemKey);
     if (!current) throw notFound("Work item");
     const affectedComponentIds = input.affectedComponentIds
@@ -1034,6 +1064,7 @@ export class MissionGoStore {
   }
 
   createAttachmentMetadata(input: CreateAttachmentMetadataInput): AttachmentRecord {
+    this.assertWorkItemWritable(input.itemKey);
     const item = this.getWorkItemRow(input.itemKey);
     if (!item) throw notFound("Work item");
     if (!isOneOf(input.kind, ATTACHMENT_KINDS)) throw invalidInput("Unsupported attachment kind.");
@@ -1115,6 +1146,7 @@ export class MissionGoStore {
     readonly attachment: AttachmentRecord;
     readonly replacedStorageFilename: string;
   } {
+    this.assertWorkItemWritable(input.itemKey);
     const existing = this.getAttachmentRecord(input.itemKey, input.attachmentId);
     const item = this.getWorkItemRow(input.itemKey)!;
     if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 1) throw invalidInput("Attachment size is invalid.");
@@ -1191,6 +1223,7 @@ export class MissionGoStore {
   }
 
   deleteAttachmentMetadata(itemKey: string, attachmentId: string, attribution?: EventAttribution): AttachmentRecord {
+    this.assertWorkItemWritable(itemKey);
     const attachment = this.getAttachmentRecord(itemKey, attachmentId);
     const item = this.getWorkItemRow(itemKey)!;
     const now = new Date().toISOString();
@@ -1207,6 +1240,7 @@ export class MissionGoStore {
   }
 
   transitionWorkItem(input: TransitionWorkItemInput): WorkItemSnapshot {
+    this.assertWorkItemWritable(input.itemKey);
     const now = new Date().toISOString();
     this.database.transaction(() => {
       const current = this.getWorkItemRow(input.itemKey);
@@ -1239,7 +1273,7 @@ export class MissionGoStore {
     const rows = this.database.connection
       .prepare(
         `SELECT e.id, w.item_key, e.event_type, e.actor_kind, e.from_status, e.to_status, e.payload_json,
-                e.account_id, e.client_id, e.execution_id, e.timeline_seq, e.created_at
+                e.account_id, e.client_id, e.execution_id, e.timeline_seq, e.created_at, e.history_source_key
          FROM work_item_events e
          JOIN work_items w ON w.id = e.item_id
          WHERE e.item_id = ?
@@ -1250,6 +1284,7 @@ export class MissionGoStore {
     const events: WorkItemEventSnapshot[] = rows.map((row) => {
       sequences.set(row.id, row.timeline_seq);
       return {
+      ...(row.history_source_key ? { historySourceKey: row.history_source_key } : {}),
       id: row.id,
       itemKey: row.item_key,
       eventType: row.event_type,
@@ -1277,6 +1312,7 @@ export class MissionGoStore {
 
   private commentAsTimelineEntry(comment: WorkItemCommentSnapshot): WorkItemEventSnapshot {
     return {
+      ...(comment.historySourceKey ? { historySourceKey: comment.historySourceKey } : {}),
       id: comment.id,
       itemKey: comment.itemKey,
       eventType: "comment_added",
@@ -1296,6 +1332,7 @@ export class MissionGoStore {
   }
 
   createComment(input: CreateCommentInput): WorkItemCommentSnapshot {
+    this.assertWorkItemWritable(input.itemKey);
     const body = this.validateCommentBody(input.bodyKind, input.body);
     const agentName = this.validateByline(input.agentName, "Agent name", 100);
     const summary = this.validateByline(input.summary, "Summary", 300);
@@ -1360,6 +1397,7 @@ export class MissionGoStore {
    * progress for a person, which is where every other exit already leads.
    */
   claimWorkItem(input: ClaimWorkItemInput): WorkItemSnapshot {
+    this.assertWorkItemWritable(input.itemKey);
     const agentId = requiredText(input.agentId, "Agent ID");
     if (agentId.length > 200) throw invalidInput("Agent ID must be 200 characters or fewer.");
     const idempotencyKey = this.validateIdempotencyKey(input.idempotencyKey);
@@ -1384,6 +1422,7 @@ export class MissionGoStore {
 
   /** Record merged work, separating an explicit no-release decision from missing evidence. */
   submitDevelopmentComplete(input: SubmitDevelopmentCompleteInput): WorkItemSnapshot {
+    this.assertWorkItemWritable(input.itemKey);
     const pullRequestUrl = requiredText(input.pullRequestUrl, "Pull request URL");
     if (pullRequestUrl.length > 500) throw invalidInput("Pull request URL must be 500 characters or fewer.");
     if (!pullRequestUrl.startsWith("https://")) throw invalidInput("Pull request URL must be an https:// address.");
@@ -1444,6 +1483,7 @@ export class MissionGoStore {
 
   /** Accept a verified release only when every artifact recorded at merge is present. */
   submitForVerification(input: SubmitForVerificationInput): WorkItemSnapshot {
+    this.assertWorkItemWritable(input.itemKey);
     const pullRequestUrl = requiredText(input.pullRequestUrl, "Pull request URL");
     if (!pullRequestUrl.startsWith("https://") || pullRequestUrl.length > 500) throw invalidInput("Pull request URL must be an https:// address.");
     if (!/^[0-9a-f]{40}$/.test(input.deployedCommit) || !/^[0-9a-f]{64}$/.test(input.receiptDigest)) {
@@ -1460,7 +1500,7 @@ export class MissionGoStore {
         throw conflict("item_not_ready_for_verification", "Only development-complete work can enter verification.");
       }
       const handover = [...this.getTimeline(item.item_key)].reverse()
-        .find((event) => event.eventType === "status_changed" && event.toStatus === "development_complete");
+        .find((event) => !event.historySourceKey && event.eventType === "status_changed" && event.toStatus === "development_complete");
       const required = handover?.payload.requiredArtifacts;
       const releases = input.releases;
       if (handover?.payload.pullRequestUrl !== pullRequestUrl || !Array.isArray(required) || required.length === 0
@@ -1488,6 +1528,7 @@ export class MissionGoStore {
    * session appeared out of nowhere and claimed the item.
    */
   appendSystemEvent(itemId: string, eventType: string, payload: Readonly<Record<string, unknown>>): void {
+    if (this.isTransferred(itemId)) throw conflict("item_transferred", "This item was transferred and is permanently read-only.");
     this.database.transaction(() => {
       this.insertEvent(itemId, eventType, "system", null, null, payload, new Date().toISOString());
     });
@@ -1506,6 +1547,7 @@ export class MissionGoStore {
    * having said it.
    */
   withdrawComment(input: WithdrawCommentInput): WorkItemCommentSnapshot {
+    this.assertWorkItemWritable(input.itemKey);
     return this.database.transaction(() => {
       const item = this.getWorkItemRow(input.itemKey);
       if (!item) throw notFound("Work item");
@@ -1542,7 +1584,7 @@ export class MissionGoStore {
     const rows = this.database.connection
       .prepare(
         `SELECT id, actor_kind, account_id, client_id, execution_id, body_kind, body_json,
-                agent_name, summary, timeline_seq, created_at, withdrawn_at, withdrawn_by
+                agent_name, summary, timeline_seq, created_at, withdrawn_at, withdrawn_by, history_source_key
          FROM work_item_comments
          WHERE item_id = ?${includeWithdrawn ? "" : " AND withdrawn_at IS NULL"}
          ORDER BY timeline_seq`,
@@ -1553,6 +1595,7 @@ export class MissionGoStore {
 
   private mapComment(row: CommentRow, itemKey: string): WorkItemCommentSnapshot {
     return {
+      ...(row.history_source_key ? { historySourceKey: row.history_source_key } : {}),
       id: row.id,
       itemKey,
       actorKind: row.actor_kind,
@@ -2202,6 +2245,7 @@ export class MissionGoStore {
       diagnosticSummary: this.getDiagnosticSummary(row.id, attachments),
       ...(environment ? { environment } : {}),
       attachments: attachments.map(({ storageFilename: _, ...attachment }) => attachment),
+      ...(this.isTransferred(row.id) ? { transferred: true } : {}),
       ...this.derivationOf(row),
       ...this.creatorOf(row.id),
       createdAt: row.created_at,
