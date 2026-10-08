@@ -1,0 +1,9 @@
+{
+  "pullRequest": 240,
+  "items": [
+    {
+      "key": "HG-193",
+      "title": "显示 Codex 会话失败原因、诊断和恢复指引"
+    }
+  ]
+}
