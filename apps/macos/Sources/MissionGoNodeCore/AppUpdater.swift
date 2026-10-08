@@ -126,7 +126,7 @@ public enum AppUpdater {
     public static func check(
         serverUrl: String,
         currentVersion: String,
-        session: URLSession = .shared
+        session: URLSession = ServerConnection.session
     ) async throws -> Available? {
         let manifest = try await fetchManifest(serverUrl: serverUrl, session: session)
         guard Version.isNewer(manifest.version, than: currentVersion) else { return nil }
@@ -195,7 +195,7 @@ public enum AppUpdater {
     public static func download(
         _ manifest: Manifest,
         serverUrl: String,
-        session: URLSession = .shared
+        session: URLSession = ServerConnection.session
     ) async throws -> Data {
         guard let url = URL(string: serverUrl + manifest.downloadPath) else {
             throw UpdateError.download("地址无效")
@@ -215,7 +215,8 @@ public enum AppUpdater {
         do {
             return try await session.data(for: request)
         } catch {
-            throw UpdateError.download(error.localizedDescription)
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            throw UpdateError.download(ServerConnection.failureDescription(error, url: request.url))
         }
     }
 

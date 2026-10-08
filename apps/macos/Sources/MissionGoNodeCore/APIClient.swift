@@ -883,7 +883,18 @@ public struct NetworkFailure: Equatable, Sendable, CustomStringConvertible {
         self.host = host
         code = error.code.rawValue
         codeName = NetworkFailure.name(of: error.code)
-        reason = error.localizedDescription
+        switch error.code {
+        case .secureConnectionFailed:
+            reason = "TLS 安全连接失败。请在「服务器连接」中诊断代理和直连；若两种方式都失败，请检查 VPN、系统时间和服务器证书。"
+        case .serverCertificateHasBadDate, .serverCertificateNotYetValid:
+            reason = "服务器证书已过期或尚未生效。请检查这台 Mac 的日期与时间，以及服务器证书有效期。"
+        case .serverCertificateUntrusted, .serverCertificateHasUnknownRoot:
+            reason = "服务器证书不受信任。请检查服务器证书链，以及代理或 VPN 是否替换了证书。"
+        case .timedOut:
+            reason = "请求未在规定时间内完成。请检查网络，或在「服务器连接」中诊断代理和直连。"
+        default:
+            reason = error.localizedDescription
+        }
     }
 
     init(host: String, other error: Error) {
@@ -1049,12 +1060,14 @@ struct HTTPResponse {
 /// The one place requests go out, shared by the node API and the OAuth login so
 /// both describe a failure the same way.
 struct HTTPTransport: Sendable {
-    let session: URLSession
+    /// An injected session stays fixed for tests/login; ordinary API clients
+    /// resolve routing per request so a running node loop can change mode.
+    let session: URLSession?
 
     func send(_ request: URLRequest) async throws -> HTTPResponse {
         let host = HTTPTransport.hostLabel(request.url)
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await (session ?? ServerConnection.session).data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw APIError.invalidResponse("\(host) 返回的不是 HTTP 响应。")
             }
@@ -1135,7 +1148,7 @@ public struct APIClient: Sendable {
     let transport: HTTPTransport
     let uploadCompression: UploadCompression
 
-    public init(serverUrl: String, token: String? = nil, session: URLSession = .shared) {
+    public init(serverUrl: String, token: String? = nil, session: URLSession? = nil) {
         self.serverUrl = normalizeServerUrl(serverUrl)
         self.token = token
         transport = HTTPTransport(session: session)
@@ -1144,7 +1157,7 @@ public struct APIClient: Sendable {
 
     /// Keeps the compression flag across the copy: a server that could not take
     /// gzip uploads stays known as such after the credential changes.
-    init(serverUrl: String, token: String?, session: URLSession, uploadCompression: UploadCompression) {
+    init(serverUrl: String, token: String?, session: URLSession?, uploadCompression: UploadCompression) {
         self.serverUrl = normalizeServerUrl(serverUrl)
         self.token = token
         transport = HTTPTransport(session: session)

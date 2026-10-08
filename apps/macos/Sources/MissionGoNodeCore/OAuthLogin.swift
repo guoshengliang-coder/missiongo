@@ -248,7 +248,7 @@ public struct OAuthLogin: Sendable {
 
     public init(
         serverUrl: String,
-        session: URLSession = .shared,
+        session: URLSession = ServerConnection.session,
         timeout: TimeInterval = OAuthLogin.defaultTimeout,
         randomBytes: @escaping RandomBytes = PKCE.secureRandomBytes,
         openURL: @escaping URLOpener
