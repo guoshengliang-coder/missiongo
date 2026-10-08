@@ -1,0 +1,10 @@
+{
+  "_comment": "用户在对话中直接请求优化，无 MissionGo 条目编号；PR-243 指向本次真实 GitHub PR。",
+  "pullRequest": 243,
+  "items": [
+    {
+      "key": "PR-243",
+      "title": "新增代理与直连诊断、一键直连重试，以及中文 TLS 排查提示"
+    }
+  ]
+}
