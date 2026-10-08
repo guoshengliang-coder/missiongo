@@ -93,11 +93,13 @@ struct SignedInView: View {
                                         .textSelection(.enabled)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
-                                .frame(maxHeight: 300)
+                                .frame(maxHeight: 150)
                                 Button("复制错误") {
                                     NSPasteboard.general.clearContents()
                                     NSPasteboard.general.setString(error, forType: .string)
                                 }
+                                Divider()
+                                ServerConnectionSection()
                             }
                             .padding(16)
                             .frame(width: 420)
@@ -467,6 +469,8 @@ struct LocalSettingsView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        Divider()
+                        ServerConnectionSection()
                         Divider()
                         DispatchesSection()
                         Divider()

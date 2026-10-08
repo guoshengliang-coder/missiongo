@@ -58,6 +58,9 @@ struct SignedOutView: View {
             }
 
             ServerAddressDisclosure()
+            DisclosureGroup("连接诊断与代理设置") {
+                ServerConnectionSection().padding(.top, 6)
+            }
 
             Divider()
 

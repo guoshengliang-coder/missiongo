@@ -90,6 +90,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var loginStatus = "正在准备登录…"
     @Published private(set) var showsRevokedNotice: Bool
     @Published private(set) var serverOverride: String?
+    @Published private(set) var connectionMode: ServerConnectionMode = .system
+    @Published private(set) var diagnosingConnection = false
+    @Published private(set) var connectionDiagnosis: ServerConnection.Diagnosis?
     @Published private(set) var loopState = NodeLoopState()
     @Published private(set) var profile: NodeProfile?
     @Published private(set) var profileError: String?
@@ -167,6 +170,7 @@ final class AppModel: ObservableObject {
     private init() {
         showsRevokedNotice = UserDefaults.standard.bool(forKey: DefaultsKey.revokedNotice)
         serverOverride = UserDefaults.standard.string(forKey: DefaultsKey.serverOverride)
+        connectionMode = ServerConnection.mode()
         refreshIntegrationStates()
     }
 
@@ -183,10 +187,12 @@ final class AppModel: ObservableObject {
 
     /// A read-only UI fixture. It never starts the node loop, reads credentials,
     /// or refreshes an integration; release builds do not include this path.
-    init(previewCredential: NodeCredential, unread: UnreadSessionsSnapshot, agentVersions: [String: String]) {
+    init(previewCredential: NodeCredential, unread: UnreadSessionsSnapshot, agentVersions: [String: String],
+         connectionDiagnosis: ServerConnection.Diagnosis? = nil) {
         isPreview = true
         showsRevokedNotice = false
         serverOverride = nil
+        self.connectionDiagnosis = connectionDiagnosis
         phase = .signedIn(previewCredential)
         unreadCount = unread.totalUnread
         unreadSessions = unread.sessions
@@ -522,6 +528,38 @@ final class AppModel: ObservableObject {
         loop?.retryNow()
         refreshProfile()
         refreshDispatches()
+        refreshUnreadSessions()
+        checkForUpdates()
+    }
+
+    var canChangeConnectionMode: Bool {
+        phase != .starting && phase != .signingIn && !updateState.isBusy && !diagnosingConnection
+    }
+
+    func setConnectionMode(_ mode: ServerConnectionMode) {
+        guard canChangeConnectionMode, mode != connectionMode else { return }
+        connectionMode = mode
+        #if DEBUG
+        if isPreview { return }
+        #endif
+        ServerConnection.setMode(mode, defaults: defaults)
+        loginError = nil
+        reconnect()
+    }
+
+    func diagnoseConnection() {
+        guard let server = consoleUrl, !diagnosingConnection else { return }
+        #if DEBUG
+        if isPreview { return }
+        #endif
+        diagnosingConnection = true
+        connectionDiagnosis = nil
+        Task {
+            let diagnosis = await ServerConnection.diagnose(serverUrl: server)
+            diagnosingConnection = false
+            guard consoleUrl == server else { return }
+            connectionDiagnosis = diagnosis
+        }
     }
 
     private func apply(_ state: NodeLoopState) {
@@ -554,6 +592,7 @@ final class AppModel: ObservableObject {
         switch ServerAddress.validate(input) {
         case let .success(origin):
             serverOverride = origin
+            connectionDiagnosis = nil
             defaults.set(origin, forKey: DefaultsKey.serverOverride)
             loginError = nil
             return nil
@@ -565,6 +604,7 @@ final class AppModel: ObservableObject {
     func clearServerOverride() {
         serverOverride = nil
         defaults.removeObject(forKey: DefaultsKey.serverOverride)
+        connectionDiagnosis = nil
     }
 
     var hasBundledServer: Bool {

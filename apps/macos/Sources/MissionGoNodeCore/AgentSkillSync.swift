@@ -57,7 +57,7 @@ extension SkillSync {
         serverUrl: String,
         target: String,
         expectedVersion: String? = nil,
-        session: URLSession = .shared,
+        session: URLSession = ServerConnection.session,
         shouldApply: @Sendable () -> Bool = { true }
     ) async -> AgentSkillSnapshot {
         let checkedAt = ISO8601DateFormatter().string(from: Date())
