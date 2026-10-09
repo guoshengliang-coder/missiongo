@@ -413,6 +413,7 @@ export type AgentSessionReplyBlockedReason =
   | "node_revoked"
   | "operate_permission"
   | "ai_permission"
+  | "external_native_unavailable"
   | "external_progress_only";
 
 export interface AgentSessionQuestion {
@@ -491,6 +492,7 @@ export interface AgentSessionAttachment {
 }
 
 export interface AgentSession {
+  readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: { id: string; runId: string; stageId: string; generation: number; role: string; state: string; stopRequested: boolean };
   readonly source?: "dispatch" | "external";
   readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
@@ -524,6 +526,9 @@ export interface AgentSession {
 }
 
 export interface AgentSessionSummary {
+  readonly nativeConnection?: ExternalNativeConnection;
+  readonly canConnectNative?: boolean;
+  readonly canDisconnectNative?: boolean;
   readonly source?: "dispatch" | "external";
   readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
   readonly lastReportedAt?: string;
@@ -581,6 +586,13 @@ export interface AgentSessionSummary {
   readonly unread: boolean;
   /** The unread clock value; marking read sends it back so later arrivals stay unread. */
   readonly unreadAt?: string;
+}
+
+export interface ExternalNativeConnection {
+  readonly state: "pending" | "connected" | "unavailable" | "disconnected";
+  readonly nodeId?: string;
+  readonly nodeName?: string;
+  readonly lastSyncedAt?: string;
 }
 
 export interface AgentApproval {

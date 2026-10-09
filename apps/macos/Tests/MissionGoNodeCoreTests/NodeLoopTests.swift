@@ -9,6 +9,7 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     let sessionList = Locked<[NodeAgentSession]>([])
     let sessionReports = Locked<[(String, AgentSessionReport)]>([])
     let sessionUploadAttempts = Locked(0)
+    let externalGenerations = Locked<[Int]>([])
     let sessionReportFailures = Locked(0)
     let rejectedSessionId = Locked<String?>(nil)
     let attachmentData = Locked<[String: Data]>([:])
@@ -75,6 +76,10 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
         if fail { throw APIError.network(NetworkFailure(host: "mg.test", error: URLError(.networkConnectionLost))) }
         sessionReports.withLock { $0.append((sessionId, report)) }
     }
+    func reportExternalAgentSession(sessionId: String, generation: Int, report: AgentSessionReport) async throws {
+        externalGenerations.withLock { $0.append(generation) }
+        try await reportAgentSession(sessionId: sessionId, report: report)
+    }
 }
 
 private struct FakeAdapter: AgentAdapter {
@@ -97,10 +102,11 @@ private struct FakeAdapter: AgentAdapter {
 /// Mirrors a session by replaying whatever reports it is currently holding, so
 /// a test can flip the transcript between rounds (AND-182 change detection).
 private final class SnapshotAdapter: AgentAdapter {
-    let kind = "claude_code"
+    let kind: String
     private let reports: Locked<[AgentSessionReport]>
 
-    init(reports: [AgentSessionReport]) {
+    init(reports: [AgentSessionReport], kind: String = "claude_code") {
+        self.kind = kind
         self.reports = Locked(reports)
     }
 
@@ -599,6 +605,24 @@ final class NodeLoopTests: XCTestCase {
 
     private func snapshotSession() -> NodeAgentSession {
         return NodeAgentSession(id: "s1", agentKind: "claude_code", sessionRef: "ref-1", status: "active")
+    }
+
+    func testExternalReconnectUploadsTheSameSnapshotForItsNewBindingGeneration() async throws {
+        let api = FakeAPI(claims: [])
+        let session = { (generation: Int) in NodeAgentSession(id: "external", agentKind: "codex", sessionRef: "exact-thread",
+            status: "idle", occupiesExecutionSlot: false, externalBindingGeneration: generation) }
+        api.sessionList.withLock { $0 = [session(1)] }
+        let adapter = SnapshotAdapter(reports: [AgentSessionReport(status: "idle", messages: [])], kind: "codex")
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Fixture node", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { api.sessionReports.current.count >= 1 }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(api.externalGenerations.current, [1])
+        api.sessionList.withLock { $0 = [session(3)] }
+        await waitUntil { api.sessionReports.current.count >= 2 }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        task.cancel(); try await task.value
+        XCTAssertEqual(api.externalGenerations.current, [1, 3])
     }
 
     func testAnUnchangedSnapshotIsNotReUploadedUntilItChanges() async throws {

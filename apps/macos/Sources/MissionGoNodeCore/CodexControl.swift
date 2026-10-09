@@ -19,6 +19,7 @@ public protocol CodexControl: Sendable {
     func startThread(_ request: CodexThreadRequest) async throws -> String
     func startManagedThread(_ request: CodexThreadRequest) async throws -> ManagedRuntimeReceipt
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
+    func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func readManagedThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     /// `overrides` carry the settings a person chose for this conversation;
     /// Codex keeps turn-level overrides for the turns after it too.
@@ -40,6 +41,9 @@ public protocol CodexControl: Sendable {
 }
 
 public extension CodexControl {
+    func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        try await readThread(socketPath: socketPath, threadId: threadId)
+    }
     func approvalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot? { nil }
     func answerApproval(threadId: String, approvalId: String, decision: String) throws {
         throw CodexControlError.rpc(method: "approval", message: "这个 Codex 控制器不支持控制台授权。")
@@ -686,7 +690,10 @@ public struct CodexAppServerControl: CodexControl {
     public func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false)
     }
-    private func readThread(socketPath: String, threadId: String, includeExecutionItems: Bool) async throws -> CodexThreadSnapshot {
+    public func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false, checkArchiveList: false)
+    }
+    private func readThread(socketPath: String, threadId: String, includeExecutionItems: Bool, checkArchiveList: Bool = true) async throws -> CodexThreadSnapshot {
         let timeout = self.readTimeout
         let archiveCache = self.archiveCache
         return try await withCheckedThrowingContinuation { continuation in
@@ -696,13 +703,16 @@ public struct CodexAppServerControl: CodexControl {
                     defer { connection.close() }
                     _ = try connection.call("initialize", CodexProtocol.initializeParams())
                     try connection.notify("initialized")
-                    let archived = (try? archiveCache.value(socketPath: socketPath) {
+                    let archived = checkArchiveList && ((try? archiveCache.value(socketPath: socketPath) {
                         try CodexAppServerControl.archivedThreadIds(connection: connection)
-                    }.contains(threadId)) ?? false
+                    }.contains(threadId)) ?? false)
                     if archived {
                         return CodexThreadSnapshot(status: "unavailable", messages: [], archived: true)
                     }
                     let result = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId))
+                    if !checkArchiveList, (result["thread"] as? [String: Any])?["id"] as? String != threadId {
+                        throw CodexControlError.invalidResponse(method: "thread/read identity")
+                    }
                     return try CodexProtocol.threadSnapshot(fromRead: result, includeExecutionItems: includeExecutionItems)
                 })
             }

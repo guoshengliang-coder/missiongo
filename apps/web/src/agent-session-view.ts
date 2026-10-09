@@ -163,8 +163,10 @@ export function replyBlockedLabelKey(reason: AgentSessionReplyBlockedReason | un
   | "agentSessionOperateReadOnly"
   | "agentSessionReadOnly"
   | "agentSessionExternalReadOnly"
+  | "agentExternalNativeUnavailable"
   | "agentSessionUnavailableReadOnly" {
   if (reason === "external_progress_only") return "agentSessionExternalReadOnly";
+  if (reason === "external_native_unavailable") return "agentExternalNativeUnavailable";
   if (reason === "work_finished") return "agentSessionWorkFinishedReadOnly";
   if (reason === "archived") return "agentSessionArchivedReadOnly";
   if (reason === "source_archived") return "agentSessionSourceArchivedReadOnly";

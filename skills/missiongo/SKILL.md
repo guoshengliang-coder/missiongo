@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 完整读取条目、评论、领取、创建条目及上传附件，并在 PR 合并和发布核实后推进状态。不修改条目正文与字段，不删除条目，不决定验收。
-version: 5.18.0
+version: 5.19.0
 ---
 
 # MissionGo 条目读取与评论
@@ -260,7 +260,7 @@ frontmatter 中的 `version` 对比。
 ### 外部主动处理的会话与进展
 
 用户在 Codex、Claude Code、OpenCode 或其他客户端里直接要求处理条目时，也要将这次处理关联到 Web Agent 控制台。
-只读查询、仅提及编号和未批准的计划不登记、不上报。这里上报的是处理记录，不是完整对话同步；不得声称 Web 已能接管或回复。
+只读查询、仅提及编号和未批准的计划不登记、不上报。这些 MCP 工具上报的是处理记录。只有用户在 Web 控制台明确连接原生会话、且节点同步成功后，才开放原生消息与回复；不得仅凭领取成功声称 Web 已能接管。
 
 - 先核对 `get_current_account.capabilities.writeTools`。只有提供 `register_agent_session`、`report_agent_session` 且本次连接可写时才使用；旧服务不支持时说明限制，不绕开权限。
 - 每个对话使用一份稳定 `session`：`agentKind` 是 `codex|claude_code|opencode|hermes|other`；`sessionRef` 是已从可信客户端取得的原生会话 ID，配 `refKind: "native"`。拿不到原生 ID 时为本次对话生成一个 UUID，配 `refKind: "tracking"`，不得编造原生 ID、用 Agent 名称代替、扫描其他聊天或按条目编号猜匹配。`name` 可填简短自述名称，不构成身份。
@@ -269,7 +269,8 @@ frontmatter 中的 `version` 对比。
 - 为已关联条目调用 `append_comment` 时带 `sessionId`，服务端会在同一事务中把评论内容或摘要记入进展；未关联的评论不按客户端名称猜会话。仍按原有规则写条目评论，不能用会话上报替代结局回写。
 - 开始、重要进展、需要用户回复、遇到阻碍和本次处理结束时，调用 `report_agent_session`，带一个已关联的 `itemKey`、`sessionId`、简短事实 `text` 和稳定 `idempotencyKey`。状态分别用 `working`、`waiting_for_input`、`blocked`、`completed` 或 `failed`；重试复用原键。多条目会话只有整次处理结束才报 `completed`。
 - `completed` 仅表示这次会话的处理结束，不代表条目验收、PR 合并或发布。所有条目状态交接仍按下面规则核验。长时间未上报会显示“近期未上报”，不会自动释放条目或重新派单。
-- 用户仍在原客户端回复。仅上报这些用户指定条目的处理事实，不上传无关聊天、历史对话或客户端凭据。
+- 用户默认仍在原客户端回复。已确认原生 ID 的 Codex、OpenCode 会话可由用户在 Web 控制台选择该会话所在的节点并点击「同步原生会话」；需更新 MissionGo macOS 客户端，且该节点控制通道能读取这一条会话。OpenCode 需使用该节点已登记的同一共享服务实例，不能把普通 TUI 的随机服务误认为共享服务。不能根据机器名猜节点或替用户自动连接。普通 Claude Code CLI、其他客户端及 tracking 记录暂不支持此连接。
+- 仅上报这些用户指定条目的处理事实，不上传无关聊天、历史对话或客户端凭据。用户明确连接后，节点只同步这一条原生会话里的可见用户与 Agent 消息；Web 回复走同一条会话，当前只支持文字。断开或归档只停止 MissionGo 同步，不关闭、归档原客户端会话。
 
 ### 处理完成后回写
 

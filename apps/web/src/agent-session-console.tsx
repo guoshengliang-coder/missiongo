@@ -63,6 +63,7 @@ import {
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { DraftChatFile } from "./agent-chat-draft-file";
 import { AgentSessionQuickSettings } from "./agent-session-settings";
+import { ExternalNativeConnectionPanel } from "./external-native-connection";
 import { sessionTitle } from "./agent-session-title";
 import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
@@ -610,7 +611,7 @@ export function AgentSessionConsole({
   // (AND-236): Codex and OpenCode report turns too, so the copy must not say
   // "Claude Code" for them.
   const agentName = selected ? agentLabel(selected, t) : "";
-  const activityText = selected?.source === "external" ? t(externalProgressLabelKey(selected)) : agentWaiting
+  const activityText = selected?.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : agentWaiting
     ? t("agentSessionWaitingForInput", { agent: agentName })
     : claudeBackgroundOnly
       ? t("agentSessionWaitingBackground", { count: activities.length })
@@ -899,7 +900,7 @@ export function AgentSessionConsole({
             // session blocked on a person reads as waiting, not as running.
             const rowWaiting = ["claude_code", "opencode"].includes(session.agentKind) && ["active", "idle"].includes(rowStatus)
               && session.command?.status !== "queued" && session.turnState?.waitingForInput === true;
-            const rowLabel = session.source === "external" ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
+            const rowLabel = session.source === "external" && !session.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
               : rowWaiting ? t("agentSessionWaitingStatus") : statusLabel(rowStatus, t);
             return (
               <div
@@ -992,7 +993,7 @@ export function AgentSessionConsole({
                   ))}</div>
                 </div>
               </div>
-              <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : selected.source === "external" ? t(externalProgressLabelKey(selected)) : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t("agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
+              <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t("agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
               <div className="agent-console-actions">
                 {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact mobile={touchDevice} />}
                 {selected.source !== "external" && selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
@@ -1059,9 +1060,13 @@ export function AgentSessionConsole({
                   <div className="agent-console-connection-banner" role="status">
                     <CircleAlert size={17} />
                     <div><strong>{t("agentExternalSource")}</strong>
-                      <span>{t("agentExternalDetail")}</span>
+                      <span>{selected.nativeConnection ? t(selected.nativeConnection.state === "connected" ? "agentExternalNativeConnected"
+                        : selected.nativeConnection.state === "pending" ? "agentExternalNativePending"
+                          : selected.nativeConnection.state === "disconnected" ? "agentExternalNativeDisconnected" : "agentExternalNativeUnavailable",
+                      { node: selected.nativeConnection.nodeName ?? "" }) : t("agentExternalDetail")}</span>
                       {selected.refKind === "tracking" && <span>{t("agentExternalTracking")}</span>}
                       {selected.lastReportedAt && <span>{t("agentExternalLastReport", { time: formatAgentMessageTime(selected.lastReportedAt, locale) })}</span>}
+                      <ExternalNativeConnectionPanel key={selected.id} session={selected} />
                     </div>
                   </div>
                 )}
@@ -1348,15 +1353,15 @@ export function AgentSessionConsole({
                   </div>}
                   {replyFileError && <p className="inline-error" role="alert">{replyFileError}</p>}
                   <div className="agent-console-reply-actions">
-                    <AgentSessionQuickSettings session={selected} />
+                    {selected.source !== "external" && <AgentSessionQuickSettings session={selected} />}
                     <div className="agent-chat-send-actions">
                       <input ref={fileInputRef} type="file" accept={CHAT_FILE_ACCEPT} multiple hidden
                         onChange={(event) => addFiles(event.target.files)} />
-                      <button type="button" className="secondary-button agent-chat-icon-button"
+                      {selected.source !== "external" && <button type="button" className="secondary-button agent-chat-icon-button"
                         disabled={!sessionQuery.data?.canAttach || pending || sendingSelected || replyFiles.length >= 10}
                         title={sessionQuery.data?.canAttach ? t("agentChatAddFile") : t("agentChatNodeUpdate")}
                         aria-label={t("agentChatAddFile")}
-                        onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>
+                        onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>}
                       <button type="submit" className="primary-button agent-chat-icon-button"
                         disabled={(!reply.trim() && replyFiles.length === 0) || (replyFiles.length > 0 && !sessionQuery.data?.canAttach) || pending || sendingSelected}
                         title={sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}
@@ -1365,7 +1370,7 @@ export function AgentSessionConsole({
                       </button>
                     </div>
                   </div>
-                  {sessionQuery.data && !sessionQuery.data.canAttach && <p className="agent-session-muted" role="note">{t("agentChatNodeUpdate")}</p>}
+                  {sessionQuery.data && !sessionQuery.data.canAttach && <p className="agent-session-muted" role="note">{t(selected.source === "external" ? "agentExternalTextOnly" : "agentChatNodeUpdate")}</p>}
                 </form>
               ) : (
                 <p className="agent-session-muted" role="note">

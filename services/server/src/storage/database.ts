@@ -1773,6 +1773,30 @@ export class MissionGoDatabase {
           .run(202610090518, new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610090634").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          ALTER TABLE external_agent_sessions ADD COLUMN native_node_id TEXT REFERENCES nodes(id);
+          ALTER TABLE external_agent_sessions ADD COLUMN native_generation INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE external_agent_sessions ADD COLUMN native_snapshot_json TEXT;
+          ALTER TABLE external_agent_sessions ADD COLUMN native_synced_at TEXT;
+          CREATE UNIQUE INDEX idx_external_native_identity
+            ON external_agent_sessions(native_node_id, agent_kind, session_ref) WHERE native_node_id IS NOT NULL;
+          CREATE TABLE external_native_messages (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES external_agent_sessions(id) ON DELETE CASCADE,
+            source_id TEXT NOT NULL, payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+            position INTEGER NOT NULL, UNIQUE(session_id, source_id)
+          ) STRICT;
+          CREATE TABLE external_native_commands (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES external_agent_sessions(id) ON DELETE CASCADE,
+            text TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('queued','delivering','delivery_unknown','delivered','failed','cancelled')),
+            created_at TEXT NOT NULL, delivering_at TEXT, delivered_at TEXT, cancelled_at TEXT, error TEXT, worker_id TEXT
+          ) STRICT;
+          CREATE INDEX idx_external_native_commands ON external_native_commands(session_id, created_at);
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(202610090634, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

@@ -13,6 +13,7 @@ import { parseFeedbackLog } from "@missiongo/domain";
 
 import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
 import { buildApp } from "./app.js";
+import { DispatchStore } from "./dispatch-store.js";
 // @ts-expect-error The published, dependency-free CLI is JavaScript.
 import { inspectFile, uploadFile } from "../../../apps/web/public/downloads/missiongo-upload.mjs";
 import { readAiAccessToken } from "./admin-auth.js";
@@ -938,12 +939,52 @@ describe("Commenting over MCP", () => {
     expect(app.missionGoStore.getWorkItem("HG-1").status).toBe("in_progress");
     for (const [path, payload] of [["commands", { text: "Do not execute" }], ["settings", { mode: "auto" }]] as const) {
       const rejected = await app.inject({ method: path === "settings" ? "PATCH" : "POST", url: `/api/v1/agent-sessions/${sessionId}/${path}`, headers, payload });
-      expect(rejected.statusCode).toBe(404);
+      expect(rejected.statusCode).toBe(path === "commands" ? 409 : 404);
     }
     expect((await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/read`, headers, payload: { through: listed[0].unreadAt } })).statusCode).toBe(204);
     expect((await app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers })).json().sessions[0].unread).toBe(false);
     expect((await app.inject({ method: "PATCH", url: `/api/v1/agent-sessions/${sessionId}`, headers, payload: { archived: true } })).statusCode).toBe(200);
     expect(app.missionGoStore.getWorkItem("HG-1").status).toBe("in_progress");
+  });
+
+  it.each(["codex", "opencode"])("syncs and replies to an explicitly connected external %s session without launching a dispatch", async (kind) => {
+    const { app, call, writeToken, adminAccount } = await commentingApp();
+    const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: "mission-owner", password: "correct horse" } });
+    const headers = { cookie: login.headers["set-cookie"]!.split(";", 1)[0]! };
+    app.missionGoStore.transitionWorkItem({ itemKey: "HG-1", to: "ready", reason: "triaged", actor: "human" });
+    const claim = await call(writeToken, 1, "tools/call", { name: "claim_item", arguments: { itemKey: "HG-1", agentId: kind,
+      idempotencyKey: "native-claim", session: { agentKind: kind, sessionRef: "exact-native-thread", refKind: "native" } } });
+    const id = (claim.result!.structuredContent as { sessionId: string }).sessionId;
+    const dispatches = new DispatchStore(app.missionGoStore.database);
+    const node = dispatches.registerNode({ accountId: adminAccount.id, name: "Fixture node", installationId: "native-installation" });
+    const other = dispatches.registerNode({ accountId: adminAccount.id, name: "Other node", installationId: "other-installation" });
+    app.missionGoStore.database.connection.prepare("UPDATE nodes SET agents_json=?,last_seen_at=? WHERE id=?").run(JSON.stringify([{ kind }]), new Date().toISOString(), node.nodeId);
+    const bound = await app.inject({ method: "PUT", url: `/api/v1/agent-sessions/${id}/native-connection`, headers, payload: { nodeId: node.nodeId } });
+    expect(bound.statusCode).toBe(200); expect(bound.json()).toMatchObject({ nativeConnection: { state: "pending" }, canReply: false });
+    expect((await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: { authorization: `Bearer ${node.token}` } })).json().sessions).toEqual([]);
+    const nodeHeaders = { authorization: `Bearer ${node.token}`, "x-missiongo-external-sessions": "1", "x-missiongo-external-worker": "fixture-worker-one" };
+    const polled = await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: nodeHeaders });
+    expect(polled.json().sessions).toMatchObject([{ id, sessionRef: "exact-native-thread", externalBindingGeneration: 1, occupiesExecutionSlot: false }]);
+    const snapshotHeaders = { ...nodeHeaders, "x-missiongo-external-generation": "1" };
+    const snapshot = { status: "idle", messages: [{ sourceId: "u1", role: "user", text: "Handle HG-1" }, { sourceId: "a1", role: "agent", text: "Fix ready" }] };
+    const post = (payload: object, h = snapshotHeaders) => app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${id}/snapshot`, headers: h, payload });
+    expect((await post(snapshot, { ...snapshotHeaders, authorization: `Bearer ${other.token}` })).statusCode).toBe(404);
+    expect((await post(snapshot, { ...snapshotHeaders, "x-missiongo-external-generation": "0" })).statusCode).toBe(400);
+    expect((await post(snapshot)).statusCode).toBe(204);
+    const detail = (await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers })).json();
+    expect(detail).toMatchObject({ canReply: true, canAttach: false, nativeConnection: { state: "connected" } });
+    expect(detail.messages.map((message: { role: string }) => message.role)).toEqual(["agent", "user", "agent"]);
+    const queued = await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${id}/commands`, headers, payload: { text: "Continue in this same conversation" } });
+    expect(queued.statusCode).toBe(201); const command = queued.json(); expect(command.status).toBe("queued");
+    expect((await post({ ...snapshot, commandId: command.id, commandStatus: "delivering" })).statusCode).toBe(204);
+    expect((await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${id}/commands/${command.id}/cancel`, headers })).statusCode).toBe(409);
+    const delivered = { ...snapshot, messages: [...snapshot.messages, { sourceId: command.id, role: "user", text: command.text }], commandId: command.id, commandStatus: "delivered" };
+    expect((await post(delivered)).statusCode).toBe(204); expect((await post(delivered)).statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers })).json()).toMatchObject({ command: { status: "delivered" }, messages: [{}, {}, {}, {}] });
+    expect((await app.inject({ method: "DELETE", url: `/api/v1/agent-sessions/${id}/native-connection`, headers })).statusCode).toBe(200);
+    expect((await post(delivered)).statusCode).toBe(404);
+    expect(app.missionGoStore.getWorkItem("HG-1").status).toBe("in_progress");
+    expect(app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS count FROM dispatches").get()).toMatchObject({ count: 0 });
   });
 
   it("keeps a claim from a validated Web dispatch out of external records", async () => {

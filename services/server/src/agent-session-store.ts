@@ -9,6 +9,7 @@ import { autoArchiveFinishedDispatches } from "./auto-archive.js";
 import { deliveredDispatchTimedOut } from "./dispatch-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
+import type { ExternalNativeConnection } from "./external-native-session-store.js";
 
 export type AgentSessionStatus = "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
 export type AgentMessageRole = "user" | "agent" | "plan";
@@ -92,6 +93,7 @@ export interface ManagedSessionBinding {
   id: string; runId: string; stageId: string; generation: number; role: string; stopRequested: boolean; state: string; ownershipHeld: boolean;
 }
 export interface AgentSessionSnapshot {
+  readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: ManagedSessionBinding;
   readonly source?: "dispatch" | "external";
   readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
@@ -122,6 +124,7 @@ export interface AgentSessionSnapshot {
 }
 
 export interface AgentSessionListItem {
+  readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: ManagedSessionBinding;
   readonly source?: "dispatch" | "external";
   readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";

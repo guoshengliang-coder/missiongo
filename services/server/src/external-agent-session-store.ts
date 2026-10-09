@@ -5,6 +5,7 @@ import type { AgentKind } from "@missiongo/domain";
 import type { AgentSessionListItem, AgentSessionSnapshot, AgentSessionStatus } from "./agent-session-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
+import { ExternalNativeSessionStore } from "./external-native-session-store.js";
 
 export const EXTERNAL_AGENT_KINDS = ["codex", "claude_code", "opencode", "hermes", "other"] as const;
 export const EXTERNAL_PROGRESS_STATUSES = ["working", "waiting_for_input", "blocked", "completed", "failed"] as const;
@@ -125,15 +126,17 @@ export class ExternalAgentSessionStore {
 
   getForAccount(accountId: string, sessionId: string): AgentSessionSnapshot {
     const row = this.row(accountId, sessionId);
+    const { nativeMessages, ...native } = new ExternalNativeSessionStore(this.store).overlay(accountId, sessionId);
     const reports = this.db.prepare("SELECT id, item_key, status, text, created_at FROM external_agent_session_reports WHERE session_id = ? ORDER BY created_at, rowid")
       .all(sessionId) as unknown as { id: string; item_key: string; status: ExternalProgressStatus; text: string | null; created_at: string }[];
     return {
       id: row.id, source: "external", agentKind: row.agent_kind, status: this.status(row),
       progressStatus: row.progress_status, lastReportedAt: row.updated_at, refKind: row.ref_kind,
       updatedAt: row.updated_at, ...(row.archived_at ? { archivedAt: row.archived_at, archivedSource: "missiongo" as const } : {}),
-      messages: reports.map((report) => ({ id: report.id, sourceId: report.id, role: "agent" as const,
-        text: `${report.item_key} · ${report.text ?? report.status}`, occurredAt: report.created_at })),
-      activities: [], turnState: {}, replyable: false,
+      activities: [], turnState: {},
+      ...native,
+      messages: [...reports.map((report) => ({ id: report.id, sourceId: report.id, role: "agent" as const,
+        text: `${report.item_key} · ${report.text ?? report.status}`, occurredAt: report.created_at })), ...nativeMessages],
     };
   }
 
@@ -141,6 +144,7 @@ export class ExternalAgentSessionStore {
     const rows = this.db.prepare("SELECT * FROM external_agent_sessions WHERE account_id = ? ORDER BY activity_at DESC, rowid DESC LIMIT ?")
       .all(accountId, limit) as unknown as SessionRow[];
     return rows.map((row) => {
+      const { nativeMessages, ...native } = new ExternalNativeSessionStore(this.store).overlay(accountId, row.id, false);
       const latest = this.db.prepare("SELECT id, text, status, item_key FROM external_agent_session_reports WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
         .get(row.id) as { id: string; text: string | null; status: ExternalProgressStatus; item_key: string } | undefined;
       const items = this.itemKeys(accountId, row.id).map((key) => this.store.getWorkItem(key));
@@ -151,7 +155,7 @@ export class ExternalAgentSessionStore {
         id: row.id, source: "external", agentKind: row.agent_kind, status: this.status(row),
         progressStatus: row.progress_status, lastReportedAt: row.updated_at, refKind: row.ref_kind,
         updatedAt: row.updated_at, ...(row.archived_at ? { archivedAt: row.archived_at, archivedSource: "missiongo" as const } : {}),
-        replyable: false, activities: [], turnState: {}, agentSessionId: row.id, activityAt: row.activity_at,
+        activities: [], turnState: {}, agentSessionId: row.id, activityAt: row.activity_at,
         nodeName: row.name ?? row.agent_kind, nodeRevoked: false,
         mode: "external", dispatchStatus: "external", ...(row.name ? { sessionName: row.name } : {}),
         createdAt: row.created_at, items: items.map((item) => ({ key: item.key, title: item.title, productId: item.productId })),
@@ -163,6 +167,8 @@ export class ExternalAgentSessionStore {
         settings: { mode: "external", adjustable: false },
         unread: Boolean(row.unread_at && (!row.read_at || row.unread_at > row.read_at)),
         ...(row.unread_at ? { unreadAt: row.unread_at } : {}),
+        ...native,
+        ...(nativeMessages.at(-1) ? { latestMessage: { role: nativeMessages.at(-1)!.role, text: nativeMessages.at(-1)!.text } } : {}),
       };
     });
   }
@@ -181,8 +187,9 @@ export class ExternalAgentSessionStore {
   }
 
   dismissAttention(accountId: string, sessionId: string, revision: string): void {
-    const snapshot = this.getForAccount(accountId, sessionId);
-    if (snapshot.messages.at(-1)?.id !== revision) throw conflict("agent_attention_changed", "New progress arrived; reload before dismissing.");
+    const native = new ExternalNativeSessionStore(this.store).overlay(accountId, sessionId, false);
+    const latest = this.db.prepare("SELECT id FROM external_agent_session_reports WHERE session_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1").get(sessionId) as { id: string } | undefined;
+    if ((native.attention?.revision ?? latest?.id) !== revision) throw conflict("agent_attention_changed", "New progress arrived; reload before dismissing.");
     this.db.prepare("UPDATE external_agent_sessions SET dismissed_revision = ? WHERE id = ?").run(revision, sessionId);
   }
 }
