@@ -9,6 +9,7 @@ import { autoArchiveFinishedDispatches } from "./auto-archive.js";
 import { deliveredDispatchTimedOut } from "./dispatch-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
+import type { ExternalNativeConnection } from "./external-native-session-store.js";
 
 export type AgentSessionStatus = "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
 export type AgentMessageRole = "user" | "agent" | "plan";
@@ -92,10 +93,15 @@ export interface ManagedSessionBinding {
   id: string; runId: string; stageId: string; generation: number; role: string; stopRequested: boolean; state: string; ownershipHeld: boolean;
 }
 export interface AgentSessionSnapshot {
+  readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: ManagedSessionBinding;
+  readonly source?: "dispatch" | "external";
+  readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
+  readonly lastReportedAt?: string;
+  readonly refKind?: "native" | "tracking";
   readonly id: string;
-  readonly dispatchId: string;
-  readonly agentKind: "codex" | "claude_code" | "opencode";
+  readonly dispatchId?: string;
+  readonly agentKind: AgentKind | "other";
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly failure?: CodexSessionFailure;
@@ -118,11 +124,16 @@ export interface AgentSessionSnapshot {
 }
 
 export interface AgentSessionListItem {
+  readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: ManagedSessionBinding;
+  readonly source?: "dispatch" | "external";
+  readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
+  readonly lastReportedAt?: string;
+  readonly refKind?: "native" | "tracking";
   readonly id: string;
   readonly agentSessionId?: string;
-  readonly dispatchId: string;
-  readonly agentKind: AgentKind;
+  readonly dispatchId?: string;
+  readonly agentKind: AgentKind | "other";
   readonly status: AgentSessionStatus;
   readonly turnState?: AgentSessionTurnState;
   readonly lastError?: string;
@@ -131,9 +142,9 @@ export interface AgentSessionListItem {
   readonly activityAt: string;
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
-  readonly nodeId: string;
+  readonly nodeId?: string;
   readonly nodeName: string;
-  readonly nodeConnectionState: NodeConnectionState;
+  readonly nodeConnectionState?: NodeConnectionState;
   readonly nodeLastSeenAt?: string;
   readonly nodeRevoked: boolean;
   readonly mode: string;

@@ -36,11 +36,17 @@ if [ "$identity" = - ]; then
   if [ -x "$app/Contents/MacOS/MissionGoClaudeHost" ]; then
     codesign --force --sign - --timestamp=none "$app/Contents/MacOS/MissionGoClaudeHost"
   fi
+  if [ -x "$app/Contents/MacOS/MissionGoClaudeBridge" ]; then
+    codesign --force --sign - --timestamp=none "$app/Contents/MacOS/MissionGoClaudeBridge"
+  fi
   codesign --force --sign - --timestamp=none "$app"
 else
   echo "==> Signing with configured certificate"
   if [ -x "$app/Contents/MacOS/MissionGoClaudeHost" ]; then
     codesign --force --sign "$identity" --options runtime --timestamp "$app/Contents/MacOS/MissionGoClaudeHost"
+  fi
+  if [ -x "$app/Contents/MacOS/MissionGoClaudeBridge" ]; then
+    codesign --force --sign "$identity" --options runtime --timestamp "$app/Contents/MacOS/MissionGoClaudeBridge"
   fi
   codesign --force --sign "$identity" --options runtime --timestamp "$app"
 fi

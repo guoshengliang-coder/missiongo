@@ -119,7 +119,7 @@ describe("agent console responsive layout", () => {
 
   it("keeps the session time beside a two-line title and removes redundant status copy", () => {
     expect(consoleSource).toContain('className="agent-console-session-heading"');
-    expect(consoleSource).toContain('<small>{session.nodeName} · {agentLabel(session, t)}</small>');
+    expect(consoleSource).toContain('<small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>');
     expect(styles).toContain(".agent-console-session-heading strong { min-width: 0; flex: 1; display: -webkit-box;");
     expect(styles).not.toContain("min-height: 104px;");
   });

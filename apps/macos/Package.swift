@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "MissionGoNodeCore", targets: ["MissionGoNodeCore"]),
         .executable(name: "MissionGo", targets: ["MissionGo"]),
         .executable(name: "MissionGoClaudeHost", targets: ["MissionGoClaudeHost"]),
+        .executable(name: "MissionGoClaudeBridge", targets: ["MissionGoClaudeBridge"]),
     ],
     targets: [
         // Everything that talks to the server or runs a process lives here, with
@@ -18,6 +19,7 @@ let package = Package(
         .target(name: "MissionGoNodeCore"),
         .executableTarget(name: "MissionGo", dependencies: ["MissionGoNodeCore"], resources: [.process("Resources")]),
         .executableTarget(name: "MissionGoClaudeHost", dependencies: ["MissionGoNodeCore"]),
+        .executableTarget(name: "MissionGoClaudeBridge", dependencies: ["MissionGoNodeCore"]),
         .testTarget(name: "MissionGoNodeCoreTests", dependencies: ["MissionGoNodeCore"]),
         // Render actual SwiftUI content in AppKit windows with offline fixtures.
         .testTarget(name: "MissionGoUITests", dependencies: ["MissionGo", "MissionGoNodeCore"]),

@@ -81,7 +81,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   const queryClient = useQueryClient();
   const settings = session.settings;
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, enabled: Boolean(session.nodeId) });
-  const models = agentModels(nodesQuery.data?.nodes.find((node) => node.id === session.nodeId), session.agentKind);
+  const models = session.agentKind === "other" ? undefined : agentModels(nodesQuery.data?.nodes.find((node) => node.id === session.nodeId), session.agentKind);
 
   const apply = useMutation({
     mutationFn: (change: { mode?: string; model?: string; effort?: string }) =>
@@ -164,7 +164,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           disabled={apply.isPending}
           onChange={(event) => changeMode(event.target.value)}
         >
-          {DISPATCH_MODES_BY_AGENT[session.agentKind].map((value) => (
+          {(session.agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[session.agentKind]).map((value) => (
             <option key={value} value={value}>{modeLabel(value)}</option>
           ))}
         </select>
@@ -213,7 +213,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           {moreOpen && <div className="agent-settings-more-panel">
             <label>{t("dispatchMode")}
               <select value={modeValue} disabled={apply.isPending} onChange={(event) => changeMode(event.target.value)}>
-                {DISPATCH_MODES_BY_AGENT[session.agentKind].map((value) => <option key={value} value={value}>{modeLabel(value)}</option>)}
+                {(session.agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[session.agentKind]).map((value) => <option key={value} value={value}>{modeLabel(value)}</option>)}
               </select>
             </label>
             <label>{t("dispatchEffort")}

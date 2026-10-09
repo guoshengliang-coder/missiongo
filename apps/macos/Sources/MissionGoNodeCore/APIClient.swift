@@ -407,6 +407,8 @@ public struct AgentSessionCommand: Codable, Equatable, Sendable {
 }
 
 public struct NodeAgentSession: Codable, Equatable, Sendable {
+    /// Present only for an explicitly connected external conversation.
+    public let externalBindingGeneration: Int?
     public let managedExecution: ManagedSessionBinding?
     public let id: String
     public let dispatchId: String?
@@ -455,9 +457,11 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
         archiveInSource: Bool = false,
         restoreInSource: Bool = false,
         desiredSettings: AgentSessionSettings? = nil,
-        appliedSettingsRevision: Int = 0
+        appliedSettingsRevision: Int = 0,
+        externalBindingGeneration: Int? = nil
     ) {
         self.managedExecution = managedExecution
+        self.externalBindingGeneration = externalBindingGeneration
         self.id = id
         self.dispatchId = dispatchId
         self.agentKind = agentKind
@@ -483,12 +487,13 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, dispatchId, agentKind, sessionRef, status, lifecycle, occupiesExecutionSlot, command, archiveInSource
-        case restoreInSource, desiredSettings, appliedSettingsRevision, managedExecution, approvalDecision, approvalRetry, approvalReviewMode
+        case restoreInSource, desiredSettings, appliedSettingsRevision, managedExecution, approvalDecision, approvalRetry, approvalReviewMode, externalBindingGeneration
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         managedExecution = try values.decodeIfPresent(ManagedSessionBinding.self, forKey: .managedExecution)
+        externalBindingGeneration = try values.decodeIfPresent(Int.self, forKey: .externalBindingGeneration)
         id = try values.decode(String.self, forKey: .id)
         dispatchId = try values.decodeIfPresent(String.self, forKey: .dispatchId)
         // A server from before Claude mirroring only ever lists Codex here.
@@ -1147,6 +1152,8 @@ public struct APIClient: Sendable {
     public let token: String?
     let transport: HTTPTransport
     let uploadCompression: UploadCompression
+    /// A restart changes this ID so an uncertain reply cannot be sent twice.
+    let externalWorkerId = UUID().uuidString.lowercased()
 
     public init(serverUrl: String, token: String? = nil, session: URLSession? = nil) {
         self.serverUrl = normalizeServerUrl(serverUrl)
@@ -1298,7 +1305,7 @@ public struct APIClient: Sendable {
         struct Reply: Decodable { let sessions: [NodeAgentSession] }
         let response = try await send(
             "GET", "/api/v1/node/agent-sessions", body: Optional<String>.none, bearer: try nodeToken(),
-            extraHeaders: ["X-MissionGo-Chat-Attachments": "1"]
+            extraHeaders: ["X-MissionGo-Chat-Attachments": "1", "X-MissionGo-External-Sessions": "1", "X-MissionGo-External-Worker": externalWorkerId]
         )
         // During a rolling update the Mac can reach a server from before
         // mirrored sessions. Dispatching must keep working until that server is
@@ -1322,6 +1329,13 @@ public struct APIClient: Sendable {
             "POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true
         )
         try requireSuccess(response, operation: "同步 Agent 会话")
+    }
+
+    public func reportExternalAgentSession(sessionId: String, generation: Int, report: AgentSessionReport) async throws {
+        let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/snapshot"
+        let response = try await send("POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true,
+            extraHeaders: ["X-MissionGo-External-Generation": String(generation), "X-MissionGo-External-Worker": externalWorkerId])
+        try requireSuccess(response, operation: "同步外部 Agent 会话")
     }
 
     /// The report as it can go on the wire: no message longer than the server's

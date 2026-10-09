@@ -563,6 +563,26 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(decoded, try APIClient.encoder.encode(report))
     }
 
+    func testExternalNativePollingAndSnapshotsShareOneWorkerAndFenceTheBinding() async throws {
+        StubURLProtocol.install { request, _ in
+            if request.httpMethod == "GET" {
+                return .response(status: 200, body: #"{"sessions":[{"id":"external","agentKind":"opencode","sessionRef":"ses_exact","status":"idle","occupiesExecutionSlot":false,"externalBindingGeneration":3}]}"#)
+            }
+            return .response(status: 204, body: "")
+        }
+        let api = client()
+        let sessions = try await api.listAgentSessions()
+        XCTAssertEqual(sessions.first?.externalBindingGeneration, 3)
+        XCTAssertNil(sessions.first?.dispatchId)
+        XCTAssertFalse(sessions.first!.occupiesExecutionSlot)
+        try await api.reportExternalAgentSession(sessionId: "external", generation: 3, report: AgentSessionReport(status: "idle", messages: []))
+        let requests = StubURLProtocol.recorded.map(\.request)
+        XCTAssertEqual(requests[0].value(forHTTPHeaderField: "X-MissionGo-External-Sessions"), "1")
+        XCTAssertEqual(requests[0].value(forHTTPHeaderField: "X-MissionGo-External-Worker"), requests[1].value(forHTTPHeaderField: "X-MissionGo-External-Worker"))
+        XCTAssertEqual(requests[1].value(forHTTPHeaderField: "X-MissionGo-External-Generation"), "3")
+        XCTAssertNotEqual(api.externalWorkerId, client().externalWorkerId)
+    }
+
     func testSnapshotUploadStaysPlainWhenSmall() async throws {
         StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
         let report = AgentSessionReport(status: "idle", messages: [])

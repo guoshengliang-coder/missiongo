@@ -162,7 +162,11 @@ export function replyBlockedLabelKey(reason: AgentSessionReplyBlockedReason | un
   | "agentNodeRevokedReadOnly"
   | "agentSessionOperateReadOnly"
   | "agentSessionReadOnly"
+  | "agentSessionExternalReadOnly"
+  | "agentExternalNativeUnavailable"
   | "agentSessionUnavailableReadOnly" {
+  if (reason === "external_progress_only") return "agentSessionExternalReadOnly";
+  if (reason === "external_native_unavailable") return "agentExternalNativeUnavailable";
   if (reason === "work_finished") return "agentSessionWorkFinishedReadOnly";
   if (reason === "archived") return "agentSessionArchivedReadOnly";
   if (reason === "source_archived") return "agentSessionSourceArchivedReadOnly";
@@ -598,10 +602,12 @@ export function withSessionReplyDraft(
 
 export function messageLabelKey(
   role: AgentSessionMessage["role"],
-  agentKind: AgentKind = "codex",
-): "agentSessionPlan" | "agentSessionCodex" | "agentClaudeCode" | "agentOpenCode" | null {
+  agentKind: AgentKind | "other" = "codex",
+): "agentSessionPlan" | "agentSessionCodex" | "agentClaudeCode" | "agentOpenCode" | "agentHermes" | "agentExternalOther" | null {
   if (role === "user") return null;
   if (role === "plan") return "agentSessionPlan";
+  if (agentKind === "hermes") return "agentHermes";
+  if (agentKind === "other") return "agentExternalOther";
   return agentKind === "claude_code" ? "agentClaudeCode" : agentKind === "opencode" ? "agentOpenCode" : "agentSessionCodex";
 }
 
@@ -626,4 +632,10 @@ export function approvalNeedsAction(approval: AgentApproval | undefined): boolea
   if (!approval) return false;
   if (approval.kind === "manual") return approval.status === "pending" && !approval.decision;
   return approval.status === "denied" && (!approval.retryId || approval.retryStatus === "failed");
+}
+
+export function externalProgressLabelKey(session: Pick<AgentSessionSummary, "status" | "progressStatus">) {
+  if (session.status === "unavailable") return "agentExternalStale" as const;
+  return ({ working: "agentExternalWorking", waiting_for_input: "agentExternalWaiting", blocked: "agentExternalBlocked",
+    completed: "agentExternalCompleted", failed: "agentExternalFailed" } as const)[session.progressStatus ?? "working"];
 }

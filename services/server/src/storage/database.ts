@@ -1739,6 +1739,64 @@ export class MissionGoDatabase {
           .run(202610020245, new Date().toISOString());
       });
     }
+    // External progress records have their own lifecycle and no node/dispatch ownership.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610090518").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE external_agent_sessions (
+            id TEXT PRIMARY KEY, account_id TEXT NOT NULL, client_id TEXT NOT NULL,
+            agent_kind TEXT NOT NULL CHECK (agent_kind IN ('codex','claude_code','opencode','hermes','other')),
+            session_ref TEXT NOT NULL, ref_kind TEXT NOT NULL CHECK (ref_kind IN ('native','tracking')),
+            name TEXT, progress_status TEXT NOT NULL CHECK (progress_status IN ('working','waiting_for_input','blocked','completed','failed')),
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, activity_at TEXT NOT NULL,
+            archived_at TEXT, unread_at TEXT, read_at TEXT, dismissed_revision TEXT,
+            UNIQUE(account_id, client_id, agent_kind, session_ref)
+          ) STRICT;
+          CREATE TABLE external_agent_session_items (
+            session_id TEXT NOT NULL REFERENCES external_agent_sessions(id) ON DELETE CASCADE,
+            item_id TEXT NOT NULL REFERENCES work_items(id), PRIMARY KEY(session_id, item_id)
+          ) STRICT;
+          CREATE TABLE external_agent_session_reports (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES external_agent_sessions(id) ON DELETE CASCADE,
+            item_key TEXT NOT NULL, status TEXT NOT NULL, text TEXT, idempotency_key TEXT NOT NULL,
+            digest TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id, idempotency_key)
+          ) STRICT;
+          CREATE TABLE mcp_agent_claim_receipts (
+            account_id TEXT NOT NULL, client_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+            digest TEXT NOT NULL, result_json TEXT NOT NULL CHECK (json_valid(result_json)),
+            PRIMARY KEY(account_id, client_id, idempotency_key)
+          ) STRICT;
+          CREATE INDEX idx_external_sessions_account_activity ON external_agent_sessions(account_id, activity_at DESC);
+          CREATE INDEX idx_external_reports_session ON external_agent_session_reports(session_id, created_at);
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+          .run(202610090518, new Date().toISOString());
+      });
+    }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610090634").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          ALTER TABLE external_agent_sessions ADD COLUMN native_node_id TEXT REFERENCES nodes(id);
+          ALTER TABLE external_agent_sessions ADD COLUMN native_generation INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE external_agent_sessions ADD COLUMN native_snapshot_json TEXT;
+          ALTER TABLE external_agent_sessions ADD COLUMN native_synced_at TEXT;
+          CREATE UNIQUE INDEX idx_external_native_identity
+            ON external_agent_sessions(native_node_id, agent_kind, session_ref) WHERE native_node_id IS NOT NULL;
+          CREATE TABLE external_native_messages (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES external_agent_sessions(id) ON DELETE CASCADE,
+            source_id TEXT NOT NULL, payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+            position INTEGER NOT NULL, UNIQUE(session_id, source_id)
+          ) STRICT;
+          CREATE TABLE external_native_commands (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES external_agent_sessions(id) ON DELETE CASCADE,
+            text TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('queued','delivering','delivery_unknown','delivered','failed','cancelled')),
+            created_at TEXT NOT NULL, delivering_at TEXT, delivered_at TEXT, cancelled_at TEXT, error TEXT, worker_id TEXT
+          ) STRICT;
+          CREATE INDEX idx_external_native_commands ON external_native_commands(session_id, created_at);
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(202610090634, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

@@ -1,0 +1,9 @@
+{
+  "pullRequest": 246,
+  "items": [
+    {
+      "key": "PR-246",
+      "title": "同步外部 Agent 会话并支持 Web 文字回复；Claude Code 桥接保留第三方模型配置"
+    }
+  ]
+}

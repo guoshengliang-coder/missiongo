@@ -481,6 +481,8 @@ export const api = {
   revokeSdkToken: (tokenId: string) =>
     request<SdkToken>(`/api/v1/sdk-tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" }),
   listNodes: () => request<{ nodes: DispatchNode[] }>("/api/v1/nodes"),
+  connectExternalSession: (sessionId: string, nodeId: string) => request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/native-connection`, { method: "PUT", body: JSON.stringify({ nodeId }) }),
+  disconnectExternalSession: (sessionId: string) => request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/native-connection`, { method: "DELETE" }),
   // Null clears it, so the machine goes back to its device name. The server
   // still reads `name` for pages loaded before nicknames, but this is the field.
   setNodeNickname: (nodeId: string, nickname: string | null) =>
@@ -562,6 +564,8 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(change),
     }),
+  markAgentSessionRead: (sessionId: string, through: string) =>
+    request<void>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/read`, { method: "POST", body: JSON.stringify({ through }) }),
   markDispatchRead: (dispatchId: string, through: string) =>
     request<void>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/read`, {
       method: "POST",

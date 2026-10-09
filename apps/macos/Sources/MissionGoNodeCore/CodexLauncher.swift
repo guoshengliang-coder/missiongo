@@ -573,6 +573,9 @@ public struct CodexLauncher: AgentAdapter {
     }
 
     private func readSnapshot(_ session: NodeAgentSession) async throws -> CodexThreadSnapshot {
+        if session.externalBindingGeneration != nil {
+            return try await control.readExternalThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        }
         if session.managedExecution != nil {
             return try await control.readManagedThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
         }
@@ -884,9 +887,7 @@ public struct CodexLauncher: AgentAdapter {
         // the delivery confirmation. The status keeps its contracts — a send
         // means the turn has begun, a steer keeps the active turn it joined —
         // because a re-read racing the turn's own start would say idle.
-        let deliveredMessages = ((try? await control.readThread(
-            socketPath: location.controlSocketPath, threadId: session.sessionRef
-        ))?.messages) ?? snapshot.messages
+        let deliveredMessages = ((try? await readSnapshot(session))?.messages) ?? snapshot.messages
         return AgentSessionReport(
             status: "active",
             messages: deliveredMessages,

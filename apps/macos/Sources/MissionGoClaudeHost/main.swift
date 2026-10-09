@@ -83,6 +83,8 @@ private func run(configPath: String) throws {
         throw HostFailure.invalidSettings(problem)
     }
 
+    if config.externalArguments != nil { _ = umask(0o077) }
+
     // MissionGo terminates the whole group on startup timeout or when all work
     // items reach verification/done. Claude and its test/build descendants
     // inherit this group, so no orphan survives the host.
@@ -90,8 +92,13 @@ private func run(configPath: String) throws {
 
     let log = try openLog(config.logPath)
     defer { try? log.close() }
-    let previous = try? ClaudeHostFiles.readState(config.statePath)
-    let resuming = previous?.status == "suspended"
+    let external = config.externalArguments != nil
+    let externalLease = external ? try ClaudeExternalBridge.Lease(directory: URL(fileURLWithPath: config.statePath).deletingLastPathComponent().path) : nil
+    defer { withExtendedLifetime(externalLease) {} }
+    let loaded = try? ClaudeHostFiles.readState(config.statePath)
+    let previous = external ? loaded.map(ClaudeExternalBridge.uncertainWrites) : loaded
+    let resuming = external ? config.externalResume == true : previous?.status == "suspended"
+    if resuming && previous == nil { throw LaunchError("恢复缺少本地会话状态，未启动新的会话。") }
     var snapshot = resuming
         ? ClaudeStreamSnapshot(resuming: previous!, hostPid: getpid())
         : ClaudeStreamSnapshot(sessionRef: config.sessionRef, hostPid: getpid())
@@ -102,7 +109,7 @@ private func run(configPath: String) throws {
     let output = Pipe()
     let process = Process()
     process.executableURL = URL(fileURLWithPath: config.claudeExecutable)
-    process.arguments = ClaudeHostArguments.claude(
+    process.arguments = external ? try ClaudeExternalBridge.arguments(config: config) : ClaudeHostArguments.claude(
         mode: config.mode,
         sessionName: config.sessionName,
         sessionRef: config.sessionRef,
@@ -113,11 +120,14 @@ private func run(configPath: String) throws {
     process.currentDirectoryURL = URL(fileURLWithPath: config.cwd, isDirectory: true)
     var environment = ProcessInfo.processInfo.environment
     environment["CLAUDE_CODE_ENTRYPOINT"] = "sdk-ts"
+    if external { environment["MISSIONGO_AGENT_SESSION_REF"] = config.sessionRef }
     process.environment = ClaudeProcessEnvironment.unattended(environment)
     process.standardInput = input
     process.standardOutput = output
-    process.standardError = log
+    process.standardError = external ? FileHandle.nullDevice : log
     try process.run()
+    if external { snapshot.recordExternalChild(process.processIdentifier) }
+    try ClaudeHostFiles.write(snapshot.state, to: config.statePath)
 
     let readDescriptor = output.fileHandleForReading.fileDescriptor
     let currentFlags = fcntl(readDescriptor, F_GETFL)
@@ -126,6 +136,8 @@ private func run(configPath: String) throws {
     var buffer = Data()
     let initializeRequestId = UUID().uuidString
     var remoteRequestId: String?
+    var nativeIdentityConfirmed = !external
+    let initializeDeadline = Date().addingTimeInterval(60)
     var controlReady = false
     var promptSent = false
     var promptId: String?
@@ -156,7 +168,8 @@ private func run(configPath: String) throws {
 
     func showNextPermission() {
         if let next = permissions.head {
-            snapshot.showPermissionRequest(next)
+            if external { snapshot.showExternalPermissionRequest(next) }
+            else { snapshot.showPermissionRequest(next) }
         } else {
             snapshot.setWaitingForInput(false)
         }
@@ -164,7 +177,7 @@ private func run(configPath: String) throws {
 
     func startWork() throws {
         controlReady = true
-        if resuming {
+        if resuming && !external {
             snapshot.markIdle()
             snapshot.confirmLaunch()
         } else {
@@ -177,12 +190,28 @@ private func run(configPath: String) throws {
     }
 
     func handleEvent(_ event: [String: Any]) throws {
+        guard shouldContinue else { return }
+        if external, event["type"] as? String == "system", event["subtype"] as? String == "init" {
+            guard let ref = event["session_id"] as? String,
+                  (try? ClaudeExternalBridge.normalizedRef(ref)) == config.sessionRef else {
+                snapshot.fail("CLI 返回的原生会话 ID 不匹配，桥接已停止。")
+                persist()
+                shouldContinue = false
+                return
+            }
+            nativeIdentityConfirmed = true
+        }
+        if external, event["type"] as? String == "user", let id = event["uuid"] as? String,
+           snapshot.state.commandResults[id]?.status == "delivering" {
+            snapshot.commandFinished(id: id, status: "delivered")
+        }
         if let request = ClaudePermissionRequest(event: event) {
             // Every approval Claude Code asks for waits here for a person;
             // none is answered on their behalf.
             permissions.enqueue(request)
             if permissions.head?.requestId == request.requestId {
-                snapshot.showPermissionRequest(request)
+                if external { snapshot.showExternalPermissionRequest(request) }
+                else { snapshot.showPermissionRequest(request) }
             }
             snapshot.setWaitingForInput(true)
             persist()
@@ -213,6 +242,11 @@ private func run(configPath: String) throws {
                     try? ClaudeModelCatalog.save(options, to: path)
                 }
                 let body = response["response"] as? [String: Any] ?? [:]
+                if external {
+                    snapshot.setMissionGoControl()
+                    try startWork()
+                    return
+                }
                 if body["remote_control_available"] as? Bool == false {
                     snapshot.setMissionGoControl()
                     try startWork()
@@ -268,7 +302,7 @@ private func run(configPath: String) throws {
         }
 
         snapshot.consume(event)
-        if promptSent,
+        if promptSent, nativeIdentityConfirmed,
            (event["type"] as? String == "system" && event["subtype"] as? String == "init"
             || event["type"] as? String == "user" && event["uuid"] as? String == promptId) {
             snapshot.confirmLaunch()
@@ -278,8 +312,9 @@ private func run(configPath: String) throws {
     }
 
     func handleCommands() throws {
-        guard controlReady else { return }
+        guard controlReady, shouldContinue else { return }
         for path in commandFiles(in: config.commandsDirectory) {
+            guard shouldContinue else { break }
             let command: ClaudeHostCommand
             do {
                 command = try JSONDecoder().decode(ClaudeHostCommand.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
@@ -288,6 +323,67 @@ private func run(configPath: String) throws {
                 continue
             }
             if snapshot.state.commandResults[command.id] != nil {
+                try? FileManager.default.removeItem(atPath: path)
+                continue
+            }
+            if external && command.webReply == true,
+               (command.expiresAt == nil || command.expiresAt! < Date() || snapshot.state.turnActive && !snapshot.state.waitingForInput) {
+                snapshot.commandFinished(id: command.id, status: "failed", error: "回复尚未写入 CLI，但会话状态已变化或本机交付已过期；未发送，请核实后重新发起。")
+                persist()
+                try? FileManager.default.removeItem(atPath: path)
+                continue
+            }
+            if external && command.kind == "delivery_resolution" {
+                if let target = command.permissionRequestId, let result = snapshot.state.commandResults[target],
+                   ["delivering", "delivery_unknown"].contains(result.status), ["received", "not_received"].contains(command.text) {
+                    snapshot.commandFinished(id: target, status: command.text == "received" ? "delivered" : "failed", error: command.text == "not_received" ? "用户在本机确认未收到；不会重发。" : nil)
+                    snapshot.commandFinished(id: command.id, status: "delivered")
+                } else {
+                    snapshot.commandFinished(id: command.id, status: "failed", error: "仅能确认已有的未决交付；不会重发。")
+                }
+                persist()
+                try? FileManager.default.removeItem(atPath: path)
+                continue
+            }
+            if external && command.kind == "release" {
+                if snapshot.state.turnActive || snapshot.state.waitingForInput || commandFiles(in: config.commandsDirectory).contains(where: { $0 != path }) || snapshot.state.commandResults.values.contains(where: { ["delivering", "delivery_unknown"].contains($0.status) }) {
+                    snapshot.commandFinished(id: command.id, status: "failed", error: "请等待当前回合、审批与交付完成后再移交回 CLI。")
+                } else {
+                    snapshot.commandFinished(id: command.id, status: "delivered")
+                    snapshot.markSuspended()
+                    shouldContinue = false
+                }
+                persist()
+                try? FileManager.default.removeItem(atPath: path)
+                continue
+            }
+            if external && command.kind == "settings" {
+                snapshot.commandFinished(id: command.id, status: "failed", error: "外部会话保留本机配置，不支持 Web 改模型或权限模式。")
+                persist()
+                try? FileManager.default.removeItem(atPath: path)
+                continue
+            }
+            if external && command.kind == "message" && !permissions.isEmpty {
+                snapshot.commandFinished(id: command.id, status: "failed", error: "此会话有待回答的权限或提问请求，请在本机桥接终端用 /answer 加请求 ID 明确回答。")
+                persist()
+                try? FileManager.default.removeItem(atPath: path)
+                continue
+            }
+            if external && command.kind == "message" && snapshot.state.turnActive { continue }
+            if external && command.kind == "permission_response" {
+                guard let head = permissions.head, head.requestId == command.permissionRequestId,
+                      let answered = permissions.answerHead(command.text) else {
+                    snapshot.commandFinished(id: command.id, status: "failed", error: "请求已变化，未发送审批答案。")
+                    persist()
+                    try? FileManager.default.removeItem(atPath: path)
+                    continue
+                }
+                try write(controlResponse(id: answered.requestId, result: answered.result), to: writer)
+                snapshot.recordUserMessage(id: command.id, text: command.text, occurredAt: command.createdAt)
+                snapshot.markPermissionAnswered(requestId: answered.requestId, answer: command.text)
+                snapshot.commandFinished(id: command.id, status: "delivered")
+                showNextPermission()
+                persist()
                 try? FileManager.default.removeItem(atPath: path)
                 continue
             }
@@ -327,9 +423,13 @@ private func run(configPath: String) throws {
                     snapshot.markPermissionAnswered(requestId: answered.requestId, answer: command.text)
                 } else {
                     snapshot.makeUserMessageVisible(id: command.id)
+                    if external {
+                        snapshot.commandFinished(id: command.id, status: "delivering")
+                        persist()
+                    }
                     try write(userMessage(id: command.id, text: command.text), to: writer)
                 }
-                snapshot.commandFinished(id: command.id, status: "delivered")
+                if !external { snapshot.commandFinished(id: command.id, status: "delivered") }
                 snapshot.markActive()
                 // A parallel tool call may still be waiting; the session then
                 // stays in "waiting for input" rather than "active".
@@ -342,11 +442,17 @@ private func run(configPath: String) throws {
     }
 
     while shouldContinue && process.isRunning {
+        if external && !controlReady && Date() > initializeDeadline {
+            snapshot.fail("CLI 控制协议初始化超时；未尝试官方 Remote Control 或其它模型。")
+            shouldContinue = false
+            persist()
+            break
+        }
         var bytes = [UInt8](repeating: 0, count: 64 * 1024)
         let count = Darwin.read(readDescriptor, &bytes, bytes.count)
         if count > 0 {
             let data = Data(bytes.prefix(count))
-            appendLog(data, handle: log)
+            if !external { appendLog(data, handle: log) }
             snapshot.noteProgress()
             buffer.append(data)
             while let newline = buffer.firstIndex(of: 0x0a) {
@@ -355,7 +461,7 @@ private func run(configPath: String) throws {
                 guard !line.isEmpty,
                       let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any]
                 else { continue }
-                try handleEvent(object)
+                try handleEvent(external ? ClaudeExternalBridge.redact(object, environment: environment) : object)
             }
         } else if count < 0 && errno != EAGAIN && errno != EWOULDBLOCK {
             break
@@ -363,7 +469,7 @@ private func run(configPath: String) throws {
         try handleCommands()
         let now = Date()
         snapshot.ensureIdleClock(at: now)
-        if ClaudeRuntimePolicy.shouldSuspend(state: snapshot.state, now: now, timeout: config.idleTimeoutSeconds) {
+        if !external && ClaudeRuntimePolicy.shouldSuspend(state: snapshot.state, now: now, timeout: config.idleTimeoutSeconds) {
             snapshot.markSuspended()
             persist()
             shouldContinue = false
@@ -415,7 +521,7 @@ private func run(configPath: String) throws {
     process.waitUntilExit()
     _ = signal(SIGTERM, SIG_DFL)
     if !snapshot.state.launchReady && snapshot.state.status != "failed" {
-        snapshot.fail("Claude Code 在接收派单提示词前退出（code=\(process.terminationStatus)）。")
+        snapshot.fail(external ? "Claude Code 控制通道未就绪（code=\(process.terminationStatus)），请核对本机 CLI 协议或第三方配置。" : "Claude Code 在接收派单提示词前退出（code=\(process.terminationStatus)）。")
     } else if snapshot.state.status == "active" || snapshot.state.status == "stalled" {
         snapshot.markUnavailable("Claude Code 宿主已退出（code=\(process.terminationStatus)）。")
     }

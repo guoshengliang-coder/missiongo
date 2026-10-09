@@ -605,6 +605,34 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(input?.first?["text"] as? String, "Focus on the failing test")
     }
 
+    func testExternalThreadReadUsesOnlyTheExactIdWithoutListingOtherConversations() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"], let method = message["method"] as? String else { return [] }
+            let result: [String: Any] = method == "thread/read"
+                ? ["thread": ["id": "external-exact", "status": ["type": "idle"], "turns": []]] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
+        }
+        let snapshot = try await CodexAppServerControl(timeout: 5).readExternalThread(socketPath: server.path, threadId: "external-exact")
+        server.waitUntilDone()
+        XCTAssertEqual(snapshot.status, "idle")
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read"])
+        XCTAssertEqual(server.params(of: "thread/read")?["threadId"] as? String, "external-exact")
+    }
+
+    func testExternalThreadReadRejectsAResponseForAnotherNativeConversation() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"], let method = message["method"] as? String else { return [] }
+            let result: [String: Any] = method == "thread/read" ? ["thread": ["id": "another-thread", "turns": []]] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
+        }
+        do {
+            _ = try await CodexAppServerControl(timeout: 5).readExternalThread(socketPath: server.path, threadId: "external-exact")
+            XCTFail("A response for another conversation must not open a native connection")
+        } catch { XCTAssertEqual(error as? CodexControlError, .invalidResponse(method: "thread/read identity")) }
+        server.waitUntilDone()
+        XCTAssertFalse(server.methods.contains("thread/list"))
+    }
+
     func testDetectsAnArchivedThreadWithoutTryingToReadItAsActive() async throws {
         let server = try FakeAppServer { message in
             guard let id = message["id"], let method = message["method"] as? String else { return [] }

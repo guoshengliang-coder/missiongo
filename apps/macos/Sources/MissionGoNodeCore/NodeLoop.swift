@@ -13,6 +13,7 @@ public protocol NodeAPI: Sendable {
     func listAgentSessions() async throws -> [NodeAgentSession]
     func downloadAgentSessionAttachment(sessionId: String, attachmentId: String) async throws -> Data
     func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws
+    func reportExternalAgentSession(sessionId: String, generation: Int, report: AgentSessionReport) async throws
 }
 
 public extension NodeAPI {
@@ -25,6 +26,9 @@ public extension NodeAPI {
         throw CocoaError(.fileNoSuchFile)
     }
     func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {}
+    func reportExternalAgentSession(sessionId: String, generation: Int, report: AgentSessionReport) async throws {
+        throw LaunchError("External native sessions require an updated node API.")
+    }
 }
 
 extension APIClient: NodeAPI {}
@@ -594,7 +598,10 @@ public final class NodeLoop: @unchecked Sendable {
         // all; uploading it unconditionally errs on the side of
         // the server hearing about the session.
         let fingerprint = Self.fingerprint(of: report)
-        if let fingerprint, reported.current[session.id] == fingerprint { return }
+        // A reconnect clears the server snapshot even when the native transcript
+        // is unchanged. Its new generation must receive its own first report.
+        let reportKey = session.externalBindingGeneration.map { "\(session.id):external:\($0)" } ?? session.id
+        if let fingerprint, reported.current[reportKey] == fingerprint { return }
         // Codex and OpenCode both hand the reply to the agent before this
         // upload confirms it: a lost HTTP response must not turn into a second
         // delivery on the next poll. Codex answers with clientUserMessageId
@@ -608,7 +615,11 @@ public final class NodeLoop: @unchecked Sendable {
             awaitingReport.withLock { $0[session.id] = (commandId, report) }
         }
         do {
-            try await self.api.reportAgentSession(sessionId: session.id, report: report)
+            if let generation = session.externalBindingGeneration {
+                try await self.api.reportExternalAgentSession(sessionId: session.id, generation: generation, report: report)
+            } else {
+                try await self.api.reportAgentSession(sessionId: session.id, report: report)
+            }
             self.noteSuccess("同步 Agent 会话 \(session.id) 出错")
             _ = rejectedUntil.withLock { $0.removeValue(forKey: session.id) }
         } catch {
@@ -626,7 +637,7 @@ public final class NodeLoop: @unchecked Sendable {
         // Keep the result until a node poll no longer offers
         // this command. Even after a 204, a stale poll must
         // not call Codex a second time.
-        if let fingerprint { reported.withLock { $0[session.id] = fingerprint } }
+        if let fingerprint { reported.withLock { $0[reportKey] = fingerprint } }
     }
 
     func prepareAttachments(_ session: NodeAgentSession) async throws -> NodeAgentSession {

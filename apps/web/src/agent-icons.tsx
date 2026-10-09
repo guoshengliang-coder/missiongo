@@ -22,8 +22,8 @@ const AGENT_ICON_PATHS: Partial<Record<AgentKind, string>> = {
   opencode: "M22 24H2V0h20zM17 4.8H7v14.4h10z",
 };
 
-export function AgentIcon({ kind, size = 17 }: { kind: AgentKind; size?: number }) {
-  const path = AGENT_ICON_PATHS[kind];
+export function AgentIcon({ kind, size = 17 }: { kind: AgentKind | "other"; size?: number }) {
+  const path = kind === "other" ? undefined : AGENT_ICON_PATHS[kind];
   if (!path) return <Bot size={size} aria-hidden="true" />;
   return (
     <svg
