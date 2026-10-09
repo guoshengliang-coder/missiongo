@@ -98,7 +98,7 @@ describe("Commenting over MCP", () => {
     const credentialsAt = app.missionGoAccounts.credentialsStamp(app.missionGoAccounts.getAccount(adminAccount.id));
     const readToken = createAiAccessToken(adminAccount, aiUser, credentialsAt, "read-client", ["missiongo:read"]).token;
     const writeToken = createAiAccessToken(adminAccount, aiUser, credentialsAt, "write-client", ["missiongo:read", "missiongo:write"]).token;
-    return { app, call, readToken, writeToken, productId: product.id };
+    return { app, call, readToken, writeToken, productId: product.id, adminAccount };
   }
 
   it("writes a comment for a client the user granted writing to", async () => {
@@ -322,7 +322,7 @@ describe("Commenting over MCP", () => {
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
       capabilities: {
-        writeTools: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment"],
+        writeTools: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
         canComment: true,
         canCreateItems: true,
       },
@@ -906,6 +906,137 @@ describe("Commenting over MCP", () => {
     });
     expect(JSON.stringify(again)).toMatch(/Only a ready work item can be claimed/);
   });
+  it("shows external claims and explicitly linked comments in the read-only Agent console", async () => {
+    const { app, call, writeToken } = await commentingApp();
+    const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: "mission-owner", password: "correct horse" } });
+    const headers = { cookie: login.headers["set-cookie"]!.split(";", 1)[0]! };
+    await app.inject({ method: "POST", url: "/api/v1/items/HG-1/transitions", headers, payload: { to: "ready", reason: "triaged" } });
+    const args = { itemKey: "HG-1", agentId: "codex", idempotencyKey: "external-claim",
+      session: { agentKind: "codex", sessionRef: "trusted-native-thread", refKind: "native", name: "Fix launch" } };
+    const claim = await call(writeToken, 1, "tools/call", { name: "claim_item", arguments: args });
+    const sessionId = (claim.result!.structuredContent as { sessionId: string }).sessionId;
+    expect(sessionId).toBeTruthy();
+    await call(writeToken, 2, "tools/call", { name: "claim_item", arguments: args });
+    const changedIdentity = await call(writeToken, 20, "tools/call", { name: "claim_item", arguments: {
+      ...args, session: { ...args.session, sessionRef: "different-thread" } } });
+    expect(JSON.stringify(changedIdentity)).toContain("different conversation");
+    const commentArgs = { itemKey: "HG-1", sessionId, text: "Added the fix", summary: "Fix verified locally", idempotencyKey: "external-comment" };
+    await call(writeToken, 3, "tools/call", { name: "append_comment", arguments: commentArgs });
+    await call(writeToken, 4, "tools/call", { name: "append_comment", arguments: commentArgs });
+    await call(writeToken, 5, "tools/call", { name: "report_agent_session", arguments: {
+      sessionId, itemKey: "HG-1", status: "completed", text: "This handling session ended; awaiting merge", idempotencyKey: "external-finish" } });
+    const listed = (await app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers })).json().sessions;
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ id: sessionId, source: "external", progressStatus: "completed", status: "idle",
+      canReply: false, canRetry: false, canStop: false, canArchive: true, unread: true, replyBlockedReason: "external_progress_only" });
+    expect(listed[0].dispatchId).toBeUndefined();
+    expect(listed[0].nodeConnectionState).toBeUndefined();
+    const detail = (await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers })).json();
+    expect(detail.messages).toHaveLength(3);
+    expect(detail.messages[1].text).toContain("Fix verified locally");
+    expect(detail).toMatchObject({ canReply: false, canAttach: false, canResolveDelivery: false });
+    expect(app.missionGoStore.getWorkItem("HG-1").status).toBe("in_progress");
+    for (const [path, payload] of [["commands", { text: "Do not execute" }], ["settings", { mode: "auto" }]] as const) {
+      const rejected = await app.inject({ method: path === "settings" ? "PATCH" : "POST", url: `/api/v1/agent-sessions/${sessionId}/${path}`, headers, payload });
+      expect(rejected.statusCode).toBe(404);
+    }
+    expect((await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/read`, headers, payload: { through: listed[0].unreadAt } })).statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers })).json().sessions[0].unread).toBe(false);
+    expect((await app.inject({ method: "PATCH", url: `/api/v1/agent-sessions/${sessionId}`, headers, payload: { archived: true } })).statusCode).toBe(200);
+    expect(app.missionGoStore.getWorkItem("HG-1").status).toBe("in_progress");
+  });
+
+  it("keeps a claim from a validated Web dispatch out of external records", async () => {
+    const { app, call, writeToken, adminAccount } = await commentingApp();
+    app.missionGoStore.transitionWorkItem({ itemKey: "HG-1", to: "ready", reason: "triaged", actor: "human" });
+    const missing = await call(writeToken, 1, "tools/call", { name: "claim_item", arguments: {
+      itemKey: "HG-1", agentId: "codex", dispatchId: "missing", idempotencyKey: "dispatch-claim" } });
+    expect(JSON.stringify(missing)).toContain("Dispatch not found");
+    expect(app.missionGoStore.getWorkItem("HG-1").status).toBe("ready");
+    const db = app.missionGoStore.database.connection;
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,created_at,updated_at)
+      VALUES ('test-node',?,'installation','Test node','synthetic','[]',?,?)`).run(adminAccount.id, now, now);
+    db.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+      VALUES ('web-dispatch',?,'test-node','codex','default','launched','/synthetic/repo',?)`).run(adminAccount.id, now);
+    db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('web-dispatch',?,0)")
+      .run(app.missionGoStore.getWorkItem("HG-1").id);
+    const claimed = await call(writeToken, 2, "tools/call", { name: "claim_item", arguments: {
+      itemKey: "HG-1", agentId: "codex", dispatchId: "web-dispatch", idempotencyKey: "dispatch-claim" } });
+    expect(claimed.result!.structuredContent).toMatchObject({ item: { status: "in_progress" } });
+    expect((claimed.result!.structuredContent as { sessionId?: string }).sessionId).toBeUndefined();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({ n: 0 });
+  });
+
+  it("creates a legacy tracking record once and rejects unclaimed registration without partial records", async () => {
+    const { app, call, readToken, writeToken } = await commentingApp();
+    const session = { agentKind: "claude_code", sessionRef: "terminal-session", refKind: "native" };
+    const rejected = await call(writeToken, 1, "tools/call", { name: "register_agent_session", arguments: { itemKey: "HG-1", session } });
+    expect(JSON.stringify(rejected)).toContain("Claim the ready item");
+    const denied = await call(readToken, 2, "tools/call", { name: "register_agent_session", arguments: { itemKey: "HG-1", session } });
+    expect(JSON.stringify(denied)).toContain("does not include write access");
+    expect(app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({ n: 0 });
+    app.missionGoStore.transitionWorkItem({ itemKey: "HG-1", to: "ready", reason: "triaged", actor: "human" });
+    const args = { itemKey: "HG-1", agentId: "Claude Code", idempotencyKey: "legacy-claim" };
+    const claim = await call(writeToken, 3, "tools/call", { name: "claim_item", arguments: args });
+    const repeat = await call(writeToken, 4, "tools/call", { name: "claim_item", arguments: args });
+    expect(repeat.result!.structuredContent).toEqual(claim.result!.structuredContent);
+    const sessionId = (claim.result!.structuredContent as { sessionId: string }).sessionId;
+    expect(app.missionGoStore.database.connection.prepare("SELECT ref_kind, agent_kind FROM external_agent_sessions WHERE id = ?").get(sessionId))
+      .toMatchObject({ ref_kind: "tracking", agent_kind: "claude_code" });
+    const lost = await call(writeToken, 5, "tools/call", { name: "claim_item", arguments: { ...args, idempotencyKey: "another-claim" } });
+    expect(JSON.stringify(lost)).toContain("Only a ready work item");
+    expect(app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({ n: 1 });
+  });
+
+  it("refuses another OAuth client's reports and rolls back a comment with a wrong session", async () => {
+    const { app, call, writeToken, adminAccount } = await commentingApp();
+    app.missionGoStore.transitionWorkItem({ itemKey: "HG-1", to: "ready", reason: "triaged", actor: "human" });
+    const claim = await call(writeToken, 1, "tools/call", { name: "claim_item", arguments: { itemKey: "HG-1", agentId: "opencode", idempotencyKey: "claim" } });
+    const sessionId = (claim.result!.structuredContent as { sessionId: string }).sessionId;
+    const account = app.missionGoAccounts.getAccount(adminAccount.id);
+    const otherToken = createAiAccessToken(adminAccount, { id: account.id, username: account.email, role: account.role },
+      app.missionGoAccounts.credentialsStamp(account), "other-client", ["missiongo:read", "missiongo:write"]).token;
+    const stolenClaim = await call(otherToken, 10, "tools/call", { name: "claim_item", arguments: {
+      itemKey: "HG-1", agentId: "opencode", idempotencyKey: "claim" } });
+    expect(JSON.stringify(stolenClaim)).toContain("Only a ready work item");
+    expect(app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({ n: 1 });
+    const report = await call(otherToken, 2, "tools/call", { name: "report_agent_session", arguments: {
+      itemKey: "HG-1", sessionId, status: "failed", text: "Spoofed failure", idempotencyKey: "spoof" } });
+    expect(JSON.stringify(report)).toContain("not found");
+    const comment = await call(otherToken, 3, "tools/call", { name: "append_comment", arguments: {
+      itemKey: "HG-1", sessionId, text: "Wrong client", idempotencyKey: "bad-comment" } });
+    expect(JSON.stringify(comment)).toContain("not found");
+    expect(app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM work_item_comments").get()).toMatchObject({ n: 0 });
+  });
+
+  it("checks all linked products after permissions are revoked, for MCP updates and Web reads", async () => {
+    const { app, call, productId, adminAccount } = await commentingApp();
+    const other = app.missionGoStore.createProduct({ name: "Other", keyPrefix: "OT" });
+    const item = app.missionGoStore.createWorkItem({ productId: other.id, type: "task", priority: "normal", title: "Private title", description: "Private", environment: { platform: "web" } });
+    const member = app.missionGoAccounts.createAccount({ email: "worker@example.com", password: "worker-password-123", role: "member" });
+    const grants = [productId, other.id].map((productId) => ({ productId, canView: true, canOperate: true, canUseAi: true }));
+    app.missionGoAccounts.replacePermissions(member.id, grants);
+    const token = createAiAccessToken(adminAccount, { id: member.id, username: member.email, role: member.role },
+      app.missionGoAccounts.credentialsStamp(member), "member-client", ["missiongo:read", "missiongo:write"]).token;
+    const session = { agentKind: "codex", sessionRef: "multi-product-conversation", refKind: "tracking" };
+    let sessionId = "";
+    for (const [index, key] of ["HG-1", item.key].entries()) {
+      app.missionGoStore.transitionWorkItem({ itemKey: key, to: "ready", reason: "triaged", actor: "human" });
+      const claimed = await call(token, index + 1, "tools/call", { name: "claim_item", arguments: { itemKey: key, agentId: "codex", session, idempotencyKey: `claim:${key}` } });
+      sessionId = (claimed.result!.structuredContent as { sessionId: string }).sessionId;
+    }
+    const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: member.email, password: "worker-password-123" } });
+    const headers = { cookie: login.headers["set-cookie"]!.split(";", 1)[0]! };
+    expect((await app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers })).json().sessions).toHaveLength(1);
+    app.missionGoAccounts.replacePermissions(member.id, [grants[0]!]);
+    expect((await app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers })).json().sessions).toHaveLength(0);
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers })).statusCode).toBe(404);
+    const rejected = await call(token, 3, "tools/call", { name: "report_agent_session", arguments: { itemKey: "HG-1", sessionId, status: "failed", idempotencyKey: "revoked" } });
+    expect(JSON.stringify(rejected)).toContain("not permitted");
+    expect(app.missionGoStore.database.connection.prepare("SELECT progress_status FROM external_agent_sessions WHERE id = ?").get(sessionId)).toMatchObject({ progress_status: "working" });
+  });
+
 });
 
 describe("The consent screen", () => {

@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 完整读取条目、评论、领取、创建条目及上传附件，并在 PR 合并和发布核实后推进状态。不修改条目正文与字段，不删除条目，不决定验收。
-version: 5.17.0
+version: 5.18.0
 ---
 
 # MissionGo 条目读取与评论
@@ -215,7 +215,7 @@ frontmatter 中的 `version` 对比。
    不是你领的——领取被拒、或者时间线里的领取不是本会话做的——说明另有会话在处理，**不要改代码**：
    在对话里告诉用户后停下；派单发起的会话没有人在旁边，按上面「派单发起的会话」写评论后退出。
 3. **领取前把「将要领取 HG-8 并开始修改代码」告诉用户。** 这是状态变更，用户要知道。
-4. 调用 `claim_item`，带 `agentId`（标明是哪个 AI）和稳定的 `idempotencyKey`。
+4. 调用 `claim_item`，带 `agentId`（标明是哪个 AI）和稳定的 `idempotencyKey`。来自可信派单启动提示词的会话还应带该提示词给出的 `dispatchId`，沿用已有派单会话；外部主动处理的会话按「外部主动处理的会话与进展」提供 `session`，保存返回的 `sessionId`。
 5. 领取之后**必须写清楚结局**——完成、做不了、或需要用户补信息。都是评论，见「处理完成后回写」。不得领了就不说话。
 
 不需要租约：状态本身就是锁，只有待处理的条目能被领取。会话中途断掉，条目留在处理中等用户处理，这和其它离开处理中的路径一致。
@@ -256,6 +256,20 @@ frontmatter 中的 `version` 对比。
 
 **多条一起处理时各写各的。** 每条条目单独一条评论，不得把几条的结论合并写进其中一条，也不得在
 一条评论里讨论别的条目——需要关联时写明编号即可。
+
+### 外部主动处理的会话与进展
+
+用户在 Codex、Claude Code、OpenCode 或其他客户端里直接要求处理条目时，也要将这次处理关联到 Web Agent 控制台。
+只读查询、仅提及编号和未批准的计划不登记、不上报。这里上报的是处理记录，不是完整对话同步；不得声称 Web 已能接管或回复。
+
+- 先核对 `get_current_account.capabilities.writeTools`。只有提供 `register_agent_session`、`report_agent_session` 且本次连接可写时才使用；旧服务不支持时说明限制，不绕开权限。
+- 每个对话使用一份稳定 `session`：`agentKind` 是 `codex|claude_code|opencode|hermes|other`；`sessionRef` 是已从可信客户端取得的原生会话 ID，配 `refKind: "native"`。拿不到原生 ID 时为本次对话生成一个 UUID，配 `refKind: "tracking"`，不得编造原生 ID、用 Agent 名称代替、扫描其他聊天或按条目编号猜匹配。`name` 可填简短自述名称，不构成身份。
+- 待处理条目领取时将这份 `session` 传给 `claim_item`，保存返回的服务端 `sessionId`。同一对话处理多条用户指定的条目时复用同一份 `session`，合并为一条控制台记录。旧客户端不带 `session` 时服务端只生成每次领取的跟踪记录，不能保证跨条目合并。
+- 对已在处理中、开发完成或待验证的条目，只有本会话自己领取过或用户明确要求继续处理时，才调用 `register_agent_session` 关联这份 `session`，保存返回的 `sessionId`。登记不会领取条目，不得借此抢占其他会话的工作。
+- 为已关联条目调用 `append_comment` 时带 `sessionId`，服务端会在同一事务中把评论内容或摘要记入进展；未关联的评论不按客户端名称猜会话。仍按原有规则写条目评论，不能用会话上报替代结局回写。
+- 开始、重要进展、需要用户回复、遇到阻碍和本次处理结束时，调用 `report_agent_session`，带一个已关联的 `itemKey`、`sessionId`、简短事实 `text` 和稳定 `idempotencyKey`。状态分别用 `working`、`waiting_for_input`、`blocked`、`completed` 或 `failed`；重试复用原键。多条目会话只有整次处理结束才报 `completed`。
+- `completed` 仅表示这次会话的处理结束，不代表条目验收、PR 合并或发布。所有条目状态交接仍按下面规则核验。长时间未上报会显示“近期未上报”，不会自动释放条目或重新派单。
+- 用户仍在原客户端回复。仅上报这些用户指定条目的处理事实，不上传无关聊天、历史对话或客户端凭据。
 
 ### 处理完成后回写
 

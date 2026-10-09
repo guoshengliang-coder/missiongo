@@ -48,6 +48,7 @@ import {
   outgoingReply,
   outgoingReplyStatusKey,
   replyBlockedLabelKey,
+  externalProgressLabelKey,
   replyMirrorArrived,
   resolvedAgentSessionId,
   sessionCountsAsUnread,
@@ -154,6 +155,7 @@ function duration(seconds: number): string {
 }
 
 function nodeConnectionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>["t"]): string {
+  if (session.source === "external") return t("agentExternalSource");
   if (session.nodeRevoked) return t("agentNodeRevoked");
   if (session.nodeConnectionState === "offline") return t("agentNodeOffline");
   if (session.nodeConnectionState === "unstable") return t("agentNodeUnstable");
@@ -175,6 +177,7 @@ function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI1
 }
 
 function dispatchActivityLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>["t"]): string {
+  if (session.source === "external") return t("agentExternalSource");
   if (session.dispatchStatus === "queued") return t("agentConsoleDispatchQueued");
   if (session.dispatchStatus === "delivered" && session.status === "failed") return t("agentConsoleDispatchTimedOut");
   if (session.dispatchStatus === "delivered") return t("agentConsoleDispatchLaunching");
@@ -440,13 +443,13 @@ export function AgentSessionConsole({
     },
   });
   const retryDispatch = useMutation({
-    mutationFn: () => api.retryDispatch(selected!.dispatchId),
+    mutationFn: () => api.retryDispatch(selected!.dispatchId!),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
     },
   });
   const stopDispatch = useMutation({
-    mutationFn: () => api.stopDispatch(selected!.dispatchId),
+    mutationFn: () => api.stopDispatch(selected!.dispatchId!),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", selected?.agentSessionId] }),
@@ -457,7 +460,7 @@ export function AgentSessionConsole({
   const archiveSession = useMutation({
     mutationFn: async (archived: boolean) => {
       if (selected!.agentSessionId) await api.setAgentSessionArchived(selected!.agentSessionId, archived);
-      else await api.setDispatchArchived(selected!.dispatchId, archived);
+      else await api.setDispatchArchived(selected!.dispatchId!, archived);
     },
     onSuccess: async () => {
       const invalidations = [queryClient.invalidateQueries({ queryKey: ["agent-sessions"] })];
@@ -485,7 +488,7 @@ export function AgentSessionConsole({
           throw new Error(t("agentConsoleBulkArchiveUnavailable"));
         }
         if (session.agentSessionId) await api.setAgentSessionArchived(session.agentSessionId, true);
-        else await api.setDispatchArchived(session.dispatchId, true);
+        else await api.setDispatchArchived(session.dispatchId!, true);
         return sessionId;
       }));
       return results.map((result, index) => ({ sessionId: sessionIds[index]!, result }));
@@ -607,7 +610,7 @@ export function AgentSessionConsole({
   // (AND-236): Codex and OpenCode report turns too, so the copy must not say
   // "Claude Code" for them.
   const agentName = selected ? agentLabel(selected, t) : "";
-  const activityText = agentWaiting
+  const activityText = selected?.source === "external" ? t(externalProgressLabelKey(selected)) : agentWaiting
     ? t("agentSessionWaitingForInput", { agent: agentName })
     : claudeBackgroundOnly
       ? t("agentSessionWaitingBackground", { count: activities.length })
@@ -616,15 +619,15 @@ export function AgentSessionConsole({
         : t(activityLabelKey(sessionStatus, command?.status === "queued"), { agent: agentName });
 
   const markRead = useMutation({
-    mutationFn: ({ dispatchId, through }: { dispatchId: string; through: string }) =>
-      api.markDispatchRead(dispatchId, through),
+    mutationFn: ({ sessionId, dispatchId, through }: { id: string; sessionId?: string | undefined; dispatchId?: string | undefined; through: string }) =>
+      sessionId ? api.markAgentSessionRead(sessionId, through) : api.markDispatchRead(dispatchId!, through),
     // A mark-read that fails silently left the unread badge on forever with
     // nothing retrying it (AND-224); give the mutation its own retries.
     retry: 3,
     retryDelay: 2_000,
-    onMutate: ({ dispatchId, through }) => {
+    onMutate: ({ id, through }) => {
       queryClient.setQueryData<{ sessions: AgentSessionSummary[] }>(["agent-sessions"], (current) => current && {
-        sessions: current.sessions.map((session) => session.dispatchId === dispatchId && session.unreadAt === through
+        sessions: current.sessions.map((session) => session.id === id && session.unreadAt === through
           ? { ...session, unread: false }
           : session),
       });
@@ -636,12 +639,12 @@ export function AgentSessionConsole({
   const markReadRetry = markRead.isError && !markRead.isPending;
   useEffect(() => {
     if (!selected || selected.archivedAt || !shouldMarkRead(selected, openedSessionId === selected.id, documentVisible)) return;
-    markReadMutate({ dispatchId: selected.dispatchId, through: selected.unreadAt });
+    markReadMutate({ id: selected.id, sessionId: selected.agentSessionId, dispatchId: selected.dispatchId, through: selected.unreadAt });
     // Keyed on the unread clock, not the object: each poll returns a new one.
     // A failed attempt rejoins through the last dependency once the retries
     // run out, so the badge clears on a later poll instead of never.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.dispatchId, selectedUnreadAt, openedSessionId, documentVisible, markReadMutate, markReadRetry]);
+  }, [selected?.id, selectedUnreadAt, openedSessionId, documentVisible, markReadMutate, markReadRetry]);
 
   const scrollToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
     const messages = messagesRef.current;
@@ -896,7 +899,7 @@ export function AgentSessionConsole({
             // session blocked on a person reads as waiting, not as running.
             const rowWaiting = ["claude_code", "opencode"].includes(session.agentKind) && ["active", "idle"].includes(rowStatus)
               && session.command?.status !== "queued" && session.turnState?.waitingForInput === true;
-            const rowLabel = rowBackground ? t("agentSessionBackgroundStatus")
+            const rowLabel = session.source === "external" ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
               : rowWaiting ? t("agentSessionWaitingStatus") : statusLabel(rowStatus, t);
             return (
               <div
@@ -953,7 +956,7 @@ export function AgentSessionConsole({
                       <strong>{sessionTitle(session)}</strong>
                       <time>{formatAgentMessageTime(session.activityAt ?? session.updatedAt, locale)}</time>
                     </span>
-                    <small>{session.nodeName} · {agentLabel(session, t)}</small>
+                    <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
                     {attentionLabel(session, t) && (
                       <i className="agent-console-attention" title={session.attention.reason}>
                         {attentionLabel(session, t)}
@@ -989,10 +992,10 @@ export function AgentSessionConsole({
                   ))}</div>
                 </div>
               </div>
-              <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t("agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
+              <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : selected.source === "external" ? t(externalProgressLabelKey(selected)) : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t("agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
               <div className="agent-console-actions">
                 {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact mobile={touchDevice} />}
-                {selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
+                {selected.source !== "external" && selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
                   <span className="agent-session-muted" title={t("agentConsoleClaudeLocal")}>{t("agentConsoleClaudeLocalBadge")}</span>
                 )}
                 {selected.canRetry && (
@@ -1052,6 +1055,16 @@ export function AgentSessionConsole({
                   }
                 }}
               >
+                {selected.source === "external" && (
+                  <div className="agent-console-connection-banner" role="status">
+                    <CircleAlert size={17} />
+                    <div><strong>{t("agentExternalSource")}</strong>
+                      <span>{t("agentExternalDetail")}</span>
+                      {selected.refKind === "tracking" && <span>{t("agentExternalTracking")}</span>}
+                      {selected.lastReportedAt && <span>{t("agentExternalLastReport", { time: formatAgentMessageTime(selected.lastReportedAt, locale) })}</span>}
+                    </div>
+                  </div>
+                )}
                 {selected.archivedAt && (
                   <div className="agent-console-connection-banner archived" role="status">
                     <Archive size={17} />
@@ -1061,7 +1074,7 @@ export function AgentSessionConsole({
                     </div>
                   </div>
                 )}
-                {selected.nodeConnectionState !== "online" && (
+                {selected.source !== "external" && selected.nodeConnectionState !== "online" && (
                   <div className={`agent-console-connection-banner ${selected.nodeConnectionState}`} role="status">
                     {selected.nodeConnectionState === "offline" ? <WifiOff size={17} /> : <CircleAlert size={17} />}
                     <div>
@@ -1224,7 +1237,7 @@ export function AgentSessionConsole({
                     ))}</ul>
                   </section>
                 )}
-                {selected.agentKind === "codex" && sessionStatus === "failed" ? (
+                {selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed" ? (
                   <AgentSessionFailureNotice status={sessionStatus}
                     failure={sessionQuery.data ? sessionQuery.data.failure : selected.failure}
                     legacyError={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
@@ -1279,7 +1292,7 @@ export function AgentSessionConsole({
                   </section>
                 )}
                 {selected.agentSessionId && !sessionQuery.isLoading && !sessionQuery.isError
-                  && !(selected.agentKind === "codex" && sessionStatus === "failed") && (
+                  && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed") && (
                   <div className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
                     <SessionStatusIcon status={visualStatus} />
                     <span>{activityText}</span>
@@ -1361,7 +1374,7 @@ export function AgentSessionConsole({
                     : t("agentConsoleNoInlineReply")}
                 </p>
               )}
-              {(!selected.canReply || !selected.agentSessionId) && <AgentSessionQuickSettings session={selected} />}
+              {selected.source !== "external" && (!selected.canReply || !selected.agentSessionId) && <AgentSessionQuickSettings session={selected} />}
               {cancel.isError && <p className="inline-error">{localizedErrorText(cancel.error, t)}</p>}
             </footer>
           </>

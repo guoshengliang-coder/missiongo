@@ -412,7 +412,8 @@ export type AgentSessionReplyBlockedReason =
   | "source_archived"
   | "node_revoked"
   | "operate_permission"
-  | "ai_permission";
+  | "ai_permission"
+  | "external_progress_only";
 
 export interface AgentSessionQuestion {
   readonly header?: string;
@@ -491,9 +492,13 @@ export interface AgentSessionAttachment {
 
 export interface AgentSession {
   readonly managedExecution?: { id: string; runId: string; stageId: string; generation: number; role: string; state: string; stopRequested: boolean };
+  readonly source?: "dispatch" | "external";
+  readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
+  readonly lastReportedAt?: string;
+  readonly refKind?: "native" | "tracking";
   readonly id: string;
-  readonly dispatchId: string;
-  readonly agentKind: "codex" | "claude_code" | "opencode";
+  readonly dispatchId?: string;
+  readonly agentKind: AgentKind | "other";
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly failure?: CodexSessionFailure;
@@ -519,10 +524,14 @@ export interface AgentSession {
 }
 
 export interface AgentSessionSummary {
+  readonly source?: "dispatch" | "external";
+  readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
+  readonly lastReportedAt?: string;
+  readonly refKind?: "native" | "tracking";
   readonly id: string;
   readonly agentSessionId?: string;
-  readonly dispatchId: string;
-  readonly agentKind: AgentKind;
+  readonly dispatchId?: string;
+  readonly agentKind: AgentKind | "other";
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly failure?: CodexSessionFailure;
@@ -532,11 +541,11 @@ export interface AgentSessionSummary {
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
   readonly nodeName: string;
-  readonly nodeConnectionState: "online" | "unstable" | "offline";
+  readonly nodeConnectionState?: "online" | "unstable" | "offline";
   readonly nodeLastSeenAt?: string;
   readonly nodeRevoked: boolean;
   readonly mode: string;
-  readonly dispatchStatus: DispatchStatus;
+  readonly dispatchStatus: DispatchStatus | "external";
   readonly sessionName?: string;
   readonly sessionUrl?: string;
   readonly createdAt: string;
@@ -566,7 +575,7 @@ export interface AgentSessionSummary {
   readonly canRetry: boolean;
   readonly canStop: boolean;
   readonly canArchive: boolean;
-  readonly nodeId: string;
+  readonly nodeId?: string;
   readonly settings: AgentSessionSettings;
   /** Server-side, per account: something to look at arrived since this conversation was last opened. */
   readonly unread: boolean;

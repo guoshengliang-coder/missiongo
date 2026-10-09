@@ -93,9 +93,13 @@ export interface ManagedSessionBinding {
 }
 export interface AgentSessionSnapshot {
   readonly managedExecution?: ManagedSessionBinding;
+  readonly source?: "dispatch" | "external";
+  readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
+  readonly lastReportedAt?: string;
+  readonly refKind?: "native" | "tracking";
   readonly id: string;
-  readonly dispatchId: string;
-  readonly agentKind: "codex" | "claude_code" | "opencode";
+  readonly dispatchId?: string;
+  readonly agentKind: AgentKind | "other";
   readonly status: AgentSessionStatus;
   readonly lastError?: string;
   readonly failure?: CodexSessionFailure;
@@ -119,10 +123,14 @@ export interface AgentSessionSnapshot {
 
 export interface AgentSessionListItem {
   readonly managedExecution?: ManagedSessionBinding;
+  readonly source?: "dispatch" | "external";
+  readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
+  readonly lastReportedAt?: string;
+  readonly refKind?: "native" | "tracking";
   readonly id: string;
   readonly agentSessionId?: string;
-  readonly dispatchId: string;
-  readonly agentKind: AgentKind;
+  readonly dispatchId?: string;
+  readonly agentKind: AgentKind | "other";
   readonly status: AgentSessionStatus;
   readonly turnState?: AgentSessionTurnState;
   readonly lastError?: string;
@@ -131,9 +139,9 @@ export interface AgentSessionListItem {
   readonly activityAt: string;
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
-  readonly nodeId: string;
+  readonly nodeId?: string;
   readonly nodeName: string;
-  readonly nodeConnectionState: NodeConnectionState;
+  readonly nodeConnectionState?: NodeConnectionState;
   readonly nodeLastSeenAt?: string;
   readonly nodeRevoked: boolean;
   readonly mode: string;

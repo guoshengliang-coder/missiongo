@@ -55,6 +55,7 @@ import { AgentSessionAttachments, type AgentSessionAttachment } from "./agent-se
 import { AgentApprovalStore, type AgentApproval } from "./agent-approval-store.js";
 import { BROWSER_UNREADABLE_IMAGE_TYPES, heicToJpeg } from "./image-decode.js";
 import { AiTitleService } from "./ai-title.js";
+import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 import {
   AgentSessionStore,
   agentSessionCountsAsUnread,
@@ -508,6 +509,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const dispatchStore = new DispatchStore(store.database);
   const agentSessionAttachments = new AgentSessionAttachments(store.database, options.attachmentsPath ?? "./data/attachments");
   const agentSessionStore = new AgentSessionStore(store.database, agentSessionAttachments);
+  const externalSessionStore = new ExternalAgentSessionStore(store);
+  const listConsoleSessions = (accountId: string) => [...agentSessionStore.listForAccount(accountId), ...externalSessionStore.listForAccount(accountId)]
+    .sort((a, b) => b.activityAt.localeCompare(a.activityAt) || b.id.localeCompare(a.id));
   const agentApprovalStore = new AgentApprovalStore(store.database);
   const accountStore = new AccountStore(store.database);
   const deviceAuthorizations = new DeviceAuthorizationStore(store.database);
@@ -520,7 +524,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // push service so a device is told to refresh exactly what the route serves.
   const widgetDevices = new WidgetDeviceStore(store.database);
   const visibleAgentSessionsFor = (account: AccountSnapshot) =>
-    agentSessionStore.listForAccount(account.id)
+    listConsoleSessions(account.id)
       .filter((session) => session.items.length > 0
         && session.items.every((item) => accountStore.allows(account, item.productId, "view")));
   const widgetSummaryFor = (account: AccountSnapshot): WidgetSummary => {
@@ -2062,6 +2066,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const account = requireAccount(request);
     const session = agentSessionStore.getForAccount(account.id, sessionId);
     if (operate && session.managedExecution) throw conflict("managed_session_control", "Use the scoped coordinator control for this managed session.");
+    if (!session.dispatchId) throw notFound("Dispatch");
     const dispatch = dispatchStore.getDispatch(account.id, session.dispatchId);
     const productIds: string[] = [];
     for (const itemKey of dispatch.itemKeys) {
@@ -2101,8 +2106,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     };
   };
 
+  const loadExternalSession = (request: FastifyRequest, sessionId: string, operate = false) => {
+    const account = requireAccount(request);
+    for (const key of externalSessionStore.itemKeys(account.id, sessionId)) {
+      requireItemPermission(request, key, operate ? "operate" : "view");
+    }
+    return { ...externalSessionStore.getForAccount(account.id, sessionId),
+      canReply: false, canAttach: false, canResolveDelivery: false, replyBlockedReason: "external_progress_only" as const };
+  };
+
   app.get("/api/v1/agent-sessions/:sessionId", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
+    if (externalSessionStore.has(sessionId)) return loadExternalSession(request, sessionId);
     return agentSessionResponse(loadAuthorizedAgentSession(request, sessionId));
   });
 
@@ -2127,7 +2142,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { productId } = request.query as { productId?: string };
     const selectedProductId = productId?.trim();
     if (selectedProductId) requireProductPermission(request, selectedProductId, "view");
-    const sessions = agentSessionStore.listForAccount(account.id)
+    const sessions = listConsoleSessions(account.id)
       .filter((session) => session.items.length > 0
         && session.items.every((item) => accountStore.allows(account, item.productId, "view")))
       .filter((session) => !selectedProductId
@@ -2135,7 +2150,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .map((session) => {
         const canOperate = session.items.every((item) => accountStore.allows(account, item.productId, "operate"));
         const canUseAi = session.items.every((item) => accountStore.allows(account, item.productId, "ai"));
-        const replyBlockedReason = agentSessionReplyBlockedReason({
+        const replyBlockedReason = session.source === "external" ? "external_progress_only" as const : agentSessionReplyBlockedReason({
           hasSession: Boolean(session.agentSessionId),
           replyable: session.replyable,
           ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
@@ -2154,7 +2169,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           canStop: !session.archivedAt && !session.nodeRevoked && session.stoppable && canOperate && canUseAi,
           canArchive: (Boolean(session.agentSessionId)
             || ["launched", "failed", "cancelled"].includes(session.dispatchStatus))
-            && canOperate && canUseAi,
+            && canOperate && (session.source === "external" || canUseAi),
         };
       });
     sessions.forEach((session) => {
@@ -2186,6 +2201,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.patch("/api/v1/agent-sessions/:sessionId", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
+    if (externalSessionStore.has(sessionId)) {
+      loadExternalSession(request, sessionId, true);
+      externalSessionStore.setArchived(requireAccountId(request), sessionId, booleanField(objectBody(request.body), "archived"));
+      return loadExternalSession(request, sessionId);
+    }
     authorizedAgentSession(request, sessionId, true);
     const body = objectBody(request.body);
     agentSessionStore.setArchived(
@@ -2198,6 +2218,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.post("/api/v1/agent-sessions/:sessionId/attention/dismiss", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
+    if (externalSessionStore.has(sessionId)) {
+      loadExternalSession(request, sessionId, true);
+      externalSessionStore.dismissAttention(requireAccountId(request), sessionId, stringField(objectBody(request.body), "revision")!);
+      return loadExternalSession(request, sessionId);
+    }
     loadAuthorizedAgentSession(request, sessionId, true, false);
     agentSessionStore.dismissAttention(
       requireAccountId(request),
@@ -2229,6 +2254,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.put("/api/v1/dispatch-defaults", async (request) => {
     return dispatchStore.setDispatchDefaults(requireAccountId(request), objectBody(request.body));
+  });
+
+  app.post("/api/v1/agent-sessions/:sessionId/read", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const through = stringField(objectBody(request.body), "through")!;
+    if (externalSessionStore.has(sessionId)) {
+      loadExternalSession(request, sessionId);
+      externalSessionStore.markRead(requireAccountId(request), sessionId, through);
+    } else {
+      const { dispatch } = loadAuthorizedAgentSession(request, sessionId);
+      agentSessionStore.markRead(requireAccountId(request), dispatch.id, through);
+    }
+    return reply.status(204).send();
   });
 
   app.post("/api/v1/dispatches/:dispatchId/read", async (request, reply) => {

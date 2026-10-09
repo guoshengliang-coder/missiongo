@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个工作条目；开启写入后，还可以追加评论、领取待处理条目、在 PR 合并后标记开发完成、在所有相关产物核实发布后推到待验证、在用户于会话里确认内容后创建条目，以及上传并关联附件。
+MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个工作条目；开启写入后，还可以追加评论、领取待处理条目、在 PR 合并后标记开发完成、在所有相关产物核实发布后推到待验证、在用户于会话里确认内容后创建条目，上传并关联附件，以及登记外部主动处理的会话与进展。
 
 写入到此为止。AI 不修改条目的标题、正文、问题详情和分类字段——那些是人写的内容；不删除条目、不撤回评论（包括自己写的）；除上述三次交接之外不改变条目状态。
 
@@ -24,9 +24,9 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 | 档位 | 开放的工具 |
 |---|---|
 | `none` | 无。工具清单与只读部署完全一致 |
-| `comments` | `append_comment`、`claim_item`、`submit_development_complete`、`submit_for_verification`、`create_item`、`upload_attachment_chunk`、`prepare_attachment_upload`、`add_item_attachment` |
+| `comments` | `append_comment`、`claim_item`、`submit_development_complete`、`submit_for_verification`、`create_item`、`upload_attachment_chunk`、`prepare_attachment_upload`、`add_item_attachment`、`register_agent_session`、`report_agent_session` |
 
-只有两级：写入面限于评论、三条受限状态流转、创建条目与关联附件。
+只有两级：写入面限于评论、三条受限状态流转、创建条目、关联附件与外部会话进展登记。
 
 档位和权限范围回答两个不同的问题——这个部署提供什么，以及这次连接被允许做什么。两者都满足才能写入。`get_current_account` 返回二者的交集，客户端应以它为准，不得依据本地 Skill 的描述判断能否写入。
 
@@ -60,6 +60,10 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 
 - `claim_item`（`comments` 档位起，需 `missiongo:write`）：把「待处理」的条目领为「处理中」。
   不需要租约——状态本身就是锁，只有待处理的条目能被领取。
+- `register_agent_session`（同上）：把当前用户明确要求继续处理的会话关联到一个已在处理中、开发完成或待验证的条目。`session` 含 `agentKind`、稳定 `sessionRef`、`refKind: native|tracking` 和可选自述 `name`。原生 ID 必须由可信客户端提供；不可取得时生成对话 UUID 并标为 tracking。唯一键由账号、OAuth 客户端、Agent 类型与会话引用共同组成；同一对话关联多条目不重复创建，不会领取或控制客户端。
+- `report_agent_session`（同上）：用返回的 `sessionId`、已关联 `itemKey`、`status: working|waiting_for_input|blocked|completed|failed`、可选事实 `text` 和稳定 `idempotencyKey` 上报进展。相同键重放不新增消息、不同内容复用键会拒绝。每次检查记录所属账号、OAuth 客户端及全部关联产品权限。completed 只结束会话处理，不更改条目状态。超过 30 分钟未上报的非终态记录显示状态无法确认。
+- 外部领取时 `claim_item.session` 可直接登记上述关联并返回 `sessionId`；旧调用不带此参数时只创建每次领取的跟踪记录。来自 Web 派单的调用应传可信启动提示词的 `dispatchId`，服务器核对派单所属账号和条目，不创建外部记录。领取、登记和初始进展在同一事务内完成；失败不留下半成品。
+- `append_comment.sessionId` 可将该评论同时记入已登记的外部会话；只有明确关联才同步，不按姓名或 Agent 名猜匹配。Web 控制台统一展示这些记录并允许已读、归档与取消待处理提示，明确标注进展记录、最近上报时间及回复限制。记录不进入节点轮询，不提供 Web 发送、附件、审批、改模型、重试派单或中断控制。
 - `submit_development_complete`（同上）：把「处理中」推到「开发完成」，记录 https PR 地址和完整、不重复的
   `requiredArtifacts`。产物标识按产品声明（AND-276）：先读 `list_products` 的 `releaseArtifacts`，只能登记其中的标识；
   产品未声明时沿用 `web`、`androidApp`、`androidSdk`、`macosApp`。Skill 须先核实 PR 已合并、仓库检查通过，

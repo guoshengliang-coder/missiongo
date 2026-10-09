@@ -562,6 +562,8 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(change),
     }),
+  markAgentSessionRead: (sessionId: string, through: string) =>
+    request<void>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/read`, { method: "POST", body: JSON.stringify({ through }) }),
   markDispatchRead: (dispatchId: string, through: string) =>
     request<void>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/read`, {
       method: "POST",

@@ -29,6 +29,8 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "upload_attachment_chunk", access: "write", purpose: "Stage a bounded chunk of a user-approved attachment in an authorized product." },
   { name: "prepare_attachment_upload", access: "write", purpose: "Authorize direct raw-byte upload for one user-approved file without passing bytes through model context." },
   { name: "add_item_attachment", access: "write", purpose: "Attach a completed upload to a user-named work item without editing its fields." },
+  { name: "register_agent_session", access: "write", purpose: "Associate a user-directed external conversation with an item already being handled, without claiming or controlling it." },
+  { name: "report_agent_session", access: "write", purpose: "Report factual external-session progress independently of work-item status." },
 ] as const satisfies readonly McpToolDefinition[];
 
 export interface ListItemsInput {
@@ -45,7 +47,16 @@ export interface GetItemContextInput {
   readonly itemKey: string;
 }
 
+export interface ExternalAgentSessionIdentity {
+  readonly agentKind: "codex" | "claude_code" | "opencode" | "hermes" | "other";
+  readonly sessionRef: string;
+  readonly refKind: "native" | "tracking";
+  readonly name?: string;
+}
+
 export interface ClaimItemInput {
+  readonly session?: ExternalAgentSessionIdentity;
+  readonly dispatchId?: string;
   readonly itemKey: string;
   readonly agentId: string;
   readonly idempotencyKey: string;
@@ -79,6 +90,7 @@ export interface CreateItemInput {
 export type CommentBodyKind = "structured" | "free";
 
 export interface AppendCommentInput {
+  readonly sessionId?: string;
   readonly itemKey: string;
   readonly bodyKind: CommentBodyKind;
   /** Free-text body. */
