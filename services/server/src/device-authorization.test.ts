@@ -122,6 +122,7 @@ describe("device login routes", () => {
       expect(approved.statusCode).toBe(200); expect(approved.headers.location).toBeUndefined();
       advance();
       const token = await poll(); expect(token.statusCode).toBe(200);
+      expect(token.json().expires_in).toBe(15_552_000);
       expect(readAiAccessToken(account, token.json().access_token)).toMatchObject({ id: user.id, scopes: ["missiongo:read", "missiongo:node"] });
       const audit = app.missionGoAccounts.listAiAuthorizations(user.id);
       expect(audit).toHaveLength(1);

@@ -561,8 +561,8 @@ describe("Products a member creates", () => {
 
 describe("What an AI client reaches", () => {
   it("loses a product the moment it is unticked, without waiting for the token to expire", async () => {
-    // The reason product reach is not written into the token. A 30-day token that
-    // froze its own permissions would keep reading a revoked product for 30 days.
+    // The reason product reach is not written into the token. A 180-day token that
+    // froze its own permissions would keep reading a revoked product for 180 days.
     const { app, adminCookie, member, shared } = await twoAccountWorkspace();
     await app.inject({
       method: "PUT",

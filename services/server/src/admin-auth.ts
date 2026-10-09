@@ -70,7 +70,7 @@ export interface AiAccessPrincipal extends AdminSessionUser {
   /**
    * Which products this authorization reaches. Resolved from the account's
    * permissions at every use rather than frozen into the token, so revoking a
-   * product takes effect on the next request instead of in thirty days.
+   * product takes effect on the next request instead of in 180 days.
    */
   readonly productIds: "*" | readonly string[];
   readonly credentialsAt: number;
@@ -93,8 +93,8 @@ interface AiAccessPayload extends AdminSessionUser {
 export type AiAccessClaims = Omit<AiAccessPrincipal, "productIds">;
 
 export const ADMIN_SESSION_COOKIE = "missiongo_session";
-export const ADMIN_SESSION_SECONDS = 30 * 24 * 60 * 60;
-export const AI_ACCESS_SESSION_SECONDS = 30 * 24 * 60 * 60;
+export const ADMIN_SESSION_SECONDS = 180 * 24 * 60 * 60;
+export const AI_ACCESS_SESSION_SECONDS = 180 * 24 * 60 * 60;
 
 function safeEqualText(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left);
@@ -254,7 +254,7 @@ export function createAiAccessToken(
  * No product list comes back: which products the authorization reaches is the
  * account's current permission set, looked up by the caller. Keeping it out of
  * the token is what makes "untick a product and the AI loses it now" true
- * rather than true in thirty days.
+ * rather than true in 180 days.
  */
 export function readAiAccessToken(
   config: AdminAccountConfig,

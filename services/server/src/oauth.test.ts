@@ -156,7 +156,8 @@ describe("code exchange", () => {
     const result = exchange({ code });
     expect(result.claims).toMatchObject({ clientId: expect.stringContaining("mgc_"), scopes: [MISSIONGO_READ_SCOPE] });
     expect(result.accessToken.startsWith("mgai_")).toBe(true);
-    expect(result.expiresIn).toBeGreaterThan(0);
+    expect(result.expiresIn).toBe(15_552_000);
+    expect(result.claims.expiresAt - result.claims.issuedAt).toBe(result.expiresIn);
   });
 
   it("carries the granted scope from the consent onto the token", () => {

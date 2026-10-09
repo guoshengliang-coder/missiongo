@@ -1173,7 +1173,7 @@ public struct APIClient: Sendable {
     /// Exchanges a login token (`mgai_`) for this machine's own credential.
     ///
     /// The login token is used for this one call and then dropped: it expires in
-    /// 30 days and cannot be revoked on its own, while the node credential is
+    /// 180 days and cannot be revoked on its own, while the node credential is
     /// long-lived and revocable from the console.
     public func register(
         accessToken: String,
