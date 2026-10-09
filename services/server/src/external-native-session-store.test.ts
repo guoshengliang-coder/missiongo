@@ -26,7 +26,7 @@ function fixture(kind: "codex" | "opencode" | "claude_code" = "codex", refKind: 
 }
 afterEach(() => { vi.useRealTimers(); stores.splice(0).forEach((store) => store.close()); });
 
-it.each(["codex", "opencode"] as const)("connects %s by exact native identity without a dispatch or launch", (kind) => {
+it.each(["codex", "opencode", "claude_code"] as const)("connects %s by exact native identity without a dispatch or launch", (kind) => {
   const { native, progress, id, store, item, report } = fixture(kind);
   native.connect("owner", id, "node");
   expect(native.overlay("owner", id)).toMatchObject({ nativeConnection: { state: "pending" }, replyable: false });
@@ -41,9 +41,9 @@ it.each(["codex", "opencode"] as const)("connects %s by exact native identity wi
   expect(store.database.connection.prepare("SELECT COUNT(*) AS count FROM dispatches").get()).toMatchObject({ count: 0 });
 });
 
-it("rejects tracking IDs, unsupported Claude control, foreign nodes and duplicate native bindings", () => {
-  for (const [kind, ref] of [["codex", "tracking"], ["claude_code", "native"]] as const) {
-    const f = fixture(kind, ref); expect(() => f.native.connect("owner", f.id, "node")).toThrow(/verified Codex or OpenCode/);
+it("rejects tracking IDs, foreign nodes and duplicate native bindings", () => {
+  for (const [kind, ref] of [["codex", "tracking"], ["claude_code", "tracking"]] as const) {
+    const f = fixture(kind, ref); expect(() => f.native.connect("owner", f.id, "node")).toThrow(/verified Codex, OpenCode or Claude/);
   }
   const f = fixture();
   expect(() => f.native.connect("different-owner", f.id, "node")).toThrow(/not found/);

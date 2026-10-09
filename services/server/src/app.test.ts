@@ -947,7 +947,7 @@ describe("Commenting over MCP", () => {
     expect(app.missionGoStore.getWorkItem("HG-1").status).toBe("in_progress");
   });
 
-  it.each(["codex", "opencode"])("syncs and replies to an explicitly connected external %s session without launching a dispatch", async (kind) => {
+  it.each(["codex", "opencode", "claude_code"])("syncs and replies to an explicitly connected external %s session without launching a dispatch", async (kind) => {
     const { app, call, writeToken, adminAccount } = await commentingApp();
     const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: "mission-owner", password: "correct horse" } });
     const headers = { cookie: login.headers["set-cookie"]!.split(";", 1)[0]! };

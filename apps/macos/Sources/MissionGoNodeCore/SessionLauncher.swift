@@ -632,6 +632,7 @@ public struct SessionLauncher: AgentAdapter {
     }
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        if session.externalBindingGeneration != nil { return try synchronizeExternal(session) }
         guard UUID(uuidString: session.sessionRef) != nil else {
             throw LaunchError("Claude 会话编号无效。")
         }
@@ -646,6 +647,56 @@ public struct SessionLauncher: AgentAdapter {
             settingsError: state.settingsError,
             clearSessionUrl: state.launchReady && state.sessionUrl == nil ? true : nil
         ).reportingTurn(state)
+    }
+
+    /// Read only an explicitly created local bridge. Never adopt a TUI or restart
+    /// with the GUI's different provider environment on behalf of a Web poll.
+    private func synchronizeExternal(_ session: NodeAgentSession) throws -> AgentSessionReport {
+        let ref = try ClaudeExternalBridge.normalizedRef(session.sessionRef)
+        let root = sessionsDirectory + "/external"
+        let directory = ClaudeHostStore.sessionDirectory(root: root, sessionRef: ref)
+        guard FileManager.default.fileExists(atPath: directory) else {
+            throw LaunchError("此会话尚未接入本机桥接；请在原模型终端启动桥接或明确移交普通 CLI。")
+        }
+        try ClaudeExternalBridge.privateDirectory(directory)
+        let configPath = ClaudeHostStore.configPath(root: root, sessionRef: ref)
+        let config = try JSONDecoder().decode(ClaudeHostConfiguration.self, from: Data(contentsOf: URL(fileURLWithPath: configPath)))
+        let statePath = ClaudeHostStore.statePath(root: root, sessionRef: ref)
+        let state = try ClaudeHostFiles.readState(statePath)
+        guard config.externalArguments != nil, config.sessionRef == ref, state.sessionRef == ref,
+              config.statePath == statePath, config.commandsDirectory == directory + "/commands" else {
+            throw LaunchError("本机桥接身份不匹配；未连接或发送。")
+        }
+        let running = state.hostPid.map { pid in
+            ClaudeHostProcess.isRunning(pid) && (ClaudeHostProcess.processArguments(pid)?.contains(configPath) == true)
+        } ?? false
+        func report(_ status: String? = nil, _ error: String? = nil, commandStatus: String? = nil, commandError: String? = nil) -> AgentSessionReport {
+            AgentSessionReport(status: status ?? state.status, messages: Array(state.messages.suffix(2000)),
+                error: error ?? state.error, commandId: commandStatus == nil ? nil : session.command?.id,
+                commandStatus: commandStatus, commandError: commandError,
+                turnActive: state.turnActive, waitingForInput: state.waitingForInput)
+        }
+        if let command = session.command, let result = state.commandResults[command.id] {
+            return report(running && state.launchReady ? nil : "unavailable",
+                commandStatus: !running && result.status == "delivering" ? "delivery_unknown" : result.status, commandError: result.error)
+        }
+        guard running, state.launchReady, state.status != "failed", state.status != "suspended" else {
+            return report("unavailable", state.error ?? "本机桥接未就绪或已停止；请在原第三方模型配置终端中恢复，不会使用 GUI 配置重启。",
+                commandStatus: session.command?.status == "delivering" ? "delivery_unknown" : nil,
+                commandError: "无法确认 CLI 是否收到回复，请在原会话核实；不会自动重发。")
+        }
+        guard let command = session.command else { return report() }
+        if state.turnActive && !state.waitingForInput { return report() }
+        if command.status == "queued" { return report(commandStatus: "delivering") }
+        guard command.status == "delivering", (command.kind ?? "message") == "message", UUID(uuidString: command.id) != nil else {
+            throw LaunchError("外部 Claude 只接受已预留的文字回复。")
+        }
+        let path = ClaudeHostStore.commandPath(root: root, sessionRef: ref, commandId: command.id)
+        if !FileManager.default.fileExists(atPath: path) {
+            try ClaudeHostFiles.write(ClaudeHostCommand(id: command.id, kind: "message", text: command.promptText, createdAt: command.createdAt, webReply: true, expiresAt: Date().addingTimeInterval(30)), to: path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        }
+        return report()
     }
 
     /// Hands a person's settings change to a running host. Nothing to do when

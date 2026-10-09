@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 完整读取条目、评论、领取、创建条目及上传附件，并在 PR 合并和发布核实后推进状态。不修改条目正文与字段，不删除条目，不决定验收。
-version: 5.19.0
+version: 5.20.0
 ---
 
 # MissionGo 条目读取与评论
@@ -269,7 +269,7 @@ frontmatter 中的 `version` 对比。
 - 为已关联条目调用 `append_comment` 时带 `sessionId`，服务端会在同一事务中把评论内容或摘要记入进展；未关联的评论不按客户端名称猜会话。仍按原有规则写条目评论，不能用会话上报替代结局回写。
 - 开始、重要进展、需要用户回复、遇到阻碍和本次处理结束时，调用 `report_agent_session`，带一个已关联的 `itemKey`、`sessionId`、简短事实 `text` 和稳定 `idempotencyKey`。状态分别用 `working`、`waiting_for_input`、`blocked`、`completed` 或 `failed`；重试复用原键。多条目会话只有整次处理结束才报 `completed`。
 - `completed` 仅表示这次会话的处理结束，不代表条目验收、PR 合并或发布。所有条目状态交接仍按下面规则核验。长时间未上报会显示“近期未上报”，不会自动释放条目或重新派单。
-- 用户默认仍在原客户端回复。已确认原生 ID 的 Codex、OpenCode 会话可由用户在 Web 控制台选择该会话所在的节点并点击「同步原生会话」；需更新 MissionGo macOS 客户端，且该节点控制通道能读取这一条会话。OpenCode 需使用该节点已登记的同一共享服务实例，不能把普通 TUI 的随机服务误认为共享服务。不能根据机器名猜节点或替用户自动连接。普通 Claude Code CLI、其他客户端及 tracking 记录暂不支持此连接。
+- 用户默认仍在原客户端回复。已确认原生 ID 的 Codex、OpenCode 会话可由用户在 Web 控制台选择该会话所在的节点并点击「同步原生会话」；需更新 MissionGo macOS 客户端，且该节点控制通道能读取这一条会话。OpenCode 需使用该节点已登记的同一共享服务实例，不能把普通 TUI 的随机服务误认为共享服务。不能根据机器名猜节点或替用户自动连接。Claude Code 会话须先由本机 MissionGoClaudeBridge 启动，或在本机明确移交已退出的普通 CLI；桥接打印的原生 ID 和本机 MISSIONGO_AGENT_SESSION_REF 可用于登记，不能读取整个环境或上传模型凭据。桥接保留第三方模型配置，不依赖官方 Remote Control 或官方订阅。普通未桥接 CLI、其他客户端及 tracking 记录仍不能直接回复；不能替用户启动桥接、停止原 CLI 或猜测历史路径。权限与提问请求由用户在桥接终端按请求 ID 明确回答，Web 文字不能视作工具批准。
 - 仅上报这些用户指定条目的处理事实，不上传无关聊天、历史对话或客户端凭据。用户明确连接后，节点只同步这一条原生会话里的可见用户与 Agent 消息；Web 回复走同一条会话，当前只支持文字。断开或归档只停止 MissionGo 同步，不关闭、归档原客户端会话。
 
 ### 处理完成后回写

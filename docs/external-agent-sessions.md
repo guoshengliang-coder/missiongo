@@ -8,10 +8,10 @@
 | --- | --- | --- | --- |
 | Codex | 支持 | 支持 | 已确认原生 ID，选定节点的 Codex 控制通道能访问该会话 |
 | OpenCode | 支持 | 支持 | 已确认原生 ID，会话运行在该节点已登记的同一共享服务 |
-| 普通 Claude Code CLI | 支持 | 暂不支持 | 现有控制器依赖 MissionGo 专用宿主，不能接管任意 CLI |
+| Claude Code（含第三方模型） | 支持 | 已桥接会话支持 | 使用本机 MissionGoClaudeBridge 启动或明确移交；普通未桥接 CLI 仅进展 |
 | tracking、其他 Agent | 支持 | 暂不支持 | 跟踪 UUID 不构成原生 ID |
 
-以上为已实现能力。Claude Code 使用第三方模型时的接入设计见下文；该设计尚未实现，不改变当前能力表。
+以上为本地代码能力，尚未发布。Claude 桥接已通过本地模拟协议验证；用户实际第三方网关与 CLI 组合仍需实测。
 
 Codex CLI 若不在选定控制通道可访问的运行时中，连接保持不可用，不会另起会话冒充接管。OpenCode 普通 TUI 的临时服务也不能与已登记共享服务混用。需升级包含此外部同步协议的 MissionGo macOS 客户端；旧客户端不拉取外部绑定。
 
@@ -27,7 +27,7 @@ Codex CLI 若不在选定控制通道可访问的运行时中，连接保持不�
 
 ## 接口与权限
 
-- `PUT /api/v1/agent-sessions/:id/native-connection`，正文 `{ nodeId }`：连接当前账号所属节点，只允许 Codex、OpenCode native 记录，检查全部关联产品 operate、ai 权限。
+- `PUT /api/v1/agent-sessions/:id/native-connection`，正文 `{ nodeId }`：连接当前账号所属节点，只允许 Codex、OpenCode、Claude native 记录，检查全部关联产品 operate、ai 权限。
 - `DELETE /api/v1/agent-sessions/:id/native-connection`：停止同步，递增绑定代次，使旧同步请求失效。
 - 原有 detail、list、commands、cancel、resolve-delivery、read、archive 入口兼容外部记录，仍检查全部关联产品权限。归档不发送来源归档命令。
 - 新节点通过 `X-MissionGo-External-Sessions: 1` 和进程级 `X-MissionGo-External-Worker` 拉取精确绑定。快照另带 `X-MissionGo-External-Generation`，服务端核对绑定代次、节点所有权和当前产品权限。旧客户端不收到此类记录。
@@ -35,7 +35,7 @@ Codex CLI 若不在选定控制通道可访问的运行时中，连接保持不�
 
 原生连接不新增 MCP 控制工具，不提供任意字段更新、命令执行或会话发现接口。消息按 sourceId 更新，保留省略的历史；重复快照不推进未读时钟。
 
-## Claude Code 外部会话接入设计（待实现）
+## Claude Code 外部会话接入设计与实现边界
 
 ### 第三方模型是正式支持目标
 
@@ -62,7 +62,7 @@ MissionGo 的控制能力不得依赖 Claude 官方 Remote Control、官方订�
 | 用户准备从终端开始处理条目 | 提供本地桥接启动入口，从当前终端环境启动受宿主管理的 Claude 会话 | 不强制 Web 派单；保留原生会话 ID，由 MCP 关联条目，Web 选择节点并完成首次同步后开放回复 |
 | 用户已经启动普通交互式 Claude CLI | 初期继续展示进展；用户在本机显式移交后，由宿主精确恢复该会话 | 不承诺无缝附着现有 TUI；原进程结束且会话已保存、无活跃回合或审批后，才能以指定 ID 和原配置恢复 |
 
-桥接启动入口为新增能力，当前不存在可供用户执行的命令。它通过认证的本地 IPC 关联节点，向宿主交接配置；终端可通过桥接界面输入和查看输出。不能将该界面描述成原版 Claude TUI，原版 `/resume` 与桥接恢复也不得同时写同一会话。
+桥接入口 MissionGoClaudeBridge 已包含在客户端构建中。它通过同用户、仅当前用户可访问的本地目录与内核锁关联宿主，向子进程继承终端配置；终端可通过桥接界面输入和查看输出。不能将该界面描述成原版 Claude TUI，原版 `/resume` 与桥接恢复也不得同时写同一会话。
 
 连接使用真实的 CLI 会话 ID、选定节点、原工作目录及本地配置引用。读取范围只包含这一条会话；恢复后必须核对 CLI 返回的 ID。历史若需补读，只读取该会话对应的本地历史并校验消息身份，不枚举、上传其它会话。无法确认身份、原进程所有权、保存完成或协议兼容时保持不可回复，不新建另一条会话冒充接管。
 
@@ -80,7 +80,7 @@ MissionGo 的控制能力不得依赖 Claude 官方 Remote Control、官方订�
 
 - 从终端桥接启动时，通过本地通道交接实际配置；GUI 连接使用本机已登记的配置引用，不根据环境缺失猜测使用官方账户。
 - API Key、认证 Token、认证 helper 和完整接口地址保留在本机，不写入会话上报、服务端绑定、Git 或普通日志；Web 只展示脱敏的配置名称与可用状态。
-- 持久恢复使用本机受保护的配置引用，需持久化的密钥由系统钥匙串保存；短期凭据或 helper 按原机制重新获取。重启后不能恢复配置时显示“本机配置待恢复”，不切换供应商或自动登录。
+- 持久恢复使用本机受保护的配置引用，当前桥接不新增密钥持久化；认证沿用用户 settings、helper 或终端环境。将来若增加密钥保存，仅使用系统钥匙串；短期凭据仍按原机制重新获取。重启后不能恢复配置时显示“本机配置待恢复”，不切换供应商或自动登录。
 - 本地文件和 IPC 限定当前用户，诊断日志脱敏。不批量读取 shell 配置、凭据或整个环境用于排错。
 
 ### 会话生命周期与交付
@@ -109,4 +109,30 @@ MissionGo 的控制能力不得依赖 Claude 官方 Remote Control、官方订�
 | 权限撤销、节点离线、断开、条目结束和归档 | Web 输入按规则关闭，用户会话不被派单清理策略终止，条目状态不被会话状态替代 |
 | CLI/网关缺少必需协议或恢复配置失败 | 展示具体能力或配置问题，不伪造已连接，不新建会话掩盖错误 |
 
-自动化测试使用脱敏的本地模拟协议与临时配置，验证接口和认证没有进入上报或日志。真实网关验收只使用用户已配置的连接和最小输入；模型调用属于实际使用成本，不能用模拟测试替代“第三方模型已实测”的结论。目前这些新增能力与真实兼容性验收均未完成。
+自动化测试使用脱敏的本地模拟协议与临时配置，验证接口和认证没有进入上报或日志。真实网关验收只使用用户已配置的连接和最小输入；模型调用属于实际使用成本，不能用模拟测试替代“第三方模型已实测”的结论。本地桥接、消息同步、文字回复与明确移交已实现；真实第三方网关验收未完成。Web 结构化提问与审批、自动恢复凭据、附件和远程停止不在本次能力范围。
+
+
+## Claude 桥接使用（需更新后的客户端）
+
+将客户端内 `Contents/MacOS/MissionGoClaudeBridge` 配置为终端命令或通过其完整路径执行。以下命令必须在原项目、原第三方模型配置的终端中运行，不改写 Claude settings，也不保存 API Key。
+
+```sh
+MissionGoClaudeBridge start -- '处理 EX-1，按 MissionGo Skill 读取并领取'
+MissionGoClaudeBridge start --model company-alias --settings ./claude-settings.json -- '处理 EX-1'
+```
+
+终端会打印原生 UUID。领取后由用户在 Web 打开对应外部记录，选择这台节点；节点核对本机桥接、原生 ID 与首次 CLI 确认成功后才开放回复。初次启动提示词由用户明确提供，随后可以在桥接终端或 Web 继续同一会话。终端普通输入不会自动回答权限请求；使用 `/answer <request-id> <答案或批准/拒绝>` 明确回答，或使用 `answer` 子命令。Web 首期仅文字消息，待审批时文字交付会明确失败并提示本机处理。
+
+`/detach` 或关闭终端输入只退出桥接界面，宿主保留。未确认交付需要先核实原会话；Web 队列在 Web 确认，本机写入记录用 `/confirm <command-id> received|not_received` 确认，均不会自动重发。空闲、无审批且无交付待确认时用 `/release` 或 `release <session-id>` 明确释放 CLI，之后可回到原版 Claude 的 `/resume`。宿主不会因 Web 断开、归档或条目结束被关闭。Mac 重启或宿主停止后，Web 显示不可用，需回到原配置终端：
+
+```sh
+MissionGoClaudeBridge resume <session-id> -- '继续处理 EX-1'
+```
+
+恢复沿用原工作目录与启动参数；接口、模型别名或代理环境发生变化时拒绝静默恢复，只有本机显式 `--confirm-config-change` 才采用当前配置。已有活跃 CLI、未完成回合或审批不能直接恢复。移交已停止的普通 CLI 时，用户须先记录原 PID，确认任务和审批已处理且历史已保存，再指定精确历史文件：
+
+```sh
+MissionGoClaudeBridge adopt <session-id> --history <selected-history.jsonl> --handoff-pid <exited-pid> --confirm-handoff -- '继续处理 EX-1'
+```
+
+只读取指定历史，核对原生 ID、工作目录及未完成工具请求，不发现其它会话。桥接内核锁阻止多个宿主；还会拒绝已知旧 CLI 子进程仍运行的恢复。原版 CLI 不使用桥接锁，因此移交后不得再在另一个终端同时 `/resume` 同一 ID。

@@ -56,6 +56,7 @@ rm -rf "$APP" "$ZIP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY_DIRECTORY/$EXECUTABLE" "$APP/Contents/MacOS/$EXECUTABLE"
 cp "$BINARY_DIRECTORY/$CLAUDE_HOST_EXECUTABLE" "$APP/Contents/MacOS/$CLAUDE_HOST_EXECUTABLE"
+cp "$BINARY_DIRECTORY/MissionGoClaudeBridge" "$APP/Contents/MacOS/MissionGoClaudeBridge"
 # SwiftPM puts package resources in sibling .bundle directories; the executable
 # looks for them inside its own bundle once it is wrapped.
 for resource_bundle in "$BINARY_DIRECTORY"/*.bundle; do

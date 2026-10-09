@@ -55,6 +55,10 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
     /// host started from it records the revision as applied: this is how a
     /// change made while the session was suspended takes effect on resume.
     public let settingsRevision: Int?
+    /// Local-only external bridge metadata. No provider credentials are persisted.
+    public let externalArguments: [String]?
+    public let externalResume: Bool?
+    public let externalEnvironmentFingerprint: String?
 
     public init(
         version: Int = 1,
@@ -72,7 +76,10 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
         model: String? = nil,
         effort: String? = nil,
         modelsCachePath: String? = nil,
-        settingsRevision: Int? = nil
+        settingsRevision: Int? = nil,
+        externalArguments: [String]? = nil,
+        externalResume: Bool? = nil,
+        externalEnvironmentFingerprint: String? = nil
     ) {
         self.version = version
         self.claudeExecutable = claudeExecutable
@@ -90,6 +97,9 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
         self.effort = effort
         self.modelsCachePath = modelsCachePath
         self.settingsRevision = settingsRevision
+        self.externalArguments = externalArguments
+        self.externalResume = externalResume
+        self.externalEnvironmentFingerprint = externalEnvironmentFingerprint
     }
 
     /// This configuration with a person's settings applied on top; a field the
@@ -101,14 +111,16 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
             statePath: statePath, commandsDirectory: commandsDirectory, logPath: logPath,
             idleTimeoutSeconds: idleTimeoutSeconds, stallWarningSeconds: stallWarningSeconds,
             model: settings.model ?? model, effort: settings.effort ?? effort,
-            modelsCachePath: modelsCachePath, settingsRevision: settings.revision
+            modelsCachePath: modelsCachePath, settingsRevision: settings.revision,
+            externalArguments: externalArguments, externalResume: externalResume,
+            externalEnvironmentFingerprint: externalEnvironmentFingerprint
         )
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, claudeExecutable, cwd, mode, sessionName, sessionRef, prompt
         case statePath, commandsDirectory, logPath, idleTimeoutSeconds, stallWarningSeconds
-        case model, effort, modelsCachePath, settingsRevision
+        case model, effort, modelsCachePath, settingsRevision, externalArguments, externalResume, externalEnvironmentFingerprint
     }
 
     public init(from decoder: Decoder) throws {
@@ -129,6 +141,9 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
         effort = try values.decodeIfPresent(String.self, forKey: .effort)
         modelsCachePath = try values.decodeIfPresent(String.self, forKey: .modelsCachePath)
         settingsRevision = try values.decodeIfPresent(Int.self, forKey: .settingsRevision)
+        externalArguments = try values.decodeIfPresent([String].self, forKey: .externalArguments)
+        externalResume = try values.decodeIfPresent(Bool.self, forKey: .externalResume)
+        externalEnvironmentFingerprint = try values.decodeIfPresent(String.self, forKey: .externalEnvironmentFingerprint)
     }
 }
 
@@ -147,6 +162,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     public var status: String
     public var sessionRef: String
     public var hostPid: Int32?
+    public var externalChildPid: Int32?
     public var sessionUrl: String?
     /// The first work prompt reached Claude. A control handshake alone is not a launch.
     public var launchReady: Bool
@@ -187,6 +203,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         status: String,
         sessionRef: String,
         hostPid: Int32? = nil,
+        externalChildPid: Int32? = nil,
         sessionUrl: String? = nil,
         launchReady: Bool = false,
         messages: [AgentSessionMessage] = [],
@@ -207,6 +224,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         self.status = status
         self.sessionRef = sessionRef
         self.hostPid = hostPid
+        self.externalChildPid = externalChildPid
         self.sessionUrl = sessionUrl
         self.launchReady = launchReady
         self.messages = messages
@@ -226,7 +244,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, status, sessionRef, hostPid, sessionUrl, launchReady, messages, activities, waitingForInput, commandResults, error
+        case version, status, sessionRef, hostPid, externalChildPid, sessionUrl, launchReady, messages, activities, waitingForInput, commandResults, error
         case idleSince, lastProgressAt
         case turnActive, turnStartedAt, lastOutputAt, thinkingStartedAt, thinkingTokens, thinkingDurationSeconds
         case model, effort, mode, settingsRevision, settingsError, acceptsSettings
@@ -238,6 +256,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         status = try values.decode(String.self, forKey: .status)
         sessionRef = try values.decode(String.self, forKey: .sessionRef)
         hostPid = try values.decodeIfPresent(Int32.self, forKey: .hostPid)
+        externalChildPid = try values.decodeIfPresent(Int32.self, forKey: .externalChildPid)
         sessionUrl = try values.decodeIfPresent(String.self, forKey: .sessionUrl)
         launchReady = try values.decodeIfPresent(Bool.self, forKey: .launchReady) ?? false
         messages = try values.decodeIfPresent([AgentSessionMessage].self, forKey: .messages) ?? []
@@ -270,13 +289,20 @@ public struct ClaudeHostCommand: Codable, Equatable, Sendable {
     public let createdAt: String?
     /// Only for `settings`.
     public let settings: AgentSessionSettings?
+    /// Explicit local permission answer; Web text never implicitly approves a tool.
+    public let permissionRequestId: String?
+    public let webReply: Bool?
+    public let expiresAt: Date?
 
-    public init(id: String, kind: String, text: String, createdAt: String? = nil, settings: AgentSessionSettings? = nil) {
+    public init(id: String, kind: String, text: String, createdAt: String? = nil, settings: AgentSessionSettings? = nil, permissionRequestId: String? = nil, webReply: Bool? = nil, expiresAt: Date? = nil) {
         self.id = id
         self.kind = kind
         self.text = text
         self.createdAt = createdAt
         self.settings = settings
+        self.permissionRequestId = permissionRequestId
+        self.webReply = webReply
+        self.expiresAt = expiresAt
     }
 }
 
@@ -472,8 +498,16 @@ public struct ClaudeStreamSnapshot: Sendable {
         noteProgress()
     }
 
-    /// An ordinary tool's approval has no `tool_use` question of its own, so
-    /// it is shown as one. Keyed by request so a re-show does not duplicate it.
+    /// Keeps an orphaned CLI identifiable if its host crashes.
+    public mutating func recordExternalChild(_ pid: Int32) { state.externalChildPid = pid }
+
+    public mutating func showExternalPermissionRequest(_ request: ClaudePermissionRequest) {
+        let questions = (request.input["questions"] as? [[String: Any]] ?? []).compactMap { $0["question"] as? String }
+        upsert(AgentSessionMessage(sourceId: "permission-\(request.requestId)", turnId: latestTurnId(), role: "agent",
+            text: ([request.promptText] + questions + ["请在桥接终端 /answer \(request.requestId) <答案或批准/拒绝> 明确回答；Web 文字不会批准工具。"]).joined(separator: "\n")))
+    }
+
+    /// An ordinary tool approval has no tool-use question of its own.
     public mutating func showPermissionRequest(_ request: ClaudePermissionRequest) {
         guard !request.asksThroughToolUse else { return }
         upsert(AgentSessionMessage(

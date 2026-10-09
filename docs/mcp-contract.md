@@ -63,7 +63,7 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 - `register_agent_session`（同上）：把当前用户明确要求继续处理的会话关联到一个已在处理中、开发完成或待验证的条目。`session` 含 `agentKind`、稳定 `sessionRef`、`refKind: native|tracking` 和可选自述 `name`。原生 ID 必须由可信客户端提供；不可取得时生成对话 UUID 并标为 tracking。唯一键由账号、OAuth 客户端、Agent 类型与会话引用共同组成；同一对话关联多条目不重复创建，不会领取或控制客户端。
 - `report_agent_session`（同上）：用返回的 `sessionId`、已关联 `itemKey`、`status: working|waiting_for_input|blocked|completed|failed`、可选事实 `text` 和稳定 `idempotencyKey` 上报进展。相同键重放不新增消息、不同内容复用键会拒绝。每次检查记录所属账号、OAuth 客户端及全部关联产品权限。completed 只结束会话处理，不更改条目状态。超过 30 分钟未上报的非终态记录显示状态无法确认。
 - 外部领取时 `claim_item.session` 可直接登记上述关联并返回 `sessionId`；旧调用不带此参数时只创建每次领取的跟踪记录。来自 Web 派单的调用应传可信启动提示词的 `dispatchId`，服务器核对派单所属账号和条目，不创建外部记录。领取、登记和初始进展在同一事务内完成；失败不留下半成品。
-- `append_comment.sessionId` 可将该评论同时记入已登记的外部会话；只有明确关联才同步，不按姓名或 Agent 名猜匹配。Web 控制台统一展示这些记录并允许已读、归档与取消待处理提示，明确标注最近上报时间及回复限制。记录默认只展示进展；用户在独立 Cookie HTTP 入口明确连接原生会话且节点同步成功后，才支持 Codex、OpenCode 原生消息与 Web 文字回复。MCP 登记不会自动连接或控制客户端，参见 [外部会话连接](external-agent-sessions.md)。附件、审批、改模型、重试派单和中断控制仍未开放。
+- `append_comment.sessionId` 可将该评论同时记入已登记的外部会话；只有明确关联才同步，不按姓名或 Agent 名猜匹配。Web 控制台统一展示这些记录并允许已读、归档与取消待处理提示，明确标注最近上报时间及回复限制。记录默认只展示进展；用户在独立 Cookie HTTP 入口明确连接原生会话且节点同步成功后，才支持 Codex、OpenCode 与已接入本机桥接的 Claude 原生消息及 Web 文字回复；Claude 桥接保留第三方模型配置，不依赖官方 Remote Control。MCP 登记不会自动连接或控制客户端，参见 [外部会话连接](external-agent-sessions.md)。附件、审批、改模型、重试派单和中断控制仍未开放。
 - `submit_development_complete`（同上）：把「处理中」推到「开发完成」，记录 https PR 地址和完整、不重复的
   `requiredArtifacts`。产物标识按产品声明（AND-276）：先读 `list_products` 的 `releaseArtifacts`，只能登记其中的标识；
   产品未声明时沿用 `web`、`androidApp`、`androidSdk`、`macosApp`。Skill 须先核实 PR 已合并、仓库检查通过，

@@ -5,7 +5,7 @@ import type { AgentSession, AgentSessionCommand, AgentSessionSummary, ExternalNa
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string; detailKey: string };
 for (const width of [375, 768, 1440]) {
-  for (const kind of ["codex", "opencode"] as const) {
+  for (const kind of ["codex", "opencode", "claude_code"] as const) {
     test(`external native ${kind} ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
       await page.emulateMedia({ colorScheme: width === 1440 ? "dark" : "light" });

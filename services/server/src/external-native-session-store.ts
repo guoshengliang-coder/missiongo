@@ -60,8 +60,8 @@ export class ExternalNativeSessionStore {
   connect(accountId: string, id: string, nodeId: string): void {
     this.store.database.transaction(() => {
       const row = this.row(accountId, id);
-      if (row.ref_kind !== "native" || !["codex", "opencode"].includes(row.agent_kind)) {
-        throw conflict("external_native_unsupported", "Only a verified Codex or OpenCode native ID can connect to a node.");
+      if (row.ref_kind !== "native" || !["codex", "opencode", "claude_code"].includes(row.agent_kind)) {
+        throw conflict("external_native_unsupported", "Only a verified Codex, OpenCode or Claude bridge native ID can connect to a node.");
       }
       if (row.archived_at) throw conflict("agent_session_archived", "Restore this session before connecting.");
       const node = this.db.prepare("SELECT agents_json FROM nodes WHERE id=? AND account_id=? AND revoked_at IS NULL").get(nodeId, accountId) as { agents_json: string } | undefined;

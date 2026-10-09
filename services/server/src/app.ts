@@ -2189,7 +2189,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             ? { approval: agentApprovalStore.get(session.id) } : {}),
           canReply: Boolean(session.agentSessionId) && replyBlockedReason === undefined,
           ...(session.source === "external" ? {
-            canConnectNative: !session.archivedAt && session.refKind === "native" && ["codex", "opencode"].includes(session.agentKind) && canOperate && canUseAi,
+            canConnectNative: !session.archivedAt && session.refKind === "native" && ["codex", "opencode", "claude_code"].includes(session.agentKind) && canOperate && canUseAi,
             canDisconnectNative: Boolean(session.nativeConnection?.nodeId) && canOperate && canUseAi,
           } : {}),
           ...(replyBlockedReason ? { replyBlockedReason } : {}),
