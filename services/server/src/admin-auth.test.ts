@@ -3,7 +3,6 @@ import { randomBytes, scryptSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
-  ADMIN_SESSION_SECONDS,
   adminSessionCookie,
   createAdminSession,
   createAiAccessToken,
@@ -168,12 +167,17 @@ describe("admin session tokens", () => {
     expect(readAdminSession(config, `${forged}.${secretSignature}`)).toBeUndefined();
   });
 
-  it("rejects an expired session and one issued in the future", () => {
+  it("keeps a session valid for 180 days and rejects it exactly at expiry", () => {
     const config = account();
-    const issuedAt = Date.now();
+    const issuedAt = Date.parse("2026-10-09T00:00:00.000Z");
+    const expiresAt = issuedAt + 180 * 24 * 60 * 60 * 1_000;
     const token = createAdminSession(config, user(), CREDENTIALS_AT, issuedAt);
-    expect(readAdminSession(config, token, issuedAt + ADMIN_SESSION_SECONDS * 1_000 + 1_000)).toBeUndefined();
+    expect(readAdminSession(config, token, issuedAt)?.expiresAt).toBe(expiresAt / 1_000);
+    expect(readAdminSession(config, token, issuedAt + 31 * 24 * 60 * 60 * 1_000)).toBeDefined();
+    expect(readAdminSession(config, token, expiresAt - 1_000)).toBeDefined();
+    expect(readAdminSession(config, token, expiresAt)).toBeUndefined();
     expect(readAdminSession(config, token, issuedAt - 120_000)).toBeUndefined();
+    expect(adminSessionCookie(config, token)).toContain("Max-Age=15552000");
   });
 
   it("marks the cookie HttpOnly, SameSite=Strict, and Secure when configured", () => {
@@ -199,8 +203,8 @@ describe("AI access tokens", () => {
 
   it("carries no product list at all", () => {
     // Which products the token reaches is the account's current permissions,
-    // resolved on every request. Freezing them into a 30-day token is what would
-    // let a revoked product stay readable for 30 days.
+    // resolved on every request. Freezing them into a 180-day token is what would
+    // let a revoked product stay readable for 180 days.
     const config = account();
     const { token } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client");
     expect(readAiAccessToken(config, token)).not.toHaveProperty("productIds");
@@ -240,10 +244,14 @@ describe("AI access tokens", () => {
     expect(readAiAccessToken(account({ sessionSecret: "another-secret" }), token)).toBeUndefined();
   });
 
-  it("rejects an expired token", () => {
+  it("keeps an AI token valid for 180 days and rejects it exactly at expiry", () => {
     const config = account();
-    const issuedAt = Date.now();
+    const issuedAt = Date.parse("2026-10-09T00:00:00.000Z");
+    const expiresAt = issuedAt + 180 * 24 * 60 * 60 * 1_000;
     const { token, claims } = createAiAccessToken(config, user(), CREDENTIALS_AT, "codex-client", ["missiongo:read"], issuedAt);
-    expect(readAiAccessToken(config, token, claims.expiresAt * 1_000 + 1_000)).toBeUndefined();
+    expect(claims.expiresAt).toBe(expiresAt / 1_000);
+    expect(readAiAccessToken(config, token, issuedAt + 31 * 24 * 60 * 60 * 1_000)).toBeDefined();
+    expect(readAiAccessToken(config, token, expiresAt - 1_000)).toBeDefined();
+    expect(readAiAccessToken(config, token, expiresAt)).toBeUndefined();
   });
 });

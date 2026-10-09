@@ -2365,7 +2365,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // The macOS client signs in through the same OAuth flow as an AI client, with
   // the node scope, and trades that login for a machine credential here. The
   // login token is not accepted anywhere else on /api/v1 and the client drops it
-  // straight after: it lasts 30 days and cannot be revoked on its own, while the
+  // straight after: it lasts 180 days and cannot be revoked on its own, while the
   // node credential can be revoked from the console at any time.
   app.post("/api/v1/node/register", async (request, reply) => {
     const principal = aiPrincipal(suppliedBearerToken(request));
