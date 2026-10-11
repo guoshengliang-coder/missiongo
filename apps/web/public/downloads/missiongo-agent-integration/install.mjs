@@ -2,7 +2,7 @@
 import { readFile, writeFile, mkdir, rename, lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
@@ -83,6 +83,10 @@ async function main() {
   for (const path of paths) process.stdout.write("Configured: " + path + "\n");
   process.stdout.write("Restart Claude Code/OpenCode to load session identity. Codex uses CODEX_THREAD_ID with MissionGo Skill 5.21+.\nEnable these Agents in the updated MissionGo Mac node. Plain Claude TUI needs an explicit local bridge handoff for Web replies. Existing model/provider configuration is retained.\n");
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+function isMain() {
+  try { return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(new URL(import.meta.url)); }
+  catch { return false; }
+}
+if (isMain()) {
   main().catch(() => { process.stderr.write("MissionGo setup failed. Check the HTTPS origin, download access and local JSON settings; no provider configuration is sent.\n"); process.exitCode = 1; });
 }
