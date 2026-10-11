@@ -11,12 +11,14 @@ export interface ExternalNativeConnection {
   readonly nodeId?: string;
   readonly nodeName?: string;
   readonly lastSyncedAt?: string;
+  readonly automatic?: boolean;
 }
 interface Row {
   id: string; account_id: string; agent_kind: string; session_ref: string; ref_kind: string;
   native_node_id: string | null; native_generation: number; native_synced_at: string | null;
   native_snapshot_json: string | null; archived_at: string | null;
   dismissed_revision: string | null;
+  native_auto_connect: number;
 }
 interface NativeSnapshot {
   status: AgentSessionStatus; turnState: AgentSessionTurnState; error?: string; sourceArchived?: boolean;
@@ -82,7 +84,7 @@ export class ExternalNativeSessionStore {
     this.store.database.transaction(() => {
       this.row(accountId, id);
       this.requireNoPending(id);
-      this.db.prepare("UPDATE external_agent_sessions SET native_node_id=NULL, native_generation=native_generation+1 WHERE id=?").run(id);
+      this.db.prepare("UPDATE external_agent_sessions SET native_node_id=NULL, native_auto_connect=0, native_generation=native_generation+1 WHERE id=?").run(id);
     });
   }
   beforeArchive(accountId: string, id: string): void { this.row(accountId, id); this.requireNoPending(id); }
@@ -94,8 +96,9 @@ export class ExternalNativeSessionStore {
       .get(row.native_node_id, accountId) as { name: string; last_seen_at: string | null; revoked_at: string | null } | undefined : undefined;
     const online = node && !node.revoked_at && nodeConnectionState(node.last_seen_at ?? undefined) === "online";
     const connected = Boolean(row.native_node_id && online && snapshot && !["failed", "unavailable", "suspended"].includes(snapshot.status) && !snapshot.sourceArchived);
-    const nativeConnection: ExternalNativeConnection | undefined = row.native_generation === 0 ? undefined : {
-      state: !row.native_node_id ? "disconnected" : !snapshot ? "pending" : connected ? "connected" : "unavailable",
+    const nativeConnection: ExternalNativeConnection | undefined = row.native_generation === 0 && !row.native_auto_connect ? undefined : {
+      state: !row.native_node_id ? row.native_auto_connect ? "pending" : "disconnected" : !snapshot ? "pending" : connected ? "connected" : "unavailable",
+      ...(row.native_auto_connect ? { automatic: true } : {}),
       ...(row.native_node_id ? { nodeId: row.native_node_id } : {}), ...(node ? { nodeName: node.name } : {}),
       ...(row.native_synced_at ? { lastSyncedAt: row.native_synced_at } : {}),
     };
@@ -142,13 +145,20 @@ export class ExternalNativeSessionStore {
     if (!changed.changes) throw conflict("agent_reply_not_uncertain", "This reply no longer needs delivery confirmation.");
     return this.command(id)!;
   }
-  listForNode(accountId: string, nodeId: string, workerId: string, authorizeProduct: (id: string, execute: boolean) => void) {
-    const rows = this.db.prepare("SELECT * FROM external_agent_sessions WHERE account_id=? AND native_node_id=? AND archived_at IS NULL ORDER BY id LIMIT 100").all(accountId, nodeId) as unknown as Row[];
+  listForNode(accountId: string, nodeId: string, workerId: string, authorizeProduct: (id: string, execute: boolean) => void, allowAutomatic = false) {
+    const node = this.db.prepare("SELECT agents_json FROM nodes WHERE id=? AND account_id=? AND revoked_at IS NULL").get(nodeId, accountId) as { agents_json: string } | undefined;
+    if (!node) return [];
+    const enabled = new Set((JSON.parse(node.agents_json) as { kind: string }[]).map((agent) => agent.kind));
+    const rows = this.db.prepare(`SELECT * FROM external_agent_sessions WHERE account_id=? AND archived_at IS NULL
+      AND (native_node_id=? OR (? AND native_node_id IS NULL AND native_auto_connect=1 AND ref_kind='native'))
+      ORDER BY native_node_id IS NULL, id LIMIT 100`).all(accountId, nodeId, allowAutomatic ? 1 : 0) as unknown as Row[];
     return rows.flatMap((row) => {
-      try { this.items(row.id).forEach((item) => authorizeProduct(item.product_id, false)); } catch { return []; }
+      const automatic = row.native_node_id === null;
+      if (automatic && (!enabled.has(row.agent_kind) || this.items(row.id).every((item) => item.status === "done"))) return [];
+      try { this.items(row.id).forEach((item) => authorizeProduct(item.product_id, automatic)); } catch { return []; }
       this.expireCommands(row.id, workerId);
       let command = this.command(row.id);
-      if (command && !["queued", "delivering"].includes(command.status)) command = undefined;
+      if (automatic || command && !["queued", "delivering"].includes(command.status)) command = undefined;
       if (command) {
         try { this.items(row.id).forEach((item) => authorizeProduct(item.product_id, true)); }
         catch { command = undefined; }
@@ -157,16 +167,34 @@ export class ExternalNativeSessionStore {
       const snapshot = row.native_snapshot_json ? JSON.parse(row.native_snapshot_json) as NativeSnapshot : undefined;
       return [{ id: row.id, agentKind: row.agent_kind, sessionRef: row.session_ref, status: snapshot?.status ?? "unavailable",
         lifecycle: "keep", occupiesExecutionSlot: false, externalBindingGeneration: row.native_generation,
+        ...(automatic ? { externalAutoConnect: true } : {}),
         ...(command ? { command } : {}) }];
     });
   }
   recordSnapshot(input: { accountId: string; nodeId: string; sessionId: string; generation: number; workerId: string;
     status: AgentSessionStatus; messages: readonly AgentSessionMessageInput[]; turnState: AgentSessionTurnState;
-    error?: string; sourceArchived?: boolean; commandId?: string; commandStatus?: "delivering" | "delivery_unknown" | "delivered" | "failed"; commandError?: string },
+    error?: string; sourceArchived?: boolean; commandId?: string; commandStatus?: "delivering" | "delivery_unknown" | "delivered" | "failed"; commandError?: string;
+    autoConnect?: boolean; nativeSessionRef?: string },
   authorizeProduct: (id: string, execute: boolean) => void): void {
     this.store.database.transaction(() => {
-      const row = this.row(input.accountId, input.sessionId);
-      if (row.native_node_id !== input.nodeId || row.native_generation !== input.generation || row.archived_at) throw notFound("Native binding");
+      let row = this.row(input.accountId, input.sessionId);
+      let generation = input.generation;
+      if (input.autoConnect) {
+        if (!row.native_auto_connect || row.ref_kind !== "native" || row.session_ref !== input.nativeSessionRef || row.archived_at
+          || input.commandId || input.commandStatus) throw notFound("Automatic native connection");
+        this.items(row.id).forEach((item) => authorizeProduct(item.product_id, true));
+        if (this.items(row.id).every((item) => item.status === "done")) throw conflict("agent_session_work_finished", "The linked work is done.");
+        if (row.native_node_id === null && row.native_generation === input.generation) {
+          // Probes cannot start a CLI or send input. Only the exact source's
+          // healthy read admits one node; failed probes never steal a binding.
+          if (!["active", "idle", "stalled"].includes(input.status) || input.error || input.sourceArchived) return;
+          this.connect(input.accountId, input.sessionId, input.nodeId);
+          row = this.row(input.accountId, input.sessionId);
+        }
+        if (row.native_node_id !== input.nodeId || row.native_generation !== input.generation + 1) throw notFound("Automatic native connection");
+        generation = row.native_generation;
+      }
+      if (row.native_node_id !== input.nodeId || row.native_generation !== generation || row.archived_at) throw notFound("Native binding");
       this.items(row.id).forEach((item) => authorizeProduct(item.product_id, Boolean(input.commandId)));
       if (Boolean(input.commandId) !== Boolean(input.commandStatus)) throw invalidInput("A command ID and status must be reported together.");
       if (input.commandStatus === "delivering" && this.items(row.id).every((item) => item.status === "done")) throw conflict("agent_session_work_finished", "The linked work is done.");

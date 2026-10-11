@@ -528,6 +528,7 @@ export interface AgentSession {
 export interface AgentSessionSummary {
   readonly nativeConnection?: ExternalNativeConnection;
   readonly canConnectNative?: boolean;
+  readonly canRegisterNative?: boolean;
   readonly canDisconnectNative?: boolean;
   readonly source?: "dispatch" | "external";
   readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
@@ -589,6 +590,7 @@ export interface AgentSessionSummary {
 }
 
 export interface ExternalNativeConnection {
+  readonly automatic?: boolean;
   readonly state: "pending" | "connected" | "unavailable" | "disconnected";
   readonly nodeId?: string;
   readonly nodeName?: string;

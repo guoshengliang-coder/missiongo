@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 完整读取条目、评论、领取、创建条目及上传附件，并在 PR 合并和发布核实后推进状态。不修改条目正文与字段，不删除条目，不决定验收。
-version: 5.20.0
+version: 5.21.0
 ---
 
 # MissionGo 条目读取与评论
@@ -260,17 +260,19 @@ frontmatter 中的 `version` 对比。
 ### 外部主动处理的会话与进展
 
 用户在 Codex、Claude Code、OpenCode 或其他客户端里直接要求处理条目时，也要将这次处理关联到 Web Agent 控制台。
-只读查询、仅提及编号和未批准的计划不登记、不上报。这些 MCP 工具上报的是处理记录。只有用户在 Web 控制台明确连接原生会话、且节点同步成功后，才开放原生消息与回复；不得仅凭领取成功声称 Web 已能接管。
+只读查询、仅提及编号和未批准的计划不登记、不上报。这些 MCP 工具上报的是处理记录。对可信原生会话身份请求自动连接；只有用户已启用的本机集成核对同一会话并同步成功后，才开放原生消息与回复。领取成功、自动连接请求或取得会话 ID 均不能证明回复已可用。用户明确要求仅记录进展时不请求自动连接。
 
 - 先核对 `get_current_account.capabilities.writeTools`。只有提供 `register_agent_session`、`report_agent_session` 且本次连接可写时才使用；旧服务不支持时说明限制，不绕开权限。
-- 每个对话使用一份稳定 `session`：`agentKind` 是 `codex|claude_code|opencode|hermes|other`；`sessionRef` 是已从可信客户端取得的原生会话 ID，配 `refKind: "native"`。拿不到原生 ID 时为本次对话生成一个 UUID，配 `refKind: "tracking"`，不得编造原生 ID、用 Agent 名称代替、扫描其他聊天或按条目编号猜匹配。`name` 可填简短自述名称，不构成身份。
+- 领取前主动取得**当前对话**的可信身份，不直接跳到 tracking：Codex 只读客户端已提供的 `CODEX_THREAD_ID`；Claude 桥接只读 `MISSIONGO_AGENT_SESSION_REF`，或使用 SessionStart hook 输出的本会话身份；OpenCode 使用 MissionGo 插件的当前 context hook 身份。环境读取只访问这两个已知键，不读取整个环境、凭据或其它会话文件。可信值不存在时才生成 tracking UUID，不用条目编号猜匹配。
+- 每个对话使用一份稳定 `session`：`agentKind` 是 `codex|claude_code|opencode|hermes|other`；`sessionRef` 是已从可信客户端取得的原生会话 ID，配 `refKind: "native"`。拿不到原生 ID 时为本次对话生成一个 UUID，配 `refKind: "tracking"`，不得编造原生 ID、用 Agent 名称代替、扫描其他聊天或按条目编号猜匹配。`name` 可填简短自述名称，不构成身份。Codex、Claude Code、OpenCode 的可信 native 身份默认带 `autoConnect: true`；用户要求仅进展时省略或设 false。tracking 和其他 Agent 不带 autoConnect。
 - 待处理条目领取时将这份 `session` 传给 `claim_item`，保存返回的服务端 `sessionId`。同一对话处理多条用户指定的条目时复用同一份 `session`，合并为一条控制台记录。旧客户端不带 `session` 时服务端只生成每次领取的跟踪记录，不能保证跨条目合并。
 - 对已在处理中、开发完成或待验证的条目，只有本会话自己领取过或用户明确要求继续处理时，才调用 `register_agent_session` 关联这份 `session`，保存返回的 `sessionId`。登记不会领取条目，不得借此抢占其他会话的工作。
+- 已保存本次对话的跟踪 `sessionId`，或用户从该记录复制了接入请求时，取得本会话可信原生 ID 后调用 `register_agent_session`，同时带原 `sessionId`、一个已关联的条目和 native `session`（含 `autoConnect: true`）。服务端核对账号、OAuth 客户端和全部关联权限，保留同一条记录及进展；不能扫描其它记录、替别的 Agent 改身份、换原生 ID或合并其他会话。当前客户端无原生身份或输入通道时，如实说明本机接入条件。
 - 为已关联条目调用 `append_comment` 时带 `sessionId`，服务端会在同一事务中把评论内容或摘要记入进展；未关联的评论不按客户端名称猜会话。仍按原有规则写条目评论，不能用会话上报替代结局回写。
 - 开始、重要进展、需要用户回复、遇到阻碍和本次处理结束时，调用 `report_agent_session`，带一个已关联的 `itemKey`、`sessionId`、简短事实 `text` 和稳定 `idempotencyKey`。状态分别用 `working`、`waiting_for_input`、`blocked`、`completed` 或 `failed`；重试复用原键。多条目会话只有整次处理结束才报 `completed`。
 - `completed` 仅表示这次会话的处理结束，不代表条目验收、PR 合并或发布。所有条目状态交接仍按下面规则核验。长时间未上报会显示“近期未上报”，不会自动释放条目或重新派单。
-- 用户默认仍在原客户端回复。已确认原生 ID 的 Codex、OpenCode 会话可由用户在 Web 控制台选择该会话所在的节点并点击「同步原生会话」；需更新 MissionGo macOS 客户端，且该节点控制通道能读取这一条会话。OpenCode 需使用该节点已登记的同一共享服务实例，不能把普通 TUI 的随机服务误认为共享服务。不能根据机器名猜节点或替用户自动连接。Claude Code 会话须先由本机 MissionGoClaudeBridge 启动，或在本机明确移交已退出的普通 CLI；桥接打印的原生 ID 和本机 MISSIONGO_AGENT_SESSION_REF 可用于登记，不能读取整个环境或上传模型凭据。桥接保留第三方模型配置，不依赖官方 Remote Control 或官方订阅。普通未桥接 CLI、其他客户端及 tracking 记录仍不能直接回复；不能替用户启动桥接、停止原 CLI 或猜测历史路径。权限与提问请求由用户在桥接终端按请求 ID 明确回答，Web 文字不能视作工具批准。
-- 仅上报这些用户指定条目的处理事实，不上传无关聊天、历史对话或客户端凭据。用户明确连接后，节点只同步这一条原生会话里的可见用户与 Agent 消息；Web 回复走同一条会话，当前只支持文字。断开或归档只停止 MissionGo 同步，不关闭、归档原客户端会话。
+- 原生身份请求自动连接后，更新后的 MissionGo macOS 节点只探测这一个原生 ID；本机已启用的集成成功核对来源后自动绑定并开放 Web 文字回复，不需要猜机器名或人工逐条选节点。未连接的探测不带回复命令，不能启动或恢复 CLI。手动「同步原生会话」仍可使用。用户断开后不得通过重复登记把自动连接重新打开。Codex 需处于该节点可访问的控制通道；OpenCode 需使用节点已登记的同一共享服务实例，不能把普通 TUI 的随机服务误认为共享服务。Claude Code 会话须先由本机 MissionGoClaudeBridge 启动，或在本机明确移交已退出的普通 CLI；桥接打印的原生 ID 和本机 MISSIONGO_AGENT_SESSION_REF 可用于登记，不能读取整个环境或上传模型凭据。桥接保留第三方模型配置，不依赖官方 Remote Control 或官方订阅。普通未桥接 CLI、其他客户端及 tracking 记录仍不能直接回复；不能替用户启动桥接、停止原 CLI 或猜测历史路径。权限与提问请求由用户在桥接终端按请求 ID 明确回答，Web 文字不能视作工具批准。
+- 仅上报这些用户指定条目的处理事实，不上传无关聊天、历史对话或客户端凭据。自动接入握手成功或用户明确连接后，节点只同步这一条原生会话里的可见用户与 Agent 消息；Web 回复走同一条会话，当前只支持文字。断开或归档只停止 MissionGo 同步，不关闭、归档原客户端会话。
 
 ### 处理完成后回写
 

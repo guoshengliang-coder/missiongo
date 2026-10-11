@@ -407,6 +407,7 @@ public struct AgentSessionCommand: Codable, Equatable, Sendable {
 }
 
 public struct NodeAgentSession: Codable, Equatable, Sendable {
+    public let externalAutoConnect: Bool
     /// Present only for an explicitly connected external conversation.
     public let externalBindingGeneration: Int?
     public let managedExecution: ManagedSessionBinding?
@@ -458,10 +459,12 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
         restoreInSource: Bool = false,
         desiredSettings: AgentSessionSettings? = nil,
         appliedSettingsRevision: Int = 0,
-        externalBindingGeneration: Int? = nil
+        externalBindingGeneration: Int? = nil,
+        externalAutoConnect: Bool = false
     ) {
         self.managedExecution = managedExecution
         self.externalBindingGeneration = externalBindingGeneration
+        self.externalAutoConnect = externalAutoConnect
         self.id = id
         self.dispatchId = dispatchId
         self.agentKind = agentKind
@@ -487,13 +490,14 @@ public struct NodeAgentSession: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, dispatchId, agentKind, sessionRef, status, lifecycle, occupiesExecutionSlot, command, archiveInSource
-        case restoreInSource, desiredSettings, appliedSettingsRevision, managedExecution, approvalDecision, approvalRetry, approvalReviewMode, externalBindingGeneration
+        case restoreInSource, desiredSettings, appliedSettingsRevision, managedExecution, approvalDecision, approvalRetry, approvalReviewMode, externalBindingGeneration, externalAutoConnect
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         managedExecution = try values.decodeIfPresent(ManagedSessionBinding.self, forKey: .managedExecution)
         externalBindingGeneration = try values.decodeIfPresent(Int.self, forKey: .externalBindingGeneration)
+        externalAutoConnect = try values.decodeIfPresent(Bool.self, forKey: .externalAutoConnect) ?? false
         id = try values.decode(String.self, forKey: .id)
         dispatchId = try values.decodeIfPresent(String.self, forKey: .dispatchId)
         // A server from before Claude mirroring only ever lists Codex here.
@@ -1305,7 +1309,7 @@ public struct APIClient: Sendable {
         struct Reply: Decodable { let sessions: [NodeAgentSession] }
         let response = try await send(
             "GET", "/api/v1/node/agent-sessions", body: Optional<String>.none, bearer: try nodeToken(),
-            extraHeaders: ["X-MissionGo-Chat-Attachments": "1", "X-MissionGo-External-Sessions": "1", "X-MissionGo-External-Worker": externalWorkerId]
+            extraHeaders: ["X-MissionGo-Chat-Attachments": "1", "X-MissionGo-External-Sessions": "1", "X-MissionGo-External-Worker": externalWorkerId, "X-MissionGo-External-Auto-Connect": "1"]
         )
         // During a rolling update the Mac can reach a server from before
         // mirrored sessions. Dispatching must keep working until that server is
@@ -1336,6 +1340,14 @@ public struct APIClient: Sendable {
         let response = try await send("POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true,
             extraHeaders: ["X-MissionGo-External-Generation": String(generation), "X-MissionGo-External-Worker": externalWorkerId])
         try requireSuccess(response, operation: "同步外部 Agent 会话")
+    }
+
+    public func reportAutomaticExternalSession(sessionId: String, generation: Int, nativeSessionRef: String, report: AgentSessionReport) async throws {
+        let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/snapshot"
+        let response = try await send("POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true,
+            extraHeaders: ["X-MissionGo-External-Generation": String(generation), "X-MissionGo-External-Worker": externalWorkerId,
+                "X-MissionGo-External-Auto-Connect": "1", "X-MissionGo-External-Ref": nativeSessionRef])
+        try requireSuccess(response, operation: "自动连接外部 Agent 会话")
     }
 
     /// The report as it can go on the wire: no message longer than the server's

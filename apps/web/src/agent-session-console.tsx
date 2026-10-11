@@ -1060,7 +1060,7 @@ export function AgentSessionConsole({
                   <div className="agent-console-connection-banner" role="status">
                     <CircleAlert size={17} />
                     <div><strong>{t("agentExternalSource")}</strong>
-                      <span>{selected.nativeConnection ? t(selected.nativeConnection.state === "connected" ? "agentExternalNativeConnected"
+                      <span>{selected.nativeConnection?.automatic && !selected.nativeConnection.nodeId ? t("agentExternalAutoConnecting") : selected.nativeConnection ? t(selected.nativeConnection.state === "connected" ? "agentExternalNativeConnected"
                         : selected.nativeConnection.state === "pending" ? "agentExternalNativePending"
                           : selected.nativeConnection.state === "disconnected" ? "agentExternalNativeDisconnected" : "agentExternalNativeUnavailable",
                       { node: selected.nativeConnection.nodeName ?? "" }) : t("agentExternalDetail")}</span>

@@ -11,17 +11,28 @@
 | Claude Code（含第三方模型） | 支持 | 已桥接会话支持 | 使用本机 MissionGoClaudeBridge 启动或明确移交；普通未桥接 CLI 仅进展 |
 | tracking、其他 Agent | 支持 | 暂不支持 | 跟踪 UUID 不构成原生 ID |
 
-以上为本地代码能力，尚未发布。Claude 桥接已通过本地模拟协议验证；用户实际第三方网关与 CLI 组合仍需实测。
+手动同步与桥接已随 Mac 0.4.38 发布；自动登记、节点握手和 tracking 记录升级需要 Mac 0.4.39 与 Skill 5.21。Claude 桥接已通过本地模拟协议验证；用户实际第三方网关与 CLI 组合仍需实测。
 
 Codex CLI 若不在选定控制通道可访问的运行时中，连接保持不可用，不会另起会话冒充接管。OpenCode 普通 TUI 的临时服务也不能与已登记共享服务混用。需升级包含此外部同步协议的 MissionGo macOS 客户端；旧客户端不拉取外部绑定。
 
 ## 使用流程
 
-1. Agent 按 Skill 领取用户指定条目，传入可信原生 ID 和 `refKind: native`。不能取得 ID 时只登记 tracking，不扫描其它聊天猜匹配。
-2. 用户在 Web 控制台打开记录，点击「同步原生会话」，选择会话所在节点。这会同步该会话可见的用户、Agent、计划与提问消息，包括已存在的消息；不枚举或导入其它会话正文。
-3. 节点首次成功读取该 ID 后才开放文字回复。同步失败、节点离线或撤销、全部条目完成、记录归档或权限不足时不可回复。
-4. 回复经过 queued → delivering → delivered。网络错误或节点重启使交付无法确认时进入 delivery_unknown；先在原客户端核实，再确认「已收到」或「未收到」。不会自动重发；确认未收到也不会创建新回复。
-5. 断开保留已同步历史。归档、断开只停止 MissionGo 同步，不关闭或归档原客户端会话，不创建派单、占用派单执行名额或改变条目状态。存在待交付或未确认回复时，先取消或确认才能归档、断开或更换节点。
+1. 一次性更新 Mac 客户端和 MissionGo Skill，并在 Mac 节点启用需要的 Agent。Codex 从当前运行时的 `CODEX_THREAD_ID` 取得原生身份；Claude 与 OpenCode 可安装下面的身份接入脚本。
+2. Agent 按 Skill 领取用户指定条目，传入可信原生 ID、`refKind: native` 与 `autoConnect: true`。不能取得 ID 时只登记 tracking，不扫描其它聊天猜匹配。
+3. 已启用的同账号节点只探测该 ID，不启动或恢复 CLI、不发送输入。首次成功读取原生会话后，服务端选定该节点，开放 Web 文字回复。多个节点同时探测时只有一个绑定成功。无法访问原会话则保持待接入；仍可手动「同步原生会话」选择节点。
+4. 旧 tracking 记录点击「启用回复」，复制接入请求给原 Agent。Agent 取得自己的真实 ID 后，用原记录的 `sessionId` 调用 `register_agent_session`，保留原进展和所有关联条目；不会创建第二条记录或猜测截图中的会话。旧记录所属 OAuth 客户端和所有关联产品权限必须一致。
+5. 回复经过 queued → delivering → delivered。网络错误或节点重启使交付无法确认时进入 delivery_unknown；先在原客户端核实，再确认「已收到」或「未收到」。不会自动重发；确认未收到也不会创建新回复。
+6. 断开保留已同步历史，同时关闭自动接入；后续 MCP 重试不会再次连上。归档、断开只停止 MissionGo 同步，不关闭或归档原客户端会话，不创建派单、占用派单执行名额或改变条目状态。存在待交付或未确认回复时，先取消或确认才能归档、断开或更换节点。
+
+### 一次性身份接入设置
+
+Web 的「自动接入设置」提供配置脚本下载和当前站点的运行命令。也可下载同一目录的 `install.mjs`、`claude-session.cjs` 和 `opencode-session.mjs` 后运行 `node install.mjs`；单独下载脚本时使用 `node install.mjs --origin <当前 MissionGo HTTPS origin>`。需要 Node.js 22+。
+
+脚本只在本机添加 Claude `SessionStart` hook 与 OpenCode V2 本地插件，幂等安装并为改写文件保留受保护的备份。保留已有 hooks、第三方接口、模型、认证来源和 MCP 配置；不读取其它会话、不上传 settings。遵循 `CLAUDE_CONFIG_DIR` 和 `XDG_CONFIG_HOME`，其它自定义目录可在安装模块调用时显式指定。安装后重新启动相关 Agent，以加载当前会话身份。
+
+Claude hook 仅向当前上下文提供真实会话 ID，**不会给普通 CLI 增加输入通道**。新任务使用下面的 `MissionGoClaudeBridge start`，已存在的普通 CLI 则在本机明确移交后才能在 Web 回复。OpenCode 插件针对 V2 的 context hook；节点仍须连接它已登记的同一共享服务。Codex 没有可信当前 ID 或控制通道不可达时仍仅进展，不承诺控制所有独立 CLI。
+
+身份来源分别使用 [Claude SessionStart](https://code.claude.com/docs/en/hooks)、[OpenCode V2 context hook](https://opencode.ai/v2/docs/build/plugins/) 与 [V2 插件自动发现](https://opencode.ai/v2/docs/plugins)。Codex 节点通过 [App Server](https://developers.openai.com/codex/app-server/) 精确读取已登记 ID，不发现其它会话。
 
 当前不开放附件、模式或模型变更、远程停止，也不接入外部 Codex 会话的权限审批控制；权限批准仍在原客户端操作。原生消息不能替代条目结局评论或发布核验。
 
@@ -30,7 +41,7 @@ Codex CLI 若不在选定控制通道可访问的运行时中，连接保持不�
 - `PUT /api/v1/agent-sessions/:id/native-connection`，正文 `{ nodeId }`：连接当前账号所属节点，只允许 Codex、OpenCode、Claude native 记录，检查全部关联产品 operate、ai 权限。
 - `DELETE /api/v1/agent-sessions/:id/native-connection`：停止同步，递增绑定代次，使旧同步请求失效。
 - 原有 detail、list、commands、cancel、resolve-delivery、read、archive 入口兼容外部记录，仍检查全部关联产品权限。归档不发送来源归档命令。
-- 新节点通过 `X-MissionGo-External-Sessions: 1` 和进程级 `X-MissionGo-External-Worker` 拉取精确绑定。快照另带 `X-MissionGo-External-Generation`，服务端核对绑定代次、节点所有权和当前产品权限。旧客户端不收到此类记录。
+- 新节点通过 `X-MissionGo-External-Sessions: 1` 和进程级 `X-MissionGo-External-Worker` 拉取精确绑定。自动探测另需 `X-MissionGo-External-Auto-Connect: 1`；首次快照带精确 `X-MissionGo-External-Ref`，不含回复命令。服务端核验权限、节点和原生 ID 后递增代次，再开放正常回复。快照另带 `X-MissionGo-External-Generation`，服务端核对绑定代次、节点所有权和当前产品权限。旧客户端不收到此类记录。
 - 回复预留持久化 worker 身份。worker 变更或预留超时转为交付待确认，防止重启后重发。节点不能直接把未预留回复标为成功。
 
 原生连接不新增 MCP 控制工具，不提供任意字段更新、命令执行或会话发现接口。消息按 sourceId 更新，保留省略的历史；重复快照不推进未读时钟。
@@ -59,7 +70,7 @@ MissionGo 的控制能力不得依赖 Claude 官方 Remote Control、官方订�
 
 | 来源 | 接入方式 | 行为边界 |
 | --- | --- | --- |
-| 用户准备从终端开始处理条目 | 提供本地桥接启动入口，从当前终端环境启动受宿主管理的 Claude 会话 | 不强制 Web 派单；保留原生会话 ID，由 MCP 关联条目，Web 选择节点并完成首次同步后开放回复 |
+| 用户准备从终端开始处理条目 | 提供本地桥接启动入口，从当前终端环境启动受宿主管理的 Claude 会话 | 不强制 Web 派单；保留原生会话 ID，由 MCP 关联条目，启用自动接入的节点完成首次同步后开放回复 |
 | 用户已经启动普通交互式 Claude CLI | 初期继续展示进展；用户在本机显式移交后，由宿主精确恢复该会话 | 不承诺无缝附着现有 TUI；原进程结束且会话已保存、无活跃回合或审批后，才能以指定 ID 和原配置恢复 |
 
 桥接入口 MissionGoClaudeBridge 已包含在客户端构建中。它通过同用户、仅当前用户可访问的本地目录与内核锁关联宿主，向子进程继承终端配置；终端可通过桥接界面输入和查看输出。不能将该界面描述成原版 Claude TUI，原版 `/resume` 与桥接恢复也不得同时写同一会话。
@@ -121,7 +132,7 @@ MissionGoClaudeBridge start -- '处理 EX-1，按 MissionGo Skill 读取并领�
 MissionGoClaudeBridge start --model company-alias --settings ./claude-settings.json -- '处理 EX-1'
 ```
 
-终端会打印原生 UUID。领取后由用户在 Web 打开对应外部记录，选择这台节点；节点核对本机桥接、原生 ID 与首次 CLI 确认成功后才开放回复。初次启动提示词由用户明确提供，随后可以在桥接终端或 Web 继续同一会话。终端普通输入不会自动回答权限请求；使用 `/answer <request-id> <答案或批准/拒绝>` 明确回答，或使用 `answer` 子命令。Web 首期仅文字消息，待审批时文字交付会明确失败并提示本机处理。
+终端会打印原生 UUID。领取时 Skill 登记原生 ID 并启用自动接入；仍可在 Web 手动选择节点。节点核对本机桥接、原生 ID 与首次 CLI 确认成功后才开放回复。初次启动提示词由用户明确提供，随后可以在桥接终端或 Web 继续同一会话。终端普通输入不会自动回答权限请求；使用 `/answer <request-id> <答案或批准/拒绝>` 明确回答，或使用 `answer` 子命令。Web 首期仅文字消息，待审批时文字交付会明确失败并提示本机处理。
 
 `/detach` 或关闭终端输入只退出桥接界面，宿主保留。未确认交付需要先核实原会话；Web 队列在 Web 确认，本机写入记录用 `/confirm <command-id> received|not_received` 确认，均不会自动重发。空闲、无审批且无交付待确认时用 `/release` 或 `release <session-id>` 明确释放 CLI，之后可回到原版 Claude 的 `/resume`。宿主不会因 Web 断开、归档或条目结束被关闭。Mac 重启或宿主停止后，Web 显示不可用，需回到原配置终端：
 

@@ -11,6 +11,10 @@ export function ExternalNativeConnectionPanel({ session }: { session: AgentSessi
   const queryClient = useQueryClient();
   const [choosing, setChoosing] = useState(false);
   const [nodeId, setNodeId] = useState("");
+  const [showRegistration, setShowRegistration] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
+  const registrationPrompt = t("agentExternalRegisterPrompt", { session: session.id });
   const nodes = useQuery({ queryKey: ["external-native-nodes"], queryFn: api.listNodes, enabled: choosing });
   const mutation = useMutation({
     mutationFn: (node: string | null) => node ? api.connectExternalSession(session.id, node) : api.disconnectExternalSession(session.id),
@@ -21,6 +25,26 @@ export function ExternalNativeConnectionPanel({ session }: { session: AgentSessi
   });
   if (session.source !== "external") return null;
   return <div>
+    {session.canRegisterNative && session.refKind === "tracking" && <>
+      <button type="button" className="secondary-button" onClick={() => setShowRegistration(!showRegistration)}>{t("agentExternalEnableReply")}</button>
+      {showRegistration && <div>
+        <p>{t("agentExternalRegisterDetail")}</p>
+        <p>{registrationPrompt}</p>
+        <button type="button" className="secondary-button" onClick={() => {
+          setCopyError(false);
+          if (!navigator.clipboard) { setCopyError(true); return; }
+          void navigator.clipboard.writeText(registrationPrompt).then(() => setCopied(true)).catch(() => setCopyError(true));
+        }}>{t(copied ? "agentExternalRegistrationCopied" : "agentExternalCopyRegistration")}</button>
+        {copyError && <p>{t("agentExternalCopyRegistrationFailed")}</p>}
+      </div>}
+    </>}
+    {!session.canReply && (session.canRegisterNative || session.canConnectNative) && <details>
+      <summary>{t("agentExternalSetup")}</summary>
+      <p>{t("agentExternalSetupDetail")}</p>
+      <a href="/downloads/missiongo-agent-integration/install.mjs" download="install.mjs">{t("agentExternalDownloadSetup")}</a>
+      <p><code>node install.mjs --origin {window.location.origin}</code></p>
+      <p>{t("agentExternalSetupClaude")}</p>
+    </details>}
     {session.agentKind === "claude_code" && <span>{t("agentExternalClaudeLimit")}</span>}
     {session.canConnectNative && !session.nativeConnection?.nodeId && !choosing && <button type="button" className="secondary-button" onClick={() => setChoosing(true)}>{t("agentExternalConnect")}</button>}
     {choosing && <div>
