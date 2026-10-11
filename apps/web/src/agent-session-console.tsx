@@ -1375,7 +1375,8 @@ export function AgentSessionConsole({
               ) : (
                 <p className="agent-session-muted" role="note">
                   {selected.agentSessionId
-                    ? t(replyBlockedLabelKey(selected.replyBlockedReason))
+                    ? selected.nativeConnection?.state === "pending" && selected.nativeConnection?.automatic
+                      ? t("agentExternalWaitingForNode") : t(replyBlockedLabelKey(selected.replyBlockedReason))
                     : t("agentConsoleNoInlineReply")}
                 </p>
               )}

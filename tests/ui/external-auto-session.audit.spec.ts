@@ -35,6 +35,10 @@ for (const width of [375, 1440]) {
       });
       const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(`/?product=${fixture.productId}&console=agent&session=${summary().id}`);
+      await page.getByText("自动接入设置", { exact: true }).click();
+      await expect(page.getByRole("link", { name: "下载配置脚本" })).toHaveAttribute("href", "/downloads/missiongo-agent-integration/install.mjs");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.getByText("自动接入设置", { exact: true }).click();
       await page.getByRole("button", { name: "启用回复" }).click();
       await page.getByRole("button", { name: "复制接入请求" }).click();
       await expect.poll(() => copied).toContain(summary().id);
