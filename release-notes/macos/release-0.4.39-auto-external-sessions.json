@@ -1,0 +1,9 @@
+{
+  "pullRequest": 248,
+  "items": [
+    {
+      "key": "PR-248",
+      "title": "自动连接 Codex、OpenCode 与已桥接 Claude 原生会话，旧进展记录可启用 Web 回复"
+    }
+  ]
+}
