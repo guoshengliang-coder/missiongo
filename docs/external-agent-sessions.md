@@ -28,7 +28,7 @@ Codex CLI 若不在选定控制通道可访问的运行时中，连接保持不�
 
 Web 的「自动接入设置」提供配置脚本下载和当前站点的运行命令。也可下载同一目录的 `install.mjs`、`claude-session.cjs` 和 `opencode-session.mjs` 后运行 `node install.mjs`；单独下载脚本时使用 `node install.mjs --origin <当前 MissionGo HTTPS origin>`。需要 Node.js 22+。
 
-脚本只在本机添加 Claude `SessionStart` hook 与 OpenCode V2 本地插件，幂等安装并为改写文件保留受保护的备份。保留已有 hooks、第三方接口、模型、认证来源和 MCP 配置；不读取其它会话、不上传 settings。遵循 `CLAUDE_CONFIG_DIR` 和 `XDG_CONFIG_HOME`，其它自定义目录可在安装模块调用时显式指定。安装后重新启动相关 Agent，以加载当前会话身份。
+脚本只为已检测到的 OpenCode V2 安装插件；未安装或版本不兼容时保留原配置，升级后可重新运行。脚本在本机添加 Claude `SessionStart` hook 与 OpenCode V2 本地插件，幂等安装并为改写文件保留受保护的备份。保留已有 hooks、第三方接口、模型、认证来源和 MCP 配置；不读取其它会话、不上传 settings。遵循 `CLAUDE_CONFIG_DIR` 和 `XDG_CONFIG_HOME`，其它自定义目录可在安装模块调用时显式指定。安装后重新启动相关 Agent，以加载当前会话身份。
 
 Claude hook 仅向当前上下文提供真实会话 ID，**不会给普通 CLI 增加输入通道**。新任务使用下面的 `MissionGoClaudeBridge start`，已存在的普通 CLI 则在本机明确移交后才能在 Web 回复。OpenCode 插件针对 V2 的 context hook；节点仍须连接它已登记的同一共享服务。Codex 没有可信当前 ID 或控制通道不可达时仍仅进展，不承诺控制所有独立 CLI。
 

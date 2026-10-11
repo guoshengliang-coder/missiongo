@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 
 const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -71,11 +72,14 @@ async function main() {
     return response.text();
   };
   const [claude, opencode] = await Promise.all([load("claude-session.cjs"), load("opencode-session.mjs")]);
+  const version = spawnSync("opencode", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 65536 });
+  const openCodeV2 = version.status === 0 && /^v?2\./.test(version.stdout.trim());
   const paths = await install({
     claudeDirectory: resolve(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")),
-    opencodeDirectory: join(resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config")), "opencode"),
+    opencodeDirectory: openCodeV2 ? join(resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config")), "opencode") : undefined,
     assets: { claude, opencode },
   });
+  if (!openCodeV2) process.stdout.write("OpenCode V2 was not detected; its plugin was not installed. Upgrade to V2 and rerun setup.\n");
   for (const path of paths) process.stdout.write("Configured: " + path + "\n");
   process.stdout.write("Restart Claude Code/OpenCode to load session identity. Codex uses CODEX_THREAD_ID with MissionGo Skill 5.21+.\nEnable these Agents in the updated MissionGo Mac node. Plain Claude TUI needs an explicit local bridge handoff for Web replies. Existing model/provider configuration is retained.\n");
 }
