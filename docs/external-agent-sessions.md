@@ -11,9 +11,9 @@
 | Claude Code（含第三方模型） | 支持 | 已桥接会话支持 | 使用本机 MissionGoClaudeBridge 启动或明确移交；普通未桥接 CLI 仅进展 |
 | tracking、其他 Agent | 支持 | 暂不支持 | 跟踪 UUID 不构成原生 ID |
 
-手动同步与桥接已随 Mac 0.4.38 发布；自动登记、节点握手和 tracking 记录升级需要 Mac 0.4.39 与 Skill 5.21。Claude 桥接已通过本地模拟协议验证；用户实际第三方网关与 CLI 组合仍需实测。
+手动同步与桥接已随 Mac 0.4.38 发布；自动登记、节点握手和 tracking 记录升级需要 Mac 0.4.40 与 Skill 5.21。Claude 桥接已通过本地模拟协议验证；用户实际第三方网关与 CLI 组合仍需实测。
 
-Codex CLI 若不在选定控制通道可访问的运行时中，连接保持不可用，不会另起会话冒充接管。OpenCode 普通 TUI 的临时服务也不能与已登记共享服务混用。需升级包含此外部同步协议的 MissionGo macOS 客户端；旧客户端不拉取外部绑定。
+Codex 外部读取必须确认会话已在控制通道对应的运行时加载；`notLoaded` 历史不可自动认领。同步不订阅 MissionGo 的审批观察器，文字回复不调用 `thread/resume` 或覆盖原模型和权限。Codex CLI 若不在选定控制通道可访问的运行时中，连接保持不可用，不会另起会话冒充接管。OpenCode 普通 TUI 的临时服务也不能与已登记共享服务混用。需升级包含此外部同步协议的 MissionGo macOS 客户端；旧客户端不拉取外部绑定。
 
 ## 使用流程
 

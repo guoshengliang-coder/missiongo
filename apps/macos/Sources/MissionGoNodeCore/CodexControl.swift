@@ -23,6 +23,7 @@ public protocol CodexControl: Sendable {
     func readManagedThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     /// `overrides` carry the settings a person chose for this conversation;
     /// Codex keeps turn-level overrides for the turns after it too.
+    func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws
     func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws
@@ -58,6 +59,9 @@ public extension CodexControl {
         throw CodexControlError.rpc(method: "thread/read", message: "这个 Codex 控制器不支持读取会话。")
     }
 
+    func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
+        throw CodexControlError.rpc(method: "turn/start", message: "这个 Codex 控制器不支持向原生外部会话直接回复。")
+    }
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws {
         throw CodexControlError.rpc(method: "turn/start", message: "这个 Codex 控制器不支持回复会话。")
     }
@@ -691,9 +695,9 @@ public struct CodexAppServerControl: CodexControl {
         try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false)
     }
     public func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
-        try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false, checkArchiveList: false)
+        try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false, checkArchiveList: false, requireLoaded: true)
     }
-    private func readThread(socketPath: String, threadId: String, includeExecutionItems: Bool, checkArchiveList: Bool = true) async throws -> CodexThreadSnapshot {
+    private func readThread(socketPath: String, threadId: String, includeExecutionItems: Bool, checkArchiveList: Bool = true, requireLoaded: Bool = false) async throws -> CodexThreadSnapshot {
         let timeout = self.readTimeout
         let archiveCache = self.archiveCache
         return try await withCheckedThrowingContinuation { continuation in
@@ -713,6 +717,7 @@ public struct CodexAppServerControl: CodexControl {
                     if !checkArchiveList, (result["thread"] as? [String: Any])?["id"] as? String != threadId {
                         throw CodexControlError.invalidResponse(method: "thread/read identity")
                     }
+                    if requireLoaded { try Self.requireExternalRuntime(result, threadId: threadId) }
                     return try CodexProtocol.threadSnapshot(fromRead: result, includeExecutionItems: includeExecutionItems)
                 })
             }
@@ -771,6 +776,39 @@ public struct CodexAppServerControl: CodexControl {
             }
         } while cursor != nil
         return ids
+    }
+
+    private static func requireExternalRuntime(_ result: [String: Any], threadId: String) throws {
+        guard let thread = result["thread"] as? [String: Any], thread["id"] as? String == threadId else {
+            throw CodexControlError.invalidResponse(method: "thread/read identity")
+        }
+        guard let status = thread["status"] as? [String: Any],
+              ["idle", "active", "systemError"].contains(status["type"] as? String ?? "") else {
+            throw CodexControlError.rpc(method: "thread/read", message: "这条原生会话未在当前 Codex 运行时加载，请在原 Codex 客户端打开后再连接。")
+        }
+    }
+
+    public func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
+        let timeout = self.timeout
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result {
+                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                    defer { connection.close() }
+                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    try connection.notify("initialized")
+                    let source = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId))
+                    try Self.requireExternalRuntime(source, threadId: threadId)
+                    guard ((source["thread"] as? [String: Any])?["status"] as? [String: Any])?["type"] as? String == "idle" else {
+                        throw CodexControlError.rpc(method: "turn/start", message: "原会话状态已变化，请等待同步后再回复。")
+                    }
+                    // Never resume an external conversation or override its
+                    // model, permissions or original client's approval channel.
+                    _ = try connection.call("turn/start", CodexProtocol.turnStartParams(threadId: threadId, prompt: text,
+                        clientUserMessageId: clientUserMessageId, overrides: nil))
+                })
+            }
+        }
     }
 
     public func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws {
