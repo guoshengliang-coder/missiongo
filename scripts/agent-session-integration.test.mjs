@@ -61,7 +61,7 @@ test("one-time setup preserves third-party settings and unrelated hooks and is i
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("installer runs through a symlink and does not load a V2 plugin into OpenCode V1", async () => {
+test("installer runs through symlinks, skips OpenCode V1 and recognizes the V2 CLI banner", async () => {
   const { mkdtemp, mkdir, writeFile, readdir, rm, symlink, readFile } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -78,6 +78,14 @@ test("installer runs through a symlink and does not load a V2 plugin into OpenCo
     assert.equal(result.status, 0);
     assert.match(result.stdout, /OpenCode V2 was not detected/);
     assert.deepEqual(await readdir(config), []);
+    assert.equal(JSON.parse(await readFile(join(root, "claude", "settings.json"), "utf8")).hooks.SessionStart.length, 1);
+    await writeFile(join(bin, "opencode"), "#!/bin/sh\nprintf 'opencode v2.0.15\\n'\n", { mode: 0o700 });
+    const v2 = spawnSync(process.execPath, [entry], {
+      env: { ...process.env, PATH: bin, CLAUDE_CONFIG_DIR: join(root, "claude"), XDG_CONFIG_HOME: config }, encoding: "utf8",
+    });
+    assert.equal(v2.status, 0);
+    assert.ok(!v2.stdout.includes("not detected"));
+    assert.match(await readFile(join(config, "opencode", "plugins", "missiongo-session", "index.js"), "utf8"), /ctx.session.hook/);
     assert.equal(JSON.parse(await readFile(join(root, "claude", "settings.json"), "utf8")).hooks.SessionStart.length, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

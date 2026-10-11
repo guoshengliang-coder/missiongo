@@ -73,7 +73,7 @@ async function main() {
   };
   const [claude, opencode] = await Promise.all([load("claude-session.cjs"), load("opencode-session.mjs")]);
   const version = spawnSync("opencode", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 65536 });
-  const openCodeV2 = version.status === 0 && /^v?2\./.test(version.stdout.trim());
+  const openCodeV2 = version.status === 0 && /^(?:opencode\s+)?v?2\./i.test(version.stdout.trim());
   const paths = await install({
     claudeDirectory: resolve(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")),
     opencodeDirectory: openCodeV2 ? join(resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config")), "opencode") : undefined,
