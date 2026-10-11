@@ -163,6 +163,7 @@ export function createMissionGoMcpServer(
     sessionRef: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9:_-]+$/),
     refKind: z.enum(["native", "tracking"]),
     name: z.string().trim().min(1).max(100).optional(),
+    autoConnect: z.boolean().optional(),
   });
   const authorizeSession = (ctx: ServerContext, sessionId: string, itemKey: string) =>
     sessions.authorize(accountAccess(ctx), sessionId, itemKey, (key) => requireItemAccess(ctx, store, key));
@@ -888,15 +889,17 @@ export function createMissionGoMcpServer(
       title: "Associate an external conversation with an item already being handled",
       description: "Register this user-directed conversation against an in-progress, development-complete or pending-verification item. "
         + "Reuse the same sessionRef for every item in this conversation. Use native only for a verified client session ID; otherwise generate a conversation UUID and use tracking. "
-        + "This records progress only; it does not mirror a transcript, control the client, or claim an item.",
-      inputSchema: z.object({ itemKey: z.string().min(2).max(50), session: sessionIdentity }),
+        + "Set autoConnect for a trusted native ID to let an enabled account-owned node confirm this exact conversation before Web replies become available. "
+        + "Optional sessionId upgrades your own existing tracking record without losing progress. It never claims an item or launches a client.",
+      inputSchema: z.object({ itemKey: z.string().min(2).max(50), session: sessionIdentity, sessionId: z.string().uuid().optional() }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, session }, ctx) => {
+    async ({ itemKey, session, sessionId: previousSessionId }, ctx) => {
       requireWriteScope(ctx);
       const key = requireItemAccess(ctx, store, itemKey);
       const sessionId = store.database.transaction(() => {
-        const id = sessions.register(accountAccess(ctx), session, key);
+        if (previousSessionId) authorizeSession(ctx, previousSessionId, key);
+        const id = sessions.register(accountAccess(ctx), session, key, previousSessionId);
         authorizeSession(ctx, id, key);
         return id;
       });

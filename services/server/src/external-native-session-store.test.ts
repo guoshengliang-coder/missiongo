@@ -140,3 +140,54 @@ it("revokes reply capability when the node is offline or revoked and keeps nativ
   f.store.database.connection.prepare("UPDATE nodes SET revoked_at=? WHERE id='node'").run(new Date().toISOString());
   expect(f.native.overlay("owner", f.id)).toMatchObject({ nativeConnection: { state: "unavailable" }, replyable: false });
 });
+
+it.each(["codex", "opencode", "claude_code"] as const)("automatically binds %s only after the exact source confirms a healthy read", (kind) => {
+  const f = fixture(kind);
+  f.progress.register({ accountId: "owner", clientId: "client" }, { ...f.identity, autoConnect: true }, f.item.key);
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {})).toEqual([]);
+  const offers = f.native.listForNode("owner", "node", "worker-one", () => {}, true);
+  expect(offers).toMatchObject([{ id: f.id, externalAutoConnect: true, externalBindingGeneration: 0, occupiesExecutionSlot: false }]);
+  expect(offers[0]).not.toHaveProperty("command");
+  expect(f.native.overlay("owner", f.id)).toMatchObject({ nativeConnection: { state: "pending", automatic: true }, replyable: false });
+  const probe = { generation: 0, autoConnect: true, nativeSessionRef: f.identity.sessionRef };
+  f.report({ ...probe, status: "unavailable", error: "not this node", messages: [] });
+  expect(f.native.overlay("owner", f.id).nativeConnection?.nodeId).toBeUndefined();
+  expect(() => f.report({ ...probe, nativeSessionRef: "different-thread" })).toThrow(/not found/);
+  f.report(probe); f.report(probe); // Lost response is retry-safe.
+  expect(f.native.overlay("owner", f.id)).toMatchObject({ nativeConnection: { state: "connected", nodeId: "node" }, replyable: true });
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, true)[0]).toMatchObject({ externalBindingGeneration: 1 });
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, true)[0]).not.toHaveProperty("externalAutoConnect");
+  const command = f.native.enqueue("owner", f.id, "Continue in the original conversation");
+  expect(command.status).toBe("queued");
+  expect(f.store.database.connection.prepare("SELECT COUNT(*) AS count FROM dispatches").get()).toMatchObject({ count: 0 });
+});
+
+it("rechecks execute permission for probes and keeps manual disconnect final across registration retries", () => {
+  const f = fixture();
+  f.progress.register({ accountId: "owner", clientId: "client" }, { ...f.identity, autoConnect: true }, f.item.key);
+  const denied = (_id: string, execute: boolean) => { if (execute) throw new Error("AI permission revoked"); };
+  expect(f.native.listForNode("owner", "node", "worker-one", denied, true)).toEqual([]);
+  const probe = { generation: 0, autoConnect: true, nativeSessionRef: f.identity.sessionRef };
+  expect(() => f.report(probe, denied)).toThrow(/revoked/);
+  expect(f.native.overlay("owner", f.id).nativeConnection?.nodeId).toBeUndefined();
+  f.report(probe);
+  f.native.disconnect("owner", f.id);
+  f.progress.register({ accountId: "owner", clientId: "client" }, { ...f.identity, autoConnect: true }, f.item.key);
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, true)).toEqual([]);
+  expect(() => f.report(probe)).toThrow(/not found/);
+  expect(f.native.overlay("owner", f.id).nativeConnection?.state).toBe("disconnected");
+});
+
+it("lets only one account-owned enabled node win automatic connection and rejects later probes", () => {
+  const f = fixture();
+  f.progress.register({ accountId: "owner", clientId: "client" }, { ...f.identity, autoConnect: true }, f.item.key);
+  const now = new Date().toISOString();
+  f.store.database.connection.prepare(`INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,last_seen_at,created_at,updated_at)
+    VALUES ('other-node','owner','other-installation','Other node','other-synthetic','[{"kind":"codex"}]',?,?,?)`).run(now, now, now);
+  const probe = { generation: 0, autoConnect: true, nativeSessionRef: f.identity.sessionRef };
+  f.report(probe);
+  expect(() => f.report({ ...probe, nodeId: "other-node" })).toThrow(/not found/);
+  expect(f.native.listForNode("owner", "other-node", "another-worker", () => {}, true)).toEqual([]);
+  expect(f.native.listForNode("other-account", "node", "worker-one", () => {}, true)).toEqual([]);
+  expect(f.native.overlay("owner", f.id).nativeConnection?.nodeId).toBe("node");
+});

@@ -48,6 +48,7 @@ export interface GetItemContextInput {
 }
 
 export interface ExternalAgentSessionIdentity {
+  readonly autoConnect?: boolean;
   readonly agentKind: "codex" | "claude_code" | "opencode" | "hermes" | "other";
   readonly sessionRef: string;
   readonly refKind: "native" | "tracking";

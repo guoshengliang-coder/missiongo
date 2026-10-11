@@ -2189,8 +2189,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             ? { approval: agentApprovalStore.get(session.id) } : {}),
           canReply: Boolean(session.agentSessionId) && replyBlockedReason === undefined,
           ...(session.source === "external" ? {
+            canRegisterNative: !session.archivedAt && ["codex", "opencode", "claude_code"].includes(session.agentKind) && canOperate && canUseAi,
             canConnectNative: !session.archivedAt && session.refKind === "native" && ["codex", "opencode", "claude_code"].includes(session.agentKind) && canOperate && canUseAi,
-            canDisconnectNative: Boolean(session.nativeConnection?.nodeId) && canOperate && canUseAi,
+            canDisconnectNative: Boolean(session.nativeConnection?.nodeId || session.nativeConnection?.automatic) && canOperate && canUseAi,
           } : {}),
           ...(replyBlockedReason ? { replyBlockedReason } : {}),
           canRetry: !session.archivedAt && !session.nodeRevoked && session.retryable && canOperate && canUseAi,
@@ -2661,7 +2662,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
     const external = request.headers["x-missiongo-external-sessions"] === "1"
       ? externalNativeStore.listForNode(node.accountId, node.nodeId, externalWorker(request),
-        (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute)) : [];
+        (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute), request.headers["x-missiongo-external-auto-connect"] === "1") : [];
     return { sessions: [...dispatchSessions, ...external] };
   });
 
@@ -2769,8 +2770,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const commandStatus = commandStatusValue as "delivering" | "delivery_unknown" | "delivered" | "failed" | undefined;
       if (externalSessionStore.has(sessionId)) {
         const generation = Number(request.headers["x-missiongo-external-generation"]);
-        if (!Number.isSafeInteger(generation) || generation < 1) throw invalidInput("An external binding generation is required.");
+        const autoConnect = request.headers["x-missiongo-external-auto-connect"] === "1";
+        if (!Number.isSafeInteger(generation) || generation < (autoConnect ? 0 : 1)) throw invalidInput("An external binding generation is required.");
         externalNativeStore.recordSnapshot({ accountId: node.accountId, nodeId: node.nodeId, sessionId, generation, workerId: externalWorker(request),
+          ...(autoConnect ? { autoConnect: true, nativeSessionRef: typeof request.headers["x-missiongo-external-ref"] === "string" ? request.headers["x-missiongo-external-ref"] : "" } : {}),
           status, messages, turnState,
           ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
           ...(body.sourceArchived === true ? { sourceArchived: true } : {}),

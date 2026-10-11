@@ -139,3 +139,21 @@ it("persists session identity and reports across database reopen without rerunni
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("upgrades only the client's own tracking record and preserves linked items, reports and console identity", () => {
+  const f = fixture();
+  const tracking = f.sessions.register(owner, { agentKind: "codex", sessionRef: "conversation-tracking", refKind: "tracking" }, f.item.key);
+  const second = f.create();
+  f.sessions.register(owner, { agentKind: "codex", sessionRef: "conversation-tracking", refKind: "tracking" }, second.key);
+  f.sessions.report(owner, tracking, f.item.key, "blocked", "Need a user reply", "need-reply");
+  const before = f.sessions.getForAccount("owner", tracking);
+  const native = { ...identity, sessionRef: "the-current-thread", autoConnect: true };
+  expect(() => f.sessions.register({ ...owner, clientId: "other" }, native, f.item.key, tracking)).toThrow(/not found/);
+  expect(() => f.sessions.register(owner, { ...native, agentKind: "opencode" }, f.item.key, tracking)).toThrow(/native identity/);
+  expect(f.sessions.register(owner, native, f.item.key, tracking)).toBe(tracking);
+  expect(f.sessions.getForAccount("owner", tracking)).toMatchObject({ id: tracking, refKind: "native", progressStatus: "blocked", messages: before.messages });
+  expect(f.sessions.itemKeys("owner", tracking)).toEqual([f.item.key, second.key]);
+  expect(f.sessions.register(owner, native, f.item.key, tracking)).toBe(tracking);
+  expect(() => f.sessions.register(owner, { ...native, sessionRef: "unrelated-thread" }, f.item.key, tracking)).toThrow(/cannot change/);
+  expect(() => f.sessions.register(owner, { agentKind: "codex", sessionRef: "fake-tracking", refKind: "tracking", autoConnect: true }, f.item.key)).toThrow(/native/);
+});

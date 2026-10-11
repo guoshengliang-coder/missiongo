@@ -16,6 +16,7 @@ export interface ExternalSessionIdentity {
   readonly sessionRef: string;
   readonly refKind: "native" | "tracking";
   readonly name?: string | undefined;
+  readonly autoConnect?: boolean | undefined;
 }
 export interface ExternalSessionOwner {
   readonly accountId: string;
@@ -61,14 +62,33 @@ export class ExternalAgentSessionStore {
     keys.forEach(authorizeItem);
   }
 
-  register(owner: ExternalSessionOwner, identity: ExternalSessionIdentity, itemKey: string): string {
+  register(owner: ExternalSessionOwner, identity: ExternalSessionIdentity, itemKey: string, sessionId?: string): string {
     const item = this.store.getWorkItem(itemKey);
     return this.store.database.transaction(() => {
+      if (identity.autoConnect && (identity.refKind !== "native" || !["codex", "opencode", "claude_code"].includes(identity.agentKind))) {
+        throw invalidInput("Automatic connection requires a native Codex, Claude Code or OpenCode session ID.");
+      }
+      if (sessionId) {
+        const previous = this.row(owner.accountId, sessionId);
+        this.authorize(owner, sessionId, itemKey, () => {});
+        if (previous.agent_kind !== identity.agentKind || identity.refKind !== "native") {
+          throw conflict("session_identity_conflict", "Only this conversation's native identity can be attached.");
+        }
+        if (previous.ref_kind === "native" && previous.session_ref !== identity.sessionRef) {
+          throw conflict("session_identity_conflict", "The native conversation cannot change.");
+        }
+        const duplicate = this.db.prepare("SELECT id FROM external_agent_sessions WHERE account_id=? AND client_id=? AND agent_kind=? AND session_ref=? AND id<>?")
+          .get(owner.accountId, owner.clientId ?? "", identity.agentKind, identity.sessionRef, sessionId);
+        if (duplicate) throw conflict("session_identity_conflict", "This native conversation already has a record.");
+        this.db.prepare("UPDATE external_agent_sessions SET session_ref=?,ref_kind='native',native_auto_connect=CASE WHEN native_generation=0 THEN ? ELSE native_auto_connect END WHERE id=?")
+          .run(identity.sessionRef, identity.autoConnect ? 1 : 0, sessionId);
+      }
       const existing = this.db.prepare(`SELECT * FROM external_agent_sessions
         WHERE account_id = ? AND client_id = ? AND agent_kind = ? AND session_ref = ?`)
         .get(owner.accountId, owner.clientId ?? "", identity.agentKind, identity.sessionRef) as unknown as SessionRow | undefined;
       if (existing && this.db.prepare("SELECT 1 FROM external_agent_session_items WHERE session_id = ? AND item_id = ?").get(existing.id, item.id)) {
         if (existing.ref_kind !== identity.refKind) throw conflict("session_identity_conflict", "The reference kind cannot change.");
+        if (identity.autoConnect) this.db.prepare("UPDATE external_agent_sessions SET native_auto_connect=1 WHERE id=? AND native_generation=0").run(existing.id);
         return existing.id;
       }
       if (!["in_progress", "development_complete", "pending_verification"].includes(item.status)) {
@@ -81,6 +101,7 @@ export class ExternalAgentSessionStore {
         (id, account_id, client_id, agent_kind, session_ref, ref_kind, name, progress_status, created_at, updated_at, activity_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?)`)
         .run(id, owner.accountId, owner.clientId ?? "", identity.agentKind, identity.sessionRef, identity.refKind, identity.name ?? null, now, now, now);
+      if (identity.autoConnect) this.db.prepare("UPDATE external_agent_sessions SET native_auto_connect=1 WHERE id=? AND native_generation=0").run(id);
       const inserted = this.db.prepare("INSERT OR IGNORE INTO external_agent_session_items(session_id, item_id) VALUES (?, ?)").run(id, item.id);
       if (inserted.changes) this.report(owner, id, item.key, "working", `开始处理 ${item.key}`, `linked:${item.id}`);
       return id;

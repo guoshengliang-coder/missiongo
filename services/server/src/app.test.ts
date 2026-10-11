@@ -987,6 +987,38 @@ describe("Commenting over MCP", () => {
     expect(app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS count FROM dispatches").get()).toMatchObject({ count: 0 });
   });
 
+  it.each(["codex", "opencode", "claude_code"])("upgrades tracking and automatically opens replies for the original %s conversation", async (kind) => {
+    const { app, call, writeToken, adminAccount } = await commentingApp();
+    const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: "mission-owner", password: "correct horse" } });
+    const headers = { cookie: login.headers["set-cookie"]!.split(";", 1)[0]! };
+    app.missionGoStore.transitionWorkItem({ itemKey: "HG-1", to: "ready", reason: "triaged", actor: "human" });
+    const claimed = await call(writeToken, 1, "tools/call", { name: "claim_item", arguments: { itemKey: "HG-1", agentId: kind,
+      idempotencyKey: "auto-claim", session: { agentKind: kind, sessionRef: "conversation-tracking", refKind: "tracking" } } });
+    const id = (claimed.result!.structuredContent as { sessionId: string }).sessionId;
+    const upgraded = await call(writeToken, 2, "tools/call", { name: "register_agent_session", arguments: { itemKey: "HG-1", sessionId: id,
+      session: { agentKind: kind, sessionRef: "trusted-current-thread", refKind: "native", autoConnect: true } } });
+    expect(upgraded.result!.structuredContent).toMatchObject({ sessionId: id });
+    const nodes = new DispatchStore(app.missionGoStore.database);
+    const node = nodes.registerNode({ accountId: adminAccount.id, name: "Auto node", installationId: "auto-installation" });
+    app.missionGoStore.database.connection.prepare("UPDATE nodes SET agents_json=?,last_seen_at=? WHERE id=?").run(JSON.stringify([{ kind }]), new Date().toISOString(), node.nodeId);
+    const nodeHeaders = { authorization: `Bearer ${node.token}`, "x-missiongo-external-sessions": "1", "x-missiongo-external-worker": "auto-worker-instance", "x-missiongo-external-auto-connect": "1" };
+    const polled = (await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: nodeHeaders })).json().sessions;
+    expect(polled).toMatchObject([{ id, externalBindingGeneration: 0, externalAutoConnect: true, sessionRef: "trusted-current-thread" }]);
+    expect(polled[0]).not.toHaveProperty("command");
+    expect((await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${id}/commands`, headers, payload: { text: "Before handshake" } })).statusCode).toBe(409);
+    const probe = { ...nodeHeaders, "x-missiongo-external-generation": "0", "x-missiongo-external-ref": "trusted-current-thread" };
+    const payload = { status: "idle", messages: [{ sourceId: "original-user", role: "user", text: "Handle HG-1" }] };
+    expect((await app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${id}/snapshot`, headers: { ...probe, "x-missiongo-external-ref": "wrong-thread" }, payload })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${id}/snapshot`, headers: probe, payload })).statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers })).json()).toMatchObject({ id, canReply: true, nativeConnection: { nodeId: node.nodeId, automatic: true } });
+    expect((await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${id}/commands`, headers, payload: { text: "Continue in the original conversation" } })).statusCode).toBe(201);
+    const list = (await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: nodeHeaders })).json().sessions;
+    expect(list).toMatchObject([{ id, sessionRef: "trusted-current-thread", externalBindingGeneration: 1, command: { text: "Continue in the original conversation" } }]);
+    expect(list[0]).not.toHaveProperty("externalAutoConnect");
+    expect((await app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers })).json().sessions).toHaveLength(1);
+    expect(app.missionGoStore.getWorkItem("HG-1").status).toBe("in_progress");
+  });
+
   it("keeps a claim from a validated Web dispatch out of external records", async () => {
     const { app, call, writeToken, adminAccount } = await commentingApp();
     app.missionGoStore.transitionWorkItem({ itemKey: "HG-1", to: "ready", reason: "triaged", actor: "human" });

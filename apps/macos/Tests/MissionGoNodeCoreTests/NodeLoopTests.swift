@@ -10,6 +10,7 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     let sessionReports = Locked<[(String, AgentSessionReport)]>([])
     let sessionUploadAttempts = Locked(0)
     let externalGenerations = Locked<[Int]>([])
+    let automaticRefs = Locked<[String]>([])
     let sessionReportFailures = Locked(0)
     let rejectedSessionId = Locked<String?>(nil)
     let attachmentData = Locked<[String: Data]>([:])
@@ -75,6 +76,10 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
         }
         if fail { throw APIError.network(NetworkFailure(host: "mg.test", error: URLError(.networkConnectionLost))) }
         sessionReports.withLock { $0.append((sessionId, report)) }
+    }
+    func reportAutomaticExternalSession(sessionId: String, generation: Int, nativeSessionRef: String, report: AgentSessionReport) async throws {
+        automaticRefs.withLock { $0.append(nativeSessionRef) }
+        try await reportAgentSession(sessionId: sessionId, report: report)
     }
     func reportExternalAgentSession(sessionId: String, generation: Int, report: AgentSessionReport) async throws {
         externalGenerations.withLock { $0.append(generation) }
@@ -605,6 +610,32 @@ final class NodeLoopTests: XCTestCase {
 
     private func snapshotSession() -> NodeAgentSession {
         return NodeAgentSession(id: "s1", agentKind: "claude_code", sessionRef: "ref-1", status: "active")
+    }
+
+    func testAutomaticProbeUsesTheExactNativeIdentityAndThenResumesBoundSync() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [NodeAgentSession(id: "auto", agentKind: "codex", sessionRef: "current-native-thread", status: "unavailable", occupiesExecutionSlot: false, externalBindingGeneration: 0, externalAutoConnect: true)] }
+        let adapter = SnapshotAdapter(reports: [AgentSessionReport(status: "idle", messages: [])], kind: "codex")
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Fixture", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { api.automaticRefs.current.count == 1 }
+        api.sessionList.withLock { $0 = [NodeAgentSession(id: "auto", agentKind: "codex", sessionRef: "current-native-thread", status: "idle", occupiesExecutionSlot: false, externalBindingGeneration: 1)] }
+        await waitUntil { api.externalGenerations.current.count == 1 }
+        task.cancel(); try await task.value
+        XCTAssertEqual(api.automaticRefs.current, ["current-native-thread"])
+        XCTAssertEqual(api.externalGenerations.current, [1])
+    }
+
+    func testAutomaticProbeDoesNotClaimAnUnavailableNativeSource() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [NodeAgentSession(id: "auto", agentKind: "codex", sessionRef: "not-local", status: "unavailable", occupiesExecutionSlot: false, externalBindingGeneration: 0, externalAutoConnect: true)] }
+        let adapter = SnapshotAdapter(reports: [AgentSessionReport(status: "unavailable", messages: [], error: "Source not available")], kind: "codex")
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Fixture", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        task.cancel(); try await task.value
+        XCTAssertTrue(api.automaticRefs.current.isEmpty)
+        XCTAssertTrue(api.sessionReports.current.isEmpty)
     }
 
     func testExternalReconnectUploadsTheSameSnapshotForItsNewBindingGeneration() async throws {

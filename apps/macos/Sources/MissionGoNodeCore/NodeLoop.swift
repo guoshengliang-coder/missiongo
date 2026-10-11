@@ -14,6 +14,7 @@ public protocol NodeAPI: Sendable {
     func downloadAgentSessionAttachment(sessionId: String, attachmentId: String) async throws -> Data
     func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws
     func reportExternalAgentSession(sessionId: String, generation: Int, report: AgentSessionReport) async throws
+    func reportAutomaticExternalSession(sessionId: String, generation: Int, nativeSessionRef: String, report: AgentSessionReport) async throws
 }
 
 public extension NodeAPI {
@@ -28,6 +29,9 @@ public extension NodeAPI {
     func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {}
     func reportExternalAgentSession(sessionId: String, generation: Int, report: AgentSessionReport) async throws {
         throw LaunchError("External native sessions require an updated node API.")
+    }
+    func reportAutomaticExternalSession(sessionId: String, generation: Int, nativeSessionRef: String, report: AgentSessionReport) async throws {
+        throw LaunchError("Automatic external sessions require an updated node API.")
     }
 }
 
@@ -616,7 +620,15 @@ public final class NodeLoop: @unchecked Sendable {
         }
         do {
             if let generation = session.externalBindingGeneration {
-                try await self.api.reportExternalAgentSession(sessionId: session.id, generation: generation, report: report)
+                if session.externalAutoConnect {
+                    // An unbound probe has no input capability. Do not publish
+                    // unrelated source errors or claim a node on a failed read.
+                    guard ["idle", "active", "stalled"].contains(report.status), report.error == nil,
+                          report.sourceArchived != true, report.commandId == nil else { return }
+                    try await self.api.reportAutomaticExternalSession(sessionId: session.id, generation: generation, nativeSessionRef: session.sessionRef, report: report)
+                } else {
+                    try await self.api.reportExternalAgentSession(sessionId: session.id, generation: generation, report: report)
+                }
             } else {
                 try await self.api.reportAgentSession(sessionId: session.id, report: report)
             }

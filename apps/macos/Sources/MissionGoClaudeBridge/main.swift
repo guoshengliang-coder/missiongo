@@ -192,7 +192,7 @@ private func run() throws {
     }
     let config = ClaudeHostConfiguration(claudeExecutable: executable, cwd: cwd, mode: "default",
         sessionName: existing?.sessionName ?? "MissionGo external Claude", sessionRef: ref,
-        prompt: prompt + "\nMissionGo 会话原生 ID：" + ref + "。领取条目时如需登记处理会话，使用 claude_code、refKind native 和此 ID。",
+        prompt: prompt + "\nMissionGo 会话原生 ID：" + ref + "。按 Skill 领取或关联用户指定条目时，使用 claude_code、refKind native、autoConnect true 和此 ID；已保存的跟踪记录用 register_agent_session 的 sessionId 升级，不另建会话。",
         statePath: statePath, commandsDirectory: commandsDirectory, logPath: directory + "/host.log",
         externalArguments: options, externalResume: action != "start",
         externalEnvironmentFingerprint: ClaudeExternalBridge.environmentFingerprint(environment.environment))
@@ -216,7 +216,7 @@ private func run() throws {
     process.standardError = FileHandle.nullDevice
     try process.run()
     print("Claude 原生会话 ID：\(ref)")
-    print("在 MissionGo 外部会话记录中选择此 Mac 节点，首次成功同步后可回复。")
+    print("按新版 MissionGo Skill 关联条目后，本机节点会自动确认此会话；首次成功同步后可从 Web 回复。")
     let deadline = Date().addingTimeInterval(60)
     while Date() < deadline {
         if let state = try? ClaudeHostFiles.readState(statePath), state.launchReady && state.hostPid == process.processIdentifier { break }

@@ -583,6 +583,25 @@ final class APIClientTests: XCTestCase {
         XCTAssertNotEqual(api.externalWorkerId, client().externalWorkerId)
     }
 
+    func testAutomaticNativeConnectionUsesZeroGenerationAndEchoesOnlyTheSelectedIdentity() async throws {
+        StubURLProtocol.install { request, _ in
+            if request.httpMethod == "GET" {
+                return .response(status: 200, body: #"{"sessions":[{"id":"external","agentKind":"claude_code","sessionRef":"exact-native","status":"unavailable","externalBindingGeneration":0,"externalAutoConnect":true,"occupiesExecutionSlot":false}]}"#)
+            }
+            return .response(status: 204, body: "")
+        }
+        let api = client()
+        let sessions = try await api.listAgentSessions()
+        XCTAssertTrue(sessions[0].externalAutoConnect)
+        XCTAssertNil(sessions[0].command)
+        try await api.reportAutomaticExternalSession(sessionId: "external", generation: 0, nativeSessionRef: sessions[0].sessionRef, report: AgentSessionReport(status: "idle", messages: []))
+        let requests = StubURLProtocol.recorded.map(\.request)
+        XCTAssertEqual(requests[0].value(forHTTPHeaderField: "X-MissionGo-External-Auto-Connect"), "1")
+        XCTAssertEqual(requests[1].value(forHTTPHeaderField: "X-MissionGo-External-Auto-Connect"), "1")
+        XCTAssertEqual(requests[1].value(forHTTPHeaderField: "X-MissionGo-External-Generation"), "0")
+        XCTAssertEqual(requests[1].value(forHTTPHeaderField: "X-MissionGo-External-Ref"), "exact-native")
+    }
+
     func testSnapshotUploadStaysPlainWhenSmall() async throws {
         StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
         let report = AgentSessionReport(status: "idle", messages: [])
