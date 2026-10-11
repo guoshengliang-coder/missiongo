@@ -1,0 +1,9 @@
+{
+  "pullRequest": 250,
+  "items": [
+    {
+      "key": "PR-250",
+      "title": "自动接入 Codex、OpenCode 与已桥接 Claude 会话；Codex 仅在原运行时回复并保留原审批与模型配置"
+    }
+  ]
+}

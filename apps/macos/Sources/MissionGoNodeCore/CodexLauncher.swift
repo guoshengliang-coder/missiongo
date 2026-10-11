@@ -582,9 +582,16 @@ public struct CodexLauncher: AgentAdapter {
         return try await control.readThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
     }
 
+    private func approvalSnapshot(_ session: NodeAgentSession) -> CodexApprovalSnapshot? {
+        // The observer resumes a thread to subscribe. External conversations
+        // retain the original client's approval channel, including read-only probes.
+        guard session.externalBindingGeneration == nil else { return nil }
+        return control.approvalSnapshot(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+    }
+
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         let snapshot = try await readSnapshot(session)
-        let approval = control.approvalSnapshot(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        let approval = approvalSnapshot(session)
         if let decision = session.approvalDecision, approval?.id == decision.id,
            approval?.status == "pending" {
             // The observer sends the answer asynchronously on the request's
@@ -759,12 +766,10 @@ public struct CodexLauncher: AgentAdapter {
                 status: snapshot.status, messages: snapshot.messages,
                 sourceArchived: false, activityAt: snapshot.activityAt,
                 turnActive: snapshot.status == "active",
-                waitingForInput: control.approvalSnapshot(socketPath: location.controlSocketPath,
-                    threadId: session.sessionRef)?.status == "pending"
+                waitingForInput: approvalSnapshot(session)?.status == "pending"
             )
         }
-        if let approval = control.approvalSnapshot(socketPath: location.controlSocketPath,
-                threadId: session.sessionRef),
+        if let approval = approvalSnapshot(session),
            (approval.status == "pending" || approval.status == "inProgress") {
             // Codex cannot accept same-turn steering while the turn is blocked
             // at a permission prompt. Keep the reply queued until it resumes.
@@ -872,6 +877,9 @@ public struct CodexLauncher: AgentAdapter {
                 text: command.promptText,
                 clientUserMessageId: command.id
             )
+        } else if session.externalBindingGeneration != nil {
+            try await control.sendExternalMessage(socketPath: location.controlSocketPath, threadId: session.sessionRef,
+                text: command.promptText, clientUserMessageId: command.id)
         } else {
             try await control.sendMessage(
                 socketPath: location.controlSocketPath,

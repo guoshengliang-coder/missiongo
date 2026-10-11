@@ -619,6 +619,54 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(server.params(of: "thread/read")?["threadId"] as? String, "external-exact")
     }
 
+    func testExternalReadRejectsUnloadedHistoryWithoutResumingIt() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            let result: [String: Any] = message["method"] as? String == "thread/read"
+                ? ["thread": ["id": "external-exact", "status": ["type": "notLoaded"], "turns": []]] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
+        }
+        do {
+            _ = try await CodexAppServerControl(timeout: 5).readExternalThread(socketPath: server.path, threadId: "external-exact")
+            XCTFail("Reading history cannot prove the original runtime owns the session")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("未在当前 Codex")) }
+        server.waitUntilDone()
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read"])
+    }
+
+    func testExternalReplyStartsInTheLoadedRuntimeWithoutResumeOrConfigurationOverrides() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            let result: [String: Any] = message["method"] as? String == "thread/read"
+                ? ["thread": ["id": "external-exact", "status": ["type": "idle"], "turns": []]] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
+        }
+        try await CodexAppServerControl(timeout: 5).sendExternalMessage(socketPath: server.path,
+            threadId: "external-exact", text: "Continue", clientUserMessageId: "reply-exact")
+        server.waitUntilDone()
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read", "turn/start"])
+        let params = server.params(of: "turn/start")
+        XCTAssertEqual(params?["threadId"] as? String, "external-exact")
+        XCTAssertEqual(params?["clientUserMessageId"] as? String, "reply-exact")
+        for key in ["model", "effort", "approvalPolicy", "approvalsReviewer", "sandbox"] { XCTAssertNil(params?[key]) }
+    }
+
+    func testExternalReplyRejectsAThreadUnloadedAfterTheFirstSyncWithoutSendingInput() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            let result: [String: Any] = message["method"] as? String == "thread/read"
+                ? ["thread": ["id": "external-exact", "status": ["type": "notLoaded"], "turns": []]] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
+        }
+        do {
+            try await CodexAppServerControl(timeout: 5).sendExternalMessage(socketPath: server.path,
+                threadId: "external-exact", text: "Continue", clientUserMessageId: "reply-exact")
+            XCTFail("An unloaded original runtime cannot receive an external reply")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("未在当前 Codex")) }
+        server.waitUntilDone()
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read"])
+    }
+
     func testExternalThreadReadRejectsAResponseForAnotherNativeConversation() async throws {
         let server = try FakeAppServer { message in
             guard let id = message["id"], let method = message["method"] as? String else { return [] }
@@ -1046,6 +1094,15 @@ private struct FixedCodexResources: CodexResourceChecking {
 private final class RecordingControl: CodexControl, @unchecked Sendable {
     let requests = Locked<[CodexThreadRequest]>([])
     let replies = Locked<[(String, String)]>([])
+    let externalReplies = Locked<[(String, String)]>([])
+    let approvalReads = Locked(0)
+    func approvalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot? {
+        approvalReads.withLock { $0 += 1 }; return nil
+    }
+    func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
+        externalReplies.withLock { $0.append((clientUserMessageId, text)) }
+        mirrorDeliveredReply(clientUserMessageId: clientUserMessageId, text: text)
+    }
     let steerings = Locked<[(String, String, String)]>([])
     let interruptions = Locked<[(String, String)]>([])
     let archived = Locked<[String]>([])
@@ -1408,6 +1465,23 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(report.commandStatus, "delivered")
         XCTAssertEqual(report.messages.map(\.sourceId), ["a1"])
         XCTAssertEqual(report.activityAt, "2026-09-21T05:30:00.000Z")
+    }
+
+    func testExternalSynchronizationKeepsOriginalApprovalOwnershipAndUsesDirectInput() async throws {
+        let control = RecordingControl(threadId: "external-exact")
+        control.mirrorDeliveredReplies = true
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        _ = try await launcher.synchronize(NodeAgentSession(id: "external", sessionRef: "external-exact", status: "idle",
+            externalBindingGeneration: 0, externalAutoConnect: true))
+        XCTAssertEqual(control.approvalReads.current, 0)
+        let report = try await launcher.synchronize(NodeAgentSession(id: "external", sessionRef: "external-exact", status: "idle",
+            command: AgentSessionCommand(id: "reply", text: "Continue", status: "delivering"), externalBindingGeneration: 1))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        XCTAssertEqual(report.messages.last?.sourceId, "reply")
+        XCTAssertEqual(control.approvalReads.current, 0)
+        XCTAssertTrue(control.replies.current.isEmpty)
+        XCTAssertEqual(control.externalReplies.current.map { [$0.0, $0.1] }, [["reply", "Continue"]])
     }
 
     func testAnAlreadyMirroredCodexReplyIsAcknowledgedWithoutSendingAgain() async throws {
