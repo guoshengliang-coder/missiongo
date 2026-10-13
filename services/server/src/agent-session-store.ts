@@ -124,6 +124,8 @@ export interface AgentSessionSnapshot {
 }
 
 export interface AgentSessionListItem {
+  /** Original record IDs represented by this one real conversation. */
+  readonly relatedSessionIds?: readonly string[];
   readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: ManagedSessionBinding;
   readonly source?: "dispatch" | "external";

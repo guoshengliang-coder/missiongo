@@ -14,6 +14,8 @@ import { parseFeedbackLog } from "@missiongo/domain";
 import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
 import { buildApp } from "./app.js";
 import { DispatchStore } from "./dispatch-store.js";
+import { AgentSessionStore } from "./agent-session-store.js";
+import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 // @ts-expect-error The published, dependency-free CLI is JavaScript.
 import { inspectFile, uploadFile } from "../../../apps/web/public/downloads/missiongo-upload.mjs";
 import { readAiAccessToken } from "./admin-auth.js";
@@ -1039,6 +1041,80 @@ describe("Commenting over MCP", () => {
     expect(claimed.result!.structuredContent).toMatchObject({ item: { status: "in_progress" } });
     expect((claimed.result!.structuredContent as { sessionId?: string }).sessionId).toBeUndefined();
     expect(db.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({ n: 0 });
+  });
+
+  async function mirroredConsole() {
+    const { app } = await commentingApp();
+    const account = app.missionGoAccounts.createAccount({ email: "console-member@example.test", password: "fixture-password", role: "member" });
+    const store = app.missionGoStore;
+    const item = store.getWorkItem("HG-1");
+    app.missionGoAccounts.replacePermissions(account.id, [{ productId: item.productId, canView: true, canOperate: true, canUseAi: true }]);
+    store.transitionWorkItem({ itemKey: item.key, to: "ready", reason: "triaged", actor: "human" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "codex", idempotencyKey: "mirror-claim" });
+    const now = new Date().toISOString();
+    const db = store.database.connection;
+    db.prepare(`INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,last_seen_at,created_at,updated_at)
+      VALUES ('mirror-node',?,'mirror-installation','Fixture node','synthetic-mirror','[]',?,?,?)`).run(account.id, now, now, now);
+    db.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+      VALUES ('mirror-dispatch',?,'mirror-node','codex','default','launched','/synthetic/repo',?)`).run(account.id, now);
+    db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('mirror-dispatch',?,0)").run(item.id);
+    const dispatch = new AgentSessionStore(store.database);
+    const sessionId = dispatch.createForDispatch({ dispatchId: "mirror-dispatch", nodeId: "mirror-node", sessionRef: "mirror-thread" });
+    dispatch.recordSnapshot({ nodeId: "mirror-node", sessionId, status: "idle", messages: [{ sourceId: "native-answer", role: "agent", text: "Native answer", occurredAt: now }] });
+    const external = new ExternalAgentSessionStore(store);
+    const owner = { accountId: account.id, clientId: "mirror-client" };
+    const identity = { agentKind: "codex" as const, sessionRef: "mirror-thread", refKind: "native" as const };
+    const externalId = external.register(owner, identity, item.key);
+    external.report(owner, externalId, item.key, "blocked", "Progress needs a reply", "mirror-progress");
+    const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: account.email, password: "fixture-password" } });
+    const headers = { cookie: login.headers["set-cookie"]!.split(";", 1)[0]! };
+    return { app, store, account, item, sessionId, externalId, external, owner, identity, headers };
+  }
+
+  it("shows one historical mirror, preserves both histories and routes replies and read/archive actions", async () => {
+    const f = await mirroredConsole();
+    const list = () => f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: f.headers });
+    const rows = (await list()).json().sessions;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: f.sessionId, canReply: true, unread: true, needsAttention: true, relatedSessionIds: [f.sessionId, f.externalId] });
+    for (const id of [f.sessionId, f.externalId]) {
+      const detail = await f.app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers: f.headers });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json().messages.map((message: { text: string }) => message.text))
+        .toEqual(expect.arrayContaining(["Native answer", "HG-1 · Progress needs a reply"]));
+    }
+    const reply = await f.app.inject({ method: "POST", url: `/api/v1/agent-sessions/${f.sessionId}/commands`, headers: f.headers, payload: { text: "Continue" } });
+    expect(reply.statusCode).toBe(201);
+    expect(f.store.database.connection.prepare("SELECT session_id FROM agent_session_commands WHERE id=?").get(reply.json().id)).toMatchObject({ session_id: f.sessionId });
+    expect((await f.app.inject({ method: "POST", url: `/api/v1/agent-sessions/${f.sessionId}/attention/dismiss`, headers: f.headers, payload: { revision: rows[0].attention.revision } })).statusCode).toBe(200);
+    expect((await list()).json().sessions[0].needsAttention).toBe(false);
+    expect((await f.app.inject({ method: "POST", url: `/api/v1/agent-sessions/${f.sessionId}/read`, headers: f.headers, payload: { through: rows[0].unreadAt } })).statusCode).toBe(204);
+    expect((await list()).json().sessions[0].unread).toBe(false);
+    expect((await f.app.inject({ method: "PATCH", url: `/api/v1/agent-sessions/${f.sessionId}`, headers: f.headers, payload: { archived: true } })).statusCode).toBe(409);
+    expect(f.external.getForAccount(f.account.id, f.externalId).archivedAt).toBeUndefined();
+    expect((await f.app.inject({ method: "POST", url: `/api/v1/agent-sessions/${f.sessionId}/commands/${reply.json().id}/cancel`, headers: f.headers })).statusCode).toBe(200);
+    expect((await f.app.inject({ method: "PATCH", url: `/api/v1/agent-sessions/${f.sessionId}`, headers: f.headers, payload: { archived: true } })).statusCode).toBe(200);
+    expect(f.external.getForAccount(f.account.id, f.externalId).archivedAt).toBeTruthy();
+    expect((await list()).json().sessions).toHaveLength(1);
+    expect(f.store.getWorkItem("HG-1").status).toBe("in_progress");
+  });
+
+  it("checks every represented product before exposing history or allowing control through either ID", async () => {
+    const f = await mirroredConsole();
+    const product = f.store.createProduct({ name: "Restricted", keyPrefix: "RR" });
+    const item = f.store.createWorkItem({ productId: product.id, title: "Restricted history", description: "", type: "task", priority: "normal" });
+    f.store.transitionWorkItem({ itemKey: item.key, to: "ready", reason: "triaged", actor: "human" });
+    f.store.claimWorkItem({ itemKey: item.key, agentId: "codex", idempotencyKey: "restricted-claim" });
+    f.external.register(f.owner, f.identity, item.key);
+    expect((await f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: f.headers })).json().sessions).toEqual([]);
+    for (const id of [f.sessionId, f.externalId]) {
+      for (const [method, suffix, payload] of [["GET", "", undefined], ["POST", "/read", { through: new Date().toISOString() }],
+        ["POST", "/commands", { text: "Spoof" }], ["PATCH", "", { archived: true }]] as const) {
+        const result = await f.app.inject({ method, url: `/api/v1/agent-sessions/${id}${suffix}`, headers: f.headers, ...(payload ? { payload } : {}) });
+        expect(result.statusCode).toBe(404);
+        expect(result.body).not.toContain("Restricted history");
+      }
+    }
   });
 
   it("creates a legacy tracking record once and rejects unclaimed registration without partial records", async () => {

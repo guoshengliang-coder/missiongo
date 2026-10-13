@@ -12,6 +12,7 @@ import {
   agentSessionMatches,
   answeredOptionSelected,
   byLatestActivity,
+  canonicalAgentSessionId,
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
@@ -40,6 +41,13 @@ import {
   withSessionReplyDraft,
 } from "./agent-session-view";
 import type { AgentSessionSummary } from "./types";
+
+it("resolves an old mirror link to the unified conversation without selecting an unrelated row", () => {
+  const rows = [{ id: "dispatch-session", relatedSessionIds: ["dispatch-session", "progress-session"] }];
+  expect(canonicalAgentSessionId("progress-session", rows)).toBe("dispatch-session");
+  expect(canonicalAgentSessionId("different-session", rows)).toBe("different-session");
+  expect(canonicalAgentSessionId(null, rows)).toBeNull();
+});
 
 describe("agent session message view", () => {
   it("keeps attachment history in order without repeating a mirrored local-file prompt", () => {

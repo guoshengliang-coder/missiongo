@@ -35,6 +35,7 @@ import {
   agentSessionMatches,
   archivableVisibleSessionIds,
   byLatestActivity,
+  canonicalAgentSessionId,
   changedMessageIds,
   DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
@@ -322,14 +323,14 @@ export function AgentSessionConsole({
   // Keep the conversation the person is still reading; explicit filter and
   // navigation handlers remain responsible for leaving it (AND-147).
   const selectedId = resolvedAgentSessionId(
-    selectedSessionId,
+    canonicalAgentSessionId(selectedSessionId, allSessions),
     allSessions.map((session) => session.id),
     sessionsLoaded,
   );
 
   useEffect(() => {
     if (!sessionsLoaded || !selectedSessionId) return;
-    const linked = allSessions.find((session) => session.id === selectedSessionId);
+    const linked = allSessions.find((session) => session.id === canonicalAgentSessionId(selectedSessionId, allSessions));
     if (!linked || linked.archivedAt) setUnavailableSessionId(selectedSessionId);
   }, [allSessions, selectedSessionId, sessionsLoaded]);
 

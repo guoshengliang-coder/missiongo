@@ -7,6 +7,8 @@ final class LaunchPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("missiongo skill"))
         XCTAssertTrue(prompt.contains("AND-37、AND-38"))
         XCTAssertTrue(prompt.contains("d1f2a3b4"))
+        XCTAssertTrue(prompt.contains(#"claim_item 必须带 dispatchId: "d1f2a3b4""#))
+        XCTAssertTrue(prompt.contains("不要为本次派单另行登记主动处理会话"))
         XCTAssertTrue(prompt.contains("一个分支和一个 PR"))
     }
 
