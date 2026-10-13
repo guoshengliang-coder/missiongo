@@ -1067,13 +1067,88 @@ final class CodexFileDescriptorGuardTests: XCTestCase {
     func testProbeFailuresFailClosedAndExposeTheSource() async {
         let guardrail = CodexFileDescriptorGuard(
             run: { _, _ in CommandResult(code: 1, stdout: "", stderr: "not permitted") },
-            softLimit: { _ in 256 }, openFiles: { _ in 255 }, managedStatePath: "/managed/app-server.pid"
+            softLimit: { _ in 256 }, openFiles: { _ in 255 }, stateSource: "/managed/app-server-daemon"
         )
         let snapshot = await guardrail.snapshot(socketPath: "/tmp/missing.sock")
         XCTAssertEqual(snapshot?.status, "unavailable")
-        XCTAssertEqual(snapshot?.source, "/managed/app-server.pid")
+        XCTAssertEqual(snapshot?.source, "/managed/app-server-daemon")
         XCTAssertNotNil(snapshot?.checkedAt)
         XCTAssertTrue(snapshot?.reason?.contains("暂停") == true)
+    }
+
+    /// The socket owner is known but nothing proves what it is: that is the one
+    /// state the operator has to be sent to a fix for, and the reason has to
+    /// name the command that rebuilds the record.
+    func testAnUnverifiableOwnerNamesTheRestartThatRebuildsTheRecord() async {
+        let guardrail = CodexFileDescriptorGuard(
+            run: { _, _ in CommandResult(code: 0, stdout: "p68039\nccodex\n", stderr: "") },
+            softLimit: { _ in nil }, openFiles: { _ in 70 }
+        )
+        let snapshot = await guardrail.snapshot(socketPath: "/tmp/app-server.sock")
+        XCTAssertEqual(snapshot?.status, "unavailable")
+        XCTAssertEqual(snapshot?.pid, 68039)
+        XCTAssertTrue(snapshot?.reason?.contains("daemon restart") == true, snapshot?.reason ?? "")
+        XCTAssertTrue(snapshot?.reason?.contains("暂停") == true, snapshot?.reason ?? "")
+    }
+
+    func testReadsTheCurrentDaemonRecordAndTheLegacyOne() throws {
+        let root = try shortTemporaryDirectory()
+        let stateDirectory = "\(root)/app-server-daemon"
+        try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
+        let codexHome = "\(root)/codex"
+        let record = #"{"pid":68039,"processStartTime":"Tue Oct 13 22:55:00 2026","executableIdentity":{"digest":[1,2,3]}}"#
+
+        // A daemon package writes daemon.pid; the older layout wrote app-server.pid.
+        for name in ["daemon.pid", "app-server.pid"] {
+            try record.write(toFile: "\(stateDirectory)/\(name)", atomically: true, encoding: .utf8)
+            XCTAssertEqual(
+                CodexFileDescriptorGuard.managedSoftLimit(
+                    ownerPID: 68039, stateDirectory: stateDirectory, codexHome: codexHome, executable: { _ in nil }
+                ),
+                4096,
+                name
+            )
+            try FileManager.default.removeItem(atPath: "\(stateDirectory)/\(name)")
+        }
+    }
+
+    func testFallsBackToTheCodexHomeBinaryRatherThanPausingForever() throws {
+        let root = try shortTemporaryDirectory()
+        let stateDirectory = "\(root)/app-server-daemon"
+        try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
+        let packages = "\(root)/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex"
+
+        // No record at all, but the socket owner is this Codex home's own daemon.
+        XCTAssertEqual(
+            CodexFileDescriptorGuard.managedSoftLimit(
+                ownerPID: 1976, stateDirectory: stateDirectory, codexHome: root, executable: { _ in packages }
+            ),
+            4096
+        )
+        // A record for another process does not make an unrelated binary the daemon.
+        try #"{"pid":1,"processStartTime":"Tue Oct 13 22:55:00 2026"}"#
+            .write(toFile: "\(stateDirectory)/daemon.pid", atomically: true, encoding: .utf8)
+        XCTAssertEqual(
+            CodexFileDescriptorGuard.managedSoftLimit(
+                ownerPID: 1976, stateDirectory: stateDirectory, codexHome: root, executable: { _ in packages }
+            ),
+            4096,
+            "the record is stale, the binary still is the daemon"
+        )
+        // Anything outside this Codex home's packages stays refused.
+        for path in ["/usr/local/bin/codex", "\(root)/bin/codex", "\(root)/packages/standalone/bin/claude"] {
+            XCTAssertNil(
+                CodexFileDescriptorGuard.managedSoftLimit(
+                    ownerPID: 1976, stateDirectory: stateDirectory, codexHome: root, executable: { _ in path }
+                ),
+                path
+            )
+        }
+        XCTAssertNil(
+            CodexFileDescriptorGuard.managedSoftLimit(
+                ownerPID: 1976, stateDirectory: stateDirectory, codexHome: root, executable: { _ in nil }
+            )
+        )
     }
 
     func testMakesDescriptorExhaustionAndMcpTimeoutActionable() {

@@ -183,6 +183,7 @@ Claude Code 的 `bypassPermissions` 仅按账户所有者明确配置后由 Miss
 | 心跳和更新同时报 TLS 安全连接失败 | 代理路径异常、网络拦截或证书问题 | 在「服务器连接」中诊断；只有直连正常时才切换直连。证书错误应检查系统时间、服务器证书链和代理证书 |
 | Claude Code 会话没有远程链接 | 自定义 API 地址下 Remote Control 不可用，这是预期行为；会话仍可由 MissionGo 控制 | 在 MissionGo 会话内查看、回复和审批，保持 Mac 节点在线；如连会话消息都没有，再查看 `~/Library/Logs/MissionGo/<派单 ID>.log` |
 | 菜单显示 Codex 后台服务未运行 | 控制通道没有应答，而且客户端自动运行 `codex app-server daemon start` 后仍没有连上 | 在终端运行菜单里复制出的 `codex app-server daemon start`，看它报什么错；要常驻就再跑一次 `codex app-server daemon bootstrap` |
+| 控制台显示这台机器的 Codex「未就绪」，本机菜单和 ChatGPT 却正常 | 节点无法确认控制 socket 的持有进程是本机 Codex 的后台服务（状态凭据缺失、过期或与 PID 不一致），于是暂停派单 | 控制台的未就绪一行写着该命令时，在本机终端运行 `codex app-server daemon restart` 重建凭据；之后心跳会自动恢复，不必重新登录 |
 | Codex 派单失败，提示 missiongo MCP 未配置或未登录 | Codex 连不上 MissionGo | 运行菜单里复制出的命令 |
 | OpenCode 显示共享服务不可用 | OpenCode 2 服务未运行或登记文件无效 | 在这台 Mac 上启动 OpenCode 共享服务，然后点击「重新检查」 |
 | OpenCode 显示 missiongo MCP `needs_auth` | OpenCode 尚未完成 MissionGo 授权 | 在 OpenCode `/mcps` 中登录，再点击「重新检查」 |

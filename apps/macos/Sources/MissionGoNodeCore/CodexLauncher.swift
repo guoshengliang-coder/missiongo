@@ -16,13 +16,21 @@ public extension CodexResourceChecking {
 public struct CodexFileDescriptorGuard: CodexResourceChecking {
     public static let minimumReserve = 64
     /// The official managed daemon raises RLIMIT_NOFILE before exec and records
-    /// its PID and startup time in app-server.pid. Some CLI releases also
-    /// include an executable digest. Never apply this contract to an unrelated
-    /// process merely because it owns a similarly named socket.
+    /// its PID and startup time. Some CLI releases also include an executable
+    /// digest. Never apply this contract to an unrelated process merely because
+    /// it owns a similarly named socket.
     static let managedDaemonSoftLimit = 4096
+    /// The names Codex has used for that record. The daemon package writes
+    /// `daemon.pid`; older layouts wrote `app-server.pid`. Reading only the
+    /// second left every current install unverifiable, and an unverifiable
+    /// daemon is what paused Codex dispatch on a machine whose daemon was
+    /// answering on the control socket the whole time.
+    static let stateFileNames = ["daemon.pid", "app-server.pid"]
 
     private let run: CommandRunner
-    private let managedStatePath: String
+    /// Where the answer came from, for the snapshot. A directory: more than one
+    /// file name can carry it.
+    private let stateSource: String
     private let softLimit: @Sendable (Int32) -> Int?
     private let openFiles: @Sendable (Int32) -> Int?
 
@@ -32,15 +40,15 @@ public struct CodexFileDescriptorGuard: CodexResourceChecking {
         home: String = Paths.homeDirectory()
     ) {
         let resolvedLocation = location ?? CodexLocation(environment: environment, home: home)
-        let statePath = "\(resolvedLocation.codexHome)/app-server-daemon/app-server.pid"
+        let stateDirectory = "\(resolvedLocation.codexHome)/app-server-daemon"
+        let codexHome = resolvedLocation.codexHome
         self.init(
             run: Commands.runner(environment: environment),
             softLimit: { pid in
-                guard let data = FileManager.default.contents(atPath: statePath) else { return nil }
-                return Self.verifiedManagedSoftLimit(ownerPID: pid, stateData: data)
+                Self.managedSoftLimit(ownerPID: pid, stateDirectory: stateDirectory, codexHome: codexHome)
             },
             openFiles: { Self.processOpenFileCount($0) },
-            managedStatePath: statePath
+            stateSource: stateDirectory
         )
     }
 
@@ -48,12 +56,12 @@ public struct CodexFileDescriptorGuard: CodexResourceChecking {
         run: @escaping CommandRunner,
         softLimit: @escaping @Sendable (Int32) -> Int?,
         openFiles: @escaping @Sendable (Int32) -> Int?,
-        managedStatePath: String = "managed-daemon-state"
+        stateSource: String = "managed-daemon-state"
     ) {
         self.run = run
         self.softLimit = softLimit
         self.openFiles = openFiles
-        self.managedStatePath = managedStatePath
+        self.stateSource = stateSource
     }
 
     public func unavailableReason(socketPath: String) async -> String? {
@@ -65,25 +73,26 @@ public struct CodexFileDescriptorGuard: CodexResourceChecking {
         let checkedAt = ISO8601DateFormatter().string(from: Date())
         guard let pid = await ownerPID(socketPath: socketPath) else {
             return AgentResourceSnapshot(
-                source: managedStatePath, checkedAt: checkedAt, status: "unavailable",
+                source: stateSource, checkedAt: checkedAt, status: "unavailable",
                 reason: "无法核实 Codex managed daemon 的当前进程；MissionGo 已暂停 Codex 派单。"
             )
         }
         guard let limit = softLimit(pid) else {
             return AgentResourceSnapshot(
-                pid: pid, source: managedStatePath, checkedAt: checkedAt, status: "unavailable",
-                reason: "Codex managed daemon 状态凭据缺失、过期或与控制 socket 的 PID 不一致；MissionGo 已暂停派单。"
+                pid: pid, source: stateSource, checkedAt: checkedAt, status: "unavailable",
+                reason: "控制 socket 的持有进程不是本机 Codex 的后台服务（状态凭据缺失、过期或与其 PID 不一致）；"
+                    + "MissionGo 已暂停派单。在终端运行 codex app-server daemon restart 可重建该凭据。"
             )
         }
         guard let used = openFiles(pid) else {
             return AgentResourceSnapshot(
-                pid: pid, softLimit: limit, source: managedStatePath, checkedAt: checkedAt, status: "unavailable",
+                pid: pid, softLimit: limit, source: stateSource, checkedAt: checkedAt, status: "unavailable",
                 reason: "无法读取 Codex managed daemon 的文件描述符数量；MissionGo 已暂停派单。"
             )
         }
         let reason = Self.unavailableReason(openFiles: used, softLimit: limit)
         return AgentResourceSnapshot(
-            pid: pid, openFiles: used, softLimit: limit, source: managedStatePath, checkedAt: checkedAt,
+            pid: pid, openFiles: used, softLimit: limit, source: stateSource, checkedAt: checkedAt,
             status: reason == nil ? "ready" : "unavailable", reason: reason
         )
     }
@@ -117,6 +126,47 @@ public struct CodexFileDescriptorGuard: CodexResourceChecking {
         guard let socket = try? UnixSocket(path: path, timeout: 1) else { return nil }
         defer { socket.close() }
         return socket.peerPID()
+    }
+
+    /// The soft limit of the managed daemon that owns the control socket.
+    ///
+    /// Codex's own record is preferred, because it proves the PID, the start
+    /// time and — when present — the executable. When no record answers, the
+    /// socket owner's executable is the one identity left: that control socket
+    /// belongs to this Codex home's package-managed daemon, and refusing to
+    /// dispatch into a daemon that plainly answers traded a descriptor shortage
+    /// that may never happen for a dispatch pause that never lifts. A binary
+    /// from anywhere else is still refused, so a foreign process that happens
+    /// to own a similarly named socket is not trusted.
+    static func managedSoftLimit(
+        ownerPID: Int32,
+        stateDirectory: String,
+        codexHome: String,
+        executable: (Int32) -> String? = processExecutablePath
+    ) -> Int? {
+        for name in stateFileNames {
+            guard let data = FileManager.default.contents(atPath: "\(stateDirectory)/\(name)") else { continue }
+            if let limit = verifiedManagedSoftLimit(ownerPID: ownerPID, stateData: data) { return limit }
+        }
+        guard let path = executable(ownerPID), isPackageManagedCodex(path, codexHome: codexHome) else { return nil }
+        return managedDaemonSoftLimit
+    }
+
+    /// `<CODEX_HOME>/packages/…/bin/codex`: the binary a package-managed Codex
+    /// installs and runs, which is what `codex app-server daemon` starts.
+    static func isPackageManagedCodex(_ executable: String, codexHome: String) -> Bool {
+        guard executable.hasPrefix("\(codexHome)/packages/") else { return false }
+        return executable.hasSuffix("/bin/codex")
+    }
+
+    /// What a running process was started from. Unlike Codex's record this
+    /// cannot be renamed or dropped by a release, and unlike the CLI on PATH it
+    /// is the process actually holding the socket.
+    static func processExecutablePath(_ pid: Int32) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        return String(cString: buffer)
     }
 
     static func verifiedManagedSoftLimit(ownerPID: Int32, stateData: Data) -> Int? {
