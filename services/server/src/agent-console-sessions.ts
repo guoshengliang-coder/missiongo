@@ -40,9 +40,14 @@ export class AgentConsoleSessions {
       groups.set(key, [...(groups.get(key) ?? []), row]);
     }
     return [...groups.values()].map((group) => group.sort((a, b) => {
-      const rank = (row: AgentSessionListItem) => row.source !== "external" ? 0
-        : row.nativeConnection?.nodeId ? 1 : 2;
-      return rank(a) - rank(b) || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+      const rank = (row: AgentSessionListItem) => {
+        if (row.source !== "external") return !row.archivedAt
+          && !["failed", "unavailable", "suspended"].includes(row.status) ? 0 : 2;
+        return !row.archivedAt && row.nativeConnection?.state === "connected" ? 1
+          : row.nativeConnection?.nodeId ? 3 : 4;
+      };
+      // A resumed native thread can have an older archived hand-off. Use its live channel.
+      return rank(a) - rank(b) || b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id);
     }));
   }
 

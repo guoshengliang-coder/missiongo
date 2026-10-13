@@ -111,6 +111,19 @@ it("keeps a historical source archive authoritative in both the list and detail"
     .toMatchObject({ archivedAt: now, archivedSource: "source" });
 });
 
+it("uses the live hand-off when the same native conversation was resumed after an older archive", () => {
+  const f = fixture();
+  f.db.prepare("UPDATE agent_sessions SET archived_at=?,archive_source='source' WHERE id=?")
+    .run(new Date().toISOString(), f.sessionId);
+  const resumed = f.createDispatch("resumed-dispatch", "native-thread");
+  const rows = f.console.list("owner");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.id).toBe(resumed);
+  expect(rows[0]!.archivedAt).toBeUndefined();
+  expect(rows[0]!.replyable).toBe(true);
+  expect(rows[0]!.relatedSessionIds).toEqual(expect.arrayContaining([f.sessionId, resumed, f.externalId]));
+});
+
 it("includes every linked item for boundary authorization instead of losing a hidden product", () => {
   const f = fixture();
   const product = f.store.createProduct({ name: "Other", keyPrefix: "OTHER" });
