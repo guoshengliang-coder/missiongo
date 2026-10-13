@@ -147,6 +147,43 @@ test("the Enter that confirms an input method candidate is never sent", async ({
 test.describe("touch screen", () => {
   test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
 
+  test("an old progress link opens one unified row and replies through its native session", async ({ page }) => {
+    const legacyId = "and-280-old-progress-fixture";
+    const sent: { text?: string }[] = [];
+    await stubSession(page, sent);
+    const readIds: string[] = [];
+    await page.route("**/api/v1/agent-sessions**", async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname !== "/api/v1/agent-sessions") readIds.push(pathname.split("/").at(-1)!);
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify(pathname === "/api/v1/agent-sessions"
+        ? { sessions: [{ ...summary, relatedSessionIds: [SESSION_ID, legacyId] }] }
+        : { ...detail, messages: [
+          { id: "native-message", role: "agent", text: "原生会话历史", occurredAt: now },
+          { id: "progress-message", role: "agent", text: "主动处理进展", occurredAt: now },
+        ] }) });
+    });
+    await page.goto(CONSOLE_URL.replace(SESSION_ID, legacyId));
+    await expect(box(page)).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`session=${SESSION_ID}`));
+    await expect(page.getByText("原生会话历史", { exact: true })).toBeVisible();
+    await expect(page.getByText("主动处理进展", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+    await expect(page.locator(".agent-console-session-row")).toHaveCount(1);
+    await page.locator(".agent-console-session").click();
+    await expect(box(page)).toBeVisible();
+    expect(readIds).toContain(SESSION_ID);
+    expect(readIds).not.toContain(legacyId);
+    const command = page.waitForRequest((request) => request.method() === "POST"
+      && request.url().endsWith(`/agent-sessions/${SESSION_ID}/commands`));
+    await box(page).fill("继续处理");
+    await page.locator(".agent-console-reply button[type=submit]").click();
+    await command;
+    await expect.poll(() => sent.length).toBe(1);
+    expect(sent[0].text).toBe("继续处理");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+
   test("Enter is a newline, and the button is the only way to send", async ({ page }) => {
     const sent: { text?: string }[] = [];
     await stubSession(page, sent);

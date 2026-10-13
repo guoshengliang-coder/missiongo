@@ -526,6 +526,7 @@ export interface AgentSession {
 }
 
 export interface AgentSessionSummary {
+  readonly relatedSessionIds?: readonly string[];
   readonly nativeConnection?: ExternalNativeConnection;
   readonly canConnectNative?: boolean;
   readonly canRegisterNative?: boolean;

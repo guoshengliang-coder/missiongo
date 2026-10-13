@@ -442,6 +442,14 @@ export function shouldResetMessageView(
  * Before the first response, absence from the empty array proves nothing and
  * must not erase state restored after an Android Activity recreation.
  */
+export function canonicalAgentSessionId(
+  selectedId: string | null,
+  sessions: readonly Pick<AgentSessionSummary, "id" | "relatedSessionIds">[],
+): string | null {
+  return sessions.find((session) => session.id === selectedId
+    || (selectedId !== null && session.relatedSessionIds?.includes(selectedId)))?.id ?? selectedId;
+}
+
 export function resolvedAgentSessionId(
   requestedId: string | null,
   availableIds: readonly string[],

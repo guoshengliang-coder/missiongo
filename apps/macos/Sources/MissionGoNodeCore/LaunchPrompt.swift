@@ -74,6 +74,7 @@ public enum LaunchPrompt {
             "使用 missiongo skill 处理这些工作条目：\(itemKeys.joined(separator: "、"))。",
             "",
             "本会话由 MissionGo 派单 \(dispatchId) 发起，上面列出的编号等同于用户给出的范围。",
+            "领取时 claim_item 必须带 dispatchId: \(JSONValues.quote(dispatchId))，沿用本次派单会话；不要为本次派单另行登记主动处理会话。",
             "整批条目走一个分支和一个 PR，之后按 Skill 的规则推进条目状态。",
             "会话起在仓库主目录，动手改代码前先按仓库规则建独立 worktree，不要直接在主工作区修改。",
             "开始时先调用 get_current_account，核对 Skill 版本和本次连接的实际权限。实施前必须确认 canComment 为 true 且 writeTools 包含 claim_item；缺少权限时说明需要在哪个客户端完成授权，不得把已配置 MCP 当作拥有写权限，也不得跳过领取直接改代码。",
