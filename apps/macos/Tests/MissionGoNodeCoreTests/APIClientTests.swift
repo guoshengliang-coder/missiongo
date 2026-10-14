@@ -602,6 +602,41 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(requests[1].value(forHTTPHeaderField: "X-MissionGo-External-Ref"), "exact-native")
     }
 
+    func testOnlyTheCodedAutomaticBindingConflictIsClassifiedAsAlreadyBound() async throws {
+        let report = AgentSessionReport(status: "idle", messages: [])
+        let body = #"{"code":"external_native_already_bound","title":"Localized conflict"}"#
+        StubURLProtocol.install { _, _ in .response(status: 409, body: body) }
+        do {
+            try await client().reportAutomaticExternalSession(sessionId: "external", generation: 0, nativeSessionRef: "exact", report: report)
+            XCTFail("Expected binding conflict")
+        } catch let error as APIError {
+            XCTAssertEqual(error, .externalNativeAlreadyBound)
+        }
+        // Other 409s, misleading titles, missing codes and wrong statuses must
+        // remain visible errors; a bound snapshot is not an automatic probe.
+        for (status, responseBody) in [
+            (409, #"{"code":"agent_reply_pending","title":"This native conversation is already connected to another console record."}"#),
+            (409, #"{"title":"This native conversation is already connected to another console record."}"#),
+            (500, body),
+        ] {
+            StubURLProtocol.install { _, _ in .response(status: status, body: responseBody) }
+            do {
+                try await client().reportAutomaticExternalSession(sessionId: "external", generation: 0, nativeSessionRef: "exact", report: report)
+                XCTFail("Expected HTTP error")
+            } catch let error as APIError {
+                guard case let .http(_, actualStatus, _) = error else { return XCTFail("Unexpected classification: \(error)") }
+                XCTAssertEqual(actualStatus, status)
+            }
+        }
+        StubURLProtocol.install { _, _ in .response(status: 409, body: body) }
+        do {
+            try await client().reportExternalAgentSession(sessionId: "external", generation: 1, report: report)
+            XCTFail("Expected HTTP error")
+        } catch let error as APIError {
+            guard case .http(_, 409, _) = error else { return XCTFail("Bound snapshot conflict must remain visible") }
+        }
+    }
+
     func testSnapshotUploadStaysPlainWhenSmall() async throws {
         StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
         let report = AgentSessionReport(status: "idle", messages: [])

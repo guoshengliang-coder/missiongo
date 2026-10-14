@@ -11,6 +11,7 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     let sessionUploadAttempts = Locked(0)
     let externalGenerations = Locked<[Int]>([])
     let automaticRefs = Locked<[String]>([])
+    let automaticError = Locked<APIError?>(nil)
     let sessionReportFailures = Locked(0)
     let rejectedSessionId = Locked<String?>(nil)
     let attachmentData = Locked<[String: Data]>([:])
@@ -79,6 +80,7 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     }
     func reportAutomaticExternalSession(sessionId: String, generation: Int, nativeSessionRef: String, report: AgentSessionReport) async throws {
         automaticRefs.withLock { $0.append(nativeSessionRef) }
+        if let error = automaticError.current { throw error }
         try await reportAgentSession(sessionId: sessionId, report: report)
     }
     func reportExternalAgentSession(sessionId: String, generation: Int, report: AgentSessionReport) async throws {
@@ -624,6 +626,40 @@ final class NodeLoopTests: XCTestCase {
         task.cancel(); try await task.value
         XCTAssertEqual(api.automaticRefs.current, ["current-native-thread"])
         XCTAssertEqual(api.externalGenerations.current, [1])
+    }
+
+    func testCompetingAutomaticProbePreservesConnectionHealthAndOtherSessionSync() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [
+            NodeAgentSession(id: "duplicate", agentKind: "codex", sessionRef: "exact-thread", status: "unavailable", occupiesExecutionSlot: false, externalBindingGeneration: 0, externalAutoConnect: true),
+            NodeAgentSession(id: "existing", agentKind: "codex", sessionRef: "exact-thread", status: "idle"),
+        ] }
+        api.automaticError.withLock { $0 = .externalNativeAlreadyBound }
+        let adapter = SnapshotAdapter(reports: [AgentSessionReport(status: "idle", messages: [])], kind: "codex")
+        let logs = Locked<[String]>([])
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Fixture", timing: snapshotTiming(), log: { message in logs.withLock { $0.append(message) } })
+        let task = Task { try await loop.run() }
+        await waitUntil { api.sessionReports.current.contains { $0.0 == "existing" } }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let state = loop.currentState
+        task.cancel(); try await task.value
+        XCTAssertEqual(api.automaticRefs.current, ["exact-thread"], "the stale probe backs off")
+        XCTAssertEqual(api.sessionReports.current.map(\.0), ["existing"])
+        XCTAssertEqual(state.connection, .online)
+        XCTAssertNil(state.lastError)
+        XCTAssertTrue(logs.current.contains { $0.contains("跳过重复自动连接 duplicate") })
+    }
+
+    func testUnknownAutomaticConflictStillReportsAnInterfaceError() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [NodeAgentSession(id: "auto", agentKind: "codex", sessionRef: "exact", status: "unavailable", externalBindingGeneration: 0, externalAutoConnect: true)] }
+        api.automaticError.withLock { $0 = .http(operation: "自动连接", status: 409, detail: "Unexpected conflict") }
+        let adapter = SnapshotAdapter(reports: [AgentSessionReport(status: "idle", messages: [])], kind: "codex")
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Fixture", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { loop.currentState.connection == .degraded }
+        task.cancel(); try await task.value
+        XCTAssertTrue(loop.currentState.lastError?.contains("Unexpected conflict") == true)
     }
 
     func testAutomaticProbeDoesNotClaimAnUnavailableNativeSource() async throws {

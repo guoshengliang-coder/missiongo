@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 
+import { AgentSessionStore } from "./agent-session-store.js";
 import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 import { ExternalNativeSessionStore } from "./external-native-session-store.js";
 import { MissionGoStore } from "./store.js";
@@ -25,6 +26,74 @@ function fixture(kind: "codex" | "opencode" | "claude_code" = "codex", refKind: 
   return { store, progress, native, id, item, identity, report };
 }
 afterEach(() => { vi.useRealTimers(); stores.splice(0).forEach((store) => store.close()); });
+
+it.each(["codex", "opencode", "claude_code"] as const)("keeps the existing %s channel and resumes duplicate probing only after disconnect", (kind) => {
+  const f = fixture(kind);
+  f.native.connect("owner", f.id, "node"); f.report();
+  const command = f.native.enqueue("owner", f.id, "Keep this reply");
+  const duplicate = f.progress.register({ accountId: "owner", clientId: "another-client" }, { ...f.identity, autoConnect: true }, f.item.key);
+  const unrelated = f.progress.register({ accountId: "owner", clientId: "client" }, { ...f.identity, sessionRef: "other-thread", autoConnect: true }, f.item.key);
+  const offers = f.native.listForNode("owner", "node", "worker-one", () => {}, true);
+  expect(offers.map((offer) => offer.id)).toEqual([f.id, unrelated]);
+  expect(offers[0]!.command?.id).toBe(command.id);
+  expect(f.native.overlay("owner", f.id).replyable).toBe(true);
+  expect(f.native.overlay("owner", duplicate).nativeConnection?.nodeId).toBeUndefined();
+  expect(f.progress.listForAccount("owner")).toHaveLength(3);
+  f.native.cancel("owner", f.id, command.id);
+  f.native.disconnect("owner", f.id);
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, true).map((offer) => offer.id)).toContain(duplicate);
+});
+
+it("does not let duplicate automatic mirrors fill the polling limit", () => {
+  const f = fixture(); const db = f.store.database.connection;
+  f.native.connect("owner", f.id, "node"); f.report();
+  for (let index = 0; index < 100; index++) {
+    const id = `000-duplicate-${index}`;
+    db.prepare(`INSERT INTO external_agent_sessions
+      (id,account_id,client_id,agent_kind,session_ref,ref_kind,progress_status,created_at,updated_at,activity_at,native_auto_connect)
+      SELECT ?,account_id,?,agent_kind,session_ref,ref_kind,progress_status,created_at,updated_at,activity_at,1
+      FROM external_agent_sessions WHERE id=?`).run(id, `client-${index}`, f.id);
+    db.prepare("INSERT INTO external_agent_session_items(session_id,item_id) VALUES (?,?)").run(id, f.item.id);
+  }
+  const unrelated = f.progress.register({ accountId: "owner", clientId: "client" }, { ...f.identity, sessionRef: "other-thread", autoConnect: true }, f.item.key);
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, true).map((offer) => offer.id)).toEqual([f.id, unrelated]);
+});
+
+it("rejects a stale competing probe without changing the winner's reply or messages", () => {
+  const f = fixture();
+  const duplicate = f.progress.register({ accountId: "owner", clientId: "another-client" }, { ...f.identity, autoConnect: true }, f.item.key);
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, true).map((offer) => offer.id)).toContain(duplicate);
+  f.native.connect("owner", f.id, "node"); f.report();
+  const command = f.native.enqueue("owner", f.id, "Original reply");
+  const before = f.native.overlay("owner", f.id);
+  expect(() => f.report({ sessionId: duplicate, generation: 0, autoConnect: true, nativeSessionRef: f.identity.sessionRef }))
+    .toThrow(expect.objectContaining({ statusCode: 409, code: "external_native_already_bound" }));
+  expect(f.native.overlay("owner", f.id)).toEqual(before);
+  expect(f.native.overlay("owner", f.id).command?.id).toBe(command.id);
+  expect(f.native.overlay("owner", duplicate).nativeMessages).toEqual([]);
+});
+
+it("excludes a dispatch-bound native identity only on its exact node and agent", () => {
+  const f = fixture(); const db = f.store.database.connection;
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+    VALUES ('dispatch','owner','node','codex','default','launched','/synthetic/repo',?)`).run(now);
+  db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('dispatch',?,0)").run(f.item.id);
+  const dispatch = new AgentSessionStore(f.store.database);
+  const dispatchId = dispatch.createForDispatch({ dispatchId: "dispatch", nodeId: "node", sessionRef: f.identity.sessionRef });
+  const before = dispatch.getForAccount("owner", dispatchId);
+  f.progress.register({ accountId: "owner", clientId: "client" }, { ...f.identity, autoConnect: true }, f.item.key);
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, true)).toEqual([]);
+  const otherAgent = f.progress.register({ accountId: "owner", clientId: "client" }, { ...f.identity, agentKind: "opencode", autoConnect: true }, f.item.key);
+  db.prepare("UPDATE nodes SET agents_json='[{\"kind\":\"codex\"},{\"kind\":\"opencode\"}]' WHERE id='node'").run();
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, true).map((offer) => offer.id)).toEqual([otherAgent]);
+  db.prepare(`INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,last_seen_at,created_at,updated_at)
+    VALUES ('other-node','owner','other-installation','Other node','other-synthetic','[{"kind":"codex"}]',?,?,?)`).run(now, now, now);
+  expect(f.native.listForNode("owner", "other-node", "worker-two", () => {}, true).map((offer) => offer.id)).toEqual([f.id]);
+  expect(f.native.listForNode("other-owner", "node", "worker-one", () => {}, true)).toEqual([]);
+  expect(f.native.listForNode("owner", "other-node", "worker-two", () => { throw new Error("permission denied"); }, true)).toEqual([]);
+  expect(dispatch.getForAccount("owner", dispatchId)).toEqual(before);
+});
 
 it.each(["codex", "opencode", "claude_code"] as const)("connects %s by exact native identity without a dispatch or launch", (kind) => {
   const { native, progress, id, store, item, report } = fixture(kind);
