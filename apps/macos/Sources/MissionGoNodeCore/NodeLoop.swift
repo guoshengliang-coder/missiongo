@@ -635,6 +635,17 @@ public final class NodeLoop: @unchecked Sendable {
             self.noteSuccess("同步 Agent 会话 \(session.id) 出错")
             _ = rejectedUntil.withLock { $0.removeValue(forKey: session.id) }
         } catch {
+            if session.externalAutoConnect, let apiError = error as? APIError,
+               case .externalNativeAlreadyBound = apiError {
+                // A binding can win after the node fetched its probe list.
+                // This is a per-conversation conflict, not a broken connection.
+                // Leave the existing reply channel untouched and poll again
+                // after a cooldown in case its owner releases the binding.
+                rejectedUntil.withLock { $0[session.id] = Date().addingTimeInterval(60) }
+                self.noteSuccess("同步 Agent 会话 \(session.id) 出错")
+                self.log("跳过重复自动连接 \(session.id)：\(apiError.localizedDescription)")
+                return
+            }
             if let apiError = error as? APIError,
                case let .http(_, status, _) = apiError,
                (400..<500).contains(status) {

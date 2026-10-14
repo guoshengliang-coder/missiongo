@@ -845,6 +845,9 @@ public enum APIError: Error, Equatable, LocalizedError, Sendable {
     case credentialRevoked(status: Int, detail: String?)
     /// The server answered, with something other than 2xx.
     case http(operation: String, status: Int, detail: String)
+    /// Only the automatic native handshake can yield this expected conflict.
+    /// Another console record keeps the existing conversation's input channel.
+    case externalNativeAlreadyBound
     /// The request never got an answer.
     case network(NetworkFailure)
     /// The server answered 2xx with a body this client cannot use.
@@ -857,6 +860,8 @@ public enum APIError: Error, Equatable, LocalizedError, Sendable {
             return "凭证已失效（HTTP \(status)）\(suffix)：需要重新登录。"
         case let .http(operation, status, detail):
             return "\(operation) 失败（HTTP \(status)）：\(detail)"
+        case .externalNativeAlreadyBound:
+            return "原生会话已由另一条控制台记录连接，沿用已有连接。"
         case let .network(failure):
             return failure.description
         case let .invalidResponse(message):
@@ -1347,6 +1352,11 @@ public struct APIClient: Sendable {
         let response = try await send("POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true,
             extraHeaders: ["X-MissionGo-External-Generation": String(generation), "X-MissionGo-External-Worker": externalWorkerId,
                 "X-MissionGo-External-Auto-Connect": "1", "X-MissionGo-External-Ref": nativeSessionRef])
+        if response.status == 409,
+           let problem = JSONValues.parse(response.text) as? [String: Any],
+           problem["code"] as? String == "external_native_already_bound" {
+            throw APIError.externalNativeAlreadyBound
+        }
         try requireSuccess(response, operation: "自动连接外部 Agent 会话")
     }
 

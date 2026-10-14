@@ -59,6 +59,12 @@ export class ExternalNativeSessionStore {
       throw conflict("agent_reply_pending", "Cancel or confirm the pending reply before disconnecting or archiving.");
     }
   }
+  private alreadyBound(row: Row, nodeId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM external_agent_sessions WHERE native_node_id=? AND agent_kind=? AND session_ref=? AND id<>?")
+      .get(nodeId, row.agent_kind, row.session_ref, row.id)
+      || this.db.prepare("SELECT 1 FROM agent_sessions WHERE node_id=? AND agent_kind=? AND agent_session_ref=?")
+        .get(nodeId, row.agent_kind, row.session_ref));
+  }
   connect(accountId: string, id: string, nodeId: string): void {
     this.store.database.transaction(() => {
       const row = this.row(accountId, id);
@@ -73,8 +79,7 @@ export class ExternalNativeSessionStore {
       }
       if (row.native_node_id === nodeId) return;
       this.requireNoPending(id);
-      if (this.db.prepare("SELECT 1 FROM external_agent_sessions WHERE native_node_id=? AND agent_kind=? AND session_ref=? AND id<>?").get(nodeId, row.agent_kind, row.session_ref, id)
-        || this.db.prepare("SELECT 1 FROM agent_sessions WHERE node_id=? AND agent_kind=? AND agent_session_ref=?").get(nodeId, row.agent_kind, row.session_ref)) {
+      if (this.alreadyBound(row, nodeId)) {
         throw conflict("external_native_already_bound", "This native conversation is already connected to another console record.");
       }
       this.db.prepare("UPDATE external_agent_sessions SET native_node_id=?, native_generation=native_generation+1, native_snapshot_json=NULL, native_synced_at=NULL WHERE id=?").run(nodeId, id);
@@ -149,9 +154,16 @@ export class ExternalNativeSessionStore {
     const node = this.db.prepare("SELECT agents_json FROM nodes WHERE id=? AND account_id=? AND revoked_at IS NULL").get(nodeId, accountId) as { agents_json: string } | undefined;
     if (!node) return [];
     const enabled = new Set((JSON.parse(node.agents_json) as { kind: string }[]).map((agent) => agent.kind));
-    const rows = this.db.prepare(`SELECT * FROM external_agent_sessions WHERE account_id=? AND archived_at IS NULL
-      AND (native_node_id=? OR (? AND native_node_id IS NULL AND native_auto_connect=1 AND ref_kind='native'))
-      ORDER BY native_node_id IS NULL, id LIMIT 100`).all(accountId, nodeId, allowAutomatic ? 1 : 0) as unknown as Row[];
+    // Exclude duplicate automatic probes before LIMIT so historical mirrors
+    // cannot crowd out unrelated sessions. Existing channels remain in the
+    // list; a released binding becomes eligible again on the next poll.
+    const rows = this.db.prepare(`SELECT s.* FROM external_agent_sessions s WHERE s.account_id=? AND s.archived_at IS NULL
+      AND (s.native_node_id=? OR (? AND s.native_node_id IS NULL AND s.native_auto_connect=1 AND s.ref_kind='native'
+        AND NOT EXISTS (SELECT 1 FROM external_agent_sessions bound
+          WHERE bound.native_node_id=? AND bound.agent_kind=s.agent_kind AND bound.session_ref=s.session_ref AND bound.id<>s.id)
+        AND NOT EXISTS (SELECT 1 FROM agent_sessions bound
+          WHERE bound.node_id=? AND bound.agent_kind=s.agent_kind AND bound.agent_session_ref=s.session_ref)))
+      ORDER BY s.native_node_id IS NULL, s.id LIMIT 100`).all(accountId, nodeId, allowAutomatic ? 1 : 0, nodeId, nodeId) as unknown as Row[];
     return rows.flatMap((row) => {
       const automatic = row.native_node_id === null;
       if (automatic && (!enabled.has(row.agent_kind) || this.items(row.id).every((item) => item.status === "done"))) return [];
