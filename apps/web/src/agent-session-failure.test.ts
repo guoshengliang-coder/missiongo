@@ -20,6 +20,12 @@ describe("failure card", () => {
     expect(legacy.summary).toBe("agentFailureUnknown");
     expect(failureDiagnostic(legacy, "")).not.toContain("secret");
   });
+  it.each(["codex_server_error", "codex_connection_failed", "codex_rate_limit_exceeded"] as const)("offers manual continuation for %s", (code) => {
+    const view = sessionFailureView("failed", { code })!;
+    expect(translate("zh-CN", view.recovery)).toContain("输入新消息并手动发送");
+    expect(translate("en", view.recovery)).toContain("send it manually");
+    expect(translate("zh-CN", view.recovery)).toContain("不会自动重发");
+  });
   it("withholds the card after recovery even if a cached list still has an old error", () => {
     for (const status of ["active", "idle", "unavailable"]) expect(sessionFailureView(status, { code: "codex_context_window_exceeded" }, "old error")).toBeUndefined();
   });
