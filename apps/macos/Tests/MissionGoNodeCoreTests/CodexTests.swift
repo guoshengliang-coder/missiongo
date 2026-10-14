@@ -786,7 +786,9 @@ final class CodexAppServerControlTests: XCTestCase {
     func testAReplyResumesAndStartsTheTurnWithTheOverrides() async throws {
         let server = try FakeAppServer { message in
             guard let id = message["id"] else { return [] }
-            return [["jsonrpc": "2.0", "id": id, "result": [:]]]
+            let result: [String: Any] = message["method"] as? String == "thread/resume"
+                ? ["thread": ["id": "thread-1", "status": ["type": "idle"]]] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
         }
         try await CodexAppServerControl(timeout: 5).sendMessage(
             socketPath: server.path, threadId: "thread-1", text: "Continue", clientUserMessageId: "command-1",
@@ -802,6 +804,54 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(turn?["approvalPolicy"] as? String, "on-request")
         XCTAssertEqual(turn?["approvalsReviewer"] as? String, "auto_review")
         XCTAssertEqual(turn?["clientUserMessageId"] as? String, "command-1")
+    }
+
+    func testReplyDoesNotStartUntilResumeConfirmsTheSameIdleThread() async throws {
+        for (id, state) in [("thread-1", "systemError"), ("thread-1", "active"), ("other", "idle")] {
+            let server = try FakeAppServer { message in
+                guard let requestId = message["id"] else { return [] }
+                let result: [String: Any] = message["method"] as? String == "thread/resume"
+                    ? ["thread": ["id": id, "status": ["type": state]]] : [:]
+                return [["jsonrpc": "2.0", "id": requestId, "result": result]]
+            }
+            do {
+                try await CodexAppServerControl(timeout: 5).sendMessage(socketPath: server.path,
+                    threadId: "thread-1", text: "Continue", clientUserMessageId: "reply-1", overrides: nil)
+                XCTFail("A reply needs an idle original thread")
+            } catch {
+                guard case .messageNotSent = error as? CodexControlError else { return XCTFail("\(error)") }
+            }
+            server.waitUntilDone()
+            XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume"])
+        }
+    }
+
+    func testResumeFailureIsDefinitelyUnsentButTurnStartFailureIsUncertain() async throws {
+        for failedMethod in ["thread/resume", "turn/start"] {
+            let server = try FakeAppServer { message in
+                guard let id = message["id"] else { return [] }
+                if message["method"] as? String == failedMethod {
+                    return [["jsonrpc": "2.0", "id": id, "error": ["code": -32603, "message": "Unavailable token=private-value"]]]
+                }
+                let result: [String: Any] = message["method"] as? String == "thread/resume"
+                    ? ["thread": ["id": "thread-1", "status": ["type": "idle"]]] : [:]
+                return [["jsonrpc": "2.0", "id": id, "result": result]]
+            }
+            do {
+                try await CodexAppServerControl(timeout: 5).sendMessage(socketPath: server.path,
+                    threadId: "thread-1", text: "Continue", clientUserMessageId: "reply-1", overrides: nil)
+                XCTFail("The fixture refuses the request")
+            } catch {
+                if failedMethod == "thread/resume" {
+                    guard case .messageNotSent = error as? CodexControlError else { return XCTFail("\(error)") }
+                    XCTAssertFalse(error.localizedDescription.contains("private-value"))
+                } else {
+                    guard case .rpc(method: "turn/start", message: _) = error as? CodexControlError else { return XCTFail("\(error)") }
+                }
+            }
+            server.waitUntilDone()
+            XCTAssertEqual(server.methods.contains("turn/start"), failedMethod == "turn/start")
+        }
     }
 
     func testReadsTheThreadsModelAndEffort() throws {
@@ -1182,6 +1232,8 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     let interruptions = Locked<[(String, String)]>([])
     let archived = Locked<[String]>([])
     var archiveError: Error?
+    var readError: Error?
+    var replyError: Error?
     let replyOverrides = Locked<[CodexTurnOverrides?]>([])
     let appliedSettings = Locked<[(String, CodexTurnOverrides)]>([])
     var applyError: Error?
@@ -1214,10 +1266,12 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     func hasLoadedThreads(socketPath: String) async throws -> Bool { loadedThreads }
 
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        if let readError { throw readError }
         return snapshot
     }
 
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws {
+        if let replyError { throw replyError }
         replies.withLock { $0.append((clientUserMessageId, text)) }
         replyOverrides.withLock { $0.append(overrides) }
         mirrorDeliveredReply(clientUserMessageId: clientUserMessageId, text: text)
@@ -1615,6 +1669,7 @@ final class CodexLauncherTests: XCTestCase {
             XCTAssertFalse(report.error?.contains("private-value") == true)
             XCTAssertTrue(control.replies.current.isEmpty)
             if command?.status == "delivering" { XCTAssertEqual(report.commandStatus, "delivery_unknown") }
+            if command?.status == "queued" { XCTAssertEqual(report.commandStatus, "failed") }
             let decoded = try JSONDecoder().decode(AgentSessionReport.self, from: JSONEncoder().encode(report.replacingMessages([])))
             XCTAssertEqual(decoded.failure, report.failure)
         }
@@ -1622,6 +1677,149 @@ final class CodexLauncherTests: XCTestCase {
         let recovered = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed"))
         XCTAssertNil(recovered.failure)
         XCTAssertNil(recovered.error)
+    }
+
+    func testManualReplyAfterTransientFailureReservesAndSendsOnce() async throws {
+        for (state, info) in [("idle", "internalServerError"), ("notLoaded", "httpConnectionFailed"), ("systemError", "rateLimitExceeded")] {
+            let control = RecordingControl(threadId: "thread-1")
+            control.snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+                "status": ["type": state], "turns": [["id": "old", "status": "failed", "items": [],
+                    "error": ["codexErrorInfo": info]]]
+            ]])
+            let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+                location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+            let noReply = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed"))
+            XCTAssertNotNil(noReply.failure)
+            XCTAssertTrue(control.replies.current.isEmpty, "Polling never retries the failed turn")
+            let reserved = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+                command: AgentSessionCommand(id: "new", text: "Continue", status: "queued")))
+            XCTAssertEqual(reserved.commandStatus, "delivering")
+            XCTAssertTrue(control.replies.current.isEmpty)
+            control.mirrorDeliveredReplies = true
+            let session = NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+                command: AgentSessionCommand(id: "new", text: "Continue", status: "delivering"))
+            let sent = try await launcher.synchronize(session)
+            XCTAssertEqual(sent.commandStatus, "delivered")
+            XCTAssertEqual(sent.status, "active")
+            XCTAssertNil(sent.failure)
+            XCTAssertTrue(sent.messages.contains { $0.sourceId == "new" })
+            _ = try await launcher.synchronize(session)
+            XCTAssertEqual(control.replies.current.map { $0.0 }, ["new"])
+        }
+    }
+
+    func testUnmirroredDeliveryBesideAFailedTurnIsNeverReplayed() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+            "status": ["type": "idle"], "turns": [["status": "failed", "items": [],
+                "error": ["codexErrorInfo": "internalServerError"]]]
+        ]])
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        for status in ["delivering", "delivery_unknown", "failed"] {
+            let report = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+                command: AgentSessionCommand(id: "old", text: "Old reply", status: status)))
+            if status == "delivering" { XCTAssertEqual(report.commandStatus, "delivery_unknown") }
+            XCTAssertTrue(control.replies.current.isEmpty)
+        }
+    }
+
+    func testFailedRecoveryEndsTheNewReplyInsteadOfLeavingItQueued() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+            "status": ["type": "idle"], "turns": [["status": "failed", "items": [],
+                "error": ["codexErrorInfo": "internalServerError"]]]
+        ]])
+        control.replyError = CodexControlError.messageNotSent("原会话无法恢复")
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        _ = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+            command: AgentSessionCommand(id: "new", text: "Continue", status: "queued")))
+        let report = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+            command: AgentSessionCommand(id: "new", text: "Continue", status: "delivering")))
+        XCTAssertEqual(report.commandStatus, "failed")
+        XCTAssertTrue(report.commandError?.contains("无法恢复") == true)
+        XCTAssertEqual(report.failure?.code, "codex_server_error")
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
+    func testUnreadableOrUnavailableThreadFailsAQueuedReplyWithoutSending() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let session = NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+            command: AgentSessionCommand(id: "new", text: "Continue", status: "queued"))
+        control.readError = CodexControlError.rpc(method: "thread/read", message: "Unavailable token=private-value")
+        let unreadable = try await launcher.synchronize(session)
+        XCTAssertEqual(unreadable.commandStatus, "failed")
+        XCTAssertFalse(unreadable.error?.contains("private-value") == true)
+        control.readError = nil
+        control.snapshot = CodexThreadSnapshot(status: "unavailable", messages: [])
+        let unavailable = try await launcher.synchronize(session)
+        XCTAssertEqual(unavailable.commandStatus, "failed")
+        XCTAssertTrue(unavailable.commandError?.contains("无法继续") == true)
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
+    func testRestartDuringFailureRecoveryNeedsConfirmationInsteadOfReplay() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+            "status": ["type": "idle"], "turns": [["status": "failed", "items": [],
+                "error": ["codexErrorInfo": "internalServerError"]]]
+        ]])
+        let environment = try codexOnPath()
+        let location = CodexLocation(codexHome: "/tmp/codex")
+        let launcher = CodexLauncher(environment: environment, serverUrl: nil, run: fakeCodex(), location: location, control: control)
+        _ = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+            command: AgentSessionCommand(id: "new", text: "Continue", status: "queued")))
+        let restarted = CodexLauncher(environment: environment, serverUrl: nil, run: fakeCodex(), location: location, control: control)
+        let report = try await restarted.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+            command: AgentSessionCommand(id: "new", text: "Continue", status: "delivering")))
+        XCTAssertEqual(report.commandStatus, "delivery_unknown")
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
+    func testTransportFailureAfterStartingRecoveryIsNotTriedTwice() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+            "status": ["type": "idle"], "turns": [["status": "failed", "items": [],
+                "error": ["codexErrorInfo": "internalServerError"]]]
+        ]])
+        control.replyError = CodexControlError.timedOut(method: "turn/start")
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        _ = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+            command: AgentSessionCommand(id: "new", text: "Continue", status: "queued")))
+        let session = NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+            command: AgentSessionCommand(id: "new", text: "Continue", status: "delivering"))
+        do { _ = try await launcher.synchronize(session); XCTFail("Delivery is uncertain") }
+        catch { XCTAssertEqual(error as? CodexControlError, .timedOut(method: "turn/start")) }
+        control.replyError = nil
+        let report = try await launcher.synchronize(session)
+        XCTAssertEqual(report.commandStatus, "delivery_unknown")
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
+    func testExternalFailureOnlyContinuesInItsLoadedIdleRuntime() async throws {
+        for state in ["idle", "systemError", "notLoaded"] {
+            let control = RecordingControl(threadId: "thread-1")
+            control.snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+                "status": ["type": state], "turns": [["status": "failed", "items": [],
+                    "error": ["codexErrorInfo": "internalServerError"]]]
+            ]])
+            let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+                location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+            let queued = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+                command: AgentSessionCommand(id: "new", text: "Continue", status: "queued"), externalBindingGeneration: 1))
+            XCTAssertEqual(queued.commandStatus, state == "idle" ? "delivering" : "failed")
+            if state == "idle" {
+                _ = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "failed",
+                    command: AgentSessionCommand(id: "new", text: "Continue", status: "delivering"), externalBindingGeneration: 1))
+                XCTAssertEqual(control.externalReplies.current.count, 1)
+            }
+            XCTAssertTrue(control.replies.current.isEmpty, "Never resumes an external conversation")
+            XCTAssertEqual(control.approvalReads.current, 0)
+        }
     }
 
     /// AND-223: Codex maps its active thread onto the turn state the console

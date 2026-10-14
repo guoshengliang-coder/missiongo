@@ -444,6 +444,10 @@ public struct CodexLauncher: AgentAdapter {
     let environment: ShellEnvironment
     let run: CommandRunner
     let location: CodexLocation
+    // A delivering reply beside a failed turn may be left over from an earlier
+    // attempt. Only a reservation made here can begin recovery; after a restart
+    // an unmirrored reservation remains unknown rather than being replayed.
+    private let failureReplyReservations = Locked<[String: String]>([:])
     let control: CodexControl
     let resources: CodexResourceChecking
     /// The MissionGo server this machine is logged in to, for the MCP hint.
@@ -640,7 +644,19 @@ public struct CodexLauncher: AgentAdapter {
     }
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
-        let snapshot = try await readSnapshot(session)
+        failureReplyReservations.withLock { reservations in
+            if reservations[session.id] != session.command?.id { reservations[session.id] = nil }
+        }
+        let snapshot: CodexThreadSnapshot
+        do {
+            snapshot = try await readSnapshot(session)
+        } catch {
+            guard let command = session.command, (command.kind ?? "message") == "message", command.status == "queued" else { throw error }
+            return AgentSessionReport(status: "unavailable", messages: [],
+                error: CodexSessionFailure.redact(error.localizedDescription),
+                commandId: command.id, commandStatus: "failed",
+                commandError: "回复未发送：无法读取原 Codex 会话，请检查 Mac 连接或在来源客户端恢复。")
+        }
         let approval = approvalSnapshot(session)
         if let decision = session.approvalDecision, approval?.id == decision.id,
            approval?.status == "pending" {
@@ -723,7 +739,7 @@ public struct CodexLauncher: AgentAdapter {
             }
         }
         return report.reportingApproval(approval, retryId: retryId,
-            retryStatus: retryStatus, retryError: retryError).reportingFailure(snapshot.failure)
+            retryStatus: retryStatus, retryError: retryError).reportingFailure(report.status == "failed" ? snapshot.failure : nil)
     }
 
     /// What a person chose for this thread, passed on every turn MissionGo
@@ -832,6 +848,7 @@ public struct CodexLauncher: AgentAdapter {
         // that reply in the source transcript instead of starting it twice.
         if command.kind != "interrupt",
            snapshot.messages.contains(where: { $0.role == "user" && $0.sourceId == command.id }) {
+            failureReplyReservations.withLock { $0[session.id] = nil }
             return AgentSessionReport(
                 status: snapshot.status, messages: snapshot.messages,
                 commandId: command.id, commandStatus: "delivered",
@@ -879,7 +896,26 @@ public struct CodexLauncher: AgentAdapter {
         // An active ordinary turn accepts same-turn steering. Older app-server
         // snapshots that do not identify the active turn keep the reply queued
         // and fall back to turn/start once the thread becomes idle.
-        let canDeliver = snapshot.status == "idle"
+        let recovering = session.managedExecution == nil && snapshot.canContinueAfterFailure
+            && (session.externalBindingGeneration == nil || snapshot.runtimeStatus == "idle")
+        if ["failed", "unavailable"].contains(snapshot.status), command.status == "queued", !recovering {
+            return AgentSessionReport(
+                status: snapshot.status, messages: snapshot.messages,
+                commandId: command.id, commandStatus: "failed",
+                commandError: "回复未发送：原 Codex 会话当前无法继续，请根据错误提示在来源客户端恢复后再发送。",
+                sourceArchived: false, activityAt: snapshot.activityAt, turnActive: false
+            )
+        }
+        if recovering, command.status == "delivering",
+           !failureReplyReservations.withLock({ $0[session.id] == command.id }) {
+            return AgentSessionReport(
+                status: snapshot.status, messages: snapshot.messages,
+                commandId: command.id, commandStatus: "delivery_unknown",
+                commandError: "无法确认 Codex 是否收到回复，请核实后手动确认；不会自动重发。",
+                sourceArchived: false, activityAt: snapshot.activityAt, turnActive: false
+            )
+        }
+        let canDeliver = snapshot.status == "idle" || recovering
             || (session.managedExecution == nil && snapshot.status == "active" && snapshot.activeTurnId != nil)
         guard canDeliver else {
             if command.status == "delivering" && (snapshot.status == "unavailable" || snapshot.status == "failed") {
@@ -902,6 +938,7 @@ public struct CodexLauncher: AgentAdapter {
         // the console says it is being delivered and no longer promises a
         // cancellation that could race the actual turn/start call below.
         if command.status == "queued" {
+            if recovering { failureReplyReservations.withLock { $0[session.id] = command.id } }
             return AgentSessionReport(
                 status: snapshot.status,
                 messages: snapshot.messages,
@@ -919,24 +956,35 @@ public struct CodexLauncher: AgentAdapter {
                 turnActive: snapshot.status == "active"
             )
         }
-        if let activeTurnId = snapshot.activeTurnId, snapshot.status == "active" {
-            try await control.steerMessage(
-                socketPath: location.controlSocketPath,
-                threadId: session.sessionRef,
-                turnId: activeTurnId,
-                text: command.promptText,
-                clientUserMessageId: command.id
-            )
-        } else if session.externalBindingGeneration != nil {
-            try await control.sendExternalMessage(socketPath: location.controlSocketPath, threadId: session.sessionRef,
-                text: command.promptText, clientUserMessageId: command.id)
-        } else {
-            try await control.sendMessage(
-                socketPath: location.controlSocketPath,
-                threadId: session.sessionRef,
-                text: command.promptText,
-                clientUserMessageId: command.id,
-                overrides: turnOverrides(session)
+        failureReplyReservations.withLock { $0[session.id] = nil }
+        do {
+            if let activeTurnId = snapshot.activeTurnId, snapshot.status == "active" {
+                try await control.steerMessage(
+                    socketPath: location.controlSocketPath,
+                    threadId: session.sessionRef,
+                    turnId: activeTurnId,
+                    text: command.promptText,
+                    clientUserMessageId: command.id
+                )
+            } else if session.externalBindingGeneration != nil {
+                try await control.sendExternalMessage(socketPath: location.controlSocketPath, threadId: session.sessionRef,
+                    text: command.promptText, clientUserMessageId: command.id)
+            } else {
+                try await control.sendMessage(
+                    socketPath: location.controlSocketPath,
+                    threadId: session.sessionRef,
+                    text: command.promptText,
+                    clientUserMessageId: command.id,
+                    overrides: turnOverrides(session)
+                )
+            }
+        } catch let CodexControlError.messageNotSent(reason) {
+            return AgentSessionReport(
+                status: snapshot.status, messages: snapshot.messages,
+                commandId: command.id, commandStatus: "failed",
+                commandError: "回复未发送：\(reason)",
+                sourceArchived: false, activityAt: snapshot.activityAt,
+                turnActive: snapshot.status == "active"
             )
         }
         // The delivered report used to carry the pre-delivery read, so the

@@ -162,6 +162,13 @@ public struct CodexAppliedSettings: Equatable, Sendable {
 public struct CodexThreadSnapshot: Equatable, Sendable {
     public let failure: CodexSessionFailure?
     public let status: String
+    /// Keep runtime readiness separate from the last turn's failure.
+    public let runtimeStatus: String?
+    public var canContinueAfterFailure: Bool {
+        status == "failed" && ["idle", "notLoaded", "systemError"].contains(runtimeStatus ?? "")
+            && ["codex_server_error", "codex_connection_failed", "codex_rate_limit_exceeded"].contains(failure?.code ?? "")
+            && activeTurnId == nil
+    }
     public let activeTurnId: String?
     public let messages: [AgentSessionMessage]
     public let archived: Bool
@@ -178,10 +185,12 @@ public struct CodexThreadSnapshot: Equatable, Sendable {
         activityAt: String? = nil,
         model: String? = nil,
         reasoningEffort: String? = nil,
-        failure: CodexSessionFailure? = nil
+        failure: CodexSessionFailure? = nil,
+        runtimeStatus: String? = nil
     ) {
         self.failure = failure
         self.status = status
+        self.runtimeStatus = runtimeStatus
         self.activeTurnId = activeTurnId
         self.messages = messages
         self.archived = archived
@@ -227,6 +236,8 @@ public struct CodexThreadRequest: Equatable, Sendable {
 }
 
 public enum CodexControlError: Error, Equatable, LocalizedError {
+    /// No turn/start or turn/steer was attempted; safe to release the composer.
+    case messageNotSent(String)
     case connect(path: String, reason: String)
     case handshake(String)
     case timedOut(method: String)
@@ -239,6 +250,7 @@ public enum CodexControlError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case let .messageNotSent(reason): return "回复未发送：\(reason)"
         case let .connect(path, reason):
             return "连不上 Codex 的控制通道 \(path)：\(reason)。确认 ChatGPT App 正在运行。"
         case let .handshake(detail):
@@ -574,7 +586,8 @@ public enum CodexProtocol {
             activityAt: sourceActivityTimestamp(thread["updatedAt"] ?? thread["updated_at"]),
             model: thread["model"] as? String,
             reasoningEffort: thread["reasoningEffort"] as? String,
-            failure: failure
+            failure: failure,
+            runtimeStatus: type
         )
     }
 
@@ -793,19 +806,26 @@ public struct CodexAppServerControl: CodexControl {
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result {
-                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
-                    defer { connection.close() }
-                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
-                    try connection.notify("initialized")
-                    let source = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId))
-                    try Self.requireExternalRuntime(source, threadId: threadId)
-                    guard ((source["thread"] as? [String: Any])?["status"] as? [String: Any])?["type"] as? String == "idle" else {
-                        throw CodexControlError.rpc(method: "turn/start", message: "原会话状态已变化，请等待同步后再回复。")
+                    var inputAttempted = false
+                    do {
+                        let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                        defer { connection.close() }
+                        _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                        try connection.notify("initialized")
+                        let source = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId))
+                        try Self.requireExternalRuntime(source, threadId: threadId)
+                        guard ((source["thread"] as? [String: Any])?["status"] as? [String: Any])?["type"] as? String == "idle" else {
+                            throw CodexControlError.rpc(method: "turn/start", message: "原会话状态已变化，请等待同步后再回复。")
+                        }
+                        // Never resume an external conversation or override its
+                        // model, permissions or original client's approval channel.
+                        inputAttempted = true
+                        _ = try connection.call("turn/start", CodexProtocol.turnStartParams(threadId: threadId, prompt: text,
+                            clientUserMessageId: clientUserMessageId, overrides: nil))
+                    } catch {
+                        if inputAttempted { throw error }
+                        throw CodexControlError.messageNotSent(CodexSessionFailure.redact(error.localizedDescription))
                     }
-                    // Never resume an external conversation or override its
-                    // model, permissions or original client's approval channel.
-                    _ = try connection.call("turn/start", CodexProtocol.turnStartParams(threadId: threadId, prompt: text,
-                        clientUserMessageId: clientUserMessageId, overrides: nil))
                 })
             }
         }
@@ -816,33 +836,45 @@ public struct CodexAppServerControl: CodexControl {
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result {
-                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
-                    defer { connection.close() }
-                    let initialized = try connection.call("initialize", CodexProtocol.initializeParams())
-                    if overrides?.managed == true { try ManagedCodexProtocol.validateVersion(initialized) }
-                    try connection.notify("initialized")
-                    if overrides?.managed == true {
-                        guard let context = overrides?.managedContext, context.threadId == threadId, overrides?.settings != nil else {
-                            throw LaunchError("Managed resume requires a frozen receipt.")
+                    var inputAttempted = false
+                    do {
+                        let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                        defer { connection.close() }
+                        let initialized = try connection.call("initialize", CodexProtocol.initializeParams())
+                        if overrides?.managed == true { try ManagedCodexProtocol.validateVersion(initialized) }
+                        try connection.notify("initialized")
+                        if overrides?.managed == true {
+                            guard let context = overrides?.managedContext, context.threadId == threadId, overrides?.settings != nil else {
+                                throw LaunchError("Managed resume requires a frozen receipt.")
+                            }
                         }
-                    }
-                    let resumed = try connection.call(
-                        "thread/resume",
-                        CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides)
-                    )
-                    if overrides?.managed == true, let settings = overrides?.settings, let context = overrides?.managedContext {
-                        try ManagedCodexProtocol.validateResumed(resumed, settings: settings, context: context)
-                        try ManagedCodexProtocol.validateMcp(connection.call("mcpServerStatus/list", ["threadId": threadId, "limit": 100]))
-                    }
-                    _ = try connection.call(
-                        "turn/start",
-                        CodexProtocol.turnStartParams(
-                            threadId: threadId,
-                            prompt: text,
-                            clientUserMessageId: clientUserMessageId,
-                            overrides: overrides
+                        let resumed = try connection.call(
+                            "thread/resume",
+                            CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides)
                         )
-                    )
+                        if overrides?.managed == true, let settings = overrides?.settings, let context = overrides?.managedContext {
+                            try ManagedCodexProtocol.validateResumed(resumed, settings: settings, context: context)
+                            try ManagedCodexProtocol.validateMcp(connection.call("mcpServerStatus/list", ["threadId": threadId, "limit": 100]))
+                        }
+                        guard let thread = resumed["thread"] as? [String: Any],
+                              thread["id"] as? String == threadId,
+                              (thread["status"] as? [String: Any])?["type"] as? String == "idle" else {
+                            throw CodexControlError.rpc(method: "thread/resume", message: "原会话尚未恢复到可接收消息的状态，请在 Codex 核对后再发送。")
+                        }
+                        inputAttempted = true
+                        _ = try connection.call(
+                            "turn/start",
+                            CodexProtocol.turnStartParams(
+                                threadId: threadId,
+                                prompt: text,
+                                clientUserMessageId: clientUserMessageId,
+                                overrides: overrides
+                            )
+                        )
+                    } catch {
+                        if inputAttempted { throw error }
+                        throw CodexControlError.messageNotSent(CodexSessionFailure.redact(error.localizedDescription))
+                    }
                 })
             }
         }
