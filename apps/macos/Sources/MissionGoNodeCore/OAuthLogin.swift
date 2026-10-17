@@ -241,14 +241,14 @@ public struct OAuthLogin: Sendable {
     public static let defaultTimeout: TimeInterval = 600
 
     public let serverUrl: String
-    let session: URLSession
+    let session: URLSession?
     let openURL: URLOpener
     let randomBytes: RandomBytes
     let timeout: TimeInterval
 
     public init(
         serverUrl: String,
-        session: URLSession = ServerConnection.session,
+        session: URLSession? = nil,
         timeout: TimeInterval = OAuthLogin.defaultTimeout,
         randomBytes: @escaping RandomBytes = PKCE.secureRandomBytes,
         openURL: @escaping URLOpener

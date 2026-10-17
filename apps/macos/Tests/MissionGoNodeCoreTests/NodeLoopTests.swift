@@ -298,6 +298,56 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertEqual(adapter.attempts.current, 1, "a lost HTTP response must not start another Codex turn")
     }
 
+    func testFailedChangedSnapshotIsRetriedEvenWhenContentsReturnToTheLastConfirmedSnapshot() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [NodeAgentSession(id: "s1", agentKind: "claude_code", sessionRef: "native-1", status: "idle")] }
+        let original = AgentSessionReport(status: "idle", messages: [])
+        let changed = AgentSessionReport(status: "active", messages: [])
+        let adapter = SnapshotAdapter(reports: [original])
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        defer { task.cancel() }
+        await waitUntil { api.sessionReports.current.count == 1 }
+        api.sessionReportFailures.withLock { $0 = 100 }
+        adapter.replaceReports([changed])
+        await waitUntil { loop.currentState.requestErrors["同步 Agent 会话 s1 出错"] != nil }
+        api.sessionReportFailures.withLock { $0 = 0 }
+        adapter.replaceReports([original])
+        loop.retryNow()
+        await waitUntil { api.sessionReports.current.count >= 2 && loop.currentState.lastError == nil }
+        task.cancel()
+        try await task.value
+        XCTAssertEqual(api.sessionReports.current.last?.1.status, "idle")
+        XCTAssertGreaterThanOrEqual(api.sessionReports.current.count, 2)
+        XCTAssertNil(loop.currentState.lastError)
+    }
+
+    func testRecentServerTrafficKeepsAnUnrecoveredUploadErrorVisibleWithoutClaimingTheNodeIsOffline() {
+        let time = Date()
+        var state = NodeLoopState()
+        state.requestErrors["snapshot"] = "snapshot networkConnectionLost"
+        state.unreachableOperations.insert("snapshot")
+        NodeLoop.refreshConnection(&state, now: time)
+        XCTAssertEqual(state.connection, .offline, "no response has reached the client yet")
+        state.lastServerResponseAt = time
+        state.requestErrors["snapshot"] = "snapshot networkConnectionLost"
+        state.unreachableOperations.insert("snapshot")
+        NodeLoop.refreshConnection(&state, now: time.addingTimeInterval(30))
+        XCTAssertEqual(state.connection, .degraded)
+        XCTAssertEqual(state.lastError, "snapshot networkConnectionLost")
+        NodeLoop.refreshConnection(&state, now: time.addingTimeInterval(61))
+        XCTAssertEqual(state.connection, .offline)
+        state.lastServerResponseAt = time.addingTimeInterval(62)
+        NodeLoop.refreshConnection(&state, now: time.addingTimeInterval(62))
+        XCTAssertEqual(state.connection, .degraded)
+        XCTAssertNotNil(state.requestErrors["snapshot"])
+        state.requestErrors.removeAll()
+        state.unreachableOperations.removeAll()
+        NodeLoop.refreshConnection(&state, now: time.addingTimeInterval(62))
+        XCTAssertEqual(state.connection, .online)
+        XCTAssertNil(state.lastError)
+    }
+
     func testLaunchesAClaimedDispatchAndReportsTheSession() async throws {
         let api = FakeAPI(claims: [.success(request)], reportFailures: 2)
         let adapter = FakeAdapter(outcome: .success(LaunchResult(
@@ -566,7 +616,7 @@ final class NodeLoopTests: XCTestCase {
         let errors = Locked<[String]>([])
         let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Mac mini", detectRepoCandidates: { [] }, timing: fastTiming(), log: { _ in },
                             onState: { state in
-                                if state.connection == .offline, let error = state.lastError { errors.withLock { $0.append(error) } }
+                                if [.offline, .degraded].contains(state.connection), let error = state.lastError { errors.withLock { $0.append(error) } }
                             })
         let task = Task { try await loop.run() }
         await waitUntil { !api.reports.current.isEmpty }
@@ -868,6 +918,24 @@ final class NodeLoopTests: XCTestCase {
         task.cancel()
         try await task.value
         XCTAssertGreaterThanOrEqual(api.heartbeats.current.count, 2)
+    }
+
+    func testReconnectDuringInFlightWorkSkipsTheFollowingSleepForEveryLoop() async throws {
+        let signal = StopSignal()
+        let beforeWork = signal.generation
+        // No sleeper exists yet: this is the reconnect that used to get lost.
+        signal.wake()
+        let finished = expectation(description: "all loops skip their next sleep")
+        finished.expectedFulfillmentCount = 3
+        let tasks = (0..<3).map { _ in
+            Task {
+                await signal.sleep(30, unlessWokenSince: beforeWork)
+                finished.fulfill()
+            }
+        }
+        await fulfillment(of: [finished], timeout: 1)
+        signal.stop()
+        for task in tasks { await task.value }
     }
 
     /// A wake must not blunt the stop signal: cancelling still ends the loops.

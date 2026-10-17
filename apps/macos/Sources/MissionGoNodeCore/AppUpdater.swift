@@ -126,14 +126,14 @@ public enum AppUpdater {
     public static func check(
         serverUrl: String,
         currentVersion: String,
-        session: URLSession = ServerConnection.session
+        session: URLSession? = nil
     ) async throws -> Available? {
         let manifest = try await fetchManifest(serverUrl: serverUrl, session: session)
         guard Version.isNewer(manifest.version, than: currentVersion) else { return nil }
         return Available(current: currentVersion, manifest: manifest)
     }
 
-    static func fetchManifest(serverUrl: String, session: URLSession) async throws -> Manifest {
+    static func fetchManifest(serverUrl: String, session: URLSession?) async throws -> Manifest {
         guard let url = URL(string: serverUrl + manifestPath) else { throw UpdateError.download("地址无效") }
         var request = URLRequest(url: url, timeoutInterval: manifestTimeout)
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -195,7 +195,7 @@ public enum AppUpdater {
     public static func download(
         _ manifest: Manifest,
         serverUrl: String,
-        session: URLSession = ServerConnection.session
+        session: URLSession? = nil
     ) async throws -> Data {
         guard let url = URL(string: serverUrl + manifest.downloadPath) else {
             throw UpdateError.download("地址无效")
@@ -211,9 +211,9 @@ public enum AppUpdater {
         return data
     }
 
-    static func send(_ request: URLRequest, session: URLSession) async throws -> (Data, URLResponse) {
+    static func send(_ request: URLRequest, session: URLSession?) async throws -> (Data, URLResponse) {
         do {
-            return try await session.data(for: request)
+            return try await ServerConnection.data(for: request, session: session)
         } catch {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
             throw UpdateError.download(ServerConnection.failureDescription(error, url: request.url))

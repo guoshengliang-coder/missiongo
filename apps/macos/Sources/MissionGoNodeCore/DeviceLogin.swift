@@ -23,13 +23,13 @@ public struct DeviceLogin: Sendable {
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async throws -> Void
 
-    public init(serverUrl: String, session: URLSession = ServerConnection.session) {
+    public init(serverUrl: String, session: URLSession? = nil) {
         self.init(serverUrl: serverUrl, session: session, now: { Date() }, sleep: { seconds in
             try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
         })
     }
 
-    init(serverUrl: String, session: URLSession, now: @escaping @Sendable () -> Date, sleep: @escaping @Sendable (TimeInterval) async throws -> Void) {
+    init(serverUrl: String, session: URLSession?, now: @escaping @Sendable () -> Date, sleep: @escaping @Sendable (TimeInterval) async throws -> Void) {
         self.serverUrl = normalizeServerUrl(serverUrl)
         transport = HTTPTransport(session: session)
         self.now = now

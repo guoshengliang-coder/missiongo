@@ -521,10 +521,11 @@ final class AppModel: ObservableObject {
 
     /// The reconnect button (AND-177): retry everything the menu shows a
     /// failure for now, rather than waiting out each refresh interval. The
-    /// loops' in-flight requests are left to finish; the wake takes effect on
-    /// their next sleep.
+    /// connection pool is replaced without restarting the loop or forgetting
+    /// pending reply acknowledgements. In-flight requests drain normally.
     func reconnect() {
         guard credential != nil else { return }
+        ServerConnection.reconnect()
         loop?.retryNow()
         refreshProfile()
         refreshDispatches()
