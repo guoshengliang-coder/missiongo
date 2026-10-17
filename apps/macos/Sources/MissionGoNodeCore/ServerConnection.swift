@@ -16,8 +16,7 @@ public enum ServerConnectionMode: String, CaseIterable, Sendable {
 /// proxy settings keep their own configuration; HTTPS trust is always checked.
 public enum ServerConnection {
     static let defaultsKey = "serverConnectionMode"
-    private static let systemSession = URLSession(configuration: configuration(for: .system))
-    private static let directSession = URLSession(configuration: configuration(for: .direct))
+    private static let pool = ServerSessionPool()
 
     public static func mode(defaults: UserDefaults = .standard) -> ServerConnectionMode {
         ServerConnectionMode(rawValue: defaults.string(forKey: defaultsKey) ?? "") ?? .system
@@ -27,8 +26,13 @@ public enum ServerConnection {
         defaults.set(mode.rawValue, forKey: defaultsKey)
     }
 
-    public static var session: URLSession {
-        mode() == .direct ? directSession : systemSession
+    public static func reconnect() {
+        pool.reconnect()
+    }
+
+    static func data(for request: URLRequest, session: URLSession? = nil) async throws -> (Data, URLResponse) {
+        if let session { return try await session.data(for: request) }
+        return try await pool.data(for: request, mode: mode())
     }
 
     static func configuration(for mode: ServerConnectionMode) -> URLSessionConfiguration {

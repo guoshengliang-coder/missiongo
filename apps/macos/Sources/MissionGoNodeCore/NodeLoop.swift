@@ -42,11 +42,11 @@ public struct NodeLoopState: Equatable, Sendable {
     public enum Connection: Equatable, Sendable {
         /// Started, nothing has answered yet.
         case connecting
-        /// The last request reached the server.
+        /// Requests are succeeding, with no outstanding operation errors.
         case online
-        /// The server answered, but at least one operation failed.
+        /// Some requests reach the server, but an operation has not recovered.
         case degraded
-        /// The last request did not; the loop keeps trying.
+        /// Network failures with no recent server response; keeps trying.
         case offline
         /// The credential was refused. Terminal: the app has to log in again.
         case credentialRevoked
@@ -57,6 +57,9 @@ public struct NodeLoopState: Equatable, Sendable {
     public var lastError: String?
     /// Cleared only by recovery of the operation that failed.
     public var requestErrors: [String: String] = [:]
+    /// Recent successful traffic distinguishes a failed operation from a
+    /// server-wide outage; errors remain until their own operation recovers.
+    var lastServerResponseAt: Date?
     var unreachableOperations: Set<String> = []
     public var lastHeartbeatAt: Date?
     public var agents: [DetectedAgent] = []
@@ -92,11 +95,13 @@ public struct LocalLaunch: Equatable, Sendable, Identifiable {
 /// Stops the loops the way an `AbortSignal` did: sleeps end early, but a request
 /// or a launch already under way is left to finish.
 final class StopSignal: @unchecked Sendable {
-    private let state = Locked<(stopped: Bool, sleepers: [UUID: CheckedContinuation<Void, Never>])>((false, [:]))
+    private let state = Locked<(stopped: Bool, generation: Int, sleepers: [UUID: CheckedContinuation<Void, Never>])>((false, 0, [:]))
 
     var isStopped: Bool {
         return state.current.stopped
     }
+
+    var generation: Int { state.current.generation }
 
     func stop() {
         let sleepers = state.withLock { value -> [CheckedContinuation<Void, Never>] in
@@ -115,18 +120,20 @@ final class StopSignal: @unchecked Sendable {
     func wake() {
         let sleepers = state.withLock { value -> [CheckedContinuation<Void, Never>] in
             guard !value.stopped else { return [] }
+            value.generation += 1
             defer { value.sleepers = [:] }
             return Array(value.sleepers.values)
         }
         sleepers.forEach { $0.resume() }
     }
 
-    /// Sleeps for `seconds`, or until `stop()`, whichever comes first.
-    func sleep(_ seconds: TimeInterval) async {
+    /// A reconnect during an in-flight request must also skip the next sleep.
+    /// Each loop supplies the generation it observed before starting its work.
+    func sleep(_ seconds: TimeInterval, unlessWokenSince generation: Int? = nil) async {
         let id = UUID()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let stopped = state.withLock { value -> Bool in
-                if value.stopped { return true }
+                if value.stopped || generation.map({ $0 != value.generation }) == true { return true }
                 value.sleepers[id] = continuation
                 return false
             }
@@ -297,6 +304,7 @@ public final class NodeLoop: @unchecked Sendable {
 
     private func heartbeatLoop(stop: StopSignal, fatal: Locked<APIError?>) async {
         while !stop.isStopped {
+            let wakeGeneration = stop.generation
             await shielded {
                 do {
                     let detectedAgents = await self.detectAgents()
@@ -334,12 +342,13 @@ public final class NodeLoop: @unchecked Sendable {
                     self.handle(error, what: "上报心跳出错", stop: stop, fatal: fatal)
                 }
             }
-            await stop.sleep(timing.heartbeatInterval)
+            await stop.sleep(timing.heartbeatInterval, unlessWokenSince: wakeGeneration)
         }
     }
 
     private func managedLoop(stop: StopSignal) async {
         while !stop.isStopped {
+            let wakeGeneration = stop.generation
             do {
                 try await managedRuntime.flushObservations(api: api, onError: { id, error in
                     log("Managed observation \(id): \(error.localizedDescription)")
@@ -355,20 +364,21 @@ public final class NodeLoop: @unchecked Sendable {
                     } catch { log("Managed intent \(job.intent.id): \(error.localizedDescription)") }
                 }
             } catch { log("Managed control: \(error.localizedDescription)") }
-            await stop.sleep(timing.sessionInterval)
+            await stop.sleep(timing.sessionInterval, unlessWokenSince: wakeGeneration)
         }
     }
 
     private func claimLoop(stop: StopSignal, fatal: Locked<APIError?>) async {
         let failures = Locked(0)
         while !stop.isStopped {
+            let wakeGeneration = stop.generation
             guard hasExecutionCapacity() else {
-                await stop.sleep(timing.claimInterval)
+                await stop.sleep(timing.claimInterval, unlessWokenSince: wakeGeneration)
                 continue
             }
             let availableAgentKinds = await availableAgentKinds()
             guard !availableAgentKinds.isEmpty else {
-                await stop.sleep(timing.agentUnavailableInterval)
+                await stop.sleep(timing.agentUnavailableInterval, unlessWokenSince: wakeGeneration)
                 continue
             }
             await shielded {
@@ -412,7 +422,7 @@ public final class NodeLoop: @unchecked Sendable {
             let count = failures.current
             let delay = count == 0 ? timing.claimInterval
                 : min(30, timing.claimFailureInterval * pow(2, Double(count - 1)))
-            await stop.sleep(delay)
+            await stop.sleep(delay, unlessWokenSince: wakeGeneration)
         }
     }
 
@@ -440,6 +450,7 @@ public final class NodeLoop: @unchecked Sendable {
         // server's ordered list. Retry deterministic client errors less often.
         let rejectedUntil = Locked<[String: Date]>([:])
         while !stop.isStopped {
+            let wakeGeneration = stop.generation
             await shielded {
                 do {
                     let sessions = try await self.api.listAgentSessions()
@@ -480,7 +491,7 @@ public final class NodeLoop: @unchecked Sendable {
                     self.handle(error, what: "同步 Agent 会话出错", stop: stop, fatal: fatal)
                 }
             }
-            await stop.sleep(timing.sessionInterval)
+            await stop.sleep(timing.sessionInterval, unlessWokenSince: wakeGeneration)
         }
     }
 
@@ -635,6 +646,10 @@ public final class NodeLoop: @unchecked Sendable {
             self.noteSuccess("同步 Agent 会话 \(session.id) 出错")
             _ = rejectedUntil.withLock { $0.removeValue(forKey: session.id) }
         } catch {
+            // A lost response might have accepted this newer snapshot. If the
+            // local transcript returns to the previously confirmed contents,
+            // that old fingerprint must not suppress the recovery upload.
+            _ = reported.withLock { $0.removeValue(forKey: reportKey) }
             if session.externalAutoConnect, let apiError = error as? APIError,
                case .externalNativeAlreadyBound = apiError {
                 // A binding can win after the node fetched its probe list.
@@ -794,6 +809,9 @@ public final class NodeLoop: @unchecked Sendable {
                 value.unreachableOperations.insert(what)
             } else {
                 value.unreachableOperations.remove(what)
+                if let apiError = error as? APIError, case .http = apiError {
+                    value.lastServerResponseAt = Date()
+                }
             }
             Self.refreshConnection(&value)
         }
@@ -804,16 +822,21 @@ public final class NodeLoop: @unchecked Sendable {
             guard value.connection != .credentialRevoked else { return }
             value.requestErrors.removeValue(forKey: operation)
             value.unreachableOperations.remove(operation)
+            value.lastServerResponseAt = Date()
             Self.refreshConnection(&value)
         }
     }
 
-    private static func refreshConnection(_ value: inout NodeLoopState) {
+    static func refreshConnection(_ value: inout NodeLoopState, now: Date = Date()) {
         guard value.connection != .credentialRevoked else { return }
         let messages = value.requestErrors.sorted { $0.key < $1.key }.map(\.value)
         value.lastError = messages.isEmpty ? nil : messages.joined(separator: "\n\n")
-        value.connection = !value.unreachableOperations.isEmpty ? .offline
-            : messages.isEmpty ? .online : .degraded
+        // Two heartbeat intervals without any response are evidence of an
+        // outage. A single failed upload must not override healthy heartbeats
+        // and session-list requests, or keep the whole node falsely offline.
+        let recentlyReachedServer = value.lastServerResponseAt.map { now.timeIntervalSince($0) < 60 } ?? false
+        value.connection = messages.isEmpty ? .online
+            : !value.unreachableOperations.isEmpty && !recentlyReachedServer ? .offline : .degraded
     }
 
     // MARK: Steps

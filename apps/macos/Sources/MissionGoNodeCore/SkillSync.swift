@@ -132,7 +132,7 @@ public enum SkillSync {
         serverUrl: String,
         targets: [String],
         expectedVersion: String? = nil,
-        session: URLSession = ServerConnection.session,
+        session: URLSession? = nil,
         shouldApply: @Sendable () -> Bool = { true }
     ) async throws -> Outcome {
         guard let url = URL(string: serverUrl + downloadPath) else { throw SyncError.download("地址无效") }
@@ -141,7 +141,7 @@ public enum SkillSync {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await ServerConnection.data(for: request, session: session)
         } catch {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
             throw SyncError.download(ServerConnection.failureDescription(error, url: url))

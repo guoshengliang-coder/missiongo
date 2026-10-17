@@ -1081,7 +1081,7 @@ struct HTTPTransport: Sendable {
     func send(_ request: URLRequest) async throws -> HTTPResponse {
         let host = HTTPTransport.hostLabel(request.url)
         do {
-            let (data, response) = try await (session ?? ServerConnection.session).data(for: request)
+            let (data, response) = try await ServerConnection.data(for: request, session: session)
             guard let http = response as? HTTPURLResponse else {
                 throw APIError.invalidResponse("\(host) 返回的不是 HTTP 响应。")
             }
