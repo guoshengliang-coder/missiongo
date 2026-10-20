@@ -856,10 +856,18 @@ public struct CodexAppServerControl: CodexControl {
                             try ManagedCodexProtocol.validateResumed(resumed, settings: settings, context: context)
                             try ManagedCodexProtocol.validateMcp(connection.call("mcpServerStatus/list", ["threadId": threadId, "limit": 100]))
                         }
-                        guard let thread = resumed["thread"] as? [String: Any],
-                              thread["id"] as? String == threadId,
-                              (thread["status"] as? [String: Any])?["type"] as? String == "idle" else {
-                            throw CodexControlError.rpc(method: "thread/resume", message: "原会话尚未恢复到可接收消息的状态，请在 Codex 核对后再发送。")
+                        guard let thread = resumed["thread"] as? [String: Any], thread["id"] as? String == threadId else {
+                            throw CodexControlError.invalidResponse(method: "thread/resume")
+                        }
+                        let snapshot = try CodexProtocol.threadSnapshot(fromRead: resumed)
+                        // Codex keeps systemError after a failed turn and clears
+                        // it only when the next turn starts. Requiring idle here
+                        // would block the manual recovery allowed by the launcher.
+                        let recovering = overrides?.managed != true && snapshot.runtimeStatus == "systemError"
+                            && snapshot.canContinueAfterFailure
+                        let hasActiveTurn = (thread["turns"] as? [[String: Any]] ?? []).contains { $0["status"] as? String == "inProgress" }
+                        guard (snapshot.runtimeStatus == "idle" || recovering), !hasActiveTurn else {
+                            throw LaunchError("原会话当前不可接收消息；MissionGo 未发送回复，请稍后重试或检查节点诊断。")
                         }
                         inputAttempted = true
                         _ = try connection.call(
