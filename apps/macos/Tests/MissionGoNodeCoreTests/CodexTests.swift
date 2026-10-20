@@ -806,23 +806,88 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(turn?["clientUserMessageId"] as? String, "command-1")
     }
 
-    func testReplyDoesNotStartUntilResumeConfirmsTheSameIdleThread() async throws {
-        for (id, state) in [("thread-1", "systemError"), ("thread-1", "active"), ("other", "idle")] {
+    func testReplyContinuesAfterTransientSystemErrorFromResume() async throws {
+        for info in ["serverOverloaded", "internalServerError", "httpConnectionFailed", "rateLimitExceeded"] {
+            // Codex 0.163.0 reports a provider HTTP 503 in this object form.
+            let errorInfo: Any = info == "httpConnectionFailed" ? [info: ["httpStatusCode": 503]] : info
             let server = try FakeAppServer { message in
                 guard let requestId = message["id"] else { return [] }
                 let result: [String: Any] = message["method"] as? String == "thread/resume"
-                    ? ["thread": ["id": id, "status": ["type": state]]] : [:]
+                    ? ["thread": ["id": "thread-1", "status": ["type": "systemError"], "turns": [
+                        ["id": "old-turn", "status": "failed", "items": [],
+                         "error": ["codexErrorInfo": errorInfo]]
+                    ]]] : [:]
+                return [["jsonrpc": "2.0", "id": requestId, "result": result]]
+            }
+            do {
+                try await CodexAppServerControl(timeout: 5).sendMessage(socketPath: server.path,
+                    threadId: "thread-1", text: "Continue", clientUserMessageId: "reply-1",
+                    overrides: CodexTurnOverrides(model: "gpt-5-mini"))
+            } catch {
+                XCTFail("A transient error is cleared by the next turn: \(info): \(error)")
+            }
+            server.waitUntilDone()
+            XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume", "turn/start"], info)
+            XCTAssertEqual(server.params(of: "turn/start")?["threadId"] as? String, "thread-1")
+            XCTAssertEqual(server.params(of: "turn/start")?["clientUserMessageId"] as? String, "reply-1")
+            XCTAssertEqual(server.params(of: "turn/start")?["model"] as? String, "gpt-5-mini")
+        }
+    }
+
+    func testReplyDoesNotStartUntilResumeConfirmsTheSameReadyThread() async throws {
+        let failed: [String: Any] = ["id": "old-turn", "status": "failed", "items": [],
+                                     "error": ["codexErrorInfo": "serverOverloaded"]]
+        let blocked: [[String: Any]] = [
+            ["id": "thread-1", "status": ["type": "systemError"]],
+            ["id": "thread-1", "status": ["type": "active"], "turns": [failed]],
+            ["id": "other", "status": ["type": "idle"]],
+            ["id": "other", "status": ["type": "systemError"], "turns": [failed]],
+            ["id": "thread-1", "status": ["type": "notLoaded"], "turns": [failed]],
+            ["id": "thread-1", "status": ["type": "futureState"], "turns": [failed]],
+            ["id": "thread-1", "status": ["type": "idle"], "turns": [["id": "running", "status": "inProgress"]]],
+            ["id": "thread-1", "status": ["type": "systemError"], "turns": [["status": "inProgress"], failed]],
+            ["id": "thread-1", "status": ["type": "systemError"], "turns": [failed, ["id": "new", "status": "completed"]]],
+        ]
+        for thread in blocked {
+            let server = try FakeAppServer { message in
+                guard let requestId = message["id"] else { return [] }
+                let result: [String: Any] = message["method"] as? String == "thread/resume"
+                    ? ["thread": thread] : [:]
                 return [["jsonrpc": "2.0", "id": requestId, "result": result]]
             }
             do {
                 try await CodexAppServerControl(timeout: 5).sendMessage(socketPath: server.path,
                     threadId: "thread-1", text: "Continue", clientUserMessageId: "reply-1", overrides: nil)
-                XCTFail("A reply needs an idle original thread")
+                XCTFail("A reply needs a ready original thread")
+            } catch {
+                guard case .messageNotSent = error as? CodexControlError else { return XCTFail("\(error)") }
+                XCTAssertFalse(error.localizedDescription.contains("Codex 拒绝了 thread/resume"),
+                    "A local readiness check is not a Codex RPC rejection")
+            }
+            server.waitUntilDone()
+            XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume"])
+        }
+    }
+
+    func testReplyDoesNotRecoverSystemErrorsThatNeedUserAction() async throws {
+        for info in ["contextWindowExceeded", "sessionBudgetExceeded", "usageLimitExceeded", "unauthorized", "badRequest", "sandboxError", "futureError"] {
+            let server = try FakeAppServer { message in
+                guard let requestId = message["id"] else { return [] }
+                let result: [String: Any] = message["method"] as? String == "thread/resume"
+                    ? ["thread": ["id": "thread-1", "status": ["type": "systemError"], "turns": [
+                        ["id": "old-turn", "status": "failed", "items": [], "error": ["codexErrorInfo": info]]
+                    ]]] : [:]
+                return [["jsonrpc": "2.0", "id": requestId, "result": result]]
+            }
+            do {
+                try await CodexAppServerControl(timeout: 5).sendMessage(socketPath: server.path,
+                    threadId: "thread-1", text: "Continue", clientUserMessageId: "reply-1", overrides: nil)
+                XCTFail("Needs user action: \(info)")
             } catch {
                 guard case .messageNotSent = error as? CodexControlError else { return XCTFail("\(error)") }
             }
             server.waitUntilDone()
-            XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume"])
+            XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume"], info)
         }
     }
 
