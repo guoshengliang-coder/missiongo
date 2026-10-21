@@ -56,6 +56,11 @@ curl -fsSL "https://missiongo.example.com/downloads/missiongo-skill/SKILL.md" \
 该地址始终返回当前部署对应的版本，并禁用缓存，所以不需要清理中间缓存。覆盖后重新开始一次
 AI 会话。
 
+使用 MissionGo macOS 节点派单时，0.4.15 及以后的客户端会在心跳中为已经启用的 Agent 自动更新
+Skill，不需要手动下载；更旧的客户端没有这项同步，会一直使用启用时下载的版本。会话里出现 Skill
+版本不一致的提示、而节点菜单的 Skill 行仍显示旧版本时，先升级该节点的客户端并确认该行显示服务端
+要求的版本。
+
 ## 配置 MCP
 
 MCP 使用 Streamable HTTP，路径为 `/mcp`，并通过 OAuth 连接现有 MissionGo 账号。从互联网访问时必须经过 HTTPS。第一次连接会打开 MissionGo 登录页；账号密码只交给 MissionGo 服务端验证，不会传给 AI。验证成功后，AI 客户端保存限时授权，服务端在每次读取时继续校验账号及其产品权限。
