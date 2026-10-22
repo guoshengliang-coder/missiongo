@@ -81,6 +81,23 @@ public enum SkillSync {
         return "\(directory)/skills/missiongo/SKILL.md"
     }
 
+    /// Codex reads user Skills from `$CODEX_HOME/skills` and also from the shared
+    /// `~/.agents/skills`. MissionGo owns the first; an outdated copy in the
+    /// second is still offered to a session and can shadow the managed one, so a
+    /// copy that already exists is kept current too. Never create the shared
+    /// directory on a machine that never used it.
+    public static func sharedCodexTarget(home: String) -> String? {
+        let path = "\(home)/.agents/skills/missiongo/SKILL.md"
+        return Paths.exists(path) ? path : nil
+    }
+
+    /// Every file that has to carry the service version before an agent is ready.
+    public static func targets(for agent: LocalAgent, home: String, codexHome: String) -> [String] {
+        let primary = target(for: agent, home: home, codexHome: codexHome)
+        guard agent == .codex, let shared = sharedCodexTarget(home: home) else { return [primary] }
+        return [primary, shared]
+    }
+
     public static func localVersion(at target: String) -> String? {
         guard let data = FileManager.default.contents(atPath: target) else { return nil }
         return version(ofSkill: String(decoding: data, as: UTF8.self))

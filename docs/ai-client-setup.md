@@ -57,7 +57,8 @@ curl -fsSL "https://missiongo.example.com/downloads/missiongo-skill/SKILL.md" \
 AI 会话。
 
 使用 MissionGo macOS 节点派单时，0.4.15 及以后的客户端会在心跳中为已经启用的 Agent 自动更新
-Skill，不需要手动下载；更旧的客户端没有这项同步，会一直使用启用时下载的版本。会话里出现 Skill
+Skill，不需要手动下载；更旧的客户端没有这项同步，会一直使用启用时下载的版本。Codex 还会读取
+`~/.agents/skills/missiongo/SKILL.md`；该副本已经存在时，节点也会把它一起更新。会话里出现 Skill
 版本不一致的提示、而节点菜单的 Skill 行仍显示旧版本时，先升级该节点的客户端并确认该行显示服务端
 要求的版本。
 

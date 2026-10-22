@@ -18,7 +18,7 @@ final class AgentSkillSyncTests: XCTestCase {
         try skill("5.15.0").write(to: target, atomically: true, encoding: .utf8)
         StubURLProtocol.install { _, _ in .failure(URLError(.notConnectedToInternet)) }
         let result = await SkillSync.check(
-            serverUrl: "https://example.test", target: target.path, expectedVersion: "5.15.0",
+            serverUrl: "https://example.test", targets: [target.path], expectedVersion: "5.15.0",
             session: StubURLProtocol.session()
         )
         XCTAssertEqual(result.localVersion, "5.15.0")
@@ -41,13 +41,13 @@ final class AgentSkillSyncTests: XCTestCase {
         let tracker = AgentSkillSync()
         let goodAttempt = tracker.begin("codex", localVersion: "5.14.0", expectedVersion: "5.15.0")
         let goodResult = await SkillSync.check(
-            serverUrl: "https://example.test", target: good.path, expectedVersion: "5.15.0",
+            serverUrl: "https://example.test", targets: [good.path], expectedVersion: "5.15.0",
             session: StubURLProtocol.session()
         )
         tracker.finish("codex", attempt: goodAttempt, snapshot: goodResult)
         let badAttempt = tracker.begin("claude_code", localVersion: nil, expectedVersion: "5.15.0")
         let badResult = await SkillSync.check(
-            serverUrl: "https://example.test", target: bad.path, expectedVersion: "5.15.0",
+            serverUrl: "https://example.test", targets: [bad.path], expectedVersion: "5.15.0",
             session: StubURLProtocol.session()
         )
         tracker.finish("claude_code", attempt: badAttempt, snapshot: badResult)
@@ -60,7 +60,7 @@ final class AgentSkillSyncTests: XCTestCase {
         try FileManager.default.removeItem(at: blocked)
         let retry = tracker.begin("claude_code", localVersion: nil, expectedVersion: "5.15.0")
         let recovered = await SkillSync.check(
-            serverUrl: "https://example.test", target: bad.path, expectedVersion: "5.15.0",
+            serverUrl: "https://example.test", targets: [bad.path], expectedVersion: "5.15.0",
             session: StubURLProtocol.session()
         )
         tracker.finish("claude_code", attempt: retry, snapshot: recovered)
@@ -75,7 +75,7 @@ final class AgentSkillSyncTests: XCTestCase {
         try skill("5.14.0").write(to: target, atomically: true, encoding: .utf8)
         StubURLProtocol.install { _, _ in .response(status: 503, body: "") }
         let failed = await SkillSync.check(
-            serverUrl: "https://example.test", target: target.path, expectedVersion: "5.15.0",
+            serverUrl: "https://example.test", targets: [target.path], expectedVersion: "5.15.0",
             session: StubURLProtocol.session()
         )
         XCTAssertEqual(failed.localVersion, "5.14.0")
@@ -93,7 +93,7 @@ final class AgentSkillSyncTests: XCTestCase {
         let remote = skill("5.15.0")
         StubURLProtocol.install { _, _ in .response(status: 200, body: remote) }
         let linked = await SkillSync.check(
-            serverUrl: "https://example.test", target: target.path, expectedVersion: "5.15.0",
+            serverUrl: "https://example.test", targets: [target.path], expectedVersion: "5.15.0",
             session: StubURLProtocol.session()
         )
         XCTAssertEqual(linked.localVersion, "5.14.0")
@@ -101,12 +101,81 @@ final class AgentSkillSyncTests: XCTestCase {
         try FileManager.default.removeItem(at: target)
         try skill("5.16.0").write(to: target, atomically: true, encoding: .utf8)
         let newer = await SkillSync.check(
-            serverUrl: "https://example.test", target: target.path, expectedVersion: "5.15.0",
+            serverUrl: "https://example.test", targets: [target.path], expectedVersion: "5.15.0",
             session: StubURLProtocol.session()
         )
         XCTAssertEqual(newer.localVersion, "5.16.0")
         XCTAssertEqual(newer.syncState, "failed")
         XCTAssertTrue(newer.reason?.contains("高于服务端要求") == true)
+    }
+
+    func testNewerSharedCodexCopyIsPreservedAndReported() async throws {
+        let home = try directory()
+        let primary = home.appendingPathComponent(".codex/skills/missiongo/SKILL.md")
+        let shared = home.appendingPathComponent(".agents/skills/missiongo/SKILL.md")
+        for path in [primary, shared] {
+            try FileManager.default.createDirectory(
+                at: path.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+        }
+        try skill("5.15.0").write(to: primary, atomically: true, encoding: .utf8)
+        try skill("5.16.0").write(to: shared, atomically: true, encoding: .utf8)
+        let remote = skill("5.15.0")
+        StubURLProtocol.install { _, _ in .response(status: 200, body: remote) }
+        let result = await SkillSync.check(
+            serverUrl: "https://example.test", targets: [primary.path, shared.path],
+            expectedVersion: "5.15.0", session: StubURLProtocol.session()
+        )
+        XCTAssertEqual(result.syncState, "failed")
+        XCTAssertEqual(SkillSync.localVersion(at: shared.path), "5.16.0")
+        XCTAssertTrue(result.reason?.contains(shared.path) == true)
+        XCTAssertTrue(result.reason?.contains("高于服务端要求") == true)
+    }
+
+    func testCodexTargetsIncludeAnExistingSharedCopyOnly() throws {
+        let home = try directory()
+        let shared = home.appendingPathComponent(".agents/skills/missiongo/SKILL.md")
+        XCTAssertEqual(
+            SkillSync.targets(for: .codex, home: home.path, codexHome: "\(home.path)/.codex"),
+            ["\(home.path)/.codex/skills/missiongo/SKILL.md"]
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: shared.path))
+        XCTAssertEqual(
+            SkillSync.targets(for: .claudeCode, home: home.path, codexHome: "\(home.path)/.codex"),
+            ["\(home.path)/.claude/skills/missiongo/SKILL.md"]
+        )
+        try FileManager.default.createDirectory(
+            at: shared.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try skill("5.10.0").write(to: shared, atomically: true, encoding: .utf8)
+        XCTAssertEqual(
+            SkillSync.targets(for: .codex, home: home.path, codexHome: "\(home.path)/.codex"),
+            ["\(home.path)/.codex/skills/missiongo/SKILL.md", shared.path]
+        )
+    }
+
+    func testOlderSharedCodexCopyIsUpdatedWithTheManagedOne() async throws {
+        let home = try directory()
+        let primary = home.appendingPathComponent(".codex/skills/missiongo/SKILL.md")
+        let shared = home.appendingPathComponent(".agents/skills/missiongo/SKILL.md")
+        for path in [primary, shared] {
+            try FileManager.default.createDirectory(
+                at: path.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+        }
+        try skill("5.14.0").write(to: primary, atomically: true, encoding: .utf8)
+        try skill("5.10.0").write(to: shared, atomically: true, encoding: .utf8)
+        let remote = skill("5.15.0")
+        StubURLProtocol.install { _, _ in .response(status: 200, body: remote) }
+        let result = await SkillSync.check(
+            serverUrl: "https://example.test",
+            targets: SkillSync.targets(for: .codex, home: home.path, codexHome: "\(home.path)/.codex"),
+            expectedVersion: "5.15.0", session: StubURLProtocol.session()
+        )
+        XCTAssertEqual(result.syncState, "ready")
+        XCTAssertNil(result.reason)
+        XCTAssertEqual(SkillSync.localVersion(at: primary.path), "5.15.0")
+        XCTAssertEqual(SkillSync.localVersion(at: shared.path), "5.15.0")
     }
 
     func testOldCompletionCannotReplaceRetryOrRestoreDisabledClient() {

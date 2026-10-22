@@ -462,23 +462,24 @@ final class AppModel: ObservableObject {
                 if let current = skillTracker.snapshots[agentKind], current.syncState == "syncing" {
                     return current
                 }
-                let target = SkillSync.target(for: agent, home: Paths.homeDirectory(), codexHome: codexHome)
+                let targets = SkillSync.targets(
+                    for: agent, home: Paths.homeDirectory(), codexHome: codexHome
+                )
+                let localVersion = SkillSync.localVersion(at: targets.first ?? "")
                 let attempt = skillTracker.begin(
-                    agentKind, localVersion: SkillSync.localVersion(at: target), expectedVersion: expectedVersion
+                    agentKind, localVersion: localVersion, expectedVersion: expectedVersion
                 )
                 let result: AgentSkillSnapshot
                 if let expectedVersion {
                     result = await SkillSync.check(
-                        serverUrl: credential.serverUrl, target: target, expectedVersion: expectedVersion,
+                        serverUrl: credential.serverUrl, targets: targets, expectedVersion: expectedVersion,
                         shouldApply: {
                             access.isCurrent(agent, attempt: consent.attempt)
                                 && skillTracker.isCurrent(agentKind, attempt: attempt)
                         }
                     )
                 } else {
-                    result = AgentSkillSnapshot(
-                        localVersion: SkillSync.localVersion(at: target), syncState: "unknown"
-                    )
+                    result = AgentSkillSnapshot(localVersion: localVersion, syncState: "unknown")
                 }
                 guard access.isCurrent(agent, attempt: consent.attempt) else {
                     return skillTracker.finish(
@@ -907,14 +908,17 @@ final class AppModel: ObservableObject {
                 access.finish(agent, attempt: attempt, version: nil, issue: issue)
                 return
             }
-            let target = SkillSync.target(for: agent, home: Paths.homeDirectory(), codexHome: CodexLocation(environment: environment).codexHome)
+            let targets = SkillSync.targets(
+                for: agent, home: Paths.homeDirectory(),
+                codexHome: CodexLocation(environment: environment).codexHome
+            )
             let syncAttempt = skillTracker.begin(
-                agent.rawValue, localVersion: SkillSync.localVersion(at: target),
+                agent.rawValue, localVersion: SkillSync.localVersion(at: targets.first ?? ""),
                 expectedVersion: loopState.expectedSkillVersion
             )
             refreshSkillStates()
             let result = await SkillSync.check(
-                serverUrl: credential.serverUrl, target: target,
+                serverUrl: credential.serverUrl, targets: targets,
                 expectedVersion: loopState.expectedSkillVersion,
                 shouldApply: {
                     access.isCurrent(agent, attempt: attempt)
@@ -949,9 +953,12 @@ final class AppModel: ObservableObject {
             return
         }
         let tracker = skillSyncTracker
-        let target = SkillSync.target(for: agent, home: Paths.homeDirectory(), codexHome: CodexLocation(environment: environment).codexHome)
+        let targets = SkillSync.targets(
+            for: agent, home: Paths.homeDirectory(),
+            codexHome: CodexLocation(environment: environment).codexHome
+        )
         let attempt = tracker.begin(
-            agent.rawValue, localVersion: SkillSync.localVersion(at: target),
+            agent.rawValue, localVersion: SkillSync.localVersion(at: targets.first ?? ""),
             expectedVersion: loopState.expectedSkillVersion
         )
         refreshSkillStates()
@@ -959,7 +966,7 @@ final class AppModel: ObservableObject {
         let expected = loopState.expectedSkillVersion
         Task {
             let result = await SkillSync.check(
-                serverUrl: credential.serverUrl, target: target, expectedVersion: expected,
+                serverUrl: credential.serverUrl, targets: targets, expectedVersion: expected,
                 shouldApply: {
                     access.isCurrent(agent, attempt: consent.attempt)
                         && tracker.isCurrent(agent.rawValue, attempt: attempt)
