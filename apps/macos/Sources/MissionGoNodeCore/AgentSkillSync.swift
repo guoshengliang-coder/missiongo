@@ -50,40 +50,45 @@ public final class AgentSkillSync: @unchecked Sendable {
 }
 
 extension SkillSync {
-    /// Check the actual file after writing as well as after a no-op. Protected
+    /// Check the actual files after writing as well as after a no-op. Protected
     /// links, invalid files and newer local copies must not look synchronized
-    /// merely because apply() did not report an I/O failure.
+    /// merely because apply() did not report an I/O failure. `targets` may hold
+    /// more than one copy of the same Skill (Codex reads a shared directory
+    /// too); all of them have to carry the expected version.
     public static func check(
         serverUrl: String,
-        target: String,
+        targets: [String],
         expectedVersion: String? = nil,
         session: URLSession? = nil,
         shouldApply: @Sendable () -> Bool = { true }
     ) async -> AgentSkillSnapshot {
         let checkedAt = ISO8601DateFormatter().string(from: Date())
-        let local = localVersion(at: target)
-        if let expectedVersion, local == expectedVersion {
+        let primary = targets.first ?? ""
+        let local = localVersion(at: primary)
+        if let expectedVersion, !targets.isEmpty,
+           targets.allSatisfy({ localVersion(at: $0) == expectedVersion }) {
             return AgentSkillSnapshot(
                 localVersion: local, expectedVersion: expectedVersion, syncState: "ready", checkedAt: checkedAt
             )
         }
         do {
             let outcome = try await run(
-                serverUrl: serverUrl, targets: [target], expectedVersion: expectedVersion,
+                serverUrl: serverUrl, targets: targets, expectedVersion: expectedVersion,
                 session: session, shouldApply: shouldApply
             )
-            let actual = localVersion(at: target)
+            let actual = localVersion(at: primary)
             let expected = expectedVersion ?? outcome.version
             let reason: String?
             if !outcome.failures.isEmpty {
                 reason = "写入失败：\(outcome.failures.joined(separator: "；"))"
-            } else if actual != expected {
-                if isSymlink(target) || isSymlink((target as NSString).deletingLastPathComponent) {
-                    reason = "Skill 路径为符号链接，已保留原文件；本地版本与服务端要求不一致。"
-                } else if let actual, isNewer(actual, than: expected) {
-                    reason = "本地 Skill \(actual) 高于服务端要求 \(expected)，已保留本地文件。"
+            } else if let mismatched = targets.first(where: { localVersion(at: $0) != expected }) {
+                let found = localVersion(at: mismatched)
+                if isSymlink(mismatched) || isSymlink((mismatched as NSString).deletingLastPathComponent) {
+                    reason = "\(mismatched)：Skill 路径为符号链接，已保留原文件；本地版本与服务端要求不一致。"
+                } else if let found, isNewer(found, than: expected) {
+                    reason = "\(mismatched)：本地 Skill \(found) 高于服务端要求 \(expected)，已保留本地文件。"
                 } else {
-                    reason = "本地 Skill 缺失或版本无法识别，未同步到服务端要求的 \(expected)。"
+                    reason = "\(mismatched)：本地 Skill 缺失或版本无法识别，未同步到服务端要求的 \(expected)。"
                 }
             } else {
                 reason = nil
@@ -94,7 +99,7 @@ extension SkillSync {
             )
         } catch {
             return AgentSkillSnapshot(
-                localVersion: localVersion(at: target), expectedVersion: expectedVersion,
+                localVersion: localVersion(at: primary), expectedVersion: expectedVersion,
                 syncState: "failed", checkedAt: checkedAt, reason: error.localizedDescription
             )
         }
