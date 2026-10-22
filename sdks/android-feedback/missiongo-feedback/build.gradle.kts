@@ -41,7 +41,7 @@ android {
 
 dependencies {
     implementation("androidx.activity:activity-ktx:1.11.0")
-    implementation("androidx.work:work-runtime:2.11.2")
+    implementation("androidx.work:work-runtime:2.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     // Must equal the Kotlin the build compiles with. No Kotlin plugin is declared
     // here, so that is whatever the Android Gradle plugin bundles -- 2.3.21 today.
