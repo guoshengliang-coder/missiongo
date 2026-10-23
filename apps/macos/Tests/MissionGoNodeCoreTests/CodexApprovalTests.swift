@@ -74,6 +74,9 @@ final class CodexApprovalTests: XCTestCase {
         let approval = try XCTUnwrap(monitor.snapshot(threadId: "thread-1"))
         try monitor.answer(threadId: "thread-1", approvalId: approval.id, decision: "accept")
         wait { monitor.snapshot(threadId: "thread-1")?.status == "approved" }
+        // Publishing the local state follows the socket write, but the fake
+        // server receives that frame on another queue. Wait for both ends.
+        wait { server.received.current.contains { $0.contains("\"action\":\"accept\"") } }
         let messages = server.received.current.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
         let answer = try XCTUnwrap(messages.first { $0["method"] == nil && ($0["id"] as? Int) == 900 })
         let result = try XCTUnwrap(answer["result"] as? [String: Any])
@@ -99,6 +102,7 @@ final class CodexApprovalTests: XCTestCase {
         wait { let next = monitor.snapshot(threadId: "thread-1"); return next?.status == "pending" && next?.id != approval.id }
         monitor.cancel(threadId: "thread-1", turnId: "turn-1")
         wait { monitor.snapshot(threadId: "thread-1")?.status == "denied" }
+        wait { server.received.current.contains { $0.contains("\"action\":\"cancel\"") } }
         let answers = server.received.current.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }.filter { $0["method"] == nil }
         XCTAssertEqual(answers.count, 2)
         XCTAssertEqual((answers.last?["result"] as? [String: Any])?["action"] as? String, "cancel")
