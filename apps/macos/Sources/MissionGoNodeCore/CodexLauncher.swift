@@ -832,11 +832,11 @@ public struct CodexLauncher: AgentAdapter {
                 status: snapshot.status, messages: snapshot.messages,
                 sourceArchived: false, activityAt: snapshot.activityAt,
                 turnActive: snapshot.status == "active",
-                waitingForInput: approvalSnapshot(session)?.status == "pending"
+                waitingForInput: snapshot.waitingOnApproval || approvalSnapshot(session)?.status == "pending"
             )
         }
-        if let approval = approvalSnapshot(session),
-           (approval.status == "pending" || approval.status == "inProgress") {
+        if command.kind != "interrupt", snapshot.waitingOnApproval
+            || approvalSnapshot(session).map({ $0.status == "pending" || $0.status == "inProgress" }) == true {
             // Codex cannot accept same-turn steering while the turn is blocked
             // at a permission prompt. Keep the reply queued until it resumes.
             return AgentSessionReport(status: snapshot.status, messages: snapshot.messages,
@@ -864,11 +864,26 @@ public struct CodexLauncher: AgentAdapter {
                 guard let turnId = command.turnId else {
                     throw LaunchError("终止命令缺少 Codex turn id，未执行中断。")
                 }
-                try await control.interruptTurn(
-                    socketPath: location.controlSocketPath,
-                    threadId: session.sessionRef,
-                    turnId: turnId
-                )
+                control.cancelApprovals(threadId: session.sessionRef, turnId: turnId)
+                do {
+                    try await control.interruptTurn(
+                        socketPath: location.controlSocketPath,
+                        threadId: session.sessionRef,
+                        turnId: turnId
+                    )
+                } catch {
+                    // A timed-out interrupt can have taken effect. Re-read it;
+                    // never leave an unconfirmed stop queued forever or claim
+                    // the turn is idle when the source still reports active.
+                    let observed = (try? await readSnapshot(session)) ?? snapshot
+                    if observed.status != "idle" {
+                        return AgentSessionReport(status: observed.status, messages: observed.messages,
+                            commandId: command.id, commandStatus: "failed",
+                            commandError: "终止尚未确认：\(CodexFailure.explain(error)) 可重试终止；不会自动重启其他会话共用的后台。",
+                            activityAt: observed.activityAt, turnActive: observed.status == "active",
+                            waitingForInput: observed.waitingOnApproval)
+                    }
+                }
                 // Re-read for the messages the interruption leaves behind so
                 // the delivered report carries the thread as it now stands
                 // (AND-219). The status stays the interrupted-idle contract;

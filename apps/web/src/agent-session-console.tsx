@@ -602,9 +602,9 @@ export function AgentSessionConsole({
   const claudeTurn = turnRunning && selected?.agentKind === "claude_code";
   // A pending question or form is not "running" (AND-205's OpenCode half,
   // AND-222): OpenCode reports it through waitingForInput the way Claude does.
-  const agentWaiting = selected !== undefined && ["claude_code", "opencode"].includes(selected.agentKind)
+  const agentWaiting = selected !== undefined && ["claude_code", "codex", "opencode"].includes(selected.agentKind)
     && ["active", "idle"].includes(sessionStatus)
-    && !pending && turnState?.waitingForInput === true;
+    && (!pending || selected.agentKind === "codex") && turnState?.waitingForInput === true;
   const claudeBackgroundOnly = selected?.agentKind === "claude_code"
     && sessionStatus === "active" && turnState?.turnActive === false && !agentWaiting && activities.length > 0;
   const visualStatus = claudeBackgroundOnly || agentWaiting ? "idle" : sessionStatus;
@@ -612,8 +612,11 @@ export function AgentSessionConsole({
   // (AND-236): Codex and OpenCode report turns too, so the copy must not say
   // "Claude Code" for them.
   const agentName = selected ? agentLabel(selected, t) : "";
+  const waitingText = selected?.agentKind === "codex"
+    ? t("agentSessionWaitingApproval", { agent: agentName })
+    : t("agentSessionWaitingForInput", { agent: agentName });
   const activityText = selected?.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : agentWaiting
-    ? t("agentSessionWaitingForInput", { agent: agentName })
+    ? waitingText
     : claudeBackgroundOnly
       ? t("agentSessionWaitingBackground", { count: activities.length })
       : turnRunning
@@ -899,10 +902,10 @@ export function AgentSessionConsole({
               && !session.turnState.waitingForInput && session.activities.length > 0;
             // Same rule as the conversation panel above (AND-222): an OpenCode
             // session blocked on a person reads as waiting, not as running.
-            const rowWaiting = ["claude_code", "opencode"].includes(session.agentKind) && ["active", "idle"].includes(rowStatus)
-              && session.command?.status !== "queued" && session.turnState?.waitingForInput === true;
+            const rowWaiting = ["claude_code", "codex", "opencode"].includes(session.agentKind) && ["active", "idle"].includes(rowStatus)
+              && (session.command?.status !== "queued" || session.agentKind === "codex") && session.turnState?.waitingForInput === true;
             const rowLabel = session.source === "external" && !session.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
-              : rowWaiting ? t("agentSessionWaitingStatus") : statusLabel(rowStatus, t);
+              : rowWaiting ? t(session.agentKind === "codex" ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus") : statusLabel(rowStatus, t);
             return (
               <div
                 key={session.id}
@@ -994,7 +997,7 @@ export function AgentSessionConsole({
                   ))}</div>
                 </div>
               </div>
-              <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t("agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
+              <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t(selected.agentKind === "codex" ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
               <div className="agent-console-actions">
                 {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact mobile={touchDevice} />}
                 {selected.source !== "external" && selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
@@ -1251,14 +1254,15 @@ export function AgentSessionConsole({
                   && (sessionQuery.data ? sessionQuery.data.lastError : selected.lastError) ? (
                   <p className="inline-error">{sessionQuery.data ? sessionQuery.data.lastError : selected.lastError}</p>
                 ) : null}
-                {approval && approvalNeedsAction(approval) && (
+                {approval && (approvalNeedsAction(approval) || (approval.kind === "manual" && approval.status === "pending")) && (
                   <section className="agent-console-approval" role="alert" aria-label={t("agentApprovalTitle") }>
                     <strong>{approval.kind === "auto" ? t("agentApprovalAutoTitle") : t("agentApprovalTitle")}</strong>
                     <p>{approval.action}</p>
                     <small>{approval.status === "inProgress" ? t("agentApprovalReviewing")
                       : approval.status === "pending" ? t("agentApprovalWaiting")
                         : approval.status === "denied" ? t("agentApprovalDenied")
-                          : approval.status === "approved" ? t("agentApprovalApproved") : approval.status}</small>
+                          : approval.status === "approved" ? t("agentApprovalApproved")
+                            : approval.status === "unavailable" ? t("agentApprovalUnavailable") : approval.status}</small>
                     {approval.reason && <small>{approval.reason}</small>}
                     {approval.kind === "manual" && approval.status === "pending" && selected.canReply
                       && selected.agentSessionId && (

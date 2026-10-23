@@ -526,10 +526,12 @@ describe("authorization intervention visibility (AND-272)", () => {
     }
     expect(approvalNeedsAction({ ...approval, kind: "manual", status: "approved" })).toBe(false);
     expect(approvalNeedsAction({ ...approval, kind: "manual", status: "denied" })).toBe(false);
+    expect(approvalNeedsAction({ ...approval, kind: "manual", status: "resolved" })).toBe(false);
     expect(approvalNeedsAction({ ...approval, kind: "manual", status: "pending", decision: "accept" })).toBe(false);
   });
   it("keeps manual requests, denials and retry failure feedback", () => {
     expect(approvalNeedsAction({ ...approval, kind: "manual", status: "pending" })).toBe(true);
+    expect(approvalNeedsAction({ ...approval, kind: "manual", status: "unavailable" })).toBe(true);
     expect(approvalNeedsAction({ ...approval, status: "denied" })).toBe(true);
     for (const retryStatus of ["queued", "delivering", "delivered", "restored"] as const) {
       expect(approvalNeedsAction({ ...approval, status: "denied", retryId: "retry", retryStatus })).toBe(false);

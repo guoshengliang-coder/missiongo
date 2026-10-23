@@ -1286,8 +1286,15 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     let replies = Locked<[(String, String)]>([])
     let externalReplies = Locked<[(String, String)]>([])
     let approvalReads = Locked(0)
+    var pendingApproval: CodexApprovalSnapshot?
+    let cancelledApprovals = Locked<[String]>([])
+    var interruptError: Error?
+    var afterInterrupt: CodexThreadSnapshot?
     func approvalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot? {
-        approvalReads.withLock { $0 += 1 }; return nil
+        approvalReads.withLock { $0 += 1 }; return pendingApproval
+    }
+    func cancelApprovals(threadId: String, turnId: String) {
+        cancelledApprovals.withLock { $0.append(turnId) }
     }
     func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
         externalReplies.withLock { $0.append((clientUserMessageId, text)) }
@@ -1376,6 +1383,8 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
 
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
         interruptions.withLock { $0.append((threadId, turnId)) }
+        if let afterInterrupt { snapshot = afterInterrupt }
+        if let interruptError { throw interruptError }
     }
 
     func archiveThread(socketPath: String, threadId: String) async throws {
@@ -2064,6 +2073,45 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(report.status, "idle")
         XCTAssertEqual(report.commandId, "command-stop")
         XCTAssertEqual(report.commandStatus, "delivered")
+    }
+
+    func testAnApprovalDoesNotBlockStoppingAndATimeoutReleasesTheQueuedStop() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.pendingApproval = CodexApprovalSnapshot(id: "prompt", kind: "manual", status: "pending",
+            turnId: "turn-9", action: "Simulator", startedAtMs: 1)
+        control.snapshot = CodexThreadSnapshot(status: "active", activeTurnId: "turn-9", messages: [], waitingOnApproval: true)
+        control.interruptError = CodexControlError.timedOut(method: "turn/interrupt")
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let session = NodeAgentSession(id: "session-1", sessionRef: "thread-1", status: "active",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "停止", turnId: "turn-9"))
+        let failed = try await launcher.synchronize(session)
+        XCTAssertEqual(control.cancelledApprovals.current, ["turn-9"])
+        XCTAssertEqual(control.interruptions.current.count, 1)
+        XCTAssertEqual(failed.status, "active")
+        XCTAssertEqual(failed.commandId, "stop")
+        XCTAssertEqual(failed.commandStatus, "failed")
+        XCTAssertTrue(failed.commandError?.contains("终止尚未确认") == true)
+
+        // The response can be lost after the source actually stopped.
+        control.afterInterrupt = CodexThreadSnapshot(status: "idle", messages: [])
+        let stopped = try await launcher.synchronize(session)
+        XCTAssertEqual(stopped.status, "idle")
+        XCTAssertEqual(stopped.commandStatus, "delivered")
+    }
+
+    func testNativeWaitingFlagIsReportedBeforeTheApprovalObserverReceivesThePrompt() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "active", activeTurnId: "turn-9", messages: [], waitingOnApproval: true)
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let idlePoll = try await launcher.synchronize(NodeAgentSession(id: "session", sessionRef: "thread-1", status: "active"))
+        XCTAssertEqual(idlePoll.waitingForInput, true)
+        let queuedPoll = try await launcher.synchronize(NodeAgentSession(id: "session", sessionRef: "thread-1", status: "active",
+            command: AgentSessionCommand(id: "reply", text: "卡住了吗？")))
+        XCTAssertEqual(queuedPoll.waitingForInput, true)
+        XCTAssertNil(queuedPoll.commandStatus)
+        XCTAssertTrue(control.steerings.current.isEmpty)
     }
 
     func testPassesTheDispatchModelAndEffortToTheThread() async throws {
