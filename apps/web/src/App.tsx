@@ -133,6 +133,7 @@ import { TransitionNoteDialog, transitionNoteCopy } from "./transition-note-dial
 import { VerificationReturnBadge, VerificationReturnCallout, VerificationReturnSummary } from "./verification-return";
 import { StartWorkDialog } from "./start-work-dialog";
 import { cachedListSummary } from "./list-summary";
+import { applyConfirmedItemTransition } from "./confirmed-item-transition";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { useForegroundSync } from "./use-foreground-sync";
 import { manualMoves, TRANSITIONS } from "./work-item-transitions";
@@ -2599,11 +2600,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
       api.transitionItem(item.key, action, note),
     onSuccess: async (updated) => {
       setNoteAction(null);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["items"] }),
-        queryClient.invalidateQueries({ queryKey: ["item", item.key] }),
-        queryClient.invalidateQueries({ queryKey: ["timeline", item.key] }),
-      ]);
+      await applyConfirmedItemTransition(queryClient, updated);
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
@@ -2840,7 +2837,7 @@ function DetailPane({
       api.transitionItem(itemKey!, action, note),
     onSuccess: async (updated) => {
       setNoteAction(null);
-      await refreshItem();
+      await applyConfirmedItemTransition(queryClient, updated);
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
