@@ -41,7 +41,6 @@ test("only shows Codex authorization when a person must intervene", async ({ pag
   };
   for (const value of [
     approval, { ...approval, status: "approved" }, undefined,
-    { ...approval, kind: "manual", status: "pending", decision: "accept" },
     { ...approval, status: "denied", retryId: "retry", retryStatus: "queued" },
     { ...approval, status: "denied", retryId: "retry", retryStatus: "restored" },
   ]) {
@@ -53,6 +52,14 @@ test("only shows Codex authorization when a person must intervene", async ({ pag
   await open();
   await expect(panel).toBeVisible();
   await expect(panel.locator("button")).toHaveCount(2);
+  current = { ...approval, kind: "manual", status: "pending", decision: "accept" };
+  await open();
+  await expect(panel).toBeVisible();
+  await expect(panel.locator("button").first()).toBeDisabled();
+  current = { ...approval, kind: "manual", status: "unavailable", reason: "授权连接重连中，旧决定已失效" };
+  await open();
+  await expect(panel).toContainText("授权连接重连中，旧决定已失效");
+  await expect(panel.locator("button")).toHaveCount(0);
   current = { ...approval, status: "denied" };
   await open();
   await expect(panel).toBeVisible();
@@ -79,4 +86,44 @@ test("only shows Codex authorization when a person must intervene", async ({ pag
       await testInfo.attach(name, { path, contentType: "image/png" });
     }
   }
+});
+
+test("Simulator approval stays visible through delivery and clears after source resolution", async ({ page }, testInfo) => {
+  let current = { ...approval, kind: "manual", status: "pending", decision: undefined as string | undefined,
+    action: 'cua_repl：Allow Computer Use to use "Simulator"?', reason: "仅回复这一次请求，不授予会话或永久权限。" };
+  const decisions: unknown[] = [];
+  await page.route("**/api/v1/agent-sessions**", async (route) => {
+    if (route.request().method() === "POST") {
+      decisions.push(route.request().postDataJSON());
+      current = { ...current, decision: "accept" };
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ approval: current }) });
+    }
+    const session = { ...summary, turnState: { turnActive: true, waitingForInput: current.status === "pending" },
+      attention: { state: "needed", kind: "approval" }, needsAttention: true, approval: current };
+    const body = new URL(route.request().url()).pathname === "/api/v1/agent-sessions"
+      ? { sessions: [session] } : { ...session, messages: [] };
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  for (const viewport of [{ name: "phone", width: 375, height: 812 }, { name: "desktop", width: 1440, height: 900 }]) {
+    await page.goto("about:blank");
+    await page.setViewportSize(viewport);
+    current = { ...current, status: "pending", decision: undefined };
+    await page.goto('/?product=' + fixture.productId + '&console=agent&session=' + id);
+    const panel = page.locator(".agent-console-approval");
+    await expect(panel).toContainText('Simulator');
+    await expect(panel.locator("button").first()).toBeEnabled();
+    await expect(page.locator(".agent-console-activity")).toContainText(/等待权限确认|waiting for permission/);
+    const screenshot = testInfo.outputPath(viewport.name + "-simulator-approval.png");
+    await panel.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: screenshot, animations: "disabled" });
+    await testInfo.attach(viewport.name, { path: screenshot, contentType: "image/png" });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await panel.locator("button").first().click();
+    await expect(panel).toBeVisible();
+    await expect(panel.locator("button").first()).toBeDisabled();
+    await expect(panel).toContainText(/Decision queued|决定.*Mac/);
+    current = { ...current, status: "resolved" };
+    await expect(panel).toHaveCount(0, { timeout: 10_000 });
+  }
+  expect(decisions).toEqual([{ decision: "accept" }, { decision: "accept" }]);
 });

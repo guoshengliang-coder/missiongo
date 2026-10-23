@@ -515,8 +515,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const externalSessionStore = new ExternalAgentSessionStore(store);
   const externalNativeStore = new ExternalNativeSessionStore(store);
   const consoleSessions = new AgentConsoleSessions(store, agentSessionStore, externalSessionStore);
-  const listConsoleSessions = (accountId: string) => consoleSessions.list(accountId);
   const agentApprovalStore = new AgentApprovalStore(store.database);
+  const listConsoleSessions = (accountId: string) => consoleSessions.list(accountId).map((session) => agentApprovalStore.withAttention(session));
   const accountStore = new AccountStore(store.database);
   const deviceAuthorizations = new DeviceAuthorizationStore(store.database);
   const aiTitle = new AiTitleService(
@@ -2099,9 +2099,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       canUseAi: productIds.every((productId) => accountStore.allows(account, productId, "ai")),
     });
     return {
-      ...session,
-      ...(session.agentKind === "codex" && agentApprovalStore.get(session.id)
-        ? { approval: agentApprovalStore.get(session.id) } : {}),
+      ...agentApprovalStore.withAttention(session),
       canReply: !session.managedExecution && replyBlockedReason === undefined,
       canResolveDelivery: !session.managedExecution && productIds.every((productId) =>
         accountStore.allows(account, productId, "operate") && accountStore.allows(account, productId, "ai")),

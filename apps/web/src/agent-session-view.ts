@@ -638,7 +638,7 @@ export function activityLabelKey(status: AgentSessionStatus, replyQueued = false
 /** Keep the intervention panel for work a person still needs to act on. */
 export function approvalNeedsAction(approval: AgentApproval | undefined): boolean {
   if (!approval) return false;
-  if (approval.kind === "manual") return approval.status === "pending" && !approval.decision;
+  if (approval.kind === "manual") return (approval.status === "pending" && !approval.decision) || approval.status === "unavailable";
   return approval.status === "denied" && (!approval.retryId || approval.retryStatus === "failed");
 }
 

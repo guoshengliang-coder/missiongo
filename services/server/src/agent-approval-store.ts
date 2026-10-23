@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
+import type { AgentSessionListItem } from "./agent-session-store.js";
 
 export interface AgentApproval {
   id: string;
@@ -33,7 +34,7 @@ interface ApprovalRow {
   retry_error: string | null;
 }
 
-const manualStatuses = new Set(["pending", "approved", "denied", "unavailable"]);
+const manualStatuses = new Set(["pending", "approved", "denied", "unavailable", "resolved"]);
 const autoStatuses = new Set(["inProgress", "approved", "denied", "timedOut", "aborted"]);
 
 function publicApproval(row: ApprovalRow): AgentApproval {
@@ -50,6 +51,20 @@ function publicApproval(row: ApprovalRow): AgentApproval {
 
 export class AgentApprovalStore {
   constructor(private readonly database: MissionGoDatabase) {}
+
+  /** Source permission prompts override text classifiers and queued chat replies. */
+  withAttention<T extends Pick<AgentSessionListItem, "id" | "agentKind" | "archivedAt">>(session: T): T & { approval?: AgentApproval } {
+    const approval = session.agentKind === "codex" ? this.get(session.id) : undefined;
+    if (!approval) return session;
+    const needed = !session.archivedAt && (approval.kind === "manual"
+      ? (approval.status === "pending" && !approval.decision) || approval.status === "unavailable"
+      : approval.status === "denied" && (!approval.retryId || approval.retryStatus === "failed"));
+    return { ...session, approval, ...(needed ? {
+      needsAttention: true, waitingForReply: true,
+      attention: { state: "needed" as const, kind: "approval" as const,
+        reason: approval.reason ?? "Codex 正在等待权限确认。", revision: `approval:${approval.id}` },
+    } : {}) };
+  }
 
   get(sessionId: string): AgentApproval | undefined {
     const row = this.row(sessionId);

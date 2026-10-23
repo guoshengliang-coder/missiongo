@@ -172,8 +172,8 @@ public final class NodeLoop: @unchecked Sendable {
         /// four times a second while every adapter is paused.
         public var agentUnavailableInterval: TimeInterval = 5
         /// Mirrored agent conversations are snapshots, not an event stream. This is
-        /// short enough for a reply to feel immediate without keeping an
-        /// app-server connection open and stealing approval requests.
+        /// short enough for a reply to feel immediate. Codex approvals use a
+        /// separate persistent observer to answer on the request's socket.
         public var sessionInterval: TimeInterval = 2
         /// Detection starts a process, which is wasteful every 30 seconds, but a CLI
         /// upgrade should still show up in the console without restarting the app.

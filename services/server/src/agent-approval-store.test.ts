@@ -46,3 +46,43 @@ it("keeps a human retry attached to its denied review while a new approval arriv
     database.close();
   }
 });
+
+it("surfaces a source Simulator approval despite queued chat and invalidates decisions resolved elsewhere", () => {
+  const database = new MissionGoDatabase(":memory:");
+  try {
+    database.connection.exec(`
+      INSERT INTO nodes (id, account_id, name, token_hash, created_at, updated_at)
+      VALUES ('node', 'owner', 'Fixture', 'hash', 'now', 'now');
+      INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+      VALUES ('dispatch', 'owner', 'node', 'codex', 'auto', 'launched', '/synthetic/repo', 'now');
+      INSERT INTO agent_sessions (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at)
+      VALUES ('session', 'dispatch', 'node', 'codex', 'thread', 'active', 'now', 'now');
+    `);
+    const approvals = new AgentApprovalStore(database);
+    const prompt = { id: "simulator-1", kind: "manual" as const, status: "pending", turnId: "turn",
+      action: 'cua_repl: Allow Computer Use to use "Simulator"?', startedAtMs: 1 };
+    const session = { id: "session", agentKind: "codex" as const, needsAttention: false, waitingForReply: false,
+      attention: { state: "not_needed" as const } };
+    expect(() => approvals.record("other-node", "session", prompt)).toThrow();
+    approvals.record("node", "session", prompt);
+    expect(approvals.withAttention(session)).toMatchObject({ approval: prompt, needsAttention: true,
+      attention: { state: "needed", kind: "approval" }, waitingForReply: true });
+    expect(approvals.withAttention({ ...session, archivedAt: "now" }).needsAttention).toBe(false);
+    approvals.decide("session", prompt.id, "accept");
+    expect(approvals.withAttention(session).needsAttention).toBe(false);
+    expect(approvals.pendingForNode("session").approvalDecision).toEqual({ id: prompt.id, choice: "accept" });
+    approvals.record("node", "session", { ...prompt, status: "resolved" });
+    expect(approvals.pendingForNode("session").approvalDecision).toBeUndefined();
+    expect(() => approvals.decide("session", prompt.id, "accept")).toThrow();
+    approvals.record("node", "session", prompt);
+    expect(approvals.get("session")?.status).toBe("resolved");
+
+    // A reconnected monitor reports a new id and cannot inherit an old grant.
+    approvals.record("node", "session", { ...prompt, id: "simulator-2" });
+    expect(approvals.pendingForNode("session").approvalDecision).toBeUndefined();
+    expect(() => approvals.decide("session", prompt.id, "accept")).toThrow();
+    approvals.record("node", "session", { ...prompt, id: "simulator-2", status: "unavailable" });
+    expect(approvals.withAttention(session).needsAttention).toBe(true);
+    expect(() => approvals.decide("session", "simulator-2", "accept")).toThrow();
+  } finally { database.close(); }
+});
