@@ -158,6 +158,7 @@ final class AppModel: ObservableObject {
     private var loopGeneration = 0
     private var lastLoopRepos: [RepoMapping]?
     private var lastSeenLaunchId: String?
+    @Published private var acknowledgedLaunchFailureId: String?
     private var updateTimer: Task<Void, Never>?
     private var lastPresentedUpdateVersion: String?
     private var menuTimer: Task<Void, Never>?
@@ -245,6 +246,24 @@ final class AppModel: ObservableObject {
 
     var recentDispatches: [DispatchRecord] {
         return Array(dispatches.prefix(DispatchPresentation.menuLimit))
+    }
+
+    /// The most recent launch this Mac attempted was not accepted. The local
+    /// report carries the reason even when the server has already rewritten
+    /// its dispatch error, so the window can show it without waiting for the
+    /// next console refresh.
+    var latestLaunchFailure: LocalLaunch? {
+        guard let launch = loopState.recentLaunches.first,
+              launch.report.status != .launched else { return nil }
+        return launch
+    }
+
+    /// The status item keeps warning until somebody opens the window. The
+    /// dispatch row still carries the reason afterwards.
+    var unacknowledgedLaunchFailure: LocalLaunch? {
+        guard let launch = latestLaunchFailure,
+              launch.dispatchId != acknowledgedLaunchFailureId else { return nil }
+        return launch
     }
 
     // MARK: Lifecycle
@@ -746,6 +765,9 @@ final class AppModel: ObservableObject {
         #endif
         refreshLaunchAtLogin()
         guard credential != nil else { return }
+        if let launch = loopState.recentLaunches.first, launch.report.status != .launched {
+            acknowledgedLaunchFailureId = launch.dispatchId
+        }
         refreshUnreadSessions()
         let now = Date()
         if let last = lastOpenRefresh, now.timeIntervalSince(last) < AppModel.openRefreshThrottle {

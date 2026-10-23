@@ -1527,6 +1527,46 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(control.requests.current.count, 1)
     }
 
+    func testMcpAuthenticationFailureIsTerminalAndDoesNotRestartTheDaemon() async throws {
+        // `authenticationRequired` is not transient. Requeueing the same
+        // dispatch starts the same thread with the same unusable credential,
+        // which is why the console used to sit at "starting" forever.
+        let machine = try machine()
+        defer { machine.listener.map { _ = close($0) } }
+        let control = RecordingControl()
+        let diagnostic = DispatchMcpDiagnostic(
+            threadId: "thread-auth", startupStatus: "failed",
+            runtimeStatus: "authenticationRequired", authStatus: "notLoggedIn",
+            error: "MCP client startup failed: authentication required"
+        )
+        control.startupError = CodexControlError.mcpStartup(diagnostic)
+        control.startupFailures.withLock { $0 = 1 }
+        control.loadedThreads = false
+        let restarts = Locked(0)
+        let base = fakeCodex()
+        let run: CommandRunner = { file, args in
+            if args == ["app-server", "daemon", "restart"] { restarts.withLock { $0 += 1 } }
+            return await base(file, args)
+        }
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: run,
+            location: machine.location, control: control
+        )
+
+        do {
+            _ = try await launcher.launch(job(repoPath: machine.repoPath))
+            XCTFail("expected a terminal authentication failure")
+        } catch let error as LaunchError {
+            XCTAssertNil(error.retryAfterSeconds)
+            XCTAssertEqual(error.failureCode, "mcp_auth")
+            XCTAssertEqual(error.failureStage, "mcp")
+            XCTAssertTrue(error.message.contains("codex mcp login missiongo"))
+            XCTAssertEqual(error.diagnosticSnapshot?.mcp, diagnostic)
+        }
+        XCTAssertEqual(control.requests.current.count, 1)
+        XCTAssertEqual(restarts.current, 0)
+    }
+
     func testMcpTimeoutRestartsOnceOnlyAfterTheDaemonIsProvenIdle() async throws {
         let machine = try machine()
         defer { machine.listener.map { _ = close($0) } }

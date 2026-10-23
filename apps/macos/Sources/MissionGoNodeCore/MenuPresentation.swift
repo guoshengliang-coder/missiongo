@@ -561,6 +561,36 @@ public enum DispatchPresentation {
         return lines.count > 1 ? first + "…" : first
     }
 
+    /// What actually went wrong, kept separately from `error`: a dispatch that
+    /// is later replaced has its `error` overwritten with "已被重新派单取代",
+    /// but its failure code and diagnostic snapshot still say why it never ran.
+    public static func failureHint(code: String?, stage: String? = nil, agentKind: String? = nil) -> String? {
+        switch code {
+        case "mcp_auth":
+            if agentKind == "opencode" {
+                return "OpenCode 的 missiongo MCP 未授权：在 OpenCode 的 /mcps 中重新登录"
+            }
+            if agentKind == "codex" {
+                return "Codex 的 missiongo MCP 未登录或授权失效：在本机终端运行 codex mcp login missiongo"
+            }
+            return "missiongo MCP 未登录或授权失效：在对应客户端重新登录"
+        case "mcp_timeout":
+            return "MissionGo MCP 启动超时：重启 Codex 后台服务后重试"
+        case "daemon_down":
+            return "Codex 后台服务不可用：运行 codex app-server daemon start"
+        case "skill_stale":
+            return "missiongo Skill 未同步：在菜单里重新检查 Codex"
+        case "resource_exhausted":
+            return "Codex 后台服务资源不足：关闭不用的会话后重启"
+        case "cli_missing":
+            return "本机找不到 codex 命令"
+        case "agent_auth_invalid":
+            return "Codex 未登录：运行 codex login"
+        default:
+            return stage == "preflight" ? "派单启动前检查失败" : nil
+        }
+    }
+
     public static func parseDate(_ value: String) -> Date? {
         let withFraction = ISO8601DateFormatter()
         withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
