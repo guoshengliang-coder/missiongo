@@ -317,6 +317,28 @@ final class DispatchPresentationTests: XCTestCase {
         XCTAssertEqual(DispatchPresentation.shortError(String(repeating: "长", count: 70), limit: 60), String(repeating: "长", count: 60) + "…")
     }
 
+    func testFailureCodesStayReadableAfterTheDispatchIsReplaced() {
+        XCTAssertEqual(
+            DispatchPresentation.failureHint(code: "mcp_auth", agentKind: "codex"),
+            "Codex 的 missiongo MCP 未登录或授权失效：在本机终端运行 codex mcp login missiongo"
+        )
+        XCTAssertEqual(
+            DispatchPresentation.failureHint(code: "mcp_auth", agentKind: "opencode"),
+            "OpenCode 的 missiongo MCP 未授权：在 OpenCode 的 /mcps 中重新登录"
+        )
+        XCTAssertEqual(
+            DispatchPresentation.failureHint(code: "mcp_auth", agentKind: "weird"),
+            "missiongo MCP 未登录或授权失效：在对应客户端重新登录"
+        )
+        XCTAssertEqual(
+            DispatchPresentation.failureHint(code: "daemon_down"),
+            "Codex 后台服务不可用：运行 codex app-server daemon start"
+        )
+        XCTAssertEqual(DispatchPresentation.failureHint(code: "unknown", stage: "preflight"), "派单启动前检查失败")
+        XCTAssertNil(DispatchPresentation.failureHint(code: "unknown", stage: "thread_start"))
+        XCTAssertNil(DispatchPresentation.failureHint(code: nil))
+    }
+
     func testRelativeTimes() throws {
         let now = try XCTUnwrap(DispatchPresentation.parseDate("2026-09-13T12:00:00.000Z"))
         var calendar = Calendar(identifier: .gregorian)

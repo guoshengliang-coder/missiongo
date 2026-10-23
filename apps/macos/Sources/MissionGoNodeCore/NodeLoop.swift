@@ -83,6 +83,7 @@ public struct LocalLaunch: Equatable, Sendable, Identifiable {
     public var id: String { dispatchId }
     public let dispatchId: String
     public let itemKeys: [String]
+    public let agentKind: String
     public let mode: String
     public let repoPath: String
     public let startedAt: Date
@@ -397,7 +398,8 @@ public final class NodeLoop: @unchecked Sendable {
                         }
                         let record = { (reported: Bool) in
                             self.recordLaunch(LocalLaunch(
-                                dispatchId: request.dispatchId, itemKeys: request.itemKeys, mode: request.mode,
+                                dispatchId: request.dispatchId, itemKeys: request.itemKeys,
+                                agentKind: request.agentKind, mode: request.mode,
                                 repoPath: request.repoPath, startedAt: startedAt, report: report,
                                 logPath: logPath, reported: reported
                             ))

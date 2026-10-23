@@ -20,6 +20,16 @@ struct DispatchesSection: View {
                     Spacer(minLength: 0)
                 }
             }
+            if let launch = model.latestLaunchFailure,
+               !model.recentDispatches.contains(where: { $0.id == launch.dispatchId }),
+               let problem = DispatchPresentation.failureHint(
+                   code: launch.report.failureCode, stage: launch.report.failureStage,
+                   agentKind: launch.agentKind
+               ) ?? DispatchPresentation.shortError(launch.report.error) {
+                // The console list can be stale or unreachable; this Mac still
+                // knows why its most recent launch did not start.
+                WrappingCaption(text: "最近一次本机启动失败：\(problem)", color: .red)
+            }
             if model.recentDispatches.isEmpty {
                 if model.dispatchesError == nil {
                     WrappingCaption(text: "还没有派单。在控制台勾选条目并派给这台 Mac 后，会显示在这里。")
@@ -66,7 +76,14 @@ private struct DispatchRow: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
-                    if let error = DispatchPresentation.shortError(record.error) {
+                    if let problem = DispatchPresentation.failureHint(
+                        code: record.failureCode, stage: record.failureStage, agentKind: record.agentKind
+                    ) {
+                        Text(problem)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .lineLimit(2)
+                    } else if let error = DispatchPresentation.shortError(record.error) {
                         Text(error)
                             .font(.caption)
                             .foregroundColor(.red)
@@ -97,6 +114,11 @@ private struct DispatchRow: View {
     }
 
     private var rowHelp: String {
+        let hint = DispatchPresentation.failureHint(
+            code: record.failureCode, stage: record.failureStage, agentKind: record.agentKind
+        )
+        if let hint, let error = record.error, error != hint { return "\(hint)\n\(error)" }
+        if let hint { return hint }
         if let error = record.error { return error }
         if record.sessionUrl != nil { return "打开会话" }
         if record.agentKind == "claude_code" && record.status == "launched" {

@@ -556,6 +556,13 @@ public struct CodexLauncher: AgentAdapter {
             guard case let .mcpStartup(diagnostic) = error else {
                 throw CodexFailure.launchError(error)
             }
+            // Authentication is not transient: retrying starts the same thread
+            // with the same unusable credential, so the console only ever sees
+            // "starting" and nobody learns that `codex mcp login` is needed.
+            // Fail it now and let the integration pause with the fix command.
+            if CodexFailure.isAuthenticationFailure(diagnostic) {
+                throw CodexFailure.authenticationError(error, diagnostic: diagnostic)
+            }
             // A restart is destructive to every loaded conversation. If the
             // app-server cannot prove there are none, return this same dispatch
             // to the node queue and let the active work finish first.
@@ -1031,11 +1038,31 @@ enum CodexFailure {
         )
     }
 
-    private static func mcpFailureCode(_ diagnostic: DispatchMcpDiagnostic) -> String {
-        if diagnostic.failureReason == "reauthenticationRequired"
+    /// The MCP server is configured but will not accept the credential. This is
+    /// terminal: no amount of requeueing makes `codex mcp login missiongo` happen,
+    /// and a retry loop hides the only useful fact from the person at the Mac.
+    static func authenticationError(
+        _ error: CodexControlError, diagnostic: DispatchMcpDiagnostic
+    ) -> LaunchError {
+        let detail = explain(error)
+        return LaunchError(
+            "Codex 的 missiongo MCP 未登录或授权已失效：在这台 Mac 的图形界面终端运行 "
+                + "codex mcp login missiongo，然后重启 Codex 后台服务（codex app-server daemon restart）。"
+                + "详情：\(detail)",
+            failureCode: "mcp_auth", failureStage: "mcp",
+            diagnosticSnapshot: DispatchDiagnosticSnapshot(mcp: diagnostic)
+        )
+    }
+
+    static func isAuthenticationFailure(_ diagnostic: DispatchMcpDiagnostic) -> Bool {
+        return diagnostic.failureReason == "reauthenticationRequired"
             || diagnostic.runtimeStatus == "authenticationRequired"
-            || diagnostic.authStatus == "notLoggedIn" { return "mcp_auth" }
-        return "mcp_timeout"
+            || diagnostic.authStatus == "notLoggedIn"
+            || diagnostic.authStatus == "not_logged_in"
+    }
+
+    private static func mcpFailureCode(_ diagnostic: DispatchMcpDiagnostic) -> String {
+        return isAuthenticationFailure(diagnostic) ? "mcp_auth" : "mcp_timeout"
     }
 
     static func launchError(_ error: Error) -> LaunchError {
@@ -1045,7 +1072,9 @@ enum CodexFailure {
         }
         switch control {
         case let .mcpStartup(diagnostic):
-            return retryableMcpError(control, diagnostic: diagnostic)
+            return isAuthenticationFailure(diagnostic)
+                ? authenticationError(control, diagnostic: diagnostic)
+                : retryableMcpError(control, diagnostic: diagnostic)
         case .skillStale:
             return LaunchError(message, failureCode: "skill_stale", failureStage: "readiness")
         case .mcpAuthorization:

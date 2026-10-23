@@ -114,8 +114,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image = NSImage(systemSymbolName: model.menuBarSymbol, accessibilityDescription: label)
         button.image?.isTemplate = true
         button.imagePosition = .imageLeading
-        button.title = UnreadBadgeLabel.text(model.unreadCount).map { " \($0)" } ?? ""
-        let description = model.unreadCount.map { $0 > 0 ? "\(label)，未读会话 \($0)" : label } ?? label
+        let unread = UnreadBadgeLabel.text(model.unreadCount).map { " \($0)" } ?? ""
+        // A dispatch that never started is not a session, so it never reaches
+        // the unread count. Keep a warning in the status item until a later
+        // launch succeeds, otherwise the Mac looks idle after a silent failure.
+        let dispatchWarning = model.unacknowledgedLaunchFailure != nil ? " ⚠︎" : ""
+        button.title = unread + dispatchWarning
+        var description = model.unreadCount.map { $0 > 0 ? "\(label)，未读会话 \($0)" : label } ?? label
+        if model.unacknowledgedLaunchFailure != nil { description += "，最近一次派单启动失败" }
         button.toolTip = description
         button.setAccessibilityLabel(description)
     }

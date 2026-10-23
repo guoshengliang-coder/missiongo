@@ -831,6 +831,12 @@ public struct DispatchRecord: Codable, Equatable, Sendable {
     public let sessionName: String?
     public let sessionUrl: String?
     public let error: String?
+    /// Why the launch failed. Unlike `error`, these survive a later dispatch
+    /// replacing this one, so the menu can still say "MCP 未登录" after the
+    /// server has rewritten the error to "已被重新派单取代".
+    public let failureCode: String?
+    public let failureStage: String?
+    public let diagnosticSnapshot: DispatchDiagnosticSnapshot?
     public let createdAt: String
     public let completedAt: String?
 }
