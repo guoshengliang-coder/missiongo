@@ -67,4 +67,37 @@ describe("account settings view mode", () => {
     expect(html).toContain("修改");
     expect(html).not.toContain("<input");
   });
+
+  it("renders the personal-token form with the PAT row naming its kind (AND-288)", () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(["ai-authorizations"], {
+      authorizations: [
+        {
+          id: "pat-1",
+          clientId: "pat",
+          scopes: ["missiongo:read"],
+          issuedAt: "2026-10-25T00:00:00.000Z",
+          expiresAt: "2027-01-23T00:00:00.000Z",
+          kind: "pat" as const,
+          name: "CI 构建机",
+        },
+      ],
+    });
+
+    const html = renderAccountUi(
+      <AccountSettings
+        user={{ id: "account-1", username: "person@example.com", displayName: "person", fontScale: "medium", consoleFontScale: "medium", role: "member" }}
+        products={[]}
+        onLoggedOut={() => undefined}
+      />,
+      queryClient,
+    );
+
+    expect(html).toContain("个人访问令牌");
+    expect(html).toContain("CI 构建机");
+    expect(html).toContain("生成令牌");
+    // Lifetime choices the server accepts, and nothing else.
+    expect(html).toContain('value="7"');
+    expect(html).toContain('value="365"');
+  });
 });

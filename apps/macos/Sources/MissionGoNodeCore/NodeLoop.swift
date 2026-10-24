@@ -891,6 +891,15 @@ public final class NodeLoop: @unchecked Sendable {
             let ready = skillReady && availabilityReason == nil && resource?.status != "unavailable"
             if ready { readyKinds.insert(agent.kind) }
             let reason = availabilityReason ?? resource?.reason ?? (skillReady ? nil : "MissionGo Skill 尚未同步。")
+            // AND-289: where this machine knows an agent's MissionGo token,
+            // report whether it still works -- a session dispatched against a
+            // dead one dies on its first MCP call. Only the verdict travels.
+            let mcpAuth: McpAuthSnapshot?
+            if agent.kind == "opencode" {
+                mcpAuth = McpAuthorizationHealth.report(token: ProcessInfo.processInfo.environment["MISSIONGO_TOKEN"])
+            } else {
+                mcpAuth = nil
+            }
             reports.append(DetectedAgent(
                 kind: agent.kind,
                 version: agent.version,
@@ -898,7 +907,8 @@ public final class NodeLoop: @unchecked Sendable {
                 ready: skillReadiness == nil && resource == nil && availabilityReason == nil ? nil : ready,
                 unavailableReason: reason,
                 skill: skill,
-                resource: resource
+                resource: resource,
+                mcpAuth: mcpAuth
             ))
         }
         skillReadyAgents.withLock { $0 = readyKinds }

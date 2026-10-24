@@ -1543,6 +1543,177 @@ describe("MissionGo REST API", () => {
     expect(app.missionGoStore.getTimeline("HG-1")).toHaveLength(timelineCountBeforeRead);
   });
 
+  it("mints, accepts and revokes a personal access token (AND-288)", async () => {
+    const adminAccount = testAdminAccount();
+    const app = buildApp({ adminAccount, adminToken: "management-test-token", publicOrigin: "https://missiongo.test" });
+    apps.push(app);
+
+    const signIn = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: adminAccount.username, password: "correct horse" },
+    });
+    expect(signIn.statusCode).toBe(200);
+    const cookie = signIn.headers["set-cookie"]!.split(";")[0];
+
+    const badLifetime = await app.inject({
+      method: "POST",
+      url: "/api/v1/ai-personal-tokens",
+      headers: { cookie },
+      payload: { name: "CI runner", scopes: ["missiongo:read"], days: 14 },
+    });
+    expect(badLifetime.statusCode).toBe(400);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/ai-personal-tokens",
+      headers: { cookie },
+      payload: { name: "CI runner", scopes: ["missiongo:read"], days: 30 },
+    });
+    expect(created.statusCode).toBe(201);
+    const minted = created.json<{ id: string; token: string; scopes: string[]; expiresAt: string }>();
+    expect(minted.token.startsWith("mgpat_")).toBe(true);
+    expect(minted.scopes).toEqual(["missiongo:read"]);
+
+    const mcp = async (token: string) => app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_current_account", arguments: {} } },
+    });
+    expect((await mcp(minted.token)).statusCode).toBe(200);
+
+    // A password change must not stop a machine's credential: the explicit
+    // revocations below are the off switch, not the person's password.
+    app.missionGoAccounts.updateAccount(adminAccount.id, { password: "new correct horse" });
+    const afterPasswordChange = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: adminAccount.username, password: "new correct horse" },
+    });
+    const freshCookie = afterPasswordChange.headers["set-cookie"]!.split(";")[0];
+    expect((await mcp(minted.token)).statusCode).toBe(200);
+
+    const list = await app.inject({ method: "GET", url: "/api/v1/ai-authorizations", headers: { cookie: freshCookie } });
+    const listed = list.json<{ authorizations: Array<{ id: string; kind?: string; name?: string }> }>()
+      .authorizations.find((authorization) => authorization.id === minted.id);
+    expect(listed?.kind).toBe("pat");
+    expect(listed?.name).toBe("CI runner");
+
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/ai-authorizations/${minted.id}`,
+      headers: { cookie: freshCookie },
+    });
+    expect(revoked.statusCode).toBe(204);
+    const refused = await mcp(minted.token);
+    expect(refused.statusCode).toBe(401);
+  });
+
+  it("rotates refresh tokens without a browser and burns the family on replay (AND-288)", async () => {
+    const adminAccount = testAdminAccount();
+    const app = buildApp({ adminAccount, adminToken: "management-test-token", publicOrigin: "https://missiongo.test" });
+    apps.push(app);
+
+    const registration = await app.inject({
+      method: "POST",
+      url: "/oauth/register",
+      payload: {
+        client_name: "Rotating client",
+        redirect_uris: ["http://127.0.0.1:49153/callback"],
+        token_endpoint_auth_method: "none",
+      },
+    });
+    const clientId = registration.json<{ client_id: string }>().client_id;
+    const verifier = "b".repeat(64);
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const authorize = await app.inject({
+      method: "GET",
+      url: "/oauth/authorize",
+      query: {
+        client_id: clientId,
+        redirect_uri: "http://127.0.0.1:49153/callback",
+        response_type: "code",
+        state: "s-1",
+        scope: "missiongo:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      },
+    });
+    const requestToken = /name="request" value="([^"]+)"/.exec(authorize.body)?.[1];
+    const login = await app.inject({
+      method: "POST",
+      url: "/oauth/authorize",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ request: requestToken!, username: adminAccount.username, password: "correct horse" }).toString(),
+    });
+    expect(login.statusCode).toBe(302);
+    const code = new URL(login.headers.location!).searchParams.get("code")!;
+
+    const exchanged = await app.inject({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        grant_type: "authorization_code", code, client_id: clientId,
+        redirect_uri: "http://127.0.0.1:49153/callback", code_verifier: verifier,
+      }).toString(),
+    });
+    expect(exchanged.statusCode).toBe(200);
+    const first = exchanged.json<{ access_token: string; refresh_token: string }>();
+    expect(first.refresh_token.startsWith("mgrt_")).toBe(true);
+
+    const rotation = async (refreshToken: string) => app.inject({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId }).toString(),
+    });
+    const second = await rotation(first.refresh_token);
+    expect(second.statusCode).toBe(200);
+    const rotated = second.json<{ access_token: string; refresh_token: string }>();
+    expect(rotated.access_token).not.toBe(first.access_token);
+    expect(rotated.refresh_token).not.toBe(first.refresh_token);
+
+    // The spent refresh token is refused, and its replay burns the family:
+    // the never-replayed successor dies with it.
+    expect((await rotation(first.refresh_token)).statusCode).toBe(400);
+    expect((await rotation(rotated.refresh_token)).statusCode).toBe(400);
+  });
+
+  it("answers browser OAuth errors with a styled HTML page and a retry instruction (AND-287)", async () => {    const adminAccount = testAdminAccount();
+    const app = buildApp({ adminAccount, adminToken: "management-test-token", publicOrigin: "https://missiongo.test" });
+    apps.push(app);
+
+    // A link whose parameters did not survive the copy (no code_challenge).
+    const brokenLink = await app.inject({
+      method: "GET",
+      url: "/oauth/authorize",
+      query: { client_id: "mgc_not-a-real-client", redirect_uri: "http://127.0.0.1:49152/callback", response_type: "code" },
+    });
+    expect(brokenLink.statusCode).toBe(400);
+    expect(brokenLink.headers["content-type"]).toContain("text/html");
+    expect(brokenLink.body).toContain("这个授权链接无效");
+    expect(brokenLink.body).toContain("重新点击登录");
+    expect(brokenLink.body).not.toContain("invalid_request");
+
+    // A consent page submitted with a request token the server never minted.
+    const replayedSubmit = await app.inject({
+      method: "POST",
+      url: "/oauth/authorize",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        request: "forged.request.token",
+        username: adminAccount.username,
+        password: "correct horse",
+      }).toString(),
+    });
+    expect(replayedSubmit.statusCode).toBe(400);
+    expect(replayedSubmit.headers["content-type"]).toContain("text/html");
+    expect(replayedSubmit.body).toContain("本次登录已结束");
+    expect(replayedSubmit.body).toContain("重新点击登录");
+  });
+
   it("uses first-time account login and limits AI reads to authorized products", async () => {
     const adminAccount = testAdminAccount();
     const app = buildApp({ adminAccount, adminToken: "management-test-token", publicOrigin: "https://missiongo.test" });

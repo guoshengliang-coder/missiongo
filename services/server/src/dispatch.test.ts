@@ -199,6 +199,50 @@ describe("Agent chat attachments", () => {
 });
 
 describe("Registering a Mac by signing in", () => {
+  it("keeps an agent with a dead MCP authorization off dispatches, and warns early instead (AND-289)", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await readyItem(app, cookie, "Mission GO", "AND");
+
+    const beat = (mcpAuth: unknown) => app.inject({
+      method: "POST",
+      url: "/api/v1/node/heartbeat",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        agents: [{
+          kind: "claude_code",
+          version: "2.1.232",
+          ready: true,
+          skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
+          ...(mcpAuth ? { mcpAuth } : {}),
+        }],
+        clientVersion: "1.2.3",
+      },
+    });
+    const agents = async () => (await app.inject({ method: "GET", url: "/api/v1/nodes", headers: { cookie } }))
+      .json<{ nodes: Array<{ agents: Array<{ kind: string; ready: boolean; unavailableReason?: string; mcpAuth?: { state: string } }> }> }>()
+      .nodes[0]!.agents.find((agent) => agent.kind === "claude_code")!;
+
+    // Expired: the session would die on its first MCP call, so it is not ready.
+    expect((await beat({ state: "invalid", checkedAt: new Date().toISOString() })).statusCode).toBe(200);
+    let reported = await agents();
+    expect(reported.ready).toBe(false);
+    expect(reported.unavailableReason).toContain("authorization has expired");
+    expect(reported.mcpAuth?.state).toBe("invalid");
+
+    // Expiring soon still works today: a warning, not a block.
+    expect((await beat({ state: "expiring", expiresAt: new Date(Date.now() + 3 * 86_400_000).toISOString(), checkedAt: new Date().toISOString() })).statusCode).toBe(200);
+    reported = await agents();
+    expect(reported.ready).toBe(true);
+    expect(reported.mcpAuth?.state).toBe("expiring");
+
+    // Unknown and absent both leave dispatching exactly as it was.
+    expect((await beat({ state: "unknown", checkedAt: new Date().toISOString() })).statusCode).toBe(200);
+    expect((await agents()).ready).toBe(true);
+    expect((await beat(null)).statusCode).toBe(200);
+    expect((await agents()).ready).toBe(true);
+  });
+
   it("trades a login carrying the node scope for a machine credential", async () => {
     const { app } = await signedInApp();
     const registered = await register(app, loginToken(app), { name: "Mac mini" });

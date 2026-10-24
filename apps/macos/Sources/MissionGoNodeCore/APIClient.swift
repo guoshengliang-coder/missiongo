@@ -95,11 +95,16 @@ public struct DetectedAgent: Codable, Equatable, Sendable {
     public let unavailableReason: String?
     public let skill: AgentSkillSnapshot?
     public let resource: AgentResourceSnapshot?
+    /// Whether this agent's MissionGo authorization still works (AND-289).
+    /// Nil means the machine cannot tell; only state and expiry travel, never
+    /// the token itself.
+    public let mcpAuth: McpAuthSnapshot?
 
     public init(
         kind: String, version: String, models: [AgentModelOption]? = nil,
         ready: Bool? = nil, unavailableReason: String? = nil,
-        skill: AgentSkillSnapshot? = nil, resource: AgentResourceSnapshot? = nil
+        skill: AgentSkillSnapshot? = nil, resource: AgentResourceSnapshot? = nil,
+        mcpAuth: McpAuthSnapshot? = nil
     ) {
         self.kind = kind
         self.version = version
@@ -108,6 +113,59 @@ public struct DetectedAgent: Codable, Equatable, Sendable {
         self.unavailableReason = unavailableReason
         self.skill = skill
         self.resource = resource
+        self.mcpAuth = mcpAuth
+    }
+}
+
+/// The health of one agent's MissionGo authorization, as reported with a
+/// heartbeat (AND-289). Only the verdict and the expiry are sent.
+public struct McpAuthSnapshot: Codable, Equatable, Sendable {
+    public let state: String
+    public let expiresAt: Date?
+    public let checkedAt: Date
+
+    public init(state: String, expiresAt: Date? = nil, checkedAt: Date = Date()) {
+        self.state = state
+        self.expiresAt = expiresAt
+        self.checkedAt = checkedAt
+    }
+}
+
+/**
+ * Reads the local MissionGo token an agent type uses and reports whether it
+ * still works, without any network call and without the token ever leaving
+ * the machine (AND-289).
+ *
+ * The signed `mgai_` token is self-describing: its payload carries `exp`, so
+ * the check is a base64url decode and a date comparison. A `mgpat_` personal
+ * token stores only a hash server-side and carries no expiry to read -- it
+ * reports nil rather than a guess.
+ */
+public enum McpAuthorizationHealth {
+    /// How far out an authorization starts warning rather than just working.
+    public static let expiringWindow: TimeInterval = 7 * 24 * 60 * 60
+
+    public static func report(token: String?, now: Date = Date()) -> McpAuthSnapshot? {
+        guard let token, token.hasPrefix("mgai_") else { return nil }
+        let encoded = String(token.dropFirst("mgai_".count)).split(separator: ".").first.map(String.init) ?? ""
+        guard let payload = Data(base64Encoded: padBase64(encoded)),
+              let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let expiresAtMs = json["expiresAt"] as? Double
+        else { return nil }
+        let expiresAt = Date(timeIntervalSince1970: expiresAtMs)
+        if expiresAt <= now {
+            return McpAuthSnapshot(state: "invalid", expiresAt: expiresAt, checkedAt: now)
+        }
+        if expiresAt.timeIntervalSince(now) <= expiringWindow {
+            return McpAuthSnapshot(state: "expiring", expiresAt: expiresAt, checkedAt: now)
+        }
+        return McpAuthSnapshot(state: "valid", expiresAt: expiresAt, checkedAt: now)
+    }
+
+    private static func padBase64(_ value: String) -> String {
+        let padding = (4 - value.count % 4) % 4
+        return value.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/") + String(repeating: "=", count: padding)
     }
 }
 

@@ -1803,6 +1803,41 @@ export class MissionGoDatabase {
         this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(202610110231, new Date().toISOString());
       });
     }
+    // AND-288: personal access tokens and refresh tokens.
+    //
+    // A PAT is another kind of row in ai_authorizations, so the existing
+    // "AI connections" page lists and revokes both with one query -- but the
+    // console cannot decode a PAT the way it decodes an OAuth client id, so
+    // its display name and a hash of the token live here. Only the hash: the
+    // plaintext is shown once at creation and never stored.
+    //
+    // Refresh tokens are one-shot and rotate on every use; each belongs to the
+    // authorization (token id) it extends, so revoking that authorization in
+    // the console cuts off its refresh tokens with it. credentials_at freezes
+    // the account's credentials stamp at issue time: changing the password
+    // ends interactive refreshes, the same way it ends the access tokens.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610241647").get()) {
+      this.transaction(() => {
+        this.connection.exec("ALTER TABLE ai_authorizations ADD COLUMN kind TEXT NOT NULL DEFAULT 'oauth' CHECK(kind IN ('oauth', 'pat'));");
+        this.connection.exec("ALTER TABLE ai_authorizations ADD COLUMN name TEXT;");
+        this.connection.exec("ALTER TABLE ai_authorizations ADD COLUMN token_hash TEXT;");
+        this.connection.exec("CREATE UNIQUE INDEX idx_ai_authorizations_token_hash ON ai_authorizations(token_hash) WHERE token_hash IS NOT NULL;");
+        this.connection.exec(`
+          CREATE TABLE IF NOT EXISTS ai_refresh_tokens (
+            id TEXT PRIMARY KEY,
+            authorization_id TEXT NOT NULL REFERENCES ai_authorizations(id) ON DELETE CASCADE,
+            token_hash TEXT NOT NULL UNIQUE,
+            client_id TEXT NOT NULL,
+            scopes_json TEXT NOT NULL,
+            credentials_at INTEGER NOT NULL,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used_at TEXT
+          ) STRICT;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(202610241647, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

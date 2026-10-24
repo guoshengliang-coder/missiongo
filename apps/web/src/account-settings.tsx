@@ -270,7 +270,11 @@ function AuthorizationRow({ authorization }: { authorization: AiAuthorization })
   });
 
   const when = (value: string) => new Date(value).toLocaleDateString(locale);
-  const name = authorization.clientName ?? t("unknownAiClient");
+  // A console-minted token has no client to decode a name from; the name its
+  // owner typed at creation is the identity, and the kind label says what it is.
+  const name = authorization.kind === "pat"
+    ? `${authorization.name ?? t("personalTokenKind")} · ${t("personalTokenKind")}`
+    : authorization.clientName ?? t("unknownAiClient");
 
   return (
     <article className="account-row">
@@ -322,7 +326,80 @@ function ConnectedAiClients() {
             ))}
           </div>
         ))}
+      <PersonalTokenForm />
     </section>
+  );
+}
+
+/**
+ * Mint a personal access token (AND-288): the browserless-machine half of the
+ * AI connections section. The token appears once, here, in a copyable field;
+ * afterwards only the named row in the list above remembers it existed.
+ */
+function PersonalTokenForm() {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [write, setWrite] = useState(false);
+  const [days, setDays] = useState(90);
+  const create = useMutation({
+    mutationFn: () => api.createPersonalToken({
+      name,
+      scopes: write ? ["missiongo:read", "missiongo:write"] : ["missiongo:read"],
+      days,
+    }),
+    onSuccess: async () => {
+      setName("");
+      await queryClient.invalidateQueries({ queryKey: ["ai-authorizations"] });
+    },
+  });
+  const minted = create.data;
+
+  return (
+    <div className="account-personal-token">
+      <h4>{t("personalTokens")}</h4>
+      <p className="account-note">{t("personalTokensHelp")}</p>
+      <div className="account-personal-token-fields">
+        <label>
+          {t("personalTokenName")}
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder={t("personalTokenNamePlaceholder")}
+            maxLength={80}
+          />
+        </label>
+        <label>
+          {t("personalTokenScopes")}
+          <select value={write ? "write" : "read"} onChange={(event) => setWrite(event.target.value === "write")}>
+            <option value="read">{t("personalTokenScopeRead")}</option>
+            <option value="write">{t("personalTokenScopeWrite")}</option>
+          </select>
+        </label>
+        <label>
+          {t("personalTokenLifetime")}
+          <select value={days} onChange={(event) => setDays(Number(event.target.value))}>
+            {[7, 30, 90, 365].map((choice) => (
+              <option key={choice} value={choice}>{t("personalTokenDays", { days: String(choice) })}</option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          disabled={!name.trim() || create.isPending}
+          onClick={() => create.mutate()}
+        >
+          {create.isPending ? <LoaderCircle className="spin" size={15} /> : null} {t("personalTokenCreate")}
+        </button>
+      </div>
+      {create.isError && <InlineNote danger message={messageFor(create.error, t, t("somethingWentWrong"))} />}
+      {minted && (
+        <div className="account-personal-token-created">
+          <p><strong>{t("personalTokenCreated")}</strong> — {t("personalTokenCreatedHelp")}</p>
+          <textarea readOnly rows={2} value={minted.token} onFocus={(event) => event.currentTarget.select()} />
+        </div>
+      )}
+    </div>
   );
 }
 
