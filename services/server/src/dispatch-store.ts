@@ -29,6 +29,18 @@ export interface NodeAgentReport {
   readonly unavailableReason?: string;
   readonly skill?: AgentSkillSnapshot;
   readonly resource?: AgentResourceSnapshot;
+  /**
+   * Whether this agent's MissionGo authorization still works (AND-289).
+   * 'invalid' keeps the agent off new dispatches -- a session started against
+   * a dead token dies on its first MCP call; 'expiring' still dispatches and
+   * is the warning the menu bar shows. Absent means the machine could not
+   * tell, and dispatching is unchanged.
+   */
+  readonly mcpAuth?: {
+    readonly state: "valid" | "expiring" | "invalid" | "unknown";
+    readonly expiresAt?: string;
+    readonly checkedAt: string;
+  };
 }
 
 /** A checkout the machine reported it can already work in. */
@@ -434,14 +446,27 @@ export class DispatchStore {
       }
     }
     const normalizedAgents = agents.map((agent) => {
+      if (agent.mcpAuth && !["valid", "expiring", "invalid", "unknown"].includes(agent.mcpAuth.state)) {
+        throw invalidInput(`Unsupported MCP authorization state: ${String(agent.mcpAuth.state)}.`);
+      }
       const skillReady = !metadata.expectedSkillVersion
         || (agent.skill?.syncState === "ready" && agent.skill.localVersion === metadata.expectedSkillVersion);
-      const ready = agent.ready !== false && skillReady && agent.resource?.status !== "unavailable";
+      // An expired authorization is as disqualifying as a missing skill: the
+      // session would die on its first MCP call (AND-289). 'expiring' warns
+      // without blocking -- the token still works today.
+      const authReady = agent.mcpAuth?.state !== "invalid";
+      const ready = agent.ready !== false && skillReady && authReady && agent.resource?.status !== "unavailable";
       return {
         ...agent,
         ready,
         ...(!ready && !agent.unavailableReason
-          ? { unavailableReason: skillReady ? agent.resource?.reason ?? "Agent readiness could not be verified." : "MissionGo Skill is not synchronized." }
+          ? {
+            unavailableReason: !authReady
+              ? "MissionGo authorization has expired; reconnect the agent's MCP sign-in."
+              : skillReady
+                ? agent.resource?.reason ?? "Agent readiness could not be verified."
+                : "MissionGo Skill is not synchronized.",
+          }
           : {}),
       };
     });

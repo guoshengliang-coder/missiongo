@@ -3068,6 +3068,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
                 ...(stringField(resourceInput, "reason", false) ? { reason: resourceInput.reason as string } : {}),
               },
             } : {}),
+            // AND-289: the machine's own read of this agent's MissionGo
+            // authorization. Only the verdict and the dates travel; the token
+            // never does.
+            ...(agent.mcpAuth === undefined ? {} : {
+              mcpAuth: (() => {
+                const authInput = objectBody(agent.mcpAuth);
+                const state = stringField(authInput, "state")! as "valid" | "expiring" | "invalid" | "unknown";
+                return {
+                  state,
+                  ...(stringField(authInput, "expiresAt", false) ? { expiresAt: authInput.expiresAt as string } : {}),
+                  checkedAt: stringField(authInput, "checkedAt", false) ?? new Date().toISOString(),
+                };
+              })(),
+            }),
           };
         }),
         repoCandidates.map((entry) => {
