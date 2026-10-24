@@ -24,6 +24,10 @@ final class LoopbackCallbackListener: @unchecked Sendable {
         var callback: CheckedContinuation<String, Error>?
         var delivered: String?
         var failure: Error?
+        /// AND-287: the login attempt ended (timeout) but the browser may
+        /// still be mid-flow. While set, callbacks get an "expired" page
+        /// instead of a refused connection, and their code is never delivered.
+        var expired = false
     }
 
     init(respond: @escaping @Sendable (String) -> String) throws {
@@ -97,13 +101,61 @@ final class LoopbackCallbackListener: @unchecked Sendable {
                 }
             }
         } onCancel: {
-            self.cancel()
+            // Not a hard cancel: when the attempt merely expired (timeout),
+            // the listener must keep answering the browser's late callback
+            // for its grace period (AND-287). A real user cancellation is
+            // not expired, and closes as before.
+            self.cancelUnlessExpired()
         }
     }
 
     /// Stops listening. Safe to call more than once and after a callback.
     func cancel() {
         finish(CancellationError())
+    }
+
+    /// `cancel()`, except an expired listener closes itself after its grace
+    /// period instead -- the browser keeps getting an explanation page until
+    /// then, so the run-loop's cleanup must not cut that short (AND-287).
+    func cancelUnlessExpired() {
+        let alreadyExpired = state.withLock { value in value.expired }
+        if !alreadyExpired { cancel() }
+    }
+
+    /**
+     * Ends the login attempt for the app while keeping the socket open for the
+     * browser (AND-287).
+     *
+     * A timeout used to close the listener outright, so a person who went on
+     * to finish the consent page minutes later got a bare connection-refused
+     * from 127.0.0.1 and no idea what to do next. After `expire`, a late
+     * callback is answered with a page that says the login is over and points
+     * them back at the client; its authorization code is discarded, because
+     * the attempt that code belongs to has already been abandoned. The
+     * listener closes itself for real once the grace period is up.
+     */
+    func expire(grace: TimeInterval = 120) {
+        let pending = state.withLock { value -> (CheckedContinuation<UInt16, Error>?, CheckedContinuation<String, Error>?) in
+            if value.failure == nil { value.failure = CancellationError() }
+            value.expired = true
+            defer {
+                value.ready = nil
+                value.callback = nil
+            }
+            return (value.ready, value.callback)
+        }
+        pending.0?.resume(throwing: OAuthLoginError.timedOut)
+        pending.1?.resume(throwing: OAuthLoginError.timedOut)
+        // Hold ourself for the grace period: every external reference dies
+        // with the failed login (the run loop unwound, its locals are gone),
+        // and an unreferenced listener is deallocated -- NWListener stops
+        // listening with it. This closure is the one strong reference left,
+        // and it lets go exactly when the grace period is over (AND-287).
+        let keepAlive = self
+        queue.asyncAfter(deadline: .now() + grace) { [weak self] in
+            _ = keepAlive
+            self?.cancel()
+        }
     }
 
     private func finish(_ error: Error) {
@@ -142,12 +194,17 @@ final class LoopbackCallbackListener: @unchecked Sendable {
             return send(connection, LoopbackCallbackListener.httpResponse(status: "404 Not Found", html: ""))
         }
 
-        let waiting = state.withLock { value -> (claimed: Bool, continuation: CheckedContinuation<String, Error>?) in
+        let waiting = state.withLock { value -> (claimed: Bool, expired: Bool, continuation: CheckedContinuation<String, Error>?) in
+            // An expired attempt answers its late callback, but never claims it.
+            if value.expired { return (false, true, nil) }
             // Only the first callback counts; reloading the page is not a second login.
-            guard value.delivered == nil, value.failure == nil else { return (false, nil) }
+            guard value.delivered == nil, value.failure == nil else { return (false, false, nil) }
             value.delivered = target
             defer { value.callback = nil }
-            return (true, value.callback)
+            return (true, false, value.callback)
+        }
+        if waiting.expired {
+            return send(connection, LoopbackCallbackListener.httpResponse(status: "200 OK", html: CallbackPages.loginExpired))
         }
         guard waiting.claimed else {
             return send(connection, LoopbackCallbackListener.httpResponse(status: "410 Gone", html: CallbackPages.stale))

@@ -506,6 +506,34 @@ function oauthLoginPage(
 </main></body></html>`;
 }
 
+/**
+ * The browser-facing error page for the OAuth routes (AND-287).
+ *
+ * These errors used to leave as bare JSON, which the browser rendered as one
+ * unstyled line -- the person staring at it had no idea what went wrong, or
+ * that the only working retry lives in the client that started the login,
+ * not in this tab. Same card styling as the login page, and the recovery
+ * instruction is the point of the page: go back to the client and start
+ * again. A fresh authorize page is minted on every GET, so retrying from the
+ * client always works however stale this tab was.
+ */
+function oauthErrorPage(title: string, detail: string): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>连接 MissionGo</title>
+  <link rel="stylesheet" href="/oauth/login.css">
+</head>
+<body><main class="card">
+  <div class="mark">🚀</div><p class="eyebrow">AI 授权</p><h1 class="title">${escapedHtml(title)}</h1>
+  <p class="copy">${escapedHtml(detail)}</p>
+  <p class="copy"><strong>请回到发起连接的客户端，重新点击登录</strong>，然后在新打开的页面上完成授权。在当前页面里刷新、后退或重新输入密码没有用——本次登录已经结束。</p>
+  <p class="note">授权页面打开后 10 分钟内有效；提交成功后页面自动跳走，即表示完成。</p>
+</main></body></html>`;
+}
+
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? false, trustProxy: options.trustProxy ?? false });
   const store = new MissionGoStore(options.databasePath ?? ":memory:");
@@ -619,16 +647,28 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const sdkRateLimits = { ...DEFAULT_SDK_RATE_LIMITS, ...options.sdkRateLimits };
   const loginFailures = new Map<string, { count: number; resetAt: number }>();
 
-  const loginIsRateLimited = (request: FastifyRequest, reply: FastifyReply, now: number): boolean => {
+  /**
+   * Sign-in throttling, shared by the console's JSON login and the OAuth
+   * consent page. `oauthErrorPage` renders for a browser: a JSON 429 there
+   * would land as a raw one-liner on the login card's tab (AND-287). The
+   * console keeps the machine-readable problem document.
+   */
+  const loginIsRateLimited = (request: FastifyRequest, reply: FastifyReply, now: number, browserPage?: () => string): boolean => {
     const failure = loginFailures.get(request.ip);
     if (failure && failure.resetAt <= now) loginFailures.delete(request.ip);
     if (!failure || failure.resetAt <= now || failure.count < 10) return false;
-    reply.header("retry-after", Math.ceil((failure.resetAt - now) / 1_000)).status(429).send({
-      type: "urn:missiongo:problem:login_rate_limited",
-      title: "Too many sign-in attempts. Try again later.",
-      status: 429,
-      code: "login_rate_limited",
-    });
+    const retryAfter = Math.ceil((failure.resetAt - now) / 1_000);
+    reply.header("retry-after", retryAfter);
+    if (browserPage) {
+      reply.header("cache-control", "no-store").type("text/html; charset=utf-8").status(429).send(browserPage());
+    } else {
+      reply.status(429).send({
+        type: "urn:missiongo:problem:login_rate_limited",
+        title: "Too many sign-in attempts. Try again later.",
+        status: 429,
+        code: "login_rate_limited",
+      });
+    }
     return true;
   };
 
@@ -1065,10 +1105,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           oauthLoginPage(started.clientName, started.requestToken, started.scopes, writeTools),
         );
       } catch {
-        return reply.header("cache-control", "no-store").status(400).send({
-          error: "invalid_request",
-          error_description: "The authorization request is invalid or expired.",
-        });
+        // A broken or tampered link (truncated copy, bad params). The browser
+        // is the only audience, so answer with the styled page and the way
+        // out instead of JSON it would render raw (AND-287).
+        return reply.header("cache-control", "no-store").type("text/html; charset=utf-8").status(400).send(
+          oauthErrorPage(
+            "这个授权链接无效",
+            "链接可能没有复制完整，或已超过有效期。",
+          ),
+        );
       }
     });
 
@@ -1078,7 +1123,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const username = form.get("username")?.trim() ?? "";
       const password = form.get("password") ?? "";
       const now = Date.now();
-      if (loginIsRateLimited(request, reply, now)) return reply;
+      if (loginIsRateLimited(request, reply, now, () => oauthErrorPage(
+        "尝试次数过多",
+        "连续失败次数太多，登录已临时锁定，请稍后再从客户端重新发起。",
+      ))) return reply;
       const account = accountStore.verifyCredentials(username, password);
       if (!account) {
         recordLoginFailure(request, now);
@@ -1106,10 +1154,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (completed.state) redirect.searchParams.set("state", completed.state);
         return reply.header("cache-control", "no-store").redirect(redirect.toString());
       } catch {
-        return reply.header("cache-control", "no-store").status(400).send({
-          error: "invalid_request",
-          error_description: "The authorization request is invalid or expired.",
-        });
+        // The signed request token was rejected: the login page sat for more
+        // than ten minutes, or this submit is a replay of one that already
+        // redirected. Either way this tab is finished -- say so, and say where
+        // the retry actually lives (AND-287).
+        return reply.header("cache-control", "no-store").type("text/html; charset=utf-8").status(400).send(
+          oauthErrorPage(
+            "本次登录已结束",
+            "从打开授权页面到提交超过了 10 分钟，或这次登录已经完成过。为防止授权被重放，同一个授权请求只能提交一次。",
+          ),
+        );
       }
     });
 

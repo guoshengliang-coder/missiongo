@@ -237,6 +237,54 @@ final class OAuthLoginFlowTests: XCTestCase {
         }
     }
 
+    /// AND-287: a browser that finishes the consent page after the timeout
+    /// must get a page explaining what happened -- not a refused connection
+    /// from 127.0.0.1 with no way forward.
+    func testALateCallbackAfterTimeoutGetsAnExpiredPage() async throws {
+        installServer()
+        let latePage = expectation(description: "late callback answered")
+        let lateResult = Locked<[(Int, String)]>([])
+        // Detached on purpose: after the timeout the login task is cancelled,
+        // and a cancelled task's sleep would throw before the browser arrives.
+        let lateBrowser = Locked<Task<Void, Never>?>(nil)
+        let login = OAuthLogin(serverUrl: server, session: StubURLProtocol.session(), timeout: 0.5, openURL: { url in
+            let query = OAuthRequests.parseQuery(url.absoluteString)
+            guard let redirect = query["redirect_uri"], let state = query["state"] else { throw OAuthLoginError.missingCode }
+            let task = Task.detached {
+                // The person is still filling in the password while the client
+                // gives up; only after that does the browser hit the callback.
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                do {
+                    guard let callback = URL(string: "\(redirect)?code=late-code&state=\(state)") else {
+                        lateResult.withLock { $0.append((0, "bad-url")) }
+                        latePage.fulfill(); return
+                    }
+                    let (data, response) = try await URLSession(configuration: .ephemeral).data(from: callback)
+                    lateResult.withLock { $0.append(((response as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: data, as: UTF8.self))) }
+                } catch {
+                    lateResult.withLock { $0.append((-1, "request failed: \(error.localizedDescription)")) }
+                }
+                latePage.fulfill()
+            }
+            lateBrowser.withLock { $0 = task }
+        })
+        do {
+            _ = try await login.run(installationId: "inst-1", name: "Mac", hostname: "mac")
+            XCTFail("expected a timeout")
+        } catch {
+            XCTAssertEqual(error as? OAuthLoginError, .timedOut)
+        }
+        await fulfillment(of: [latePage], timeout: 10)
+        if let task = lateBrowser.current { _ = try? await task.value }
+        XCTAssertEqual(lateResult.current.count, 1)
+        let (status, body) = lateResult.current[0]
+        XCTAssertEqual(status, 200)
+        XCTAssertTrue(body.contains("超时结束"), "late callback should see the expired page, got: \(body)")
+        XCTAssertTrue(body.contains("重新点击登录"))
+        // The late code must not resurrect the attempt: no token exchange ran.
+        XCTAssertEqual(StubURLProtocol.recorded.map { $0.request.url?.path }, ["/oauth/register"])
+    }
+
     func testCanBeCancelled() async {
         installServer()
         let opened = expectation(description: "browser opened")

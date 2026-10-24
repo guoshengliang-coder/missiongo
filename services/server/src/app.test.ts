@@ -1543,6 +1543,40 @@ describe("MissionGo REST API", () => {
     expect(app.missionGoStore.getTimeline("HG-1")).toHaveLength(timelineCountBeforeRead);
   });
 
+  it("answers browser OAuth errors with a styled HTML page and a retry instruction (AND-287)", async () => {
+    const adminAccount = testAdminAccount();
+    const app = buildApp({ adminAccount, adminToken: "management-test-token", publicOrigin: "https://missiongo.test" });
+    apps.push(app);
+
+    // A link whose parameters did not survive the copy (no code_challenge).
+    const brokenLink = await app.inject({
+      method: "GET",
+      url: "/oauth/authorize",
+      query: { client_id: "mgc_not-a-real-client", redirect_uri: "http://127.0.0.1:49152/callback", response_type: "code" },
+    });
+    expect(brokenLink.statusCode).toBe(400);
+    expect(brokenLink.headers["content-type"]).toContain("text/html");
+    expect(brokenLink.body).toContain("这个授权链接无效");
+    expect(brokenLink.body).toContain("重新点击登录");
+    expect(brokenLink.body).not.toContain("invalid_request");
+
+    // A consent page submitted with a request token the server never minted.
+    const replayedSubmit = await app.inject({
+      method: "POST",
+      url: "/oauth/authorize",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        request: "forged.request.token",
+        username: adminAccount.username,
+        password: "correct horse",
+      }).toString(),
+    });
+    expect(replayedSubmit.statusCode).toBe(400);
+    expect(replayedSubmit.headers["content-type"]).toContain("text/html");
+    expect(replayedSubmit.body).toContain("本次登录已结束");
+    expect(replayedSubmit.body).toContain("重新点击登录");
+  });
+
   it("uses first-time account login and limits AI reads to authorized products", async () => {
     const adminAccount = testAdminAccount();
     const app = buildApp({ adminAccount, adminToken: "management-test-token", publicOrigin: "https://missiongo.test" });
