@@ -31,6 +31,7 @@ import {
   ADMIN_SESSION_COOKIE,
   adminSessionCookie,
   createAdminSession,
+  createAiAccessToken,
   expiredAdminSessionCookie,
   readAiAccessToken,
   readAdminSession,
@@ -137,6 +138,15 @@ const DEFAULT_THUMBNAIL_EDGE = 192;
 const MAX_THUMBNAIL_EDGE = 1024;
 
 const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "server", "shared", "other"] as const;
+/**
+ * How long a refresh token lives (AND-288). Every rotation issues a fresh one
+ * with a full window again, so this is the silence an interactive client
+ * tolerates -- three months without a person is plenty, and revocation does
+ * not wait for it.
+ */
+const REFRESH_TOKEN_SECONDS = 90 * 24 * 60 * 60;
+/** The lifetimes a personal access token may be created with, in days. */
+const PERSONAL_TOKEN_DAY_CHOICES = [7, 30, 90, 365] as const;
 
 type AgentSessionReplyBlockedReason =
   | "work_finished"
@@ -752,6 +762,29 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    */
   const aiPrincipal = (token: string) => {
     if (!options.adminAccount) return undefined;
+    // A personal access token (AND-288): no signature to verify, the stored
+    // hash is the whole check. Deliberately not tied to the account's
+    // credentials_changed_at -- see personalAccessTokenAccount.
+    if (token.startsWith("mgpat_")) {
+      const pat = accountStore.personalAccessTokenAccount(token);
+      if (!pat) return undefined;
+      const account = accountStore.activeAccount(pat.accountId);
+      if (!account) return undefined;
+      accountStore.touchAiAuthorization(pat.tokenId);
+      return {
+        id: account.id,
+        username: account.email,
+        displayName: accountDisplayName(account),
+        role: account.role,
+        tokenId: pat.tokenId,
+        clientId: "pat",
+        scopes: pat.scopes,
+        credentialsAt: accountStore.credentialsStamp(account),
+        issuedAt: 0,
+        expiresAt: pat.expiresAt,
+        productIds: accountStore.reachableProductIds(account, "ai"),
+      };
+    }
     const claims = readAiAccessToken(options.adminAccount, token);
     if (!claims) return undefined;
     const account = accountStore.resolveActive(claims.id, claims.credentialsAt);
@@ -981,7 +1014,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         registration_endpoint: `${publicOrigin}/oauth/register`,
         response_types_supported: ["code"],
         device_authorization_endpoint: `${publicOrigin}/oauth/device_authorization`,
-        grant_types_supported: ["authorization_code", DEVICE_GRANT],
+        grant_types_supported: ["authorization_code", "refresh_token", DEVICE_GRANT],
         code_challenge_methods_supported: ["S256"],
         token_endpoint_auth_methods_supported: ["none"],
         scopes_supported: [...MISSIONGO_SUPPORTED_SCOPES],
@@ -1170,6 +1203,49 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.post("/oauth/token", async (request, reply) => {
       const form = new URLSearchParams(typeof request.body === "string" ? request.body : "");
       try {
+        // Refresh rotation (AND-288): the client trades its refresh token for
+        // a new access token and a fresh refresh, without a browser. The old
+        // refresh dies in the exchange; a replay of it revokes the family.
+        if (form.get("grant_type") === "refresh_token") {
+          const consumed = accountStore.consumeRefreshToken({
+            token: form.get("refresh_token") ?? "",
+            clientId: form.get("client_id") ?? "",
+          });
+          if (consumed.kind !== "issued") {
+            return reply.header("cache-control", "no-store").status(400).send({
+              error: "invalid_grant",
+              error_description: "The refresh token is invalid, expired, or already used.",
+            });
+          }
+          const account = accountStore.resolveActive(consumed.accountId, consumed.credentialsAt);
+          if (!account) {
+            return reply.header("cache-control", "no-store").status(400).send({ error: "access_denied" });
+          }
+          const rotated = createAiAccessToken(
+            options.adminAccount!,
+            { id: account.id, username: account.email, role: account.role },
+            consumed.credentialsAt,
+            consumed.authorizationId,
+            consumed.scopes,
+          );
+          // The rotated access token keeps the same token id, so the existing
+          // authorization row and its revocation govern the family as before.
+          const refresh = accountStore.issueRefreshToken({
+            authorizationId: consumed.authorizationId,
+            accountId: account.id,
+            clientId: form.get("client_id") ?? "",
+            scopes: consumed.scopes,
+            credentialsAt: consumed.credentialsAt,
+            expiresAt: new Date(Date.now() + REFRESH_TOKEN_SECONDS * 1_000),
+          });
+          return reply.header("cache-control", "no-store").send({
+            access_token: rotated.token,
+            token_type: "Bearer",
+            expires_in: rotated.claims.expiresAt - Math.floor(Date.now() / 1_000),
+            scope: consumed.scopes.join(" "),
+            refresh_token: refresh,
+          });
+        }
         const isDevice = form.get("grant_type") === DEVICE_GRANT;
         const issued = isDevice ? deviceAuthorizations.poll(form.get("device_code") ?? "", form.get("client_id") ?? "", (row) => {
           const user = JSON.parse(row.user_json!) as AdminSessionUser;
@@ -1200,11 +1276,23 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           issuedAt: issued.claims.issuedAt,
           expiresAt: issued.claims.expiresAt,
         });
+        // Interactive clients get a refresh token alongside (AND-288): without
+        // one, every thirty days the account has to click through the consent
+        // page again for a client that never needed a person in the first place.
+        const refreshToken = accountStore.issueRefreshToken({
+          authorizationId: issued.claims.tokenId,
+          accountId: issued.claims.id,
+          clientId: issued.claims.clientId,
+          scopes: issued.claims.scopes,
+          credentialsAt: issued.claims.credentialsAt,
+          expiresAt: new Date(Date.now() + REFRESH_TOKEN_SECONDS * 1_000),
+        });
         return reply.header("cache-control", "no-store").send({
           access_token: issued.accessToken,
           token_type: "Bearer",
           expires_in: issued.expiresIn,
           scope: issued.scope,
+          refresh_token: refreshToken,
         });
       } catch (error) {
         if (error instanceof DeviceGrantError) return reply.header("cache-control", "no-store").status(400).send({ error: error.message });
@@ -1980,6 +2068,41 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { authorizationId } = request.params as { authorizationId: string };
     accountStore.revokeAiAuthorization(account.id, authorizationId);
     return reply.status(204).send();
+  });
+
+  /**
+   * Mint a personal access token (AND-288): the console's own credential for
+   * machines that cannot complete a browser flow -- CI, servers, scripts. The
+   * plaintext leaves exactly once, in this response; after that only its hash
+   * exists, and the row is listed and revoked like any other authorization.
+   */
+  app.post("/api/v1/ai-personal-tokens", async (request, reply) => {
+    const account = requireAccount(request);
+    const body = objectBody(request.body);
+    const name = stringField(body, "name")!;
+    const days = body.days;
+    if (typeof days !== "number" || !PERSONAL_TOKEN_DAY_CHOICES.includes(days as typeof PERSONAL_TOKEN_DAY_CHOICES[number])) {
+      throw invalidInput(`Choose a lifetime of one of ${PERSONAL_TOKEN_DAY_CHOICES.join(", ")} days.`);
+    }
+    const requested = Array.isArray(body.scopes) ? body.scopes : [];
+    if (requested.some((scope) => typeof scope !== "string")) throw invalidInput("invalid scopes");
+    // Reading is always included, and the machine scopes stay out: registering
+    // a dispatch node is what the browser flow with its consent page is for.
+    const scopes = parseRequestedScopes((requested as string[]).filter((scope) => scope !== MISSIONGO_READ_SCOPE).join(" "))
+      .filter((scope) => scope !== MISSIONGO_NODE_SCOPE);
+    const created = accountStore.createPersonalAccessToken({
+      accountId: account.id,
+      name,
+      scopes,
+      expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1_000),
+    });
+    return reply.header("cache-control", "no-store").status(201).send({
+      id: created.id,
+      name: stringField(body, "name")!.trim(),
+      token: created.token,
+      scopes: [...scopes],
+      expiresAt: created.expiresAt,
+    });
   });
 
   registerManagedDecisionRoutes(app, { db: store.database, accounts: accountStore, requireAccount,
