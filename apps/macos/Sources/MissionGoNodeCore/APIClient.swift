@@ -119,6 +119,11 @@ public struct DetectedAgent: Codable, Equatable, Sendable {
 
 /// The health of one agent's MissionGo authorization, as reported with a
 /// heartbeat (AND-289). Only the verdict and the expiry are sent.
+///
+/// Dates travel as ISO 8601 strings: the server's wire contract expects
+/// strings, and Swift's default `Date` coding is a numeric double -- which
+/// the 0.4.49 heartbeat answered with `400 expiresAt must be a string`,
+/// cutting the node's heartbeat off entirely.
 public struct McpAuthSnapshot: Codable, Equatable, Sendable {
     public let state: String
     public let expiresAt: Date?
@@ -128,6 +133,24 @@ public struct McpAuthSnapshot: Codable, Equatable, Sendable {
         self.state = state
         self.expiresAt = expiresAt
         self.checkedAt = checkedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case state, expiresAt, checkedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = try container.decode(String.self, forKey: .state)
+        expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt).flatMap { try? Date($0, strategy: .iso8601) }
+        checkedAt = try container.decodeIfPresent(String.self, forKey: .checkedAt).flatMap { try? Date($0, strategy: .iso8601) } ?? Date()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(state, forKey: .state)
+        try container.encodeIfPresent(expiresAt?.formatted(.iso8601), forKey: .expiresAt)
+        try container.encode(checkedAt.formatted(.iso8601), forKey: .checkedAt)
     }
 }
 
