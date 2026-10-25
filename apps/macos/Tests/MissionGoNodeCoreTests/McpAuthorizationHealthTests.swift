@@ -31,4 +31,17 @@ final class McpAuthorizationHealthTests: XCTestCase {
         let report = try XCTUnwrap(McpAuthorizationHealth.report(token: token(expiresAt: 3 * 24 * 60 * 60, now: now), now: now))
         XCTAssertEqual(report.expiresAt, now.addingTimeInterval(3 * 24 * 60 * 60))
     }
+
+    /// The wire contract says strings: a numeric double here is what 0.4.49
+    /// shipped, and the server answered every heartbeat with 400.
+    func testEncodesDatesAsIso8601Strings() throws {
+        let moment = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = McpAuthSnapshot(state: "expiring", expiresAt: moment, checkedAt: moment)
+        let json = String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self)
+        XCTAssertTrue(json.contains("\"expiresAt\":\""), "expected a string date, got: \(json)")
+        XCTAssertTrue(json.contains("\"checkedAt\":\""), "expected a string date, got: \(json)")
+        XCTAssertFalse(try Regex("\\d{9,}\\},").firstMatch(in: json) != nil, "numeric date leaked into: \(json)")
+        let decoded = try JSONDecoder().decode(McpAuthSnapshot.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded, snapshot)
+    }
 }
