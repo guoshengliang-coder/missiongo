@@ -432,6 +432,20 @@ export class DispatchStore {
     return { nodeId: row.id, accountId: row.account_id };
   }
 
+  /**
+   * Whether a presented credential belongs to a node row that was revoked in
+   * the console -- as opposed to a hash with no row at all, which is what a
+   * credential rotated by a newer sign-in looks like (AND-290/291). The two
+   * read very differently to the person at the machine, and one generic 401
+   * used to tell them apart only by misleading everyone.
+   */
+  revokedNodeForToken(token: string): boolean {
+    const row = this.database.connection
+      .prepare("SELECT revoked_at FROM nodes WHERE token_hash = ?")
+      .get(nodeTokenHash(token)) as unknown as { revoked_at: string | null } | undefined;
+    return row?.revoked_at != null;
+  }
+
   recordHeartbeat(
     nodeId: string,
     agents: readonly NodeAgentReport[],

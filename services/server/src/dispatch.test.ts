@@ -199,8 +199,31 @@ describe("Agent chat attachments", () => {
 });
 
 describe("Registering a Mac by signing in", () => {
-  it("keeps an agent with a dead MCP authorization off dispatches, and warns early instead (AND-289)", async () => {
+  it("tells a revoked node from a replaced credential in the 401 (AND-290/291)", async () => {
     const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    await readyItem(app, cookie, "Mission GO", "AND");
+    expect((await heartbeat(app, node.token)).statusCode).toBe(200);
+
+    // A stale credential -- what a newer sign-in on the same machine leaves
+    // behind -- must not claim a console revocation nobody performed.
+    const replaced = await heartbeat(app, "mgn_" + "a".repeat(43));
+    expect(replaced.statusCode).toBe(401);
+    expect(replaced.json()).toMatchObject({ code: "node_credential_replaced" });
+
+    // A console revocation keeps its name.
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/nodes/${node.nodeId}`,
+      headers: { cookie },
+    });
+    expect(revoked.statusCode).toBe(204);
+    const afterRevoke = await heartbeat(app, node.token);
+    expect(afterRevoke.statusCode).toBe(401);
+    expect(afterRevoke.json()).toMatchObject({ code: "node_revoked" });
+  });
+
+  it("keeps an agent with a dead MCP authorization off dispatches, and warns early instead (AND-289)", async () => {    const { app, cookie } = await signedInApp();
     const node = await registeredNode(app);
     await readyItem(app, cookie, "Mission GO", "AND");
 

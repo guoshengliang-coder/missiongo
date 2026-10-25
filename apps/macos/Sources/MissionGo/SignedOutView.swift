@@ -24,7 +24,19 @@ struct SignedOutView: View {
                 }
             }
 
-            if model.showsRevokedNotice {
+            // AND-291: the three ways a session ends against this Mac's will
+            // read differently on purpose -- a console revocation is the only
+            // one that says "revoked".
+            if model.phase != .signingIn, let reason = model.credentialEndReason {
+                switch reason {
+                case "revoked":
+                    WrappingCaption(text: "这台 Mac 已在控制台被撤销，重新登录即可恢复。", color: .orange)
+                case "replaced":
+                    WrappingCaption(text: "本机的登录凭据已被一次新的登录替换（常见于客户端更新重启），重新登录即可恢复。", color: .orange)
+                default:
+                    WrappingCaption(text: "登录凭据已失效，重新登录即可恢复。", color: .orange)
+                }
+            } else if model.showsRevokedNotice {
                 WrappingCaption(text: "这台 Mac 已在控制台被撤销，重新登录即可恢复。", color: .orange)
             }
 
@@ -38,7 +50,7 @@ struct SignedOutView: View {
                 if let pending = model.deviceLogin {
                     Text(pending.userCode).font(.title2.monospaced()).textSelection(.enabled)
                     Text(pending.verificationUri.absoluteString).font(.caption).textSelection(.enabled)
-                    Text("请在浏览器核对验证码并授权。退出后重新打开客户端可继续此次登录。")
+                    Text("打开页面后先核对：页面显示的验证码必须与上面完全一致。不一致说明浏览器停在旧标签页——请关掉它，手动访问上面的网址并输入当前验证码。")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("打开验证页面") { model.reopenDeviceLogin() }
                 }

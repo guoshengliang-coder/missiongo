@@ -628,7 +628,7 @@ final class NodeLoopTests: XCTestCase {
     }
 
     func testARevokedCredentialStopsBothLoopsAndSurfaces() async {
-        let api = FakeAPI(claims: [], heartbeat: .failure(APIError.credentialRevoked(status: 401, detail: nil)))
+        let api = FakeAPI(claims: [], heartbeat: .failure(APIError.credentialRevoked(status: 401, code: nil, detail: nil)))
         let loop = NodeLoop(api: api, adapters: [], fallbackNodeName: "Mac mini", detectRepoCandidates: { [] }, timing: fastTiming(), log: { _ in })
         do {
             try await loop.run()
@@ -638,7 +638,7 @@ final class NodeLoopTests: XCTestCase {
         } catch {
             XCTFail("\(error)")
         }
-        XCTAssertEqual(loop.currentState.connection, .credentialRevoked)
+        XCTAssertEqual(loop.currentState.connection, .credentialRevoked(code: nil))
         let callsAtStop = api.calls.current.count
         try? await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertEqual(api.calls.current.count, callsAtStop)

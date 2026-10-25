@@ -929,7 +929,7 @@ public enum APIError: Error, Equatable, LocalizedError, Sendable {
     /// token refused. Unlike a network blip this never fixes itself, so the loop
     /// stops instead of hammering the server with a credential that will keep
     /// being refused, and the app goes back to "请登录".
-    case credentialRevoked(status: Int, detail: String?)
+    case credentialRevoked(status: Int, code: String?, detail: String?)
     /// The server answered, with something other than 2xx.
     case http(operation: String, status: Int, detail: String)
     /// Only the automatic native handshake can yield this expected conflict.
@@ -942,9 +942,9 @@ public enum APIError: Error, Equatable, LocalizedError, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case let .credentialRevoked(status, detail):
+        case let .credentialRevoked(status, code, detail):
             let suffix = detail.map { "（\($0)）" } ?? ""
-            return "凭证已失效（HTTP \(status)）\(suffix)：需要重新登录。"
+            return "凭证已失效（HTTP \(status)\(code.map { " · \($0)" } ?? "")\(suffix)）：需要重新登录。"
         case let .http(operation, status, detail):
             return "\(operation) 失败（HTTP \(status)）：\(detail)"
         case .externalNativeAlreadyBound:
@@ -1210,6 +1210,14 @@ struct HTTPTransport: Sendable {
     static func problemTitle(_ response: HTTPResponse) -> String? {
         guard let object = JSONValues.parse(response.text) as? [String: Any] else { return nil }
         return object["title"] as? String
+    }
+
+    /// The machine-readable problem code of an error response, e.g.
+    /// "node_revoked". The 401/403 handling distinguishes stories that used to
+    /// share one misleading message (AND-291).
+    static func problemCode(_ response: HTTPResponse) -> String? {
+        guard let object = JSONValues.parse(response.text) as? [String: Any] else { return nil }
+        return object["code"] as? String
     }
 }
 
@@ -1586,7 +1594,7 @@ public struct APIClient: Sendable {
 
     private func nodeToken() throws -> String {
         guard let token, !token.isEmpty else {
-            throw APIError.credentialRevoked(status: 401, detail: "本机还没有登录")
+            throw APIError.credentialRevoked(status: 401, code: nil, detail: "本机还没有登录")
         }
         return token
     }
@@ -1636,7 +1644,7 @@ public struct APIClient: Sendable {
             response = try await transport.send(request)
         }
         if response.status == 401 || response.status == 403 {
-            throw APIError.credentialRevoked(status: response.status, detail: HTTPTransport.problemTitle(response))
+            throw APIError.credentialRevoked(status: response.status, code: HTTPTransport.problemCode(response), detail: HTTPTransport.problemTitle(response))
         }
         return response
     }
