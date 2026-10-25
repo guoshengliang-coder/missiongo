@@ -70,6 +70,11 @@ final class AppModel: ObservableObject {
         static let pendingLoginCancelled = "pendingLoginCancelled"
         static let serverOverride = "serverURLOverride"
         static let revokedNotice = "lastSessionRevoked"
+        /// AND-291: why the last session ended -- "revoked", "replaced", or
+        /// "invalid". Anything else used to be reported as a console
+        /// revocation, which sent whoever was debugging in the wrong
+        /// direction.
+        static let credentialEnd = "lastCredentialEnd"
         static let importedPath = "explicitlyImportedCLIPath"
     }
 
@@ -89,6 +94,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var deviceLogin: PendingDeviceLogin?
     @Published private(set) var loginStatus = "正在准备登录…"
     @Published private(set) var showsRevokedNotice: Bool
+    /// AND-291: why the last session ended, when it ended against this
+    /// Mac's will -- "revoked" (console), "replaced" (a newer sign-in on this
+    /// machine rotated the credential), or "invalid" (anything else). The old
+    /// single message claimed a console revocation for all three.
+    @Published private(set) var credentialEndReason: String?
     @Published private(set) var serverOverride: String?
     @Published private(set) var connectionMode: ServerConnectionMode = .system
     @Published private(set) var diagnosingConnection = false
@@ -170,6 +180,8 @@ final class AppModel: ObservableObject {
 
     private init() {
         showsRevokedNotice = UserDefaults.standard.bool(forKey: DefaultsKey.revokedNotice)
+        credentialEndReason = UserDefaults.standard.string(forKey: DefaultsKey.credentialEnd)
+            ?? (UserDefaults.standard.bool(forKey: DefaultsKey.revokedNotice) ? "revoked" : nil)
         serverOverride = UserDefaults.standard.string(forKey: DefaultsKey.serverOverride)
         connectionMode = ServerConnection.mode()
         refreshIntegrationStates()
@@ -336,7 +348,7 @@ final class AppModel: ObservableObject {
         refreshDispatches()
     }
 
-    private func leaveSignedIn(revoked: Bool) {
+    private func leaveSignedIn(revoked: Bool, reason: String? = nil) {
         loginGeneration += 1
         loginTask?.cancel()
         loginTask = nil
@@ -366,6 +378,10 @@ final class AppModel: ObservableObject {
         }
         showsRevokedNotice = revoked
         defaults.set(revoked, forKey: DefaultsKey.revokedNotice)
+        // AND-291: keep the specific story with the state it explains.
+        let endReason = reason ?? (revoked ? "revoked" : nil)
+        credentialEndReason = endReason
+        defaults.set(endReason, forKey: DefaultsKey.credentialEnd)
         phase = .signedOut
         loopState = NodeLoopState()
         profile = nil
@@ -386,16 +402,29 @@ final class AppModel: ObservableObject {
         updateState = AppUpdater.currentVersion().map { .current($0) } ?? .unavailable
     }
 
-    private func handleCredentialRevoked() {
+    private func handleCredentialRevoked(_ error: Error?) {
         guard credential != nil else { return }
-        leaveSignedIn(revoked: true)
+        // AND-291: say what actually happened. A console revocation is a
+        // person's decision and the message repeats it; a credential replaced
+        // by a newer sign-in on this same machine is routine and only needs a
+        // fresh sign-in; everything else stays neutral instead of accusing
+        // the console of something nobody did.
+        let code: String?
+        if case let .credentialRevoked(_, problemCode, _) = error as? APIError { code = problemCode } else { code = nil }
+        let reason: String
+        switch code {
+        case "node_revoked": reason = "revoked"
+        case "node_credential_replaced": reason = "replaced"
+        default: reason = "invalid"
+        }
+        leaveSignedIn(revoked: reason == "revoked", reason: reason)
     }
 
     /// Any API failure goes through here: a refused credential ends the session,
     /// everything else is only a message.
     private func isRevoked(_ error: Error) -> Bool {
         if let apiError = error as? APIError, case .credentialRevoked = apiError {
-            handleCredentialRevoked()
+            handleCredentialRevoked(apiError)
             return true
         }
         return false
@@ -692,6 +721,8 @@ final class AppModel: ObservableObject {
                 defaults.set(true, forKey: DefaultsKey.pendingLoginCancelled)
                 showsRevokedNotice = false
                 defaults.set(false, forKey: DefaultsKey.revokedNotice)
+                credentialEndReason = nil
+                defaults.removeObject(forKey: DefaultsKey.credentialEnd)
                 deviceLogin = nil
                 enterSignedIn(credential)
                 // Best effort cleanup cannot turn a successful login into failure.

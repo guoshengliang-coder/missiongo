@@ -503,7 +503,7 @@ function oauthLoginPage(
     ${scopes.includes(MISSIONGO_NODE_SCOPE) ? `<li>${nodeGrant}</li>` : ""}
   </ul>
   ${invalidCredentials ? '<p class="error">邮箱或密码不正确，请重新输入。</p>' : ""}
-  ${device ? `<p class="copy">请核对客户端显示的验证码：</p><p class="device-code">${escapedHtml(device.userCode)}</p><p class="copy">只有你正在登录的设备才能获得这次授权。</p>` : ""}
+  ${device ? `<p class="copy">请核对客户端显示的验证码：</p><p class="device-code">${escapedHtml(device.userCode)}</p><p class="copy">只有你正在登录的设备才能获得这次授权。<strong>验证码与客户端不一致，说明浏览器打开的是旧标签页</strong>——请关掉本页，手动访问客户端显示的授权网址并输入当前验证码。</p>` : ""}
   <form method="post" action="${device ? "/oauth/device" : "/oauth/authorize"}">
     ${device ? `<input type="hidden" name="user_code" value="${escapedHtml(device.userCode)}"><input type="hidden" name="proof" value="${escapedHtml(device.proof)}">` : ""}
     <input type="hidden" name="request" value="${escapedHtml(requestToken)}">
@@ -1075,7 +1075,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
 
     const devicePage = (content: string) => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>设备登录</title><link rel="stylesheet" href="/oauth/login.css"></head><body><main class="card">${content}</main></body></html>`;
-    const deviceUnavailable = () => devicePage('<h1 class="title">登录请求不可用</h1><p class="copy">验证码无效、已过期或已处理。请回到客户端查看状态，必要时重新发起登录。</p>');
+    const deviceUnavailable = () => devicePage('<h1 class="title">登录请求不可用</h1><p class="copy">验证码无效、已过期或已处理。请回到客户端查看状态，必要时重新发起登录。</p><p class="copy">如果浏览器里还开着别的"连接 MissionGo"标签页，你可能在看一次已经结束的旧登录：请关掉它们，手动访问客户端显示的授权网址并输入客户端<strong>当前</strong>显示的验证码。</p>');
     app.get("/oauth/device", async (request, reply) => {
       reply.header("cache-control", "no-store");
       if (loginIsRateLimited(request, reply, Date.now())) return reply;
@@ -2648,11 +2648,28 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   const requireNode = (request: FastifyRequest): { nodeId: string; accountId: string } => {
-    const node = dispatchStore.authenticateNode(suppliedBearerToken(request));
+    const presented = suppliedBearerToken(request);
+    const node = dispatchStore.authenticateNode(presented);
     // A machine acts for the account that registered it, so it stops when that
     // account does: disabling or deleting an account has to cut off its Macs
     // too, or they keep pulling queued work and product names.
-    if (!node || (!unauthenticatedDeployment && !accountStore.findActive(node.accountId))) {
+    if (!node) {
+      // Two very different stories share this 401 (AND-290/291): a node row
+      // that was revoked in the console, and a credential that no longer
+      // matches -- most often because another login on the same machine just
+      // rotated the token. The console revocation is a person's decision the
+      // client should repeat verbatim; the rotation is routine and only needs
+      // a fresh sign-in. One error code cannot tell both stories.
+      const revokedNode = dispatchStore.revokedNodeForToken(presented);
+      throw new MissionGoError(
+        revokedNode ? "node_revoked" : "node_credential_replaced",
+        revokedNode
+          ? "This machine was revoked from the console; sign in again to re-register it."
+          : "This node credential is no longer current -- another sign-in on this machine may have replaced it. Sign in again.",
+        401,
+      );
+    }
+    if (!unauthenticatedDeployment && !accountStore.findActive(node.accountId)) {
       throw new MissionGoError("authentication_required", "A valid node bearer token is required.", 401);
     }
     return node;

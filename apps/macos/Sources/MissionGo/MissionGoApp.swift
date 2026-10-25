@@ -61,6 +61,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // AND-290: two overlapping lives of this app -- an update relaunch
+        // racing a slow exit, a manual second open -- each run their own
+        // device login, and every successful login rotates the node
+        // credential under the other's feet. The loser then sits on a dead
+        // credential through no fault of anyone's console. Refuse to be the
+        // second instance: bring the first forward and bow out.
+        if let bundleId = Bundle.main.bundleIdentifier {
+            let peers = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
+                .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+            if let first = peers.first {
+                first.activate()
+                NSApp.terminate(nil)
+                return
+            }
+        }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem = item
         item.button?.target = self

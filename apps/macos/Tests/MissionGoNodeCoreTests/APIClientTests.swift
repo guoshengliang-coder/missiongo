@@ -366,14 +366,35 @@ final class APIClientTests: XCTestCase {
                 _ = try await client().heartbeat(agents: [])
                 XCTFail("expected credentialRevoked for \(status)")
             } catch let error as APIError {
-                guard case let .credentialRevoked(got, detail) = error else {
+                guard case let .credentialRevoked(got, code, detail) = error else {
                     return XCTFail("expected credentialRevoked, got \(error)")
                 }
                 XCTAssertEqual(got, status)
+                XCTAssertEqual(code, "node_revoked")
                 XCTAssertEqual(detail, "机器已撤销")
             } catch {
                 XCTFail("unexpected error \(error)")
             }
+        }
+    }
+
+    /// AND-291: a rotated credential must not arrive claiming a console
+    /// revocation -- the replacement code is the difference between "someone
+    /// revoked me" and "another sign-in replaced me".
+    func testReplacedCredentialCarriesItsOwnCode() async {
+        StubURLProtocol.install { _, _ in
+            .response(status: 401, body: #"{"title":"凭据已不当前","code":"node_credential_replaced","status":401}"#)
+        }
+        do {
+            _ = try await client().heartbeat(agents: [])
+            XCTFail("expected credentialRevoked")
+        } catch let error as APIError {
+            guard case let .credentialRevoked(_, code, _) = error else {
+                return XCTFail("expected credentialRevoked, got \(error)")
+            }
+            XCTAssertEqual(code, "node_credential_replaced")
+        } catch {
+            XCTFail("unexpected error \(error)")
         }
     }
 
