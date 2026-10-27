@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, BarChart3, ChevronLeft, ChevronRight, LoaderCircle, RefreshCw, X } from "lucide-react";
 import type { InsightMetric, InsightMetrics } from "@missiongo/domain";
@@ -7,6 +7,14 @@ import { localizedErrorText } from "./error-text";
 import { useI18n } from "./i18n";
 import { ITEM_TYPES, ITEM_STATUSES, type Product } from "./types";
 import { statisticsDatesValid, statisticsQuery, statisticsState, statisticsStateUrl, statisticsToday, type StatisticsFilters, type StatisticsSelection } from "./statistics-state";
+
+function openDatePicker(event: MouseEvent<HTMLInputElement>) {
+  try {
+    event.currentTarget.showPicker?.();
+  } catch {
+    // Keep native date editing available if the browser cannot open its picker.
+  }
+}
 
 export function StatisticsCenter({products,accountId,onClose,onOpenItem}:{products:readonly Product[];accountId:string|undefined;onClose:()=>void;onOpenItem:(key:string,productId:string)=>void}) {
   const {locale,t,statusLabel,typeLabel}=useI18n(); const zh=locale==="zh-CN";
@@ -50,12 +58,17 @@ export function StatisticsCenter({products,accountId,onClose,onOpenItem}:{produc
       <button type="button" className="secondary-button" disabled={!accountId||query.isFetching} onClick={()=>{void query.refetch();if(selection)void details.refetch();}}><RefreshCw size={16} className={query.isFetching ? "spin" : ""}/>{label("刷新","Refresh")}</button>
     </header>
     <div className="statistics-content">
-      <form className="statistics-filters" onSubmit={event=>{event.preventDefault();if(!statisticsDatesValid(draft)){setFilterError(true);return;}setFilterError(false);setFilters({...draft});setSelection(null);}}>
+      <form className={`statistics-filters ${draft.period === "custom" ? "has-custom-dates" : ""}`} onSubmit={event=>{event.preventDefault();if(!statisticsDatesValid(draft)){setFilterError(true);return;}setFilterError(false);setFilters({...draft});setSelection(null);}}>
         <label>{label("项目范围","Projects")}<select value={draft.product} onChange={e=>setDraft({...draft,product:e.target.value})}><option value="all">{label("全部可见项目","All visible projects")}</option>{products.map(p=><option value={p.id} key={p.id}>{p.name}</option>)}{draft.product!=="all"&&!products.some(p=>p.id===draft.product)&&<option value={draft.product}>{label("项目不可用","Unavailable project")}</option>}</select></label>
         <label>{label("统计时间","Period")}<select value={draft.period} onChange={e=>setDraft({...draft,period:e.target.value as StatisticsFilters["period"]})}>
           <option value="today">{label("今天","Today")}</option><option value="yesterday">{label("昨天","Yesterday")}</option><option value="last7Days">{label("最近 7 天","Last 7 days")}</option><option value="thisMonth">{label("本月","This month")}</option><option value="custom">{label("自定义时间","Custom dates")}</option></select></label>
         <label>{label("条目类型","Item type")}<select value={draft.type} onChange={e=>setDraft({...draft,type:e.target.value as StatisticsFilters["type"]})}><option value="all">{label("全部类型","All types")}</option>{ITEM_TYPES.map(type=><option value={type} key={type}>{typeLabel(type)}</option>)}</select></label>
-        {draft.period==="custom"&&<><label>{label("开始日期","Start date")}<input type="date" required max={statisticsToday()} value={draft.start} onChange={e=>setDraft({...draft,start:e.target.value})}/></label><label>{label("结束日期","End date")}<input type="date" required max={statisticsToday()} value={draft.end} onChange={e=>setDraft({...draft,end:e.target.value})}/></label></>}
+        {draft.period === "custom" && (
+          <div className="statistics-date-range" role="group" aria-label={label("自定义日期范围", "Custom date range")}>
+            <label>{label("开始日期", "Start date")}<input type="date" required max={statisticsToday()} value={draft.start} onClick={openDatePicker} onChange={e => setDraft({...draft, start: e.target.value})}/></label>
+            <label>{label("结束日期", "End date")}<input type="date" required max={statisticsToday()} value={draft.end} onClick={openDatePicker} onChange={e => setDraft({...draft, end: e.target.value})}/></label>
+          </div>
+        )}
         <button type="submit" className="primary-button">{label("应用筛选","Apply filters")}</button>
         {dirty&&<p className="statistics-filter-note" role="status">{label("筛选尚未应用，报表仍按下方已显示的范围统计。","Filters have not been applied; the report still uses its displayed scope.")}</p>}
         {(filterError||!statisticsDatesValid(filters))&&<p className="inline-error" role="alert">{label("请选择有效日期，开始不晚于结束，结束不晚于今天，范围不超过 366 天。","Choose valid dates: start ≤ end ≤ today, spanning at most 366 days.")}</p>}
