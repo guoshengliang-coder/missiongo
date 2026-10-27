@@ -166,9 +166,11 @@ outside the checkout. It then runs:
 node scripts/release-notices.mjs --receipt <receipt.json> --candidates <candidates.json>
 ```
 
-That command checks each candidate's merged PR, all artifact paths it affects,
-the public state of every required artifact, and the new release range. Separate
-release batches can satisfy different artifacts. It prints a proposed comment,
+That command checks each candidate's merged PR and the public state of every
+artifact explicitly registered for that item. File paths help suggest scope;
+they do not override the registered scope in a mixed PR. Separate release
+batches can satisfy different artifacts, and an already published build that
+contains the PR can repair an earlier missed handoff. It prints a proposed comment,
 verified versions and source commits, a receipt digest, and stable keys for the
 comment and status handoff; it never writes to MissionGo. The OAuth-connected
 AI reads each matched item fully, calls `append_comment`, then calls the narrow
