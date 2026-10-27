@@ -19,6 +19,14 @@ describe("statistics navigation and filters",()=>{
   expect(statisticsUrl(base)).not.toMatch(/console=|session=|item=/);
   expect(statisticsExitUrl(base)).toBe("/?console=agent&session=x&item=ONE-1");
  });
+ it("restores a weekly delivery range and the first-delivery cycle detail",()=>{
+  const base=new URL("https://example.test/?statistics=1");
+  const filters={product:"all",period:"thisMonth" as const,type:"all" as const,start:"",end:""};
+  const selection={metric:"pending_verification" as const,day:"2026-10-19",endDay:"2026-10-25",offset:0};
+  const restored=statisticsState(new URL(statisticsStateUrl(filters,selection,base),base));
+  expect(restored.selection).toMatchObject(selection);
+  expect(statisticsState(new URL("https://example.test/?statistics=1&statsMetric=started_to_delivery")).selection?.metric).toBe("started_to_delivery");
+ });
  it("uses the Beijing calendar for this month and validates custom dates without silent normalization",()=>{
   const base={product:"all",period:"thisMonth" as const,type:"all" as const,start:"",end:""};
   expect(statisticsQuery(base,now)).toMatchObject({period:"custom",startDate:"2026-11-01",endDate:"2026-11-01",timezone:"Asia/Shanghai"});

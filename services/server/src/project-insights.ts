@@ -1,4 +1,4 @@
-import type { InsightQuery, InsightDay, InsightMetrics, InsightProject, InsightSummary, InsightItem, InsightDetails, InsightDetailSelection } from "@missiongo/domain";
+import type { InsightQuery, InsightDay, InsightMetrics, InsightProject, InsightSummary, InsightItem, InsightDetails, InsightDetailSelection, InsightWeek } from "@missiongo/domain";
 import type { WorkItemStatus, WorkItemType } from "@missiongo/domain";
 import { WORK_ITEM_STATUSES, WORK_ITEM_TYPES } from "@missiongo/domain";
 import type { SQLInputValue } from "node:sqlite";
@@ -6,9 +6,9 @@ import { invalidInput } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
 
 export type { InsightQuery, InsightMetric } from "@missiongo/domain";
-interface ItemRow { id: string; item_key: string; product_id: string; title: string; type: WorkItemType; status: WorkItemStatus; created_at: string }
+export interface ItemRow { id: string; item_key: string; product_id: string; title: string; type: WorkItemType; status: WorkItemStatus; created_at: string }
 interface EventRow { id: string; item_id: string; event_type: string; actor_kind: string; from_status: WorkItemStatus | null; to_status: WorkItemStatus | null; payload_json: string; created_at: string; timeline_seq: number }
-interface Event extends EventRow { at: string; reason?: string | undefined; timeEstimated: boolean }
+export interface InsightEvent extends EventRow { at: string; reason?: string | undefined; timeEstimated: boolean }
 const open = (status: string) => !["done", "cancelled"].includes(status);
 const countBy = <T extends string>(values: readonly T[]) => Object.fromEntries(values.map(v => [v, 0])) as Record<T, number>;
 
@@ -66,20 +66,14 @@ function durationStats(values: number[], eligible: number) {
     p90Hours: values.length >= 10 ? quantile(0.9) / 3_600_000 : null, p90MinimumSamples: 10 };
 }
 
-/** Two bounded-by-permission queries, no comments/attachments or per-item API calls. */
-export function projectInsights(store: MissionGoStore, productIds: string[], query?: InsightQuery, now?: Date): InsightSummary;
-export function projectInsights(store: MissionGoStore, productIds: string[], query: InsightQuery, now: Date, detail: InsightDetailSelection): InsightDetails;
-export function projectInsights(store: MissionGoStore, productIds: string[], query: InsightQuery = {}, now = new Date(), detail?: InsightDetailSelection): InsightSummary | InsightDetails {
-  const period = insightPeriod(query, now);
-  const products = [...new Set(productIds)].map(id => store.getProduct(id));
-  const uniqueIds = [...new Set(products.map(p => p.id))];
+export function loadInsightData(store: MissionGoStore, uniqueIds: string[], itemIds?: string[]) {
   const marks = uniqueIds.map(() => "?").join(",");
-  const parameters: SQLInputValue[] = [...uniqueIds];
+  const parameters: SQLInputValue[] = [...uniqueIds, ...(itemIds ?? [])];
   const items = uniqueIds.length ? store.database.connection.prepare(`SELECT id,item_key,product_id,title,type,status,created_at FROM work_items
-    WHERE product_id IN (${marks}) AND NOT EXISTS (SELECT 1 FROM item_transfers t WHERE t.source_item_id = work_items.id) ORDER BY product_id,sequence DESC`).all(...parameters) as unknown as ItemRow[] : [];
+    WHERE product_id IN (${marks}) ${itemIds ? `AND id IN (${itemIds.map(() => "?").join(",")})` : ""} AND NOT EXISTS (SELECT 1 FROM item_transfers t WHERE t.source_item_id = work_items.id) ORDER BY product_id,sequence DESC`).all(...parameters) as unknown as ItemRow[] : [];
   const events = uniqueIds.length ? store.database.connection.prepare(`SELECT e.* FROM work_item_events e JOIN work_items w ON w.id=e.item_id
-    WHERE w.product_id IN (${marks}) AND e.history_source_key IS NULL AND e.event_type IN ('item_created','status_changed') ORDER BY e.item_id,e.timeline_seq`).all(...parameters) as unknown as EventRow[] : [];
-  const byItem = new Map<string, Event[]>();
+    WHERE w.product_id IN (${marks}) ${itemIds ? `AND w.id IN (${itemIds.map(() => "?").join(",")})` : ""} AND e.history_source_key IS NULL AND e.event_type IN ('item_created','status_changed') ORDER BY e.item_id,e.timeline_seq`).all(...parameters) as unknown as EventRow[] : [];
+  const byItem = new Map<string, InsightEvent[]>();
   let invalidEventCount = 0;
   for (const row of events) {
     let payload: Record<string, unknown>;
@@ -87,12 +81,23 @@ export function projectInsights(store: MissionGoStore, productIds: string[], que
     catch { invalidEventCount++; continue; }
     const occurredAt = payload.occurredAt;
     const valid = typeof occurredAt === "string" && Number.isFinite(Date.parse(occurredAt)) && Date.parse(occurredAt) <= Date.parse(row.created_at);
-    const event: Event = { ...row, at: valid ? new Date(occurredAt).toISOString() : row.created_at,
+    const event: InsightEvent = { ...row, at: valid ? new Date(occurredAt).toISOString() : row.created_at,
       reason: typeof payload.reason === "string" ? payload.reason : undefined,
       timeEstimated: row.event_type === "status_changed" && ["resolution_submitted", "release_verified"].includes(String(payload.reason)) && !valid };
     const list = byItem.get(row.item_id) ?? [];
     list.push(event); byItem.set(row.item_id, list);
   }
+  return { items, byItem, invalidEventCount };
+}
+
+/** Two bounded-by-permission queries, no comments/attachments or per-item API calls. */
+export function projectInsights(store: MissionGoStore, productIds: string[], query?: InsightQuery, now?: Date): InsightSummary;
+export function projectInsights(store: MissionGoStore, productIds: string[], query: InsightQuery, now: Date, detail: InsightDetailSelection): InsightDetails;
+export function projectInsights(store: MissionGoStore, productIds: string[], query: InsightQuery = {}, now = new Date(), detail?: InsightDetailSelection): InsightSummary | InsightDetails {
+  const period = insightPeriod(query, now);
+  const products = [...new Set(productIds)].map(id => store.getProduct(id));
+  const uniqueIds = [...new Set(products.map(p => p.id))];
+  const { items, byItem, invalidEventCount } = loadInsightData(store, uniqueIds);
   const inPeriod = (at: string) => at >= period.start && at < period.endExclusive && at <= period.dataAsOf;
   const days: Array<{date: string; cutoff: string}> = [];
   if (query.includeTrend && !detail) {
@@ -100,13 +105,25 @@ export function projectInsights(store: MissionGoStore, productIds: string[], que
       days.push({date, cutoff: midnight(shiftDay(date, 1), period.timezone)});
     }
   }
-  const allDelivery: number[] = [], allDevelopment: number[] = [];
+  const allDelivery: number[] = [], allDevelopment: number[] = [], allStartToDelivery: number[] = [];
+  const weeks: InsightWeek[] = [];
+  if (query.includeTrend && !detail) {
+    const weekday = new Date(`${period.startDate}T12:00:00Z`).getUTCDay();
+    for (let monday = shiftDay(period.startDate, -(weekday + 6) % 7); monday <= period.endDate; monday = shiftDay(monday, 7)) {
+      const sunday = shiftDay(monday, 6);
+      const startDate = monday < period.startDate ? period.startDate : monday;
+      const endDate = sunday > period.endDate ? period.endDate : sunday;
+      weeks.push({ weekStart: monday, weekEnd: sunday, startDate, endDate, delivered: 0,
+        partial: startDate !== monday || endDate !== sunday || period.dataAsOf < midnight(shiftDay(sunday, 1), period.timezone) });
+    }
+  }
   const result = products.map(product => {
     const createdByType = countBy(WORK_ITEM_TYPES);
     const currentByStatus = countBy(WORK_ITEM_STATUSES);
     const periodEndByStatus = countBy(WORK_ITEM_STATUSES);
-    const counts = { created: 0, completed: 0, development_complete: 0, pending_verification: 0, returned: 0, reopened: 0, backlog: 0, stalled: 0, period_end_backlog: 0, repeat_returned: 0 };
-    const delivery: number[] = []; const development: number[] = [];
+    const counts = { created: 0, completed: 0, development_complete: 0, pending_verification: 0, returned: 0, reopened: 0, backlog: 0, stalled: 0, period_end_backlog: 0, repeat_returned: 0, started_to_delivery: 0 };
+    const delivery: number[] = []; const development: number[] = []; const startToDelivery: number[] = [];
+    const weeklyDeliveries = weeks.map(week => ({...week}));
     let developmentEligible = 0, passedRounds = 0, failedRounds = 0, unknownPeriodEnd = 0, estimatedEventTimes = 0, missingCreationEvents = 0;
     const trend: InsightDay[] = days.map(day => ({date: day.date, created: 0, completed: 0, backlog: 0, unknownStatusCount: 0}));
     const rows: InsightItem[] = [];
@@ -133,9 +150,13 @@ export function projectInsights(store: MissionGoStore, productIds: string[], que
       passedRounds += inWindow.filter(e => e.from_status === "pending_verification" && e.to_status === "done" && e.reason === "verification_passed" && e.actor_kind === "human").length;
       failedRounds += failed.length;
       const allReturns = statusEvents.filter(e => e.from_status === "pending_verification" && e.to_status === "ready" && e.reason === "verification_failed" && e.actor_kind === "human");
+      const firstStarted = statusEvents.find(event => event.to_status === "in_progress");
+      const firstDelivered = statusEvents.find(event => event.to_status === "pending_verification");
+      const startToDeliveryHours = firstStarted && firstDelivered && firstStarted.timeline_seq < firstDelivered.timeline_seq
+        && firstStarted.at <= firstDelivered.at ? (Date.parse(firstDelivered.at) - Date.parse(firstStarted.at)) / 3_600_000 : null;
       const latest = statusEvents.at(-1) ?? creation;
       const ageHours = latest ? Math.max(0, (now.getTime() - Date.parse(latest.at)) / 3_600_000) : null;
-      const flags = { created: inPeriod(item.created_at), completed: completed.length > 0, development_complete: dev.length > 0,
+      const flags = { started_to_delivery: Boolean(firstDelivered && inPeriod(firstDelivered.at)), created: inPeriod(item.created_at), completed: completed.length > 0, development_complete: dev.length > 0,
         pending_verification: verification.length > 0, returned: failed.length > 0,
         period_end_backlog: item.created_at < period.endExclusive && Boolean(historical && open(historical)),
         repeat_returned: failed.length >= 2,
@@ -143,6 +164,13 @@ export function projectInsights(store: MissionGoStore, productIds: string[], que
         backlog: open(item.status), stalled: open(item.status) && ageHours !== null && ageHours >= 7 * 24 };
       for (const key of Object.keys(counts) as Array<keyof typeof counts>) if (flags[key]) counts[key]++;
       if (flags.created) createdByType[item.type]++;
+      if (flags.started_to_delivery && startToDeliveryHours !== null) startToDelivery.push(startToDeliveryHours * 3_600_000);
+      const deliveryWeeks = new Set(verification.map(event => {
+        const date = dayAt(new Date(event.at), period.timezone);
+        const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
+        return shiftDay(date, -(weekday + 6) % 7);
+      }));
+      for (const week of weeklyDeliveries) if (deliveryWeeks.has(week.weekStart)) week.delivered++;
       const completedAt = completed.at(-1)?.at;
       if (completedAt && creation && Date.parse(completedAt) >= Date.parse(item.created_at)) delivery.push(Date.parse(completedAt) - Date.parse(item.created_at));
       let developmentHours: number | null = null;
@@ -175,20 +203,25 @@ export function projectInsights(store: MissionGoStore, productIds: string[], que
       }
       if (!detail || flags[detail.metric]) rows.push({ productId: product.id, productName: product.name, itemKey: item.item_key, title: item.title, type: item.type, currentStatus: item.status,
         periodEndStatus: historical ?? null, createdAt: item.created_at, completedAt: completedAt ?? null,
+        firstStartedAt: firstStarted?.at ?? null, firstDeliveredAt: firstDelivered?.at ?? null, startToDeliveryHours,
         deliveryHours: completedAt && creation && completedAt >= item.created_at ? (Date.parse(completedAt) - Date.parse(item.created_at)) / 3_600_000 : null, developmentHours,
         stageSince: latest?.at ?? null, stageHours: ageHours, verificationFailuresInPeriod: failed.length,
         verificationFailuresTotal: allReturns.length, flags });
     }
     for (const value of delivery) allDelivery.push(value);
     for (const value of development) allDevelopment.push(value);
+    for (const value of startToDelivery) allStartToDelivery.push(value);
     return { productId: product.id, productName: product.name, counts, createdByType, currentByStatus, periodEndByStatus,
-      ...(query.includeTrend && !detail ? {trend} : {}),
+      ...(query.includeTrend && !detail ? {trend, weeklyDeliveries} : {}),
       verificationReturnRate: { failedRounds, passedRounds, decidedRounds: failedRounds + passedRounds,
         rate: failedRounds + passedRounds ? failedRounds / (failedRounds + passedRounds) : null },
+      startToDeliveryCycle: durationStats(startToDelivery, counts.started_to_delivery),
       deliveryCycle: durationStats(delivery, counts.completed), developmentCycle: durationStats(development, developmentEligible),
       quality: { missingCreationEvents, unknownPeriodEnd, estimatedEventTimes }, rows };
   });
   const definitions = { completion: "Distinct items entering done by a human in the period; repeated completion counts once per item. Latest completion supplies cycle time.",
+    startToDelivery: "First in_progress to first pending_verification. Samples belong to the first delivery period; missing starts are excluded and reported. Calendar time includes pauses and release waits.",
+    weeklyDeliveries: "Monday-Sunday in the query timezone. Distinct items entering pending_verification per week; repeat releases in different weeks count in each week. Clipped or unfinished weeks are partial.",
     cycle: "Calendar duration; queue/release/verification waiting included. Development cycle starts at the first in_progress of that processing round.",
     returnRate: "Failed / (passed + failed) human verification rounds decided in the period; pending and manual overrides excluded.",
     statusFilter: "Filters current status. periodEndByStatus is reconstructed separately from events.",
@@ -205,13 +238,14 @@ export function projectInsights(store: MissionGoStore, productIds: string[], que
       ...(offset + limit < rows.length ? { nextOffset: offset + limit } : {}), invalidEventCount };
   }
   const projects: InsightProject[] = result.map(({rows: _rows, ...summary}) => summary);
-  const counts = {created:0,completed:0,development_complete:0,pending_verification:0,returned:0,reopened:0,backlog:0,stalled:0,period_end_backlog:0,repeat_returned:0};
+  const counts = {created:0,completed:0,development_complete:0,pending_verification:0,returned:0,reopened:0,backlog:0,stalled:0,period_end_backlog:0,repeat_returned:0,started_to_delivery:0};
   const aggregate: InsightMetrics = { counts, createdByType: countBy(WORK_ITEM_TYPES), currentByStatus: countBy(WORK_ITEM_STATUSES), periodEndByStatus: countBy(WORK_ITEM_STATUSES),
     verificationReturnRate: {failedRounds:0,passedRounds:0,decidedRounds:0,rate:null},
+    startToDeliveryCycle: durationStats(allStartToDelivery, projects.reduce((n,p)=>n+p.counts.started_to_delivery,0)),
     deliveryCycle: durationStats(allDelivery, projects.reduce((n,p)=>n+p.counts.completed,0)),
     developmentCycle: durationStats(allDevelopment, projects.reduce((n,p)=>n+p.developmentCycle.eligibleCount,0)),
     quality: {missingCreationEvents:0,unknownPeriodEnd:0,estimatedEventTimes:0},
-    ...(query.includeTrend ? {trend: days.map(day=>({date:day.date,created:0,completed:0,backlog:0,unknownStatusCount:0}))} : {}) };
+    ...(query.includeTrend ? {weeklyDeliveries: weeks.map(week => ({...week})), trend: days.map(day=>({date:day.date,created:0,completed:0,backlog:0,unknownStatusCount:0}))} : {}) };
   for (const project of projects) {
     for (const key of Object.keys(counts) as Array<keyof typeof counts>) counts[key] += project.counts[key];
     for (const type of WORK_ITEM_TYPES) aggregate.createdByType[type] += project.createdByType[type];
@@ -219,6 +253,7 @@ export function projectInsights(store: MissionGoStore, productIds: string[], que
     for (const key of ["missingCreationEvents","unknownPeriodEnd","estimatedEventTimes"] as const) aggregate.quality[key] += project.quality[key];
     aggregate.verificationReturnRate.failedRounds += project.verificationReturnRate.failedRounds;
     aggregate.verificationReturnRate.passedRounds += project.verificationReturnRate.passedRounds;
+    project.weeklyDeliveries?.forEach((week,index) => { aggregate.weeklyDeliveries![index]!.delivered += week.delivered; });
     project.trend?.forEach((point,index)=>{ const target=aggregate.trend![index]!; target.created+=point.created; target.completed+=point.completed; target.backlog+=point.backlog; target.unknownStatusCount+=point.unknownStatusCount; });
   }
   const rate=aggregate.verificationReturnRate;

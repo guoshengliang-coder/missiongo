@@ -113,3 +113,27 @@ describe("Web statistics (AND-297)",()=>{
   expect(next.json().items[0].itemKey).not.toBe(first.json().items[0].itemKey);expect(next.json().nextOffset).toBeUndefined();
  });
 });
+
+describe("saved batch API boundaries",()=>{
+ it("saves personal batches with view permission, denies hidden items and isolates owners",async()=>{
+  const {app,cookie,memberCookie,item,hidden,shared}=await seed();
+  const path="/api/v1/project-insights/batches";
+  expect((await app.inject({url:path})).statusCode).toBe(401);
+  expect((await app.inject({method:"POST",url:path,headers:{cookie:memberCookie},payload:{name:"Invalid",itemKeys:[item.key],sql:"SELECT"}})).statusCode).toBe(400);
+  const secret=app.missionGoStore.createWorkItem({productId:hidden.id,title:"Secret batch item",description:"Private",type:"task",priority:"normal",environment:{platform:"web"}});
+  expect((await app.inject({method:"POST",url:path,headers:{cookie:memberCookie},payload:{name:"Hidden",itemKeys:[item.key,secret.key]}})).statusCode).toBe(404);
+  expect((await app.inject({url:path,headers:{cookie:memberCookie}})).json()).toEqual({batches:[]});
+  const saved=await app.inject({method:"POST",url:path,headers:{cookie:memberCookie},payload:{name:"Selected feedback",itemKeys:[item.key,item.key]}});
+  expect(saved.statusCode).toBe(201);expect(saved.json().itemCount).toBe(1);
+  const id=saved.json().id;
+  expect((await app.inject({url:`${path}/${id}`,headers:{cookie:memberCookie}})).json()).toMatchObject({total:1,processing:1});
+  expect((await app.inject({url:`${path}/${id}`,headers:{cookie}})).statusCode).toBe(404);
+  expect((await app.inject({method:"DELETE",url:`${path}/${id}`,headers:{cookie}})).statusCode).toBe(404);
+  const account=app.missionGoAccounts.listAccounts().find(a=>a.email==="member@example.test")!;
+  await app.inject({method:"PUT",url:`/api/v1/accounts/${account.id}/products`,headers:{cookie},payload:{permissions:[]}});
+  const revoked=await app.inject({url:`${path}/${id}`,headers:{cookie:memberCookie}});
+  expect(revoked.json()).toMatchObject({total:1,unavailable:1,deliveryRate:null,items:[]});expect(revoked.body).not.toContain(item.title);expect(revoked.body).not.toContain(shared.id);
+  expect((await app.inject({method:"DELETE",url:`${path}/${id}`,headers:{cookie:memberCookie}})).statusCode).toBe(204);
+  expect(app.missionGoStore.getWorkItem(item.key).id).toBe(item.id);
+ });
+});

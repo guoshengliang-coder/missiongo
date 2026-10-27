@@ -1,5 +1,5 @@
 import type { CompletionReference } from "@missiongo/contracts";
-import type { InsightQuery, InsightSummary, InsightDetails, InsightDetailSelection } from "@missiongo/domain";
+import type { InsightQuery, InsightSummary, InsightDetails, InsightDetailSelection, InsightBatch, InsightBatchProgress } from "@missiongo/domain";
 import type { ManagedDecision, ManagedDecisionGuard } from "@missiongo/domain";
 import { attachmentPreviewPath, attachmentThumbnailPath } from "./attachment-thumbnail";
 import type { FontScale } from "./font-scale";
@@ -268,6 +268,11 @@ function insightSearch(input: InsightQuery & {productIds?: string[]} & Partial<I
 }
 
 export const api = {
+  insightBatches: () => request<{batches: InsightBatch[]}>("/api/v1/project-insights/batches"),
+  createInsightBatch: (name: string, itemKeys: string[]) => request<InsightBatch>("/api/v1/project-insights/batches", {method: "POST", body: JSON.stringify({name,itemKeys})}),
+  insightBatchProgress: (id: string) => request<InsightBatchProgress>(`/api/v1/project-insights/batches/${encodeURIComponent(id)}`),
+  deleteInsightBatch: (id: string) => requestNoContent(`/api/v1/project-insights/batches/${encodeURIComponent(id)}`, {method: "DELETE"}),
+
   projectInsights(input: InsightQuery & {productIds?: string[]}) {
     return request<InsightSummary>(`/api/v1/project-insights?${insightSearch(input)}`);
   },

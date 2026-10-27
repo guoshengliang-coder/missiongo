@@ -1865,6 +1865,17 @@ export class MissionGoDatabase {
           .run(202610270743,new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610271120").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE TABLE insight_batches (
+          id TEXT PRIMARY KEY, account_id TEXT NOT NULL, name TEXT NOT NULL,
+          members_json TEXT NOT NULL CHECK(json_valid(members_json)), created_at TEXT NOT NULL
+        );
+        CREATE INDEX insight_batches_account ON insight_batches(account_id, created_at);`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610271120,new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

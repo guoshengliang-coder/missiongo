@@ -8,6 +8,69 @@ security:
   - adminSessionCookie: []
   - bearerAuth: []
 paths:
+  /api/v1/project-insights/batches:
+    get:
+      operationId: listInsightBatches
+      security: [{adminSessionCookie: []}]
+      description: List the signed-in account's private fixed-membership delivery batches.
+      responses:
+        '200':
+          description: Saved batches.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batches]
+                properties:
+                  batches: {type: array, maxItems: 50, items: {$ref: '#/components/schemas/InsightBatch'}}
+        '401': {description: Signed-in account required.}
+    post:
+      operationId: createInsightBatch
+      security: [{adminSessionCookie: []}]
+      description: Save fixed members after checking current view permission for every item. Does not alter any work item.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, itemKeys]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100}
+                itemKeys: {type: array, minItems: 1, maxItems: 500, items: {type: string, maxLength: 100}}
+      responses:
+        '201':
+          description: Saved immutable membership; duplicate item keys count once.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InsightBatch'}
+        '400': {description: Invalid input or the account already has 50 batches.}
+        '401': {description: Signed-in account required.}
+        '404': {description: At least one item is unavailable.}
+  /api/v1/project-insights/batches/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: getInsightBatchProgress
+      security: [{adminSessionCookie: []}]
+      description: Recheck current product visibility; unavailable members remain in the original count and suppress rates. Other accounts' batches are not visible.
+      responses:
+        '200':
+          description: Current progress and status at each receipt deadline.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InsightBatchProgress'}
+        '401': {description: Signed-in account required.}
+        '404': {description: Batch unavailable.}
+    delete:
+      operationId: deleteInsightBatch
+      security: [{adminSessionCookie: []}]
+      description: Remove only this account's saved batch; work items and their histories are unchanged.
+      responses:
+        '204': {description: Batch removed.}
+        '401': {description: Signed-in account required.}
+        '404': {description: Batch unavailable.}
   /api/v1/managed-execution/intents/{id}/session:
     "get":
       "operationId": "managedExecutionSessionRead"
@@ -2498,6 +2561,55 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
   schemas:
+    InsightBatch:
+      type: object
+      required: [id, name, createdAt, itemCount]
+      properties:
+        id: {type: string}
+        name: {type: string, maxLength: 100}
+        createdAt: {type: string, format: date-time}
+        itemCount: {type: integer, minimum: 1, maximum: 500}
+    InsightBatchMilestone:
+      type: object
+      required: [days, delivered, eligible, immature, cancelled, unknown, rate]
+      properties:
+        days: {type: integer, enum: [7, 14]}
+        delivered: {type: integer, minimum: 0}
+        eligible: {type: integer, minimum: 0}
+        immature: {type: integer, minimum: 0}
+        cancelled: {type: integer, minimum: 0}
+        unknown: {type: integer, minimum: 0}
+        rate: {type: [number, 'null'], minimum: 0, maximum: 1}
+    InsightBatchProgress:
+      type: object
+      required: [batch, dataAsOf, total, effective, cancelled, unavailable, delivered, processing, waiting, paused, deliveryRate, milestones, items]
+      properties:
+        batch: {$ref: '#/components/schemas/InsightBatch'}
+        dataAsOf: {type: string, format: date-time}
+        total: {type: integer, minimum: 1}
+        effective: {type: integer, minimum: 0}
+        cancelled: {type: integer, minimum: 0}
+        unavailable: {type: integer, minimum: 0}
+        delivered: {type: integer, minimum: 0}
+        processing: {type: integer, minimum: 0}
+        waiting: {type: integer, minimum: 0}
+        paused: {type: integer, minimum: 0}
+        deliveryRate: {type: [number, 'null'], minimum: 0, maximum: 1}
+        milestones: {type: array, items: {$ref: '#/components/schemas/InsightBatchMilestone'}}
+        items:
+          type: array
+          maxItems: 500
+          items:
+            type: object
+            required: [itemKey, productId, title, type, status, createdAt, stage]
+            properties:
+              itemKey: {type: string}
+              productId: {type: string}
+              title: {type: string}
+              type: {$ref: '#/components/schemas/WorkItemType'}
+              status: {$ref: '#/components/schemas/WorkItemStatus'}
+              createdAt: {type: string, format: date-time}
+              stage: {type: string, enum: [delivered, processing, waiting, paused, cancelled]}
     "ManagedManualReconciliation":
       "type": "object"
       "additionalProperties": false
