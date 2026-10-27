@@ -59,9 +59,7 @@ function pullRequestFacts(url, repository) {
   if (!parsed) return null;
   const view = JSON.parse(gh("pr", "view", url, "--json", "state,mergedAt,mergeCommit"));
   if (view.state !== "MERGED" || !view.mergedAt || !view.mergeCommit?.oid) return null;
-  const files = gh("api", `repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.number}/files`, "--paginate", "--jq", ".[].filename")
-    .split("\n").filter(Boolean);
-  return { mergeCommit: view.mergeCommit.oid, files };
+  return { mergeCommit: view.mergeCommit.oid };
 }
 
 export function requiredArtifactsForFiles(files) {
@@ -103,56 +101,39 @@ export function proposedComment(candidate, releases, receipt) {
 export function matchCandidates(receipt, candidates, resolvePr, ancestor = isAncestor) {
   const comments = [];
   const skipped = [];
-  // AND-293: a mixed PR carries several items' changes at once, and the
-  // recorded set -- what the handoff registered -- is the only per-item fact.
-  // The PR-wide recomputation stays as a cross-check: a warning when the item
-  // registers less than the PR touches (other items' files), a skip when the
-  // registration reaches beyond the PR (wrong PR or wrong registration).
-  const warnings = [];
+  const facts = new Map();
   for (const candidate of candidates) {
     if (!/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(candidate.itemKey ?? "")) {
       skipped.push({ itemKey: candidate.itemKey, reason: "invalid item key" });
       continue;
     }
     let pr;
-    try { pr = resolvePr(candidate.pullRequestUrl); }
+    try {
+      if (!facts.has(candidate.pullRequestUrl)) facts.set(candidate.pullRequestUrl,resolvePr(candidate.pullRequestUrl));
+      pr = facts.get(candidate.pullRequestUrl);
+    }
     catch (error) { skipped.push({ itemKey: candidate.itemKey, reason: `PR lookup failed: ${String(error)}` }); continue; }
     if (!pr) { skipped.push({ itemKey: candidate.itemKey, reason: "PR is not a verified merge in this repository" }); continue; }
-    const implied = requiredArtifactsForFiles(pr.files);
-    const recorded = Array.isArray(candidate.requiredArtifacts) ? candidate.requiredArtifacts : [];
-    const orderedRecorded = [...recorded].sort();
-    const diagnosis = `required artifacts: registered [${orderedRecorded.join(", ")}] vs PR files imply [${implied.join(", ")}]`;
-    if (implied.length === 0 || recorded.length === 0 || recorded.some((artifact) => typeof artifact !== "string")) {
-      skipped.push({ itemKey: candidate.itemKey, reason: `no usable registered artifacts (${diagnosis})` });
-      continue;
+    // The explicitly registered scope is authoritative. File paths remain a
+    // suggestion at development time, not a second competing release contract.
+    const recorded = candidate.requiredArtifacts;
+    if (!Array.isArray(recorded) || !recorded.length || new Set(recorded).size !== recorded.length
+      || recorded.some(artifact => typeof artifact !== "string" || !/^[a-z][A-Za-z0-9_-]{0,49}$/.test(artifact))) {
+      skipped.push({itemKey:candidate.itemKey,reason:"release scope is missing or invalid"}); continue;
     }
-    if (orderedRecorded.some((artifact) => !implied.includes(artifact))) {
-      skipped.push({ itemKey: candidate.itemKey, reason: `registered artifacts reach beyond this PR's files (${diagnosis})` });
-      continue;
-    }
-    if (orderedRecorded.length < implied.length) {
-      warnings.push({
-        itemKey: candidate.itemKey,
-        note: `PR also touches artifacts not registered for this item: [${implied.filter((artifact) => !orderedRecorded.includes(artifact)).join(", ")}]; the registered set is the verification scope (${diagnosis})`,
-      });
-    }
-    const releases = orderedRecorded.map((artifact) => currentRelease(receipt, artifact));
+    const required = [...recorded].sort();
+    const releases = required.map((artifact) => currentRelease(receipt, artifact));
     if (releases.some((release) => !release)
       || !/^[0-9a-f]{40}$/.test(receipt.deployedCommit ?? "")
       || releases.some((release) => !ancestor(pr.mergeCommit, release.sourceCommit))) {
       skipped.push({ itemKey: candidate.itemKey, reason: "not every required public artifact contains the PR" });
       continue;
     }
-    const newlyPublished = (receipt.changes ?? []).some((change) =>
-      orderedRecorded.includes(change.artifact) && change.eligibleForMatching
-      && inReleasedRange(pr.mergeCommit, change.fromCommit, change.toCommit, ancestor));
-    if (!newlyPublished) {
-      skipped.push({ itemKey: candidate.itemKey, reason: "no newly published required artifact contains this PR" });
-      continue;
-    }
+    // A currently verified release containing the PR can repair a missed
+    // handoff even when nothing new was published in this particular receipt.
     comments.push(proposedComment(candidate, releases, receipt));
   }
-  return { comments, skipped, warnings };
+  return { comments, skipped };
 }
 
 /** Refuse a partial candidate scan: an empty MCP page can still have a cursor. */

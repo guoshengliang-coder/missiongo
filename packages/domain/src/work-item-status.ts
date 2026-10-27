@@ -67,12 +67,12 @@ const TRANSITIONS: Readonly<
   in_progress: {
     on_hold: rule(["human"], ["request_human_input"]),
     // A merged pull request proves integration, not publication.
-    development_complete: rule(["agent", "human"], ["resolution_submitted"]),
+    development_complete: rule(["agent", "human", "system"], ["resolution_submitted"]),
     ready: rule(["human"], ["released"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
   development_complete: {
-    pending_verification: rule(["agent", "human"], ["release_verified"]),
+    pending_verification: rule(["agent", "human", "system"], ["release_verified"]),
     ready: rule(["human"], ["released"]),
     cancelled: rule(["human"], ["cancelled"]),
   },

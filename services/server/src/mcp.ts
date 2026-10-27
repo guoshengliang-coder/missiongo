@@ -1,3 +1,5 @@
+import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema } from "./status-checks.js";
+import { projectInsights } from "./project-insights.js";
 import { createHash } from "node:crypto";
 import { open, readFile, stat } from "node:fs/promises";
 
@@ -49,6 +51,7 @@ export const MCP_WRITE_TIERS = ["none", "comments"] as const;
 export type McpWriteTier = (typeof MCP_WRITE_TIERS)[number];
 
 export interface MissionGoMcpOptions {
+  readonly canOperate?: (accountId: string, productId: string) => boolean;
   /** Defaults to "none": the read-only surface this deployment has always exposed. */
   readonly writeTools?: McpWriteTier;
   /** Deployment origin, used to tell clients where to reinstall an outdated Skill. */
@@ -100,7 +103,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+  comments: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"],
 };
 
 /**
@@ -218,6 +221,42 @@ export function createMissionGoMcpServer(
       return textResult({ products: store.listProducts().filter((product) => hasProductAccess(access, product.id)) });
     },
   );
+
+  const insightsInput = z.object({
+    productIds: z.array(z.string().min(1)).min(1).max(50).optional(),
+    period: z.enum(["yesterday", "today", "last7Days", "last30Days", "custom"]).default("yesterday"),
+    startDate: z.string().optional(), endDate: z.string().optional(), timezone: z.string().max(100).default("Asia/Shanghai"),
+    types: z.array(z.enum(WORK_ITEM_TYPES)).max(5).optional(), statuses: z.array(z.enum(WORK_ITEM_STATUSES)).max(8).optional(),
+  });
+  const insightScope = (ctx: ServerContext, requested?: string[]) => {
+    const accessible = store.listProducts().filter(p => hasProductAccess(accountAccess(ctx), p.id)).map(p => p.id);
+    if (requested) requested.forEach(id => requireProductAccess(ctx,id));
+    return [...new Set(requested ?? accessible)];
+  };
+  server.registerTool("get_project_insights", {
+    title: "Summarize project flow and delivery metrics",
+    description: "Read permission-scoped project totals for a calendar period: created, developed, published for verification, human-completed, backlog, durations and verification return rate. No attachments or GitHub access. Definitions, sample coverage, timezone and data cutoff accompany every result.",
+    inputSchema: insightsInput,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input,ctx) => textResult(projectInsights(store, insightScope(ctx,input.productIds), input)));
+  server.registerTool("list_project_insight_items", {
+    title: "Expand one project metric into paginated items",
+    description: "Read item keys, titles, current and historical statuses and durations supporting one metric. Returns no comments or attachments; paginate with nextOffset. Reopened items and repeated verification rounds remain explicit.",
+    inputSchema: insightsInput.extend({ metric: z.enum(["created", "completed", "development_complete", "pending_verification", "returned", "backlog", "stalled"]),
+      limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).max(1000000).default(0) }),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input,ctx) => textResult(projectInsights(store, insightScope(ctx,input.productIds), input, new Date(), input)));
+  const checks = new StatusChecks(store);
+  server.registerTool("get_item_status_checks", {
+    title: "Read the item's handover and check results",
+    description: "Read recorded PR, required release scope, evidence and status-check results. This does not contact GitHub or trigger work. Evidence originates with the authorized executor, not an independent server-side GitHub check.",
+    inputSchema: z.object({ itemKey: z.string().min(2).max(50) }),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({itemKey},ctx) => {
+    const key = requireItemAccess(ctx,store,itemKey);
+    return textResult(checks.list(store.getWorkItem(key).productId,key));
+  });
+
 
   server.registerTool(
     "list_components",
@@ -927,6 +966,30 @@ export function createMissionGoMcpServer(
       return textResult({ sessionId, status, statusChanged: false, progressOnly: true });
     },
   );
+
+  server.registerTool(
+    "register_item_handover", {
+    title: "Associate a PR and release scope with the current work round",
+    description: "After reading the user-directed item, register its PR before merge. A PR merged before this work round needs human review. requiredArtifacts is an explicitly confirmed subset of the product artifacts; omit for unknown scope, or send [] with noReleaseReason. A durable record lets the node detect a later merge even if the conversation stops. Changes are constrained to handover metadata, never item prose or acceptance.",
+    inputSchema: handoverRegistrationSchema.extend({itemKey:z.string().min(2).max(50)}),
+    annotations: { readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false },
+  }, async ({itemKey,...input},ctx) => {
+    requireWriteScope(ctx); const key = requireItemAccess(ctx,store,itemKey);
+    if (!options.canOperate?.(accountAccess(ctx).accountId,store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
+    return textResult({handover:checks.register(key,accountAccess(ctx).accountId,input)});
+  });
+  server.registerTool(
+    "report_handover_evidence", {
+    title: "Record executor-verified merge and release evidence",
+    description: "Only report facts verified by this authorized executor. The supplied releases list is a complete current observation, replacing earlier release evidence. Each release must contain the named merged commit, have a verified public artifact, time and receipt digest. Persists evidence before attempting the constrained development/verification handoff, safe to repeat after interruption. Never accepts work as done.",
+    inputSchema: handoverEvidenceSchema.extend({itemKey:z.string().min(2).max(50),handoverId:z.uuid()}),
+    annotations: { readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false },
+  }, async ({itemKey,handoverId,...input},ctx) => {
+    requireWriteScope(ctx); const key = requireItemAccess(ctx,store,itemKey);
+    if (!options.canOperate?.(accountAccess(ctx).accountId,store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
+    if (checks.snapshot(handoverId).itemKey !== key) throw new Error("Handover does not belong to this item.");
+    return textResult({handover:checks.report(handoverId,input,{accountId:accountAccess(ctx).accountId})});
+  });
 
   return server;
 }

@@ -48,45 +48,13 @@ test("proposes one stable comment only for a merged PR touching the released art
   assert.deepEqual(first.skipped, []);
 });
 
-test("reports a merged but unrelated PR without proposing a publication comment", () => {
-  const receipt = { changes: [{ artifact: "web", version: c, fromCommit: a, toCommit: c, eligibleForMatching: true }] };
+test("accepts explicit scope when file path suggestions differ", () => {
+  const receipt = { deployedCommit:c,current:{web:{version:c,commit:c,clean:true,ciPassed:true}},publicEvidence:{checks:{web:true}},changes:[] };
   const candidates = [{ itemKey: "AND-75", pullRequestUrl: "https://github.com/owner/repo/pull/42", requiredArtifacts: ["web"] }];
   const ancestor = (older, newer) => [a, b, c].indexOf(older) <= [a, b, c].indexOf(newer);
   const result = matchCandidates(receipt, candidates, () => ({ mergeCommit: b, files: ["apps/macos/Sources/App.swift"] }), ancestor);
-  assert.deepEqual(result.comments, []);
-  // AND-293: the skip says which two sets disagreed, so a person can settle
-  // it by reading the line instead of the source.
-  assert.match(result.skipped[0].reason, /registered artifacts reach beyond this PR's files/);
-  assert.match(result.skipped[0].reason, /registered \[web\]/);
-  assert.match(result.skipped[0].reason, /imply \[macosApp\]/);
-});
-
-test("accepts an item whose registration covers part of a mixed PR (AND-293)", () => {
-  // PR #268's exact shape: server-side changes for one item, macOS changes
-  // belonging to others. The precise registration must hand off, with a
-  // warning that says what the PR touched beyond it.
-  const receipt = {
-    schemaVersion: 1, deployedCommit: c,
-    current: {
-      web: { version: c, commit: c, clean: true, ciPassed: true },
-      macosApp: { version: "1.2", sourceCommit: b },
-    },
-    publicEvidence: { checks: { web: true, macosApp: true } },
-    changes: [
-      { artifact: "web", version: c, fromCommit: a, toCommit: c, eligibleForMatching: true },
-      { artifact: "macosApp", version: "1.2", fromCommit: a, toCommit: b, eligibleForMatching: true },
-    ],
-  };
-  const candidates = [{ itemKey: "AND-88", pullRequestUrl: "https://github.com/owner/repo/pull/68", requiredArtifacts: ["web"] }];
-  const resolve = () => ({ mergeCommit: b, files: ["services/server/src/app.ts", "apps/macos/Sources/App.swift"] });
-  const ancestor = (older, newer) => [a, b, c].indexOf(older) <= [a, b, c].indexOf(newer);
-  const result = matchCandidates(receipt, candidates, resolve, ancestor);
   assert.equal(result.comments.length, 1);
-  assert.deepEqual(result.comments[0].releases, [{ artifact: "web", version: c, sourceCommit: c }]);
-  assert.deepEqual(result.skipped, []);
-  assert.equal(result.warnings.length, 1);
-  assert.match(result.warnings[0].note, /not registered for this item: \[macosApp\]/);
-  assert.match(result.warnings[0].note, /registered \[web\]/);
+  assert.equal(result.skipped.length, 0);
 });
 
 test("waits for every related artifact across separate release batches", () => {

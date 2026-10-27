@@ -1838,6 +1838,25 @@ export class MissionGoDatabase {
         this.connection.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(202610241647, new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610270535").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE status_handovers (
+            id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+            account_id TEXT NOT NULL, round_key TEXT NOT NULL, pull_request_url TEXT NOT NULL,
+            required_json TEXT, no_release_reason TEXT, evidence_json TEXT NOT NULL DEFAULT '{}', evidence_source_json TEXT NOT NULL DEFAULT '{}',
+            revision INTEGER NOT NULL DEFAULT 1, checked_revision INTEGER NOT NULL DEFAULT 0,
+            check_status TEXT NOT NULL DEFAULT 'evidence_missing', reason TEXT NOT NULL DEFAULT '',
+            checked_at TEXT, requested_at TEXT, lease_token TEXT, lease_node_id TEXT, lease_repo_path TEXT, lease_until TEXT,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(item_id,round_key)
+          ) STRICT;
+          CREATE INDEX idx_status_handover_queue ON status_handovers(account_id,requested_at,lease_until);
+          CREATE TABLE status_check_days (account_id TEXT NOT NULL,product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            day TEXT NOT NULL,PRIMARY KEY(account_id,product_id,day)) STRICT;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202610270535,new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

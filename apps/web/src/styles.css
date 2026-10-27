@@ -1879,6 +1879,8 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 }
 
 @media (max-width: 520px) {
+  .status-check-entry { flex: 0 0 44px; width: 44px; min-height: 44px; padding: 0; justify-content: center; }
+  .status-check-entry-label { display: none; }
   .app-shell.agent-console-open { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
   .agent-console-topbar { gap: 6px; }
   .agent-console-projects { gap: 5px; }
@@ -1924,7 +1926,9 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
      that block, and these only fought it: a three-column grid, a title forced to
      its own line, an indented media strip. The compact block keeps what is not
      about the row's shape -- the 44px targets and the spilling page control. */
-  .detail-back-button { width: 44px; padding: 0; font-size: 0; }
+  .detail-toolbar { gap: 6px; padding-inline: 12px; }
+  .detail-toolbar-actions { gap: 4px; }
+  .detail-back-button { flex: 0 0 44px; width: 44px; padding: 0; font-size: 0; }
   .detail-toolbar code { display: none; }
   .field-row, .classification-row, .context-grid, .report-field-grid, .report-detail-grid, .diagnostic-context-grid { grid-template-columns: 1fr; }
   .capture-type-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -2347,3 +2351,14 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .transfer-banner .text-button { min-height: 44px; }
 .transfer-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .transfer-actions button { min-height: 44px; }
+
+/* AND-295: check state is separate from work-item status. */
+.status-check-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 16px; }
+.status-check-list { display: grid; gap: 12px; }
+.status-check-card { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 16px; overflow-wrap: anywhere; background: var(--surface); }
+.status-check-card header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.status-check-card p { margin-block: 8px; }
+.status-check-scope { display: grid; gap: 12px; padding-block: 16px; }
+.status-check-scope > label { display: grid; gap: 6px; }
+.status-check-scope fieldset { display: flex; flex-wrap: wrap; gap: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.status-check-scope fieldset label { display: flex; align-items: center; gap: 6px; min-height: 44px; }
