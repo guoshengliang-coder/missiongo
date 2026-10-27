@@ -213,9 +213,12 @@ public enum OAuthRequests {
 enum CallbackPages {
     static let success = page("登录完成，可以回到 MissionGo 客户端了。")
     static let stale = page("这次登录已经结束，请回到 MissionGo 客户端。")
+    /// AND-287: what a late callback sees after the login attempt timed out.
+    /// The retry lives in the client, never in this tab -- say so.
+    static let loginExpired = page("这次登录已经超时结束。请回到 MissionGo 客户端重新点击登录，在新打开的页面上完成授权；在当前页面重试没有用。")
 
     static func failure(_ message: String) -> String {
-        return page("登录没有完成：\(message)")
+        return page("登录没有完成：\(message)。请回到 MissionGo 客户端重新点击登录。")
     }
 
     static func page(_ message: String) -> String {
@@ -273,9 +276,13 @@ public struct OAuthLogin: Sendable {
                 return CallbackPages.failure(error.localizedDescription)
             }
         }
-        defer { listener.cancel() }
+        defer { listener.cancelUnlessExpired() }
 
-        return try await OAuthLogin.withTimeout(timeout, onTimeout: { listener.cancel() }) {
+        // On timeout the listener is expired, not torn down: a browser that
+        // completes the consent page minutes late gets a page explaining the
+        // login is over instead of a connection refused from 127.0.0.1, and
+        // closes itself after the grace period (AND-287).
+        return try await OAuthLogin.withTimeout(timeout, onTimeout: { listener.expire() }) {
             try await self.perform(
                 listener: listener, pkce: pkce, state: state,
                 installationId: installationId, name: name, hostname: hostname

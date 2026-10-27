@@ -109,6 +109,28 @@ final class DeviceLoginTests: XCTestCase {
         XCTAssertEqual(StubURLProtocol.recorded.map { $0.request.url?.path }, ["/oauth/register", "/oauth/device_authorization"])
     }
 
+    /// AND-287: with under two minutes left, the status line warns that the
+    /// authorization is about to expire instead of waiting for the failure.
+    func testWarnsInTheStatusLineBeforeExpiring() async throws {
+        install(failures: ["authorization_pending", "authorization_pending"])
+        let statuses = Locked<[String]>([])
+        // A clock that only moves when the flow sleeps, so expiry is reachable.
+        let clock = Locked<TimeInterval>(0)
+        let flow = DeviceLogin(serverUrl: server, session: StubURLProtocol.session(),
+            now: { [now] in now.addingTimeInterval(clock.current) },
+            sleep: { seconds in clock.withLock { $0 += seconds } })
+        let current = try await flow.begin()
+        let nearly = PendingDeviceLogin(serverUrl: current.serverUrl, clientId: current.clientId,
+            deviceCode: current.deviceCode, userCode: current.userCode, verificationUri: current.verificationUri,
+            verificationUriComplete: current.verificationUriComplete, expiresAt: now.addingTimeInterval(90), interval: 60, accessToken: nil)
+        do {
+            _ = try await flow.complete(nearly, installationId: "i", name: "m", hostname: "h", checkpoint: { _ in },
+                status: { message in statuses.withLock { $0.append(message) } })
+            XCTFail("expected expiry")
+        } catch { XCTAssertEqual(error as? OAuthLoginError, .timedOut) }
+        XCTAssertTrue(statuses.current.contains { $0.contains("即将超时") }, "statuses: \(statuses.current)")
+    }
+
     func testNetworkFailureBacksOffAndReportsRecoveryState() async throws {
         install()
         let pending = try await login().begin()

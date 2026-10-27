@@ -96,11 +96,16 @@ public struct DetectedAgent: Codable, Equatable, Sendable {
     public let unavailableReason: String?
     public let skill: AgentSkillSnapshot?
     public let resource: AgentResourceSnapshot?
+    /// Whether this agent's MissionGo authorization still works (AND-289).
+    /// Nil means the machine cannot tell; only state and expiry travel, never
+    /// the token itself.
+    public let mcpAuth: McpAuthSnapshot?
 
     public init(
         kind: String, version: String, models: [AgentModelOption]? = nil,
         ready: Bool? = nil, unavailableReason: String? = nil,
-        skill: AgentSkillSnapshot? = nil, resource: AgentResourceSnapshot? = nil
+        skill: AgentSkillSnapshot? = nil, resource: AgentResourceSnapshot? = nil,
+        mcpAuth: McpAuthSnapshot? = nil
     ) {
         self.kind = kind
         self.version = version
@@ -109,6 +114,82 @@ public struct DetectedAgent: Codable, Equatable, Sendable {
         self.unavailableReason = unavailableReason
         self.skill = skill
         self.resource = resource
+        self.mcpAuth = mcpAuth
+    }
+}
+
+/// The health of one agent's MissionGo authorization, as reported with a
+/// heartbeat (AND-289). Only the verdict and the expiry are sent.
+///
+/// Dates travel as ISO 8601 strings: the server's wire contract expects
+/// strings, and Swift's default `Date` coding is a numeric double -- which
+/// the 0.4.49 heartbeat answered with `400 expiresAt must be a string`,
+/// cutting the node's heartbeat off entirely.
+public struct McpAuthSnapshot: Codable, Equatable, Sendable {
+    public let state: String
+    public let expiresAt: Date?
+    public let checkedAt: Date
+
+    public init(state: String, expiresAt: Date? = nil, checkedAt: Date = Date()) {
+        self.state = state
+        self.expiresAt = expiresAt
+        self.checkedAt = checkedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case state, expiresAt, checkedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = try container.decode(String.self, forKey: .state)
+        expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt).flatMap { try? Date($0, strategy: .iso8601) }
+        checkedAt = try container.decodeIfPresent(String.self, forKey: .checkedAt).flatMap { try? Date($0, strategy: .iso8601) } ?? Date()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(state, forKey: .state)
+        try container.encodeIfPresent(expiresAt?.formatted(.iso8601), forKey: .expiresAt)
+        try container.encode(checkedAt.formatted(.iso8601), forKey: .checkedAt)
+    }
+}
+
+/**
+ * Reads the local MissionGo token an agent type uses and reports whether it
+ * still works, without any network call and without the token ever leaving
+ * the machine (AND-289).
+ *
+ * The signed `mgai_` token is self-describing: its payload carries `exp`, so
+ * the check is a base64url decode and a date comparison. A `mgpat_` personal
+ * token stores only a hash server-side and carries no expiry to read -- it
+ * reports nil rather than a guess.
+ */
+public enum McpAuthorizationHealth {
+    /// How far out an authorization starts warning rather than just working.
+    public static let expiringWindow: TimeInterval = 7 * 24 * 60 * 60
+
+    public static func report(token: String?, now: Date = Date()) -> McpAuthSnapshot? {
+        guard let token, token.hasPrefix("mgai_") else { return nil }
+        let encoded = String(token.dropFirst("mgai_".count)).split(separator: ".").first.map(String.init) ?? ""
+        guard let payload = Data(base64Encoded: padBase64(encoded)),
+              let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let expiresAtMs = json["expiresAt"] as? Double
+        else { return nil }
+        let expiresAt = Date(timeIntervalSince1970: expiresAtMs)
+        if expiresAt <= now {
+            return McpAuthSnapshot(state: "invalid", expiresAt: expiresAt, checkedAt: now)
+        }
+        if expiresAt.timeIntervalSince(now) <= expiringWindow {
+            return McpAuthSnapshot(state: "expiring", expiresAt: expiresAt, checkedAt: now)
+        }
+        return McpAuthSnapshot(state: "valid", expiresAt: expiresAt, checkedAt: now)
+    }
+
+    private static func padBase64(_ value: String) -> String {
+        let padding = (4 - value.count % 4) % 4
+        return value.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/") + String(repeating: "=", count: padding)
     }
 }
 
@@ -852,7 +933,7 @@ public enum APIError: Error, Equatable, LocalizedError, Sendable {
     /// token refused. Unlike a network blip this never fixes itself, so the loop
     /// stops instead of hammering the server with a credential that will keep
     /// being refused, and the app goes back to "请登录".
-    case credentialRevoked(status: Int, detail: String?)
+    case credentialRevoked(status: Int, code: String?, detail: String?)
     /// The server answered, with something other than 2xx.
     case http(operation: String, status: Int, detail: String)
     /// Only the automatic native handshake can yield this expected conflict.
@@ -865,9 +946,9 @@ public enum APIError: Error, Equatable, LocalizedError, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case let .credentialRevoked(status, detail):
+        case let .credentialRevoked(status, code, detail):
             let suffix = detail.map { "（\($0)）" } ?? ""
-            return "凭证已失效（HTTP \(status)）\(suffix)：需要重新登录。"
+            return "凭证已失效（HTTP \(status)\(code.map { " · \($0)" } ?? "")\(suffix)）：需要重新登录。"
         case let .http(operation, status, detail):
             return "\(operation) 失败（HTTP \(status)）：\(detail)"
         case .externalNativeAlreadyBound:
@@ -1133,6 +1214,14 @@ struct HTTPTransport: Sendable {
     static func problemTitle(_ response: HTTPResponse) -> String? {
         guard let object = JSONValues.parse(response.text) as? [String: Any] else { return nil }
         return object["title"] as? String
+    }
+
+    /// The machine-readable problem code of an error response, e.g.
+    /// "node_revoked". The 401/403 handling distinguishes stories that used to
+    /// share one misleading message (AND-291).
+    static func problemCode(_ response: HTTPResponse) -> String? {
+        guard let object = JSONValues.parse(response.text) as? [String: Any] else { return nil }
+        return object["code"] as? String
     }
 }
 
@@ -1528,7 +1617,7 @@ public struct APIClient: Sendable {
 
     private func nodeToken() throws -> String {
         guard let token, !token.isEmpty else {
-            throw APIError.credentialRevoked(status: 401, detail: "本机还没有登录")
+            throw APIError.credentialRevoked(status: 401, code: nil, detail: "本机还没有登录")
         }
         return token
     }
@@ -1578,7 +1667,7 @@ public struct APIClient: Sendable {
             response = try await transport.send(request)
         }
         if response.status == 401 || response.status == 403 {
-            throw APIError.credentialRevoked(status: response.status, detail: HTTPTransport.problemTitle(response))
+            throw APIError.credentialRevoked(status: response.status, code: HTTPTransport.problemCode(response), detail: HTTPTransport.problemTitle(response))
         }
         return response
     }

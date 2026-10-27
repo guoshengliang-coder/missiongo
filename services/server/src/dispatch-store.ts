@@ -29,6 +29,18 @@ export interface NodeAgentReport {
   readonly unavailableReason?: string;
   readonly skill?: AgentSkillSnapshot;
   readonly resource?: AgentResourceSnapshot;
+  /**
+   * Whether this agent's MissionGo authorization still works (AND-289).
+   * 'invalid' keeps the agent off new dispatches -- a session started against
+   * a dead token dies on its first MCP call; 'expiring' still dispatches and
+   * is the warning the menu bar shows. Absent means the machine could not
+   * tell, and dispatching is unchanged.
+   */
+  readonly mcpAuth?: {
+    readonly state: "valid" | "expiring" | "invalid" | "unknown";
+    readonly expiresAt?: string;
+    readonly checkedAt: string;
+  };
 }
 
 /** A checkout the machine reported it can already work in. */
@@ -420,6 +432,20 @@ export class DispatchStore {
     return { nodeId: row.id, accountId: row.account_id };
   }
 
+  /**
+   * Whether a presented credential belongs to a node row that was revoked in
+   * the console -- as opposed to a hash with no row at all, which is what a
+   * credential rotated by a newer sign-in looks like (AND-290/291). The two
+   * read very differently to the person at the machine, and one generic 401
+   * used to tell them apart only by misleading everyone.
+   */
+  revokedNodeForToken(token: string): boolean {
+    const row = this.database.connection
+      .prepare("SELECT revoked_at FROM nodes WHERE token_hash = ?")
+      .get(nodeTokenHash(token)) as unknown as { revoked_at: string | null } | undefined;
+    return row?.revoked_at != null;
+  }
+
   recordHeartbeat(
     nodeId: string,
     agents: readonly NodeAgentReport[],
@@ -434,14 +460,27 @@ export class DispatchStore {
       }
     }
     const normalizedAgents = agents.map((agent) => {
+      if (agent.mcpAuth && !["valid", "expiring", "invalid", "unknown"].includes(agent.mcpAuth.state)) {
+        throw invalidInput(`Unsupported MCP authorization state: ${String(agent.mcpAuth.state)}.`);
+      }
       const skillReady = !metadata.expectedSkillVersion
         || (agent.skill?.syncState === "ready" && agent.skill.localVersion === metadata.expectedSkillVersion);
-      const ready = agent.ready !== false && skillReady && agent.resource?.status !== "unavailable";
+      // An expired authorization is as disqualifying as a missing skill: the
+      // session would die on its first MCP call (AND-289). 'expiring' warns
+      // without blocking -- the token still works today.
+      const authReady = agent.mcpAuth?.state !== "invalid";
+      const ready = agent.ready !== false && skillReady && authReady && agent.resource?.status !== "unavailable";
       return {
         ...agent,
         ready,
         ...(!ready && !agent.unavailableReason
-          ? { unavailableReason: skillReady ? agent.resource?.reason ?? "Agent readiness could not be verified." : "MissionGo Skill is not synchronized." }
+          ? {
+            unavailableReason: !authReady
+              ? "MissionGo authorization has expired; reconnect the agent's MCP sign-in."
+              : skillReady
+                ? agent.resource?.reason ?? "Agent readiness could not be verified."
+                : "MissionGo Skill is not synchronized.",
+          }
           : {}),
       };
     });

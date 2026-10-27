@@ -113,7 +113,16 @@ public struct DeviceLogin: Sendable {
                 let code = (try? JSONDecoder().decode(Failure.self, from: response.body))?.error
                 switch code {
                 case "authorization_pending":
-                    await status("等待浏览器授权…")
+                    // AND-287: say so before the request dies, not only after.
+                    // The status line is the one place the person is looking
+                    // at while the browser sits somewhere else.
+                    let remaining = current.expiresAt.timeIntervalSince(now())
+                    if remaining < 120 {
+                        let minutes = max(1, Int(remaining / 60) + (remaining.truncatingRemainder(dividingBy: 60) > 0 ? 1 : 0))
+                        await status("授权即将超时（剩约 \(minutes) 分钟）：请在浏览器尽快完成，超时后需重新点击登录。")
+                    } else {
+                        await status("等待浏览器授权…")
+                    }
                     continue
                 case "slow_down":
                     current.interval += 5

@@ -1,10 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { MIN_PASSWORD_LENGTH } from "@missiongo/domain";
 
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { hashPassword, verifyPassword, type AccountRole } from "./admin-auth.js";
 import type { MissionGoDatabase } from "./storage/database.js";
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
 
 export { MIN_PASSWORD_LENGTH };
 export const MAX_PASSWORD_LENGTH = 1_024;
@@ -148,6 +152,10 @@ export interface AiAuthorizationSnapshot {
   readonly issuedAt: string;
   readonly expiresAt: string;
   readonly lastUsedAt?: string;
+  /** 'pat' rows were minted in the console, not granted through a browser. */
+  readonly kind?: "oauth" | "pat";
+  /** The name the account gave this personal access token. */
+  readonly name?: string;
 }
 
 interface AiAuthorizationRow {
@@ -157,6 +165,8 @@ interface AiAuthorizationRow {
   issued_at: string;
   expires_at: string;
   last_used_at: string | null;
+  kind?: "oauth" | "pat";
+  name?: string | null;
 }
 
 interface PermissionRow {
@@ -514,6 +524,19 @@ export class AccountStore {
     return mapAccount(row);
   }
 
+  /**
+   * The account behind a personal access token (AND-288): alive is the only
+   * question. A PAT is the machine's own credential, not a session of the
+   * person's -- a password change must not silently stop every CI job, so the
+   * credentials stamp is deliberately not compared. Revoking the token or
+   * disabling the account is the explicit off switch.
+   */
+  activeAccount(accountId: string): AccountSnapshot | undefined {
+    const row = this.row(accountId);
+    if (!row || row.disabled_at) return undefined;
+    return mapAccount(row);
+  }
+
   /** The stamp to sign into a token so `resolveActive` will accept it. */
   credentialsStamp(account: AccountSnapshot): number {
     return Date.parse(account.credentialsChangedAt);
@@ -803,7 +826,7 @@ export class AccountStore {
   listAiAuthorizations(accountId: string, now = Date.now()): readonly AiAuthorizationSnapshot[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT id, client_id, scopes_json, issued_at, expires_at, last_used_at
+        `SELECT id, client_id, scopes_json, issued_at, expires_at, last_used_at, kind, name
          FROM ai_authorizations
          WHERE account_id = ? AND revoked_at IS NULL AND expires_at > ?
          ORDER BY issued_at DESC`,
@@ -816,6 +839,8 @@ export class AccountStore {
       issuedAt: row.issued_at,
       expiresAt: row.expires_at,
       ...(row.last_used_at ? { lastUsedAt: row.last_used_at } : {}),
+      ...(row.kind && row.kind !== "oauth" ? { kind: row.kind } : {}),
+      ...(row.kind === "pat" && row.name ? { name: row.name } : {}),
     }));
   }
 
@@ -828,6 +853,168 @@ export class AccountStore {
     // account cut off another's client, and answering "not found" keeps it from
     // learning whether the id exists.
     if (Number(changes.changes) === 0) throw notFound("Authorization");
+  }
+
+  // ---- Personal access tokens (AND-288) ----
+
+  /**
+   * Mint a personal access token for an account: a named, console-created
+   * credential for machines that cannot complete a browser flow. The plaintext
+   * is returned exactly once; only its SHA-256 is stored, so the console can
+   * never show it again and a leaked database copy cannot sign in.
+   */
+  createPersonalAccessToken(input: {
+    readonly accountId: string;
+    readonly name: string;
+    readonly scopes: readonly string[];
+    readonly expiresAt: Date;
+  }): { readonly id: string; readonly token: string; readonly expiresAt: string } {
+    const name = input.name.trim().slice(0, 80);
+    if (!name) throw invalidInput("Give the token a name.");
+    const id = randomUUID();
+    const token = `mgpat_${randomBytes(32).toString("base64url")}`;
+    const now = new Date().toISOString();
+    this.database.connection
+      .prepare(
+        `INSERT INTO ai_authorizations (id, account_id, client_id, scopes_json, issued_at, expires_at, kind, name, token_hash)
+         VALUES (?, ?, ?, ?, ?, ?, 'pat', ?, ?)`,
+      )
+      .run(id, input.accountId, "pat", JSON.stringify([...input.scopes]), now, input.expiresAt.toISOString(), name, sha256Hex(token));
+    return { id, token, expiresAt: input.expiresAt.toISOString() };
+  }
+
+  /**
+   * Resolve a presented `mgpat_` token to its account. Deliberately not bound
+   * to credentials_changed_at: a token is the machine's credential, and
+   * rotating a human's password should not silently stop every CI job -- the
+   * explicit revocations (this row, the account) still stop it on the spot.
+   */
+  personalAccessTokenAccount(token: string, now = Date.now()): {
+    readonly accountId: string;
+    readonly tokenId: string;
+    readonly scopes: readonly string[];
+    readonly expiresAt: number;
+  } | undefined {
+    if (!token.startsWith("mgpat_")) return undefined;
+    const row = this.database.connection
+      .prepare(
+        `SELECT id, account_id, scopes_json, expires_at FROM ai_authorizations
+         WHERE token_hash = ? AND kind = 'pat' AND revoked_at IS NULL AND expires_at > ?`,
+      )
+      .get(sha256Hex(token), new Date(now).toISOString()) as unknown as {
+      id: string;
+      account_id: string;
+      scopes_json: string;
+      expires_at: string;
+    } | undefined;
+    if (!row) return undefined;
+    return {
+      accountId: row.account_id,
+      tokenId: row.id,
+      scopes: JSON.parse(row.scopes_json) as string[],
+      expiresAt: Date.parse(row.expires_at) / 1_000,
+    };
+  }
+
+  // ---- Refresh tokens (AND-288) ----
+
+  /**
+   * Issue a one-shot refresh token under an existing authorization. Rotating
+   * later marks this row used and issues a fresh one; the authorization row is
+   * the family they both belong to, so revoking it in the console ends every
+   * refresh with no extra bookkeeping.
+   */
+  issueRefreshToken(input: {
+    readonly authorizationId: string;
+    readonly accountId: string;
+    readonly clientId: string;
+    readonly scopes: readonly string[];
+    readonly credentialsAt: number;
+    readonly expiresAt: Date;
+  }): string {
+    const token = `mgrt_${randomBytes(32).toString("base64url")}`;
+    this.database.connection
+      .prepare(
+        `INSERT INTO ai_refresh_tokens (id, authorization_id, token_hash, client_id, scopes_json, credentials_at, issued_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        randomUUID(),
+        input.authorizationId,
+        sha256Hex(token),
+        input.clientId,
+        JSON.stringify([...input.scopes]),
+        input.credentialsAt,
+        new Date().toISOString(),
+        input.expiresAt.toISOString(),
+      );
+    return token;
+  }
+
+  /**
+   * Exchange a refresh token for a new access token and a fresh refresh.
+   *
+   * A used token showing up again is a replay -- either the client lost the
+   * rotation and kept the old copy, or someone else has it. Both end the whole
+   * authorization: the family is only as trustworthy as its weakest copy.
+   */
+  consumeRefreshToken(input: {
+    readonly token: string;
+    readonly clientId: string;
+  }, now = Date.now()): {
+    readonly kind: "issued";
+    readonly accountId: string;
+    readonly authorizationId: string;
+    readonly scopes: readonly string[];
+    readonly credentialsAt: number;
+  } | { readonly kind: "denied" } {
+    if (!input.token.startsWith("mgrt_")) return { kind: "denied" };
+    const row = this.database.connection
+      .prepare("SELECT * FROM ai_refresh_tokens WHERE token_hash = ?")
+      .get(sha256Hex(input.token)) as unknown as {
+      id: string;
+      authorization_id: string;
+      token_hash: string;
+      client_id: string;
+      scopes_json: string;
+      credentials_at: number;
+      issued_at: string;
+      expires_at: string;
+      used_at: string | null;
+    } | undefined;
+    if (!row) return { kind: "denied" };
+
+    const family = this.database.connection
+      .prepare("SELECT account_id, revoked_at FROM ai_authorizations WHERE id = ?")
+      .get(row.authorization_id) as unknown as { account_id: string; revoked_at: string | null } | undefined;
+    const expired = Date.parse(row.expires_at) <= now;
+    if (!family || family.revoked_at != null || row.client_id !== input.clientId || expired) {
+      this.database.connection
+        .prepare("DELETE FROM ai_refresh_tokens WHERE token_hash = ?")
+        .run(row.token_hash);
+      return { kind: "denied" };
+    }
+    if (row.used_at != null) {
+      // Replay: burn the family. The honest client still holds the newest
+      // refresh and will be told to authorize again, same as a revoked one.
+      this.database.connection
+        .prepare("UPDATE ai_authorizations SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+        .run(new Date().toISOString(), row.authorization_id);
+      this.database.connection
+        .prepare("DELETE FROM ai_refresh_tokens WHERE authorization_id = ?")
+        .run(row.authorization_id);
+      return { kind: "denied" };
+    }
+    this.database.connection
+      .prepare("UPDATE ai_refresh_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL")
+      .run(new Date().toISOString(), row.id);
+    return {
+      kind: "issued",
+      accountId: family.account_id,
+      authorizationId: row.authorization_id,
+      scopes: JSON.parse(row.scopes_json) as string[],
+      credentialsAt: row.credentials_at,
+    };
   }
 
   private writeFontScale(accountId: string, fontScale: FontScale, now: string): void {

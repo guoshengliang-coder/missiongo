@@ -32,6 +32,7 @@ import {
   ADMIN_SESSION_COOKIE,
   adminSessionCookie,
   createAdminSession,
+  createAiAccessToken,
   expiredAdminSessionCookie,
   readAiAccessToken,
   readAdminSession,
@@ -139,6 +140,15 @@ const DEFAULT_THUMBNAIL_EDGE = 192;
 const MAX_THUMBNAIL_EDGE = 1024;
 
 const ENVIRONMENT_PLATFORMS = ["android", "macos", "web", "server", "shared", "other"] as const;
+/**
+ * How long a refresh token lives (AND-288). Every rotation issues a fresh one
+ * with a full window again, so this is the silence an interactive client
+ * tolerates -- three months without a person is plenty, and revocation does
+ * not wait for it.
+ */
+const REFRESH_TOKEN_SECONDS = 90 * 24 * 60 * 60;
+/** The lifetimes a personal access token may be created with, in days. */
+const PERSONAL_TOKEN_DAY_CHOICES = [7, 30, 90, 365] as const;
 
 type AgentSessionReplyBlockedReason =
   | "work_finished"
@@ -495,7 +505,7 @@ function oauthLoginPage(
     ${scopes.includes(MISSIONGO_NODE_SCOPE) ? `<li>${nodeGrant}</li>` : ""}
   </ul>
   ${invalidCredentials ? '<p class="error">邮箱或密码不正确，请重新输入。</p>' : ""}
-  ${device ? `<p class="copy">请核对客户端显示的验证码：</p><p class="device-code">${escapedHtml(device.userCode)}</p><p class="copy">只有你正在登录的设备才能获得这次授权。</p>` : ""}
+  ${device ? `<p class="copy">请核对客户端显示的验证码：</p><p class="device-code">${escapedHtml(device.userCode)}</p><p class="copy">只有你正在登录的设备才能获得这次授权。<strong>验证码与客户端不一致，说明浏览器打开的是旧标签页</strong>——请关掉本页，手动访问客户端显示的授权网址并输入当前验证码。</p>` : ""}
   <form method="post" action="${device ? "/oauth/device" : "/oauth/authorize"}">
     ${device ? `<input type="hidden" name="user_code" value="${escapedHtml(device.userCode)}"><input type="hidden" name="proof" value="${escapedHtml(device.proof)}">` : ""}
     <input type="hidden" name="request" value="${escapedHtml(requestToken)}">
@@ -505,6 +515,34 @@ function oauthLoginPage(
     ${device ? '<button class="secondary" type="submit" name="decision" value="deny" formnovalidate>拒绝授权</button>' : ""}
   </form>
   <p class="note">密码只用于本次验证，不会交给 AI。${scopeNote}</p>
+</main></body></html>`;
+}
+
+/**
+ * The browser-facing error page for the OAuth routes (AND-287).
+ *
+ * These errors used to leave as bare JSON, which the browser rendered as one
+ * unstyled line -- the person staring at it had no idea what went wrong, or
+ * that the only working retry lives in the client that started the login,
+ * not in this tab. Same card styling as the login page, and the recovery
+ * instruction is the point of the page: go back to the client and start
+ * again. A fresh authorize page is minted on every GET, so retrying from the
+ * client always works however stale this tab was.
+ */
+function oauthErrorPage(title: string, detail: string): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>连接 MissionGo</title>
+  <link rel="stylesheet" href="/oauth/login.css">
+</head>
+<body><main class="card">
+  <div class="mark">🚀</div><p class="eyebrow">AI 授权</p><h1 class="title">${escapedHtml(title)}</h1>
+  <p class="copy">${escapedHtml(detail)}</p>
+  <p class="copy"><strong>请回到发起连接的客户端，重新点击登录</strong>，然后在新打开的页面上完成授权。在当前页面里刷新、后退或重新输入密码没有用——本次登录已经结束。</p>
+  <p class="note">授权页面打开后 10 分钟内有效；提交成功后页面自动跳走，即表示完成。</p>
 </main></body></html>`;
 }
 
@@ -648,16 +686,28 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const sdkRateLimits = { ...DEFAULT_SDK_RATE_LIMITS, ...options.sdkRateLimits };
   const loginFailures = new Map<string, { count: number; resetAt: number }>();
 
-  const loginIsRateLimited = (request: FastifyRequest, reply: FastifyReply, now: number): boolean => {
+  /**
+   * Sign-in throttling, shared by the console's JSON login and the OAuth
+   * consent page. `oauthErrorPage` renders for a browser: a JSON 429 there
+   * would land as a raw one-liner on the login card's tab (AND-287). The
+   * console keeps the machine-readable problem document.
+   */
+  const loginIsRateLimited = (request: FastifyRequest, reply: FastifyReply, now: number, browserPage?: () => string): boolean => {
     const failure = loginFailures.get(request.ip);
     if (failure && failure.resetAt <= now) loginFailures.delete(request.ip);
     if (!failure || failure.resetAt <= now || failure.count < 10) return false;
-    reply.header("retry-after", Math.ceil((failure.resetAt - now) / 1_000)).status(429).send({
-      type: "urn:missiongo:problem:login_rate_limited",
-      title: "Too many sign-in attempts. Try again later.",
-      status: 429,
-      code: "login_rate_limited",
-    });
+    const retryAfter = Math.ceil((failure.resetAt - now) / 1_000);
+    reply.header("retry-after", retryAfter);
+    if (browserPage) {
+      reply.header("cache-control", "no-store").type("text/html; charset=utf-8").status(429).send(browserPage());
+    } else {
+      reply.status(429).send({
+        type: "urn:missiongo:problem:login_rate_limited",
+        title: "Too many sign-in attempts. Try again later.",
+        status: 429,
+        code: "login_rate_limited",
+      });
+    }
     return true;
   };
 
@@ -741,6 +791,29 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    */
   const aiPrincipal = (token: string) => {
     if (!options.adminAccount) return undefined;
+    // A personal access token (AND-288): no signature to verify, the stored
+    // hash is the whole check. Deliberately not tied to the account's
+    // credentials_changed_at -- see personalAccessTokenAccount.
+    if (token.startsWith("mgpat_")) {
+      const pat = accountStore.personalAccessTokenAccount(token);
+      if (!pat) return undefined;
+      const account = accountStore.activeAccount(pat.accountId);
+      if (!account) return undefined;
+      accountStore.touchAiAuthorization(pat.tokenId);
+      return {
+        id: account.id,
+        username: account.email,
+        displayName: accountDisplayName(account),
+        role: account.role,
+        tokenId: pat.tokenId,
+        clientId: "pat",
+        scopes: pat.scopes,
+        credentialsAt: accountStore.credentialsStamp(account),
+        issuedAt: 0,
+        expiresAt: pat.expiresAt,
+        productIds: accountStore.reachableProductIds(account, "ai"),
+      };
+    }
     const claims = readAiAccessToken(options.adminAccount, token);
     if (!claims) return undefined;
     const account = accountStore.resolveActive(claims.id, claims.credentialsAt);
@@ -971,7 +1044,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         registration_endpoint: `${publicOrigin}/oauth/register`,
         response_types_supported: ["code"],
         device_authorization_endpoint: `${publicOrigin}/oauth/device_authorization`,
-        grant_types_supported: ["authorization_code", DEVICE_GRANT],
+        grant_types_supported: ["authorization_code", "refresh_token", DEVICE_GRANT],
         code_challenge_methods_supported: ["S256"],
         token_endpoint_auth_methods_supported: ["none"],
         scopes_supported: [...MISSIONGO_SUPPORTED_SCOPES],
@@ -1032,7 +1105,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
 
     const devicePage = (content: string) => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>设备登录</title><link rel="stylesheet" href="/oauth/login.css"></head><body><main class="card">${content}</main></body></html>`;
-    const deviceUnavailable = () => devicePage('<h1 class="title">登录请求不可用</h1><p class="copy">验证码无效、已过期或已处理。请回到客户端查看状态，必要时重新发起登录。</p>');
+    const deviceUnavailable = () => devicePage('<h1 class="title">登录请求不可用</h1><p class="copy">验证码无效、已过期或已处理。请回到客户端查看状态，必要时重新发起登录。</p><p class="copy">如果浏览器里还开着别的"连接 MissionGo"标签页，你可能在看一次已经结束的旧登录：请关掉它们，手动访问客户端显示的授权网址并输入客户端<strong>当前</strong>显示的验证码。</p>');
     app.get("/oauth/device", async (request, reply) => {
       reply.header("cache-control", "no-store");
       if (loginIsRateLimited(request, reply, Date.now())) return reply;
@@ -1095,10 +1168,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           oauthLoginPage(started.clientName, started.requestToken, started.scopes, writeTools),
         );
       } catch {
-        return reply.header("cache-control", "no-store").status(400).send({
-          error: "invalid_request",
-          error_description: "The authorization request is invalid or expired.",
-        });
+        // A broken or tampered link (truncated copy, bad params). The browser
+        // is the only audience, so answer with the styled page and the way
+        // out instead of JSON it would render raw (AND-287).
+        return reply.header("cache-control", "no-store").type("text/html; charset=utf-8").status(400).send(
+          oauthErrorPage(
+            "这个授权链接无效",
+            "链接可能没有复制完整，或已超过有效期。",
+          ),
+        );
       }
     });
 
@@ -1108,7 +1186,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const username = form.get("username")?.trim() ?? "";
       const password = form.get("password") ?? "";
       const now = Date.now();
-      if (loginIsRateLimited(request, reply, now)) return reply;
+      if (loginIsRateLimited(request, reply, now, () => oauthErrorPage(
+        "尝试次数过多",
+        "连续失败次数太多，登录已临时锁定，请稍后再从客户端重新发起。",
+      ))) return reply;
       const account = accountStore.verifyCredentials(username, password);
       if (!account) {
         recordLoginFailure(request, now);
@@ -1136,16 +1217,65 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (completed.state) redirect.searchParams.set("state", completed.state);
         return reply.header("cache-control", "no-store").redirect(redirect.toString());
       } catch {
-        return reply.header("cache-control", "no-store").status(400).send({
-          error: "invalid_request",
-          error_description: "The authorization request is invalid or expired.",
-        });
+        // The signed request token was rejected: the login page sat for more
+        // than ten minutes, or this submit is a replay of one that already
+        // redirected. Either way this tab is finished -- say so, and say where
+        // the retry actually lives (AND-287).
+        return reply.header("cache-control", "no-store").type("text/html; charset=utf-8").status(400).send(
+          oauthErrorPage(
+            "本次登录已结束",
+            "从打开授权页面到提交超过了 10 分钟，或这次登录已经完成过。为防止授权被重放，同一个授权请求只能提交一次。",
+          ),
+        );
       }
     });
 
     app.post("/oauth/token", async (request, reply) => {
       const form = new URLSearchParams(typeof request.body === "string" ? request.body : "");
       try {
+        // Refresh rotation (AND-288): the client trades its refresh token for
+        // a new access token and a fresh refresh, without a browser. The old
+        // refresh dies in the exchange; a replay of it revokes the family.
+        if (form.get("grant_type") === "refresh_token") {
+          const consumed = accountStore.consumeRefreshToken({
+            token: form.get("refresh_token") ?? "",
+            clientId: form.get("client_id") ?? "",
+          });
+          if (consumed.kind !== "issued") {
+            return reply.header("cache-control", "no-store").status(400).send({
+              error: "invalid_grant",
+              error_description: "The refresh token is invalid, expired, or already used.",
+            });
+          }
+          const account = accountStore.resolveActive(consumed.accountId, consumed.credentialsAt);
+          if (!account) {
+            return reply.header("cache-control", "no-store").status(400).send({ error: "access_denied" });
+          }
+          const rotated = createAiAccessToken(
+            options.adminAccount!,
+            { id: account.id, username: account.email, role: account.role },
+            consumed.credentialsAt,
+            consumed.authorizationId,
+            consumed.scopes,
+          );
+          // The rotated access token keeps the same token id, so the existing
+          // authorization row and its revocation govern the family as before.
+          const refresh = accountStore.issueRefreshToken({
+            authorizationId: consumed.authorizationId,
+            accountId: account.id,
+            clientId: form.get("client_id") ?? "",
+            scopes: consumed.scopes,
+            credentialsAt: consumed.credentialsAt,
+            expiresAt: new Date(Date.now() + REFRESH_TOKEN_SECONDS * 1_000),
+          });
+          return reply.header("cache-control", "no-store").send({
+            access_token: rotated.token,
+            token_type: "Bearer",
+            expires_in: rotated.claims.expiresAt - Math.floor(Date.now() / 1_000),
+            scope: consumed.scopes.join(" "),
+            refresh_token: refresh,
+          });
+        }
         const isDevice = form.get("grant_type") === DEVICE_GRANT;
         const issued = isDevice ? deviceAuthorizations.poll(form.get("device_code") ?? "", form.get("client_id") ?? "", (row) => {
           const user = JSON.parse(row.user_json!) as AdminSessionUser;
@@ -1176,11 +1306,23 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           issuedAt: issued.claims.issuedAt,
           expiresAt: issued.claims.expiresAt,
         });
+        // Interactive clients get a refresh token alongside (AND-288): without
+        // one, every thirty days the account has to click through the consent
+        // page again for a client that never needed a person in the first place.
+        const refreshToken = accountStore.issueRefreshToken({
+          authorizationId: issued.claims.tokenId,
+          accountId: issued.claims.id,
+          clientId: issued.claims.clientId,
+          scopes: issued.claims.scopes,
+          credentialsAt: issued.claims.credentialsAt,
+          expiresAt: new Date(Date.now() + REFRESH_TOKEN_SECONDS * 1_000),
+        });
         return reply.header("cache-control", "no-store").send({
           access_token: issued.accessToken,
           token_type: "Bearer",
           expires_in: issued.expiresIn,
           scope: issued.scope,
+          refresh_token: refreshToken,
         });
       } catch (error) {
         if (error instanceof DeviceGrantError) return reply.header("cache-control", "no-store").status(400).send({ error: error.message });
@@ -1958,6 +2100,41 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.status(204).send();
   });
 
+  /**
+   * Mint a personal access token (AND-288): the console's own credential for
+   * machines that cannot complete a browser flow -- CI, servers, scripts. The
+   * plaintext leaves exactly once, in this response; after that only its hash
+   * exists, and the row is listed and revoked like any other authorization.
+   */
+  app.post("/api/v1/ai-personal-tokens", async (request, reply) => {
+    const account = requireAccount(request);
+    const body = objectBody(request.body);
+    const name = stringField(body, "name")!;
+    const days = body.days;
+    if (typeof days !== "number" || !PERSONAL_TOKEN_DAY_CHOICES.includes(days as typeof PERSONAL_TOKEN_DAY_CHOICES[number])) {
+      throw invalidInput(`Choose a lifetime of one of ${PERSONAL_TOKEN_DAY_CHOICES.join(", ")} days.`);
+    }
+    const requested = Array.isArray(body.scopes) ? body.scopes : [];
+    if (requested.some((scope) => typeof scope !== "string")) throw invalidInput("invalid scopes");
+    // Reading is always included, and the machine scopes stay out: registering
+    // a dispatch node is what the browser flow with its consent page is for.
+    const scopes = parseRequestedScopes((requested as string[]).filter((scope) => scope !== MISSIONGO_READ_SCOPE).join(" "))
+      .filter((scope) => scope !== MISSIONGO_NODE_SCOPE);
+    const created = accountStore.createPersonalAccessToken({
+      accountId: account.id,
+      name,
+      scopes,
+      expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1_000),
+    });
+    return reply.header("cache-control", "no-store").status(201).send({
+      id: created.id,
+      name: stringField(body, "name")!.trim(),
+      token: created.token,
+      scopes: [...scopes],
+      expiresAt: created.expiresAt,
+    });
+  });
+
   registerManagedDecisionRoutes(app, { db: store.database, accounts: accountStore, requireAccount,
     ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}) });
 
@@ -2531,11 +2708,28 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   const requireNode = (request: FastifyRequest): { nodeId: string; accountId: string } => {
-    const node = dispatchStore.authenticateNode(suppliedBearerToken(request));
+    const presented = suppliedBearerToken(request);
+    const node = dispatchStore.authenticateNode(presented);
     // A machine acts for the account that registered it, so it stops when that
     // account does: disabling or deleting an account has to cut off its Macs
     // too, or they keep pulling queued work and product names.
-    if (!node || (!unauthenticatedDeployment && !accountStore.findActive(node.accountId))) {
+    if (!node) {
+      // Two very different stories share this 401 (AND-290/291): a node row
+      // that was revoked in the console, and a credential that no longer
+      // matches -- most often because another login on the same machine just
+      // rotated the token. The console revocation is a person's decision the
+      // client should repeat verbatim; the rotation is routine and only needs
+      // a fresh sign-in. One error code cannot tell both stories.
+      const revokedNode = dispatchStore.revokedNodeForToken(presented);
+      throw new MissionGoError(
+        revokedNode ? "node_revoked" : "node_credential_replaced",
+        revokedNode
+          ? "This machine was revoked from the console; sign in again to re-register it."
+          : "This node credential is no longer current -- another sign-in on this machine may have replaced it. Sign in again.",
+        401,
+      );
+    }
+    if (!unauthenticatedDeployment && !accountStore.findActive(node.accountId)) {
       throw new MissionGoError("authentication_required", "A valid node bearer token is required.", 401);
     }
     return node;
@@ -2968,6 +3162,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
                 ...(stringField(resourceInput, "reason", false) ? { reason: resourceInput.reason as string } : {}),
               },
             } : {}),
+            // AND-289: the machine's own read of this agent's MissionGo
+            // authorization. Only the verdict and the dates travel; the token
+            // never does.
+            ...(agent.mcpAuth === undefined ? {} : {
+              mcpAuth: (() => {
+                const authInput = objectBody(agent.mcpAuth);
+                const state = stringField(authInput, "state")! as "valid" | "expiring" | "invalid" | "unknown";
+                return {
+                  state,
+                  ...(stringField(authInput, "expiresAt", false) ? { expiresAt: authInput.expiresAt as string } : {}),
+                  checkedAt: stringField(authInput, "checkedAt", false) ?? new Date().toISOString(),
+                };
+              })(),
+            }),
           };
         }),
         repoCandidates.map((entry) => {

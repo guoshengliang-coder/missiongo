@@ -55,7 +55,10 @@ public struct NodeLoopState: Equatable, Sendable {
         /// Network failures with no recent server response; keeps trying.
         case offline
         /// The credential was refused. Terminal: the app has to log in again.
-        case credentialRevoked
+        /// Carries the problem code when the server sent one, so "revoked in
+        /// the console" and "replaced by a newer sign-in" can be told apart
+        /// wherever the state is presented (AND-291).
+        case credentialRevoked(code: String?)
         case stopped
     }
 
@@ -301,7 +304,7 @@ public final class NodeLoop: @unchecked Sendable {
         }
 
         if let error = fatal.current {
-            update { $0.connection = .credentialRevoked }
+            update { $0.connection = .credentialRevoked(code: Self.revokedCode(of: error)) }
             stateContinuation.finish()
             throw error
         }
@@ -826,7 +829,7 @@ public final class NodeLoop: @unchecked Sendable {
         if let apiError = error as? APIError, case .credentialRevoked = apiError {
             fatal.withLock { if $0 == nil { $0 = apiError } }
             update {
-                $0.connection = .credentialRevoked
+                $0.connection = .credentialRevoked(code: Self.revokedCode(of: apiError))
                 $0.lastError = apiError.localizedDescription
             }
             stop.stop()
@@ -835,7 +838,7 @@ public final class NodeLoop: @unchecked Sendable {
         let message = "\(what)：\(error.localizedDescription)"
         log(message)
         update { value in
-            guard value.connection != .credentialRevoked else { return }
+            if case .credentialRevoked = value.connection { return }
             value.requestErrors[what] = message
             if let apiError = error as? APIError, case .network = apiError {
                 value.unreachableOperations.insert(what)
@@ -851,7 +854,7 @@ public final class NodeLoop: @unchecked Sendable {
 
     private func noteSuccess(_ operation: String) {
         update { value in
-            guard value.connection != .credentialRevoked else { return }
+            if case .credentialRevoked = value.connection { return }
             value.requestErrors.removeValue(forKey: operation)
             value.unreachableOperations.remove(operation)
             value.lastServerResponseAt = Date()
@@ -859,8 +862,16 @@ public final class NodeLoop: @unchecked Sendable {
         }
     }
 
+    /// The problem code of a refused credential, when the server sent one
+    /// (AND-291): "node_revoked" and "node_credential_replaced" read very
+    /// differently to whoever is staring at the menu bar.
+    static func revokedCode(of error: Error) -> String? {
+        if case let .credentialRevoked(_, code, _) = error as? APIError { return code }
+        return nil
+    }
+
     static func refreshConnection(_ value: inout NodeLoopState, now: Date = Date()) {
-        guard value.connection != .credentialRevoked else { return }
+        if case .credentialRevoked = value.connection { return }
         let messages = value.requestErrors.sorted { $0.key < $1.key }.map(\.value)
         value.lastError = messages.isEmpty ? nil : messages.joined(separator: "\n\n")
         // Two heartbeat intervals without any response are evidence of an
@@ -921,6 +932,15 @@ public final class NodeLoop: @unchecked Sendable {
             let ready = skillReady && availabilityReason == nil && resource?.status != "unavailable"
             if ready { readyKinds.insert(agent.kind) }
             let reason = availabilityReason ?? resource?.reason ?? (skillReady ? nil : "MissionGo Skill 尚未同步。")
+            // AND-289: where this machine knows an agent's MissionGo token,
+            // report whether it still works -- a session dispatched against a
+            // dead one dies on its first MCP call. Only the verdict travels.
+            let mcpAuth: McpAuthSnapshot?
+            if agent.kind == "opencode" {
+                mcpAuth = McpAuthorizationHealth.report(token: ProcessInfo.processInfo.environment["MISSIONGO_TOKEN"])
+            } else {
+                mcpAuth = nil
+            }
             reports.append(DetectedAgent(
                 kind: agent.kind,
                 version: agent.version,
@@ -928,7 +948,8 @@ public final class NodeLoop: @unchecked Sendable {
                 ready: skillReadiness == nil && resource == nil && availabilityReason == nil ? nil : ready,
                 unavailableReason: reason,
                 skill: skill,
-                resource: resource
+                resource: resource,
+                mcpAuth: mcpAuth
             ))
         }
         skillReadyAgents.withLock { $0 = readyKinds }

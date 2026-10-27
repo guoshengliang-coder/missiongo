@@ -176,8 +176,17 @@ public struct ConnectionSummary: Equatable, Sendable {
         case .offline:
             let reason = state.lastError?.trimmingCharacters(in: .whitespacesAndNewlines)
             return ConnectionSummary(text: "离线：\(reason.flatMap { $0.isEmpty ? nil : $0 } ?? "原因未知")", tone: .bad)
-        case .credentialRevoked:
-            return ConnectionSummary(text: "凭证已失效，需要重新登录", tone: .bad)
+        case let .credentialRevoked(code):
+            // AND-291: name the actual story. "已在控制台被撤销" is an
+            // accusation -- it belongs to a real revocation and nothing else.
+            switch code {
+            case "node_revoked":
+                return ConnectionSummary(text: "这台 Mac 已在控制台被撤销，需要重新登录", tone: .bad)
+            case "node_credential_replaced":
+                return ConnectionSummary(text: "本机登录凭据已被新的登录替换，需要重新登录", tone: .bad)
+            default:
+                return ConnectionSummary(text: "凭证已失效，需要重新登录", tone: .bad)
+            }
         case .stopped:
             return ConnectionSummary(text: "已停止", tone: .idle)
         }

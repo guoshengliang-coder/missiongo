@@ -92,6 +92,19 @@ export interface AiAuthorization {
   readonly issuedAt: string;
   readonly expiresAt: string;
   readonly lastUsedAt?: string;
+  /** 'pat' entries were minted in the console for machines (AND-288). */
+  readonly kind?: "oauth" | "pat";
+  /** The name given to a personal access token. */
+  readonly name?: string;
+}
+
+/** A freshly minted personal access token; `token` is shown once, never again. */
+export interface PersonalTokenCreated {
+  readonly id: string;
+  readonly name: string;
+  readonly token: string;
+  readonly scopes: string[];
+  readonly expiresAt: string;
 }
 
 /**
@@ -304,6 +317,9 @@ export const api = {
     request<{ authorizations: AiAuthorization[] }>("/api/v1/ai-authorizations"),
   revokeAiAuthorization: (authorizationId: string) =>
     request<void>(`/api/v1/ai-authorizations/${encodeURIComponent(authorizationId)}`, { method: "DELETE" }),
+  // The plaintext comes back exactly once and is never stored server-side.
+  createPersonalToken: (input: { name: string; scopes: string[]; days: number }) =>
+    request<PersonalTokenCreated>("/api/v1/ai-personal-tokens", { method: "POST", body: JSON.stringify(input) }),
   listAccounts: () => request<{ accounts: Account[] }>("/api/v1/accounts"),
   createAccount: (input: { email: string; password: string; role: AccountRole }) =>
     request<Account>("/api/v1/accounts", { method: "POST", body: JSON.stringify(input) }),
