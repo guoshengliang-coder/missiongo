@@ -45,6 +45,8 @@ TRUST_PROXY=
 # A client still needs the missiongo:write scope its user granted at sign-in, so opening
 # the surface and granting access stay two separate decisions.
 MISSIONGO_WRITE_TOOLS=
+# Optional: daily status-check time in Asia/Shanghai (HH:mm), or off to disable.
+MISSIONGO_STATUS_CHECK_TIME=09:00
 # Optional (AND-150): the Firebase service-account JSON as one line, for the
 # Android widget's push signals. Generate it in the Firebase console
 # (Project settings > Service accounts > Generate new private key), then inline
