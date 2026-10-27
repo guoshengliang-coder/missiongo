@@ -1,4 +1,5 @@
 import type { CompletionReference } from "@missiongo/contracts";
+import type { InsightQuery, InsightSummary, InsightDetails, InsightDetailSelection } from "@missiongo/domain";
 import type { ManagedDecision, ManagedDecisionGuard } from "@missiongo/domain";
 import { attachmentPreviewPath, attachmentThumbnailPath } from "./attachment-thumbnail";
 import type { FontScale } from "./font-scale";
@@ -257,7 +258,22 @@ export interface StatusCheckRecord {
 export interface StatusCheckPage { items: StatusCheckRecord[]; nextOffset?: number; queued?: number; missingAssociation?: boolean;
   schedule?: {time:string|false;timezone:string;frequency:string} }
 
+function insightSearch(input: InsightQuery & {productIds?: string[]} & Partial<InsightDetailSelection>): string {
+  const params = new URLSearchParams();
+  for (const [key,value] of Object.entries(input)) {
+    if (value === undefined || key === "includeTrend") continue;
+    params.set(key,Array.isArray(value) ? value.join(",") : String(value));
+  }
+  return params.toString();
+}
+
 export const api = {
+  projectInsights(input: InsightQuery & {productIds?: string[]}) {
+    return request<InsightSummary>(`/api/v1/project-insights?${insightSearch(input)}`);
+  },
+  projectInsightItems(input: InsightQuery & {productIds?: string[]} & InsightDetailSelection) {
+    return request<InsightDetails>(`/api/v1/project-insights/items?${insightSearch(input)}`);
+  },
   statusChecks(productId: string, itemKey?: string, offset = 0) {
     return request<StatusCheckPage>(itemKey ? `/api/v1/items/${encodeURIComponent(itemKey)}/status-checks?offset=${offset}`
       : `/api/v1/products/${encodeURIComponent(productId)}/status-checks?offset=${offset}`);

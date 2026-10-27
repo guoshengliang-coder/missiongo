@@ -52,6 +52,11 @@ describe("status-check and insight API permissions",()=>{
   expect(JSON.stringify(denied)).not.toContain("Private project");
   const detail=await call("list_project_insight_items",{productIds:[shared.id],period:"today",metric:"created",limit:1});
   expect(detail.result?.structuredContent).toMatchObject({total:1});
+  for (const metric of ["period_end_backlog", "repeat_returned"]) {
+   const expanded=await call("list_project_insight_items",{productIds:[shared.id],period:"today",metric});
+   expect(expanded.result?.isError).not.toBe(true);
+   expect(expanded.result?.structuredContent).toMatchObject({metric,total:metric==="period_end_backlog" ? 1 : 0});
+  }
  });
  it("separates viewing results from triggering or editing a check",async()=>{
   const {app,cookie,memberCookie,shared,hidden,item}=await seed();
@@ -72,5 +77,39 @@ describe("status-check and insight API permissions",()=>{
   expect(denied.error || denied.result?.isError).toBeTruthy();
   const cannotOperate=await call("register_item_handover",{itemKey:item.key,pullRequestUrl:"https://github.com/example/project/pull/1",requiredArtifacts:["web"]},true);
   expect(cannotOperate.error || cannotOperate.result?.isError).toBeTruthy();
+ });
+});
+
+describe("Web statistics (AND-297)",()=>{
+ it("uses ordinary view permissions even without AI access, and agrees with the shared MCP calculation",async()=>{
+  const {app,cookie,memberCookie,shared,hidden,call}=await seed();
+  const response=await app.inject({url:"/api/v1/project-insights?period=today",headers:{cookie:memberCookie}});
+  expect(response.statusCode).toBe(200);expect(response.headers["cache-control"]).toBe("no-store");
+  const web=response.json();const mcp=await call("get_project_insights",{period:"today"});
+  expect(web.projects.map((p:{productId:string})=>p.productId)).toEqual([shared.id]);
+  expect(web.aggregate.counts).toEqual((mcp.result!.structuredContent!.aggregate as {counts:unknown}).counts);
+  expect(JSON.stringify(web)).not.toContain("Must remain private");
+  expect(web.aggregate.trend.length).toBe(1);
+  const member=app.missionGoAccounts.listAccounts().find(a=>a.email==="member@example.test")!;
+  const changed=await app.inject({method:"PUT",url:`/api/v1/accounts/${member.id}/products`,headers:{cookie},payload:{permissions:[{productId:shared.id,canView:true,canOperate:false,canUseAi:false}]}});expect(changed.statusCode).toBe(200);
+  expect((await app.inject({url:`/api/v1/project-insights?productIds=${shared.id}&period=today`,headers:{cookie:memberCookie}})).statusCode).toBe(200);
+  const denied=await app.inject({url:`/api/v1/project-insights?productIds=${hidden.id}`,headers:{cookie:memberCookie}});
+  expect(denied.statusCode).toBe(404);expect(denied.body).not.toContain("Private project");
+  expect((await app.inject({url:`/api/v1/project-insights/items?productIds=${hidden.id}&metric=created`,headers:{cookie:memberCookie}})).statusCode).toBe(404);
+ });
+ it("requires authentication, rejects invalid scope/filter/pagination and supports filtered detail paging",async()=>{
+  const {app,memberCookie,shared}=await seed();
+  expect((await app.inject({url:"/api/v1/project-insights"})).statusCode).toBe(401);
+  for(const suffix of ["productIds=","types=bogus","period=custom&startDate=2026-02-30&endDate=2026-03-01","timezone=bad-zone","sql=SELECT","period=today&startDate=2026-01-01"]){
+   expect((await app.inject({url:`/api/v1/project-insights?${suffix}`,headers:{cookie:memberCookie}})).statusCode,suffix).toBe(400);
+  }
+  for(const suffix of ["metric=bogus","metric=created&offset=NaN","metric=created&limit=101","metric=created&types=bogus"]){
+   expect((await app.inject({url:`/api/v1/project-insights/items?${suffix}`,headers:{cookie:memberCookie}})).statusCode,suffix).toBe(400);
+  }
+  for(let i=0;i<2;i++)app.missionGoStore.createWorkItem({productId:shared.id,title:`Extra ${i}`,description:"Body",type:"task",priority:"normal",environment:{platform:"web"}});
+  const base=`/api/v1/project-insights/items?period=today&metric=created&types=task&productIds=${shared.id}&limit=1`;
+  const first=await app.inject({url:base,headers:{cookie:memberCookie}});expect(first.json()).toMatchObject({total:2,nextOffset:1});
+  const next=await app.inject({url:base+"&offset=1",headers:{cookie:memberCookie}});expect(next.json()).toMatchObject({total:2});
+  expect(next.json().items[0].itemKey).not.toBe(first.json().items[0].itemKey);expect(next.json().nextOffset).toBeUndefined();
  });
 });

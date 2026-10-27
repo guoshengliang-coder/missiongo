@@ -9,3 +9,4 @@ export * from "./work-item-status.js";
 export * from "./work-item.js";
 
 export * from "./managed-execution.js";
+export * from "./project-insights.js";

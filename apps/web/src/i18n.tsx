@@ -5,6 +5,7 @@ import type { WorkItemPriority, WorkItemStatus, WorkItemType } from "./types";
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
+  statisticsEntry: "Statistics",
   privateWorkspace: "Sign in",
   connectTitle: "Sign in to MissionGo",
   connectBody: "Use your email address and password to continue.",
@@ -1014,6 +1015,7 @@ const EN_MESSAGES = {
 export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
+  statisticsEntry: "统计",
   privateWorkspace: "登录",
   connectTitle: "登录 MissionGo",
   connectBody: "请输入邮箱和密码继续使用。",

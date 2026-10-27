@@ -1,18 +1,11 @@
+import type { InsightQuery, InsightDay, InsightMetrics, InsightProject, InsightSummary, InsightItem, InsightDetails, InsightDetailSelection } from "@missiongo/domain";
 import type { WorkItemStatus, WorkItemType } from "@missiongo/domain";
 import { WORK_ITEM_STATUSES, WORK_ITEM_TYPES } from "@missiongo/domain";
 import type { SQLInputValue } from "node:sqlite";
 import { invalidInput } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
 
-export interface InsightQuery {
-  period?: "yesterday" | "today" | "last7Days" | "last30Days" | "custom";
-  startDate?: string | undefined;
-  endDate?: string | undefined;
-  timezone?: string;
-  types?: WorkItemType[] | undefined;
-  statuses?: WorkItemStatus[] | undefined;
-}
-export type InsightMetric = "created" | "completed" | "development_complete" | "pending_verification" | "returned" | "backlog" | "stalled";
+export type { InsightQuery, InsightMetric } from "@missiongo/domain";
 interface ItemRow { id: string; item_key: string; product_id: string; title: string; type: WorkItemType; status: WorkItemStatus; created_at: string }
 interface EventRow { id: string; item_id: string; event_type: string; actor_kind: string; from_status: WorkItemStatus | null; to_status: WorkItemStatus | null; payload_json: string; created_at: string; timeline_seq: number }
 interface Event extends EventRow { at: string; reason?: string | undefined; timeEstimated: boolean }
@@ -74,9 +67,11 @@ function durationStats(values: number[], eligible: number) {
 }
 
 /** Two bounded-by-permission queries, no comments/attachments or per-item API calls. */
-export function projectInsights(store: MissionGoStore, productIds: string[], query: InsightQuery = {}, now = new Date(), detail?: { metric: InsightMetric; limit?: number; offset?: number }) {
+export function projectInsights(store: MissionGoStore, productIds: string[], query?: InsightQuery, now?: Date): InsightSummary;
+export function projectInsights(store: MissionGoStore, productIds: string[], query: InsightQuery, now: Date, detail: InsightDetailSelection): InsightDetails;
+export function projectInsights(store: MissionGoStore, productIds: string[], query: InsightQuery = {}, now = new Date(), detail?: InsightDetailSelection): InsightSummary | InsightDetails {
   const period = insightPeriod(query, now);
-  const products = productIds.map(id => store.getProduct(id));
+  const products = [...new Set(productIds)].map(id => store.getProduct(id));
   const uniqueIds = [...new Set(products.map(p => p.id))];
   const marks = uniqueIds.map(() => "?").join(",");
   const parameters: SQLInputValue[] = [...uniqueIds];
@@ -99,16 +94,26 @@ export function projectInsights(store: MissionGoStore, productIds: string[], que
     list.push(event); byItem.set(row.item_id, list);
   }
   const inPeriod = (at: string) => at >= period.start && at < period.endExclusive && at <= period.dataAsOf;
+  const days: Array<{date: string; cutoff: string}> = [];
+  if (query.includeTrend && !detail) {
+    for (let date = period.startDate; date <= period.endDate; date = shiftDay(date, 1)) {
+      days.push({date, cutoff: midnight(shiftDay(date, 1), period.timezone)});
+    }
+  }
+  const allDelivery: number[] = [], allDevelopment: number[] = [];
   const result = products.map(product => {
     const createdByType = countBy(WORK_ITEM_TYPES);
     const currentByStatus = countBy(WORK_ITEM_STATUSES);
     const periodEndByStatus = countBy(WORK_ITEM_STATUSES);
-    const counts = { created: 0, completed: 0, development_complete: 0, pending_verification: 0, returned: 0, reopened: 0, backlog: 0, stalled: 0 };
+    const counts = { created: 0, completed: 0, development_complete: 0, pending_verification: 0, returned: 0, reopened: 0, backlog: 0, stalled: 0, period_end_backlog: 0, repeat_returned: 0 };
     const delivery: number[] = []; const development: number[] = [];
     let developmentEligible = 0, passedRounds = 0, failedRounds = 0, unknownPeriodEnd = 0, estimatedEventTimes = 0, missingCreationEvents = 0;
-    const rows: Array<Record<string, unknown>> = [];
+    const trend: InsightDay[] = days.map(day => ({date: day.date, created: 0, completed: 0, backlog: 0, unknownStatusCount: 0}));
+    const rows: InsightItem[] = [];
     for (const item of items.filter(i => i.product_id === product.id && (!query.types?.length || query.types.includes(i.type)) && (!query.statuses?.length || query.statuses.includes(i.status)))) {
-      const history = byItem.get(item.id) ?? [];
+      if (item.created_at > period.dataAsOf) continue;
+      const history = (byItem.get(item.id) ?? []).filter(e => e.at <= period.dataAsOf)
+        .sort((a,b) => a.at.localeCompare(b.at) || a.timeline_seq - b.timeline_seq);
       const statusEvents = history.filter(e => e.event_type === "status_changed");
       const creation = history.find(e => e.event_type === "item_created");
       if (!creation) missingCreationEvents++;
@@ -127,32 +132,57 @@ export function projectInsights(store: MissionGoStore, productIds: string[], que
       const failed = inWindow.filter(e => e.from_status === "pending_verification" && e.to_status === "ready" && e.reason === "verification_failed" && e.actor_kind === "human");
       passedRounds += inWindow.filter(e => e.from_status === "pending_verification" && e.to_status === "done" && e.reason === "verification_passed" && e.actor_kind === "human").length;
       failedRounds += failed.length;
-      const allReturns = statusEvents.filter(e => e.from_status === "pending_verification" && e.to_status === "ready" && e.reason === "verification_failed");
+      const allReturns = statusEvents.filter(e => e.from_status === "pending_verification" && e.to_status === "ready" && e.reason === "verification_failed" && e.actor_kind === "human");
       const latest = statusEvents.at(-1) ?? creation;
       const ageHours = latest ? Math.max(0, (now.getTime() - Date.parse(latest.at)) / 3_600_000) : null;
       const flags = { created: inPeriod(item.created_at), completed: completed.length > 0, development_complete: dev.length > 0,
         pending_verification: verification.length > 0, returned: failed.length > 0,
+        period_end_backlog: item.created_at < period.endExclusive && Boolean(historical && open(historical)),
+        repeat_returned: failed.length >= 2,
         reopened: inWindow.some(e => e.from_status === "done" && e.to_status !== "done"),
         backlog: open(item.status), stalled: open(item.status) && ageHours !== null && ageHours >= 7 * 24 };
       for (const key of Object.keys(counts) as Array<keyof typeof counts>) if (flags[key]) counts[key]++;
       if (flags.created) createdByType[item.type]++;
       const completedAt = completed.at(-1)?.at;
       if (completedAt && creation && Date.parse(completedAt) >= Date.parse(item.created_at)) delivery.push(Date.parse(completedAt) - Date.parse(item.created_at));
+      let developmentHours: number | null = null;
       const devEnd = dev.at(-1);
       if (devEnd) {
         developmentEligible++;
-        const before = statusEvents.filter(e => e.timeline_seq < devEnd.timeline_seq);
+        const before = statusEvents.filter(e => e.timeline_seq < devEnd.timeline_seq).sort((a,b) => a.timeline_seq - b.timeline_seq);
         const boundary = [...before].reverse().find(e => e.to_status === "ready" || e.to_status === "done" || e.to_status === "cancelled");
         const started = before.find(e => e.timeline_seq > (boundary?.timeline_seq ?? -1) && e.to_status === "in_progress");
-        if (started && Date.parse(devEnd.at) >= Date.parse(started.at)) development.push(Date.parse(devEnd.at) - Date.parse(started.at));
+        if (started && Date.parse(devEnd.at) >= Date.parse(started.at)) {
+          developmentHours = (Date.parse(devEnd.at) - Date.parse(started.at)) / 3_600_000;
+          development.push(developmentHours * 3_600_000);
+        }
       }
-      if (!detail || flags[detail.metric]) rows.push({ itemKey: item.item_key, title: item.title, type: item.type, currentStatus: item.status,
+      // A single traversal per item/day; no repeated database queries for charts.
+      let historyIndex = 0;
+      const completionDays = new Set(statusEvents.filter(e => e.to_status === "done" && e.actor_kind === "human" && inPeriod(e.at))
+        .map(e => dayAt(new Date(e.at), period.timezone)));
+      const creationDay = inPeriod(item.created_at) ? dayAt(new Date(item.created_at), period.timezone) : null;
+      let dayStatus: WorkItemStatus | null = null;
+      for (let index = 0; index < days.length; index++) {
+        const day = days[index]!, point = trend[index]!;
+        while (historyIndex < history.length && history[historyIndex]!.at < day.cutoff) dayStatus = history[historyIndex++]!.to_status;
+        if (creationDay === day.date) point.created++;
+        if (completionDays.has(day.date)) point.completed++;
+        if (item.created_at < day.cutoff) {
+          if (dayStatus) { if (open(dayStatus)) point.backlog++; }
+          else point.unknownStatusCount++;
+        }
+      }
+      if (!detail || flags[detail.metric]) rows.push({ productId: product.id, productName: product.name, itemKey: item.item_key, title: item.title, type: item.type, currentStatus: item.status,
         periodEndStatus: historical ?? null, createdAt: item.created_at, completedAt: completedAt ?? null,
-        deliveryHours: completedAt && creation ? (Date.parse(completedAt) - Date.parse(item.created_at)) / 3_600_000 : null,
+        deliveryHours: completedAt && creation && completedAt >= item.created_at ? (Date.parse(completedAt) - Date.parse(item.created_at)) / 3_600_000 : null, developmentHours,
         stageSince: latest?.at ?? null, stageHours: ageHours, verificationFailuresInPeriod: failed.length,
         verificationFailuresTotal: allReturns.length, flags });
     }
+    for (const value of delivery) allDelivery.push(value);
+    for (const value of development) allDevelopment.push(value);
     return { productId: product.id, productName: product.name, counts, createdByType, currentByStatus, periodEndByStatus,
+      ...(query.includeTrend && !detail ? {trend} : {}),
       verificationReturnRate: { failedRounds, passedRounds, decidedRounds: failedRounds + passedRounds,
         rate: failedRounds + passedRounds ? failedRounds / (failedRounds + passedRounds) : null },
       deliveryCycle: durationStats(delivery, counts.completed), developmentCycle: durationStats(development, developmentEligible),
@@ -163,13 +193,35 @@ export function projectInsights(store: MissionGoStore, productIds: string[], que
     returnRate: "Failed / (passed + failed) human verification rounds decided in the period; pending and manual overrides excluded.",
     statusFilter: "Filters current status. periodEndByStatus is reconstructed separately from events.",
     stalled: "Open items in the same stage for at least 7 calendar days; unknown stage entry times are excluded.",
+    trend: "Daily created/completed count distinct items within each day. An item completed on different days appears on each day; period completion totals deduplicate across the entire period. Backlog uses reconstructed day-end status, or dataAsOf for an unfinished day; unknown statuses are excluded and reported.",
+    repeatReturns: "Items with at least two failed human verification rounds in the selected period; total historical failures are shown separately.",
     history: "Transferred source items and copied history excluded to avoid double counting; dimensions use current product/type. Missing historical times are not inferred from comments." };
   if (detail) {
-    const rows: Array<Record<string, unknown>> = result.flatMap(p => p.rows.map(row => ({ productId: p.productId, productName: p.productName, ...row })));
-    if (detail.metric === "stalled" || detail.metric === "backlog") rows.sort((a,b) => Number(b.stageHours ?? -1) - Number(a.stageHours ?? -1));
+    const rows = result.flatMap(p => p.rows);
+    if (detail.metric === "stalled" || detail.metric === "backlog") rows.sort((a,b) => Number(b.stageHours ?? -1) - Number(a.stageHours ?? -1) || a.itemKey.localeCompare(b.itemKey));
+    if (detail.metric === "repeat_returned" || detail.metric === "returned") rows.sort((a,b) => b.verificationFailuresInPeriod - a.verificationFailuresInPeriod || a.itemKey.localeCompare(b.itemKey));
     const limit = Math.max(1, Math.min(detail.limit ?? 50, 100)); const offset = Math.max(0, detail.offset ?? 0);
     return { period, definitions, metric: detail.metric, total: rows.length, items: rows.slice(offset, offset + limit),
       ...(offset + limit < rows.length ? { nextOffset: offset + limit } : {}), invalidEventCount };
   }
-  return { period, definitions, invalidEventCount, projects: result.map(({ rows: _rows, ...summary }) => summary) };
+  const projects: InsightProject[] = result.map(({rows: _rows, ...summary}) => summary);
+  const counts = {created:0,completed:0,development_complete:0,pending_verification:0,returned:0,reopened:0,backlog:0,stalled:0,period_end_backlog:0,repeat_returned:0};
+  const aggregate: InsightMetrics = { counts, createdByType: countBy(WORK_ITEM_TYPES), currentByStatus: countBy(WORK_ITEM_STATUSES), periodEndByStatus: countBy(WORK_ITEM_STATUSES),
+    verificationReturnRate: {failedRounds:0,passedRounds:0,decidedRounds:0,rate:null},
+    deliveryCycle: durationStats(allDelivery, projects.reduce((n,p)=>n+p.counts.completed,0)),
+    developmentCycle: durationStats(allDevelopment, projects.reduce((n,p)=>n+p.developmentCycle.eligibleCount,0)),
+    quality: {missingCreationEvents:0,unknownPeriodEnd:0,estimatedEventTimes:0},
+    ...(query.includeTrend ? {trend: days.map(day=>({date:day.date,created:0,completed:0,backlog:0,unknownStatusCount:0}))} : {}) };
+  for (const project of projects) {
+    for (const key of Object.keys(counts) as Array<keyof typeof counts>) counts[key] += project.counts[key];
+    for (const type of WORK_ITEM_TYPES) aggregate.createdByType[type] += project.createdByType[type];
+    for (const status of WORK_ITEM_STATUSES) { aggregate.currentByStatus[status] += project.currentByStatus[status]; aggregate.periodEndByStatus[status] += project.periodEndByStatus[status]; }
+    for (const key of ["missingCreationEvents","unknownPeriodEnd","estimatedEventTimes"] as const) aggregate.quality[key] += project.quality[key];
+    aggregate.verificationReturnRate.failedRounds += project.verificationReturnRate.failedRounds;
+    aggregate.verificationReturnRate.passedRounds += project.verificationReturnRate.passedRounds;
+    project.trend?.forEach((point,index)=>{ const target=aggregate.trend![index]!; target.created+=point.created; target.completed+=point.completed; target.backlog+=point.backlog; target.unknownStatusCount+=point.unknownStatusCount; });
+  }
+  const rate=aggregate.verificationReturnRate;
+  rate.decidedRounds=rate.failedRounds+rate.passedRounds; rate.rate=rate.decidedRounds ? rate.failedRounds/rate.decidedRounds : null;
+  return { period, definitions, invalidEventCount, projects, aggregate };
 }

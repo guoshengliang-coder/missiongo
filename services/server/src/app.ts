@@ -1,4 +1,6 @@
 import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema, humanConfirmationSchema } from "./status-checks.js";
+import { projectInsights } from "./project-insights.js";
+import { browserInsightSchema, browserInsightDetailSchema } from "./project-insights-query.js";
 import { transferWorkItem } from "./item-transfer.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -1816,6 +1818,27 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     titleRequests.set(accountId, next);
     if (next.count > 10) throw new MissionGoError("ai_rate_limited", "Please wait before generating another title.", 429);
     return { title: await aiTitle.generate(stringField(body, "content")!) };
+  });
+
+  const insightProductScope = (request: FastifyRequest, requested?: string[]) => {
+    if (requested) {
+      requested.forEach(id => { requireProductPermission(request,id); store.getProduct(id); });
+      return [...new Set(requested)];
+    }
+    const reachable = bearerAuthorized(request) ? "*" : accountStore.reachableProductIds(requireAccount(request),"view");
+    return store.listProducts().filter(p => reachable === "*" || reachable.includes(p.id)).map(p => p.id);
+  };
+  app.get("/api/v1/project-insights", async (request,reply) => {
+    reply.header("cache-control","no-store");
+    const parsed = browserInsightSchema.safeParse(request.query);
+    if (!parsed.success) throw invalidInput("Invalid statistics filters.");
+    return projectInsights(store,insightProductScope(request,parsed.data.productIds),{...parsed.data,includeTrend:true});
+  });
+  app.get("/api/v1/project-insights/items", async (request,reply) => {
+    reply.header("cache-control","no-store");
+    const parsed = browserInsightDetailSchema.safeParse(request.query);
+    if (!parsed.success) throw invalidInput("Invalid statistics filters or pagination.");
+    return projectInsights(store,insightProductScope(request,parsed.data.productIds),parsed.data,new Date(),parsed.data);
   });
 
   app.get("/api/v1/products", async (request) => {

@@ -1,6 +1,8 @@
 import type { AgentSessionFilter } from "./agent-session-view";
 import { ITEM_STATUSES, ITEM_TYPES, type WorkItemStatus, type WorkItemType } from "./types";
 
+export const STATISTICS_HISTORY_MARKER = "missiongo:statistics";
+
 export const ITEM_HISTORY_MARKER = "missiongo:item-detail";
 
 /**
@@ -60,7 +62,8 @@ export function backDepthFromState(state: unknown): number {
     + (markers[SIDEBAR_HISTORY_MARKER] ? 1 : 0)
     + (markers[AGENT_CONSOLE_HISTORY_MARKER] ? 1 : 0)
     + (markers[AGENT_CONVERSATION_HISTORY_MARKER] ? 1 : 0)
-    + (markers[QUICK_SETTINGS_HISTORY_MARKER] ? 1 : 0);
+    + (markers[QUICK_SETTINGS_HISTORY_MARKER] ? 1 : 0)
+    + (markers[STATISTICS_HISTORY_MARKER] ? 1 : 0);
 }
 
 export function agentConsoleIsOpen(url: URL = new URL(window.location.href)): boolean {

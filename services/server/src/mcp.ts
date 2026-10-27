@@ -1,4 +1,5 @@
 import { completionFields, completionPayload, normalizeCompletion } from "./completion.js";
+import { insightInputSchema } from "./project-insights-query.js";
 import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema } from "./status-checks.js";
 import { projectInsights } from "./project-insights.js";
 import { createHash } from "node:crypto";
@@ -6,7 +7,7 @@ import { open, readFile, stat } from "node:fs/promises";
 
 import { McpServer, createMcpHandler, type McpHttpHandler, type ServerContext } from "@modelcontextprotocol/server";
 import { skillVersionInfo } from "@missiongo/contracts";
-import { WORK_ITEM_PRIORITIES, WORK_ITEM_STATUSES, WORK_ITEM_TYPES } from "@missiongo/domain";
+import { INSIGHT_METRICS, WORK_ITEM_PRIORITIES, WORK_ITEM_STATUSES, WORK_ITEM_TYPES } from "@missiongo/domain";
 import sharp from "sharp";
 import { z } from "zod";
 
@@ -223,12 +224,7 @@ export function createMissionGoMcpServer(
     },
   );
 
-  const insightsInput = z.object({
-    productIds: z.array(z.string().min(1)).min(1).max(50).optional(),
-    period: z.enum(["yesterday", "today", "last7Days", "last30Days", "custom"]).default("yesterday"),
-    startDate: z.string().optional(), endDate: z.string().optional(), timezone: z.string().max(100).default("Asia/Shanghai"),
-    types: z.array(z.enum(WORK_ITEM_TYPES)).max(5).optional(), statuses: z.array(z.enum(WORK_ITEM_STATUSES)).max(8).optional(),
-  });
+  const insightsInput = insightInputSchema;
   const insightScope = (ctx: ServerContext, requested?: string[]) => {
     const accessible = store.listProducts().filter(p => hasProductAccess(accountAccess(ctx), p.id)).map(p => p.id);
     if (requested) requested.forEach(id => requireProductAccess(ctx,id));
@@ -239,14 +235,14 @@ export function createMissionGoMcpServer(
     description: "Read permission-scoped project totals for a calendar period: created, developed, published for verification, human-completed, backlog, durations and verification return rate. No attachments or GitHub access. Definitions, sample coverage, timezone and data cutoff accompany every result.",
     inputSchema: insightsInput,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input,ctx) => textResult(projectInsights(store, insightScope(ctx,input.productIds), input)));
+  }, async (input,ctx) => textResult({...projectInsights(store, insightScope(ctx,input.productIds), input)}));
   server.registerTool("list_project_insight_items", {
     title: "Expand one project metric into paginated items",
     description: "Read item keys, titles, current and historical statuses and durations supporting one metric. Returns no comments or attachments; paginate with nextOffset. Reopened items and repeated verification rounds remain explicit.",
-    inputSchema: insightsInput.extend({ metric: z.enum(["created", "completed", "development_complete", "pending_verification", "returned", "backlog", "stalled"]),
+    inputSchema: insightsInput.extend({ metric: z.enum(INSIGHT_METRICS),
       limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).max(1000000).default(0) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input,ctx) => textResult(projectInsights(store, insightScope(ctx,input.productIds), input, new Date(), input)));
+  }, async (input,ctx) => textResult({...projectInsights(store, insightScope(ctx,input.productIds), input, new Date(), input)}));
   const checks = new StatusChecks(store);
   server.registerTool("get_item_status_checks", {
     title: "Read the item's handover and check results",
