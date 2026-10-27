@@ -20,7 +20,8 @@ async function seed() {
   directories.push(directory);
   const store = new MissionGoStore(join(directory, "missiongo.sqlite"));
   stores.push(store);
-  const product = store.createProduct({ name: "Hermes Go", keyPrefix: "HG" });
+  let product = store.createProduct({ name: "Hermes Go", keyPrefix: "HG" });
+  product = store.setProductReleaseArtifacts(product.id,["web","androidApp","androidSdk","macosApp"]);
   const item = store.createWorkItem({
     productId: product.id,
     type: "bug",
@@ -250,15 +251,15 @@ describe("work-item event attribution", () => {
     ], idempotencyKey: "complete" }).status).toBe("pending_verification");
   });
 
-  it("rejects a product artifact list that is empty or malformed", async () => {
+  it("allows an empty project artifact list and rejects malformed identifiers", async () => {
     const { store, product } = await seed();
-    expect(() => store.setProductReleaseArtifacts(product.id, [])).toThrow(/between 1 and/);
+    expect(store.setProductReleaseArtifacts(product.id, []).releaseArtifacts).toEqual([]);
     expect(() => store.setProductReleaseArtifacts(product.id, ["web", "web"])).toThrow(/unique identifiers/);
     expect(() => store.setProductReleaseArtifacts(product.id, ["1bad"])).toThrow(/unique identifiers/);
     expect(() => store.setProductReleaseArtifacts(product.id, ["x".repeat(41)])).toThrow(/unique identifiers/);
-    // Resetting restores the default rather than leaving a product with none.
+    // Clearing a project does not import another project's artifacts.
     expect(store.setProductReleaseArtifacts(product.id, ["gateway"]).releaseArtifacts).toEqual(["gateway"]);
-    expect(store.setProductReleaseArtifacts(product.id, null).releaseArtifacts).toEqual(["web", "androidApp", "androidSdk", "macosApp"]);
+    expect(store.setProductReleaseArtifacts(product.id, null).releaseArtifacts).toEqual([]);
   });
 
   it("keeps the handover summary's own length limit, which is twice a transition note's", async () => {
@@ -302,7 +303,7 @@ describe("work-item event attribution", () => {
     store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
     for (const pullRequestUrl of ["", "   ", "github.com/owner/repo/pull/42"]) {
       expect(() => store.submitDevelopmentComplete({ itemKey: item.key, pullRequestUrl, requiredArtifacts: ["web"], idempotencyKey: `bad-${pullRequestUrl}` }))
-        .toThrowError(/Pull request URL/);
+        .toThrowError(/completion reference/);
     }
     expect(store.getWorkItem(item.key).status).toBe("in_progress");
   });

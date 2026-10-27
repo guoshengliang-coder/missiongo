@@ -1,3 +1,4 @@
+import type { CompletionReference } from "@missiongo/contracts";
 import type { ManagedDecision, ManagedDecisionGuard } from "@missiongo/domain";
 import { attachmentPreviewPath, attachmentThumbnailPath } from "./attachment-thumbnail";
 import type { FontScale } from "./font-scale";
@@ -248,9 +249,9 @@ export interface Bootstrap {
 }
 
 export interface StatusCheckRecord {
-  id: string; itemKey: string; productId: string; itemStatus: WorkItemStatus; pullRequestUrl: string;
+  id: string; itemKey: string; productId: string; itemStatus: WorkItemStatus; pullRequestUrl: string; completion: CompletionReference;
   requiredArtifacts: string[] | null; noReleaseReason: string | null; status: string; reason: string;
-  checkedAt: string | null; requestedAt: string | null; evidenceUpdatedAt: string; evidenceSource: string;
+  checkedAt: string | null; requestedAt: string | null; evidenceUpdatedAt: string; evidenceSource: string; evidenceReporter?: {accountId?:string;note?:string;recordedAt?:string};
   evidence: { merged?: {commit: string; occurredAt: string}; releases?: Array<{artifact:string;version:string;sourceCommit:string;verifiedAt:string}> };
 }
 export interface StatusCheckPage { items: StatusCheckRecord[]; nextOffset?: number; queued?: number; missingAssociation?: boolean;
@@ -265,8 +266,11 @@ export const api = {
     return request<StatusCheckPage>(itemKey ? `/api/v1/items/${encodeURIComponent(itemKey)}/status-checks`
       : `/api/v1/products/${encodeURIComponent(productId)}/status-checks`, {method:"POST"});
   },
-  registerHandover(itemKey: string, input: {pullRequestUrl:string;requiredArtifacts?:string[];noReleaseReason?:string}) {
+  registerHandover(itemKey: string, input: {completion:CompletionReference;requiredArtifacts?:string[];noReleaseReason?:string}) {
     return request<{handover:StatusCheckRecord}>(`/api/v1/items/${encodeURIComponent(itemKey)}/handover`,{method:"PUT",body:JSON.stringify(input)});
+  },
+  confirmHandover(itemKey: string, handoverId: string, input: {stage:"integration";commit:string;note:string} | {stage:"release";note:string;releases:Array<{artifact:string;version:string;sourceCommit:string}>}) {
+    return request<{handover:StatusCheckRecord}>(`/api/v1/items/${encodeURIComponent(itemKey)}/handovers/${encodeURIComponent(handoverId)}/confirm`, {method:"POST",body:JSON.stringify(input)});
   },
   getAiTitleSettings: () => request<{ configured: boolean; agentAttentionEnabled: boolean }>("/api/v1/ai/title-settings"),
   setAiTitleKey: (apiKey: string | null) => request<{ configured: boolean; agentAttentionEnabled: boolean }>("/api/v1/ai/title-settings", {

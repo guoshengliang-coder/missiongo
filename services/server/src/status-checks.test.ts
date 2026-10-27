@@ -11,6 +11,7 @@ const merged={commit:"a".repeat(40),occurredAt:"2026-10-27T01:00:00Z"};
 const release=(artifact="web")=>({artifact,version:"1.2.0",sourceCommit:"b".repeat(40),containsMergeCommit:merged.commit,verifiedAt:"2026-10-27T01:00:00Z",receiptDigest:"c".repeat(64)});
 function seed(requiredArtifacts: string[] | undefined=["web"], noReleaseReason?:string) {
  const product=store.createProduct({name:"Project",keyPrefix:"PRJ"});
+ store.setProductReleaseArtifacts(product.id,["web","androidApp","androidSdk","macosApp"]);
  const item=store.createWorkItem({productId:product.id,title:"Fix",description:"Fix flow",type:"bug",priority:"normal",environment:{platform:"web"}});
  store.transitionWorkItem({itemKey:item.key,to:"ready",actor:"human",reason:"triaged"});
  store.claimWorkItem({itemKey:item.key,agentId:"test",idempotencyKey:"claim"});
@@ -95,5 +96,57 @@ describe("durable handover checks",()=>{
   const {checks,handover,item}=seed(["web","macosApp"]);
   checks.report(handover.id,{merged,releases:[release()]},{accountId:"account-1"});
   expect(checks.register(item.key,"account-1",{pullRequestUrl:pr,requiredArtifacts:["web"]}).itemStatus).toBe("pending_verification");
+ });
+});
+
+describe("platform-independent handover", () => {
+ it.each([
+  {kind:"gitlab" as const,url:"https://git.example.test/group/sub/project/-/merge_requests/12"},
+  {kind:"commit" as const,commit:merged.commit,targetBranch:"main"},
+ ])("hands off $kind integration and custom project artifacts", completion => {
+  const {item,product,checks}=seed();
+  store.setProductReleaseArtifacts(product.id,["gateway","desktop"]);
+  const handover=checks.register(item.key,"account-1",{completion,requiredArtifacts:["gateway","desktop"]});
+  expect(checks.report(handover.id,{merged,releases:[release("gateway")]},{accountId:"account-1"}).itemStatus).toBe("development_complete");
+  // The recorded scope remains authoritative even if settings change afterwards.
+  store.setProductReleaseArtifacts(product.id,["next-release"]);
+  expect(checks.report(handover.id,{releases:[release("gateway"),release("desktop")]},{accountId:"account-1"})).toMatchObject({itemStatus:"pending_verification",completion});
+  expect(store.getTimeline(item.key).find(e=>e.toStatus==="pending_verification")?.payload.completion).toEqual(completion);
+ });
+ it("requires a real person for manual integration and records both confirmation stages",()=>{
+  const {item,checks}=seed();
+  const completion={kind:"manual" as const,commit:merged.commit,description:"Offline delivery"};
+  const handover=checks.register(item.key,"account-1",{completion,requiredArtifacts:["web"]});
+  expect(handover.status).toBe("waiting_confirmation");
+  expect(checks.request(item.productId,"account-1").queued).toBe(0);
+  expect(()=>checks.report(handover.id,{merged},{accountId:"agent"})).toThrow(/human confirmation/);
+  expect(()=>store.submitDevelopmentComplete({itemKey:item.key,completion,requiredArtifacts:["web"],idempotencyKey:"agent-manual"})).toThrow(/signed-in person/);
+  expect(checks.confirm(handover.id,"human-1",{stage:"integration",commit:merged.commit,note:"Confirmed main contains the fix"})).toMatchObject({itemStatus:"development_complete",evidenceSource:"human_confirmation",evidenceReporter:{accountId:"human-1"}});
+  expect(()=>checks.confirm(handover.id,"human-1",{stage:"release",note:"Published",releases:[]})).toThrow(/every required artifact/);
+  expect(checks.confirm(handover.id,"human-1",{stage:"release",note:"Installed offline build",releases:[{artifact:"web",version:"2.0",sourceCommit:merged.commit}]})).toMatchObject({itemStatus:"pending_verification",evidenceSource:"human_confirmation"});
+  const transitions=store.getTimeline(item.key).filter(e=>["development_complete","pending_verification"].includes(e.toStatus ?? ""));
+  expect(transitions.map(e=>[e.actorKind,e.accountId,e.payload.evidenceSource])).toEqual([["human","human-1","human_confirmation"],["human","human-1","human_confirmation"]]);
+  expect(store.getWorkItem(item.key).status).not.toBe("done");
+ });
+ it("allows a person to arrange verification for explicitly no-release local work",()=>{
+  const {item,checks}=seed();
+  const handover=checks.register(item.key,"account-1",{completion:{kind:"commit",commit:merged.commit,targetBranch:"main"},requiredArtifacts:[],noReleaseReason:"Documentation, inspect the source"});
+  checks.report(handover.id,{merged},{accountId:"executor"});
+  expect(store.getWorkItem(item.key).status).toBe("development_complete");
+  expect(checks.confirm(handover.id,"human-1",{stage:"release",note:"Review source directly",releases:[]}).itemStatus).toBe("pending_verification");
+ });
+ it("rejects mismatched local commits and invalidates proof when a reference changes",()=>{
+  const {item,checks}=seed();
+  const handover=checks.register(item.key,"account-1",{completion:{kind:"commit",commit:merged.commit,targetBranch:"main"},requiredArtifacts:["web"]});
+  expect(()=>checks.report(handover.id,{merged:{...merged,commit:"f".repeat(40)}},{accountId:"executor"})).toThrow(/registered commit/);
+  const changed=checks.register(item.key,"account-1",{completion:{kind:"commit",commit:"d".repeat(40),targetBranch:"main"},requiredArtifacts:["web"]});
+  expect(changed.evidence.merged).toBeUndefined();
+  expect(()=>checks.report(changed.id,{merged},{accountId:"executor"})).toThrow(/registered commit/);
+ });
+ it("does not invent release artifacts for a newly created product",()=>{
+  const product=store.createProduct({name:"Local project",keyPrefix:"LOC"});
+  expect(product.releaseArtifacts).toEqual([]);
+  expect(store.setProductReleaseArtifacts(product.id,["cli","server"]).releaseArtifacts).toEqual(["cli","server"]);
+  expect(store.setProductReleaseArtifacts(product.id,null).releaseArtifacts).toEqual([]);
  });
 });

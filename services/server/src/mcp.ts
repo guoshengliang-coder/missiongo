@@ -1,3 +1,4 @@
+import { completionFields, completionPayload, normalizeCompletion } from "./completion.js";
 import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema } from "./status-checks.js";
 import { projectInsights } from "./project-insights.js";
 import { createHash } from "node:crypto";
@@ -309,7 +310,7 @@ export function createMissionGoMcpServer(
     {
       title: "List development-complete work awaiting a verified release",
       description:
-        "For one authorized product, list development-complete items whose handover records a pull request and "
+        "For one authorized product, list development-complete items whose handover records an integration reference and "
         + "nonempty required artifacts. Explicit no-release work is excluded. The release client must verify all current public artifacts and the item before writing.",
       inputSchema: z.object({
         productId: z.string().min(1),
@@ -329,10 +330,12 @@ export function createMissionGoMcpServer(
       const candidates = items.flatMap((item) => {
         const handover = [...store.getTimeline(item.key)].reverse()
           .find((event) => !event.historySourceKey && event.toStatus === "development_complete" && event.eventType === "status_changed");
-        const pullRequestUrl = handover?.payload.pullRequestUrl;
+        if (!handover) return [];
+        let completion;
+        try { completion = normalizeCompletion(handover.payload); } catch { return []; }
         const requiredArtifacts = handover?.payload.requiredArtifacts;
-        return typeof pullRequestUrl === "string" && pullRequestUrl.startsWith("https://") && Array.isArray(requiredArtifacts) && requiredArtifacts.length > 0
-          ? [{ itemKey: item.key, pullRequestUrl, requiredArtifacts }]
+        return Array.isArray(requiredArtifacts) && requiredArtifacts.length > 0
+          ? [{ itemKey: item.key, ...completionPayload(completion), requiredArtifacts }]
           : [];
       });
       const lastKey = items.at(-1)?.key;
@@ -681,10 +684,9 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "submit_development_complete",
     {
-      title: "Record merged work as development complete",
+      title: "Record integrated work as development complete",
       description:
-        "Move an in-progress item to development complete only after checking the PR is merged with "
-        + "`gh pr view <url> --json state,mergedAt`, with required repository checks passing. "
+        "Move work to development complete after verifying GitHub PR merge (gh), GitLab MR merge (glab), or a local commit included in targetBranch (git merge-base --is-ancestor), with required checks passing. Manual completion is confirmed only by a signed-in person in the console. "
         + "Enumerate artifacts using the current product repository's actual diff and release rules, never another "
         + "repository's path mapping, and pick identifiers from the product's `releaseArtifacts` in list_products. "
         + "Explicit no-release work may use requiredArtifacts: [] only with noReleaseReason explaining scope, evidence "
@@ -692,7 +694,7 @@ export function createMissionGoMcpServer(
         + "No-release work waits for a person to arrange verification; this tool never proves publication or acceptance.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
-        pullRequestUrl: z.string().min(1).max(500).startsWith("https://"),
+        ...completionFields,
         requiredArtifacts: z.array(z.string().regex(RELEASE_ARTIFACT_ID_PATTERN)).max(MAX_RELEASE_ARTIFACTS),
         noReleaseReason: z.string().trim().min(1).max(4_000).optional(),
         summary: z.string().min(1).max(4_000).optional(),
@@ -706,12 +708,12 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, pullRequestUrl, requiredArtifacts, noReleaseReason, summary, idempotencyKey }, ctx) => {
+    async ({ itemKey, completion, pullRequestUrl, requiredArtifacts, noReleaseReason, summary, idempotencyKey }, ctx) => {
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
       const item = store.submitDevelopmentComplete({
         itemKey: requireItemAccess(ctx, store, itemKey),
-        pullRequestUrl,
+        completion: normalizeCompletion({ completion, pullRequestUrl }),
         requiredArtifacts,
         ...(noReleaseReason ? { noReleaseReason } : {}),
         ...(summary ? { summary } : {}),
@@ -734,10 +736,10 @@ export function createMissionGoMcpServer(
     "submit_for_verification",
     {
       title: "Hand published work over for verification",
-      description: "Only after independently checking the merged PR, verified release receipt and every required public artifact, move a development-complete item to pending verification. Read the item fully and write a release comment first. Artifacts must match the identifiers recorded at handover. The receipt digest and artifact versions are recorded for audit; the server cannot itself verify GitHub or public downloads.",
+      description: "Only after independently checking the integration reference, verified release receipt and every required public artifact, move a development-complete item to pending verification. Read the item fully and write a release comment first. Artifacts must match the identifiers recorded at handover. The receipt digest and artifact versions are recorded for audit; the server cannot itself verify the repository host or public downloads.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
-        pullRequestUrl: z.string().min(1).max(500).startsWith("https://"),
+        ...completionFields,
         releases: z.array(z.object({
           artifact: z.string().regex(RELEASE_ARTIFACT_ID_PATTERN),
           version: z.string().min(1).max(100),
@@ -749,11 +751,11 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, pullRequestUrl, releases, deployedCommit, receiptDigest, idempotencyKey }, ctx) => {
+    async ({ itemKey, completion, pullRequestUrl, releases, deployedCommit, receiptDigest, idempotencyKey }, ctx) => {
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
       const item = store.submitForVerification({
-        itemKey: requireItemAccess(ctx, store, itemKey), pullRequestUrl, releases, deployedCommit, receiptDigest,
+        itemKey: requireItemAccess(ctx, store, itemKey), completion: normalizeCompletion({ completion, pullRequestUrl }), releases, deployedCommit, receiptDigest,
         attribution: { accountId: access.accountId, ...(access.clientId ? { clientId: access.clientId } : {}) },
         idempotencyKey,
       });
@@ -969,9 +971,9 @@ export function createMissionGoMcpServer(
 
   server.registerTool(
     "register_item_handover", {
-    title: "Associate a PR and release scope with the current work round",
-    description: "After reading the user-directed item, register its PR before merge. A PR merged before this work round needs human review. requiredArtifacts is an explicitly confirmed subset of the product artifacts; omit for unknown scope, or send [] with noReleaseReason. A durable record lets the node detect a later merge even if the conversation stops. Changes are constrained to handover metadata, never item prose or acceptance.",
-    inputSchema: handoverRegistrationSchema.extend({itemKey:z.string().min(2).max(50)}),
+    title: "Associate completion and release scope with the current work round",
+    description: "After reading the user-directed item, register its completion reference (GitHub PR, GitLab MR, local commit with targetBranch, or manual confirmation). Integration occurring before this work round needs human review. requiredArtifacts is an explicitly confirmed subset of the product artifacts; omit for unknown scope, or send [] with noReleaseReason. A durable record lets the node detect a later merge even if the conversation stops. Changes are constrained to handover metadata, never item prose or acceptance.",
+    inputSchema: handoverRegistrationSchema.safeExtend({itemKey:z.string().min(2).max(50)}),
     annotations: { readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false },
   }, async ({itemKey,...input},ctx) => {
     requireWriteScope(ctx); const key = requireItemAccess(ctx,store,itemKey);

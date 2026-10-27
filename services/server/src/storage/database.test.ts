@@ -15,6 +15,33 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("adds completion references without changing legacy handovers or project artifacts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-completion-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    seeded.close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      ALTER TABLE status_handovers DROP COLUMN completion_json;
+      DELETE FROM schema_migrations WHERE version = 202610270743;
+      INSERT INTO products (id,key_prefix,name,created_at,updated_at) VALUES ('p','OLD','Existing project','2026-10-27T00:00:00Z','2026-10-27T00:00:00Z');
+      INSERT INTO work_items (id,item_key,sequence,product_id,type,priority,status,title,description,created_at,updated_at)
+        VALUES ('i','OLD-1',1,'p','task','normal','in_progress','Fix','Existing work','2026-10-27T00:00:00Z','2026-10-27T00:00:00Z');
+      INSERT INTO status_handovers (id,item_id,account_id,round_key,pull_request_url,required_json,created_at,updated_at)
+        VALUES ('h','i','account','round','https://github.com/example/project/pull/1','["web"]','2026-10-27T00:00:00Z','2026-10-27T00:00:00Z');
+    `);
+    legacy.close();
+    const migrated = new MissionGoDatabase(path);
+    try {
+      expect(migrated.connection.prepare("SELECT pull_request_url,required_json,completion_json FROM status_handovers WHERE id='h'").get()).toEqual({
+        pull_request_url:"https://github.com/example/project/pull/1", required_json:'["web"]', completion_json:null,
+      });
+      expect(migrated.connection.prepare("SELECT release_artifacts FROM products WHERE id='p'").get()).toEqual({release_artifacts:null});
+      expect(migrated.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { migrated.close(); }
+  });
+
   it("adds development_complete to an existing work_items constraint without losing references", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-development-complete-migration-"));
     temporaryDirectories.push(directory);

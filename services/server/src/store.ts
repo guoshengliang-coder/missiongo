@@ -1,3 +1,4 @@
+import { completionPayload, normalizeCompletion, sameCompletion } from "./completion.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 
@@ -220,7 +221,7 @@ function parseReleaseArtifacts(value: string | null): readonly string[] {
   if (!value) return [...DEFAULT_RELEASE_ARTIFACTS];
   try {
     const parsed: unknown = JSON.parse(value);
-    if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((entry) => typeof entry === "string" && isReleaseArtifactId(entry))) {
+    if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === "string" && isReleaseArtifactId(entry))) {
       return parsed as string[];
     }
   } catch {
@@ -235,8 +236,8 @@ function parseReleaseArtifacts(value: string | null): readonly string[] {
  * route so both reject the same shapes.
  */
 function normalizedReleaseArtifacts(input: readonly string[]): readonly string[] {
-  if (input.length === 0 || input.length > MAX_RELEASE_ARTIFACTS) {
-    throw invalidInput(`A product needs between 1 and ${MAX_RELEASE_ARTIFACTS} release artifacts.`);
+  if (input.length > MAX_RELEASE_ARTIFACTS) {
+    throw invalidInput(`A product needs between 0 and ${MAX_RELEASE_ARTIFACTS} release artifacts.`);
   }
   if (new Set(input).size !== input.length || input.some((artifact) => !isReleaseArtifactId(artifact))) {
     throw invalidInput("Release artifacts must be unique identifiers of 1-40 letters, digits, hyphens or underscores, starting with a letter.");
@@ -307,8 +308,8 @@ export class MissionGoStore {
     try {
       this.database.connection
         .prepare(
-          `INSERT INTO products (id, key_prefix, name, created_at, updated_at, created_by_account_id)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO products (id, key_prefix, name, created_at, updated_at, created_by_account_id, release_artifacts)
+           VALUES (?, ?, ?, ?, ?, ?, '[]')`,
         )
         .run(id, keyPrefix, name, now, now, input.createdByAccountId ?? null);
     } catch (error) {
@@ -370,10 +371,10 @@ export class MissionGoStore {
     return this.getProduct(productId);
   }
 
-  /** Replace a product's declared release artifacts, or `null` to reset to the defaults. */
+  /** Replace a product's declared release artifacts, or `null` to clear the project list. */
   setProductReleaseArtifacts(productId: string, artifacts: readonly string[] | null): ProductSnapshot {
     this.getProduct(productId);
-    const stored = artifacts === null ? null : JSON.stringify(normalizedReleaseArtifacts(artifacts));
+    const stored = JSON.stringify(normalizedReleaseArtifacts(artifacts ?? []));
     this.database.connection
       .prepare("UPDATE products SET release_artifacts = ?, updated_at = ? WHERE id = ?")
       .run(stored, new Date().toISOString(), productId);
@@ -1421,11 +1422,10 @@ export class MissionGoStore {
   }
 
   /** Record merged work, separating an explicit no-release decision from missing evidence. */
-  submitDevelopmentComplete(input: SubmitDevelopmentCompleteInput, evidence?: { actor: "system"; occurredAt: string; handoverId: string }): WorkItemSnapshot {
+  submitDevelopmentComplete(input: SubmitDevelopmentCompleteInput, evidence?: { actor: "system" | "human"; occurredAt: string; handoverId: string }): WorkItemSnapshot {
     this.assertWorkItemWritable(input.itemKey);
-    const pullRequestUrl = requiredText(input.pullRequestUrl, "Pull request URL");
-    if (pullRequestUrl.length > 500) throw invalidInput("Pull request URL must be 500 characters or fewer.");
-    if (!pullRequestUrl.startsWith("https://")) throw invalidInput("Pull request URL must be an https:// address.");
+    const completion = normalizeCompletion(input);
+    if (completion.kind === "manual" && evidence?.actor !== "human") throw invalidInput("Human confirmation requires a signed-in person.");
     const requiredArtifacts = [...input.requiredArtifacts];
     if (requiredArtifacts.length > MAX_RELEASE_ARTIFACTS
       || new Set(requiredArtifacts).size !== requiredArtifacts.length
@@ -1472,9 +1472,9 @@ export class MissionGoStore {
         summary,
         now,
         input.attribution ?? {},
-        { pullRequestUrl, requiredArtifacts: [...requiredArtifacts].sort(),
+        { ...completionPayload(completion), requiredArtifacts: [...requiredArtifacts].sort(),
           ...(noReleaseReason ? { noReleaseReason } : {}),
-          ...(evidence ? { occurredAt: evidence.occurredAt, handoverId: evidence.handoverId, evidenceSource: "authorized_executor" } : {}) },
+          ...(evidence ? { occurredAt: evidence.occurredAt, handoverId: evidence.handoverId, evidenceSource: evidence.actor === "human" ? "human_confirmation" : "authorized_executor" } : {}) },
       );
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
@@ -1483,10 +1483,10 @@ export class MissionGoStore {
   }
 
   /** Accept a verified release only when every artifact recorded at merge is present. */
-  submitForVerification(input: SubmitForVerificationInput, evidence?: { actor: "system"; occurredAt: string; handoverId: string; requiredArtifacts: readonly string[] }): WorkItemSnapshot {
+  submitForVerification(input: SubmitForVerificationInput, evidence?: { actor: "system" | "human"; occurredAt: string; handoverId: string; requiredArtifacts: readonly string[] }): WorkItemSnapshot {
     this.assertWorkItemWritable(input.itemKey);
-    const pullRequestUrl = requiredText(input.pullRequestUrl, "Pull request URL");
-    if (!pullRequestUrl.startsWith("https://") || pullRequestUrl.length > 500) throw invalidInput("Pull request URL must be an https:// address.");
+    const completion = normalizeCompletion(input);
+    if (completion.kind === "manual" && evidence?.actor !== "human") throw invalidInput("Human confirmation requires a signed-in person.");
     if (!/^[0-9a-f]{40}$/.test(input.deployedCommit) || !/^[0-9a-f]{64}$/.test(input.receiptDigest)) {
       throw invalidInput("A verified release needs a deployed commit and receipt digest.");
     }
@@ -1504,19 +1504,19 @@ export class MissionGoStore {
         .find((event) => !event.historySourceKey && event.eventType === "status_changed" && event.toStatus === "development_complete");
       const required = evidence?.requiredArtifacts ?? handover?.payload.requiredArtifacts;
       const releases = input.releases;
-      if (handover?.payload.pullRequestUrl !== pullRequestUrl || !Array.isArray(required) || required.length === 0
+      if (!handover || !sameCompletion(normalizeCompletion(handover.payload), completion) || !Array.isArray(required) || required.length === 0
         || releases.length !== required.length
         || new Set(releases.map((release) => release.artifact)).size !== releases.length
         || releases.some((release) => !isReleaseArtifactId(release.artifact) || !required.includes(release.artifact)
           || !release.version.trim() || release.version.length > 100
           || !/^[0-9a-f]{40}$/.test(release.sourceCommit))) {
-        throw invalidInput("Release evidence does not cover the recorded merged PR and every required artifact.");
+        throw invalidInput("Release evidence does not cover the recorded integration and every required artifact.");
       }
       const now = new Date().toISOString();
       this.applyTransition(item, "pending_verification", evidence?.actor ?? "agent", "release_verified", undefined, now,
-        input.attribution ?? {}, { pullRequestUrl, releases, deployedCommit: input.deployedCommit,
+        input.attribution ?? {}, { ...completionPayload(completion), releases, deployedCommit: input.deployedCommit,
           receiptDigest: input.receiptDigest,
-          ...(evidence ? { occurredAt: evidence.occurredAt, handoverId: evidence.handoverId, evidenceSource: "authorized_executor" } : {}) });
+          ...(evidence ? { occurredAt: evidence.occurredAt, handoverId: evidence.handoverId, evidenceSource: evidence.actor === "human" ? "human_confirmation" : "authorized_executor" } : {}) });
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
       return result;

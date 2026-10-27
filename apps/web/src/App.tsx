@@ -3158,6 +3158,8 @@ function DetailPane({
                           </a>
                         </p>
                       )}
+                      {event.eventType === "handover_human_confirmed" && <p>{typeof event.payload.note === "string" ? event.payload.note : ""}</p>}
+                      {typeof event.payload.completion === "object" && event.payload.completion !== null && "commit" in event.payload.completion && typeof event.payload.completion.commit === "string" && <p><code>{event.payload.completion.commit}</code></p>}
                       {/* Why it moved. Going back to Ready has to say so, which is
                           the case this is here for; a handover carries the agent's
                           summary in the same field and is worth reading too. */}
@@ -5046,7 +5048,7 @@ function ReleaseArtifactsSettings({ product }: { product: Product }) {
             <button
               type="button"
               className="text-button"
-              disabled={artifacts.length <= 1 || mutation.isPending}
+              disabled={mutation.isPending}
               aria-label={`${t("delete")} ${artifact}`}
               onClick={() => save(artifacts.filter((entry) => entry !== artifact))}
             >

@@ -1,4 +1,4 @@
-import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema } from "./status-checks.js";
+import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema, humanConfirmationSchema } from "./status-checks.js";
 import { transferWorkItem } from "./item-transfer.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -2686,6 +2686,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const parsed = handoverRegistrationSchema.safeParse(request.body);
     if (!parsed.success) throw invalidInput(parsed.error.issues.map(e=>e.message).join("; "));
     return {handover:statusChecks.register(key,requireAccountId(request),parsed.data)};
+  });
+
+  app.post("/api/v1/items/:itemKey/handovers/:handoverId/confirm", async request => {
+    const user = sessionUser(request);
+    if (!user) throw new MissionGoError("authentication_required", "Human confirmation requires a signed-in console user.", 401);
+    const { itemKey, handoverId } = request.params as { itemKey: string; handoverId: string };
+    const key = requireItemPermission(request, itemKey, "operate");
+    if (statusChecks.snapshot(handoverId).itemKey !== key) throw notFound("Handover");
+    const parsed = humanConfirmationSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidInput("Provide confirmation notes and the integration commit or every required artifact's release details.");
+    return { handover: statusChecks.confirm(handoverId, user.id, parsed.data) };
   });
 
   app.post("/api/v1/node/register", async (request, reply) => {

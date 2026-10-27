@@ -2362,3 +2362,9 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .status-check-scope > label { display: grid; gap: 6px; }
 .status-check-scope fieldset { display: flex; flex-wrap: wrap; gap: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); }
 .status-check-scope fieldset label { display: flex; align-items: center; gap: 6px; min-height: 44px; }
+
+.status-check-scope .status-check-release-fields { display: grid; min-width: 0; }
+.status-check-scope .status-check-release-fields label { display: grid; }
+.status-check-release-fields input { min-width: 0; width: 100%; }
+/* This dialog can be opened inside the compact detail toolbar. Its commit evidence stays visible on phones. */
+.status-check-card code { display: inline; overflow-wrap: anywhere; }

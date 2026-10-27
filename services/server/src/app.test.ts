@@ -72,6 +72,7 @@ describe("Commenting over MCP", () => {
       headers: { authorization: "Bearer management-test-token" },
       payload: { name: "Hermes Go", keyPrefix: "HG" },
     })).json<{ id: string }>();
+    app.missionGoStore.setProductReleaseArtifacts(product.id, ["web", "androidApp", "androidSdk", "macosApp"]);
     await app.inject({
       method: "POST",
       url: "/api/v1/items",
@@ -103,6 +104,50 @@ describe("Commenting over MCP", () => {
     const writeToken = createAiAccessToken(adminAccount, aiUser, credentialsAt, "write-client", ["missiongo:read", "missiongo:write"]).token;
     return { app, call, readToken, writeToken, productId: product.id, adminAccount };
   }
+
+  it("keeps human confirmation behind a signed-in console session", async () => {
+    const { app, call, productId, writeToken } = await commentingApp();
+    const store = app.missionGoStore;
+    store.transitionWorkItem({itemKey:"HG-1",to:"ready",actor:"human",reason:"triaged"});
+    store.claimWorkItem({itemKey:"HG-1",agentId:"test",idempotencyKey:"manual-claim"});
+    const registration = await call(writeToken,1,"tools/call",{name:"register_item_handover",arguments:{
+      itemKey:"HG-1",completion:{kind:"manual",commit:"a".repeat(40),description:"Offline build"},requiredArtifacts:["web"],
+    }});
+    const registered = registration.result?.structuredContent as {handover:{id:string}};
+    const url = `/api/v1/items/HG-1/handovers/${registered.handover.id}/confirm`;
+    const input = {stage:"integration",commit:"a".repeat(40),note:"Verified on main"};
+    for (const token of ["management-test-token",writeToken]) {
+      expect((await app.inject({method:"POST",url,headers:{authorization:`Bearer ${token}`},payload:input})).statusCode).toBe(401);
+    }
+    const forged = await call(writeToken,2,"tools/call",{name:"report_handover_evidence",arguments:{
+      itemKey:"HG-1",handoverId:registered.handover.id,merged:{commit:"a".repeat(40),occurredAt:new Date().toISOString()},human:true,
+    }});
+    expect(forged.result?.isError).toBe(true);
+    expect(store.getWorkItem("HG-1").status).toBe("in_progress");
+    const login = await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:"mission-owner",password:"correct horse"}});
+    const headers = {cookie:login.headers["set-cookie"]!.split(";",1)[0]!};
+    const confirmed = await app.inject({method:"POST",url,headers,payload:input});
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json()).toMatchObject({handover:{itemStatus:"development_complete",evidenceSource:"human_confirmation"}});
+    const publication = await app.inject({method:"POST",url,headers,payload:{stage:"release",note:"Installed the offline build",releases:[{artifact:"web",version:"2.0",sourceCommit:"a".repeat(40)}]}});
+    expect(publication.statusCode).toBe(200);
+    expect(store.getWorkItem("HG-1").status).toBe("pending_verification");
+    expect(store.getProduct(productId).releaseArtifacts).toContain("web");
+  });
+
+  it.each([
+    {kind:"gitlab",url:"https://git.example.test/team/sub/project/-/merge_requests/12"},
+    {kind:"commit",commit:"a".repeat(40),targetBranch:"main"},
+  ])("accepts $kind references over MCP without a fabricated GitHub URL", async completion => {
+    const {app,call,writeToken} = await commentingApp();
+    const store=app.missionGoStore;
+    store.transitionWorkItem({itemKey:"HG-1",to:"ready",actor:"human",reason:"triaged"});
+    store.claimWorkItem({itemKey:"HG-1",agentId:"test",idempotencyKey:"platform-claim"});
+    const response=await call(writeToken,1,"tools/call",{name:"submit_development_complete",arguments:{itemKey:"HG-1",completion,requiredArtifacts:["web"],idempotencyKey:"platform-development"}});
+    expect(response.result?.structuredContent).toMatchObject({item:{status:"development_complete"}});
+    const published=await call(writeToken,2,"tools/call",{name:"submit_for_verification",arguments:{itemKey:"HG-1",completion,releases:[{artifact:"web",version:"1.0",sourceCommit:"a".repeat(40)}],deployedCommit:"a".repeat(40),receiptDigest:"b".repeat(64),idempotencyKey:"platform-published"}});
+    expect(published.result?.structuredContent).toMatchObject({item:{status:"pending_verification"}});
+  });
 
   it("writes a comment for a client the user granted writing to", async () => {
     const { app, call, writeToken } = await commentingApp();

@@ -1857,6 +1857,14 @@ export class MissionGoDatabase {
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202610270535,new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610270743").get()) {
+      this.transaction(() => {
+        this.connection.exec(`ALTER TABLE status_handovers ADD COLUMN completion_json TEXT
+          CHECK (completion_json IS NULL OR json_valid(completion_json));`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610270743,new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

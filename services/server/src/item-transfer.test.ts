@@ -143,13 +143,14 @@ describe("project transfer", () => {
 
   it("keeps copied release handovers historical", async () => {
     const { store, item, transfer } = await seed();
+    store.setProductReleaseArtifacts(item.productId,["web"]);
     store.database.connection.prepare("UPDATE work_items SET status = 'in_progress' WHERE id = ?").run(item.id);
-    store.submitDevelopmentComplete({ itemKey: item.key, pullRequestUrl: "https://example.test/pr/1", requiredArtifacts: ["web"], idempotencyKey: "merge" });
+    store.submitDevelopmentComplete({ itemKey: item.key, pullRequestUrl: "https://github.com/example/project/pull/1", requiredArtifacts: ["web"], idempotencyKey: "merge" });
     const moved = transfer();
     expect(moved.status).toBe("development_complete");
-    expect(() => store.submitForVerification({ itemKey: moved.key, pullRequestUrl: "https://example.test/pr/1",
+    expect(() => store.submitForVerification({ itemKey: moved.key, pullRequestUrl: "https://github.com/example/project/pull/1",
       releases: [{ artifact: "web", version: "test", sourceCommit: "a".repeat(40) }], deployedCommit: "a".repeat(40),
-      receiptDigest: "a".repeat(64), idempotencyKey: "release" })).toThrow(/recorded merged PR/);
+      receiptDigest: "a".repeat(64), idempotencyKey: "release" })).toThrow(/recorded integration/);
   });
 
   it("blocks managed stages and prevents a frozen scope from starting work later", async () => {
