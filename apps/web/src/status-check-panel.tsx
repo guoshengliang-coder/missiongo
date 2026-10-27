@@ -17,7 +17,7 @@ export function statusCheckLabel(status: string, chinese: boolean) { return copy
 
 export function StatusCheckButton({productId,itemKey,canOperate}:{productId:string;itemKey?:string;canOperate:boolean}) {
   const {locale} = useI18n(); const [open,setOpen] = useState(false);
-  return <><button type="button" className={itemKey ? "icon-button" : "secondary-button"} aria-label={locale === "zh-CN" ? "检查状态" : "Check status"} title={locale === "zh-CN" ? "检查状态" : "Check status"} onClick={()=>setOpen(true)}><ClipboardCheck size={16}/>{!itemKey && (locale === "zh-CN" ? "检查状态" : "Check status")}</button>
+  return <><button type="button" className={itemKey ? "icon-button" : "secondary-button status-check-entry"} aria-label={locale === "zh-CN" ? "检查状态" : "Check status"} title={locale === "zh-CN" ? "检查状态" : "Check status"} onClick={()=>setOpen(true)}><ClipboardCheck size={16}/>{!itemKey && <span className="status-check-entry-label">{locale === "zh-CN" ? "检查状态" : "Check status"}</span>}</button>
     {open && <StatusCheckPanel key={itemKey ?? productId} productId={productId} {...(itemKey ? {itemKey} : {})} canOperate={canOperate} onClose={()=>setOpen(false)}/>}</>;
 }
 function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{productId:string;itemKey?:string;canOperate:boolean;onClose:()=>void}) {

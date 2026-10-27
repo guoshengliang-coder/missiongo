@@ -25,7 +25,10 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
  });
 }
 test("product check entry shows daily schedule",async({page})=>{
+ await page.setViewportSize({width:375,height:812});
  await page.goto(`/?product=${fixture.productId}`);
+ const heading=page.locator(".workspace-head h1");
+ expect(await heading.evaluate(el=>el.getBoundingClientRect().height<=parseFloat(getComputedStyle(el).lineHeight)+2)).toBe(true);
  await page.getByRole("button",{name:"检查状态",exact:true}).click();
  const dialog=page.getByRole("dialog",{name:"状态检查",exact:true});await expect(dialog).toBeVisible();
  await expect(dialog.getByText("每天 09:00 · Asia/Shanghai",{exact:true})).toBeVisible();

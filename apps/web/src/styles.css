@@ -1879,6 +1879,8 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 }
 
 @media (max-width: 520px) {
+  .status-check-entry { flex: 0 0 44px; width: 44px; min-height: 44px; padding: 0; justify-content: center; }
+  .status-check-entry-label { display: none; }
   .app-shell.agent-console-open { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
   .agent-console-topbar { gap: 6px; }
   .agent-console-projects { gap: 5px; }
