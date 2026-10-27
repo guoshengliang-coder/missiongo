@@ -7,7 +7,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
   const created=await request.post("/api/v1/items",{data:{productId:fixture.productId,title:"Status check fixture",description:"Publication handover",type:"requirement",priority:"normal",status:"ready",environment:{platform:"web"}}});
   expect(created.status()).toBe(201);const item=await created.json() as {key:string};
   const moved=await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});expect(moved.status()).toBe(200);
-  await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
+  await page.setViewportSize({width,height:width === 375 ? 812 : 900});await page.emulateMedia({colorScheme:theme});
   await page.goto(`/?product=${fixture.productId}&item=${item.key}`);
   await page.locator(".detail-toolbar").getByRole("button",{name:"检查状态",exact:true}).click();
   const dialog=page.getByRole("dialog",{name:"状态检查",exact:true});await expect(dialog).toBeVisible();
@@ -40,7 +40,7 @@ test("local manual confirmation records integration and offline publication", as
  const created=await request.post("/api/v1/items",{data:{productId:fixture.productId,title:"Offline CLI delivery",description:"Manual evidence",type:"task",priority:"normal",status:"ready",environment:{platform:"other"}}});
  const item=await created.json() as {key:string};
  await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
- await page.setViewportSize({width:375,height:900});
+ await page.setViewportSize({width:375,height:812});
  await page.goto(`/?product=${fixture.productId}&item=${item.key}`);
  await page.locator(".detail-toolbar").getByRole("button",{name:"检查状态",exact:true}).click();
  const dialog=page.getByRole("dialog",{name:"状态检查",exact:true});
