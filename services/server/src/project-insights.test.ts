@@ -114,3 +114,47 @@ describe("Web statistics and shared aggregates (AND-297)",()=>{
   expect(empty.aggregate.counts.completed).toBe(0);expect(empty.aggregate.deliveryCycle.medianHours).toBeNull();
  });
 });
+
+describe("start to delivery and weekly throughput",()=>{
+ it("uses the first start and first release, excludes pre-start queue time and does not restart after returns",()=>{
+  at("2026-10-01T00:00:00Z");const {product,move}=seed();move("ready","triaged");
+  at("2026-10-05T00:00:00Z");move("in_progress","claim");
+  at("2026-10-06T00:00:00Z");move("development_complete","resolution_submitted");move("pending_verification","release_verified");
+  at("2026-10-20T00:00:00Z");move("ready","verification_failed","Returned");move("in_progress","claim");
+  at("2026-10-26T00:00:00Z");move("development_complete","resolution_submitted");move("pending_verification","release_verified");
+  const whole=projectInsights(store,[product.id],{period:"custom",startDate:"2026-10-01",endDate:"2026-10-27",includeTrend:true},now);
+  expect(whole.aggregate.startToDeliveryCycle).toMatchObject({sampleCount:1,eligibleCount:1,missingCount:0,medianHours:24});
+  expect(whole.aggregate.weeklyDeliveries?.map(week=>week.delivered)).toEqual([0,1,0,0,1]);
+  const later=projectInsights(store,[product.id],{period:"custom",startDate:"2026-10-20",endDate:"2026-10-27"},now);
+  expect(later.aggregate.startToDeliveryCycle.sampleCount).toBe(0);
+  expect(later.aggregate.counts.pending_verification).toBe(1);
+  // Pending verification remains backlog under the original definition.
+  expect(later.aggregate.counts.backlog).toBe(1);
+  const details=projectInsights(store,[product.id],{period:"custom",startDate:"2026-10-01",endDate:"2026-10-27"},now,{metric:"started_to_delivery"});
+  expect(details.items[0]).toMatchObject({firstStartedAt:"2026-10-05T00:00:00.000Z",firstDeliveredAt:"2026-10-06T00:00:00.000Z",startToDeliveryHours:24});
+ });
+ it("deduplicates a repeated delivery within each week, counts cross-week delivery and marks clipped weeks",()=>{
+  at("2026-10-20T00:00:00Z");const {product,move}=seed();move("ready","triaged");move("in_progress","claim");
+  for(const date of ["2026-10-20T01:00:00Z","2026-10-21T01:00:00Z","2026-10-26T01:00:00Z"]){
+   at(date);move("development_complete","resolution_submitted");move("pending_verification","release_verified");
+   move("ready","verification_failed","Returned");move("in_progress","claim");
+  }
+  const result=projectInsights(store,[product.id],{period:"custom",startDate:"2026-10-20",endDate:"2026-10-27",includeTrend:true},now);
+  expect(result.aggregate.weeklyDeliveries).toEqual([
+   {weekStart:"2026-10-19",weekEnd:"2026-10-25",startDate:"2026-10-20",endDate:"2026-10-25",delivered:1,partial:true},
+   {weekStart:"2026-10-26",weekEnd:"2026-11-01",startDate:"2026-10-26",endDate:"2026-10-27",delivered:1,partial:true},
+  ]);
+  expect(result.aggregate.counts.pending_verification).toBe(1);
+  expect(projectInsights(store,[product.id],{period:"custom",startDate:"2026-10-19",endDate:"2026-10-25",includeTrend:true},now).aggregate.weeklyDeliveries?.[0]?.partial).toBe(false);
+ });
+ it("reports missing starts rather than treating delivery as zero hours, and preserves all backlog statuses",()=>{
+  const {product,item,move}=seed();move("ready","triaged");move("in_progress","claim");
+  at("2026-10-26T00:00:00Z");move("development_complete","resolution_submitted");move("pending_verification","release_verified");
+  store.database.connection.prepare("DELETE FROM work_item_events WHERE item_id=? AND to_status='in_progress'").run(item.id);
+  const report=summary(product.id);
+  expect(report.startToDeliveryCycle).toMatchObject({sampleCount:0,eligibleCount:1,missingCount:1,medianHours:null});
+  expect(report.counts.backlog).toBe(1);
+  store.createWorkItem({productId:product.id,title:"Draft",description:"Wait",type:"task",priority:"low",environment:{platform:"web"}});
+  expect(summary(product.id).counts.backlog).toBe(2);
+ });
+});

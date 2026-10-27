@@ -1,3 +1,4 @@
+import { listInsightBatches, createInsightBatch, insightBatchProgress, deleteInsightBatch } from "./insight-batches.js";
 import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema, humanConfirmationSchema } from "./status-checks.js";
 import { projectInsights } from "./project-insights.js";
 import { browserInsightSchema, browserInsightDetailSchema } from "./project-insights-query.js";
@@ -1828,6 +1829,35 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const reachable = bearerAuthorized(request) ? "*" : accountStore.reachableProductIds(requireAccount(request),"view");
     return store.listProducts().filter(p => reachable === "*" || reachable.includes(p.id)).map(p => p.id);
   };
+  app.get("/api/v1/project-insights/batches", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return { batches: listInsightBatches(store, requireAccount(request).id) };
+  });
+  app.post("/api/v1/project-insights/batches", async (request, reply) => {
+    const accountId = requireAccount(request).id;
+    const body = objectBody(request.body);
+    if (Object.keys(body).some(key => !["name", "itemKeys"].includes(key)) || typeof body.name !== "string"
+      || !body.name.trim() || body.name.trim().length > 100 || !Array.isArray(body.itemKeys)
+      || !body.itemKeys.length || body.itemKeys.length > 500 || body.itemKeys.some(key => typeof key !== "string" || key.length > 100)) {
+      throw invalidInput("Choose a batch name and 1–500 item keys.");
+    }
+    const members = (body.itemKeys as string[]).map(key => {
+      const authorized = requireItemPermission(request, key, "view");
+      const item = store.getWorkItem(authorized);
+      return {itemId: item.id, itemKey: item.key};
+    });
+    reply.code(201);
+    return createInsightBatch(store, accountId, body.name, members);
+  });
+  app.get<{Params: {id: string}}>("/api/v1/project-insights/batches/:id", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return insightBatchProgress(store, requireAccount(request).id, request.params.id, insightProductScope(request));
+  });
+  app.delete<{Params: {id: string}}>("/api/v1/project-insights/batches/:id", async (request, reply) => {
+    deleteInsightBatch(store, requireAccount(request).id, request.params.id);
+    return reply.code(204).send();
+  });
+
   app.get("/api/v1/project-insights", async (request,reply) => {
     reply.header("cache-control","no-store");
     const parsed = browserInsightSchema.safeParse(request.query);

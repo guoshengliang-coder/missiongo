@@ -4,7 +4,7 @@ import { ITEM_TYPES, ITEM_STATUSES, type WorkItemType, type WorkItemStatus } fro
 
 export const STATISTICS_PERIODS = ["today","yesterday","last7Days","thisMonth","custom"] as const;
 export interface StatisticsFilters { product: string; period: typeof STATISTICS_PERIODS[number]; type: WorkItemType | "all"; start: string; end: string }
-export interface StatisticsSelection { metric: InsightMetric; product?: string | undefined; day?: string | undefined; status?: WorkItemStatus | undefined; offset: number }
+export interface StatisticsSelection { metric: InsightMetric; product?: string | undefined; day?: string | undefined; endDay?: string | undefined; status?: WorkItemStatus | undefined; offset: number }
 export const statisticsIsOpen = (url = new URL(window.location.href)) => url.searchParams.get("statistics") === "1";
 export function statisticsUrl(url = new URL(window.location.href)) {
   const next = new URL(url); next.searchParams.set("statistics","1"); next.searchParams.delete("item");
@@ -24,6 +24,7 @@ export function statisticsState(url = new URL(window.location.href)): {filters: 
   const offset = Number(get("Offset"));
   return {filters:{product:get("Project") || "all",period,type,start:get("Start"),end:get("End")},
     selection: metric ? {metric,product:get("DetailProject") || undefined,day:get("Day") || undefined,
+      ...(get("EndDay") ? {endDay: get("EndDay")} : {}),
       status: ITEM_STATUSES.find(s=>s===get("Status")),offset:Number.isSafeInteger(offset)&&offset>=0&&offset<=1000000 ? offset : 0} : null};
 }
 export function statisticsStateUrl(filters: StatisticsFilters, selection: StatisticsSelection | null, url = new URL(window.location.href)) {
@@ -31,7 +32,7 @@ export function statisticsStateUrl(filters: StatisticsFilters, selection: Statis
   for(const key of Array.from(next.searchParams.keys())) if(key.startsWith("stats")) next.searchParams.delete(key);
   const values = {Project:filters.product,Period:filters.period,Type:filters.type,
     Start:filters.period==="custom" ? filters.start : "",End:filters.period==="custom" ? filters.end : "",
-    Metric:selection?.metric,DetailProject:selection?.product,Day:selection?.day,Status:selection?.status,Offset:selection?.offset};
+    Metric:selection?.metric,DetailProject:selection?.product,Day:selection?.day,EndDay:selection?.endDay,Status:selection?.status,Offset:selection?.offset};
   for (const [key,value] of Object.entries(values)) if(value!==undefined && value!=="") next.searchParams.set(`stats${key}`,String(value));
   return `${next.pathname}${next.search}${next.hash}`;
 }
