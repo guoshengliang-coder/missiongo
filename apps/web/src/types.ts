@@ -86,8 +86,7 @@ export interface Product {
   readonly hasIcon: boolean;
   /**
    * Release artifact identifiers this product declares (AND-276), read from
-   * `list_products`. A product with none configured reports the defaults, so
-   * this is always a usable list.
+   * `list_products`. New products start with an empty list; historical configurations are preserved.
    */
   readonly releaseArtifacts: readonly string[];
 }

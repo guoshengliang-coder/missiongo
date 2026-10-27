@@ -19,6 +19,14 @@ public struct HandoverEvidence: Codable, Equatable, Sendable {
     public var failure: String?
 }
 
+public struct CompletionReference: Codable, Equatable, Sendable {
+    public let kind: String
+    public var url: String? = nil
+    public var commit: String? = nil
+    public var targetBranch: String? = nil
+    public var description: String? = nil
+}
+
 public struct StatusCheckJob: Codable, Equatable, Sendable {
     public let id: String
     public let productId: String
@@ -27,6 +35,7 @@ public struct StatusCheckJob: Codable, Equatable, Sendable {
     public let requiredArtifacts: [String]?
     public let evidence: HandoverEvidence
     public let leaseToken: String
+    public var completion: CompletionReference? = nil
 }
 
 /// This file is publication evidence produced by a publisher, not a file-to-artifact map.
@@ -51,20 +60,40 @@ public enum HandoverVerifier {
     static let commitPattern = AnchoredPattern("[a-f0-9]{40}")
     static let digestPattern = AnchoredPattern("[a-f0-9]{64}")
 
-    /// No shell, git fetch, checkout, or server-provided command is executed.
-    public static func repository(_ remote: String) -> String? {
+    /// Bind every hosted request to the mapped repository's remote, including self-hosted GitLab.
+    static func remoteIdentity(_ remote: String) -> (host: String, path: String)? {
         let value = remote.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefix: String
-        if value.hasPrefix("git@github.com:") { prefix = "git@github.com:" }
-        else if value.hasPrefix("https://github.com/") { prefix = "https://github.com/" }
-        else if value.hasPrefix("ssh://git@github.com/") { prefix = "ssh://git@github.com/" }
-        else { return nil }
-        var repo = String(value.dropFirst(prefix.count))
-        if repo.hasSuffix(".git") { repo = String(repo.dropLast(4)) }
-        guard AnchoredPattern("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+").matches(repo) else { return nil }
-        return repo
+        let host: String
+        var path: String
+        if let url = URL(string: value), ["https", "ssh"].contains(url.scheme ?? ""), let name = url.host {
+            host = name.lowercased() + (url.scheme == "ssh" ? "" : url.port.map { ":\($0)" } ?? "")
+            path = String(url.path.drop(while: { $0 == "/" }))
+        } else if value.hasPrefix("git@"), let colon = value.firstIndex(of: ":") {
+            host = String(value[value.index(value.startIndex, offsetBy: 4)..<colon]).lowercased()
+            path = String(value[value.index(after: colon)...])
+        } else { return nil }
+        if path.hasSuffix(".git") { path = String(path.dropLast(4)) }
+        guard AnchoredPattern("[A-Za-z0-9.-]+(?::[0-9]+)?").matches(host),
+              AnchoredPattern("[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+").matches(path),
+              !path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }) else { return nil }
+        return (host, path)
+    }
+    public static func repository(_ remote: String) -> String? {
+        guard let identity = remoteIdentity(remote), identity.host == "github.com" else { return nil }
+        return identity.path
     }
 
+    private static func currentTimestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions.insert(.withFractionalSeconds)
+        return formatter.string(from: Date())
+    }
+    private static func validTimestamp(_ value: String) -> Bool {
+        let formatter = ISO8601DateFormatter()
+        if formatter.date(from: value) != nil { return true }
+        formatter.formatOptions.insert(.withFractionalSeconds)
+        return formatter.date(from: value) != nil
+    }
     private static let mergedCache = Locked<[String:HandoverEvidence.Merge]>([:])
     public static func verify(
         _ job: StatusCheckJob, run: CommandRunner,
@@ -78,23 +107,57 @@ public enum HandoverVerifier {
         var result = HandoverEvidence()
         guard Paths.isAbsolute(job.repoPath), !job.repoPath.contains("\0"), UUID(uuidString: job.id) != nil,
               UUID(uuidString: job.leaseToken) != nil else { result.failure = "failed"; return result }
-        let remote = await run("git", ["-C", job.repoPath, "config", "--get", "remote.origin.url"])
-        guard remote.code == 0, let repo = repository(remote.stdout),
-              job.pullRequestUrl.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                .hasPrefix("https://github.com/\(repo.lowercased())/pull/") else { result.failure = "permission_failed"; return result }
-        let number = job.pullRequestUrl.split(separator: "/").last.map(String.init) ?? ""
-        guard AnchoredPattern("[1-9][0-9]*").matches(number) else { result.failure = "failed"; return result }
-        let cacheKey = "\(repo.lowercased()):\(number)"
-        var merged = job.evidence.merged ?? mergedCache.current[cacheKey]
-        if merged == nil {
-            let response = await run("gh", ["pr", "view", number, "--repo", repo, "--json", "state,mergedAt,mergeCommit"])
-            guard response.code == 0 else { result.failure = "permission_failed"; return result }
-            struct PR: Decodable { let state: String; let mergedAt: String?; let mergeCommit: Commit?; struct Commit: Decodable { let oid: String } }
-            guard let pr = try? JSONDecoder().decode(PR.self, from: Data(response.stdout.utf8)) else { result.failure = "failed"; return result }
-            guard pr.state == "MERGED", let at = pr.mergedAt, let commit = pr.mergeCommit?.oid,
-                  commitPattern.matches(commit), ISO8601DateFormatter().date(from: at) != nil else { result.failure = "waiting_merge"; return result }
-            merged = .init(commit: commit, occurredAt: at)
-            mergedCache.withLock { if $0.count > 1000 { $0.removeAll() }; $0[cacheKey] = merged }
+        let reference = job.completion ?? CompletionReference(kind: job.pullRequestUrl.contains("/-/merge_requests/") ? "gitlab" : "github", url: job.pullRequestUrl)
+        if reference.kind == "manual" { result.failure = "evidence_missing"; return result }
+        var identity: (host: String, path: String)?
+        var merged: HandoverEvidence.Merge?
+        if reference.kind == "commit" {
+            guard let commit = reference.commit, commitPattern.matches(commit), let branch = reference.targetBranch,
+                  AnchoredPattern("[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}").matches(branch) else { result.failure = "failed"; return result }
+            let ref = branch.hasPrefix("refs/heads/") ? branch : "refs/heads/\(branch)"
+            let valid = await run("git", ["-C", job.repoPath, "check-ref-format", ref])
+            guard valid.code == 0 else { result.failure = "failed"; return result }
+            let target = await run("git", ["-C", job.repoPath, "rev-parse", "--verify", "\(ref)^{commit}"])
+            let tip = target.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard target.code == 0, commitPattern.matches(tip) else { result.failure = "evidence_missing"; return result }
+            let included = await run("git", ["-C", job.repoPath, "merge-base", "--is-ancestor", commit, tip])
+            guard included.code == 0 else { result.failure = included.code == 1 ? "waiting_merge" : "evidence_missing"; return result }
+            merged = job.evidence.merged ?? .init(commit: commit, occurredAt: currentTimestamp())
+        } else {
+            guard ["github", "gitlab"].contains(reference.kind), let rawURL = reference.url, let url = URL(string: rawURL),
+                  url.scheme == "https", let host = url.host, url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { result.failure = "failed"; return result }
+            let remote = await run("git", ["-C", job.repoPath, "config", "--get", "remote.origin.url"])
+            guard remote.code == 0, let repo = remoteIdentity(remote.stdout),
+                  repo.host == host.lowercased() + (url.port.map { ":\($0)" } ?? "") else { result.failure = "permission_failed"; return result }
+            identity = repo
+            let prefix = "/\(repo.path)/" + (reference.kind == "github" ? "pull/" : "-/merge_requests/")
+            let pathname = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard ("/" + pathname).lowercased().hasPrefix(prefix.lowercased()) else { result.failure = "permission_failed"; return result }
+            let number = String(("/" + pathname).dropFirst(prefix.count))
+            guard AnchoredPattern("[1-9][0-9]*").matches(number) else { result.failure = "failed"; return result }
+            let cacheKey = "\(reference.kind):\(repo.host):\(repo.path.lowercased()):\(number)"
+            merged = job.evidence.merged ?? mergedCache.current[cacheKey]
+            if merged == nil {
+                if reference.kind == "github" {
+                    let response = await run("gh", ["pr", "view", number, "--repo", "\(repo.host)/\(repo.path)", "--json", "state,mergedAt,mergeCommit"])
+                    guard response.code == 0 else { result.failure = "permission_failed"; return result }
+                    struct PR: Decodable { let state: String; let mergedAt: String?; let mergeCommit: Commit?; struct Commit: Decodable { let oid: String } }
+                    guard let pr = try? JSONDecoder().decode(PR.self, from: Data(response.stdout.utf8)) else { result.failure = "failed"; return result }
+                    guard pr.state == "MERGED", let at = pr.mergedAt, let commit = pr.mergeCommit?.oid,
+                          commitPattern.matches(commit), validTimestamp(at) else { result.failure = "waiting_merge"; return result }
+                    merged = .init(commit: commit, occurredAt: at)
+                } else {
+                    let project = repo.path.replacingOccurrences(of: "/", with: "%2F")
+                    let response = await run("glab", ["api", "--hostname", repo.host, "projects/\(project)/merge_requests/\(number)"])
+                    guard response.code == 0 else { result.failure = "permission_failed"; return result }
+                    struct MR: Decodable { let state: String; let merged_at: String?; let merge_commit_sha: String?; let squash_commit_sha: String?; let sha: String? }
+                    guard let mr = try? JSONDecoder().decode(MR.self, from: Data(response.stdout.utf8)) else { result.failure = "failed"; return result }
+                    guard mr.state == "merged", let at = mr.merged_at, let commit = mr.merge_commit_sha ?? mr.squash_commit_sha ?? mr.sha,
+                          commitPattern.matches(commit), validTimestamp(at) else { result.failure = "waiting_merge"; return result }
+                    merged = .init(commit: commit, occurredAt: at)
+                }
+                mergedCache.withLock { if $0.count > 1000 { $0.removeAll() }; $0[cacheKey] = merged }
+            }
         }
         guard let merged, commitPattern.matches(merged.commit) else { result.failure = "evidence_missing"; return result }
         result.merged = merged
@@ -112,11 +175,11 @@ public enum HandoverVerifier {
             guard let release = receipt.releases.first(where: { $0.artifact == artifact }),
                   commitPattern.matches(release.sourceCommit), !release.version.isEmpty, release.version.count <= 100 else { continue }
             // An immutable commit pair is checked once and shared across this node's jobs.
-            let containment = await containsMerge(repo: repo, merge: merged.commit, source: release.sourceCommit, run: run)
+            let containment = await containsMerge(repoPath: job.repoPath, host: identity?.host, repo: identity?.path, kind: reference.kind, merge: merged.commit, source: release.sourceCommit, run: run)
             if containment == .unavailable { result.failure = "permission_failed"; continue }
             guard containment == .contains, await prove(release) else { continue }
             releases.append(.init(artifact: artifact, version: release.version, sourceCommit: release.sourceCommit,
-                containsMergeCommit: merged.commit, verifiedAt: ISO8601DateFormatter().string(from: Date()), receiptDigest: digest))
+                containsMergeCommit: merged.commit, verifiedAt: currentTimestamp(), receiptDigest: digest))
         }
         result.releases = releases
         if releases.count != required.count && result.failure == nil { result.failure = "waiting_release" }
@@ -125,11 +188,15 @@ public enum HandoverVerifier {
 
     private enum Containment { case contains, absent, unavailable }
     private static let ancestryCache = Locked<Set<String>>([])
-    private static func containsMerge(repo: String, merge: String, source: String, run: CommandRunner) async -> Containment {
+    private static func containsMerge(repoPath: String, host: String?, repo: String?, kind: String, merge: String, source: String, run: CommandRunner) async -> Containment {
         if merge == source { return .contains }
-        let key = "\(repo):\(merge):\(source)"
+        let key = "\(repoPath):\(host ?? "local"):\(repo ?? ""):\(merge):\(source)"
         if ancestryCache.current.contains(key) { return .contains }
-        let response = await run("gh", ["api", "repos/\(repo)/compare/\(merge)...\(source)", "--jq", ".status"])
+        let local = await run("git", ["-C", repoPath, "merge-base", "--is-ancestor", merge, source])
+        if local.code == 0 { ancestryCache.withLock { $0.insert(key) }; return .contains }
+        if local.code == 1 { return .absent }
+        guard kind == "github", let host, let repo else { return .unavailable }
+        let response = await run("gh", ["api", "--hostname", host, "repos/\(repo)/compare/\(merge)...\(source)", "--jq", ".status"])
         guard response.code == 0 else { return .unavailable }
         guard ["ahead", "identical"].contains(response.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else { return .absent }
         ancestryCache.withLock { if $0.count > 1000 { $0.removeAll() }; $0.insert(key) }

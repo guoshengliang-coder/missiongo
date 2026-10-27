@@ -23,6 +23,7 @@ async function seed() {
   expect(response.statusCode).toBe(201);return response.json<{id:string}>();
  };
  const shared=await create("Shared","SHR"),hidden=await create("Private project","SEC");
+ app.missionGoStore.setProductReleaseArtifacts(shared.id,["web"]);
  const member=app.missionGoAccounts.createAccount({email:"member@example.test",password:"member-password-long",role:"member"});
  const permissions=await app.inject({method:"PUT",url:`/api/v1/accounts/${member.id}/products`,headers:{cookie},payload:{permissions:[{productId:shared.id,canView:true,canOperate:false,canUseAi:true}]}});expect(permissions.statusCode).toBe(200);
  const memberCookie=await login("member@example.test","member-password-long");

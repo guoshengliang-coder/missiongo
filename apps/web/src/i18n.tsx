@@ -170,10 +170,10 @@ const EN_MESSAGES = {
   productInformation: "Product information",
   moduleManagement: "Module management",
   releaseArtifacts: "Release artifacts",
-  releaseArtifactsHelp: "Identifiers this product publishes separately, such as a static web bundle, a gateway service or a connector. A development-complete handover may only name these, and a verified release must cover every one recorded. The list is never empty; resetting restores the defaults web, androidApp, androidSdk and macosApp.",
+  releaseArtifactsHelp: "Identifiers this product publishes separately, such as a static web bundle, a gateway service or a connector. A development-complete handover may only name these, and a verified release must cover every one recorded. Each project configures its own list; clearing it does not automatically mean an item needs no release.",
   releaseArtifactPlaceholder: "e.g. gateway",
   addReleaseArtifact: "Add artifact",
-  releaseArtifactsReset: "Reset to defaults",
+  releaseArtifactsReset: "Clear list",
   sdkTokens: "Feedback SDK tokens",
   sdkTokensHelp: "A token lets your Android app submit feedback into this product. The value is shown once, when it is created.",
   newSdkToken: "New token",
@@ -407,7 +407,7 @@ const EN_MESSAGES = {
   analysisProposal: "Proposal",
   analysisOpenQuestions: "Needs your call",
   agentAnalysis: "AI analysis",
-  mergedPullRequest: "Merged pull request",
+  mergedPullRequest: "Integration reference",
   derivedFrom: "Split off from",
   derivedItems: "Split-off items",
   derivedFromBadge: "From {key}",
@@ -1179,10 +1179,10 @@ const ZH_MESSAGES: Record<MessageKey, string> = {
   productInformation: "产品信息",
   moduleManagement: "模块管理",
   releaseArtifacts: "发布产物",
-  releaseArtifactsHelp: "这个产品单独发布的产物标识，例如 Web 静态包、Gateway 服务或独立 Connector。标记「开发完成」时只能登记这些标识，核实发布时必须覆盖记录的每一个。清单不会为空；重置会恢复默认的 web、androidApp、androidSdk 和 macosApp。",
+  releaseArtifactsHelp: "这个产品单独发布的产物标识，例如 Web 静态包、Gateway 服务或独立 Connector。标记「开发完成」时只能登记这些标识，核实发布时必须覆盖记录的每一个。各项目独立配置；清空清单不代表条目自动无需发布，仍须明确填写依据。",
   releaseArtifactPlaceholder: "例如 gateway",
   addReleaseArtifact: "新增产物",
-  releaseArtifactsReset: "恢复默认",
+  releaseArtifactsReset: "清空清单",
   sdkTokens: "反馈 SDK 令牌",
   sdkTokensHelp: "令牌让你的 Android App 把反馈提交到这个产品。明文只在创建时展示一次。",
   newSdkToken: "新建令牌",
@@ -1416,7 +1416,7 @@ const ZH_MESSAGES: Record<MessageKey, string> = {
   analysisProposal: "方案",
   analysisOpenQuestions: "待你确认",
   agentAnalysis: "AI 分析",
-  mergedPullRequest: "已合并的 PR",
+  mergedPullRequest: "集成依据",
   derivedFrom: "衍生自",
   derivedItems: "衍生条目",
   derivedFromBadge: "衍生自 {key}",
@@ -2079,8 +2079,8 @@ const ACTOR_LABELS: Record<Locale, Record<string, string>> = {
 };
 
 const EVENT_LABELS: Record<Locale, Record<string, string>> = {
-  en: { item_created: "Item created", item_updated: "Item updated", item_transferred_in: "Item transferred in", item_transferred_out: "Item transferred out", attachment_added: "Attachment added", attachment_removed: "Attachment deleted", attachment_replaced: "Attachment edited", derived_item_created: "Split off an item", comment_added: "Comment", comment_withdrawn: "Comment withdrawn", dispatched: "Dispatched to an agent" },
-  "zh-CN": { item_created: "已创建条目", item_updated: "已更新详情", item_transferred_in: "条目已迁入", item_transferred_out: "条目已迁出", attachment_added: "已添加附件", attachment_removed: "已删除附件", attachment_replaced: "已编辑附件", derived_item_created: "已衍生条目", comment_added: "评论", comment_withdrawn: "已撤回评论", dispatched: "已派给 Agent" },
+  en: { handover_human_confirmed: "Human handover confirmation", item_created: "Item created", item_updated: "Item updated", item_transferred_in: "Item transferred in", item_transferred_out: "Item transferred out", attachment_added: "Attachment added", attachment_removed: "Attachment deleted", attachment_replaced: "Attachment edited", derived_item_created: "Split off an item", comment_added: "Comment", comment_withdrawn: "Comment withdrawn", dispatched: "Dispatched to an agent" },
+  "zh-CN": { handover_human_confirmed: "人工确认交接", item_created: "已创建条目", item_updated: "已更新详情", item_transferred_in: "条目已迁入", item_transferred_out: "条目已迁出", attachment_added: "已添加附件", attachment_removed: "已删除附件", attachment_replaced: "已编辑附件", derived_item_created: "已衍生条目", comment_added: "评论", comment_withdrawn: "已撤回评论", dispatched: "已派给 Agent" },
 };
 
 interface I18nValue {

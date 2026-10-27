@@ -26,7 +26,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "get_attachment", access: "read", purpose: "Obtain controlled access to one work item attachment." },
   { name: "append_comment", access: "write", purpose: "Add one comment to a work item without changing anything a person wrote." },
   { name: "claim_item", access: "write", purpose: "Take a ready work item into progress." },
-  { name: "submit_development_complete", access: "write", purpose: "Record a verified merged PR and its release requirements, or an explicit reason no release is needed." },
+  { name: "submit_development_complete", access: "write", purpose: "Record verified GitHub/GitLab or local Git integration and its release requirements, or an explicit reason no release is needed." },
   { name: "submit_for_verification", access: "write", purpose: "Hand published work over for a person to verify, recording evidence for every required artifact." },
   { name: "create_item", access: "write", purpose: "Record a follow-up split off from another item, or an independent item in a product, after the user approved its content (including the product) in the session." },
   { name: "upload_attachment_chunk", access: "write", purpose: "Stage a bounded chunk of a user-approved attachment in an authorized product." },
@@ -34,7 +34,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "add_item_attachment", access: "write", purpose: "Attach a completed upload to a user-named work item without editing its fields." },
   { name: "register_agent_session", access: "write", purpose: "Associate a user-directed external conversation with an item already being handled, without claiming or controlling it." },
   { name: "report_agent_session", access: "write", purpose: "Report factual external-session progress independently of work-item status." },
-  { name: "register_item_handover", access: "write", purpose: "Register a PR and explicit release scope for this processing round." },
+  { name: "register_item_handover", access: "write", purpose: "Register GitHub/GitLab, local Git or human confirmation and explicit release scope for this processing round." },
   { name: "report_handover_evidence", access: "write", purpose: "Persist executor-verified merge and release facts and perform constrained handoffs." },
 ] as const satisfies readonly McpToolDefinition[];
 

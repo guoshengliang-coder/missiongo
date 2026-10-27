@@ -1,3 +1,4 @@
+import type { CompletionReference } from "@missiongo/contracts";
 import type {
   AttachmentKind,
   ActorKind,
@@ -45,8 +46,8 @@ export interface ProductSnapshot {
   /**
    * Release artifact identifiers this product declares (AND-276). Agents read
    * them from `list_products` and may only record these as required artifacts.
-   * Falls back to {@link DEFAULT_RELEASE_ARTIFACTS} when the product declares
-   * none, so products configured before this column existed keep working.
+   * New products start empty. Only legacy NULL values retain the historical
+   * artifacts so existing handovers keep working.
    */
   readonly releaseArtifacts: readonly string[];
 }
@@ -319,7 +320,7 @@ export interface ClaimWorkItemInput {
 export type ReleaseArtifact = string;
 
 /**
- * The artifacts every product starts with when it declares none of its own.
+ * Legacy artifacts for products created before project configuration existed.
  * These are MissionGo's historical set; keeping them as the fallback preserves
  * items handed over before products could configure a list.
  */
@@ -341,7 +342,8 @@ export function isReleaseArtifactId(value: string): boolean {
 
 export interface SubmitDevelopmentCompleteInput {
   readonly itemKey: string;
-  readonly pullRequestUrl: string;
+  readonly pullRequestUrl?: string;
+  readonly completion?: CompletionReference;
   /** Empty only when the merged PR needs no release and noReleaseReason is given. */
   readonly requiredArtifacts: readonly ReleaseArtifact[];
   readonly noReleaseReason?: string;
@@ -352,7 +354,8 @@ export interface SubmitDevelopmentCompleteInput {
 
 export interface SubmitForVerificationInput {
   readonly itemKey: string;
-  readonly pullRequestUrl: string;
+  readonly pullRequestUrl?: string;
+  readonly completion?: CompletionReference;
   readonly releases: readonly { artifact: ReleaseArtifact; version: string; sourceCommit: string }[];
   readonly deployedCommit: string;
   readonly receiptDigest: string;
