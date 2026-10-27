@@ -8,5 +8,8 @@
     "types": ["vite/client"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"],
-  "references": [{ "path": "../../packages/domain" }]
+  "references": [
+    { "path": "../../packages/domain" },
+    { "path": "../../packages/contracts" }
+  ]
 }
