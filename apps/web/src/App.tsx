@@ -1,3 +1,4 @@
+import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { Modal } from "./modal";
 import { StatusCheckButton } from "./status-check-panel";
 import { localizedErrorText } from "./error-text";
@@ -5,6 +6,7 @@ import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useR
 import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoginForm } from "./login-form";
 import {
+  BarChart3,
   ArrowLeft,
   Archive,
   ArrowRight,
@@ -160,6 +162,7 @@ import {
   ITEM_STATUS_NAV_ORDER,
   OVERLAY_HISTORY_MARKER,
   SIDEBAR_HISTORY_MARKER,
+  STATISTICS_HISTORY_MARKER,
   agentConsoleExitUrl,
   agentConsoleFilterFromUrl,
   agentConsoleIsOpen,
@@ -436,6 +439,8 @@ function useNearViewport<ElementType extends HTMLElement>(rootMargin = "160px"):
  */
 const SEARCH_SHORTCUT = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent) ? "⌘ K" : "Ctrl K";
 
+const StatisticsCenter = lazy(() => import("./statistics-center").then(module => ({default:module.StatisticsCenter})));
+
 export function App() {
   const queryClient = useQueryClient();
   const { statusLabel, t, typeLabel } = useI18n();
@@ -452,6 +457,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
   const [downloadsOpen, setDownloadsOpen] = useState(false);
+  const [statisticsOpen,setStatisticsOpen] = useState(statisticsIsOpen);
   const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [agentSessionId, setAgentSessionId] = useState<string | null>(agentSessionIdFromUrl);
@@ -537,6 +543,21 @@ export function App() {
    * can never be looking at a stale depth. See AND-28.
    */
   const syncBackDepth = () => reportAndroidBackDepth(backDepthFromState(history.state));
+
+  const openStatistics = () => {
+    const state = {...history.state};
+    const replacesDrawer = Boolean(state[SIDEBAR_HISTORY_MARKER]);
+    delete state[SIDEBAR_HISTORY_MARKER];
+    state[STATISTICS_HISTORY_MARKER] = true;
+    history[replacesDrawer ? "replaceState" : "pushState"](state,"",statisticsUrl());
+    setSidebarOpen(false); setSelectedItemKey(null); setStatisticsOpen(true);
+    setAgentConsoleOpen(false); setMobileSearchOpen(false); syncBackDepth();
+  };
+  const closeStatistics = () => {
+    if (history.state?.[STATISTICS_HISTORY_MARKER]) { history.back(); return; }
+    history.replaceState(history.state,"",statisticsExitUrl());
+    setStatisticsOpen(false); syncBackDepth();
+  };
 
   const openAgentConsole = () => {
     // A deep-link filter applies only to that visit; a later ordinary opening
@@ -787,6 +808,7 @@ export function App() {
       syncBackDepth();
       if (!history.state?.[OVERLAY_HISTORY_MARKER]) setCaptureOpen(false);
       if (!history.state?.[SIDEBAR_HISTORY_MARKER]) setSidebarOpen(false);
+      setStatisticsOpen(statisticsIsOpen());
       setAgentConsoleOpen(agentConsoleIsOpen());
       setAgentSessionId(agentSessionIdFromUrl());
       setAgentConversationOpen(Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]));
@@ -942,7 +964,7 @@ export function App() {
         // well as the copy on disk: clearing only the disk leaves them in memory,
         // where the persistence subscription promptly writes them back out.
         if (error instanceof ApiError && error.status === 401) {
-          for (const key of ["products", "items", "components"]) {
+          for (const key of ["products", "items", "components", "project-insights", "project-insight-items"]) {
             queryClient.removeQueries({ queryKey: [key] });
           }
           clearPersistedQueryCache();
@@ -1075,12 +1097,12 @@ export function App() {
   // can be handed to someone else. replaceState keeps them out of the back
   // stack, which belongs to opening and closing items.
   useEffect(() => {
-    if (!selectedProductId) return;
+    if (!selectedProductId || statisticsOpen) return;
     const next = filtersToUrl({ productId: selectedProductId, status: statusFilter, type: typeFilter, search });
     if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
       history.replaceState(history.state, "", next);
     }
-  }, [search, selectedProductId, statusFilter, typeFilter]);
+  }, [search, selectedProductId, statusFilter, typeFilter, statisticsOpen]);
 
   useEffect(() => {
     const updateOnlineState = () => setIsOnline(navigator.onLine);
@@ -1100,7 +1122,7 @@ export function App() {
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      if (!statisticsOpen && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setMobileSearchOpen(true);
         requestAnimationFrame(() => searchInputRef.current?.focus());
@@ -1108,7 +1130,7 @@ export function App() {
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, []);
+  }, [statisticsOpen]);
 
   const deferredSearch = useDeferredValue(search.trim());
   const itemsQuery = useInfiniteQuery({
@@ -1303,6 +1325,8 @@ export function App() {
             onAuthenticated={(session) => {
               queryClient.removeQueries({ queryKey: ["items"] });
               queryClient.removeQueries({ queryKey: ["components"] });
+              queryClient.removeQueries({ queryKey: ["project-insights"] });
+              queryClient.removeQueries({ queryKey: ["project-insight-items"] });
               queryClient.setQueryData(["auth-session"], session);
               // Whoever signed in may not be who this device cached.
               clearPersistedQueryCache();
@@ -1339,6 +1363,8 @@ export function App() {
       </main>
     );
   }
+
+  if (statisticsOpen && !selectedItemKey) return <Suspense fallback={<BootSkeleton />}><StatisticsCenter accountId={bootstrapQuery.data?.user.id} products={products} onClose={closeStatistics} onOpenItem={(key,productId)=>{setSelectedProductId(productId);openItemPage(key);}} /></Suspense>;
 
   return (
     <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""} ${
@@ -1505,6 +1531,7 @@ export function App() {
           </StatusNavItem>
         </nav>
         <div className="sidebar-spacer" />
+        <button type="button" className="text-button add-product" onClick={openStatistics}><BarChart3 size={15}/>{t("statisticsEntry")}</button>
         {androidFeedbackBridge() && (
           <button
             className="text-button add-product"
