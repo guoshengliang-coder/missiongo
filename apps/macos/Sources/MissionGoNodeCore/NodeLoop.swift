@@ -3,6 +3,9 @@ import Foundation
 
 /// The protocol calls the loop makes, so a test can stand in for the server.
 public protocol NodeAPI: Sendable {
+    func statusCheckJournalScope() throws -> String?
+    func claimStatusCheck() async throws -> StatusCheckJob?
+    func reportStatusCheck(id: String, leaseToken: String, evidence: HandoverEvidence) async throws
     func managedJobs() async throws -> [ManagedExecutionJob]
     func claimManaged(id: String, generation: Int) async throws -> ManagedExecutionIntent
     func permitManaged(id: String, generation: Int) async throws -> ManagedExecutionPermit
@@ -18,6 +21,9 @@ public protocol NodeAPI: Sendable {
 }
 
 public extension NodeAPI {
+    func statusCheckJournalScope() throws -> String? { nil }
+    func claimStatusCheck() async throws -> StatusCheckJob? { nil }
+    func reportStatusCheck(id: String, leaseToken: String, evidence: HandoverEvidence) async throws {}
     func managedJobs() async throws -> [ManagedExecutionJob] { [] }
     func claimManaged(id: String, generation: Int) async throws -> ManagedExecutionIntent { throw LaunchError("Managed API unsupported") }
     func permitManaged(id: String, generation: Int) async throws -> ManagedExecutionPermit { throw LaunchError("Managed API unsupported") }
@@ -72,6 +78,7 @@ public struct NodeLoopState: Equatable, Sendable {
     /// The Skill version the server will require when the next dispatch starts.
     /// nil keeps compatibility with a server from before heartbeat sync.
     public var expectedSkillVersion: String?
+    public var supportsStatusChecks = false
     /// Most recent first, capped at `NodeLoop.recentLaunchLimit`.
     public var recentLaunches: [LocalLaunch] = []
 
@@ -287,7 +294,8 @@ public final class NodeLoop: @unchecked Sendable {
             async let claim: Void = claimLoop(stop: stop, fatal: fatal)
             async let sessions: Void = sessionLoop(stop: stop, fatal: fatal)
             async let managed: Void = managedLoop(stop: stop)
-            _ = await (heartbeat, claim, sessions, managed)
+            async let statusChecks: Void = statusCheckLoop(stop: stop)
+            _ = await (heartbeat, claim, sessions, managed, statusChecks)
         } onCancel: {
             stop.stop()
         }
@@ -302,6 +310,27 @@ public final class NodeLoop: @unchecked Sendable {
     }
 
     // MARK: Loops
+
+    private func statusCheckLoop(stop: StopSignal) async {
+        guard let scope = try? api.statusCheckJournalScope() else { return }
+        let worker = StatusCheckWorker(root: attachmentCacheRoot.deletingLastPathComponent()
+            .appendingPathComponent("StatusCheckOutbox").appendingPathComponent(scope))
+        while !stop.isStopped {
+            let generation = stop.generation
+            if !currentState.supportsStatusChecks {
+                await stop.sleep(timing.heartbeatInterval, unlessWokenSince: generation)
+                continue
+            }
+            do { try await worker.tick(api: api, mappedRepos: currentState.repos) }
+            catch APIError.http(_, let status, _) where status == 404 {
+                // Older servers have no check queue. Retry after a later upgrade.
+                await stop.sleep(timing.heartbeatInterval, unlessWokenSince: generation)
+                continue
+            }
+            catch { log("状态检查暂未完成，将保留结果重试。") }
+            await stop.sleep(timing.heartbeatInterval, unlessWokenSince: generation)
+        }
+    }
 
     private func heartbeatLoop(stop: StopSignal, fatal: Locked<APIError?>) async {
         while !stop.isStopped {
@@ -338,6 +367,7 @@ public final class NodeLoop: @unchecked Sendable {
                         // an older server must not empty the repository menu.
                         if let products = beat.products { $0.products = products }
                         if let expected = beat.expectedSkillVersion { $0.expectedSkillVersion = expected }
+                        $0.supportsStatusChecks = beat.supportsStatusChecks == true
                     }
                 } catch {
                     self.handle(error, what: "上报心跳出错", stop: stop, fatal: fatal)

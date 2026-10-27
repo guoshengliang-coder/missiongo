@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { publicReleaseEvidence, saveReleaseEvidence } from "./handover-evidence.mjs";
 // Read the live deployment before and after deploy.sh, then describe only what
 // actually changed. This command never writes to MissionGo or stores a token.
 
@@ -193,7 +194,11 @@ async function main() {
     const before = JSON.parse(args.beforeJson);
     const after = readSnapshot(args);
     const evidence = await verifyPublic(args.origin, after);
-    process.stdout.write(`${JSON.stringify(buildReceipt(before, after, evidence))}\n`);
+    const receipt = buildReceipt(before, after, evidence);
+    // Persist before printing: an interrupted AI conversation cannot lose the
+    // public facts. The mapped macOS checkout reads the same git common dir.
+    saveReleaseEvidence(publicReleaseEvidence(receipt,args.origin));
+    process.stdout.write(`${JSON.stringify(receipt)}\n`);
     return;
   }
   throw new Error("Usage: release-receipt.mjs snapshot|compare --host <ssh-host> --current-link <remote-path> --downloads-dir <remote-path> [--before-json <snapshot> --origin <url>]");

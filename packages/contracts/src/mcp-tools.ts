@@ -15,6 +15,9 @@ export interface McpToolDefinition {
 export const MCP_TOOL_DEFINITIONS = [
   { name: "get_current_account", access: "read", purpose: "Confirm the connected account, its product read scope, and the expected Skill version." },
   { name: "list_products", access: "read", purpose: "List products visible to the connected account." },
+  { name: "get_project_insights", access: "read", purpose: "Summarize authorized projects with explicit calendar periods and metric definitions." },
+  { name: "list_project_insight_items", access: "read", purpose: "Page through items supporting a project flow metric." },
+  { name: "get_item_status_checks", access: "read", purpose: "Read the named item's handover evidence and status-check results." },
   { name: "list_components", access: "read", purpose: "List components for a product." },
   { name: "list_items", access: "read", purpose: "Find work items using narrow product and status filters." },
   { name: "list_release_candidates", access: "read", purpose: "Find development-complete items with merged PRs in one authorized product for a verified release." },
@@ -31,6 +34,8 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "add_item_attachment", access: "write", purpose: "Attach a completed upload to a user-named work item without editing its fields." },
   { name: "register_agent_session", access: "write", purpose: "Associate a user-directed external conversation with an item already being handled, without claiming or controlling it." },
   { name: "report_agent_session", access: "write", purpose: "Report factual external-session progress independently of work-item status." },
+  { name: "register_item_handover", access: "write", purpose: "Register a PR and explicit release scope for this processing round." },
+  { name: "report_handover_evidence", access: "write", purpose: "Persist executor-verified merge and release facts and perform constrained handoffs." },
 ] as const satisfies readonly McpToolDefinition[];
 
 export interface ListItemsInput {

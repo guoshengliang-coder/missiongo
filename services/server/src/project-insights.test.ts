@@ -1,0 +1,61 @@
+import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
+import {MissionGoStore} from "./store.js";
+import {insightPeriod,projectInsights} from "./project-insights.js";
+let store:MissionGoStore;
+beforeEach(()=>{vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date("2026-10-25T00:00:00Z"));store=new MissionGoStore(":memory:");});
+afterEach(()=>{store.close();vi.useRealTimers();});
+const at=(value:string)=>vi.setSystemTime(new Date(value));
+const now=new Date("2026-10-27T02:00:00Z");
+function seed() {
+ const product=store.createProduct({name:"Project",keyPrefix:"PRJ"});
+ const item=store.createWorkItem({productId:product.id,title:"Flow",description:"A requirement",type:"requirement",priority:"normal",environment:{platform:"web"}});
+ const move=(to:"ready"|"in_progress"|"development_complete"|"pending_verification"|"done",reason:"triaged"|"claim"|"resolution_submitted"|"release_verified"|"verification_passed"|"verification_failed"|"reopened",note?:string)=>
+   store.transitionWorkItem({itemKey:item.key,to,reason,actor:"human",...(note ? {note}: {})});
+ return {product,item,move};
+}
+function summary(id:string) {const result=projectInsights(store,[id],{},now);if (!("projects" in result)) throw Error();return result.projects![0]!;}
+describe("project flow metrics",()=>{
+ it("uses local calendar boundaries including DST and validates impossible or future dates",()=>{
+  expect(insightPeriod({},now)).toMatchObject({startDate:"2026-10-26",endDate:"2026-10-26",start:"2026-10-25T16:00:00.000Z",endExclusive:"2026-10-26T16:00:00.000Z"});
+  const dst=insightPeriod({period:"custom",startDate:"2026-03-08",endDate:"2026-03-08",timezone:"America/New_York"},now);
+  expect(Date.parse(dst.endExclusive)-Date.parse(dst.start)).toBe(23*3600000);
+  expect(()=>insightPeriod({period:"custom",startDate:"2026-02-30",endDate:"2026-03-01"},now)).toThrow();
+  expect(()=>insightPeriod({period:"custom",startDate:"2027-01-01",endDate:"2027-01-01"},now)).toThrow();
+ });
+ it("counts human completions once, preserves yesterday's completion when reopened today and separates current backlog",()=>{
+  const {product,move,item}=seed();move("ready","triaged");move("in_progress","claim");
+  at("2026-10-26T00:00:00Z");move("development_complete","resolution_submitted");move("pending_verification","release_verified");
+  at("2026-10-26T04:00:00Z");move("done","verification_passed");
+  at("2026-10-27T00:00:00Z");move("ready","reopened","Regression");
+  const result=summary(product.id);
+  expect(result.counts).toMatchObject({created:0,completed:1,development_complete:1,pending_verification:1,backlog:1});
+  expect(result.periodEndByStatus.done).toBe(1);expect(result.currentByStatus.ready).toBe(1);
+  expect(result.deliveryCycle).toMatchObject({sampleCount:1,medianHours:28,p90Hours:null});
+  const details=projectInsights(store,[product.id],{},now,{metric:"completed"});
+  expect("items" in details && details.items?.[0]).toMatchObject({itemKey:item.key,currentStatus:"ready",periodEndStatus:"done"});
+ });
+ it("counts decided verification rounds, excluding pending verification and manual returns",()=>{
+  const {product,move}=seed();move("ready","triaged");move("in_progress","claim");
+  at("2026-10-26T00:00:00Z");move("development_complete","resolution_submitted");move("pending_verification","release_verified");
+  move("ready","verification_failed","Still fails");move("in_progress","claim");move("development_complete","resolution_submitted");move("pending_verification","release_verified");
+  move("ready","verification_failed","Again");move("in_progress","claim");move("development_complete","resolution_submitted");move("pending_verification","release_verified");move("done","verification_passed");
+  expect(summary(product.id).verificationReturnRate).toEqual({failedRounds:2,passedRounds:1,decidedRounds:3,rate:2/3});
+  expect(summary(product.id).counts.returned).toBe(1);
+ });
+ it("reports missing historical timestamps instead of inventing a cycle",()=>{
+  const {product,item,move}=seed();move("ready","triaged");move("in_progress","claim");
+  at("2026-10-26T00:00:00Z");move("development_complete","resolution_submitted");move("pending_verification","release_verified");move("done","verification_passed");
+  store.database.connection.prepare("DELETE FROM work_item_events WHERE item_id=? AND event_type='item_created'").run(item.id);
+  expect(summary(product.id).deliveryCycle).toMatchObject({sampleCount:0,eligibleCount:1,missingCount:1,medianHours:null});
+  expect(summary(product.id).quality.estimatedEventTimes).toBe(2);
+ });
+ it("separates projects, applies filters and paginates drilldowns without reading attachments",()=>{
+  const {product}=seed();at("2026-10-26T00:00:00Z");
+  for(let i=0;i<3;i++)store.createWorkItem({productId:product.id,title:`Bug ${i}`,description:"x",type:"bug",priority:"normal",environment:{platform:"web"}});
+  const other=store.createProduct({name:"Other",keyPrefix:"OTH"});store.createWorkItem({productId:other.id,title:"Private",description:"x",type:"bug",priority:"normal",environment:{platform:"web"}});
+  const result=projectInsights(store,[product.id],{types:["bug"]},now,{metric:"created",limit:2});
+  expect(result).toMatchObject({total:3,nextOffset:2});
+  expect("items" in result && result.items?.every(r=>r.productId===product.id)).toBe(true);
+  expect(projectInsights(store,[],{},now)).toMatchObject({projects:[]});
+ });
+});

@@ -234,7 +234,27 @@ export interface Bootstrap {
   readonly nextBeforeSequence?: number;
 }
 
+export interface StatusCheckRecord {
+  id: string; itemKey: string; productId: string; itemStatus: WorkItemStatus; pullRequestUrl: string;
+  requiredArtifacts: string[] | null; noReleaseReason: string | null; status: string; reason: string;
+  checkedAt: string | null; requestedAt: string | null; evidenceUpdatedAt: string; evidenceSource: string;
+  evidence: { merged?: {commit: string; occurredAt: string}; releases?: Array<{artifact:string;version:string;sourceCommit:string;verifiedAt:string}> };
+}
+export interface StatusCheckPage { items: StatusCheckRecord[]; nextOffset?: number; queued?: number; missingAssociation?: boolean;
+  schedule?: {time:string|false;timezone:string;frequency:string} }
+
 export const api = {
+  statusChecks(productId: string, itemKey?: string, offset = 0) {
+    return request<StatusCheckPage>(itemKey ? `/api/v1/items/${encodeURIComponent(itemKey)}/status-checks?offset=${offset}`
+      : `/api/v1/products/${encodeURIComponent(productId)}/status-checks?offset=${offset}`);
+  },
+  requestStatusCheck(productId: string, itemKey?: string) {
+    return request<StatusCheckPage>(itemKey ? `/api/v1/items/${encodeURIComponent(itemKey)}/status-checks`
+      : `/api/v1/products/${encodeURIComponent(productId)}/status-checks`, {method:"POST"});
+  },
+  registerHandover(itemKey: string, input: {pullRequestUrl:string;requiredArtifacts?:string[];noReleaseReason?:string}) {
+    return request<{handover:StatusCheckRecord}>(`/api/v1/items/${encodeURIComponent(itemKey)}/handover`,{method:"PUT",body:JSON.stringify(input)});
+  },
   getAiTitleSettings: () => request<{ configured: boolean; agentAttentionEnabled: boolean }>("/api/v1/ai/title-settings"),
   setAiTitleKey: (apiKey: string | null) => request<{ configured: boolean; agentAttentionEnabled: boolean }>("/api/v1/ai/title-settings", {
     method: "PUT", body: JSON.stringify({ apiKey }),

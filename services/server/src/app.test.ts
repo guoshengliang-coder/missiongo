@@ -325,7 +325,7 @@ describe("Commenting over MCP", () => {
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
       capabilities: {
-        writeTools: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+        writeTools: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"],
         canComment: true,
         canCreateItems: true,
       },
@@ -1445,6 +1445,9 @@ describe("MissionGo REST API", () => {
     expect(names).toEqual([
       "get_current_account",
       "list_products",
+      "get_project_insights",
+      "list_project_insight_items",
+      "get_item_status_checks",
       "list_components",
       "list_items",
       "list_release_candidates",

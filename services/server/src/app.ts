@@ -1,3 +1,4 @@
+import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema } from "./status-checks.js";
 import { transferWorkItem } from "./item-transfer.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -89,6 +90,7 @@ import { WidgetPushService, type WidgetPushServiceAccount } from "./widget-push.
 import { widgetSummary, type WidgetSummary, type WidgetSummarySession } from "./widget-summary.js";
 
 export interface BuildAppOptions {
+  readonly statusCheckTime?: string | false;
   readonly managedExecution?: { readonly enabled: boolean; readonly coordinatorClientIds: readonly string[] };
   readonly databasePath?: string;
   readonly logger?: FastifyServerOptions["logger"];
@@ -603,6 +605,32 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         : {}),
     });
   }
+  const statusChecks = new StatusChecks(store);
+  const statusCheckTime = options.statusCheckTime ?? "09:00";
+  if (statusCheckTime !== false && !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(statusCheckTime)) throw invalidInput("statusCheckTime must be HH:mm in Asia/Shanghai.");
+  let statusCheckTimer: ReturnType<typeof setInterval> | undefined;
+  const canCheck = (accountId: string, productId: string): boolean => {
+    if (unauthenticatedDeployment) return true;
+    const account = accountStore.findActive(accountId);
+    return Boolean(account && accountStore.allows(account,productId,"view") && accountStore.allows(account,productId,"operate"));
+  };
+  app.addHook("onReady", async () => {
+    if (statusCheckTime === false) return;
+    let scheduledDay = "";
+    const clock = new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"});
+    const tick = () => {
+      const parts = clock.formatToParts(new Date());
+      const part = (name:string) => parts.find(p=>p.type===name)!.value;
+      const day = `${part("year")}-${part("month")}-${part("day")}`;
+      if (`${part("hour")}:${part("minute")}` < statusCheckTime || day === scheduledDay) return;
+      try { statusChecks.schedule(statusCheckTime,canCheck); scheduledDay = day; }
+      catch (error) { app.log.error({error},"Daily handover check could not be scheduled"); }
+    };
+    tick();
+    // This cheap local clock check does not inspect repositories or call GitHub.
+    // The durable day key allows one actual reconciliation per product/account/day.
+    statusCheckTimer = setInterval(tick,60_000); statusCheckTimer.unref();
+  });
   const attachmentStorage = new AttachmentStorage(options.attachmentsPath ?? "./data/attachments");
   const mcpUploads = new McpAttachmentUploads(store, attachmentStorage);
   const publicOrigin = new URL(options.publicOrigin ?? "http://127.0.0.1").origin;
@@ -611,6 +639,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // Only hand out an update URL when a real deployment origin was configured;
     // the loopback fallback above is not an address a client can reinstall from.
     ? createMissionGoMcpHandler(store, attachmentStorage, {
+      canOperate: canCheck,
       ...(options.publicOrigin ? { publicOrigin } : {}),
       ...(options.writeTools ? { writeTools: options.writeTools } : {}),
     })
@@ -792,6 +821,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.decorate("missionGoStore", store);
   app.decorate("missionGoAccounts", accountStore);
   app.addHook("onClose", async () => {
+    if (statusCheckTimer) clearInterval(statusCheckTimer);
     await Promise.allSettled(attentionClassifications.values());
     await widgetPush.close();
     await mcpHandler?.close();
@@ -2451,6 +2481,36 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // login token is not accepted anywhere else on /api/v1 and the client drops it
   // straight after: it lasts 180 days and cannot be revoked on its own, while the
   // node credential can be revoked from the console at any time.
+  const statusPage = (query: unknown) => {
+    const q = (query ?? {}) as Record<string,string>;
+    const limit = Number(q.limit ?? 100), offset = Number(q.offset ?? 0);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(offset) || offset < 0 || offset > 1000000) throw invalidInput("Invalid status-check pagination.");
+    return {limit,offset};
+  };
+  app.get("/api/v1/products/:productId/status-checks",async request => {
+    const {productId} = request.params as {productId:string}; requireProductPermission(request,productId);
+    const {limit,offset} = statusPage(request.query);
+    return {...statusChecks.list(productId,undefined,limit,offset), schedule:{time:statusCheckTime,timezone:"Asia/Shanghai",frequency:"daily"}};
+  });
+  app.post("/api/v1/products/:productId/status-checks",async request => {
+    const {productId} = request.params as {productId:string}; requireProductPermission(request,productId,"operate");
+    return statusChecks.request(productId,requireAccountId(request));
+  });
+  app.get("/api/v1/items/:itemKey/status-checks",async request => {
+    const {itemKey} = request.params as {itemKey:string}; const key = requireItemPermission(request,itemKey);
+    return {...statusChecks.list(store.getWorkItem(key).productId,key),schedule:{time:statusCheckTime,timezone:"Asia/Shanghai",frequency:"daily"}};
+  });
+  app.post("/api/v1/items/:itemKey/status-checks",async request => {
+    const {itemKey} = request.params as {itemKey:string}; const key = requireItemPermission(request,itemKey,"operate");
+    return statusChecks.request(store.getWorkItem(key).productId,requireAccountId(request),key);
+  });
+  app.put("/api/v1/items/:itemKey/handover",async request => {
+    const {itemKey} = request.params as {itemKey:string}; const key = requireItemPermission(request,itemKey,"operate");
+    const parsed = handoverRegistrationSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidInput(parsed.error.issues.map(e=>e.message).join("; "));
+    return {handover:statusChecks.register(key,requireAccountId(request),parsed.data)};
+  });
+
   app.post("/api/v1/node/register", async (request, reply) => {
     const principal = aiPrincipal(suppliedBearerToken(request));
     if (!principal || !principal.scopes.includes(MISSIONGO_NODE_SCOPE)) {
@@ -2480,6 +2540,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     return node;
   };
+
+  app.post("/api/v1/node/status-checks/claim",async request => {
+    const node = requireNode(request);
+    return {job:statusChecks.claim(node.nodeId,node.accountId,productId => {
+      if (!canCheck(node.accountId,productId)) throw notFound("Product");
+    })};
+  });
+  app.post("/api/v1/node/status-checks/:handoverId/report",async request => {
+    const node = requireNode(request); const {handoverId} = request.params as {handoverId:string};
+    const body = objectBody(request.body);
+    const parsed = handoverEvidenceSchema.safeParse(body.evidence);
+    if (!parsed.success) throw invalidInput("Invalid handover evidence.");
+    const snapshot = statusChecks.snapshot(handoverId);
+    if (!canCheck(node.accountId,snapshot.productId)) throw notFound("Handover");
+    return {handover:statusChecks.report(handoverId,parsed.data,{accountId:node.accountId,nodeId:node.nodeId,leaseToken:stringField(body,"leaseToken")!})};
+  });
 
   registerManagedExecutionRoutes(app, {
     db: store.database, enabled: options.managedExecution?.enabled === true,
@@ -2853,6 +2929,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       // nobody is looking at.
       products: nodeProducts(node.accountId),
       expectedSkillVersion,
+      supportsStatusChecks: true,
       repos: dispatchStore.recordHeartbeat(
         node.nodeId,
         agents.map((entry) => {

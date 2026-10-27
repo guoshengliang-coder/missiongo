@@ -1421,7 +1421,7 @@ export class MissionGoStore {
   }
 
   /** Record merged work, separating an explicit no-release decision from missing evidence. */
-  submitDevelopmentComplete(input: SubmitDevelopmentCompleteInput): WorkItemSnapshot {
+  submitDevelopmentComplete(input: SubmitDevelopmentCompleteInput, evidence?: { actor: "system"; occurredAt: string; handoverId: string }): WorkItemSnapshot {
     this.assertWorkItemWritable(input.itemKey);
     const pullRequestUrl = requiredText(input.pullRequestUrl, "Pull request URL");
     if (pullRequestUrl.length > 500) throw invalidInput("Pull request URL must be 500 characters or fewer.");
@@ -1467,13 +1467,14 @@ export class MissionGoStore {
       this.applyTransition(
         item,
         "development_complete",
-        "agent",
+        evidence?.actor ?? "agent",
         "resolution_submitted",
         summary,
         now,
         input.attribution ?? {},
         { pullRequestUrl, requiredArtifacts: [...requiredArtifacts].sort(),
-          ...(noReleaseReason ? { noReleaseReason } : {}) },
+          ...(noReleaseReason ? { noReleaseReason } : {}),
+          ...(evidence ? { occurredAt: evidence.occurredAt, handoverId: evidence.handoverId, evidenceSource: "authorized_executor" } : {}) },
       );
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
@@ -1482,7 +1483,7 @@ export class MissionGoStore {
   }
 
   /** Accept a verified release only when every artifact recorded at merge is present. */
-  submitForVerification(input: SubmitForVerificationInput): WorkItemSnapshot {
+  submitForVerification(input: SubmitForVerificationInput, evidence?: { actor: "system"; occurredAt: string; handoverId: string; requiredArtifacts: readonly string[] }): WorkItemSnapshot {
     this.assertWorkItemWritable(input.itemKey);
     const pullRequestUrl = requiredText(input.pullRequestUrl, "Pull request URL");
     if (!pullRequestUrl.startsWith("https://") || pullRequestUrl.length > 500) throw invalidInput("Pull request URL must be an https:// address.");
@@ -1501,7 +1502,7 @@ export class MissionGoStore {
       }
       const handover = [...this.getTimeline(item.item_key)].reverse()
         .find((event) => !event.historySourceKey && event.eventType === "status_changed" && event.toStatus === "development_complete");
-      const required = handover?.payload.requiredArtifacts;
+      const required = evidence?.requiredArtifacts ?? handover?.payload.requiredArtifacts;
       const releases = input.releases;
       if (handover?.payload.pullRequestUrl !== pullRequestUrl || !Array.isArray(required) || required.length === 0
         || releases.length !== required.length
@@ -1512,9 +1513,10 @@ export class MissionGoStore {
         throw invalidInput("Release evidence does not cover the recorded merged PR and every required artifact.");
       }
       const now = new Date().toISOString();
-      this.applyTransition(item, "pending_verification", "agent", "release_verified", undefined, now,
+      this.applyTransition(item, "pending_verification", evidence?.actor ?? "agent", "release_verified", undefined, now,
         input.attribution ?? {}, { pullRequestUrl, releases, deployedCommit: input.deployedCommit,
-          receiptDigest: input.receiptDigest });
+          receiptDigest: input.receiptDigest,
+          ...(evidence ? { occurredAt: evidence.occurredAt, handoverId: evidence.handoverId, evidenceSource: "authorized_executor" } : {}) });
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
       return result;

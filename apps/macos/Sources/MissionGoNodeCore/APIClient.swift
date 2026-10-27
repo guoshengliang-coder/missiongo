@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import zlib
 
@@ -809,15 +810,18 @@ public struct HeartbeatReply: Equatable, Sendable {
     public let repos: [RepoMapping]
     public let products: [NodeProfile.Product]?
     public let expectedSkillVersion: String?
+    public let supportsStatusChecks: Bool?
 
     public init(
         repos: [RepoMapping],
         products: [NodeProfile.Product]? = nil,
-        expectedSkillVersion: String? = nil
+        expectedSkillVersion: String? = nil,
+        supportsStatusChecks: Bool? = nil
     ) {
         self.repos = repos
         self.products = products
         self.expectedSkillVersion = expectedSkillVersion
+        self.supportsStatusChecks = supportsStatusChecks
     }
 }
 
@@ -1221,6 +1225,23 @@ public struct APIClient: Sendable {
         return node
     }
 
+    public func statusCheckJournalScope() throws -> String? {
+        SHA256.hash(data: Data(try nodeToken().utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+    public func claimStatusCheck() async throws -> StatusCheckJob? {
+        struct Reply: Decodable { let job: StatusCheckJob? }
+        let response = try await send("POST", "/api/v1/node/status-checks/claim", body: [String:String](), bearer: try nodeToken())
+        try requireSuccess(response, operation: "领取状态检查")
+        let reply: Reply = try decode(response, operation: "领取状态检查")
+        return reply.job
+    }
+    public func reportStatusCheck(id: String, leaseToken: String, evidence: HandoverEvidence) async throws {
+        guard UUID(uuidString: id) != nil, UUID(uuidString: leaseToken) != nil else { throw APIError.invalidResponse("无效的状态检查标识。") }
+        struct Body: Encodable { let leaseToken: String; let evidence: HandoverEvidence }
+        let response = try await send("POST", "/api/v1/node/status-checks/\(id)/report", body: Body(leaseToken: leaseToken, evidence: evidence), bearer: try nodeToken())
+        try requireSuccess(response, operation: "上报状态检查")
+    }
+
     public func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate] = []) async throws -> HeartbeatReply {
         struct Body: Encodable {
             let agents: [DetectedAgent]
@@ -1232,6 +1253,7 @@ public struct APIClient: Sendable {
             let repos: [RepoMapping]?
             let products: [NodeProfile.Product]?
             let expectedSkillVersion: String?
+            let supportsStatusChecks: Bool?
         }
         let response = try await send(
             "POST", "/api/v1/node/heartbeat",
@@ -1248,7 +1270,8 @@ public struct APIClient: Sendable {
         return HeartbeatReply(
             repos: reply.repos ?? [],
             products: reply.products,
-            expectedSkillVersion: reply.expectedSkillVersion
+            expectedSkillVersion: reply.expectedSkillVersion,
+            supportsStatusChecks: reply.supportsStatusChecks
         )
     }
 

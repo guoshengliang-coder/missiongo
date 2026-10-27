@@ -48,13 +48,13 @@ test("proposes one stable comment only for a merged PR touching the released art
   assert.deepEqual(first.skipped, []);
 });
 
-test("reports a merged but unrelated PR without proposing a publication comment", () => {
-  const receipt = { changes: [{ artifact: "web", version: c, fromCommit: a, toCommit: c, eligibleForMatching: true }] };
+test("accepts explicit scope when file path suggestions differ", () => {
+  const receipt = { deployedCommit:c,current:{web:{version:c,commit:c,clean:true,ciPassed:true}},publicEvidence:{checks:{web:true}},changes:[] };
   const candidates = [{ itemKey: "AND-75", pullRequestUrl: "https://github.com/owner/repo/pull/42", requiredArtifacts: ["web"] }];
   const ancestor = (older, newer) => [a, b, c].indexOf(older) <= [a, b, c].indexOf(newer);
   const result = matchCandidates(receipt, candidates, () => ({ mergeCommit: b, files: ["apps/macos/Sources/App.swift"] }), ancestor);
-  assert.deepEqual(result.comments, []);
-  assert.match(result.skipped[0].reason, /required artifacts differ/);
+  assert.equal(result.comments.length, 1);
+  assert.equal(result.skipped.length, 0);
 });
 
 test("waits for every related artifact across separate release batches", () => {
