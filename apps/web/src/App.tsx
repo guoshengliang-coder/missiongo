@@ -122,7 +122,6 @@ import { environmentFields, environmentSummary, platformName, type EnvironmentFi
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
-import { ProductAccessSettings } from "./account-settings";
 import { SettingsPage } from "./settings-page";
 import { useSettingsNavigation } from "./settings-navigation";
 import { useSettingsDraft } from "./settings-drafts";
@@ -479,7 +478,7 @@ export function App() {
 
   /** One entry point for every panel the settings dialog holds. */
   const openSettings = (tab: "account" | "agents") => {
-    settings.navigate({ section: tab === "agents" ? "devices" : sidebarIsDrawer ? "index" : "profile" });
+    settings.navigate({ section: tab === "agents" ? "agent" : sidebarIsDrawer ? "index" : "profile" });
     setSidebarOpen(false);
     syncBackDepth();
   };
@@ -1346,10 +1345,10 @@ export function App() {
     return <SettingsPage route={settings.route} user={bootstrapQuery.data.user} products={products}
       canUseAi={hasAnyAiPermission} selectedProductId={selectedProductId} navigate={settings.navigate} guard={settings.guard}
       onLoggedOut={() => { clearPersistedQueryCache(); window.location.reload(); }}
-      renderProduct={(product, section) => <ProductSettings key={`${product.id}:${section}`} product={product} user={bootstrapQuery.data.user} section={section} onSelected={() => undefined} />}
+      renderProduct={(product, section) => <ProductSettings key={`${product.id}:${section}`} product={product} user={bootstrapQuery.data.user} section={section} componentId={settings.route?.componentId} onOpenComponent={componentId => settings.navigate({ section: "components", productId: product.id, componentId })} onSelected={() => undefined} />}
       renderNewProduct={() => <ProductForm onCreated={async product => {
         await queryClient.invalidateQueries({ queryKey: ["products"] });
-        settings.navigate({ section: "product", productId: product.id }, true);
+        settings.navigate({ section: "overview", productId: product.id }, true);
       }} />}
     />;
   }
@@ -4655,11 +4654,15 @@ function ProductSettings({
   product,
   user,
   onSelected,
+  componentId,
+  onOpenComponent,
 }: {
   product: Product;
   user?: AuthenticatedUser;
   onSelected: () => void;
   section: ProductSettingsSection;
+  componentId?: string | undefined;
+  onOpenComponent: (id: string) => void;
 }) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
@@ -4674,7 +4677,7 @@ function ProductSettings({
   // hopefully and refused than flickering disabled; a tab is better withheld
   // than shown and then failing to load, so the two differ here on purpose.
   const mayArchive = !user || mayAdminister || !product.createdByAccountId;
-  const canOperate = activeSettingsTab === "access" ? mayAdminister : user?.role === "admin" || product.access?.canOperate === true;
+  const canOperate = user?.role === "admin" || product.access?.canOperate === true;
   const [newComponentName, setNewComponentName] = useState("");
   const [newComponentKind, setNewComponentKind] = useState<ComponentKind>("android");
   const [addingComponent, setAddingComponent] = useState(false);
@@ -4720,13 +4723,8 @@ function ProductSettings({
   return (
     <div className="product-settings">
       {!canOperate && <p className="account-note">{t("settingsProductReadOnly")}</p>}
-      <fieldset className="settings-product-fields" disabled={!canOperate}>
-      {activeSettingsTab === "access" ? (
-        <section className="product-settings-section" role="tabpanel">
-          <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("productAccess")}</h3></div></header>
-          <ProductAccessSettings productId={product.id} user={user} />
-        </section>
-      ) : activeSettingsTab === "tokens" ? (
+      <fieldset className="settings-product-fields" disabled={!canOperate && activeSettingsTab !== "components"}>
+      {activeSettingsTab === "tokens" ? (
         <SdkTokenSettings product={product} />
       ) : activeSettingsTab === "product" ? (
         <section className="product-settings-section" role="tabpanel">
@@ -4769,28 +4767,18 @@ function ProductSettings({
             <div><p className="eyebrow">{t("productComponents")}</p><h3>{t("moduleManagement")}</h3></div>
             <div className="component-header-actions">
               <span>{componentsQuery.data?.length ?? 0}</span>
-              {(componentsQuery.data?.length ?? 0) > 0 && (
-                <button className="primary-button component-add-trigger" onClick={() => setAddingComponent((value) => !value)}><Plus size={15} /> {t("newComponent")}</button>
+              {!componentId && (componentsQuery.data?.length ?? 0) > 0 && (
+                <button className="primary-button component-add-trigger" disabled={!canOperate} onClick={() => setAddingComponent((value) => !value)}><Plus size={15} /> {t("newComponent")}</button>
               )}
             </div>
           </header>
           <p className="component-management-help">{t("componentManagementHelp")}</p>
+          {componentsQuery.isError && <InlineError message={errorMessage(componentsQuery.error, t("somethingWentWrong"))} />}
           <div className="component-manager-list">
-            {components.length > 0 && (
-              <div className="component-list-head">
-                <span>{t("componentName")}</span><span>{t("componentKind")}</span><span>{t("save")}</span>
-              </div>
-            )}
-            {components.map((component) => (
-              <div key={component.id}>
-                <ComponentSettingsRow component={component} />
-              </div>
-            ))}
-            {!componentsQuery.isLoading && (componentsQuery.data?.length ?? 0) === 0 && !addingComponent && (
-              <div className="component-empty-state">
-                <button className="primary-button" onClick={() => setAddingComponent(true)}><Plus size={17} /> {t("newComponent")}</button>
-              </div>
-            )}
+            {componentId ? components.find(component => component.id === componentId) ? <fieldset className="settings-product-fields" disabled={!canOperate}><ComponentSettingsRow component={components.find(component => component.id === componentId)!} /></fieldset>
+              : !componentsQuery.isLoading && <p role="alert">{t("settingsUnavailable")}</p>
+              : components.map(component => <button type="button" key={component.id} className="settings-hub-row" onClick={() => onOpenComponent(component.id)}><span><strong>{component.name}</strong><small>{t(component.kind)}{component.archivedAt ? ` · ${t("archived")}` : ""}</small></span><ChevronRight size={18} /></button>)}
+            {!componentId && !componentsQuery.isLoading && components.length === 0 && !addingComponent && <div className="component-empty-state"><button className="primary-button" disabled={!canOperate} onClick={() => setAddingComponent(true)}><Plus size={17} /> {t("newComponent")}</button></div>}
           </div>
           {addingComponent && (
             <div className="component-add-panel">
@@ -4943,6 +4931,7 @@ function SdkTokenSettings({ product }: { product: Product }) {
         <div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("sdkTokens")}</h3></div>
         <div className="component-header-actions"><span>{tokens.filter((token) => !token.revokedAt).length}</span><button type="button" className="primary-button" onClick={() => setCreating(true)} disabled={creating}>{t("newSdkToken")}</button></div>
       </header>
+      <p className="account-note">{t("settingsSdkScopeHelp")}</p>
       <p className="component-management-help">{t("sdkTokensHelp")}</p>
 
       {createdToken && (

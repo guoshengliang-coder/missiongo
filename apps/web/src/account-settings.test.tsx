@@ -65,7 +65,9 @@ describe("account settings view mode", () => {
 
     expect(html).toContain("新建账号");
     expect(html).toContain("修改");
-    expect(html).not.toContain("<input");
+    expect(html).toContain("搜索账号");
+    expect(html).not.toContain('type="email"');
+    expect(html).not.toContain('type="password"');
   });
 
   it("renders the personal-token form with the PAT row naming its kind (AND-288)", () => {

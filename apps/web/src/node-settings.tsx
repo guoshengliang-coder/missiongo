@@ -40,7 +40,7 @@ const MANUAL_OPTION = "manual";
  * repository table only reads right with those products side by side -- reached
  * through a product, it had to be configured once per product.
  */
-export function NodeSettings({ products }: { products: readonly Product[] }) {
+export function NodeSettings({ products, nodeId, onOpenNode }: { products: readonly Product[]; nodeId?: string | undefined; onOpenNode?: (id: string) => void }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   // Set when the download is clicked. There is no code tying a Mac to this
@@ -133,19 +133,15 @@ export function NodeSettings({ products }: { products: readonly Product[] }) {
         {nodesQuery.isError && (
           <div className="inline-error"><CirclePause size={16} /><span>{nodeErrorMessage(nodesQuery.error, t("somethingWentWrong"))}</span></div>
         )}
-        {nodes.map((node) => (
-          <NodeCard
-            key={node.id}
-            node={node}
-            products={products}
-            startsOpen={deviceStartsOpen(nodes.length)}
-            onChanged={() => queryClient.invalidateQueries({ queryKey: ["nodes"] })}
-          />
-        ))}
+        {(nodeId ? nodes.filter(node => node.id === nodeId) : nodes).map(node => onOpenNode && !nodeId ? (
+          <button key={node.id} type="button" className="settings-hub-row settings-device-row" onClick={() => onOpenNode(node.id)}><span><strong>{node.name || node.deviceName}</strong><small>{node.online ? t("settingsDeviceOnline") : t("settingsDeviceOffline")} · {node.agents.map(agent => { const key = agentLabelKey(agent.kind); return key ? t(key) : agent.kind; }).join(" · ")}</small></span><ChevronRight size={18} /></button>
+        ) : <NodeCard key={node.id} node={node} products={products} startsOpen={Boolean(nodeId) || deviceStartsOpen(nodes.length)} onChanged={() => queryClient.invalidateQueries({ queryKey: ["nodes"] })} />)}
+        {nodeId && !nodesQuery.isLoading && !nodesQuery.isError && !nodes.some(node => node.id === nodeId) && <p role="alert">{t("settingsUnavailable")}</p>}
+
       </div>
 
       {/* Deciding collapsed-or-open before the list loads would open the guide and then snap it shut. */}
-      {!nodesQuery.isLoading && (guideShown ? (
+      {!nodeId && !nodesQuery.isLoading && (guideShown ? (
         <NodeInstallGuide
           progress={progress}
           onDownload={startWaiting}
