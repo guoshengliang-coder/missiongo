@@ -150,4 +150,123 @@ final class CodexApprovalTests: XCTestCase {
         wait { monitor.snapshot(threadId: "thread-1")?.status == "resolved" }
         XCTAssertThrowsError(try monitor.answer(threadId: "thread-1", approvalId: old.id, decision: "accept"))
     }
+    private func command(decisions: [Any]? = nil) -> [String: Any] {
+        var params: [String: Any] = ["threadId": "thread-1", "turnId": "turn-1", "command": "git status"]
+        if let decisions { params["availableDecisions"] = decisions }
+        return ["id": 900, "method": "item/commandExecution/requestApproval", "params": params]
+    }
+
+    func testCommandOptionsRespectTheNativeListAndUseTheExactProposedRule() throws {
+        let rule: [String: Any] = ["acceptWithExecpolicyAmendment": ["execpolicy_amendment": ["git", "status"]]]
+        let request = try XCTUnwrap(CodexApprovalRequest(command(decisions: ["accept", "acceptForSession", rule, "decline"]), threadId: "thread-1"))
+        XCTAssertEqual(request.snapshot.options?.map(\.id), ["accept", "acceptForSession", "execpolicy-2", "decline"])
+        XCTAssertEqual(request.result(decision: "acceptForSession")["decision"] as? String, "acceptForSession")
+        let decision = try XCTUnwrap(request.result(decision: "execpolicy-2")["decision"] as? [String: Any])
+        XCTAssertEqual((decision["acceptWithExecpolicyAmendment"] as? [String: Any])?["execpolicy_amendment"] as? [String], ["git", "status"])
+        XCTAssertEqual(request.snapshot.options?[2].detail, "\"git\" \"status\"")
+        let restricted = try XCTUnwrap(CodexApprovalRequest(command(decisions: ["accept", "decline"]), threadId: "thread-1"))
+        XCTAssertEqual(restricted.snapshot.options?.map(\.id), ["accept", "decline"])
+        XCTAssertEqual(restricted.result(decision: "acceptForSession")["decision"] as? String, "cancel")
+        let empty = try XCTUnwrap(CodexApprovalRequest(command(decisions: []), threadId: "thread-1"))
+        XCTAssertEqual(empty.snapshot.status, "unavailable")
+        XCTAssertEqual(empty.snapshot.options, [])
+        let oversized: [String: Any] = ["acceptWithExecpolicyAmendment": ["execpolicy_amendment": [String(repeating: "x", count: 4_001)]]]
+        let bounded = try XCTUnwrap(CodexApprovalRequest(command(decisions: ["accept", oversized, "decline"]), threadId: "thread-1"))
+        XCTAssertEqual(bounded.snapshot.options?.map(\.id), ["accept", "decline"])
+    }
+
+    func testPermissionsSessionGrantContainsOnlyRequestedPermissions() throws {
+        let permissions: [String: Any] = ["network": ["enabled": true]]
+        let request = try XCTUnwrap(CodexApprovalRequest(["id": 901, "method": "item/permissions/requestApproval",
+            "params": ["threadId": "thread-1", "turnId": "turn-1", "permissions": permissions]], threadId: "thread-1"))
+        XCTAssertEqual(request.snapshot.options?.map(\.kind), ["turn", "session", "decline"])
+        XCTAssertEqual(request.result(decision: "acceptForSession")["scope"] as? String, "session")
+        XCTAssertEqual((request.result(decision: "acceptForSession")["permissions"] as? [String: Any])?.keys.sorted(), ["network"])
+        XCTAssertEqual((request.result(decision: "decline")["permissions"] as? [String: Any])?.count, 0)
+    }
+
+    func testPendingRequestOutlivesPollingAndRejectsAnUnofferedChoice() throws {
+        let prompt = command(decisions: ["accept", "acceptForSession", "decline"])
+        let server = try FakeAppServer { message in
+            guard let id = message["id"], let method = message["method"] as? String else { return [] }
+            let response: [String: Any] = ["id": id, "result": [:]]
+            return method == "thread/resume" ? [response, prompt] : [response]
+        }
+        let monitor = CodexApprovalMonitor(idleTimeout: 0.01)
+        defer { monitor.stop(threadId: "thread-1"); server.waitUntilDone() }
+        monitor.watch(socketPath: server.path, threadId: "thread-1")
+        wait { monitor.snapshot(threadId: "thread-1")?.status == "pending" }
+        let approval = try XCTUnwrap(monitor.snapshot(threadId: "thread-1"))
+        // Cross several receive cycles without touching watch(): equivalent to
+        // leaving the page/backgrounding the phone past the old idle limit.
+        Thread.sleep(forTimeInterval: 1.2)
+        XCTAssertEqual(monitor.snapshot(threadId: "thread-1")?.status, "pending")
+        XCTAssertFalse(server.clientClosed.current)
+        XCTAssertThrowsError(try monitor.answer(threadId: "thread-1", approvalId: approval.id, decision: "execpolicy-2"))
+        try monitor.answer(threadId: "thread-1", approvalId: approval.id, decision: "acceptForSession")
+        XCTAssertThrowsError(try monitor.answer(threadId: "thread-1", approvalId: approval.id, decision: "decline"))
+        wait { monitor.snapshot(threadId: "thread-1")?.status == "approved" }
+        wait { server.received.current.contains { $0.contains("\"decision\":\"acceptForSession\"") } }
+    }
+
+    func testTransportLossReconnectsWithoutPollingAndDoesNotReplayTheOldDecision() throws {
+        let prompt = command(decisions: ["accept", "acceptForSession", "decline"])
+        let respond: @Sendable ([String: Any]) -> [[String: Any]] = { message in
+            guard let id = message["id"], let method = message["method"] as? String else { return [] }
+            let response: [String: Any] = ["id": id, "result": [:]]
+            return method == "thread/resume" ? [response, prompt] : [response]
+        }
+        let original = try FakeAppServer(respond: respond)
+        let monitor = CodexApprovalMonitor(reconnectDelay: 0.1)
+        monitor.watch(socketPath: original.path, threadId: "thread-1")
+        wait { monitor.snapshot(threadId: "thread-1")?.status == "pending" }
+        let old = try XCTUnwrap(monitor.snapshot(threadId: "thread-1"))
+        original.disconnectClient()
+        original.waitUntilDone()
+        wait { monitor.snapshot(threadId: "thread-1")?.status == "reconnecting" }
+        XCTAssertThrowsError(try monitor.answer(threadId: "thread-1", approvalId: old.id, decision: "acceptForSession"))
+        try FileManager.default.removeItem(atPath: original.path)
+        let restored = try FakeAppServer(path: original.path, respond: respond)
+        defer { monitor.stop(threadId: "thread-1"); restored.waitUntilDone() }
+        wait { monitor.snapshot(threadId: "thread-1")?.status == "pending" && monitor.snapshot(threadId: "thread-1")?.id != old.id }
+        XCTAssertThrowsError(try monitor.answer(threadId: "thread-1", approvalId: old.id, decision: "acceptForSession"))
+        XCTAssertFalse(restored.received.current.contains { $0.contains("\"decision\"") })
+        let fresh = try XCTUnwrap(monitor.snapshot(threadId: "thread-1"))
+        try monitor.answer(threadId: "thread-1", approvalId: fresh.id, decision: "acceptForSession")
+        wait { monitor.snapshot(threadId: "thread-1")?.status == "approved" }
+        wait { restored.received.current.contains { $0.contains("\"decision\":\"acceptForSession\"") } }
+    }
+
+    func testNetworkRulesAreOfferedOnlyWhenNativeDecisionsContainThem() throws {
+        let rule: [String: Any] = ["applyNetworkPolicyAmendment": ["network_policy_amendment": ["host": "example.test", "action": "allow"]]]
+        let request = try XCTUnwrap(CodexApprovalRequest(command(decisions: ["accept", rule, "decline"]), threadId: "thread-1"))
+        XCTAssertEqual(request.snapshot.options?.map(\.kind), ["once", "networkAllow", "decline"])
+        XCTAssertEqual(request.snapshot.options?[1].detail, "example.test")
+        let result = try XCTUnwrap(request.result(decision: "network-1")["decision"] as? [String: Any])
+        XCTAssertNotNil(result["applyNetworkPolicyAmendment"])
+    }
+
+    func testCompletedTurnClearsAReconnectingRequestThatWasNotReplayed() throws {
+        let prompt = command()
+        let original = try FakeAppServer { message in
+            guard let id = message["id"], let method = message["method"] as? String else { return [] }
+            let response: [String: Any] = ["id": id, "result": [:]]
+            return method == "thread/resume" ? [response, prompt] : [response]
+        }
+        let monitor = CodexApprovalMonitor(reconnectDelay: 0.1)
+        monitor.watch(socketPath: original.path, threadId: "thread-1")
+        wait { monitor.snapshot(threadId: "thread-1")?.status == "pending" }
+        original.disconnectClient()
+        original.waitUntilDone()
+        wait { monitor.snapshot(threadId: "thread-1")?.status == "reconnecting" }
+        try FileManager.default.removeItem(atPath: original.path)
+        let restored = try FakeAppServer(path: original.path) { message in
+            guard let id = message["id"], let method = message["method"] as? String else { return [] }
+            let response: [String: Any] = ["id": id, "result": [:]]
+            return method == "thread/resume" ? [response, ["method": "turn/completed", "params": ["threadId": "thread-1", "turn": ["id": "turn-1"]]]] : [response]
+        }
+        defer { monitor.stop(threadId: "thread-1"); restored.waitUntilDone() }
+        wait { monitor.snapshot(threadId: "thread-1")?.status == "resolved" }
+    }
+
 }

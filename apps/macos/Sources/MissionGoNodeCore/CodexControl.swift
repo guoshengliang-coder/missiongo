@@ -95,6 +95,18 @@ public extension CodexControl {
     func hasLoadedThreads(socketPath: String) async throws -> Bool { true }
 }
 
+public struct CodexApprovalOption: Codable, Equatable, Sendable {
+    public let id: String
+    public let kind: String
+    public let detail: String?
+
+    public init(id: String, kind: String, detail: String? = nil) {
+        self.id = id
+        self.kind = kind
+        self.detail = detail
+    }
+}
+
 public struct CodexApprovalSnapshot: Codable, Equatable, Sendable {
     public let id: String
     public let kind: String
@@ -103,9 +115,10 @@ public struct CodexApprovalSnapshot: Codable, Equatable, Sendable {
     public let action: String
     public let reason: String?
     public let startedAtMs: Int64
+    public let options: [CodexApprovalOption]?
 
     public init(id: String, kind: String, status: String, turnId: String, action: String,
-                reason: String? = nil, startedAtMs: Int64) {
+                reason: String? = nil, startedAtMs: Int64, options: [CodexApprovalOption]? = nil) {
         self.id = id
         self.kind = kind
         self.status = status
@@ -113,6 +126,7 @@ public struct CodexApprovalSnapshot: Codable, Equatable, Sendable {
         self.action = action
         self.reason = reason
         self.startedAtMs = startedAtMs
+        self.options = options
     }
 }
 
@@ -1120,7 +1134,8 @@ public struct CodexAppServerControl: CodexControl {
 
 /// One observer per Codex thread. App-server approval requests are live JSON-RPC
 /// requests, not part of thread/read. The observer owns the socket until the
-/// node stops polling this thread; an answer is sent only on that same socket.
+/// node stops polling an idle thread. Pending approvals keep the socket alive;
+/// an answer is sent only on the socket that received the request.
 final class CodexApprovalMonitor: @unchecked Sendable {
     private struct Watch {
         var active = false
@@ -1128,13 +1143,23 @@ final class CodexApprovalMonitor: @unchecked Sendable {
         var snapshot: CodexApprovalSnapshot?
         var decision: (id: String, choice: String)?
         var cancelledTurn: String?
+        var stopped = false
     }
     private let watches = Locked<[String: Watch]>([:])
+
+    private let idleTimeout: TimeInterval
+    private let reconnectDelay: TimeInterval
+
+    init(idleTimeout: TimeInterval = 60, reconnectDelay: TimeInterval = 2) {
+        self.idleTimeout = idleTimeout
+        self.reconnectDelay = reconnectDelay
+    }
 
     func watch(socketPath: String, threadId: String) {
         let start = watches.withLock { state -> Bool in
             var watch = state[threadId] ?? Watch()
             watch.lastTouched = Date()
+            watch.stopped = false
             defer { state[threadId] = watch }
             guard !watch.active else { return false }
             watch.active = true
@@ -1151,20 +1176,18 @@ final class CodexApprovalMonitor: @unchecked Sendable {
     func stop(threadId: String) {
         watches.withLock { state in
             guard var watch = state[threadId] else { return }
-            watch.lastTouched = .distantPast
+            watch.stopped = true
             state[threadId] = watch
         }
     }
 
     func answer(threadId: String, approvalId: String, decision: String) throws {
-        guard decision == "accept" || decision == "decline" else {
-            throw CodexControlError.invalidResponse(method: "approval decision")
-        }
         let accepted = watches.withLock { state -> Bool in
             guard var watch = state[threadId], watch.active,
                   watch.snapshot?.id == approvalId,
                   watch.snapshot?.kind == "manual",
-                  watch.snapshot?.status == "pending" else { return false }
+                  watch.snapshot?.status == "pending",
+                  watch.snapshot?.options?.contains(where: { $0.id == decision }) == true else { return false }
             if let queued = watch.decision, queued.id != approvalId || queued.choice != decision { return false }
             watch.decision = (approvalId, decision)
             state[threadId] = watch
@@ -1183,58 +1206,85 @@ final class CodexApprovalMonitor: @unchecked Sendable {
     }
 
     private func run(socketPath: String, threadId: String) {
-        var pending: [CodexApprovalRequest] = []
-        do {
-            let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: 2)
-            defer { connection.close() }
-            _ = try connection.call("initialize", CodexProtocol.initializeParams())
-            try connection.notify("initialized")
-            let resumed = try connection.call("thread/resume", ["threadId": threadId, "excludeTurns": true])
-            for message in connection.notifications {
-                observe(message, threadId: threadId, pending: &pending)
-            }
-            // A prompt can be resolved while this observer is disconnected.
-            // Do not leave its unavailable card behind after an idle resume.
-            if let thread = resumed["thread"] as? [String: Any],
-               let status = thread["status"] as? [String: Any],
-               ["idle", "notLoaded"].contains(status["type"] as? String ?? ""), pending.isEmpty {
+        while watches.current[threadId]?.stopped == false {
+            var pending: [CodexApprovalRequest] = []
+            do {
+                let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: 2)
+                defer { connection.close() }
+                _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                try connection.notify("initialized")
+                let resumed = try connection.call("thread/resume", ["threadId": threadId, "excludeTurns": true])
+                for message in connection.notifications {
+                    observe(message, threadId: threadId, pending: &pending)
+                }
+                // A prompt can be resolved while this observer is disconnected.
+                // Do not leave its unavailable card behind after an idle resume.
+                if let thread = resumed["thread"] as? [String: Any],
+                   let status = thread["status"] as? [String: Any],
+                   ["idle", "notLoaded"].contains(status["type"] as? String ?? ""), pending.isEmpty {
+                    watches.withLock { state in
+                        guard var watch = state[threadId], let old = watch.snapshot,
+                              old.kind == "manual", ["pending", "unavailable", "reconnecting"].contains(old.status) else { return }
+                        watch.snapshot = CodexApprovalSnapshot(id: old.id, kind: old.kind, status: "resolved",
+                            turnId: old.turnId, action: old.action, reason: "来源回合已结束，旧授权请求已失效。",
+                            startedAtMs: old.startedAtMs, options: old.options)
+                        watch.decision = nil
+                        state[threadId] = watch
+                    }
+                }
+                while true {
+                    let current = watches.current[threadId]
+                    guard let current, !current.stopped else { break }
+                    // A human may return much later or from another device. An
+                    // outstanding request owns this socket regardless of polling.
+                    guard !pending.isEmpty || current.snapshot?.status == "reconnecting"
+                        || Date().timeIntervalSince(current.lastTouched) < idleTimeout else { break }
+                    if let cancelledTurn = current.cancelledTurn, pending.contains(where: { $0.snapshot.turnId == cancelledTurn }) {
+                        for request in pending.filter({ $0.snapshot.turnId == cancelledTurn }) {
+                            try connection.respond(id: request.rpcId, result: request.result(decision: "cancel"))
+                            pending.removeAll { $0.snapshot.id == request.snapshot.id }
+                            publish(request.ended("denied", reason: "用户已终止当前回合，未授予权限。"), pending: pending, threadId: threadId)
+                        }
+                    } else if let decision = current.decision,
+                              let request = pending.first(where: { $0.snapshot.id == decision.id }) {
+                        try connection.respond(id: request.rpcId, result: request.result(decision: decision.choice))
+                        pending.removeAll { $0.snapshot.id == decision.id }
+                        let denied = request.snapshot.options?.contains {
+                            $0.id == decision.choice && ["decline", "cancel", "networkDeny"].contains($0.kind)
+                        } == true
+                        publish(request.ended(denied ? "denied" : "approved"), pending: pending, threadId: threadId)
+                    }
+                    do {
+                        let message = try connection.receive(timeout: 1)
+                        observe(message, threadId: threadId, pending: &pending)
+                    } catch CodexControlError.timedOut { continue }
+                }
+            } catch {
                 watches.withLock { state in
-                    guard var watch = state[threadId], let old = watch.snapshot,
-                          old.kind == "manual", ["pending", "unavailable"].contains(old.status) else { return }
-                    watch.snapshot = CodexApprovalSnapshot(id: old.id, kind: old.kind, status: "resolved",
-                        turnId: old.turnId, action: old.action, reason: "来源回合已结束，旧授权请求已失效。",
-                        startedAtMs: old.startedAtMs)
+                    guard var watch = state[threadId], !watch.stopped,
+                          let old = watch.snapshot, old.kind == "manual",
+                          ["pending", "reconnecting"].contains(old.status) else { return }
+                    watch.snapshot = CodexApprovalSnapshot(id: old.id, kind: old.kind, status: "reconnecting",
+                        turnId: old.turnId, action: old.action,
+                        reason: "授权连接已断开，正在重新连接并核实来源请求。旧决定不会自动重发。",
+                        startedAtMs: old.startedAtMs, options: old.options)
                     watch.decision = nil
                     state[threadId] = watch
                 }
             }
-            while true {
-                let current = watches.current[threadId]
-                guard let current, Date().timeIntervalSince(current.lastTouched) < 60 else { break }
-                if let cancelledTurn = current.cancelledTurn, pending.contains(where: { $0.snapshot.turnId == cancelledTurn }) {
-                    for request in pending.filter({ $0.snapshot.turnId == cancelledTurn }) {
-                        try connection.respond(id: request.rpcId, result: request.result(decision: "cancel"))
-                        pending.removeAll { $0.snapshot.id == request.snapshot.id }
-                        publish(request.ended("denied", reason: "用户已终止当前回合，未授予权限。"), pending: pending, threadId: threadId)
-                    }
-                } else if let decision = current.decision,
-                          let request = pending.first(where: { $0.snapshot.id == decision.id }) {
-                    try connection.respond(id: request.rpcId, result: request.result(decision: decision.choice))
-                    pending.removeAll { $0.snapshot.id == decision.id }
-                    publish(request.ended(decision.choice == "accept" ? "approved" : "denied"), pending: pending, threadId: threadId)
-                }
-                do {
-                    let message = try connection.receive(timeout: 1)
-                    observe(message, threadId: threadId, pending: &pending)
-                } catch CodexControlError.timedOut { continue }
-            }
-        } catch { }
+            if watches.current[threadId]?.stopped == true { break }
+            let current = watches.current[threadId]
+            guard current?.snapshot?.status == "reconnecting" else { break }
+            // Reconnection gets fresh request identities from Codex. Never replay
+            // an RPC id or decision captured on a previous transport connection.
+            Thread.sleep(forTimeInterval: reconnectDelay)
+        }
         watches.withLock { state in
             guard var watch = state[threadId] else { return }
-            if let old = watch.snapshot, old.kind == "manual", old.status == "pending" {
+            if let old = watch.snapshot, old.kind == "manual", ["pending", "reconnecting"].contains(old.status) {
                 watch.snapshot = CodexApprovalSnapshot(id: old.id, kind: old.kind, status: "unavailable",
                     turnId: old.turnId, action: old.action, reason: "Codex 授权连接已断开，请在 Codex 中核实。",
-                    startedAtMs: old.startedAtMs)
+                    startedAtMs: old.startedAtMs, options: old.options)
             }
             watch.active = false
             watch.decision = nil
@@ -1292,6 +1342,19 @@ final class CodexApprovalMonitor: @unchecked Sendable {
             for request in pending.filter({ $0.snapshot.turnId == turnId }) {
                 pending.removeAll { $0.snapshot.id == request.snapshot.id }
                 publish(request.ended("resolved", reason: "授权请求已随回合结束失效。"), pending: pending, threadId: threadId)
+            }
+            // A request may have finished on the source client during a
+            // disconnect and need not be replayed on this new connection.
+            if pending.isEmpty {
+                watches.withLock { state in
+                    guard var watch = state[threadId], let old = watch.snapshot,
+                          old.kind == "manual", old.status == "reconnecting", old.turnId == turnId else { return }
+                    watch.snapshot = CodexApprovalSnapshot(id: old.id, kind: old.kind, status: "resolved",
+                        turnId: old.turnId, action: old.action, reason: "授权请求已随回合结束失效。",
+                        startedAtMs: old.startedAtMs, options: old.options)
+                    watch.decision = nil
+                    state[threadId] = watch
+                }
             }
         }
     }

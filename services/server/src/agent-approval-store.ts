@@ -4,6 +4,12 @@ import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import type { AgentSessionListItem } from "./agent-session-store.js";
 
+export interface AgentApprovalOption {
+  id: string;
+  kind: "once" | "turn" | "session" | "rule" | "networkAllow" | "networkDeny" | "decline" | "cancel";
+  detail?: string;
+}
+
 export interface AgentApproval {
   id: string;
   kind: "manual" | "auto";
@@ -12,7 +18,8 @@ export interface AgentApproval {
   action: string;
   reason?: string;
   startedAtMs: number;
-  decision?: "accept" | "decline";
+  options?: AgentApprovalOption[];
+  decision?: string;
   retryId?: string;
   retryStatus?: "queued" | "delivering" | "delivered" | "restored" | "failed";
   retryError?: string;
@@ -27,14 +34,15 @@ interface ApprovalRow {
   action: string;
   reason: string | null;
   started_at_ms: number;
-  decision: "accept" | "decline" | null;
+  decision: string | null;
+  options_json: string | null;
   retry_id: string | null;
   retry_review_id: string | null;
   retry_status: "queued" | "delivering" | "delivered" | "restored" | "failed" | null;
   retry_error: string | null;
 }
 
-const manualStatuses = new Set(["pending", "approved", "denied", "unavailable", "resolved"]);
+const manualStatuses = new Set(["pending", "approved", "denied", "unavailable", "reconnecting", "resolved"]);
 const autoStatuses = new Set(["inProgress", "approved", "denied", "timedOut", "aborted"]);
 
 function publicApproval(row: ApprovalRow): AgentApproval {
@@ -42,6 +50,7 @@ function publicApproval(row: ApprovalRow): AgentApproval {
     id: row.approval_id, kind: row.kind, status: row.status,
     turnId: row.turn_id, action: row.action, startedAtMs: row.started_at_ms,
     ...(row.reason ? { reason: row.reason } : {}),
+    ...(row.options_json ? { options: JSON.parse(row.options_json) as AgentApprovalOption[] } : {}),
     ...(row.decision ? { decision: row.decision } : {}),
     ...(row.retry_review_id === row.approval_id && row.retry_id ? { retryId: row.retry_id } : {}),
     ...(row.retry_review_id === row.approval_id && row.retry_status ? { retryStatus: row.retry_status } : {}),
@@ -57,7 +66,7 @@ export class AgentApprovalStore {
     const approval = session.agentKind === "codex" ? this.get(session.id) : undefined;
     if (!approval) return session;
     const needed = !session.archivedAt && (approval.kind === "manual"
-      ? (approval.status === "pending" && !approval.decision) || approval.status === "unavailable"
+      ? (approval.status === "pending" && !approval.decision) || ["unavailable", "reconnecting"].includes(approval.status)
       : approval.status === "denied" && (!approval.retryId || approval.retryStatus === "failed"));
     return { ...session, approval, ...(needed ? {
       needsAttention: true, waitingForReply: true,
@@ -90,40 +99,54 @@ export class AgentApprovalStore {
       || !(approval.kind === "manual" ? manualStatuses : autoStatuses).has(approval.status)) {
       throw invalidInput("Invalid Codex approval snapshot.");
     }
+    if (approval.options !== undefined && (!Array.isArray(approval.options) || approval.options.length > 20
+      || approval.options.some((option) => !option || typeof option.id !== "string" || !/^[A-Za-z0-9-]{1,80}$/.test(option.id)
+        || !["once", "turn", "session", "rule", "networkAllow", "networkDeny", "decline", "cancel"].includes(option.kind)
+        || (option.detail !== undefined && (typeof option.detail !== "string" || option.detail.length > 4_000)))
+      || new Set(approval.options.map((option) => option.id)).size !== approval.options.length)) {
+      throw invalidInput("Invalid Codex approval options.");
+    }
     const now = new Date().toISOString();
     this.database.transaction(() => {
       const previous = this.row(sessionId);
       if (previous && previous.approval_id === approval.id) {
         if ((previous.kind === "manual" && previous.status !== "pending" && approval.status === "pending")
+          || (previous.kind === "manual" && !["pending", "reconnecting"].includes(previous.status) && approval.status === "reconnecting")
           || (previous.kind === "auto" && previous.status !== "inProgress" && approval.status === "inProgress")) {
           return;
         }
         // A stale node snapshot must not reset a decision or retry queued by a
         // person after that snapshot was taken.
         this.database.connection.prepare(
-          `UPDATE agent_session_approvals SET status = ?, action = ?, reason = ?, updated_at = ?
+          `UPDATE agent_session_approvals SET status = ?, action = ?, reason = ?, updated_at = ?,
+           decision = CASE WHEN ? = 'reconnecting' THEN NULL ELSE decision END
            WHERE session_id = ? AND approval_id = ?`,
-        ).run(approval.status, approval.action, approval.reason ?? null, now, sessionId, approval.id);
+        ).run(approval.status, approval.action, approval.reason ?? null, now, approval.status, sessionId, approval.id);
       } else {
         this.database.connection.prepare(
           `INSERT INTO agent_session_approvals
-           (session_id, approval_id, kind, status, turn_id, action, reason, started_at_ms, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (session_id, approval_id, kind, status, turn_id, action, reason, started_at_ms, updated_at, options_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(session_id) DO UPDATE SET
            approval_id=excluded.approval_id,kind=excluded.kind,status=excluded.status,
            turn_id=excluded.turn_id,action=excluded.action,reason=excluded.reason,
-           started_at_ms=excluded.started_at_ms,decision=NULL,updated_at=excluded.updated_at`,
+           started_at_ms=excluded.started_at_ms,decision=NULL,updated_at=excluded.updated_at,options_json=excluded.options_json`,
         ).run(sessionId, approval.id, approval.kind, approval.status, approval.turnId,
-          approval.action, approval.reason ?? null, approval.startedAtMs, now);
+          approval.action, approval.reason ?? null, approval.startedAtMs, now, approval.options === undefined ? null : JSON.stringify(approval.options));
       }
     });
   }
 
-  decide(sessionId: string, approvalId: string, choice: "accept" | "decline"): AgentApproval {
+  decide(sessionId: string, approvalId: string, choice: string): AgentApproval {
     return this.database.transaction(() => {
       const row = this.row(sessionId);
       if (!row || row.approval_id !== approvalId || row.kind !== "manual" || row.status !== "pending") {
         throw conflict("approval_stale", "This Codex approval is no longer pending.");
+      }
+      const options = row.options_json ? JSON.parse(row.options_json) as AgentApprovalOption[] : undefined;
+      // Legacy nodes advertise no options and retain only their old yes/no path.
+      if (!(options ? options.some((option) => option.id === choice) : ["accept", "decline"].includes(choice))) {
+        throw invalidInput("This decision was not offered by the source Codex request.");
       }
       if (row.decision && row.decision !== choice) throw conflict("approval_decided", "This approval already has a different decision.");
       if (!row.decision) this.database.connection.prepare(
@@ -151,7 +174,7 @@ export class AgentApprovalStore {
   }
 
   /** Sent to the owning node on its next session poll. */
-  pendingForNode(sessionId: string): { approvalDecision?: { id: string; choice: "accept" | "decline" };
+  pendingForNode(sessionId: string): { approvalDecision?: { id: string; choice: string };
     approvalRetry?: { id: string; reviewId: string; status: string } } {
     const row = this.row(sessionId);
     if (!row) return {};
