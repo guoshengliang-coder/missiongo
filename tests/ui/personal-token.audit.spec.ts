@@ -12,7 +12,8 @@ for (const width of [375, 1440]) {
         const openSettings = async () => {
           if (width === 375) await page.getByRole("button", { name: "打开导航", exact: true }).click();
           await page.getByRole("button", { name: "设置", exact: true }).click();
-          await page.getByRole("button", { name: "AI 连接", exact: true }).click();
+          await page.getByRole("button", { name: "Agent 配置", exact: true }).click();
+          await page.locator(".settings-hub-row").filter({ has: page.getByText("连接与授权", { exact: true }) }).click();
         };
         await openSettings();
         const section = page.getByRole("region", { name: "个人访问令牌", exact: true });

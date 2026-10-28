@@ -2598,3 +2598,32 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .settings-page-body .account-ai-toggle input { flex: 0 0 auto; margin: 2px 0 0; }
 .settings-page-body .account-ai-toggle span { display: grid; gap: 6px; }
 .settings-page-body .account-ai-toggle small { color: var(--muted); font-size: var(--text-md); font-weight: 400; line-height: 1.65; }
+
+/* Module entry lists share the existing settings surfaces and focus treatment. */
+.settings-hub-intro { margin: 0 0 20px; color: var(--muted); font-size: var(--text-md); line-height: 1.65; }
+.settings-hub-list { border-top: 1px solid var(--line); }
+.settings-hub-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; width: 100%; min-height: 76px; padding: 18px 0; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.settings-hub-row > span { display: grid; gap: 6px; min-width: 0; }
+.settings-hub-row strong { font-size: var(--text-base); font-weight: 650; overflow-wrap: anywhere; }
+.settings-hub-row small { color: var(--muted); font-size: var(--text-md); line-height: 1.65; overflow-wrap: anywhere; }
+.settings-hub-row svg { flex-shrink: 0; color: var(--muted); }
+.settings-product-summary { margin-bottom: 24px; }
+.settings-product-summary strong { font-size: var(--text-xl); overflow-wrap: anywhere; }
+.settings-product-summary > span { margin-left: 12px; font-size: var(--text-sm); color: var(--muted); }
+.settings-product-summary p { color: var(--muted); font-size: var(--text-md); line-height: 1.65; }
+.settings-product-actions { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; max-width: 100%; }
+.settings-product-actions label { flex: 1; min-width: 0; }
+.settings-product-actions select { width: 100%; }
+.settings-product-actions button { min-height: 44px; }
+.settings-access-shortcut { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin-top: 20px; }
+.settings-breadcrumb { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 4px 32px; border-bottom: 1px solid var(--line); font-size: var(--text-sm); color: var(--muted); }
+.settings-breadcrumb button { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; }
+.settings-account-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin: 20px 0; }
+.settings-account-filters label { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: var(--text-md); }
+.settings-account-filters input, .settings-account-filters select { width: 100%; min-width: 0; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line-dark); border-radius: var(--radius-sm); color: var(--ink); background: var(--surface-field); font: inherit; }
+@media (hover: hover) { .settings-hub-row:hover { background: var(--row-hover); } }
+@media (max-width: 1023px) {
+  .settings-product-actions { width: 100%; }
+  .settings-breadcrumb { padding-right: 18px; padding-left: 18px; }
+  .settings-account-filters { grid-template-columns: minmax(0, 1fr); }
+}

@@ -563,8 +563,8 @@ function AccountRow({
     onSuccess: invalidate,
   });
 
-  useEffect(() => setEmail(account.email), [account.email]);
-  useEffect(() => setNickname(account.nickname ?? ""), [account.nickname]);
+  useEffect(() => setEmail(account.email), [account.email, open]);
+  useEffect(() => setNickname(account.nickname ?? ""), [account.nickname, open]);
   useSettingsDraft(open && (email !== account.email || nickname !== (account.nickname ?? "")), rename.isPending || renameNickname.isPending || suspend.isPending || remove.isPending);
 
   const error = suspend.error ?? remove.error ?? rename.error ?? renameNickname.error;
@@ -628,7 +628,7 @@ function AccountRow({
               disabled={rename.isPending || !email.trim() || email.trim() === account.email}
               onClick={() => rename.mutate()}
             >
-              {rename.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
+              {rename.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
             </button>
           </div>
           {/* Correcting a name somebody else chose. Unlike the address above it
@@ -654,7 +654,7 @@ function AccountRow({
               }
               onClick={() => renameNickname.mutate()}
             >
-              {renameNickname.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
+              {renameNickname.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
             </button>
           </div>
           <PermissionGrid account={account} products={products} />
@@ -663,7 +663,7 @@ function AccountRow({
               type="button"
               className="secondary-button"
               disabled={rename.isPending || renameNickname.isPending}
-              onClick={() => { setEmail(account.email); setNickname(account.nickname ?? ""); setEditor(closeAccountEditor(editor, editIntent)); }}
+              onClick={() => setEditor(closeAccountEditor(editor, editIntent))}
             >
               <X size={15} /> {t("cancel")}
             </button>
@@ -753,49 +753,41 @@ function NewAccountForm({ onCancel, onCreated }: { onCancel: () => void; onCreat
 }
 
 /** The accounts on this deployment, and what each of them reaches. Administrators only. */
-export function AccountManagement({ user, products }: { user: AuthenticatedUser; products: readonly Product[] }) {
+export function AccountManagement({ user, products, accountId, filterProductId, onNavigate }: {
+  user: AuthenticatedUser; products: readonly Product[]; accountId?: string | undefined; filterProductId?: string | undefined;
+  onNavigate?: (accountId?: string | undefined, filterProductId?: string | undefined) => void;
+}) {
   const { t } = useI18n();
-  const [editor, setEditor] = useState<AccountEditor | null>(null);
+  const [localEditor, setLocalEditor] = useState<AccountEditor | null>(null);
+  const [search, setSearch] = useState("");
+  const [localFilter, setLocalFilter] = useState("");
+  const filter = onNavigate ? filterProductId ?? "" : localFilter;
+  const editor: AccountEditor | null = accountId ? `account:${accountId}` : localEditor;
+  const setEditor = (next: AccountEditor | null) => {
+    if (onNavigate && (next?.startsWith("account:") || accountId)) {
+      onNavigate(next?.startsWith("account:") ? next.slice(8) : undefined, filter || undefined);
+    } else setLocalEditor(next);
+  };
   const accountsQuery = useQuery({ queryKey: ["accounts"], queryFn: api.listAccounts });
-
   if (accountsQuery.isPending) return <p className="account-note"><LoaderCircle className="spin" size={15} /></p>;
-  if (accountsQuery.isError) {
-    return <InlineNote danger message={messageFor(accountsQuery.error, t, t("somethingWentWrong"))} />;
-  }
-
-  return (
-    <div className="account-management">
-      <div className="account-management-header">
-        <p className="account-note">{t("accountsHelp")}</p>
-        <button
-          type="button"
-          className="primary-button"
-          disabled={editor !== null}
-          onClick={() => setEditor(openAccountEditor(editor, "new-account"))}
-        >
-          <Plus size={15} /> {t("addAccount")}
-        </button>
+  if (accountsQuery.isError) return <InlineNote danger message={messageFor(accountsQuery.error, t, t("somethingWentWrong"))} />;
+  const accounts = accountsQuery.data.accounts.filter(account => accountId ? account.id === accountId
+    : (account.email.toLowerCase().includes(search.trim().toLowerCase()) || (account.nickname ?? "").toLowerCase().includes(search.trim().toLowerCase()))
+      && (!filter || account.role === "admin" || account.permissions.some(permission => permission.productId === filter && (permission.canView || permission.canOperate || permission.canUseAi))));
+  return <div className="account-management">
+    {!accountId && <>
+      <div className="account-management-header"><p className="account-note">{t("accountsHelp")}</p><button type="button" className="primary-button" disabled={editor !== null} onClick={() => setEditor(openAccountEditor(editor, "new-account"))}><Plus size={15} /> {t("addAccount")}</button></div>
+      <div className="settings-account-filters">
+        <label>{t("settingsSearchAccounts")}<input type="search" value={search} disabled={editor !== null} onChange={event => setSearch(event.target.value)} /></label>
+        <label>{t("settingsFilterProduct")}<select value={filter} disabled={editor !== null} onChange={event => onNavigate ? onNavigate(undefined, event.target.value || undefined) : setLocalFilter(event.target.value)}><option value="">{t("settingsAllProducts")}</option>{products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</select></label>
       </div>
-      {editor === "new-account" && (
-        <NewAccountForm
-          onCancel={() => setEditor(closeAccountEditor(editor, "new-account"))}
-          onCreated={() => setEditor(closeAccountEditor(editor, "new-account"))}
-        />
-      )}
-      <div className="account-list">
-        {accountsQuery.data.accounts.map((account) => (
-          <AccountRow
-            key={account.id}
-            account={account}
-            products={products}
-            isSelf={account.id === user.id}
-            editor={editor}
-            setEditor={setEditor}
-          />
-        ))}
-      </div>
+    </>}
+    {editor === "new-account" && <NewAccountForm onCancel={() => setEditor(null)} onCreated={() => setEditor(null)} />}
+    <div className="account-list">
+      {accounts.length === 0 && <p role="status" className="account-note">{t(accountId ? "settingsUnavailable" : "settingsNoMatchingAccounts")}</p>}
+      {accounts.map(account => <AccountRow key={account.id} account={account} products={products} isSelf={account.id === user.id} editor={editor} setEditor={setEditor} />)}
     </div>
-  );
+  </div>;
 }
 
 export function DeepSeekSettings() {
