@@ -341,7 +341,7 @@ export const api = {
   listAiAuthorizations: () =>
     request<{ authorizations: AiAuthorization[] }>("/api/v1/ai-authorizations"),
   revokeAiAuthorization: (authorizationId: string) =>
-    request<void>(`/api/v1/ai-authorizations/${encodeURIComponent(authorizationId)}`, { method: "DELETE" }),
+    requestNoContent(`/api/v1/ai-authorizations/${encodeURIComponent(authorizationId)}`, { method: "DELETE" }),
   // The plaintext comes back exactly once and is never stored server-side.
   createPersonalToken: (input: { name: string; scopes: string[]; days: number }) =>
     request<PersonalTokenCreated>("/api/v1/ai-personal-tokens", { method: "POST", body: JSON.stringify(input) }),
