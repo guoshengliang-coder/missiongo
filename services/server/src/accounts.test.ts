@@ -590,6 +590,37 @@ describe("What an AI client reaches", () => {
     expect((await callMcp(app, token, 4, "list_products")).structuredContent).toMatchObject({ products: [] });
   });
 
+  it("applies current product permissions and expiry to personal tokens (AND-298)", async () => {
+    const { app, member, shared } = await twoAccountWorkspace();
+    app.missionGoAccounts.replacePermissions(member.id, [
+      { productId: shared.id, canView: true, canOperate: false, canUseAi: true },
+    ]);
+    const cookie = await signIn(app, "member@example.com", MEMBER_PASSWORD);
+    const created = await app.inject({
+      method: "POST", url: "/api/v1/ai-personal-tokens", headers: { cookie },
+      payload: { name: "Scoped machine", scopes: ["missiongo:read"], days: 7 },
+    });
+    expect(created.statusCode).toBe(201);
+    const { token } = created.json<{ token: string }>();
+    expect((await callMcp(app, token, 1, "list_products")).structuredContent)
+      .toMatchObject({ products: [{ id: shared.id }] });
+
+    app.missionGoAccounts.replacePermissions(member.id, []);
+    expect((await callMcp(app, token, 2, "list_products")).structuredContent)
+      .toMatchObject({ products: [] });
+
+    const expired = app.missionGoAccounts.createPersonalAccessToken({
+      accountId: member.id, name: "Expired machine", scopes: ["missiongo:read"],
+      expiresAt: new Date(Date.now() - 1_000),
+    });
+    const response = await app.inject({
+      method: "POST", url: "/mcp",
+      headers: { authorization: `Bearer ${expired.token}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      payload: { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "get_current_account", arguments: {} } },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
   it("reaches only what the account that authorized it reaches, not what an administrator would", async () => {
     const { app, adminCookie, member, shared, hidden } = await twoAccountWorkspace();
     await app.inject({

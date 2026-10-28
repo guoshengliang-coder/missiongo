@@ -326,15 +326,14 @@ function ConnectedAiClients() {
             ))}
           </div>
         ))}
-      <PersonalTokenForm />
     </section>
   );
 }
 
 /**
  * Mint a personal access token (AND-288): the browserless-machine half of the
- * AI connections section. The token appears once, here, in a copyable field;
- * afterwards only the named row in the list above remembers it existed.
+ * account settings. The token appears once, here, in a copyable field;
+ * afterwards only the named row in the connections list below remains.
  */
 function PersonalTokenForm() {
   const { t } = useI18n();
@@ -356,10 +355,10 @@ function PersonalTokenForm() {
   const minted = create.data;
 
   return (
-    <div className="account-personal-token">
-      <h4>{t("personalTokens")}</h4>
+    <section className="account-authorizations" aria-labelledby="personal-token-title">
+      <h3 id="personal-token-title">{t("personalTokens")}</h3>
       <p className="account-note">{t("personalTokensHelp")}</p>
-      <div className="account-personal-token-fields">
+      <div className="account-add-form">
         <label>
           {t("personalTokenName")}
           <input
@@ -386,6 +385,7 @@ function PersonalTokenForm() {
         </label>
         <button
           type="button"
+          className="secondary-button"
           disabled={!name.trim() || create.isPending}
           onClick={() => create.mutate()}
         >
@@ -394,12 +394,16 @@ function PersonalTokenForm() {
       </div>
       {create.isError && <InlineNote danger message={messageFor(create.error, t, t("somethingWentWrong"))} />}
       {minted && (
-        <div className="account-personal-token-created">
+        <div className="account-add-form">
           <p><strong>{t("personalTokenCreated")}</strong> — {t("personalTokenCreatedHelp")}</p>
-          <textarea readOnly rows={2} value={minted.token} onFocus={(event) => event.currentTarget.select()} />
+          <label>
+            {t("personalTokens")}
+            <textarea readOnly rows={2} value={minted.token} autoComplete="off" spellCheck={false}
+              onFocus={(event) => event.currentTarget.select()} />
+          </label>
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -908,6 +912,7 @@ export function AccountSettings({
           {editor === "password" && (
             <PasswordForm onCancel={() => setEditor(closeAccountEditor(editor, "password"))} />
           )}
+          <PersonalTokenForm />
           <ConnectedAiClients />
           {user.role === "admin" && <DeepSeekSettings />}
           {logout.isError && <InlineNote danger message={messageFor(logout.error, t, t("somethingWentWrong"))} />}
