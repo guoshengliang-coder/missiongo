@@ -46,12 +46,9 @@ import {
   RotateCcw,
   Search,
   Settings,
-  Settings2,
   Sparkles,
   Trash2,
-  Type as TypeIcon,
   Undo2,
-  UserRound,
   Video,
   WifiOff,
   X,
@@ -125,12 +122,13 @@ import { environmentFields, environmentSummary, platformName, type EnvironmentFi
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
-import { AccountSettings, ProductAccessSettings } from "./account-settings";
-import { DisplaySettings } from "./display-settings";
+import { ProductAccessSettings } from "./account-settings";
+import { SettingsPage } from "./settings-page";
+import { useSettingsNavigation } from "./settings-navigation";
+import { useSettingsDraft } from "./settings-drafts";
+import { settingsRoute as readSettingsRoute, type ProductSettingsSection } from "./settings-state";
 import { applyConsoleFontScale, applyFontScale, readStoredConsoleFontScale, readStoredFontScale, storeConsoleFontScale, storeFontScale } from "./font-scale";
 import { mayAdministerProduct } from "./product-permissions";
-import { DispatchDefaultsSettings } from "./dispatch-defaults-settings";
-import { NodeSettings } from "./node-settings";
 import { parseFeedbackLog, transitionRequiresNote, TRANSITION_NOTE_MAX_LENGTH } from "@missiongo/domain";
 import { statusChangeNote, dispatchedEvent, groupTimeline } from "./timeline";
 import { TransitionNoteDialog, transitionNoteCopy } from "./transition-note-dialog";
@@ -454,8 +452,7 @@ export function App() {
   const [typeFilter, setTypeFilter] = useState<WorkItemType | "all">(initialFilters.type);
   const [search, setSearch] = useState(initialFilters.search);
   const [captureOpen, setCaptureOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
+  const settings = useSettingsNavigation();
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [statisticsOpen,setStatisticsOpen] = useState(statisticsIsOpen);
   const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
@@ -481,9 +478,10 @@ export function App() {
   const [notice, setNotice] = useState<string | null>(null);
 
   /** One entry point for every panel the settings dialog holds. */
-  const openSettings = (tab: SettingsTab) => {
-    setSettingsTab(tab);
-    setSettingsOpen(true);
+  const openSettings = (tab: "account" | "agents") => {
+    settings.navigate({ section: tab === "agents" ? "devices" : sidebarIsDrawer ? "index" : "profile" });
+    setSidebarOpen(false);
+    syncBackDepth();
   };
   const [selectedItemKeys, setSelectedItemKeys] = useState<ReadonlySet<string>>(() => new Set());
   /**
@@ -803,6 +801,7 @@ export function App() {
 
   useEffect(() => {
     const handlePopState = () => {
+      if (!settings.syncFromPop()) return;
       // The overlay entry carries no URL of its own, so the marker on the state
       // is what says whether the sheet is still the top of the stack.
       syncBackDepth();
@@ -829,7 +828,7 @@ export function App() {
     // screen and none in the history. Give it the list entry it is missing.
     // Read once: the replaceState below drops the parameter, so asking the URL
     // again afterwards would hand back null and write "item=null".
-    const deepLinkedConsole = agentConsoleIsOpen();
+    const deepLinkedConsole = !readSettingsRoute() && agentConsoleIsOpen();
     if (deepLinkedConsole && !history.state?.[AGENT_CONSOLE_HISTORY_MARKER]) {
       const sessionId = agentSessionIdFromUrl();
       const current = typeof history.state === "object" && history.state
@@ -859,7 +858,7 @@ export function App() {
       setAgentSessionId(sessionId);
       setAgentConversationOpen(Boolean(agentConsoleSinglePane && sessionId));
     }
-    const deepLinkedItem = itemKeyFromUrl();
+    const deepLinkedItem = readSettingsRoute() ? null : itemKeyFromUrl();
     if (!deepLinkedConsole && deepLinkedItem && !history.state?.[ITEM_HISTORY_MARKER]) {
       const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
       history.replaceState(state, "", itemListUrl());
@@ -1342,6 +1341,19 @@ export function App() {
     );
   }
 
+  if (settings.route) {
+    if (!bootstrapQuery.data) return <BootSkeleton />;
+    return <SettingsPage route={settings.route} user={bootstrapQuery.data.user} products={products}
+      canUseAi={hasAnyAiPermission} selectedProductId={selectedProductId} navigate={settings.navigate} guard={settings.guard}
+      onLoggedOut={() => { clearPersistedQueryCache(); window.location.reload(); }}
+      renderProduct={(product, section) => <ProductSettings key={`${product.id}:${section}`} product={product} user={bootstrapQuery.data.user} section={section} onSelected={() => undefined} />}
+      renderNewProduct={() => <ProductForm onCreated={async product => {
+        await queryClient.invalidateQueries({ queryKey: ["products"] });
+        settings.navigate({ section: "product", productId: product.id }, true);
+      }} />}
+    />;
+  }
+
   if (products.length === 0) {
     return (
       <main className="onboarding-page">
@@ -1553,7 +1565,6 @@ export function App() {
           <button
             className="text-button sidebar-utility-button"
             onClick={() => {
-              closeSidebar();
               openSettings("account");
             }}
           ><Settings size={15} /> {t("settingsEntry")}</button>
@@ -1891,35 +1902,6 @@ export function App() {
               }
             }}
           />
-        </Modal>
-      )}
-      {settingsOpen && (
-        <Modal title={t("settingsEntry")} subtitle={t("settingsSubtitle")} onClose={() => setSettingsOpen(false)} wide scrolls>
-          {/* The shell can be on screen from cache before the session is known,
-              so the panel waits for the real user rather than inventing one. */}
-          {!bootstrapQuery.data ? (
-            <div className="centered-state"><LoaderCircle className="spin" size={22} /></div>
-          ) : (
-            <SettingsDialog
-              tab={settingsTab}
-              onTabChange={setSettingsTab}
-              user={bootstrapQuery.data.user}
-              products={bootstrapQuery.data.products}
-              canUseAi={hasAnyAiPermission}
-              selectedProductId={selectedProductId}
-              onSelectProduct={(product) => {
-                setSelectedProductId(product.id);
-                clearItemPage();
-              }}
-              onLoggedOut={() => {
-                // Before the reload, not after: the cache on disk holds this
-                // account's work items, and a restore on the next start would
-                // paint them for whoever opens the app next.
-                clearPersistedQueryCache();
-                window.location.reload();
-              }}
-            />
-          )}
         </Modal>
       )}
       {downloadsOpen && (
@@ -4618,164 +4600,6 @@ function AttachmentCard({
   );
 }
 
-type SettingsTab = "account" | "agents" | "products" | "display";
-
-/**
- * Everything that used to be its own sidebar entry, behind one "Settings".
- *
- * The tabs follow the same permissions the separate entries did rather than a
- * new rule: agent management appears only where a product allows AI, and the
- * account panel still narrows itself to "my account" for a member. A tab can
- * vanish between renders (the last AI product is archived), so the panel drawn
- * is always one the tab list still offers.
- */
-function SettingsDialog({
-  tab,
-  onTabChange,
-  user,
-  products,
-  canUseAi,
-  selectedProductId,
-  onSelectProduct,
-  onLoggedOut,
-}: {
-  tab: SettingsTab;
-  onTabChange: (tab: SettingsTab) => void;
-  user: AuthenticatedUser;
-  products: readonly Product[];
-  canUseAi: boolean;
-  selectedProductId: string;
-  onSelectProduct: (product: Product) => void;
-  onLoggedOut: () => void;
-}) {
-  const { t } = useI18n();
-  const tabs: ReadonlyArray<{ id: SettingsTab; label: string; icon: ReactNode }> = [
-    { id: "account", label: t("accountSettings"), icon: <UserRound size={16} /> },
-    ...(canUseAi ? [{ id: "agents" as const, label: t("agentManagementEntry"), icon: <Bot size={16} /> }] : []),
-    { id: "products", label: t("manageProductsEntry"), icon: <Settings2 size={16} /> },
-    { id: "display", label: t("displaySettings"), icon: <TypeIcon size={16} /> },
-  ];
-  const active: SettingsTab = tabs.some((entry) => entry.id === tab) ? tab : "account";
-
-  return (
-    <div className="settings-dialog">
-      <nav className="settings-tabs" role="tablist" aria-label={t("settingsEntry")}>
-        {tabs.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            role="tab"
-            aria-selected={active === entry.id}
-            className={active === entry.id ? "settings-tab selected" : "settings-tab"}
-            onClick={() => onTabChange(entry.id)}
-          >
-            {entry.icon}
-            <span>{entry.label}</span>
-          </button>
-        ))}
-      </nav>
-      <div className="settings-content">
-        {active === "account" && (
-          <AccountSettings user={user} products={products} onLoggedOut={onLoggedOut} />
-        )}
-        {active === "agents" && canUseAi && (
-          <>
-            <NodeSettings products={products} />
-            <DispatchDefaultsSettings />
-          </>
-        )}
-        {active === "products" && (
-          <ProductManager
-            products={products}
-            user={user}
-            selectedProductId={selectedProductId}
-            onSelectProduct={onSelectProduct}
-          />
-        )}
-        {active === "display" && <DisplaySettings user={user} />}
-      </div>
-    </div>
-  );
-}
-
-function ProductManager({
-  products,
-  user,
-  selectedProductId,
-  onSelectProduct,
-}: {
-  products: readonly Product[];
-  /** Absent only while the shell is drawn from cache and the session is still loading. */
-  user?: AuthenticatedUser;
-  selectedProductId: string;
-  onSelectProduct: (product: Product) => void;
-}) {
-  const queryClient = useQueryClient();
-  const { t } = useI18n();
-  const [activeProductId, setActiveProductId] = useState(selectedProductId || products[0]?.id || "");
-  const [adding, setAdding] = useState(false);
-  const activeProduct = products.find((product) => product.id === activeProductId);
-  // A phone has room for one thing at a time. Stacking both panes put a
-  // scrolling list, a tab strip and a form inside one scrolling dialog, and
-  // nothing said which product the tabs belonged to.
-  const stacked = useSinglePaneLayout();
-  const [openOnPhone, setOpenOnPhone] = useState(false);
-  const showingSettings = !stacked || openOnPhone;
-
-  return (
-    <div className={`product-manager ${stacked ? "stacked" : ""}`}>
-      {(!stacked || !openOnPhone) && (
-        <aside className="product-manager-list">
-          <p className="sidebar-label">{t("existingProducts")}</p>
-          {products.map((product) => (
-            <button
-              key={product.id}
-              className={!stacked && activeProductId === product.id && !adding ? "active" : ""}
-              onClick={() => { setActiveProductId(product.id); setAdding(false); setOpenOnPhone(true); }}
-            >
-              <ProductBadge product={product} size={26} />
-              <span><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
-              <ChevronRight size={16} />
-            </button>
-          ))}
-          <button className={`product-manager-add ${!stacked && adding ? "active" : ""}`} onClick={() => { setAdding(true); setOpenOnPhone(true); }}><Plus size={15} /> {t("addProduct")}</button>
-        </aside>
-      )}
-      {showingSettings && (
-      <section className="product-manager-content">
-        {stacked && (
-          <button type="button" className="product-manager-back" onClick={() => setOpenOnPhone(false)}>
-            <ArrowLeft size={16} />
-            {adding || !activeProduct ? t("addProduct") : <><ProductBadge product={activeProduct} size={22} /><span>{activeProduct.name}</span></>}
-          </button>
-        )}
-        {adding || !activeProduct ? (
-          <div className="product-create-panel">
-            <p className="eyebrow">{t("newProduct")}</p>
-            <h3>{t("createProductWorkspace")}</h3>
-            <ProductForm
-              onCreated={async (product) => {
-                await queryClient.invalidateQueries({ queryKey: ["products"] });
-                setActiveProductId(product.id);
-                setAdding(false);
-                onSelectProduct(product);
-              }}
-            />
-          </div>
-        ) : (
-          <ProductSettings
-            key={activeProduct.id}
-            product={activeProduct}
-            {...(user ? { user } : {})}
-            onSelected={() => onSelectProduct(activeProduct)}
-          />
-        )}
-      </section>
-      )}
-    </div>
-  );
-}
-
 /** An uploaded icon replaces the generated badge; removing it brings the badge back. */
 function ProductIconField({ product }: { product: Product }) {
   const queryClient = useQueryClient();
@@ -4790,6 +4614,8 @@ function ProductIconField({ product }: { product: Product }) {
     },
     onError: (mutationError) => setError(errorMessage(mutationError, t("somethingWentWrong"))),
   });
+
+  useSettingsDraft(false, mutation.isPending);
 
   return (
     <div className="product-icon-field">
@@ -4825,6 +4651,7 @@ function ProductIconField({ product }: { product: Product }) {
 }
 
 function ProductSettings({
+  section,
   product,
   user,
   onSelected,
@@ -4832,10 +4659,11 @@ function ProductSettings({
   product: Product;
   user?: AuthenticatedUser;
   onSelected: () => void;
+  section: ProductSettingsSection;
 }) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
-  const [activeSettingsTab, setActiveSettingsTab] = useState<"product" | "components" | "artifacts" | "tokens" | "access">("product");
+  const activeSettingsTab = section;
   const [name, setName] = useState(product.name);
   // Retiring a product retires it for everyone who shares it, and deciding who
   // else reaches it is the same call, so both come from one judgement that
@@ -4846,6 +4674,7 @@ function ProductSettings({
   // hopefully and refused than flickering disabled; a tab is better withheld
   // than shown and then failing to load, so the two differ here on purpose.
   const mayArchive = !user || mayAdminister || !product.createdByAccountId;
+  const canOperate = activeSettingsTab === "access" ? mayAdminister : user?.role === "admin" || product.access?.canOperate === true;
   const [newComponentName, setNewComponentName] = useState("");
   const [newComponentKind, setNewComponentKind] = useState<ComponentKind>("android");
   const [addingComponent, setAddingComponent] = useState(false);
@@ -4863,7 +4692,6 @@ function ProductSettings({
   };
 
   useEffect(() => setName(product.name), [product.id, product.name]);
-  useEffect(() => setActiveSettingsTab("product"), [product.id]);
 
   const productMutation = useMutation({
     mutationFn: () => api.updateProduct(product.id, { name }),
@@ -4887,60 +4715,12 @@ function ProductSettings({
     },
   });
 
+  useSettingsDraft(name !== product.name || newComponentName.trim().length > 0, productMutation.isPending || componentMutation.isPending || archiveMutation.isPending);
+
   return (
     <div className="product-settings">
-      <div className="product-settings-tabs" role="tablist" aria-label={t("productSettings")}>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeSettingsTab === "product"}
-          className={activeSettingsTab === "product" ? "active" : ""}
-          onClick={() => setActiveSettingsTab("product")}
-        >
-          {t("productInformation")}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeSettingsTab === "components"}
-          className={activeSettingsTab === "components" ? "active" : ""}
-          onClick={() => setActiveSettingsTab("components")}
-        >
-          {t("moduleManagement")}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeSettingsTab === "artifacts"}
-          className={activeSettingsTab === "artifacts" ? "active" : ""}
-          onClick={() => setActiveSettingsTab("artifacts")}
-        >
-          {t("releaseArtifacts")}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeSettingsTab === "tokens"}
-          className={activeSettingsTab === "tokens" ? "active" : ""}
-          onClick={() => setActiveSettingsTab("tokens")}
-        >
-          {t("sdkTokens")}
-        </button>
-        {/* Who else reaches this product is the creator's call or an
-            administrator's (AND-58). A member looking at a product shared with
-            them has no say in it, and the endpoint answers them 403. */}
-        {mayAdminister && (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeSettingsTab === "access"}
-            className={activeSettingsTab === "access" ? "active" : ""}
-            onClick={() => setActiveSettingsTab("access")}
-          >
-            {t("productAccess")}
-          </button>
-        )}
-      </div>
+      {!canOperate && <p className="account-note">{t("settingsProductReadOnly")}</p>}
+      <fieldset className="settings-product-fields" disabled={!canOperate}>
       {activeSettingsTab === "access" ? (
         <section className="product-settings-section" role="tabpanel">
           <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("productAccess")}</h3></div></header>
@@ -4950,7 +4730,7 @@ function ProductSettings({
         <SdkTokenSettings product={product} />
       ) : activeSettingsTab === "product" ? (
         <section className="product-settings-section" role="tabpanel">
-          <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("productInformation")}</h3></div></header>
+          <header><div><h3>{t("settingsBasicDetails")}</h3></div></header>
           <div className="product-settings-grid">
             <label>{t("productName")}<input value={name} onChange={(event) => setName(event.target.value)} /></label>
             <label>{t("itemPrefix")}<input value={product.keyPrefix} readOnly /><small>{t("prefixLockedHelp")}</small></label>
@@ -4958,9 +4738,13 @@ function ProductSettings({
           <ProductIconField product={product} />
           {productMutation.isError && <InlineError message={errorMessage(productMutation.error, t("somethingWentWrong"))} />}
           {archiveMutation.isError && <InlineError message={errorMessage(archiveMutation.error, t("somethingWentWrong"))} />}
+          <div className="settings-form-footer">
+          <span className="settings-save-note" role="status">{productMutation.isSuccess && name === product.name ? t("permissionsSaved") : t("settingsManualSave")}</span>
+          <button type="button" className="secondary-button" disabled={productMutation.isPending || name === product.name} onClick={() => setName(product.name)}>{t("cancel")}</button>
           <button className="primary-button settings-save" disabled={!name.trim() || name.trim() === product.name || productMutation.isPending} onClick={() => productMutation.mutate()}>
             {productMutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {t("saveProduct")}
           </button>
+          </div>
           <div className="archive-row">
             <p>{mayArchive ? t("archiveProductHelp") : t("archiveNotOwner")}</p>
             <button
@@ -5026,6 +4810,7 @@ function ProductSettings({
           {componentMutation.isError && <InlineError message={errorMessage(componentMutation.error, t("somethingWentWrong"))} />}
         </section>
       )}
+      </fieldset>
     </div>
   );
 }
@@ -5050,7 +4835,10 @@ function ReleaseArtifactsSettings({ product }: { product: Product }) {
   const mutation = useMutation({
     mutationFn: (next: readonly string[] | null) => api.setProductReleaseArtifacts(product.id, next),
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["products"] }),
+    onError: () => setArtifacts([...product.releaseArtifacts]),
   });
+
+  useSettingsDraft(draft.trim().length > 0, mutation.isPending);
 
   const save = (next: readonly string[]) => {
     setArtifacts([...next]);
@@ -5068,6 +4856,7 @@ function ReleaseArtifactsSettings({ product }: { product: Product }) {
     <section className="product-settings-section release-artifacts-settings" role="tabpanel">
       <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("releaseArtifacts")}</h3></div></header>
       <p className="component-management-help">{t("releaseArtifactsHelp")}</p>
+      <p className="settings-save-note">{t("settingsImmediateChange")}</p>
       <div className="release-artifact-list">
         {artifacts.map((artifact) => (
           <div key={artifact} className="release-artifact-row">
@@ -5109,6 +4898,7 @@ function SdkTokenSettings({ product }: { product: Product }) {
   const queryClient = useQueryClient();
   const { formatTime, t } = useI18n();
   const [name, setName] = useState("");
+  const [creating, setCreating] = useState(false);
   const [sourceComponentId, setSourceComponentId] = useState("");
   // Shown once, held only in memory: the server never hands it back again.
   const [createdToken, setCreatedToken] = useState<CreatedSdkToken | null>(null);
@@ -5128,6 +4918,7 @@ function SdkTokenSettings({ product }: { product: Product }) {
     onSuccess: async (token) => {
       setCreatedToken(token);
       setCopied(false);
+      setCreating(false);
       setName("");
       setSourceComponentId("");
       await queryClient.invalidateQueries({ queryKey: ["sdk-tokens"] });
@@ -5137,6 +4928,8 @@ function SdkTokenSettings({ product }: { product: Product }) {
     mutationFn: (tokenId: string) => api.revokeSdkToken(tokenId),
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["sdk-tokens"] }),
   });
+
+  useSettingsDraft(Boolean(name || sourceComponentId), createMutation.isPending || revokeMutation.isPending);
 
   const copyToken = async () => {
     if (!createdToken) return;
@@ -5148,7 +4941,7 @@ function SdkTokenSettings({ product }: { product: Product }) {
     <section className="product-settings-section" role="tabpanel">
       <header>
         <div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("sdkTokens")}</h3></div>
-        <div className="component-header-actions"><span>{tokens.filter((token) => !token.revokedAt).length}</span></div>
+        <div className="component-header-actions"><span>{tokens.filter((token) => !token.revokedAt).length}</span><button type="button" className="primary-button" onClick={() => setCreating(true)} disabled={creating}>{t("newSdkToken")}</button></div>
       </header>
       <p className="component-management-help">{t("sdkTokensHelp")}</p>
 
@@ -5164,7 +4957,7 @@ function SdkTokenSettings({ product }: { product: Product }) {
         </div>
       )}
 
-      <div className="component-add-panel">
+      {creating && <div className="component-add-panel">
         <div className="component-add-row">
           <label>{t("sdkTokenName")}<input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("sdkTokenNamePlaceholder")} maxLength={100} /></label>
           <label>{t("sdkTokenScope")}
@@ -5178,7 +4971,8 @@ function SdkTokenSettings({ product }: { product: Product }) {
           </button>
         </div>
         {androidComponents.length === 0 && <p className="section-empty">{t("sdkTokenNeedsAndroidModule")}</p>}
-      </div>
+        <button type="button" className="secondary-button" disabled={createMutation.isPending} onClick={() => { setCreating(false); setName(""); setSourceComponentId(""); }}>{t("cancel")}</button>
+      </div>}
       {createMutation.isError && <InlineError message={errorMessage(createMutation.error, t("somethingWentWrong"))} />}
       {revokeMutation.isError && <InlineError message={errorMessage(revokeMutation.error, t("somethingWentWrong"))} />}
 
@@ -5238,6 +5032,7 @@ function ComponentSettingsRow({ component }: { component: Component }) {
     onSuccess: refresh,
   });
   const changed = name.trim() !== component.name || kind !== component.kind;
+  useSettingsDraft(changed, mutation.isPending || archiveMutation.isPending);
   return (
     <div className={`component-settings-row ${archived ? "archived" : ""}`}>
       <input value={name} onChange={(event) => setName(event.target.value)} aria-label={t("componentName")} disabled={archived} />
@@ -5274,6 +5069,7 @@ function ProductForm({ onCreated }: { onCreated: (product: Product) => void | Pr
   const [name, setName] = useState("");
   const [keyPrefix, setKeyPrefix] = useState("");
   const mutation = useMutation({ mutationFn: api.createProduct, onSuccess: onCreated });
+  useSettingsDraft(Boolean(name || keyPrefix), mutation.isPending);
   return (
     <form className="product-form" onSubmit={(event) => { event.preventDefault(); mutation.mutate({ name, keyPrefix }); }}>
       <label>{t("productName")}<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Hermes Go" required autoFocus /></label>
