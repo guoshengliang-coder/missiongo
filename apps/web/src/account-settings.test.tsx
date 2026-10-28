@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { AccountManagement, AccountSettings } from "./account-settings";
+import { AccountManagement, AccountSettings, AiConnectionsSettings } from "./account-settings";
 import { I18nProvider } from "./i18n";
 
 Object.defineProperty(globalThis, "localStorage", {
@@ -85,19 +85,14 @@ describe("account settings view mode", () => {
     });
 
     const html = renderAccountUi(
-      <AccountSettings
-        user={{ id: "account-1", username: "person@example.com", displayName: "person", fontScale: "medium", consoleFontScale: "medium", role: "member" }}
-        products={[]}
-        onLoggedOut={() => undefined}
-      />,
+      <AiConnectionsSettings />,
       queryClient,
     );
 
     expect(html).toContain("个人访问令牌");
     expect(html).toContain("CI 构建机");
-    expect(html).toContain("生成令牌");
-    // Lifetime choices the server accepts, and nothing else.
-    expect(html).toContain('value="7"');
-    expect(html).toContain('value="365"');
+    expect(html).toContain("新建个人令牌");
+    // Creation fields stay out of the default list view.
+    expect(html).not.toContain("<select");
   });
 });

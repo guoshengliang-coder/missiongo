@@ -12,11 +12,13 @@ for (const width of [375, 1440]) {
         const openSettings = async () => {
           if (width === 375) await page.getByRole("button", { name: "打开导航", exact: true }).click();
           await page.getByRole("button", { name: "设置", exact: true }).click();
+          await page.getByRole("button", { name: "AI 连接", exact: true }).click();
         };
         await openSettings();
         const section = page.getByRole("region", { name: "个人访问令牌", exact: true });
         await expect(section).toBeVisible();
         await expect(section).toContainText("直接令牌授权");
+        await section.getByRole("button", { name: "新建个人令牌", exact: true }).click();
         await expect(section.getByRole("button", { name: "生成令牌", exact: true })).toBeDisabled();
         const name = `Token ${width} ${theme}`;
         await section.getByLabel("名称", { exact: true }).fill(name);
@@ -39,7 +41,7 @@ for (const width of [375, 1440]) {
         });
         expect((await call()).status()).toBe(200);
 
-        await page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
+        await page.getByRole("button", { name: "返回工作区", exact: true }).click();
         await openSettings();
         await expect(section.getByRole("textbox", { name: "个人访问令牌", exact: true })).toHaveCount(0);
         const row = page.locator(".account-row").filter({ hasText: name });

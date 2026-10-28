@@ -1,3 +1,4 @@
+import { SETTINGS_DEPTH } from "./settings-state";
 import type { AgentSessionFilter } from "./agent-session-view";
 import { ITEM_STATUSES, ITEM_TYPES, type WorkItemStatus, type WorkItemType } from "./types";
 
@@ -57,7 +58,8 @@ export type AgentConsoleLayout = "single" | "wide";
 export function backDepthFromState(state: unknown): number {
   if (typeof state !== "object" || state === null) return 0;
   const markers = state as Record<string, unknown>;
-  return (markers[ITEM_HISTORY_MARKER] ? 1 : 0)
+  return (Number.isSafeInteger(markers[SETTINGS_DEPTH]) ? Math.max(0, Number(markers[SETTINGS_DEPTH])) : 0)
+    + (markers[ITEM_HISTORY_MARKER] ? 1 : 0)
     + (markers[OVERLAY_HISTORY_MARKER] ? 1 : 0)
     + (markers[SIDEBAR_HISTORY_MARKER] ? 1 : 0)
     + (markers[AGENT_CONSOLE_HISTORY_MARKER] ? 1 : 0)

@@ -144,6 +144,7 @@ function FontScaleGroup({
  * reader can keep the console dense and the transcript large, or the reverse.
  */
 export function DisplaySettings({ user }: { user: AuthenticatedUser }) {
+  const { t } = useI18n();
   const globalField = useFontScaleField({
     serverValue: user.fontScale,
     readSession: (session) => session.user.fontScale,
@@ -163,6 +164,7 @@ export function DisplaySettings({ user }: { user: AuthenticatedUser }) {
 
   return (
     <section className="display-settings">
+      <p className="settings-save-note">{t("settingsAutoSave")}</p>
       <FontScaleGroup
         headingKey="fontSize"
         helpKey="displaySettingsHelp"

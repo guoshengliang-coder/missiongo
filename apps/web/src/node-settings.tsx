@@ -1,3 +1,4 @@
+import { useSettingsDraft } from "./settings-drafts";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronRight, CirclePause, Download, LoaderCircle, Plus, RefreshCw, Trash2 } from "lucide-react";
@@ -345,6 +346,8 @@ function NodeCard({
   const state = node.revokedAt ? t("nodeRevoked") : node.online ? t("nodeOnline") : t("nodeOffline");
   const coverage = repoCoverage(node, products);
   const unsaved = (!node.revokedAt && nicknameDraftChanged(nicknameDraft, node)) || hasRepoDrafts(drafts, saved);
+
+  useSettingsDraft(unsaved, nicknameMutation.isPending || reposMutation.isPending || revokeMutation.isPending);
 
   return (
     <details

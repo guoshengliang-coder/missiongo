@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, LoaderCircle, Pencil, Plus, Trash2, Unplug, UserRound, X } from "lucide-react";
 
@@ -22,6 +22,7 @@ import {
   parseNicknameDraft,
 } from "./account-nickname";
 import { useI18n, type MessageKey } from "./i18n";
+import { useSettingsDraft } from "./settings-drafts";
 import { permissionCell } from "./product-permissions";
 import type { Product } from "./types";
 
@@ -61,6 +62,8 @@ function PasswordForm({ onCancel }: { onCancel: () => void }) {
       setDone(true);
     },
   });
+
+  useSettingsDraft(Boolean(current || next || confirmation), mutation.isPending);
 
   const mismatch = confirmation.length > 0 && next !== confirmation;
   const tooShort = next.length > 0 && next.length < MIN_PASSWORD_LENGTH;
@@ -153,6 +156,8 @@ function NicknameForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: (
     },
   });
 
+  useSettingsDraft(nicknameDraftChanged(draft, user) && !done, mutation.isPending);
+
   return (
     <form
       className="account-password-form"
@@ -167,7 +172,7 @@ function NicknameForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: (
         <input
           type="text"
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => { setDraft(event.target.value); setDone(false); }}
           placeholder={draftDisplayName("", user)}
           maxLength={MAX_ACCOUNT_NICKNAME_LENGTH * 2}
           autoComplete="nickname"
@@ -202,17 +207,21 @@ function NicknameForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: (
  */
 function EmailForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: () => void }) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const [current, setCurrent] = useState("");
   const [email, setEmail] = useState(user.username);
   const [done, setDone] = useState(false);
 
   const mutation = useMutation({
     mutationFn: () => api.changeEmail({ currentPassword: current, email: email.trim() }),
-    onSuccess: () => {
+    onSuccess: async () => {
       setCurrent("");
       setDone(true);
+      await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
     },
   });
+
+  useSettingsDraft((email !== user.username || Boolean(current)) && !done, mutation.isPending);
 
   const changed = email.trim().length > 0 && email.trim() !== user.username;
 
@@ -230,7 +239,7 @@ function EmailForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: () =
         <input
           type="email"
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={(event) => { setEmail(event.target.value); setDone(false); }}
           autoComplete="username"
           autoCapitalize="none"
           spellCheck={false}
@@ -242,7 +251,7 @@ function EmailForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: () =
         <input
           type="password"
           value={current}
-          onChange={(event) => setCurrent(event.target.value)}
+          onChange={(event) => { setCurrent(event.target.value); setDone(false); }}
           autoComplete="current-password"
           required
         />
@@ -268,6 +277,8 @@ function AuthorizationRow({ authorization }: { authorization: AiAuthorization })
     mutationFn: () => api.revokeAiAuthorization(authorization.id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ai-authorizations"] }),
   });
+
+  useSettingsDraft(false, revoke.isPending);
 
   const when = (value: string) => new Date(value).toLocaleDateString(locale);
   // A console-minted token has no client to decode a name from; the name its
@@ -330,6 +341,10 @@ function ConnectedAiClients() {
   );
 }
 
+export function AiConnectionsSettings() {
+  return <><PersonalTokenForm /><ConnectedAiClients /></>;
+}
+
 /**
  * Mint a personal access token (AND-288): the browserless-machine half of the
  * account settings. The token appears once, here, in a copyable field;
@@ -339,6 +354,7 @@ function PersonalTokenForm() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
+  const [creating, setCreating] = useState(false);
   const [write, setWrite] = useState(false);
   const [days, setDays] = useState(90);
   const create = useMutation({
@@ -348,17 +364,20 @@ function PersonalTokenForm() {
       days,
     }),
     onSuccess: async () => {
+      setCreating(false);
       setName("");
       await queryClient.invalidateQueries({ queryKey: ["ai-authorizations"] });
     },
   });
   const minted = create.data;
+  useSettingsDraft(Boolean(name), create.isPending);
 
   return (
     <section className="account-authorizations" aria-labelledby="personal-token-title">
       <h3 id="personal-token-title">{t("personalTokens")}</h3>
       <p className="account-note">{t("personalTokensHelp")}</p>
-      <div className="account-add-form">
+      {!creating && <button type="button" className="primary-button" onClick={() => { create.reset(); setCreating(true); }}>{t("newPersonalToken")}</button>}
+      {creating && <div className="account-add-form">
         <label>
           {t("personalTokenName")}
           <input
@@ -391,7 +410,8 @@ function PersonalTokenForm() {
         >
           {create.isPending ? <LoaderCircle className="spin" size={15} /> : null} {t("personalTokenCreate")}
         </button>
-      </div>
+        <button type="button" className="secondary-button" disabled={create.isPending} onClick={() => { setCreating(false); setName(""); }}>{t("cancel")}</button>
+      </div>}
       {create.isError && <InlineNote danger message={messageFor(create.error, t, t("somethingWentWrong"))} />}
       {minted && (
         <div className="account-add-form">
@@ -448,6 +468,8 @@ function PermissionGrid({ account, products }: { account: Account; products: rea
     const updated: ProductPermission = { ...current, [field]: checked };
     setDraft([...draft.filter((entry) => entry.productId !== productId), updated]);
   };
+
+  useSettingsDraft(!saved && JSON.stringify(draft) !== JSON.stringify(account.permissions), mutation.isPending);
 
   if (products.length === 0) return <p className="account-note">{t("noProductsToGrant")}</p>;
 
@@ -540,6 +562,10 @@ function AccountRow({
     mutationFn: () => api.updateAccount(account.id, { nickname: nicknameDraft.ok ? nicknameDraft.nickname : null }),
     onSuccess: invalidate,
   });
+
+  useEffect(() => setEmail(account.email), [account.email]);
+  useEffect(() => setNickname(account.nickname ?? ""), [account.nickname]);
+  useSettingsDraft(open && (email !== account.email || nickname !== (account.nickname ?? "")), rename.isPending || renameNickname.isPending || suspend.isPending || remove.isPending);
 
   const error = suspend.error ?? remove.error ?? rename.error ?? renameNickname.error;
 
@@ -636,7 +662,8 @@ function AccountRow({
             <button
               type="button"
               className="secondary-button"
-              onClick={() => setEditor(closeAccountEditor(editor, editIntent))}
+              disabled={rename.isPending || renameNickname.isPending}
+              onClick={() => { setEmail(account.email); setNickname(account.nickname ?? ""); setEditor(closeAccountEditor(editor, editIntent)); }}
             >
               <X size={15} /> {t("cancel")}
             </button>
@@ -668,6 +695,8 @@ function NewAccountForm({ onCancel, onCreated }: { onCancel: () => void; onCreat
       onCreated();
     },
   });
+
+  useSettingsDraft(Boolean(email || password), mutation.isPending);
 
   const tooShort = password.length > 0 && password.length < MIN_PASSWORD_LENGTH;
 
@@ -769,7 +798,7 @@ export function AccountManagement({ user, products }: { user: AuthenticatedUser;
   );
 }
 
-function DeepSeekSettings() {
+export function DeepSeekSettings() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [key, setKey] = useState("");
@@ -792,6 +821,8 @@ function DeepSeekSettings() {
     },
     onError: () => setSaved(false),
   });
+  useSettingsDraft(Boolean(key), mutation.isPending || attentionMutation.isPending);
+
   return (
     <section className="account-ai-settings">
       <h3>{t("deepseekSettings")}</h3>
@@ -799,7 +830,7 @@ function DeepSeekSettings() {
       <p className="account-note">{query.data?.configured ? t("deepseekConfigured") : t("deepseekNotConfigured")}</p>
       <div className="account-email-row">
         <label>
-          {t("deepseekSettings")}
+          {t("settingsApiKey")}
           <input type="password" value={key} onChange={(event) => { setKey(event.target.value); setSaved(false); }}
             placeholder={t("deepseekKeyPlaceholder")} autoComplete="off" spellCheck={false} />
         </label>
@@ -833,7 +864,6 @@ function DeepSeekSettings() {
 /** Who you are signed in as, your password, and -- for an administrator -- everyone else. */
 export function AccountSettings({
   user,
-  products,
   onLoggedOut,
 }: {
   user: AuthenticatedUser;
@@ -841,34 +871,11 @@ export function AccountSettings({
   onLoggedOut: () => void;
 }) {
   const { t } = useI18n();
-  const [tab, setTab] = useState<"me" | "accounts">("me");
   const [editor, setEditor] = useState<AccountEditor | null>(null);
   const logout = useMutation({ mutationFn: api.logout, onSuccess: onLoggedOut });
 
   return (
     <div className="account-panel">
-      {user.role === "admin" && (
-        <div className="account-tabs" role="tablist">
-          {(["me", "accounts"] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              role="tab"
-              aria-selected={tab === value}
-              className={tab === value ? "text-button selected" : "text-button"}
-              onClick={() => {
-                setTab(value);
-                setEditor(null);
-              }}
-            >
-              {t(value === "me" ? "myAccountTab" : "manageAccountsTab")}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {tab === "me" || user.role !== "admin" ? (
-        <>
           <div className="account-identity">
             <span><UserRound size={21} /></span>
             <div>
@@ -884,7 +891,7 @@ export function AccountSettings({
               disabled={editor !== null}
               onClick={() => setEditor(openAccountEditor(editor, "nickname"))}
             >
-              <Pencil size={15} /> {t("changeNickname")}
+              <Pencil size={15} /> {t("editNickname")}
             </button>
             <button
               type="button"
@@ -912,17 +919,10 @@ export function AccountSettings({
           {editor === "password" && (
             <PasswordForm onCancel={() => setEditor(closeAccountEditor(editor, "password"))} />
           )}
-          <PersonalTokenForm />
-          <ConnectedAiClients />
-          {user.role === "admin" && <DeepSeekSettings />}
           {logout.isError && <InlineNote danger message={messageFor(logout.error, t, t("somethingWentWrong"))} />}
           <button className="secondary-button wide" disabled={logout.isPending} onClick={() => logout.mutate()}>
             {logout.isPending ? <LoaderCircle className="spin" size={16} /> : null} {t("signOut")}
           </button>
-        </>
-      ) : (
-        <AccountManagement user={user} products={products} />
-      )}
     </div>
   );
 }
@@ -972,6 +972,8 @@ export function ProductAccessSettings(
       await queryClient.invalidateQueries({ queryKey: ["products"] });
     },
   });
+
+  useSettingsDraft(draft !== null || added.length > 0 || Boolean(email), mutation.isPending);
 
   if (query.isPending) return <p className="account-note"><LoaderCircle className="spin" size={15} /></p>;
   if (query.isError) return <InlineNote danger message={messageFor(query.error, t, t("somethingWentWrong"))} />;

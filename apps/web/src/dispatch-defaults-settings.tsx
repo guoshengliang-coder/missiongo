@@ -5,6 +5,7 @@ import { Check, CirclePause, LoaderCircle } from "lucide-react";
 import { DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo/domain";
 
 import { api } from "./api";
+import { useSettingsDraft } from "./settings-drafts";
 import { effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, modelsAcrossNodes } from "./agent-model-options";
 import { SUPPORTED_AGENT_KINDS, agentLabelKey, dispatchModeLabelKey, dispatchModeOrDefault } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
@@ -16,7 +17,7 @@ import type { DispatchDefaults } from "./types";
  * default is not tied to one machine, and the dialog drops a model the chosen
  * Mac does not offer.
  */
-export function DispatchDefaultsSettings() {
+export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () => void }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
@@ -38,7 +39,11 @@ export function DispatchDefaultsSettings() {
     },
   });
 
-  if (!draft) {
+  useSettingsDraft(draft !== null && JSON.stringify(draft) !== JSON.stringify(defaultsQuery.data), save.isPending);
+
+  if (nodesQuery.isError || defaultsQuery.isError) return <p role="alert">{t("settingsLoadFailed")} <button type="button" className="secondary-button" onClick={() => { void nodesQuery.refetch(); void defaultsQuery.refetch(); }}>{t("retry")}</button></p>;
+
+  if (!draft || nodesQuery.isPending) {
     return (
       <section className="product-settings-section">
         <header><div><h3>{t("dispatchDefaultsTitle")}</h3></div></header>
@@ -46,6 +51,9 @@ export function DispatchDefaultsSettings() {
       </section>
     );
   }
+
+  const available = SUPPORTED_AGENT_KINDS.filter(kind => nodes.some(node => !node.revokedAt && node.agents.some(agent => agent.kind === kind)));
+  if (available.length === 0) return <section className="settings-empty"><h3>{t("settingsConnectDeviceFirst")}</h3><p>{t("settingsDispatchNeedsDevice")}</p><button type="button" className="primary-button" onClick={onOpenDevices}>{t("settingsDevices")}</button></section>;
 
   const update = (next: DispatchDefaults) => {
     setDraft(next);
@@ -92,13 +100,13 @@ export function DispatchDefaultsSettings() {
               value={draft.agentKind ?? "claude_code"}
               onChange={(event) => update({ ...draft, agentKind: event.target.value as AgentKind })}
             >
-              {SUPPORTED_AGENT_KINDS.map((kind) => (
+              {Array.from(new Set([draft.agentKind ?? "claude_code", ...available])).map((kind) => (
                 <option key={kind} value={kind}>{label(agentLabelKey(kind), kind)}</option>
               ))}
             </select>
           </label>
         </div>
-        {SUPPORTED_AGENT_KINDS.map((kind) => {
+        {[draft.agentKind ?? "claude_code"].map((kind) => {
           const current = draft.agents[kind] ?? {};
           const models = modelsAcrossNodes(nodes, kind);
           return (
@@ -112,6 +120,8 @@ export function DispatchDefaultsSettings() {
                     ))}
                   </select>
                 </label>
+                <details className="settings-advanced"><summary>{t("settingsAdvancedModel")}</summary>
+                <div className="field-row">
                 <label>{t("dispatchModel")}
                   <select
                     value={current.model ?? ""}
@@ -144,6 +154,8 @@ export function DispatchDefaultsSettings() {
                     ))}
                   </select>
                 </label>
+                </div>
+                </details>
               </div>
             </fieldset>
           );
@@ -152,8 +164,9 @@ export function DispatchDefaultsSettings() {
           <div className="inline-error"><CirclePause size={16} /><span>{save.error instanceof Error ? save.error.message : t("somethingWentWrong")}</span></div>
         )}
         <div className="form-footer">
+          <button type="button" className="secondary-button" disabled={save.isPending} onClick={() => { setDraft(defaultsQuery.data ?? null); setSaved(false); }}>{t("cancel")}</button>
           {saved && <span className="dispatch-defaults-saved"><Check size={14} /> {t("dispatchDefaultsSaved")}</span>}
-          <button type="submit" className="primary-button" disabled={save.isPending}>
+          <button type="submit" className="primary-button" disabled={save.isPending || JSON.stringify(draft) === JSON.stringify(defaultsQuery.data)}>
             {save.isPending && <LoaderCircle className="spin" size={15} />}
             {t("save")}
           </button>
