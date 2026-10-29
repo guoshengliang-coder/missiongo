@@ -55,6 +55,9 @@ export interface InsightDetails {
 export interface InsightDetailSelection { metric: InsightMetric; limit?: number; offset?: number }
 
 export interface InsightBatch { id: string; name: string; createdAt: string; itemCount: number }
+export interface InsightBatchSummary extends InsightBatch {
+  delivered: number; effective: number; unavailable: number; deliveryRate: number | null;
+}
 export type InsightBatchStage = "delivered" | "processing" | "waiting" | "paused";
 export interface InsightBatchItem {
   itemKey: string; productId: string; title: string; type: WorkItemType; status: WorkItemStatus;
