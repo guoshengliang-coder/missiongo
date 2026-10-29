@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, LoaderCircle, Pencil, Plus, Trash2, Unplug, UserRound, X } from "lucide-react";
+import { Check, ChevronRight, LoaderCircle, Pencil, Plus, Trash2, Unplug, UserRound, X } from "lucide-react";
 
 import { MIN_PASSWORD_LENGTH } from "@missiongo/domain";
 
@@ -15,6 +15,7 @@ import {
   type ProductPermission,
 } from "./api";
 import { closeAccountEditor, openAccountEditor, type AccountEditor } from "./account-edit-state";
+import { groupAiConnections, type AiConnectionGroup } from "./ai-connections";
 import {
   draftDisplayName,
   MAX_ACCOUNT_NICKNAME_LENGTH,
@@ -270,7 +271,17 @@ function EmailForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: () =
   );
 }
 
-function AuthorizationRow({ authorization }: { authorization: AiAuthorization }) {
+function AiPermissions({ scopes }: { scopes: readonly string[] }) {
+  const { t } = useI18n();
+  const labels: Record<string, MessageKey> = {
+    "missiongo:read": "aiScopeRead",
+    "missiongo:write": "aiScopeWrite",
+    "missiongo:node": "aiScopeNode",
+  };
+  return <>{scopes.map((scope) => labels[scope] ? t(labels[scope]) : scope).join(" · ")}</>;
+}
+
+function AuthorizationRow({ authorization, index, name }: { authorization: AiAuthorization; index: number; name: string }) {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const revoke = useMutation({
@@ -281,39 +292,54 @@ function AuthorizationRow({ authorization }: { authorization: AiAuthorization })
   useSettingsDraft(false, revoke.isPending);
 
   const when = (value: string) => new Date(value).toLocaleDateString(locale);
-  // A console-minted token has no client to decode a name from; the name its
-  // owner typed at creation is the identity, and the kind label says what it is.
-  const name = authorization.kind === "pat"
-    ? `${authorization.name ?? t("personalTokenKind")} · ${t("personalTokenKind")}`
-    : authorization.clientName ?? t("unknownAiClient");
-
   return (
-    <article className="account-row">
+    <article className="ai-connection-entry">
       <header>
-        <div className="ai-authorization-identity">
-          <strong>{name}</strong>
-          <small>
-            {t("aiAuthorizedAt", { date: when(authorization.issuedAt) })}
-            {" · "}
-            {authorization.lastUsedAt ? t("aiLastUsed", { date: when(authorization.lastUsedAt) }) : t("aiNeverUsed")}
-            {" · "}
-            {t("aiExpires", { date: when(authorization.expiresAt) })}
-          </small>
-        </div>
+        <strong>{t("aiConnectionNumber", { number: index + 1 })}</strong>
         <button
           type="button"
           className="secondary-button archive-button"
           disabled={revoke.isPending}
           onClick={() => {
-            if (window.confirm(t("confirmRevokeAi", { client: name }))) revoke.mutate();
+            const client = `${name} · ${t("aiConnectionNumber", { number: index + 1 })} · ${t("aiAuthorizedAt", { date: when(authorization.issuedAt) })}`;
+            if (window.confirm(t("confirmRevokeAi", { client }))) revoke.mutate();
           }}
         >
           {revoke.isPending ? <LoaderCircle className="spin" size={15} /> : <Unplug size={15} />} {t("revokeAi")}
         </button>
       </header>
-      <p className="account-note">{authorization.scopes.join(" · ")}</p>
+      <dl className="ai-connection-facts">
+        <div><dt>{t("aiPermissions")}</dt><dd><AiPermissions scopes={authorization.scopes} /></dd></div>
+        <div><dt>{t("aiLastUsedLabel")}</dt><dd>{authorization.lastUsedAt ? when(authorization.lastUsedAt) : t("aiNeverUsed")}</dd></div>
+        <div><dt>{t("aiAuthorizedLabel")}</dt><dd>{when(authorization.issuedAt)}</dd></div>
+        <div><dt>{t("aiExpiresLabel")}</dt><dd>{when(authorization.expiresAt)}</dd></div>
+      </dl>
       {revoke.isError && <InlineNote danger message={messageFor(revoke.error, t, t("somethingWentWrong"))} />}
     </article>
+  );
+}
+
+function AiClientGroup({ group }: { group: AiConnectionGroup }) {
+  const { t, locale } = useI18n();
+  const name = group.name ?? t(group.kind === "pat" ? "personalTokenKind" : "unknownAiClient");
+  return (
+    <details className="ai-client-group">
+      <summary className="ai-client-summary">
+        <span className="ai-client-identity">
+          <span className="ai-client-name"><strong>{name}</strong><small>{t("aiConnectionCount", { count: group.authorizations.length })}</small></span>
+          <span className="ai-client-permissions">{group.scopes ? <AiPermissions scopes={group.scopes} /> : t("aiMixedPermissions")}</span>
+        </span>
+        <span className="ai-client-activity">{group.lastUsedAt
+          ? t("aiLastUsed", { date: new Date(group.lastUsedAt).toLocaleDateString(locale) })
+          : t("aiNeverUsed")}</span>
+        <ChevronRight size={16} aria-hidden="true" />
+      </summary>
+      <div className="ai-client-connections">
+        {group.authorizations.map((authorization, index) => (
+          <AuthorizationRow key={authorization.id} authorization={authorization} index={index} name={name} />
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -321,20 +347,30 @@ function AuthorizationRow({ authorization }: { authorization: AiAuthorization })
 function ConnectedAiClients() {
   const { t } = useI18n();
   const query = useQuery({ queryKey: ["ai-authorizations"], queryFn: api.listAiAuthorizations });
+  const groups = groupAiConnections(query.data?.authorizations ?? []);
 
   return (
     <section className="account-authorizations">
-      <h3>{t("connectedAi")}</h3>
+      <div className="ai-connections-heading">
+        <h3>{t("connectedAi")}</h3>
+        {groups.length > 0 && <span>{t("aiConnectionsTotal", { clients: groups.length, connections: query.data!.authorizations.length })}</span>}
+      </div>
       <p className="account-note">{t("connectedAiHelp")}</p>
       {query.isPending && <p className="account-note"><LoaderCircle className="spin" size={15} /></p>}
       {query.isError && <InlineNote danger message={messageFor(query.error, t, t("somethingWentWrong"))} />}
       {query.data && (query.data.authorizations.length === 0
         ? <InlineNote message={t("noConnectedAi")} />
         : (
-          <div className="account-list">
-            {query.data.authorizations.map((authorization) => (
-              <AuthorizationRow key={authorization.id} authorization={authorization} />
-            ))}
+          <div className="ai-connections-categories">
+            {(["oauth", "pat"] as const).map((kind) => {
+              const category = groups.filter((group) => group.kind === kind);
+              return category.length > 0 && (
+                <section key={kind} className="ai-connections-category" aria-label={t(kind === "pat" ? "aiPersonalTokens" : "aiClientAuthorizations")}>
+                  <h4>{t(kind === "pat" ? "aiPersonalTokens" : "aiClientAuthorizations")}</h4>
+                  {category.map((group) => <AiClientGroup key={group.key} group={group} />)}
+                </section>
+              );
+            })}
           </div>
         ))}
     </section>
