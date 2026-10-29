@@ -95,16 +95,36 @@ public enum AgentArtifactReader {
     }
 
     static func references(_ text: String, type: String) -> [String] {
-        var result: [String] = []
-        if type == "text/html" {
-            result += captures(#"\b(?:src|href|poster)\s*=\s*["']([^"']+)["']"#, in: text)
-            // Inline scripts/styles use the same relative base as the HTML document.
+        if type == "text/css" { return cssReferences(text) }
+        if type == "text/javascript" { return moduleReferences(text) }
+        if type == "text/markdown" { return captures(linkPattern, in: text) }
+        guard type == "text/html" else { return [] }
+
+        let html = text.replacingOccurrences(of: #"(?s)<!--.*?-->"#, with: "", options: .regularExpression)
+        let scripts = captures(#"(?s)<script\b(?:[^>"']|"[^"]*"|'[^']*')*>(.*?)</script\s*>"#, in: html)
+        let styles = captures(#"(?s)<style\b(?:[^>"']|"[^"]*"|'[^']*')*>(.*?)</style\s*>"#, in: html)
+        // Attribute-looking strings and URL API calls inside scripts are not HTML/CSS dependencies.
+        var markup = html
+        for element in ["script", "style"] {
+            let pattern = "(?is)(<" + element + #"\b(?:[^>"']|"[^"]*"|'[^']*')*>).*?(</"# + element + #"\s*>)"#
+            markup = markup.replacingOccurrences(of: pattern, with: "$1$2", options: .regularExpression)
         }
-        if type == "text/markdown" { result += captures(linkPattern, in: text) }
-        result += captures(#"url\(\s*["']?([^\s)'";]+)"#, in: text)
-        result += captures(#"@import\s+["']([^"']+)["']"#, in: text)
-        result += captures(#"(?:\bfrom\s*|\bimport\s*\(?\s*)["'](\.[^"']+)["']"#, in: text)
+        var result = styles.flatMap(cssReferences) + scripts.flatMap(moduleReferences)
+        for tag in captures(#"(<(?:[^<>"']|"[^"]*"|'[^']*')+>)"#, in: markup) {
+            result += captures(#"\s(?:src|href|poster)\s*=\s*["']([^"']+)["']"#, in: tag)
+            for style in captures(#"\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')"#, in: tag) { result += cssReferences(style) }
+        }
         return result
+    }
+
+    static func cssReferences(_ text: String) -> [String] {
+        let css = text.replacingOccurrences(of: #"(?s)/\*.*?\*/"#, with: "", options: .regularExpression)
+        return captures(#"\burl\(\s*["']?([^\s)'";]+)"#, in: css)
+            + captures(#"@import\s+["']([^"']+)["']"#, in: css)
+    }
+
+    static func moduleReferences(_ text: String) -> [String] {
+        captures(#"(?:\bfrom\s*|\bimport\s*\(?\s*)["'](\.[^"']+)["']"#, in: text)
     }
 
     static func relativeResource(_ reference: String, from: String) throws -> String? {
