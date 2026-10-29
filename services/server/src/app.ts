@@ -76,6 +76,7 @@ import { optionalName, parseAgentModels } from "./agent-settings.js";
 import { DispatchStore } from "./dispatch-store.js";
 import { ManagedExecutionStore } from "./managed-execution-store.js";
 import { registerManagedExecutionRoutes } from "./managed-execution-routes.js";
+import { registerItemDeliveryRoutes } from "./item-delivery.js";
 import { registerManagedDecisionRoutes } from "./managed-decision-routes.js";
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
@@ -2192,6 +2193,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   });
 
+  registerItemDeliveryRoutes(app, { store, accounts: accountStore, requireAccount });
   registerManagedDecisionRoutes(app, { db: store.database, accounts: accountStore, requireAccount,
     ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}) });
 
@@ -3769,8 +3771,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       throw invalidInput("beforeSequence must be a positive integer.");
     }
 
+    const builderAccountId = query.builder === "unassigned" ? null
+      : query.builder === "mine" ? requireAccount(request).id
+      : typeof query.builder === "string" && query.builder ? query.builder : undefined;
+    const builderFilter = builderAccountId !== undefined ? { builderAccountId } : {};
     const effectiveLimit = limit ?? 50;
     const items = store.listWorkItems({
+      ...builderFilter,
       productId,
       ...(typeof query.status === "string" ? { status: query.status as never } : {}),
       ...(typeof query.type === "string" ? { type: query.type as never } : {}),
@@ -3784,6 +3791,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return {
       items: withCreatorNames(items.map((item) => withTransferReferences(request, item))),
       summary: store.getWorkItemListSummary({
+        ...builderFilter,
         productId,
         ...(typeof query.type === "string" ? { type: query.type as never } : {}),
         ...(typeof query.search === "string" ? { search: query.search } : {}),

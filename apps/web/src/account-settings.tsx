@@ -433,7 +433,7 @@ function PersonalTokenForm() {
  * Saved whole rather than per tick: the server replaces the set, so sending the
  * whole grid is the only shape in which an unticked row reliably means revoked.
  */
-function PermissionGrid({ account, products }: { account: Account; products: readonly Product[] }) {
+function PermissionGrid({ account, products, productId }: { account: Account; products: readonly Product[]; productId?: string | undefined }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<readonly ProductPermission[]>(account.permissions);
@@ -486,7 +486,7 @@ function PermissionGrid({ account, products }: { account: Account; products: rea
           </tr>
         </thead>
         <tbody>
-          {products.map((product) => {
+          {products.filter(product => !productId || product.id === productId).map((product) => {
             const permission = permissionFor(product.id);
             return (
               <tr key={product.id}>
@@ -530,12 +530,14 @@ function PermissionGrid({ account, products }: { account: Account; products: rea
 function AccountRow({
   account,
   products,
+  filterProductId,
   isSelf,
   editor,
   setEditor,
 }: {
   account: Account;
   products: readonly Product[];
+  filterProductId?: string | undefined;
   isSelf: boolean;
   editor: AccountEditor | null;
   setEditor: (editor: AccountEditor | null) => void;
@@ -544,6 +546,9 @@ function AccountRow({
   const queryClient = useQueryClient();
   const [email, setEmail] = useState(account.email);
   const [nickname, setNickname] = useState(account.nickname ?? "");
+  const [permissionsOnly, setPermissionsOnly] = useState(false);
+  const permission = account.permissions.find(row => row.productId === filterProductId) ?? { canView: false, canOperate: false, canUseAi: false };
+  const administrator = account.role === "admin" ? { aiUnrestricted: !account.permissions.some(row => row.canUseAi) } : undefined;
   const editIntent = `account:${account.id}` as const;
   const open = editor === editIntent;
 
@@ -571,46 +576,42 @@ function AccountRow({
 
   return (
     <article className={account.disabledAt ? "account-row suspended" : "account-row"}>
-      <header>
-        <strong>{account.email}</strong>
-        <em>{t(account.role === "admin" ? "administratorRole" : "memberRole")}</em>
-        {account.disabledAt && <span className="status-pill status-cancelled">{t("suspendedAccount")}</span>}
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={editor !== null}
-          onClick={() => setEditor(openAccountEditor(editor, editIntent))}
-        >
-          <Pencil size={15} /> {t("editAccount")}
-        </button>
-        {!isSelf && (
-          <>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={suspend.isPending}
-              onClick={() => suspend.mutate(!account.disabledAt)}
-            >
-              {t(account.disabledAt ? "restoreAccount" : "suspendAccount")}
-            </button>
-            <button
-              type="button"
-              className="secondary-button archive-button"
-              disabled={remove.isPending}
-              onClick={() => {
-                if (window.confirm(t("confirmDeleteAccount", { email: account.email }))) remove.mutate();
-              }}
-            >
-              <Trash2 size={15} /> {t("deleteAccount")}
-            </button>
-          </>
-        )}
+      <header className="account-access-row">
+        <div className="account-access-identity"><strong>{account.email}</strong><small>{t(account.role === "admin" ? "administratorRole" : "memberRole")}</small></div>
+        {filterProductId && <dl className="account-access-permissions">
+          {(["canView", "canOperate", "canUseAi"] as const).map(field => {
+            const cell = permissionCell(field, permission, administrator);
+            const label = t(field === "canView" ? "permissionView" : field === "canOperate" ? "permissionOperate" : "permissionUseAi");
+            const effective = cell.checked && !account.disabledAt;
+            return <div key={field}><dt>{label}</dt><dd title={account.disabledAt ? "账号已停用，配置权限不生效" : cell.byRole ? t("adminAccessByRole") : undefined}>{effective ? "✓" : "—"}<span className="sr-only">{effective ? "已授权" : "未授权"}</span></dd></div>;
+          })}
+        </dl>}
+        <span className="account-access-status">{account.disabledAt ? t("suspendedAccount") : "正常"}</span>
+        <div className="account-access-actions">
+          <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setPermissionsOnly(Boolean(filterProductId)); setEditor(openAccountEditor(editor, editIntent)); }}>
+            <Pencil size={15} /> {filterProductId ? "修改权限" : t("editAccount")}
+          </button>
+          <details className="account-more"><summary className="secondary-button">更多</summary><div className="account-more-actions">
+            {filterProductId && <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setPermissionsOnly(false); setEditor(openAccountEditor(editor, editIntent)); }}>{t("editAccount")}</button>}
+            <small>以下账号操作影响整个工作空间</small>
+            {!isSelf && <>
+              <button type="button" className="secondary-button" disabled={suspend.isPending} onClick={() => {
+                if (window.confirm(`${account.disabledAt ? "恢复" : "停用"}账号 ${account.email}？此操作影响整个工作空间。`)) suspend.mutate(!account.disabledAt);
+              }}>{t(account.disabledAt ? "restoreAccount" : "suspendAccount")}</button>
+              <button type="button" className="secondary-button archive-button" disabled={remove.isPending} onClick={() => {
+                if (window.confirm(`${t("confirmDeleteAccount", { email: account.email })} 此操作影响整个工作空间。`)) remove.mutate();
+              }}><Trash2 size={15} /> {t("deleteAccount")}</button>
+            </>}
+            {isSelf && <small>当前登录账号不能在此停用或删除。</small>}
+          </div></details>
+        </div>
       </header>
       {error && <InlineNote danger message={messageFor(error, t, t("somethingWentWrong"))} />}
       {open && (
         <>
           {/* How an account seeded before addresses were required gets a real
               one: until this existed, nothing could change it. */}
+          {!permissionsOnly && <>
           <div className="account-email-row">
             <label>
               {t("newAccountEmail")}
@@ -657,7 +658,8 @@ function AccountRow({
               {renameNickname.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
             </button>
           </div>
-          <PermissionGrid account={account} products={products} />
+          </>}
+          <PermissionGrid account={account} products={products} productId={permissionsOnly ? filterProductId : undefined} />
           <div className="account-form-actions">
             <button
               type="button"
@@ -783,9 +785,10 @@ export function AccountManagement({ user, products, accountId, filterProductId, 
       </div>
     </>}
     {editor === "new-account" && <NewAccountForm onCancel={() => setEditor(null)} onCreated={() => setEditor(null)} />}
-    <div className="account-list">
+    {filter && !accountId && <p className="account-note">{products.find(product => product.id === filter)?.name} 的账号权限</p>}
+    <div className="account-list account-access-list">
       {accounts.length === 0 && <p role="status" className="account-note">{t(accountId ? "settingsUnavailable" : "settingsNoMatchingAccounts")}</p>}
-      {accounts.map(account => <AccountRow key={account.id} account={account} products={products} isSelf={account.id === user.id} editor={editor} setEditor={setEditor} />)}
+      {accounts.map(account => <AccountRow key={account.id} account={account} products={products} filterProductId={filter || undefined} isSelf={account.id === user.id} editor={editor} setEditor={setEditor} />)}
     </div>
   </div>;
 }

@@ -104,6 +104,9 @@ export interface WorkItemSnapshot {
   readonly transferred?: boolean;
   readonly transferredFrom?: { readonly key: string; readonly productId: string };
   readonly transferredTo?: { readonly key: string; readonly productId: string };
+  readonly builderAccountId?: string;
+  readonly builderName?: string;
+  readonly builderNeedsReassignment?: boolean;
   readonly id: string;
   readonly key: string;
   readonly productId: string;

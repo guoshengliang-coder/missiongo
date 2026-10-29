@@ -95,6 +95,7 @@ export const COMPONENT_KINDS = ["android", "macos", "web", "server", "shared", "
 export type ComponentKind = (typeof COMPONENT_KINDS)[number];
 
 export interface Component {
+  readonly defaultBuilderAccountId?: string;
   readonly id: string;
   readonly productId: string;
   readonly name: string;
@@ -110,6 +111,9 @@ export interface WorkItem {
   readonly transferred?: boolean;
   readonly transferredFrom?: { readonly key: string; readonly productId: string };
   readonly transferredTo?: { readonly key: string; readonly productId: string };
+  readonly builderAccountId?: string;
+  readonly builderName?: string;
+  readonly builderNeedsReassignment?: boolean;
   readonly id: string;
   readonly key: string;
   readonly productId: string;

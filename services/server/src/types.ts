@@ -53,6 +53,7 @@ export interface ProductSnapshot {
 }
 
 export interface ComponentSnapshot {
+  readonly defaultBuilderAccountId?: string;
   readonly id: string;
   readonly productId: string;
   readonly name: string;
@@ -109,6 +110,7 @@ interface CreateAgentWorkItemFields {
 }
 
 export interface ListWorkItemsInput {
+  readonly builderAccountId?: string | null;
   readonly productId: string;
   readonly status?: WorkItemStatus;
   /** Without a status filter, cancelled items are left out unless this is set. */
@@ -120,6 +122,7 @@ export interface ListWorkItemsInput {
 }
 
 export interface WorkItemListSummaryInput {
+  readonly builderAccountId?: string | null;
   readonly productId: string;
   readonly type?: WorkItemType;
   readonly search?: string;

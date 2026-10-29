@@ -24,6 +24,7 @@ import {
   type WorkItemType,
 } from "@missiongo/domain";
 
+import { AccountStore } from "./accounts-store.js";
 import { autoArchiveForItem } from "./auto-archive.js";
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { MissionGoDatabase } from "./storage/database.js";
@@ -81,6 +82,7 @@ interface ProductRow {
 }
 
 interface ComponentRow {
+  default_builder_account_id?: string | null;
   id: string;
   product_id: string;
   name: string;
@@ -91,6 +93,7 @@ interface ComponentRow {
 }
 
 interface WorkItemRow {
+  builder_account_id?: string | null;
   id: string;
   item_key: string;
   sequence: number;
@@ -410,7 +413,7 @@ export class MissionGoStore {
     this.getProduct(productId);
     const rows = this.database.connection
       .prepare(
-        `SELECT id, product_id, name, kind, created_at, updated_at, archived_at
+        `SELECT *
          FROM components
          WHERE product_id = ?${options.includeArchived ? "" : " AND archived_at IS NULL"}
          ORDER BY archived_at IS NOT NULL, name`,
@@ -887,6 +890,7 @@ export class MissionGoStore {
     type?: WorkItemType;
     search?: string;
     includeCancelled?: boolean;
+    builderAccountId?: string | null;
   }): {
     clauses: string[];
     values: SQLInputValue[];
@@ -908,6 +912,8 @@ export class MissionGoStore {
       clauses.push("type = ?");
       values.push(input.type);
     }
+    if (input.builderAccountId === null) clauses.push("builder_account_id IS NULL");
+    else if (input.builderAccountId !== undefined) { clauses.push("builder_account_id = ?"); values.push(input.builderAccountId); }
     const search = input.search?.trim();
     if (search) {
       if (search.length > 200) throw invalidInput("search must be 200 characters or fewer.");
@@ -969,6 +975,7 @@ export class MissionGoStore {
     const { clauses, values } = this.workItemFilter({
       productId: input.productId,
       includeCancelled: true,
+      ...(input.builderAccountId !== undefined ? { builderAccountId: input.builderAccountId } : {}),
       ...(input.type !== undefined ? { type: input.type } : {}),
       ...(input.search !== undefined ? { search: input.search } : {}),
     });
@@ -1058,6 +1065,7 @@ export class MissionGoStore {
         for (const componentId of affectedComponentIds) insert.run(current.id, componentId);
         this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, current.id);
       }
+      if (input.sourceComponentId && input.sourceComponentId !== current.source_component_id) this.assignDefaultBuilder(current.id, current.product_id, input.sourceComponentId);
       this.insertEvent(current.id, "item_updated", "human", null, null, {}, now, input.attribution);
     });
 
@@ -1751,6 +1759,7 @@ export class MissionGoStore {
       "INSERT INTO work_item_affected_components (item_id, component_id) VALUES (?, ?)",
     );
     for (const componentId of affectedComponentIds) insertAffected.run(id, componentId);
+    this.assignDefaultBuilder(id, input.productId, input.sourceComponentId);
     this.insertEvent(id, "item_created", origin.actor, null, status, createdPayload, now, origin.attribution);
     return key;
   }
@@ -1862,7 +1871,7 @@ export class MissionGoStore {
 
   private getComponent(componentId: string): ComponentSnapshot {
     const row = this.database.connection
-      .prepare("SELECT id, product_id, name, kind, created_at, updated_at, archived_at FROM components WHERE id = ?")
+      .prepare("SELECT * FROM components WHERE id = ?")
       .get(componentId) as unknown as ComponentRow | undefined;
     if (!row) throw notFound("Component");
     return this.mapComponent(row);
@@ -2027,6 +2036,7 @@ export class MissionGoStore {
 
   private mapComponent(row: ComponentRow): ComponentSnapshot {
     return {
+      ...(row.default_builder_account_id ? { defaultBuilderAccountId: row.default_builder_account_id } : {}),
       id: row.id,
       productId: row.product_id,
       name: row.name,
@@ -2225,6 +2235,31 @@ export class MissionGoStore {
     return {};
   }
 
+  private assignDefaultBuilder(itemId: string, productId: string, componentId?: string): void {
+    if (!componentId) return;
+    const module = this.getComponent(componentId);
+    if (module.archivedAt || !module.defaultBuilderAccountId) return;
+    const accounts = new AccountStore(this.database);
+    const account = accounts.listAccounts().find(entry => entry.id === module.defaultBuilderAccountId);
+    if (!account || account.disabledAt || !accounts.allows(account, productId, "ai")) return;
+    this.database.connection.prepare(`UPDATE work_items SET builder_account_id = ?, builder_assignment = 'automatic'
+      WHERE id = ? AND builder_account_id IS NULL AND builder_assignment IS NULL`).run(account.id, itemId);
+  }
+
+  recordDeliveryEvent(itemKey: string, accountId: string, event: string, payload: Readonly<Record<string, unknown>>): void {
+    const item = this.getWorkItem(itemKey);
+    this.insertEvent(item.id, event, "human", null, null, payload, new Date().toISOString(), { accountId });
+  }
+
+  private builderOf(row: WorkItemRow): Pick<WorkItemSnapshot, "builderAccountId" | "builderName" | "builderNeedsReassignment"> {
+    if (!row.builder_account_id) return {};
+    const accounts = new AccountStore(this.database);
+    const account = accounts.listAccounts().find(entry => entry.id === row.builder_account_id);
+    return { builderAccountId: row.builder_account_id,
+      builderName: account ? account.nickname || account.email.split("@")[0]! : "已删除账号",
+      builderNeedsReassignment: !account || Boolean(account.disabledAt) || !accounts.allows(account, row.product_id, "ai") };
+  }
+
   private mapWorkItem(row: WorkItemRow): WorkItemSnapshot {
     const environment = parseEnvironment(row.environment_json);
     const report = parseReport(row.report_json);
@@ -2233,6 +2268,7 @@ export class MissionGoStore {
     return {
       id: row.id,
       key: row.item_key,
+      ...this.builderOf(row),
       productId: row.product_id,
       ...(row.source_component_id ? { sourceComponentId: row.source_component_id } : {}),
       affectedComponentIds: this.getAffectedComponentIds(row.id),
