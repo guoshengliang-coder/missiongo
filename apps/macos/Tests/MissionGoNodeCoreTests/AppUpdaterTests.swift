@@ -331,6 +331,128 @@ final class AppUpdaterInstallTests: XCTestCase {
         XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "0.3.1")
     }
 
+    // MARK: Translocated copies
+
+    /// The read-only projection macOS makes of a quarantined app it was started
+    /// from outside an approved location -- the path in the console's update
+    /// failure, "You don't have permission to save the file".
+    private var translocatedBundle: URL {
+        return URL(fileURLWithPath: "/private/var/folders/9f/lw4n5vk520j0d28cv3q6f3hm0000gn/T/AppTranslocation/"
+            + "21B35289-FDD9-4BF7-8A73-7156B7E21262/d/MissionGo.app")
+    }
+
+    private func packedBundle(in root: URL, version: String = "0.4.0") async throws -> Data {
+        let source = try makeBundle(
+            in: root.appendingPathComponent("src", isDirectory: true),
+            version: version,
+            identifier: "io.missiongo.macos"
+        )
+        let archive = root.appendingPathComponent("MissionGo-macOS.zip")
+        let packed = await AppUpdater.systemRunner("/usr/bin/ditto", ["-c", "-k", "--keepParent", source.path, archive.path])
+        XCTAssertEqual(packed.code, 0, packed.output)
+        return try Data(contentsOf: archive)
+    }
+
+    /// ditto is real (the bundle has to survive extraction); the signing tools
+    /// are stubbed because a unit test cannot produce a signed bundle.
+    private func stubbedRun(signature: String = "") -> AppUpdater.ToolRunner {
+        return { path, args in
+            if path == "/usr/bin/ditto" { return await AppUpdater.systemRunner(path, args) }
+            if args.first == "-d" { return (0, signature) }
+            return (0, "")
+        }
+    }
+
+    private func versionOfBundle(at bundle: URL) throws -> String? {
+        let info = try PropertyListSerialization.propertyList(
+            from: try Data(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")), format: nil
+        ) as? [String: Any]
+        return info?["CFBundleShortVersionString"] as? String
+    }
+
+    func testRecognisesATranslocatedProjectionAndNothingElse() {
+        XCTAssertTrue(AppUpdater.isTranslocated(bundle: translocatedBundle))
+        XCTAssertFalse(AppUpdater.isTranslocated(bundle: URL(fileURLWithPath: "/Applications/MissionGo.app")))
+        XCTAssertFalse(AppUpdater.isTranslocated(bundle: URL(fileURLWithPath: "/Users/someone/Applications/MissionGo.app")))
+    }
+
+    /// A translocated copy cannot replace itself, so the verified build goes to
+    /// an approved location -- and that is the bundle handed back to relaunch.
+    func testInstallsATranslocatedCopyIntoAnApprovedLocation() async throws {
+        let root = try temporaryDirectory()
+        let zip = try await packedBundle(in: root)
+        let applications = root.appendingPathComponent("Applications", isDirectory: true)
+
+        let installed = try await AppUpdater.install(
+            zip: zip,
+            manifest: try manifest(version: "0.4.0"),
+            replacing: translocatedBundle,
+            expectedIdentifier: "io.missiongo.macos",
+            allowAdHocUpdates: true,
+            installRoots: [applications],
+            run: stubbedRun(signature: "Signature=adhoc\n")
+        )
+
+        XCTAssertEqual(installed, applications.appendingPathComponent("MissionGo.app"))
+        XCTAssertEqual(try versionOfBundle(at: installed), "0.4.0")
+        // Nothing was written into the projection, and no staging copy was left
+        // behind for someone to launch by mistake.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: translocatedBundle.path))
+        let entries = try FileManager.default.contentsOfDirectory(atPath: applications.path)
+        XCTAssertEqual(entries, ["MissionGo.app"])
+    }
+
+    /// /Applications is where a normal install lives, but it is not always
+    /// writable; ~/Applications is an approved location too, so use it.
+    func testFallsBackToTheSecondApprovedLocation() async throws {
+        let root = try temporaryDirectory()
+        let zip = try await packedBundle(in: root)
+        let unwritable = root.appendingPathComponent("not-a-directory", isDirectory: false)
+        try Data("x".utf8).write(to: unwritable)
+        let homeApplications = root.appendingPathComponent("home/Applications", isDirectory: true)
+
+        let installed = try await AppUpdater.install(
+            zip: zip,
+            manifest: try manifest(version: "0.4.0"),
+            replacing: translocatedBundle,
+            expectedIdentifier: "io.missiongo.macos",
+            allowAdHocUpdates: true,
+            installRoots: [unwritable, homeApplications],
+            run: stubbedRun(signature: "Signature=adhoc\n")
+        )
+
+        XCTAssertEqual(installed, homeApplications.appendingPathComponent("MissionGo.app"))
+        XCTAssertEqual(try versionOfBundle(at: installed), "0.4.0")
+    }
+
+    /// When no location takes the copy, say what the person can do instead of
+    /// leaving the system's "folder d" wording as the only explanation.
+    func testExplainsWhenNoApprovedLocationAcceptsTheCopy() async throws {
+        let root = try temporaryDirectory()
+        let zip = try await packedBundle(in: root)
+        let unwritable = root.appendingPathComponent("not-a-directory", isDirectory: false)
+        try Data("x".utf8).write(to: unwritable)
+
+        do {
+            _ = try await AppUpdater.install(
+                zip: zip,
+                manifest: try manifest(version: "0.4.0"),
+                replacing: translocatedBundle,
+                expectedIdentifier: "io.missiongo.macos",
+                allowAdHocUpdates: true,
+                installRoots: [unwritable],
+                run: stubbedRun(signature: "Signature=adhoc\n")
+            )
+            XCTFail("expected a failure")
+        } catch {
+            guard case let .install(detail) = error as? AppUpdater.UpdateError ?? .digestMismatch else {
+                return XCTFail("expected install, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("App Translocation"))
+            XCTAssertTrue(detail.contains("应用程序"))
+        }
+    }
+
     func testRelaunchWaitsForThisProcessToGoAway() {
         let command = AppUpdater.relaunchCommand(bundle: URL(fileURLWithPath: "/Applications/MissionGo.app"), pid: 4321)
         XCTAssertEqual(command.file, "/bin/sh")

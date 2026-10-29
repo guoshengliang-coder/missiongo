@@ -237,6 +237,7 @@ public enum AppUpdater {
         replacing bundle: URL,
         expectedIdentifier: String?,
         allowAdHocUpdates: Bool = Bundle.main.object(forInfoDictionaryKey: "MissionGoAllowsAdHocUpdates") as? Bool ?? false,
+        installRoots: [URL]? = nil,
         run: ToolRunner = systemRunner
     ) async throws -> URL {
         let work = try workDirectory()
@@ -277,15 +278,89 @@ public enum AppUpdater {
         // Preserve quarantine and macOS's launch checks in both modes. Never
         // grant privacy permissions or change the machine's Gatekeeper policy.
 
+        // A quarantined app started outside an approved location runs from a
+        // read-only projection Gatekeeper makes of it, so the path to replace is
+        // not an install at all: `replaceItemAt` there fails with "You don't
+        // have permission to save the file" for anyone, and the real bundle, if
+        // there is one, is somewhere else. Put the verified build where macOS
+        // runs it in place instead; the projection itself is temporary and must
+        // be left alone.
+        if isTranslocated(bundle: bundle) {
+            return try await place(
+                newBundle,
+                named: bundle.lastPathComponent,
+                roots: installRoots ?? approvedInstallRoots(),
+                run: run
+            )
+        }
+
         do {
             _ = try FileManager.default.replaceItemAt(bundle, withItemAt: newBundle)
         } catch {
             throw UpdateError.install(
                 "无法替换 \(bundle.path)：\(error.localizedDescription)。"
-                + "把新版本手工拖进「应用程序」也可以完成更新。"
+                + "请确认 MissionGo 装在可以写入的位置；从控制台重新下载并安装到「应用程序」也可以完成更新。"
             )
         }
         return bundle
+    }
+
+    /// True when macOS is running this bundle from the temporary, read-only
+    /// projection it makes of a quarantined app started outside an approved
+    /// location -- `/private/var/folders/…/T/AppTranslocation/<uuid>/d/…`.
+    ///
+    /// Such a copy can never update itself, no matter the person's privileges:
+    /// it is not where the app lives.
+    public static func isTranslocated(bundle: URL) -> Bool {
+        return bundle.standardizedFileURL.path.contains("/AppTranslocation/")
+    }
+
+    /// The places macOS runs an app in place, and therefore where an update of a
+    /// translocated copy has to go: `/Applications` for a normal install,
+    /// `~/Applications` when that one refuses the copy. Neither is translocated,
+    /// so the next update is an ordinary replace again.
+    public static func approvedInstallRoots(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [URL] {
+        return [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            home.appendingPathComponent("Applications", isDirectory: true),
+        ]
+    }
+
+    /// Copies a verified bundle to the first root that accepts it, returning the
+    /// path to relaunch.
+    ///
+    /// The copy lands under a temporary name beside the destination and is then
+    /// renamed, so a failed copy never leaves a half-written app where someone
+    /// might launch it. A root that cannot be written is reported and skipped
+    /// rather than ending the whole update.
+    static func place(_ newBundle: URL, named name: String, roots: [URL], run: ToolRunner) async throws -> URL {
+        let fileName = name.isEmpty ? "MissionGo.app" : name
+        var failures: [String] = []
+        for root in roots {
+            let destination = root.appendingPathComponent(fileName, isDirectory: true)
+            let staging = root.appendingPathComponent(".\(fileName).\(UUID().uuidString)", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                let copy = await run("/usr/bin/ditto", [newBundle.path, staging.path])
+                guard copy.code == 0 else { throw UpdateError.install(copy.output) }
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
+                } else {
+                    try FileManager.default.moveItem(at: staging, to: destination)
+                }
+                return destination
+            } catch {
+                try? FileManager.default.removeItem(at: staging)
+                failures.append("\(root.path)：\(error.localizedDescription)")
+            }
+        }
+        throw UpdateError.install(
+            "MissionGo 正在从临时位置运行（macOS 的 App Translocation），无法替换自己，"
+            + "安装到「应用程序」也没有成功（\(failures.joined(separator: "；"))）。"
+            + "请退出 MissionGo，从控制台重新下载 zip，把 MissionGo.app 拖进「应用程序」后重新打开。"
+        )
     }
 
     static func workDirectory() throws -> URL {
