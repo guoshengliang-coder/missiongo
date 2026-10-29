@@ -1,3 +1,4 @@
+import { useDialogDraft } from "./dialog-state";
 import type { CompletionReference } from "@missiongo/contracts";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,6 +25,8 @@ export function StatusCheckButton({productId,itemKey,canOperate}:{productId:stri
 }
 function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{productId:string;itemKey?:string;canOperate:boolean;onClose:()=>void}) {
   const {locale,t,statusLabel} = useI18n(); const zh = locale === "zh-CN";
+  const [confirmation, setConfirmation] = useState<StatusCheckRecord | null>(null);
+  const [scopeRecord, setScopeRecord] = useState<StatusCheckRecord>();
   const [offset,setOffset] = useState(0); const [editing,setEditing] = useState(false); const [requested,setRequested] = useState(false);
   const client = useQueryClient();
   const products = useQuery({queryKey:["products"],queryFn:()=>api.listProducts()});
@@ -44,19 +47,21 @@ function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{productId:stri
     void client.invalidateQueries({queryKey:["item"]});
     void client.invalidateQueries({queryKey:["timeline"]});
   },[statusFingerprint,client]);
-  return <Modal title={zh ? "状态检查" : "Status checks"} subtitle={itemKey ?? product?.name ?? ""} onClose={onClose} wide scrolls>
+  return <Modal title={editing ? (zh ? "关联完成依据 / 确认发布范围" : "Associate completion / confirm release scope") : confirmation ? (zh ? "人工确认交付" : "Confirm delivery") : (zh ? "状态检查" : "Status checks")} subtitle={itemKey ?? product?.name ?? ""} onClose={onClose} pending={mutation.isPending} wide scrolls>
+    {editing && itemKey ? <ScopeEditor key={itemKey} itemKey={itemKey} record={scopeRecord} artifacts={product?.releaseArtifacts ?? []} onCancel={()=>setEditing(false)} onSaved={async()=>{setEditing(false);await refresh();}}/>
+      : confirmation ? <HumanConfirmation key={`${confirmation.id}:${confirmation.itemStatus}`} record={confirmation} onCancel={()=>setConfirmation(null)} onSaved={async()=>{setConfirmation(null);await refresh();}}/> : <>
     <p className="dispatch-note">{zh ? "已有证据由服务端核对；需要仓库权限时，由已关联的 macOS 节点检查。节点离线时任务会保留。" : "The server reconciles recorded evidence. Repository checks run on a mapped macOS node; offline work remains queued."}</p>
     {query.data?.schedule && <p className="dispatch-note">{query.data.schedule.time === false ? (zh ? "自动检查已关闭" : "Automatic checks disabled") : `${zh ? "每天" : "Daily at"} ${query.data.schedule.time} · ${query.data.schedule.timezone}`}</p>}
     <div className="status-check-actions"><button type="button" className="primary-button" disabled={!mayOperate || mutation.isPending} onClick={()=>mutation.mutate()}>
       {mutation.isPending ? <LoaderCircle className="spin" size={16}/> : <ClipboardCheck size={16}/>}{zh ? "立即检查并校正" : "Check and reconcile now"}</button>
       <button type="button" className="secondary-button" disabled={query.isFetching} onClick={()=>void refresh()}>{zh ? "刷新结果" : "Refresh results"}</button>
-      {itemKey && mayOperate && canRegister && <button type="button" className="secondary-button" onClick={()=>setEditing(v=>!v)}>{zh ? "关联完成依据 / 确认发布范围" : "Associate completion / confirm release scope"}</button>}
+      {itemKey && mayOperate && canRegister && <button type="button" className="secondary-button" onClick={()=>{setScopeRecord(newest);setEditing(true);}}>{zh ? "关联完成依据 / 确认发布范围" : "Associate completion / confirm release scope"}</button>}
     </div>
     {(mutation.isError || query.isError) && <p className="inline-error" role="alert">{localizedErrorText(mutation.error ?? query.error,t)}</p>}
     {requested && <p role="status" className="dispatch-note">{mutation.data?.missingAssociation ? (zh ? "缺少完成依据，暂时无法检查。请先关联 PR、MR 或提交。" : "Associate a PR, MR or commit before requesting a check.")
       : mutation.data?.queued ? (zh ? "已排队，等待关联节点；这不代表已经核实。" : "Queued for a mapped node; this is not a verification result.")
       : (zh ? "已有证据已核对；请查看下方结果。" : "Recorded evidence reconciled; see results below.")}</p>}
-    {editing && itemKey && <ScopeEditor key={newest?.id ?? itemKey} itemKey={itemKey} record={newest} artifacts={product?.releaseArtifacts ?? []} onSaved={async()=>{setEditing(false);await refresh();}}/>}
+
     {query.isLoading && <p><LoaderCircle className="spin" size={16}/>{zh ? "正在读取…" : "Loading…"}</p>}
     {query.isSuccess && !records.length && <p className="dispatch-note">{zh ? "暂无交接记录。请先关联完成依据和发布范围。" : "No handover recorded. Associate completion evidence and release scope first."}</p>}
     <div className="status-check-list">{records.map(record=><article className="status-check-card" key={record.id}>
@@ -76,14 +81,15 @@ function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{productId:stri
       {zh && record.reason && <p className="dispatch-note">{record.reason}</p>}
       <p className="dispatch-note">{record.evidenceSource === "human_confirmation" ? (zh ? "来源：登录用户人工确认。" : "Source: signed-in user's confirmation.") : (zh ? "来源：授权执行端上报；服务端未独立访问代码托管平台。" : "Source: authorized executor report; the server does not independently check the repository host.")}</p>
       {mayOperate && ["in_progress","development_complete"].includes(record.itemStatus) && record.status !== "stale" &&
-        <HumanConfirmation key={`${record.id}:${record.itemStatus}`} record={record} onSaved={refresh}/>}
+        <button type="button" className="secondary-button" disabled={record.requiredArtifacts === null} onClick={()=>setConfirmation(record)}>{record.itemStatus === "in_progress" ? (zh ? "人工确认已集成" : "Confirm integration") : record.requiredArtifacts?.length === 0 ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication")}</button>}
       <p className="dispatch-note">{zh ? "最近检查：" : "Last check: "}{record.checkedAt ? new Date(record.checkedAt).toLocaleString(locale) : (zh ? "尚未检查" : "Never")}</p>
     </article>)}</div>
     <div className="status-check-actions"><button type="button" className="secondary-button" disabled={offset === 0} onClick={()=>setOffset(Math.max(0,offset-100))}>{zh ? "上一页" : "Previous"}</button>
       <button type="button" className="secondary-button" disabled={query.data?.nextOffset === undefined} onClick={()=>setOffset(query.data!.nextOffset!)}>{zh ? "下一页" : "Next"}</button></div>
+    </>}
   </Modal>;
 }
-function ScopeEditor({itemKey,record,artifacts,onSaved}:{itemKey:string;record:StatusCheckRecord|undefined;artifacts:readonly string[];onSaved:()=>Promise<void>}) {
+function ScopeEditor({itemKey,record,artifacts,onSaved,onCancel}:{itemKey:string;record:StatusCheckRecord|undefined;artifacts:readonly string[];onSaved:()=>Promise<void>;onCancel:()=>void}) {
   const {locale,t} = useI18n(); const zh = locale === "zh-CN";
   const [kind,setKind] = useState<CompletionReference["kind"]>(record?.completion.kind ?? "github");
   const [url,setUrl] = useState(record?.pullRequestUrl ?? "");
@@ -92,6 +98,9 @@ function ScopeEditor({itemKey,record,artifacts,onSaved}:{itemKey:string;record:S
   const [description,setDescription] = useState(record?.completion.kind === "manual" ? record.completion.description : ""); const [selected,setSelected] = useState<string[]>(record?.requiredArtifacts ?? []);
   const [noRelease,setNoRelease] = useState(record?.requiredArtifacts?.length === 0); const [reason,setReason] = useState(record?.noReleaseReason ?? "");
   const mutation = useMutation({mutationFn:()=>api.registerHandover(itemKey,{completion: kind === "github" || kind === "gitlab" ? {kind,url:url.trim()} : kind === "commit" ? {kind,commit:commit.trim(),targetBranch:branch.trim()} : {kind,commit:commit.trim(),description:description.trim()},...(noRelease ? {requiredArtifacts:[],noReleaseReason:reason.trim()} : selected.length ? {requiredArtifacts:selected} : {})}),onSuccess:onSaved});
+  const currentDraft = JSON.stringify({kind,url,commit,branch,description,selected,noRelease,reason});
+  const [initialDraft] = useState(currentDraft);
+  useDialogDraft(currentDraft !== initialDraft, mutation.isPending);
   return <form className="status-check-scope" onSubmit={event=>{event.preventDefault();mutation.mutate();}}>
     <label>{zh ? "完成依据" : "Completion reference"}<select value={kind} onChange={e=>setKind(e.target.value as CompletionReference["kind"])}>
       <option value="github">GitHub PR</option><option value="gitlab">GitLab MR</option>
@@ -106,24 +115,22 @@ function ScopeEditor({itemKey,record,artifacts,onSaved}:{itemKey:string;record:S
     {noRelease && <label>{zh ? "无需发布的依据和验证方式" : "Reason and verification method"}<textarea required value={reason} onChange={e=>setReason(e.target.value)} maxLength={4000}/></label>}
     {!noRelease && !selected.length && <p className="dispatch-note">{zh ? "未选产物表示范围未知，不会按无需发布处理。" : "No selection means unknown scope, not no release required."}</p>}
     {mutation.isError && <p className="inline-error" role="alert">{localizedErrorText(mutation.error,t)}</p>}
-    <button type="submit" className="secondary-button" disabled={mutation.isPending}>{mutation.isPending && <LoaderCircle className="spin" size={16}/>} {zh ? "确认并保存关联" : "Confirm and save association"}</button>
+    <div className="form-footer"><button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>{t("cancel")}</button><button type="submit" className="primary-button" disabled={mutation.isPending}>{mutation.isPending && <LoaderCircle className="spin" size={16}/>} {zh ? "确认并保存关联" : "Confirm and save association"}</button></div>
   </form>;
 }
 
-function HumanConfirmation({record,onSaved}:{record:StatusCheckRecord;onSaved:()=>Promise<void>}) {
+function HumanConfirmation({record,onSaved,onCancel}:{record:StatusCheckRecord;onSaved:()=>Promise<void>;onCancel:()=>void}) {
   const {locale,t} = useI18n(); const zh = locale === "zh-CN";
-  const [open,setOpen] = useState(false);
   const stage = record.itemStatus === "in_progress" ? "integration" : "release";
   const [commit,setCommit] = useState("commit" in record.completion ? record.completion.commit : record.evidence.merged?.commit ?? "");
   const [note,setNote] = useState("");
   const [details,setDetails] = useState<Record<string,{version:string;sourceCommit:string}>>({});
   const noRelease = record.requiredArtifacts?.length === 0;
   const mutation = useMutation({mutationFn:()=>api.confirmHandover(record.itemKey,record.id,stage === "integration" ? {stage,commit:commit.trim(),note:note.trim()}
-    : {stage,note:note.trim(),releases:(record.requiredArtifacts ?? []).map(artifact=>({artifact,version:details[artifact]?.version.trim() ?? "",sourceCommit:details[artifact]?.sourceCommit.trim() ?? ""}))}),onSuccess:async()=>{setOpen(false);await onSaved();}});
+    : {stage,note:note.trim(),releases:(record.requiredArtifacts ?? []).map(artifact=>({artifact,version:details[artifact]?.version.trim() ?? "",sourceCommit:details[artifact]?.sourceCommit.trim() ?? ""}))}),onSuccess:async()=>{await onSaved();}});
   const label = stage === "integration" ? (zh ? "人工确认已集成" : "Confirm integration") : noRelease ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication");
-  return <div>
-    <button type="button" className="secondary-button" disabled={record.requiredArtifacts === null} onClick={()=>setOpen(v=>!v)}>{label}</button>
-    {open && <form className="status-check-scope" onSubmit={e=>{e.preventDefault();mutation.mutate();}}>
+  useDialogDraft(Boolean(note) || Object.keys(details).length > 0 || commit !== ("commit" in record.completion ? record.completion.commit : record.evidence.merged?.commit ?? ""), mutation.isPending);
+  return <form className="status-check-scope" onSubmit={e=>{e.preventDefault();if (!mutation.isPending) mutation.mutate();}}>
       <p className="dispatch-note">{zh ? "确认会记录你的账号和说明，不代表验收通过。" : "Your account and explanation will be recorded. This does not pass acceptance."}</p>
       {stage === "integration" ? <label>{zh ? "已纳入交付的完整提交编号" : "Integrated commit SHA"}<input required pattern="[a-f0-9]{40}" value={commit} onChange={e=>setCommit(e.target.value)} maxLength={40}/></label>
         : record.requiredArtifacts?.map(artifact=><fieldset className="status-check-release-fields" key={artifact}><legend>{artifact}</legend>
@@ -132,7 +139,6 @@ function HumanConfirmation({record,onSaved}:{record:StatusCheckRecord;onSaved:()
         </fieldset>)}
       <label>{zh ? "确认依据与说明" : "Evidence and explanation"}<textarea required maxLength={2000} value={note} onChange={e=>setNote(e.target.value)}/></label>
       {mutation.isError && <p className="inline-error" role="alert">{localizedErrorText(mutation.error,t)}</p>}
-      <button type="submit" className="primary-button" disabled={mutation.isPending}>{label}</button>
-    </form>}
-  </div>;
+      <div className="form-footer"><button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>{t("cancel")}</button><button type="submit" className="primary-button" disabled={mutation.isPending}>{label}</button></div>
+    </form>;
 }

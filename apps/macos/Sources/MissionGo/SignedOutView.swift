@@ -69,7 +69,7 @@ struct SignedOutView: View {
                 WrappingCaption(text: error, color: .red)
             }
 
-            ServerAddressDisclosure()
+            ServerAddressEditor()
             DisclosureGroup("连接诊断与代理设置") {
                 ServerConnectionSection().padding(.top, 6)
             }
@@ -84,48 +84,67 @@ struct SignedOutView: View {
     }
 }
 
-private struct ServerAddressDisclosure: View {
+private struct ServerAddressEditor: View {
     @EnvironmentObject private var model: AppModel
-    @State private var expanded = false
+    @State private var editing = false
     @State private var draft = ""
+    @State private var restoreDefault = false
     @State private var error: String?
+    @FocusState private var addressFocused: Bool
 
     var body: some View {
-        DisclosureGroup("服务器地址", isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 6) {
-                TextField("https://missiongo.example.com", text: $draft)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(save)
-                HStack {
-                    Button("保存", action: save)
-                        .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
-                    if model.serverOverride != nil, model.hasBundledServer {
-                        Button("恢复默认") {
-                            model.clearServerOverride()
-                            draft = model.loginServerUrl ?? ""
-                            error = nil
-                        }
-                    }
-                    Spacer()
-                }
-                if let error {
-                    WrappingCaption(text: error, color: .red)
-                } else if model.loginServerUrl == nil {
-                    WrappingCaption(text: "这个安装包没有内置服务器地址，请填写你的 MissionGo 地址，例如 https://missiongo.example.com。")
-                }
+        HStack {
+            Text("服务器地址").font(.callout)
+            Spacer()
+            Button("修改…") {
+                draft = model.serverOverride ?? model.loginServerUrl ?? ""
+                restoreDefault = false
+                error = nil
+                editing = true
             }
-            .padding(.top, 6)
         }
-        .font(.callout)
         .disabled(model.phase == .signingIn)
         .onAppear {
-            draft = model.serverOverride ?? model.loginServerUrl ?? ""
-            if model.loginServerUrl == nil { expanded = true }
+            if model.loginServerUrl == nil { draft = ""; editing = true }
+        }
+        .sheet(isPresented: $editing, onDismiss: { draft = ""; error = nil; restoreDefault = false }) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("修改服务器地址").font(.title2.weight(.semibold))
+                TextField("https://missiongo.example.com", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($addressFocused)
+                    .disabled(restoreDefault)
+                    .onSubmit(save)
+                if restoreDefault {
+                    Text("保存后将使用安装包内置的服务器地址。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let error { WrappingCaption(text: error, color: .red) }
+                HStack {
+                    if model.serverOverride != nil, model.hasBundledServer {
+                        Toggle("恢复默认地址", isOn: $restoreDefault).toggleStyle(.checkbox)
+                    }
+                    Spacer()
+                    Button("取消") { editing = false }.keyboardShortcut(.cancelAction)
+                    Button("保存", action: save)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!restoreDefault && draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .padding(24)
+            .frame(width: 440)
+            .interactiveDismissDisabled(restoreDefault || draft != (model.serverOverride ?? model.loginServerUrl ?? ""))
+            .onAppear { addressFocused = true }
         }
     }
 
     private func save() {
-        error = model.setServerOverride(draft)
-        if error == nil { draft = model.serverOverride ?? draft }
+        if restoreDefault {
+            model.clearServerOverride()
+            editing = false
+        } else {
+            error = model.setServerOverride(draft)
+            if error == nil { editing = false }
+        }
     }
 }

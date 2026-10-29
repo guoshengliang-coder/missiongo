@@ -5,6 +5,23 @@ import type { WorkItemPriority, WorkItemStatus, WorkItemType } from "./types";
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
+  confirmClearModelKey: "Clear the configured model key? Features that depend on it will become unavailable.",
+  keepViewing: "Keep viewing",
+  closeTokenWarning: "The token is shown only once. Make sure you have copied it before closing.",
+  partialItemSave: "Some changes were saved, but attachment processing did not finish. Retry to save the remaining changes.",
+  stagedAttachmentRemoval: "{count} attachments marked for deletion. Save to apply.",
+  undoAttachmentRemoval: "Undo deletion",
+  stagedAnnotation: "Annotations will be applied when you save changes.",
+  discardDialogTitle: "Discard changes?",
+  discardDialogHelp: "Your changes have not been saved. You can keep editing or discard them.",
+  continueEditing: "Keep editing",
+  discardChanges: "Discard changes",
+  confirmAction: "Confirm action",
+  confirm: "Confirm",
+  tokenCopiedDone: "I have saved the token",
+  editConfiguration: "Edit configuration",
+  iconSavedImmediately: "Icon changes are saved separately from the product name.",
+
   artifactPreview: "File preview",
   artifactLoading: "Getting the file from its source device…",
   artifactWaiting: "The source device has not returned the file yet. Keep it online with the latest MissionGo app; this request will resume automatically.",
@@ -1118,6 +1135,23 @@ const EN_MESSAGES = {
 export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
+  confirmClearModelKey: "清除已配置的模型密钥？依赖此密钥的功能将不可用。",
+  keepViewing: "返回查看",
+  closeTokenWarning: "令牌明文只展示这一次。请确认已经复制保存后再关闭。",
+  partialItemSave: "部分修改已保存，附件尚未全部处理完成。请重试以保存剩余修改。",
+  stagedAttachmentRemoval: "已标记删除 {count} 个附件，保存后生效。",
+  undoAttachmentRemoval: "撤销删除",
+  stagedAnnotation: "标注将在保存修改后生效。",
+  discardDialogTitle: "放弃修改？",
+  discardDialogHelp: "本次修改尚未保存。你可以继续编辑，或放弃这些修改。",
+  continueEditing: "继续编辑",
+  discardChanges: "放弃修改",
+  confirmAction: "确认操作",
+  confirm: "确认",
+  tokenCopiedDone: "我已保存令牌",
+  editConfiguration: "修改配置",
+  iconSavedImmediately: "图标与产品名称分开保存。",
+
   artifactPreview: "文件预览",
   artifactLoading: "正在从原设备获取文件…",
   artifactWaiting: "原设备尚未返回文件。请保持设备在线并使用最新版 MissionGo；设备恢复后会自动继续获取。",

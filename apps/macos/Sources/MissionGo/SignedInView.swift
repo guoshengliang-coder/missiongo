@@ -528,88 +528,65 @@ struct LocalSettingsView: View {
     }
 }
 
-/// The machine's name, and the place to give it a nickname.
-///
-/// The nickname is what dispatched sessions are named after, so with several
-/// Macs taking work it is what tells their sessions apart. Edited inline rather
-/// than in a sheet: the menu closes as soon as another window takes focus.
+/// Nickname edits are a temporary sheet; cancellation leaves the saved name intact.
 private struct MachineNameRow: View {
     @EnvironmentObject private var model: AppModel
     @State private var editing = false
     @State private var draft = ""
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
         let node = model.profile?.node
         let nickname = node?.nickname
         let deviceName = node?.deviceName ?? model.machineName
         VStack(alignment: .leading, spacing: 4) {
-            if editing {
-                HStack(spacing: 6) {
-                    TextField(deviceName, text: $draft)
-                        .textFieldStyle(.roundedBorder)
-                        .controlSize(.small)
-                        .onSubmit { save(draft) }
-                        .onChange(of: draft) { _ in model.clearNicknameError() }
-                    if model.savingNickname {
-                        ProgressView().controlSize(.mini)
-                    }
-                    // No default-button shortcut: Return already submits the field,
-                    // and a second path to the same request could send it twice.
-                    Button("保存") { save(draft) }
-                        .controlSize(.small)
-                    Button("取消") {
-                        editing = false
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(model.machineName).font(.headline).lineLimit(1).truncationMode(.middle)
+                if model.canEditNickname {
+                    Button(nickname == nil ? "设置昵称" : "修改昵称") {
+                        draft = nickname ?? ""
                         model.clearNicknameError()
+                        editing = true
                     }
-                    .controlSize(.small)
+                }
+                Spacer(minLength: 0)
+            }
+            if nickname != nil {
+                Text("设备名：\(deviceName)").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .sheet(isPresented: $editing, onDismiss: { draft = ""; model.clearNicknameError() }) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("修改设备昵称").font(.title2.weight(.semibold))
+                TextField(deviceName, text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($nameFocused)
+                    .onSubmit { save(draft) }
+                    .onChange(of: draft) { _ in model.clearNicknameError() }
+                    .disabled(model.savingNickname)
+                Text("留空则使用设备名。派单会话将使用保存后的名称。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let error = model.nicknameError { WrappingCaption(text: error, color: .red) }
+                HStack {
+                    if nickname != nil {
+                        Button("恢复为设备名") { draft = "" }
+                    }
+                    Spacer()
+                    Button("取消") { editing = false }.keyboardShortcut(.cancelAction)
+                    Button("保存") { save(draft) }.buttonStyle(.borderedProminent)
                 }
                 .disabled(model.savingNickname)
-                if nickname != nil {
-                    Button("恢复为设备名") { save("") }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                        .disabled(model.savingNickname)
-                        .help("清除昵称，派单会话改用设备名「\(deviceName)」命名")
-                }
-                if let error = model.nicknameError {
-                    WrappingCaption(text: error, color: .red)
-                }
-            } else {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(model.machineName)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(model.machineName)
-                    if model.canEditNickname {
-                        Button(nickname == nil ? "设置昵称" : "修改昵称") {
-                            draft = nickname ?? ""
-                            model.clearNicknameError()
-                            editing = true
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                        .help("派单会话以昵称命名，留空则使用设备名")
-                    }
-                    Spacer(minLength: 0)
-                }
-                if nickname != nil {
-                    Text("设备名：\(deviceName)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
             }
+            .padding(24)
+            .frame(width: 400)
+            .interactiveDismissDisabled(model.savingNickname || draft != (nickname ?? ""))
+            .onAppear { nameFocused = true }
         }
     }
 
     private func save(_ input: String) {
-        Task {
-            if await model.saveNickname(input) {
-                editing = false
-            }
-        }
+        guard !model.savingNickname else { return }
+        Task { if await model.saveNickname(input) { editing = false } }
     }
 }
 

@@ -1,3 +1,4 @@
+import { useConfirm } from "./confirm-dialog";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronRight, ClipboardCheck, LoaderCircle, Pencil, Plus, Trash2, Unplug, UserRound, X } from "lucide-react";
@@ -14,7 +15,7 @@ import {
   type ProductAccessEntry,
   type ProductPermission,
 } from "./api";
-import { closeAccountEditor, openAccountEditor, type AccountEditor } from "./account-edit-state";
+import { openAccountEditor, type AccountEditor } from "./account-edit-state";
 import { groupAiConnections, type AiConnectionGroup } from "./ai-connections";
 import {
   accountDisplayName,
@@ -49,7 +50,7 @@ function messageFor(error: unknown, t: (key: MessageKey) => string, fallback: st
  * cookie proves the browser was left signed in, not that the owner is at it.
  * Succeeding ends every other session, which is the point of the notice.
  */
-function PasswordForm({ onCancel }: { onCancel: () => void }) {
+function PasswordForm({ onCancel, onSaved }: { onCancel: () => void; onSaved: () => void }) {
   const { t } = useI18n();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -63,6 +64,7 @@ function PasswordForm({ onCancel }: { onCancel: () => void }) {
       setNext("");
       setConfirmation("");
       setDone(true);
+      onSaved();
     },
   });
 
@@ -120,7 +122,7 @@ function PasswordForm({ onCancel }: { onCancel: () => void }) {
         <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>
           <X size={15} /> {t("cancel")}
         </button>
-        <button className="secondary-button" disabled={!ready || mutation.isPending}>
+        <button className="primary-button" disabled={!ready || mutation.isPending}>
           {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("changePassword")}
         </button>
       </div>
@@ -139,7 +141,7 @@ function InlineNote({ message, danger = false }: { message: string; danger?: boo
  * this is a label, and asking for a password to edit a label only teaches people
  * to type theirs wherever they are asked.
  */
-function NicknameForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: () => void }) {
+function NicknameForm({ user, onCancel, onSaved }: { user: AuthenticatedUser; onCancel: () => void; onSaved: () => void }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   // Seeded from the stored nickname, never from displayName: starting the field
@@ -156,6 +158,7 @@ function NicknameForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: (
       // The signed-in-as line above reads from the bootstrap payload, so without
       // this the page keeps showing the old name back at you.
       await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+      onSaved();
     },
   });
 
@@ -191,7 +194,7 @@ function NicknameForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: (
           <X size={15} /> {t("cancel")}
         </button>
         <button
-          className="secondary-button"
+          className="primary-button"
           disabled={!parsed.ok || !nicknameDraftChanged(draft, user) || mutation.isPending}
         >
           {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("changeNickname")}
@@ -208,7 +211,7 @@ function NicknameForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: (
  * address is what you sign in with, so taking it over is taking over the
  * account.
  */
-function EmailForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: () => void }) {
+function EmailForm({ user, onCancel, onSaved }: { user: AuthenticatedUser; onCancel: () => void; onSaved: () => void }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [current, setCurrent] = useState("");
@@ -221,6 +224,7 @@ function EmailForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: () =
       setCurrent("");
       setDone(true);
       await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+      onSaved();
     },
   });
 
@@ -265,7 +269,7 @@ function EmailForm({ user, onCancel }: { user: AuthenticatedUser; onCancel: () =
         <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>
           <X size={15} /> {t("cancel")}
         </button>
-        <button className="secondary-button" disabled={!changed || current.length === 0 || mutation.isPending}>
+        <button className="primary-button" disabled={!changed || current.length === 0 || mutation.isPending}>
           {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("changeEmail")}
         </button>
       </div>
@@ -284,6 +288,7 @@ function AiPermissions({ scopes }: { scopes: readonly string[] }) {
 }
 
 function AuthorizationRow({ authorization, index, name }: { authorization: AiAuthorization; index: number; name: string }) {
+  const confirm = useConfirm();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const revoke = useMutation({
@@ -302,9 +307,9 @@ function AuthorizationRow({ authorization, index, name }: { authorization: AiAut
           type="button"
           className="secondary-button archive-button"
           disabled={revoke.isPending}
-          onClick={() => {
+          onClick={async () => {
             const client = `${name} · ${t("aiConnectionNumber", { number: index + 1 })} · ${t("aiAuthorizedAt", { date: when(authorization.issuedAt) })}`;
-            if (window.confirm(t("confirmRevokeAi", { client }))) revoke.mutate();
+            if (await confirm(t("confirmRevokeAi", { client }))) revoke.mutate();
           }}
         >
           {revoke.isPending ? <LoaderCircle className="spin" size={15} /> : <Unplug size={15} />} {t("revokeAi")}
@@ -405,18 +410,17 @@ function PersonalTokenForm() {
       days,
     }),
     onSuccess: async () => {
-      setCreating(false);
       setName("");
       setCopied(false);
       await queryClient.invalidateQueries({ queryKey: ["ai-authorizations"] });
     },
   });
   const minted = create.data;
-  useSettingsDraft(Boolean(name), create.isPending);
   const closeForm = () => {
     if (create.isPending) return;
     setCreating(false);
     setName("");
+    create.reset();
   };
   const copyToken = async () => {
     if (!minted) return;
@@ -436,7 +440,8 @@ function PersonalTokenForm() {
       <p className="account-note">{t("personalTokensHelp")}</p>
       {!creating && <button type="button" className="primary-button" onClick={() => { create.reset(); setCreating(true); }}>{t("newPersonalToken")}</button>}
       {creating && (
-        <Modal title={t("newPersonalToken")} subtitle={t("personalTokens")} onClose={closeForm}>
+        <Modal title={t(minted ? "personalTokenCreated" : "newPersonalToken")} subtitle={t("personalTokens")} onClose={closeForm} closeWarning={minted ? t("closeTokenWarning") : undefined} dirty={!minted && Boolean(name || !write || days !== 365)} pending={create.isPending}>
+          {!minted && <>
           <form
             className="personal-token-form"
             onSubmit={(event) => {
@@ -477,8 +482,7 @@ function PersonalTokenForm() {
               </button>
             </div>
           </form>
-        </Modal>
-      )}
+          </>}
       {minted && (
         <div className="account-add-form">
           <p><strong>{t("personalTokenCreated")}</strong> — {t("personalTokenCreatedHelp")}</p>
@@ -500,6 +504,9 @@ function PersonalTokenForm() {
           </div>
         </div>
       )}
+      {minted && <div className="form-footer"><button type="button" className="primary-button" onClick={closeForm}>{t("tokenCopiedDone")}</button></div>}
+        </Modal>
+      )}
     </section>
   );
 }
@@ -510,7 +517,7 @@ function PersonalTokenForm() {
  * Saved whole rather than per tick: the server replaces the set, so sending the
  * whole grid is the only shape in which an unticked row reliably means revoked.
  */
-function PermissionGrid({ account, products, productId }: { account: Account; products: readonly Product[]; productId?: string | undefined }) {
+function PermissionGrid({ account, products, productId, onCancel, onSaved }: { account: Account; products: readonly Product[]; productId?: string | undefined; onCancel: () => void; onSaved: () => void }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<readonly ProductPermission[]>(account.permissions);
@@ -521,6 +528,7 @@ function PermissionGrid({ account, products, productId }: { account: Account; pr
     onSuccess: async () => {
       setSaved(true);
       await queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      onSaved();
     },
   });
 
@@ -596,7 +604,8 @@ function PermissionGrid({ account, products, productId }: { account: Account; pr
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
       <div className="account-permissions-footer">
         {saved && <span className="account-note">{t("permissionsSaved")}</span>}
-        <button className="secondary-button" disabled={mutation.isPending} onClick={() => mutation.mutate()}>
+        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>{t("cancel")}</button>
+        <button className="primary-button" disabled={mutation.isPending || JSON.stringify(draft) === JSON.stringify(account.permissions)} onClick={() => mutation.mutate()}>
           {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
         </button>
       </div>
@@ -619,11 +628,12 @@ function AccountRow({
   editor: AccountEditor | null;
   setEditor: (editor: AccountEditor | null) => void;
 }) {
+  const confirm = useConfirm();
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [email, setEmail] = useState(account.email);
   const [nickname, setNickname] = useState(account.nickname ?? "");
-  const [permissionsOnly, setPermissionsOnly] = useState(false);
+  const [permissionsOnly, setPermissionsOnly] = useState(Boolean(filterProductId));
   const permission = account.permissions.find(row => row.productId === filterProductId) ?? { canView: false, canOperate: false, canUseAi: false };
   const projectAdministrator = Boolean(filterProductId && account.projectAdministratorProductIds?.includes(filterProductId));
   const administrator = account.role === "admin" ? { aiUnrestricted: !account.permissions.some(row => row.canUseAi) } : undefined;
@@ -637,20 +647,17 @@ function AccountRow({
   });
   const remove = useMutation({ mutationFn: () => api.deleteAccount(account.id), onSuccess: invalidate });
   const rename = useMutation({
-    mutationFn: () => api.updateAccount(account.id, { email: email.trim() }),
-    onSuccess: invalidate,
+    mutationFn: () => api.updateAccount(account.id, { email: email.trim(), nickname: parseNicknameDraft(nickname).ok ? nickname.trim() || null : account.nickname ?? null }),
+    onSuccess: async () => { await invalidate(); setEditor(null); },
   });
   const nicknameDraft = parseNicknameDraft(nickname);
-  const renameNickname = useMutation({
-    mutationFn: () => api.updateAccount(account.id, { nickname: nicknameDraft.ok ? nicknameDraft.nickname : null }),
-    onSuccess: invalidate,
-  });
+
 
   useEffect(() => setEmail(account.email), [account.email, open]);
   useEffect(() => setNickname(account.nickname ?? ""), [account.nickname, open]);
-  useSettingsDraft(open && (email !== account.email || nickname !== (account.nickname ?? "")), rename.isPending || renameNickname.isPending || suspend.isPending || remove.isPending);
+  useSettingsDraft(false, suspend.isPending || remove.isPending);
 
-  const error = suspend.error ?? remove.error ?? rename.error ?? renameNickname.error;
+  const error = suspend.error ?? remove.error ?? rename.error;
 
   return (
     <article className={account.disabledAt ? "account-row suspended" : "account-row"}>
@@ -672,15 +679,16 @@ function AccountRow({
           <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setPermissionsOnly(Boolean(filterProductId)); setEditor(openAccountEditor(editor, editIntent)); }}>
             <Pencil size={15} /> {filterProductId ? "修改权限" : t("editAccount")}
           </button>
+          {!filterProductId && <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setPermissionsOnly(true); setEditor(openAccountEditor(editor, editIntent)); }}>修改权限</button>}
           <details className="account-more"><summary className="secondary-button">更多</summary><div className="account-more-actions">
             {filterProductId && <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setPermissionsOnly(false); setEditor(openAccountEditor(editor, editIntent)); }}>{t("editAccount")}</button>}
             <small>以下账号操作影响整个工作空间</small>
             {!isSelf && <>
-              <button type="button" className="secondary-button" disabled={suspend.isPending} onClick={() => {
-                if (window.confirm(`${account.disabledAt ? "恢复" : "停用"}账号 ${account.email}？此操作影响整个工作空间。`)) suspend.mutate(!account.disabledAt);
+              <button type="button" className="secondary-button" disabled={suspend.isPending} onClick={async () => {
+                if (await confirm(`${account.disabledAt ? "恢复" : "停用"}账号 ${account.email}？此操作影响整个工作空间。`)) suspend.mutate(!account.disabledAt);
               }}>{t(account.disabledAt ? "restoreAccount" : "suspendAccount")}</button>
-              <button type="button" className="secondary-button archive-button" disabled={remove.isPending} onClick={() => {
-                if (window.confirm(`${t("confirmDeleteAccount", { email: account.email })} 此操作影响整个工作空间。`)) remove.mutate();
+              <button type="button" className="secondary-button archive-button" disabled={remove.isPending} onClick={async () => {
+                if (await confirm(`${t("confirmDeleteAccount", { email: account.email })} 此操作影响整个工作空间。`)) remove.mutate();
               }}><Trash2 size={15} /> {t("deleteAccount")}</button>
             </>}
             {isSelf && <small>当前登录账号不能在此停用或删除。</small>}
@@ -688,71 +696,19 @@ function AccountRow({
         </div>
       </header>
       {error && <InlineNote danger message={messageFor(error, t, t("somethingWentWrong"))} />}
-      {open && (
-        <>
-          {/* How an account seeded before addresses were required gets a real
-              one: until this existed, nothing could change it. */}
-          {!permissionsOnly && <>
-          <div className="account-email-row">
-            <label>
-              {t("newAccountEmail")}
-              <input
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </label>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={rename.isPending || !email.trim() || email.trim() === account.email}
-              onClick={() => rename.mutate()}
-            >
-              {rename.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
-            </button>
-          </div>
-          {/* Correcting a name somebody else chose. Unlike the address above it
-              changes nothing they hold, so no session is disturbed. */}
-          <div className="account-email-row">
-            <label>
-              {t("nickname")}
-              <input
-                type="text"
-                value={nickname}
-                onChange={(event) => setNickname(event.target.value)}
-                placeholder={account.email.split("@")[0] || account.email}
-                autoComplete="off"
-              />
-            </label>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={
-                renameNickname.isPending
-                || !nicknameDraft.ok
-                || nicknameDraft.nickname === (account.nickname ?? null)
-              }
-              onClick={() => renameNickname.mutate()}
-            >
-              {renameNickname.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
-            </button>
-          </div>
-          </>}
-          <PermissionGrid account={account} products={products} productId={permissionsOnly ? filterProductId : undefined} />
-          <div className="account-form-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={rename.isPending || renameNickname.isPending}
-              onClick={() => setEditor(closeAccountEditor(editor, editIntent))}
-            >
-              <X size={15} /> {t("cancel")}
-            </button>
-          </div>
-        </>
-      )}
+      {open && <Modal title={permissionsOnly ? "修改权限" : t("editAccount")} subtitle={accountDisplayName(account)} onClose={() => setEditor(null)}
+        dirty={!permissionsOnly && (email !== account.email || nickname !== (account.nickname ?? ""))} pending={rename.isPending} wide={permissionsOnly} scrolls>
+        {permissionsOnly ? <PermissionGrid account={account} products={products} productId={filterProductId} onCancel={() => setEditor(null)} onSaved={() => setEditor(null)} />
+          : <form className="dialog-form" onSubmit={event => { event.preventDefault(); if (nicknameDraft.ok && !rename.isPending) rename.mutate(); }}>
+            <label>{t("newAccountEmail")}<input type="email" required value={email} onChange={event => setEmail(event.target.value)} autoComplete="off" /></label>
+            <label>{t("nickname")}<input value={nickname} onChange={event => setNickname(event.target.value)} maxLength={MAX_ACCOUNT_NICKNAME_LENGTH} autoComplete="off" /></label>
+            {rename.isError && <InlineNote danger message={messageFor(rename.error, t, t("somethingWentWrong"))} />}
+            <div className="form-footer">
+              <button type="button" className="secondary-button" disabled={rename.isPending} onClick={() => setEditor(null)}>{t("cancel")}</button>
+              <button type="submit" className="primary-button" disabled={rename.isPending || !nicknameDraft.ok || !email.trim() || email === account.email && nickname === (account.nickname ?? "")}>{t("save")}</button>
+            </div>
+          </form>}
+      </Modal>}
     </article>
   );
 }
@@ -847,7 +803,7 @@ export function AccountManagement({ user, products, accountId, filterProductId, 
   const filter = onNavigate ? filterProductId ?? "" : localFilter;
   const editor: AccountEditor | null = accountId ? `account:${accountId}` : localEditor;
   const setEditor = (next: AccountEditor | null) => {
-    if (onNavigate && (next?.startsWith("account:") || accountId)) {
+    if (onNavigate && accountId) {
       onNavigate(next?.startsWith("account:") ? next.slice(8) : undefined, filter || undefined);
     } else setLocalEditor(next);
   };
@@ -865,7 +821,7 @@ export function AccountManagement({ user, products, accountId, filterProductId, 
         <label>{t("settingsFilterProduct")}<select value={filter} disabled={editor !== null} onChange={event => onNavigate ? onNavigate(undefined, event.target.value || undefined) : setLocalFilter(event.target.value)}><option value="">{t("settingsAllProducts")}</option>{products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</select></label>
       </div>
     </>}
-    {editor === "new-account" && <NewAccountForm onCancel={() => setEditor(null)} onCreated={() => setEditor(null)} />}
+    {editor === "new-account" && <Modal title={t("addAccount")} subtitle={t("settingsAccountsPermissions")} onClose={() => setEditor(null)}><NewAccountForm onCancel={() => setEditor(null)} onCreated={() => setEditor(null)} /></Modal>}
     {filter && !accountId && <p className="account-note">{products.find(product => product.id === filter)?.name} 的账号权限</p>}
     <div className="account-list account-access-list">
       {accounts.length === 0 && <p role="status" className="account-note">{t(accountId ? "settingsUnavailable" : "settingsNoMatchingAccounts")}</p>}
@@ -875,14 +831,17 @@ export function AccountManagement({ user, products, accountId, filterProductId, 
 }
 
 export function DeepSeekSettings() {
+  const confirm = useConfirm();
   const { t } = useI18n();
   const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
   const [key, setKey] = useState("");
   const [saved, setSaved] = useState(false);
   const query = useQuery({ queryKey: ["ai-title-settings"], queryFn: api.getAiTitleSettings });
   const mutation = useMutation({
     mutationFn: (value: string | null) => api.setAiTitleKey(value),
     onSuccess: async () => {
+      setEditing(false);
       setKey("");
       setSaved(true);
       await queryClient.invalidateQueries({ queryKey: ["ai-title-settings"] });
@@ -897,26 +856,23 @@ export function DeepSeekSettings() {
     },
     onError: () => setSaved(false),
   });
-  useSettingsDraft(Boolean(key), mutation.isPending || attentionMutation.isPending);
+  useSettingsDraft(false, !editing && mutation.isPending || attentionMutation.isPending);
 
   return (
     <section className="account-ai-settings">
       <h3>{t("deepseekSettings")}</h3>
       <p className="account-note">{t("deepseekSettingsHelp")}</p>
       <p className="account-note">{query.data?.configured ? t("deepseekConfigured") : t("deepseekNotConfigured")}</p>
-      <div className="account-email-row">
-        <label>
-          {t("settingsApiKey")}
-          <input type="password" value={key} onChange={(event) => { setKey(event.target.value); setSaved(false); }}
-            placeholder={t("deepseekKeyPlaceholder")} autoComplete="off" spellCheck={false} />
-        </label>
-        <button type="button" className="secondary-button" disabled={mutation.isPending || !key.trim()}
-          onClick={() => mutation.mutate(key)}>
-          {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
-        </button>
-      </div>
+      <button type="button" className="secondary-button" onClick={() => { setKey(""); mutation.reset(); setEditing(true); }}>{t("editConfiguration")}</button>
+      {editing && <Modal title={t("deepseekSettings")} subtitle={t("settingsModelsTitle")} onClose={() => { setKey(""); setEditing(false); }} dirty={Boolean(key)} pending={mutation.isPending}>
+        <form className="dialog-form" onSubmit={event => { event.preventDefault(); if (key.trim() && !mutation.isPending) mutation.mutate(key); }}>
+          <label>{t("settingsApiKey")}<input type="password" required value={key} onChange={event => setKey(event.target.value)} placeholder={t("deepseekKeyPlaceholder")} autoComplete="off" spellCheck={false} /></label>
+          {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
+          <div className="form-footer"><button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => { setKey(""); setEditing(false); }}>{t("cancel")}</button><button type="submit" className="primary-button" disabled={!key.trim() || mutation.isPending}>{t("save")}</button></div>
+        </form>
+      </Modal>}
       {query.data?.configured && <button type="button" className="text-button" disabled={mutation.isPending}
-        onClick={() => mutation.mutate(null)}>{t("deepseekClearKey")}</button>}
+        onClick={async () => { if (await confirm(t("confirmClearModelKey"), { confirmLabel: t("deepseekClearKey") })) mutation.mutate(null); }}>{t("deepseekClearKey")}</button>}
       <label className="account-ai-toggle">
         <input
           type="checkbox"
@@ -948,6 +904,8 @@ export function AccountSettings({
 }) {
   const { t } = useI18n();
   const [editor, setEditor] = useState<AccountEditor | null>(null);
+  const [notice, setNotice] = useState("");
+  const saved = (message: string) => { setEditor(null); setNotice(message); };
   const logout = useMutation({ mutationFn: api.logout, onSuccess: onLoggedOut });
 
   return (
@@ -987,18 +945,19 @@ export function AccountSettings({
             </button>
           </div>
           {editor === "nickname" && (
-            <NicknameForm user={user} onCancel={() => setEditor(closeAccountEditor(editor, "nickname"))} />
+            <Modal title={t("editNickname")} subtitle={t("settingsProfile")} onClose={() => setEditor(null)}><NicknameForm user={user} onCancel={() => setEditor(null)} onSaved={() => saved(t("nicknameChanged"))} /></Modal>
           )}
           {editor === "email" && (
-            <EmailForm user={user} onCancel={() => setEditor(closeAccountEditor(editor, "email"))} />
+            <Modal title={t("changeEmail")} subtitle={t("settingsProfile")} onClose={() => setEditor(null)}><EmailForm user={user} onCancel={() => setEditor(null)} onSaved={() => saved(t("emailChanged"))} /></Modal>
           )}
           {editor === "password" && (
-            <PasswordForm onCancel={() => setEditor(closeAccountEditor(editor, "password"))} />
+            <Modal title={t("changePassword")} subtitle={t("settingsProfile")} onClose={() => setEditor(null)}><PasswordForm onCancel={() => setEditor(null)} onSaved={() => saved(t("passwordChanged"))} /></Modal>
           )}
+          {notice && <p role="status" className="account-note">{notice}</p>}
           {logout.isError && <InlineNote danger message={messageFor(logout.error, t, t("somethingWentWrong"))} />}
-          <button className="secondary-button wide" disabled={logout.isPending} onClick={() => logout.mutate()}>
+          <div className="account-signout"><button className="secondary-button" disabled={logout.isPending || editor !== null} onClick={() => logout.mutate()}>
             {logout.isPending ? <LoaderCircle className="spin" size={16} /> : null} {t("signOut")}
-          </button>
+          </button></div>
     </div>
   );
 }
@@ -1200,7 +1159,8 @@ export function ProductAccessSettings(
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
       <div className="account-permissions-footer">
         {saved && <span className="account-note">{t("productAccessSaved")}</span>}
-        <button className="secondary-button" disabled={mutation.isPending || !dirty} onClick={submit}>
+        <button type="button" className="secondary-button" disabled={mutation.isPending || !dirty && !email} onClick={() => { setDraft(null); setAdded([]); setEmail(""); setSaved(false); mutation.reset(); }}>{t("cancel")}</button>
+        <button className="primary-button" disabled={mutation.isPending || !dirty} onClick={submit}>
           {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
         </button>
       </div>

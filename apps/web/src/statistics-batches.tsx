@@ -1,3 +1,4 @@
+import { Modal } from "./modal";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
@@ -44,13 +45,13 @@ export function StatisticsBatches({ accountId, scopeKey, input, valid, onOpenIte
   const offset = Math.min(itemOffset, Math.max(0, Math.ceil(filtered.length / 25) - 1) * 25);
   return <section className="statistics-panel statistics-batches" aria-label={text("批次交付进度", "Batch delivery progress")}>
     <div className="statistics-panel-head"><h2>{text("批次交付进度", "Batch delivery progress")}</h2>
-      <button type="button" className="secondary-button" disabled={!accountId} onClick={() => {setCreating(!creating);create.reset();setCandidateOffset(0);}}>
+      <button type="button" className="secondary-button" disabled={!accountId} onClick={() => {setCreating(true);setName("");setSelected({});create.reset();setCandidateOffset(0);}}>
         {creating ? <X size={16}/> : <Plus size={16}/>}{creating ? text("收起", "Close") : text("创建批次", "Create batch")}
       </button></div>
     <p className="statistics-help">{text("保存一组固定条目，持续查看消化进度。批次仅自己可见，不随上方筛选增减；进度按当前状态计算。", "Save a fixed set of items and track its progress. Batches are private to your account, independent of report filters; progress uses current status.")}</p>
     {list.isError && <p className="inline-error" role="alert">{localizedErrorText(list.error, t)}</p>}
     {list.isPending && accountId && <p role="status">{text("正在读取批次…", "Loading batches…")}</p>}
-    {creating && <form className="statistics-batch-create" onSubmit={event => {event.preventDefault();create.mutate();}}>
+    {creating && <Modal title={text("创建批次", "Create batch")} subtitle={text("批次交付进度", "Batch delivery progress")} onClose={() => setCreating(false)} dirty={Boolean(name || Object.keys(selected).length)} pending={create.isPending} wide scrolls><form className="statistics-batch-create" onSubmit={event => {event.preventDefault();create.mutate();}}>
       <label>{text("批次名称", "Batch name")}<input required maxLength={100} value={name} onChange={event => setName(event.target.value)} placeholder={text("例如：本周收到的 10 个反馈", "For example: 10 feedback items received this week")}/></label>
       <p className="statistics-help">{text("候选条目按上方已应用的项目、类型和创建日期筛选。可跨页勾选；保存后成员固定，低优先级和暂停不会被移出。", "Candidates use the applied project, type and creation dates above. Select across pages; saved membership stays fixed, including low-priority and paused items.")}</p>
       {!valid && <p role="alert" className="inline-error">{text("请先应用有效的统计范围。", "Apply a valid report range first.")}</p>}
@@ -68,21 +69,21 @@ export function StatisticsBatches({ accountId, scopeKey, input, valid, onOpenIte
           <button type="button" className="secondary-button" disabled={candidates.data.nextOffset === undefined} onClick={() => setCandidateOffset(candidates.data.nextOffset!)}>{text("下一页", "Next")}<ChevronRight size={16}/></button>
         </nav>
       </>}
-      <div className="statistics-batch-save"><span>{text("已选", "Selected")} {Object.keys(selected).length} / 500</span>
+      <div className="statistics-batch-save form-footer"><button type="button" className="secondary-button" disabled={create.isPending} onClick={() => { setCreating(false); setName(""); setSelected({}); }}>{t("cancel")}</button><span>{text("已选", "Selected")} {Object.keys(selected).length} / 500</span>
         <button type="button" className="text-button" disabled={create.isPending} onClick={() => setSelected({})}>{text("清空选择", "Clear selection")}</button>
         <button type="submit" className="primary-button" disabled={!name.trim() || !Object.keys(selected).length || create.isPending}>{create.isPending ? text("保存中…", "Saving…") : text("保存固定批次", "Save fixed batch")}</button></div>
       {create.isError && <p className="inline-error" role="alert">{localizedErrorText(create.error,t)}</p>}
-    </form>}
+    </form></Modal>}
     {list.isSuccess && !list.data.batches.length && !creating && <p className="statistics-empty">{text("还没有批次。先选定一组条目，再查看这批交付了多少、还有多少未处理。", "No batches yet. Select a group of items to track deliveries and remaining work.")}</p>}
     {Boolean(list.data?.batches.length) && <div className="statistics-batch-toolbar">
       <label>{text("查看批次", "Batch")}<select value={batchId ?? ""} onChange={event => {setActiveId(event.target.value);setStage("all");setItemOffset(0);setDeleting(false);remove.reset();}}>{list.data?.batches.map(batch => <option key={batch.id} value={batch.id}>{batch.name} · {batch.itemCount}</option>)}</select></label>
       <button type="button" className="secondary-button" disabled={progress.isFetching} onClick={() => void progress.refetch()}><RefreshCw size={16}/>{text("刷新进度", "Refresh progress")}</button>
       <button type="button" className="text-button" onClick={() => setDeleting(true)}>{text("删除批次", "Delete batch")}</button>
     </div>}
-    {deleting && <div className="statistics-batch-delete" role="group" aria-label={text("删除批次确认", "Confirm batch deletion")}><p>{text("仅删除这个批次记录，条目本身不受影响。", "Delete only this saved batch; its work items are unaffected.")}</p>
+    {deleting && <Modal title={text("删除批次确认", "Confirm batch deletion")} subtitle={list.data?.batches.find(batch => batch.id === batchId)?.name ?? ""} onClose={() => setDeleting(false)} pending={remove.isPending}><div className="statistics-batch-delete"><p>{text("仅删除这个批次记录，条目本身不受影响。", "Delete only this saved batch; its work items are unaffected.")}</p>
       <button type="button" className="secondary-button" disabled={remove.isPending} onClick={() => setDeleting(false)}>{text("保留", "Keep")}</button>
-      <button type="button" className="secondary-button" disabled={remove.isPending} onClick={() => remove.mutate()}>{text("确认删除批次", "Confirm deletion")}</button>
-      {remove.isError && <p className="inline-error" role="alert">{localizedErrorText(remove.error,t)}</p>}</div>}
+      <button type="button" className="danger-button" disabled={remove.isPending} onClick={() => remove.mutate()}>{text("确认删除批次", "Confirm deletion")}</button>
+      {remove.isError && <p className="inline-error" role="alert">{localizedErrorText(remove.error,t)}</p>}</div></Modal>}
     {progress.isPending && batchId && <p role="status">{text("正在计算进度…", "Calculating progress…")}</p>}
     {progress.isError && <p role="alert" className="inline-error">{localizedErrorText(progress.error,t)}</p>}
     {data && <>

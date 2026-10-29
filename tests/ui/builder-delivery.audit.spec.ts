@@ -50,7 +50,10 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await second.getByRole("combobox").selectOption("completed");
       await second.getByLabel("结果／说明",{exact:true}).fill("Integration complete");
       await second.getByRole("button",{name:"保存执行进展",exact:true}).click();
-      await expect(second).toContainText("本轮完成");
+      await expect(second.locator(".execution-heading")).toContainText("本轮完成");
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      // Closing the modal also returns from its same-document history entry.
+      await expect.poll(() => page.evaluate(() => history.state?.["missiongo:dialogs"]?.length ?? 0)).toBe(0);
       const delivery=await (await request.get(`/api/v1/items/${item.key}/delivery`)).json();
       const secondExecutionId=delivery.executions.at(-1).id as string;
       await request.post(`/api/v1/items/${item.key}/executions`,{data:{kind:"human",accountId:user.id,scope:"Handle verification feedback",previousId:secondExecutionId,followUp:true,note:"Follow up after verification"}});

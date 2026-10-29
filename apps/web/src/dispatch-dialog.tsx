@@ -1,3 +1,4 @@
+import { useDialogDraft } from "./dialog-state";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CirclePause, LoaderCircle, Rocket, TriangleAlert } from "lucide-react";
@@ -89,6 +90,7 @@ export function DispatchDialog({
 }) {
   const { formatTime, t } = useI18n();
   const queryClient = useQueryClient();
+  const [touched, setTouched] = useState(false);
   const [agentKind, setAgentKind] = useState<AgentKind>("claude_code");
   const [mode, setMode] = useState<string>(dispatchModeOrDefault("claude_code"));
   const [nodeId, setNodeId] = useState("");
@@ -231,6 +233,8 @@ export function DispatchDialog({
     return `${node.name} · ${ineligibilityText(reason, { agentLabel: agentLabel(agentKind), productName }, t)}`;
   };
 
+  useDialogDraft(touched && !created, mutation.isPending);
+
   if (created) {
     const statusKey = dispatchStatusLabelKey(created.status);
     return (
@@ -263,7 +267,7 @@ export function DispatchDialog({
 
   return (
     <form
-      className="dispatch-form"
+      className="dispatch-form" onChangeCapture={() => setTouched(true)}
       onSubmit={(event) => {
         event.preventDefault();
         if (!blocked) mutation.mutate();
@@ -410,7 +414,7 @@ export function DispatchDialog({
       )}
 
       <div className="form-footer">
-        <button type="button" className="secondary-button" onClick={onClose}>{t("cancel")}</button>
+        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onClose}>{t("cancel")}</button>
         <button type="submit" className="primary-button" disabled={blocked || mutation.isPending}>
           {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
           {t("dispatchSubmit")}

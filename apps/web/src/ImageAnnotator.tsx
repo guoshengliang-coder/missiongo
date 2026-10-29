@@ -1,3 +1,4 @@
+import { useConfirm } from "./confirm-dialog";
 import { Circle, Hand, Loader2, Maximize, Minus, Pencil, Plus, RotateCcw, Square, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
@@ -91,7 +92,9 @@ export function ImageAnnotator({
   file,
   onCancel,
   onSave,
+  staged = false,
 }: {
+  staged?: boolean;
   file: File;
   onCancel: () => void;
   onSave: (annotated: File) => void | Promise<void>;
@@ -101,6 +104,11 @@ export function ImageAnnotator({
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const confirm = useConfirm();
+  const cancel = async () => {
+    if (saving) return;
+    if (!shapes.length || await confirm(t("discardDialogHelp"), { title: t("discardDialogTitle"), confirmLabel: t("discardChanges") })) onCancel();
+  };
   const [natural, setNatural] = useState({ width: 0, height: 0 });
   const [stage, setStage] = useState({ width: 0, height: 0 });
   const [zoom, setZoom] = useState(MIN_ANNOTATION_ZOOM);
@@ -350,11 +358,11 @@ export function ImageAnnotator({
       ref={dialogRef}
       className="annotator"
       aria-label={t("annotateTitle")}
-      onCancel={(event) => { event.preventDefault(); onCancel(); }}
+      onCancel={(event) => { event.preventDefault(); void cancel(); }}
     >
       <header className="annotator-bar">
         <strong>{t("annotateTitle")}</strong>
-        <button type="button" className="icon-button" onClick={onCancel} aria-label={t("cancel")}>
+        <button type="button" className="icon-button" onClick={() => void cancel()} aria-label={t("cancel")}>
           <X size={18} aria-hidden="true" />
         </button>
       </header>
@@ -463,7 +471,7 @@ export function ImageAnnotator({
       </div>
 
       <footer className="annotator-actions">
-        <p className="annotator-hint">{t("annotateOverwriteHint")}</p>
+        <p className="annotator-hint">{t(staged ? "stagedAnnotation" : "annotateOverwriteHint")}</p>
         <div>
           <button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>{t("cancel")}</button>
           <button type="button" className="primary-button" onClick={save} disabled={!ready || saving || Boolean(loadError)}>

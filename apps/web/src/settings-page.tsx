@@ -9,7 +9,7 @@ import { DispatchDefaultsSettings } from "./dispatch-defaults-settings";
 import { NodeSettings } from "./node-settings";
 import { useI18n, type MessageKey } from "./i18n";
 import { mayAdministerProduct } from "./product-permissions";
-import { SettingsDraftProvider } from "./settings-drafts";
+import { SettingsDraftProvider, type SettingsLeaveGuard } from "./settings-drafts";
 import { PRODUCT_SETTINGS, type SettingsRoute, type SettingsSection, type ProductSettingsSection } from "./settings-state";
 
 const LABELS: Record<SettingsSection, MessageKey> = {
@@ -35,7 +35,7 @@ function revealSettingsField(field: HTMLElement, scroller: HTMLElement) {
 
 export function SettingsPage({ route, user, products, canUseAi, selectedProductId, navigate, guard, onLoggedOut, renderProduct, renderNewProduct }: {
   route: SettingsRoute; user: AuthenticatedUser; products: readonly Product[]; canUseAi: boolean; selectedProductId: string;
-  navigate: (route: SettingsRoute | null) => void; guard: RefObject<() => boolean>; onLoggedOut: () => void;
+  navigate: (route: SettingsRoute | null) => void; guard: RefObject<SettingsLeaveGuard>; onLoggedOut: () => void;
   renderProduct: (product: Product, section: ProductSettingsSection) => ReactNode; renderNewProduct: () => ReactNode;
 }) {
   const { t } = useI18n();

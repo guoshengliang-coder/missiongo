@@ -30,7 +30,7 @@ export function ProjectAdministratorsSettings({productId}: {productId:string}) {
         <span><strong>{account.nickname || account.email}</strong>{account.nickname && <small>{account.email}</small>}<small>{account.disabledAt ? "已停用，角色不生效" : account.role === "admin" ? "系统管理员，已拥有所有项目的 Builder 管理权限" : "普通账号"}</small></span>
       </label>)}
     </fieldset>
-    <div className="account-form-actions"><button type="button" className="primary-button" disabled={!changed || save.isPending} onClick={()=>save.mutate()}>保存项目管理员</button></div>
+    <div className="account-form-actions"><button type="button" className="secondary-button" disabled={!changed || save.isPending} onClick={() => setSelected(query.data.accountIds)}>取消</button><button type="button" className="primary-button" disabled={!changed || save.isPending} onClick={()=>save.mutate()}>保存项目管理员</button></div>
     {save.isError && <p role="alert">{failure(save.error)}</p>}
     {save.isSuccess && !changed && <p role="status">项目管理员已保存</p>}
   </section>;

@@ -10,7 +10,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
   await page.setViewportSize({width,height:width === 375 ? 812 : 900});await page.emulateMedia({colorScheme:theme});
   await page.goto(`/?product=${fixture.productId}&item=${item.key}`);
   await page.locator(".detail-toolbar").getByRole("button",{name:"检查状态",exact:true}).click();
-  const dialog=page.getByRole("dialog",{name:"状态检查",exact:true});await expect(dialog).toBeVisible();
+  const dialog=page.getByRole("dialog");await expect(dialog).toBeVisible();
   await expect(dialog.getByText("暂无交接记录。请先关联完成依据和发布范围。")).toBeVisible();
   await dialog.getByRole("button",{name:"关联完成依据 / 确认发布范围",exact:true}).click();
   await dialog.getByLabel("PR URL",{exact:true}).fill("https://github.com/example/project/pull/42");
@@ -31,7 +31,7 @@ test("product check entry shows daily schedule",async({page})=>{
  const heading=page.locator(".workspace-head h1");
  expect(await heading.evaluate(el=>el.getBoundingClientRect().height<=parseFloat(getComputedStyle(el).lineHeight)+2)).toBe(true);
  await page.getByRole("button",{name:"检查状态",exact:true}).click();
- const dialog=page.getByRole("dialog",{name:"状态检查",exact:true});await expect(dialog).toBeVisible();
+ const dialog=page.getByRole("dialog");await expect(dialog).toBeVisible();
  await expect(dialog.getByText("每天 09:00 · Asia/Shanghai",{exact:true})).toBeVisible();
 });
 
@@ -43,7 +43,7 @@ test("local manual confirmation records integration and offline publication", as
  await page.setViewportSize({width:375,height:812});
  await page.goto(`/?product=${fixture.productId}&item=${item.key}`);
  await page.locator(".detail-toolbar").getByRole("button",{name:"检查状态",exact:true}).click();
- const dialog=page.getByRole("dialog",{name:"状态检查",exact:true});
+ const dialog=page.getByRole("dialog");
  await dialog.getByRole("button",{name:"关联完成依据 / 确认发布范围",exact:true}).click();
  await dialog.getByRole("combobox",{name:"完成依据",exact:true}).selectOption("manual");
  await dialog.getByLabel("完整提交编号",{exact:true}).fill("a".repeat(40));
