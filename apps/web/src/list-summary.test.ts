@@ -57,3 +57,8 @@ describe("cachedListSummary", () => {
   expect(cachedListSummary(queries,{...filters,builder:"mine"})).toEqual(summary(2));
   expect(cachedListSummary(queries,filters)).toEqual(summary(50));
  });
+
+it("never borrows counts from another advanced-filter combination", () => {
+  const queries = [entry(["items","p1","ready","all","","","high"],summary(2),10), entry(["items","p1","done","all","","","low"],summary(50),20)];
+  expect(cachedListSummary(queries,{...filters,advanced:"high"})).toEqual(summary(2));
+});

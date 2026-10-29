@@ -39,7 +39,7 @@ export function ProjectAdministratorsSettings({productId}: {productId:string}) {
 export function ProjectBuilderSettings({productId}: {productId:string}) {
   const query = useQuery({queryKey:["components",productId],queryFn:()=>api.listComponents(productId)});
   return <section aria-label="模块 Builder 分配">
-    <p className="settings-hub-intro">为各来源模块配置默认 Builder，新条目将自动分配给对应负责人。已有条目的 Builder 可在条目详情中转交。</p>
+    <p className="settings-hub-intro">为各来源模块配置默认 Builder，新条目将自动分配给对应 Builder。已有条目的 Builder 可在条目详情中转交。</p>
     {query.isPending ? <p role="status">正在加载模块…</p> : query.isError ? <p role="alert">{failure(query.error)}</p> : query.data.length ?
       <div className="project-builder-modules">{query.data.map(component=><section key={component.id} className="project-builder-module"><h2>{component.name}</h2><ModuleBuilderSetting component={component} /></section>)}</div> : <p className="account-note">暂无来源模块，请先在模块管理中创建。</p>}
   </section>;

@@ -1,3 +1,5 @@
+import type { ItemFilters } from "@missiongo/domain";
+import { appendItemFilters, readItemFilters } from "./item-filters";
 import { SETTINGS_DEPTH } from "./settings-state";
 import type { AgentSessionFilter } from "./agent-session-view";
 import { ITEM_STATUSES, ITEM_TYPES, type WorkItemStatus, type WorkItemType } from "./types";
@@ -121,7 +123,7 @@ export function agentConsoleLayoutFromState(state: unknown): AgentConsoleLayout 
   return value === "single" || value === "wide" ? value : null;
 }
 
-export interface ListFilters {
+export interface ListFilters extends ItemFilters {
   readonly builder?: string;
   readonly productId: string;
   readonly status: WorkItemStatus | "all";
@@ -195,6 +197,7 @@ export function filtersFromUrl(url: URL = new URL(window.location.href)): ListFi
   const status = url.searchParams.get("status");
   const type = url.searchParams.get("type");
   return {
+    ...readItemFilters(url.searchParams),
     ...(url.searchParams.get("builder") ? {builder: url.searchParams.get("builder")!} : {}),
     productId: url.searchParams.get("product")?.trim() ?? "",
     status: status === "all" || (status && (ITEM_STATUSES as readonly string[]).includes(status))
@@ -211,6 +214,7 @@ export function filtersToUrl(filters: ListFilters, url: URL = new URL(window.loc
     if (value) next.searchParams.set(name, value);
     else next.searchParams.delete(name);
   };
+  appendItemFilters(next.searchParams, filters);
   set("product", filters.productId);
   set("builder", filters.builder ?? "");
   set("status", filters.status === DEFAULT_STATUS ? "" : filters.status);

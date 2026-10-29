@@ -46,7 +46,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
         await expect(memberPage.getByRole("region",{name:"交付与执行",exact:true})).toHaveCount(0);
         await expect(memberPage.getByRole("button",{name:"安排执行／交接",exact:true})).toHaveCount(0);
         await memberPage.locator(".detail-toolbar .detail-more-menu > summary").click();
-        await memberPage.getByRole("button",{name:"转交负责人",exact:true}).click();
+        await memberPage.getByRole("button",{name:"转交 Builder",exact:true}).click();
         await memberPage.getByRole("combobox",{name:"新的 Builder",exact:true}).selectOption(builder.id);
         await memberPage.getByLabel("交接说明",{exact:true}).fill("Project administrator allocates responsibility");
         await memberPage.getByRole("button",{name:"确认转交",exact:true}).click();

@@ -1,3 +1,4 @@
+import type { ItemFilters } from "@missiongo/domain";
 import type { CompletionReference } from "@missiongo/contracts";
 import type {
   AttachmentKind,
@@ -109,7 +110,7 @@ interface CreateAgentWorkItemFields {
   readonly idempotencyKey: string;
 }
 
-export interface ListWorkItemsInput {
+export interface ListWorkItemsInput extends ItemFilters {
   readonly builderAccountId?: string | null;
   readonly productId: string;
   readonly status?: WorkItemStatus;
@@ -121,7 +122,7 @@ export interface ListWorkItemsInput {
   readonly beforeSequence?: number;
 }
 
-export interface WorkItemListSummaryInput {
+export interface WorkItemListSummaryInput extends ItemFilters {
   readonly builderAccountId?: string | null;
   readonly productId: string;
   readonly type?: WorkItemType;

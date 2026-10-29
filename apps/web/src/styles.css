@@ -2723,9 +2723,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 }
 
 /* AND-304: keep responsibility and execution history readable in both panes. */
-.builder-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 12px; }
-.builder-filter label { color: var(--muted); font-size: var(--text-sm); }
-.builder-filter select, .delivery-form select, .module-builder-setting select { min-height: 44px; max-width: 100%; padding: 8px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.delivery-form select, .module-builder-setting select { min-height: 44px; max-width: 100%; padding: 8px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .item-builder { color: var(--muted); font-size: var(--text-xs); }
 .delivery-panel { margin: 16px 0; padding: 16px 0; border-block: 1px solid var(--line); min-width: 0; }
 .delivery-heading, .execution-heading, .delivery-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
@@ -2761,4 +2759,58 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
    full-width touch target instead of squeezing the token into a sliver. */
 @media (max-width: 520px) {
   .personal-token-reveal { flex-direction: column; align-items: stretch; }
+}
+
+/* AND-308: list-local filters stay reachable while either pane scrolls. */
+.list-page { container-type: inline-size; container-name: list-pane; }
+.list-filter-bar { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; margin-bottom: 10px; padding: 4px 0 8px; background: var(--canvas); }
+.workspace.detail-open .list-filter-bar { background: var(--surface-strong); }
+.list-filter-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.list-filter-builder, .list-filter-type { display: flex; flex-direction: row; align-items: center; gap: 6px; min-width: 0; max-width: 220px; padding-left: 9px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--muted); font-size: var(--text-sm); }
+.list-filter-builder select, .list-filter-type select { width: auto; min-width: 0; max-width: 150px; min-height: 34px; margin: 0; padding: 4px 6px; color: var(--ink); background: transparent; border: 0; font-size: var(--text-sm); }
+.list-filter-builder select option, .list-filter-type select option { color: var(--ink); background: var(--surface); }
+.list-filter-type { max-width: 160px; }
+.list-filter-more { margin-left: auto; flex-shrink: 0; min-height: 36px; padding: 6px 10px; font-size: var(--text-sm); white-space: nowrap; }
+.list-filter-all { display: none; }
+.list-filter-summary { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 8px; }
+.list-filter-summary .filter-chip { min-width: 0; max-width: 240px; }
+.list-filter-summary .filter-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-filter-summary .filter-chip svg { flex-shrink: 0; }
+.list-filter-summary .text-button { flex-shrink: 0; font-size: var(--text-sm); white-space: nowrap; }
+.list-filter-clear { margin-left: auto; flex-shrink: 0; font-size: var(--text-sm); }
+.list-filter-hidden-type, .list-filter-only-type { display: none; }
+.list-filter-error { color: var(--muted); font-size: var(--text-sm); }
+.list-filter-form { display: flex; flex-direction: column; gap: 18px; }
+.list-filter-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.list-filter-form legend, .list-filter-field { margin-bottom: 8px; color: var(--ink); font-size: var(--text-sm); font-weight: 650; }
+.list-filter-form input[type="search"], .list-filter-form input[type="date"], .list-filter-field select { width: 100%; min-width: 0; min-height: 38px; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--ink); background: var(--surface); font: inherit; }
+.list-filter-field { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.list-filter-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; margin-top: 6px; }
+.list-filter-choices label { display: flex; flex-direction: row; align-items: center; gap: 8px; min-width: 0; min-height: 32px; font-size: var(--text-sm); font-weight: 500; overflow-wrap: anywhere; }
+.list-filter-choices input[type="checkbox"] { flex: 0 0 16px; width: 16px; height: 16px; min-height: 16px; margin: 0; padding: 0; accent-color: var(--mint-dark); }
+.list-filter-group-name { margin: 10px 0 2px; color: var(--muted); font-size: var(--text-xs); }
+.list-filter-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.list-filter-dates label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: var(--text-sm); }
+.list-filter-footer { position: sticky; bottom: -22px; display: flex; align-items: center; gap: 8px; margin: 0 -2px -2px; padding: 14px 2px 2px; background: var(--surface-strong); border-top: 1px solid var(--line); }
+.list-filter-footer > :first-child { margin-right: auto; }
+@container list-pane (max-width: 480px) {
+  .list-filter-type { display: none; }
+  .list-filter-hidden-type { display: inline-flex; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list-filter-only-type { display: flex; }
+  .list-filter-summary .filter-chip { max-width: 150px; }
+  .list-filter-builder { max-width: calc(100% - 130px); }
+}
+@container list-pane (max-width: 310px) {
+  .list-filter-builder, .list-filter-more { display: none; }
+  .list-filter-all { display: inline-flex; min-height: 36px; }
+  .list-filter-hidden-type { display: none; }
+  .list-filter-only-type { display: none; }
+  .list-filter-summary .filter-chip { max-width: 95px; }
+}
+@media (pointer: coarse) {
+  .list-filter-controls select, .list-filter-controls button, .list-filter-summary button, .list-filter-choices label { min-height: 44px; }
+  .list-filter-form input[type="search"], .list-filter-form input[type="date"], .list-filter-field select { min-height: 44px; font-size: 16px; }
+}
+@media (max-width: 520px) {
+  .list-filter-dates { grid-template-columns: minmax(0, 1fr); }
 }
