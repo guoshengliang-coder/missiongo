@@ -6,6 +6,16 @@ import { DialogDraftContext, type DialogDraft } from "./dialog-state";
 import { reportAndroidBackDepth } from "./android-bridge";
 import { backDepthFromState, DIALOG_HISTORY_MARKER } from "./navigation";
 
+let acceptedDialogUrl: { parent: string; accepted: string } | undefined;
+// Install before React mounts route listeners. At the window event target,
+// capture listeners still run in registration order, so a listener added while
+// closing would let existing routes read the old URL before it was restored.
+if (typeof window !== "undefined") window.addEventListener("popstate", () => {
+  const commit = acceptedDialogUrl;
+  acceptedDialogUrl = undefined;
+  if (commit && window.location.href === commit.parent) history.replaceState(history.state, "", commit.accepted);
+}, true);
+
 export function Modal({ title, subtitle, onClose, children, wide = false, scrolls = false, historyManaged = false, dirty: ownDirty = false, pending: ownPending = false, closeWarning }: {
   title: string;
   subtitle: string;
@@ -93,9 +103,7 @@ export function Modal({ title, subtitle, onClose, children, wide = false, scroll
           // A form can apply URL-based filters before it closes. Carry that
           // accepted URL to the parent entry before route listeners read it.
           const acceptedUrl = window.location.href;
-          if (acceptedUrl !== url) window.addEventListener("popstate", () => {
-            if (window.location.href === url) history.replaceState(history.state, "", acceptedUrl);
-          }, { capture: true, once: true });
+          if (acceptedUrl !== url) acceptedDialogUrl = { parent: url, accepted: acceptedUrl };
           history.back();
         }
         originalFocus?.focus();
