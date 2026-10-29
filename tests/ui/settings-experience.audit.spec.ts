@@ -91,10 +91,16 @@ test("requires deliberate token creation and does not show dispatch fields befor
   await page.goto("/settings/connections");
   await expect(page.getByRole("textbox", { name: "名称", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "新建个人令牌", exact: true }).click();
-  await page.getByRole("textbox", { name: "名称", exact: true }).fill("Unsubmitted token");
-  page.once("dialog", dialog => dialog.dismiss());
-  await nav(page).getByRole("button", { name: "资料与安全", exact: true }).click();
-  await expect(page.getByRole("textbox", { name: "名称", exact: true })).toHaveValue("Unsubmitted token");
+  const tokenDialog = page.getByRole("dialog", { name: "新建个人令牌", exact: true });
+  await expect(tokenDialog).toBeVisible();
+  await tokenDialog.getByRole("textbox", { name: "名称", exact: true }).fill("Unsubmitted token");
+  // The form is modal, so the settings navigation behind it cannot be clicked away;
+  // closing it is explicit and a reopen starts from empty.
+  await tokenDialog.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(tokenDialog).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "名称", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "新建个人令牌", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "名称", exact: true })).toHaveValue("");
   await page.getByRole("button", { name: "取消", exact: true }).click();
   await nav(page).getByRole("button", { name: "Agent 配置", exact: true }).click();
   await hub(page, "派单默认值").click();
