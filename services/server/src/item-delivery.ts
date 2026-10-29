@@ -89,13 +89,18 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
   });
   app.post("/api/v1/items/:itemKey/builder", async request => {
     const {itemKey} = request.params as {itemKey:string}; const {item,account} = writable(request,itemKey,true);
-    const input = body(request); const note = text(input.note,"Handover note");
+    const input = body(request);
     const target = input.accountId;
     if (target !== null && (typeof target !== "string" || !candidates(item.productId).some(row => row.id === target))) throw invalidInput("Choose an active Builder with AI permission on this product.");
+    const draft = typeof input.note === "string" ? input.note.trim() : "";
+    if (draft.length > 2000) throw invalidInput("Handover note is too long (max 2000).");
     return store.database.transaction(() => {
       // Compare with what the user saw: two simultaneous transfers must not silently overwrite each other.
       const current = store.getWorkItem(itemKey);
       if ((current.builderAccountId ?? null) !== input.expectedBuilderAccountId) throw conflict("builder_changed", "The Builder changed. Refresh before transferring.");
+      // A first assignment has no prior owner to hand over from, so an empty note defaults instead of blocking.
+      const note = draft || (current.builderAccountId == null ? "首次分配 builder" : "");
+      if (!note) throw invalidInput("Handover note is required (max 2000).");
       db.prepare("UPDATE work_items SET builder_account_id=?,builder_assignment='manual',updated_at=? WHERE id=?")
         .run(target as string | null, new Date().toISOString(), item.id);
       store.recordDeliveryEvent(itemKey,account.id,"builder_changed",{from:current.builderAccountId ?? null,to:target,note,
