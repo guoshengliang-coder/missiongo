@@ -794,6 +794,8 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .workspace.detail-open .list-page { display: none; }
 .workspace-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 22px; }
 .eyebrow { margin: 0 0 6px; color: var(--muted); font-size: var(--text-sm); font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
+/* Keep the Builder segment whole: it breaks before the separator, never mid-name. */
+.eyebrow-nowrap { white-space: nowrap; }
 .workspace-head h1 { margin: 0; font-size: clamp(27px, 3vw, 38px); letter-spacing: -0.045em; line-height: 1; }
 .workspace-head-side { display: flex; align-items: center; gap: 22px; }
 .refresh-button { width: 36px; padding: 0; display: inline-grid; place-items: center; flex: 0 0 auto; }
@@ -1092,7 +1094,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .toolbar-primary-action.positive { color: var(--primary-fg); border-color: var(--mint-dark); background: var(--mint-dark); }
 .detail-title-block { display: flex; gap: 13px; align-items: flex-start; margin-bottom: 27px; }
 .detail-title-block h2 { max-width: 680px; margin: 0; font-size: clamp(22px, 2.3vw, 30px); letter-spacing: -0.035em; line-height: 1.17; }
-.detail-title-block .eyebrow { margin-top: 2px; }
+.detail-title-block .eyebrow { margin-top: 2px; word-break: keep-all; }
 /* Between the toolbar and the title: the agent and machine the work was last
    handed to, moved out of the toolbar where it only ever fit one status
    (AND-217). Quiet for a plain hand-off, danger-coloured for a failure. */
