@@ -273,9 +273,17 @@ public enum ClaudeCodeStatus: Equatable, Sendable {
         return auth.loggedIn ? .ready(version: version) : .notLoggedIn(version: version)
     }
 
-    public static func check(run: CommandRunner) async -> ClaudeCodeStatus {
+    public static func check(
+        run: CommandRunner,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: String = Paths.homeDirectory()
+    ) async -> ClaudeCodeStatus {
         guard let version = await Preflight.claudeVersion(run: run) else { return .notInstalled }
-        return evaluate(version: version, auth: await Preflight.claudeAuthStatus(run: run))
+        switch await ClaudeAuthentication.check(run: run, environment: environment, home: home) {
+        case .signedIn, .apiKeyConfigured: return .ready(version: version)
+        case .missing: return .notLoggedIn(version: version)
+        case .unreadable: return .unreadable(version: version)
+        }
     }
 
     public var isReady: Bool {
@@ -298,8 +306,8 @@ public enum ClaudeCodeStatus: Equatable, Sendable {
         switch self {
         case .checking, .ready: return nil
         case .notInstalled: return "确认已安装 claude；自定义安装位置可先导入终端 PATH，再点击重新检查"
-        case .notLoggedIn: return "在终端运行 claude auth login"
-        case .unreadable: return "在终端运行 claude auth status 查看"
+        case .notLoggedIn: return "配置 Claude Code 的 API Key／网关认证，或在终端运行 claude auth login"
+        case .unreadable: return "检查 settings.json 的 env，并在终端运行 claude auth status 查看"
         }
     }
 
@@ -342,10 +350,10 @@ public enum CodexStatus: Equatable, Sendable {
         guard let binary = CodexLocation.binary(environment: environment),
               let version = await CodexPreflight.version(binary: binary, run: run)
         else { return .notInstalled }
-        switch await CodexPreflight.isLoggedIn(binary: binary, run: run) {
-        case true?: break
-        case false?: return .notLoggedIn(version: version)
-        case nil: return .unreadable(version: version)
+        switch await CodexAuthentication.check(binary: binary, run: run, environment: environment, location: location) {
+        case .signedIn, .apiKeyConfigured: break
+        case .missing: return .notLoggedIn(version: version)
+        case .unreadable: return .unreadable(version: version)
         }
         if case .failed = await CodexPreflight.ensureDaemon(binary: binary, location: location, run: run, wait: daemonWait) {
             return .daemonNotRunning(version: version, path: location.controlSocketPath)
@@ -387,8 +395,8 @@ public enum CodexStatus: Equatable, Sendable {
     public var fixHint: String? {
         switch self {
         case .checking, .notInstalled, .ready: return nil
-        case .notLoggedIn: return "在 ChatGPT App 里登录，或在终端运行 codex login"
-        case .unreadable: return "在终端运行 codex login status 和 codex mcp list 查看"
+        case .notLoggedIn: return "配置 Codex 当前 provider 的 API Key／网关认证，或在终端运行 codex login"
+        case .unreadable: return "检查 config.toml、auth.json，并在终端运行 codex login status 和 codex mcp list 查看"
         case let .daemonNotRunning(_, path): return "Codex 派单要通过 app-server 的控制通道 \(path)，它由 codex app-server daemon 提供。MissionGo 自动运行 codex app-server daemon start 后仍然没有连上：在终端运行它查看原因。派单时 MissionGo 也会自动尝试启动；codex app-server daemon bootstrap 可以让它开机常驻。"
         case .mcpMissing: return "在终端添加 missiongo MCP 并登录"
         case .mcpNotLoggedIn: return "在终端运行 codex mcp login missiongo"

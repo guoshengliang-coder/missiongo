@@ -932,7 +932,7 @@ final class AppModel: ObservableObject {
             let issue: String?
             switch agent {
             case .claudeCode:
-                let status = await ClaudeCodeStatus.check(run: run)
+                let status = await ClaudeCodeStatus.check(run: run, environment: environment.environment)
                 guard access.isCurrent(agent, attempt: attempt) else { return }
                 claude = status
                 if case let .ready(value) = status { version = value; issue = nil }

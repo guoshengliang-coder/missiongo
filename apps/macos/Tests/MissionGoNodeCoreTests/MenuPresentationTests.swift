@@ -181,7 +181,7 @@ final class ClaudeCodeStatusTests: XCTestCase {
 
     func testEachProblemSaysHowToFixIt() {
         XCTAssertEqual(ClaudeCodeStatus.notLoggedIn(version: "2.1.0").summary, "未登录")
-        XCTAssertEqual(ClaudeCodeStatus.notLoggedIn(version: "2.1.0").fixHint, "在终端运行 claude auth login")
+        XCTAssertEqual(ClaudeCodeStatus.notLoggedIn(version: "2.1.0").fixHint?.contains("API Key／网关"), true)
         XCTAssertEqual(ClaudeCodeStatus.notLoggedIn(version: "2.1.0").fixCommand, "claude auth login")
         XCTAssertEqual(ClaudeCodeStatus.notInstalled.summary, "未安装")
         XCTAssertNotNil(ClaudeCodeStatus.notInstalled.fixHint)
@@ -190,14 +190,16 @@ final class ClaudeCodeStatusTests: XCTestCase {
         XCTAssertNil(ClaudeCodeStatus.ready(version: "2.1.232").fixHint)
     }
 
-    func testChecksThroughTheCommandRunner() async {
-        let ready = await ClaudeCodeStatus.check(run: fakeClaude())
+    func testChecksThroughTheCommandRunner() async throws {
+        let home = try makeTrustedRepo(trusted: true).home
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let ready = await ClaudeCodeStatus.check(run: fakeClaude(), environment: [:], home: home)
         XCTAssertEqual(ready, .ready(version: "2.1.232"))
         let loggedOut = await ClaudeCodeStatus.check(
-            run: fakeClaude(auth: CommandResult(code: 1, stdout: #"{"loggedIn":false,"authMethod":"none"}"#, stderr: ""))
+            run: fakeClaude(auth: CommandResult(code: 1, stdout: #"{"loggedIn":false,"authMethod":"none"}"#, stderr: "")), environment: [:], home: home
         )
         XCTAssertEqual(loggedOut, .notLoggedIn(version: "2.1.232"))
-        let missing = await ClaudeCodeStatus.check(run: fakeClaude(version: CommandResult(code: -1, stdout: "", stderr: "")))
+        let missing = await ClaudeCodeStatus.check(run: fakeClaude(version: CommandResult(code: -1, stdout: "", stderr: "")), environment: [:], home: home)
         XCTAssertEqual(missing, .notInstalled)
     }
 }

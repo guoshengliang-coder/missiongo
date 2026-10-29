@@ -655,6 +655,9 @@ private struct IntegrationRow: View {
                     Spacer(minLength: 0)
                 }
             }
+            if !checking, state?.version != nil, agent != .openCode {
+                WrappingCaption(text: "认证配置已识别，未进行模型调用验证。")
+            }
             if agent == .claudeCode {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     WrappingCaption(text: "无人值守任务建议授予完全磁盘访问；ad-hoc 更新后可能需要重新授权。")
