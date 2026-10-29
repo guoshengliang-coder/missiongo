@@ -127,3 +127,50 @@ test("Simulator approval stays visible through delivery and clears after source 
   }
   expect(decisions).toEqual([{ decision: "accept" }, { decision: "accept" }]);
 });
+
+test("native authorization scopes survive navigation and reconnect with a fresh request", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 353, height: 757 });
+  let current = { ...approval, id: "scope-1", kind: "manual", status: "pending", decision: undefined as string | undefined,
+    options: [{ id: "accept", kind: "once" }, { id: "acceptForSession", kind: "session" },
+      { id: "execpolicy-2", kind: "rule", detail: '"git" "status"' }, { id: "decline", kind: "decline" }] };
+  const decisions: unknown[] = [];
+  await page.route("**/api/v1/agent-sessions**", async (route) => {
+    if (route.request().method() === "POST") {
+      const decision = route.request().postDataJSON() as { decision: string };
+      decisions.push(decision);
+      current = { ...current, decision: decision.decision };
+      return route.fulfill({ json: { approval: current } });
+    }
+    const session = { ...summary, approval: current };
+    return route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions"
+      ? { sessions: [session] } : { ...session, messages: [] } });
+  });
+  const open = () => page.goto('/?product=' + fixture.productId + '&console=agent&session=' + id);
+  const panel = page.locator(".agent-console-approval");
+  await open();
+  await expect(panel.locator("button")).toHaveCount(4);
+  await expect(panel).toContainText('"git" "status"');
+  await page.goto("about:blank"); // phone can leave and return without deciding
+  await open();
+  await expect(panel.getByRole("button", { name: /本会话内允许|Allow for this session/ })).toBeEnabled();
+  current = { ...current, status: "reconnecting" };
+  await expect(panel).toContainText(/正在重新连接|Reconnecting/);
+  await expect(panel.locator("button")).toHaveCount(0);
+  current = { ...current, id: "scope-2", status: "pending" };
+  await expect(panel.locator("button")).toHaveCount(4);
+  for (const theme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: theme });
+    await panel.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const path = testInfo.outputPath(`native-scopes-${theme}.png`);
+    await page.screenshot({ path, animations: "disabled" });
+    await testInfo.attach(theme, { path, contentType: "image/png" });
+  }
+  await panel.getByRole("button", { name: /本会话内允许|Allow for this session/ }).dblclick();
+  await expect(panel.locator("button").first()).toBeDisabled();
+  expect(decisions).toEqual([{ decision: "acceptForSession" }]);
+  current = { ...current, id: "scope-3", decision: undefined,
+    options: [{ id: "accept", kind: "once" }, { id: "decline", kind: "decline" }] };
+  await expect(panel.locator("button")).toHaveCount(2);
+  await expect(panel.getByRole("button", { name: /本会话内允许|Allow for this session/ })).toHaveCount(0);
+});

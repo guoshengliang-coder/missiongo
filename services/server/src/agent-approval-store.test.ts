@@ -86,3 +86,43 @@ it("surfaces a source Simulator approval despite queued chat and invalidates dec
     expect(() => approvals.decide("session", "simulator-2", "accept")).toThrow();
   } finally { database.close(); }
 });
+
+it("persists only advertised scopes and discards decisions after a transport loss", () => {
+  const database = new MissionGoDatabase(":memory:");
+  try {
+    database.connection.exec(`
+      INSERT INTO nodes (id, account_id, name, token_hash, created_at, updated_at)
+      VALUES ('node', 'owner', 'Fixture', 'hash', 'now', 'now');
+      INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+      VALUES ('dispatch', 'owner', 'node', 'codex', 'auto', 'launched', '/synthetic/repo', 'now');
+      INSERT INTO agent_sessions (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at)
+      VALUES ('session', 'dispatch', 'node', 'codex', 'thread', 'active', 'now', 'now');
+    `);
+    const approvals = new AgentApprovalStore(database);
+    const prompt = { id: "prompt", kind: "manual" as const, status: "pending", turnId: "turn",
+      action: "git status", startedAtMs: 1, options: [
+        { id: "accept", kind: "once" as const }, { id: "acceptForSession", kind: "session" as const },
+        { id: "execpolicy-2", kind: "rule" as const, detail: '"git" "status"' },
+      ] };
+    approvals.record("node", "session", prompt);
+    expect(approvals.get("session")?.options).toEqual(prompt.options);
+    expect(() => approvals.decide("session", "prompt", "network-2")).toThrow();
+    approvals.decide("session", "prompt", "acceptForSession");
+    expect(approvals.pendingForNode("session").approvalDecision?.choice).toBe("acceptForSession");
+    expect(() => approvals.decide("session", "prompt", "accept")).toThrow();
+    approvals.record("node", "session", { ...prompt, status: "reconnecting" });
+    expect(approvals.pendingForNode("session").approvalDecision).toBeUndefined();
+    expect(approvals.withAttention({ id: "session", agentKind: "codex" }).needsAttention).toBe(true);
+    expect(() => approvals.decide("session", "prompt", "acceptForSession")).toThrow();
+    approvals.record("node", "session", prompt); // stale snapshot cannot revive an old transport
+    expect(approvals.get("session")?.status).toBe("reconnecting");
+    approvals.record("node", "session", { ...prompt, id: "fresh" });
+    expect(approvals.get("session")?.decision).toBeUndefined();
+    expect(() => approvals.decide("session", "prompt", "accept")).toThrow();
+    approvals.decide("session", "fresh", "execpolicy-2");
+    expect(approvals.pendingForNode("session").approvalDecision?.choice).toBe("execpolicy-2");
+    approvals.record("node", "session", { ...prompt, id: "fresh", status: "approved" });
+    approvals.record("node", "session", { ...prompt, id: "fresh", status: "reconnecting" });
+    expect(approvals.get("session")?.status).toBe("approved");
+  } finally { database.close(); }
+});

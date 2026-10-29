@@ -91,18 +91,20 @@ final class FakeAppServer: @unchecked Sendable {
     private let listener: Int32
     let received = Locked<[String]>([])
     let clientClosed = Locked(false)
+    private let connected = Locked<Int32?>(nil)
     private let finished = DispatchSemaphore(value: 0)
 
     /// Given a request, the messages to send back, in order.
-    init(respond: @escaping @Sendable ([String: Any]) -> [[String: Any]]) throws {
-        path = try shortTemporaryDirectory() + "/c.sock"
-        listener = try listeningSocket(at: path)
+    init(path: String? = nil, respond: @escaping @Sendable ([String: Any]) -> [[String: Any]]) throws {
+        self.path = try path ?? shortTemporaryDirectory() + "/c.sock"
+        listener = try listeningSocket(at: self.path)
         let listener = self.listener
         DispatchQueue.global().async { [self] in
             defer { finished.signal() }
             let connection = accept(listener, nil, nil)
             guard connection >= 0 else { return }
-            defer { close(connection) }
+            connected.withLock { $0 = connection }
+            defer { connected.withLock { $0 = nil; close(connection) } }
             var buffer: [UInt8] = []
             func readMore() -> Bool {
                 var chunk = [UInt8](repeating: 0, count: 65_536)
@@ -143,6 +145,10 @@ final class FakeAppServer: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    func disconnectClient() {
+        connected.withLock { if let descriptor = $0 { _ = shutdown(descriptor, SHUT_RDWR) } }
     }
 
     func waitUntilDone() {

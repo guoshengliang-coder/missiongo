@@ -541,8 +541,9 @@ export function AgentSessionConsole({
       ]);
     },
   });
+  const approvalDecisionLocks = useRef(new Set<string>());
   const decideApproval = useMutation({
-    mutationFn: ({ sessionId, approvalId, decision }: { sessionId: string; approvalId: string; decision: "accept" | "decline" }) =>
+    mutationFn: ({ sessionId, approvalId, decision }: { sessionId: string; approvalId: string; decision: string }) =>
       api.decideAgentApproval(sessionId, approvalId, decision),
     onSettled: async () => {
       await Promise.all([
@@ -551,6 +552,13 @@ export function AgentSessionConsole({
       ]);
     },
   });
+  const chooseApproval = (input: { sessionId: string; approvalId: string; decision: string }) => {
+    const key = `${input.sessionId}:${input.approvalId}`;
+    // React may not have rendered isPending before the second tap arrives.
+    if (approvalDecisionLocks.current.has(key)) return;
+    approvalDecisionLocks.current.add(key);
+    decideApproval.mutate(input, { onError: () => { approvalDecisionLocks.current.delete(key); } });
+  };
   const retryApproval = useMutation({
     mutationFn: ({ sessionId, approvalId }: { sessionId: string; approvalId: string }) =>
       api.retryAgentApproval(sessionId, approvalId),
@@ -1262,21 +1270,24 @@ export function AgentSessionConsole({
                       : approval.status === "pending" ? t("agentApprovalWaiting")
                         : approval.status === "denied" ? t("agentApprovalDenied")
                           : approval.status === "approved" ? t("agentApprovalApproved")
+                            : approval.status === "reconnecting" ? t("agentApprovalReconnecting")
                             : approval.status === "unavailable" ? t("agentApprovalUnavailable") : approval.status}</small>
                     {approval.reason && <small>{approval.reason}</small>}
                     {approval.kind === "manual" && approval.status === "pending" && selected.canReply
                       && selected.agentSessionId && (
                       <div className="agent-console-approval-actions">
-                        <button type="button" className="primary-button"
-                          disabled={Boolean(approval.decision) || decideApproval.isPending}
-                          onClick={() => decideApproval.mutate({ sessionId: selected.agentSessionId!, approvalId: approval.id, decision: "accept" })}>
-                          {t("agentApprovalAccept")}
-                        </button>
-                        <button type="button" className="text-button"
-                          disabled={Boolean(approval.decision) || decideApproval.isPending}
-                          onClick={() => decideApproval.mutate({ sessionId: selected.agentSessionId!, approvalId: approval.id, decision: "decline" })}>
-                          {t("agentApprovalDecline")}
-                        </button>
+                        {(approval.options ?? [{ id: "accept", kind: "once" }, { id: "decline", kind: "decline" }]).map((option) => (
+                          <div key={option.id}>
+                            <button type="button" className={["decline", "cancel", "networkDeny"].includes(option.kind) ? "text-button" : "primary-button"}
+                              disabled={Boolean(approval.decision) || decideApproval.isPending}
+                              onClick={() => chooseApproval({ sessionId: selected.agentSessionId!, approvalId: approval.id, decision: option.id })}>
+                              {t(({ once: "agentApprovalAccept", turn: "agentApprovalTurn", session: "agentApprovalSession",
+                                rule: "agentApprovalRule", networkAllow: "agentApprovalNetworkAllow", networkDeny: "agentApprovalNetworkDeny",
+                                decline: "agentApprovalDecline", cancel: "agentApprovalCancel" } as const)[option.kind])}
+                            </button>
+                            {option.detail && <small>{option.detail}</small>}
+                          </div>
+                        ))}
                         {approval.decision && <small>{t("agentApprovalDecisionQueued")}</small>}
                       </div>
                     )}

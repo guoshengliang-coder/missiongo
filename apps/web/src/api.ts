@@ -570,7 +570,7 @@ export const api = {
     request<{ dispatches: Dispatch[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/dispatches`),
   getAgentSession: (sessionId: string) =>
     request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}`),
-  decideAgentApproval: (sessionId: string, approvalId: string, decision: "accept" | "decline") =>
+  decideAgentApproval: (sessionId: string, approvalId: string, decision: string) =>
     request(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}/decision`, {
       method: "POST", body: JSON.stringify({ decision }),
     }),

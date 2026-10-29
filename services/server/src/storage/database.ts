@@ -1876,6 +1876,36 @@ export class MissionGoDatabase {
           .run(202610271120,new Date().toISOString());
       });
     }
+    // AND-300: retain pending decisions while adding source-advertised scopes.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610282337").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE agent_session_approvals_v2 (
+            session_id TEXT PRIMARY KEY REFERENCES agent_sessions(id) ON DELETE CASCADE,
+            approval_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('manual', 'auto')),
+            status TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            reason TEXT,
+            started_at_ms INTEGER NOT NULL,
+            decision TEXT,
+            options_json TEXT CHECK (options_json IS NULL OR json_valid(options_json)),
+            retry_id TEXT,
+            retry_review_id TEXT,
+            retry_status TEXT CHECK (retry_status IN ('queued', 'delivering', 'delivered', 'restored', 'failed')),
+            retry_error TEXT,
+            updated_at TEXT NOT NULL
+          ) STRICT;
+          INSERT INTO agent_session_approvals_v2 (session_id,approval_id,kind,status,turn_id,action,reason,started_at_ms,decision,retry_id,retry_review_id,retry_status,retry_error,updated_at)
+            SELECT session_id,approval_id,kind,status,turn_id,action,reason,started_at_ms,decision,retry_id,retry_review_id,retry_status,retry_error,updated_at FROM agent_session_approvals;
+          DROP TABLE agent_session_approvals;
+          ALTER TABLE agent_session_approvals_v2 RENAME TO agent_session_approvals;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610282337,new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

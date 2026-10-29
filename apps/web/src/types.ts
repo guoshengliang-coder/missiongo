@@ -605,7 +605,12 @@ export interface AgentApproval {
   readonly action: string;
   readonly reason?: string;
   readonly startedAtMs: number;
-  readonly decision?: "accept" | "decline";
+  readonly options?: readonly {
+    readonly id: string;
+    readonly kind: "once" | "turn" | "session" | "rule" | "networkAllow" | "networkDeny" | "decline" | "cancel";
+    readonly detail?: string;
+  }[];
+  readonly decision?: string;
   readonly retryId?: string;
   readonly retryStatus?: "queued" | "delivering" | "delivered" | "restored" | "failed";
   readonly retryError?: string;

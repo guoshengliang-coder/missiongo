@@ -2410,7 +2410,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const session = authorizedAgentSession(request, sessionId, true);
     if (session.agentKind !== "codex") throw conflict("approval_not_codex", "Only Codex sessions have this approval path.");
     const choice = stringField(objectBody(request.body), "decision");
-    if (choice !== "accept" && choice !== "decline") throw invalidInput("decision must be accept or decline.");
+    if (!choice || choice.length > 80) throw invalidInput("Invalid approval decision.");
     return { approval: agentApprovalStore.decide(sessionId, approvalId, choice) };
   });
 
