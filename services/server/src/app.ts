@@ -1,7 +1,7 @@
 import { AgentArtifacts, ARTIFACT_PREVIEW_POLICY, ARTIFACT_PREVIEW_SHELL } from "./agent-artifacts.js";
 import { localArtifactLinks } from "@missiongo/domain";
 import { join } from "node:path";
-import { listInsightBatches, createInsightBatch, insightBatchProgress, deleteInsightBatch } from "./insight-batches.js";
+import { listInsightBatchSummaries, createInsightBatch, insightBatchProgress, deleteInsightBatch } from "./insight-batches.js";
 import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema, humanConfirmationSchema } from "./status-checks.js";
 import { projectInsights } from "./project-insights.js";
 import { browserInsightSchema, browserInsightDetailSchema } from "./project-insights-query.js";
@@ -1883,7 +1883,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   };
   app.get("/api/v1/project-insights/batches", async (request, reply) => {
     reply.header("cache-control", "no-store");
-    return { batches: listInsightBatches(store, requireAccount(request).id) };
+    return { batches: listInsightBatchSummaries(store, requireAccount(request).id, insightProductScope(request)) };
   });
   app.post("/api/v1/project-insights/batches", async (request, reply) => {
     const accountId = requireAccount(request).id;

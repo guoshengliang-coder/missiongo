@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { InsightBatch, InsightBatchProgress, InsightBatchItem, InsightBatchMilestone } from "@missiongo/domain";
+import type { InsightBatch, InsightBatchSummary, InsightBatchProgress, InsightBatchItem, InsightBatchMilestone } from "@missiongo/domain";
 import type { MissionGoStore } from "./store.js";
 import { invalidInput, notFound } from "./errors.js";
 import { loadInsightData } from "./project-insights.js";
@@ -12,6 +12,29 @@ const metadata = (row: BatchRow): InsightBatch => ({ id: row.id, name: row.name,
 export function listInsightBatches(store: MissionGoStore, accountId: string): InsightBatch[] {
   const rows = store.database.connection.prepare("SELECT id,name,members_json,created_at FROM insight_batches WHERE account_id=? ORDER BY created_at DESC,id DESC").all(accountId) as unknown as BatchRow[];
   return rows.map(metadata);
+}
+/** Read current statuses once for the overview; histories and item details stay in the detail endpoint. */
+export function listInsightBatchSummaries(store: MissionGoStore, accountId: string, visibleProductIds: string[]): InsightBatchSummary[] {
+  const batches = store.database.connection.prepare("SELECT id,name,members_json,created_at FROM insight_batches WHERE account_id=? ORDER BY created_at DESC,id DESC").all(accountId) as unknown as BatchRow[];
+  if (!batches.length) return [];
+  const members = batches.map(batch => JSON.parse(batch.members_json) as Member[]);
+  const ids = [...new Set(members.flatMap(values => values.map(member => member.itemId)))];
+  const items = store.database.connection.prepare(`SELECT id,status FROM work_items
+    WHERE id IN (SELECT value FROM json_each(?)) AND product_id IN (SELECT value FROM json_each(?))
+    AND NOT EXISTS (SELECT 1 FROM item_transfers t WHERE t.source_item_id=work_items.id)`)
+    .all(JSON.stringify(ids), JSON.stringify(visibleProductIds)) as unknown as Array<{id: string; status: string}>;
+  const statuses = new Map(items.map(item => [item.id, item.status]));
+  return batches.map((batch, index) => {
+    let delivered = 0, cancelled = 0, unavailable = 0;
+    for (const member of members[index]!) {
+      const status = statuses.get(member.itemId);
+      if (!status) unavailable++;
+      else if (status === "cancelled") cancelled++;
+      else if (status === "pending_verification" || status === "done") delivered++;
+    }
+    const effective = members[index]!.length - cancelled;
+    return {...metadata(batch), delivered, effective, unavailable, deliveryRate: unavailable || !effective ? null : delivered / effective};
+  });
 }
 export function createInsightBatch(store: MissionGoStore, accountId: string, name: string, members: Member[]): InsightBatch {
   const unique = [...new Map(members.map(member => [member.itemId, member])).values()];

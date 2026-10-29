@@ -27,7 +27,7 @@ for (const viewport of [{ name: "phone", width: 375, height: 812 }, { name: "des
         await page.getByRole("button", { name: "迁移条目", exact: true }).click();
         const dialog = page.getByRole("dialog");
         await expect(dialog).toBeVisible();
-        await dialog.getByLabel("目标项目").selectOption(target.id);
+        await dialog.getByLabel("目标产品").selectOption(target.id);
         await dialog.getByRole("button", { name: "下一步", exact: true }).click();
         await expect(dialog).toContainText("来源组件和受影响组件关联将清空");
         await expect(dialog).toContainText("永久只读");

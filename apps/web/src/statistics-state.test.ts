@@ -3,6 +3,13 @@ import {backDepthFromState,STATISTICS_HISTORY_MARKER,ITEM_HISTORY_MARKER,itemDet
 import {statisticsState,statisticsStateUrl,statisticsUrl,statisticsExitUrl,statisticsQuery,statisticsDatesValid} from "./statistics-state";
 const now=new Date("2026-10-31T17:00:00Z");
 describe("statistics navigation and filters",()=>{
+ it("retains an explicitly selected batch when report filters change and removes it on exit",()=>{
+  const base=new URL("https://example.test/?statistics=1&statsBatch=batch-one");
+  const filters={product:"all",period:"thisMonth" as const,type:"all" as const,start:"",end:""};
+  const next=new URL(statisticsStateUrl(filters,null,base),base);
+  expect(next.searchParams.get("statsBatch")).toBe("batch-one");
+  expect(statisticsExitUrl(next)).toBe("/");
+ });
  it("preserves list context, filters and metric detail across item visits and reloads",()=>{
   const base=new URL("https://example.test/?product=one&status=all&type=bug&q=slow#workspace");
   const filters={product:"two",period:"custom" as const,type:"task" as const,start:"2026-10-01",end:"2026-10-26"};

@@ -126,6 +126,8 @@ describe("saved batch API boundaries",()=>{
   const saved=await app.inject({method:"POST",url:path,headers:{cookie:memberCookie},payload:{name:"Selected feedback",itemKeys:[item.key,item.key]}});
   expect(saved.statusCode).toBe(201);expect(saved.json().itemCount).toBe(1);
   const id=saved.json().id;
+  expect((await app.inject({url:path,headers:{cookie:memberCookie}})).json()).toMatchObject({batches:[{id,delivered:0,effective:1,unavailable:0,deliveryRate:0}]});
+  expect((await app.inject({url:path,headers:{cookie}})).json()).toEqual({batches:[]});
   expect((await app.inject({url:`${path}/${id}`,headers:{cookie:memberCookie}})).json()).toMatchObject({total:1,processing:1});
   expect((await app.inject({url:`${path}/${id}`,headers:{cookie}})).statusCode).toBe(404);
   expect((await app.inject({method:"DELETE",url:`${path}/${id}`,headers:{cookie}})).statusCode).toBe(404);
@@ -133,6 +135,9 @@ describe("saved batch API boundaries",()=>{
   await app.inject({method:"PUT",url:`/api/v1/accounts/${account.id}/products`,headers:{cookie},payload:{permissions:[]}});
   const revoked=await app.inject({url:`${path}/${id}`,headers:{cookie:memberCookie}});
   expect(revoked.json()).toMatchObject({total:1,unavailable:1,deliveryRate:null,items:[]});expect(revoked.body).not.toContain(item.title);expect(revoked.body).not.toContain(shared.id);
+  const overview=await app.inject({url:path,headers:{cookie:memberCookie}});
+  expect(overview.json()).toMatchObject({batches:[{id,unavailable:1,deliveryRate:null}]});
+  expect(overview.body).not.toContain(item.title);expect(overview.body).not.toContain(shared.id);
   expect((await app.inject({method:"DELETE",url:`${path}/${id}`,headers:{cookie:memberCookie}})).statusCode).toBe(204);
   expect(app.missionGoStore.getWorkItem(item.key).id).toBe(item.id);
  });
