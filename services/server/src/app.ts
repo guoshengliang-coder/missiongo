@@ -2391,16 +2391,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   };
 
   const artifactSession = (request: FastifyRequest, sessionId: string, operate = false) =>
-    externalSessionStore.has(sessionId) ? loadExternalSession(request, sessionId, operate) : authorizedAgentSession(request, sessionId, operate);
+    externalSessionStore.has(sessionId) ? loadExternalSession(request, sessionId, operate) : loadAuthorizedAgentSession(request, sessionId, operate, false).session;
   app.post("/api/v1/agent-sessions/:sessionId/artifacts", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
-    const snapshot = artifactSession(request, sessionId, true);
+    const snapshot = artifactSession(request, sessionId);
     const body = objectBody(request.body);
     const messageId = stringField(body, "messageId")!;
     const href = stringField(body, "href")!;
     const message = snapshot.messages.find((entry) => entry.id === messageId && ["agent", "plan"].includes(entry.role));
     if (!message?.sourceId || !localArtifactLinks(message.text).includes(href)) throw notFound("Agent artifact reference");
     const accountId = requireAccountId(request);
+    const saved = agentArtifacts.saved(accountId, sessionId, message.sourceId, href);
+    if (saved) return saved;
+    artifactSession(request, sessionId, true);
     const binding = consoleSessions.members(accountId, sessionId)
       .map((member) => agentArtifacts.binding(accountId, member.id)).find(Boolean);
     return agentArtifacts.request(accountId, sessionId, message.sourceId, href, binding);

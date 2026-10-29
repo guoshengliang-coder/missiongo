@@ -52,6 +52,13 @@ it("recovers an archived link through its owning node, persists it offline, and 
     const saved = await app.inject({ method: "GET", url: `${url}/${artifact.id}/bundle`, headers });
     expect(saved.statusCode).toBe(200); expect(saved.json()).toEqual(bundle);
     expect((await request()).json().status).toBe("ready");
+    app.missionGoAccounts.createAccount({ email: "second-admin@example.test", password: "test-password", role: "admin" });
+    app.missionGoAccounts.updateAccount("owner", { role: "member" });
+    app.missionGoAccounts.replacePermissions("owner", [{ productId: product.id, canView: true, canOperate: false, canUseAi: false }]);
+    expect((await request()).json().status).toBe("ready");
+    sessions.recordSnapshot({ nodeId: node.nodeId, sessionId: id, status: "idle", messages: [{ sourceId: "unsaved", role: "agent", text: "[新文件](/tmp/fixture-preview/unsaved.md)" }] });
+    const unsaved = sessions.getForAccount("owner", id).messages.find((message) => message.sourceId === "unsaved")!;
+    expect((await request({ messageId: unsaved.id, href: "/tmp/fixture-preview/unsaved.md" })).statusCode).toBe(404);
     const preview = await app.inject({ method: "GET", url: `${url}/${artifact.id}/preview`, headers });
     expect(preview.statusCode).toBe(200);
     expect(preview.headers["content-security-policy"]).toContain("sandbox allow-scripts;");

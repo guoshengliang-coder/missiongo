@@ -57,6 +57,12 @@ export class AgentArtifacts {
       .get(sessionId, accountId, accountId, sessionId, accountId, accountId) as Binding | undefined;
   }
 
+  saved(accountId: string, sessionId: string, sourceId: string, href: string): AgentArtifactState | undefined {
+    const row = this.db.prepare("SELECT * FROM agent_artifacts WHERE account_id=? AND session_id=? AND source_id=? AND href=? AND status='ready'")
+      .get(accountId, sessionId, sourceId, href) as Row | undefined;
+    return row ? this.state(row) : undefined;
+  }
+
   request(accountId: string, sessionId: string, sourceId: string, href: string, binding?: Binding): AgentArtifactState {
     if (!localArtifactPath(href)) throw invalidInput("Not a local artifact link.");
     const previous = this.db.prepare("SELECT * FROM agent_artifacts WHERE session_id=? AND account_id=? AND source_id=? AND href=?")
