@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ItemDelivery, type ItemExecution } from "./api";
 import type { Component, WorkItem } from "./types";
 import { useSettingsDraft } from "./settings-drafts";
+import { Modal } from "./modal";
 
 const executionLabels: Record<string,string> = {
   assigned:"待执行", working:"执行中", completed:"本轮完成", blocked:"受阻", cancelled:"已取消", handed_over:"已交接",
@@ -56,41 +57,51 @@ export function ItemDeliveryPanel({item}: {item:WorkItem}) {
   const queryClient=useQueryClient();
   const query=useQuery({queryKey:["delivery",item.key],queryFn:()=>api.getDelivery(item.key),refetchInterval:15_000});
   const [mode,setMode]=useState<"builder"|"execution"|null>(null);
-  const [target,setTarget]=useState("");const [note,setNote]=useState("");
-  const [scope,setScope]=useState("");const [performer,setPerformer]=useState("");const [previousId,setPreviousId]=useState("");
+  const [target,setTarget]=useState("");const [transferNote,setTransferNote]=useState("");
+  const [scope,setScope]=useState("");const [performer,setPerformer]=useState("");const [previousId,setPreviousId]=useState("");const [executionNote,setExecutionNote]=useState("");
   const refresh=async()=>{await Promise.all([
     queryClient.invalidateQueries({queryKey:["delivery",item.key]}),queryClient.invalidateQueries({queryKey:["item",item.key]}),
     queryClient.invalidateQueries({queryKey:["items"]}),queryClient.invalidateQueries({queryKey:["timeline",item.key]}),
   ]);};
-  const transfer=useMutation({mutationFn:()=>api.transferBuilder(item.key,{accountId:target || null,expectedBuilderAccountId:query.data?.builderAccountId ?? null,note}),onSuccess:async()=>{setMode(null);setNote("");await refresh();}});
-  const assign=useMutation({mutationFn:()=>api.assignExecution(item.key,{...(performer.startsWith("agent:") ? {kind:"agent" as const,sessionId:performer.slice(6)} : {kind:"human" as const,accountId:performer}),scope,...(previousId ? {previousId:previousId.replace(/^followup:/,""),followUp:previousId.startsWith("followup:"),note} : {})}),onSuccess:async()=>{setMode(null);setScope("");setNote("");setPreviousId("");await refresh();}});
+  const transfer=useMutation({mutationFn:()=>api.transferBuilder(item.key,{accountId:target || null,expectedBuilderAccountId:query.data?.builderAccountId ?? null,note:transferNote}),onSuccess:async()=>{setMode(null);setTransferNote("");await refresh();}});
+  const assign=useMutation({mutationFn:()=>api.assignExecution(item.key,{...(performer.startsWith("agent:") ? {kind:"agent" as const,sessionId:performer.slice(6)} : {kind:"human" as const,accountId:performer}),scope,...(previousId ? {previousId:previousId.replace(/^followup:/,""),followUp:previousId.startsWith("followup:"),note:executionNote} : {})}),onSuccess:async()=>{setMode(null);setScope("");setExecutionNote("");setPreviousId("");await refresh();}});
   if(query.isPending) return <section className="delivery-panel" aria-label="交付与执行"><p>正在加载交付信息…</p></section>;
   if(query.isError) return <section className="delivery-panel"><p role="alert">{failure(query.error)}</p><button type="button" className="secondary-button" onClick={()=>query.refetch()}>重试</button></section>;
   const data=query.data;
   return <section className="delivery-panel" aria-label="交付与执行">
     <div className="delivery-heading"><div><h3>交付与执行</h3><p>Builder：<strong>{data.builderName ?? "待分配"}</strong>{data.builderNeedsReassignment && <span role="status"> · 需重新分配</span>}</p></div>
       {(data.canManageBuilder || data.canManage) && <div className="delivery-actions">
-        {data.canManageBuilder && <button type="button" className="secondary-button" onClick={()=>{setMode(mode==="builder"?null:"builder");setTarget(data.builderAccountId ?? "");setNote("");transfer.reset();}}>转交负责人</button>}
-        {data.canManage && <button type="button" className="secondary-button" onClick={()=>{setMode(mode==="execution"?null:"execution");setNote("");assign.reset();}}>安排执行／交接</button>}
+        {data.canManageBuilder && <button type="button" className="secondary-button" onClick={()=>{setTarget("");setTransferNote("");transfer.reset();setMode("builder");}}>转交负责人</button>}
+        {data.canManage && <button type="button" className="secondary-button" onClick={()=>{setPerformer("");setScope("");setPreviousId("");setExecutionNote("");assign.reset();setMode("execution");}}>安排执行／交接</button>}
       </div>}
     </div>
-    {mode==="builder" && <form className="delivery-form" onSubmit={event=>{event.preventDefault();transfer.mutate();}}>
-      <label>新的 Builder<select aria-label="新的 Builder" required value={target} onChange={event=>setTarget(event.target.value)}><option value="">请选择负责人</option>{data.candidates.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
-      <label>交接说明<textarea required maxLength={2000} value={note} onChange={event=>setNote(event.target.value)} /></label>
-      <small>转交整体交付责任，保留当前条目状态及执行安排。</small>
-      <button className="secondary-button" disabled={transfer.isPending || !target || target===data.builderAccountId}>确认转交</button>
-      {transfer.isError && <p role="alert">{failure(transfer.error)}</p>}
-    </form>}
-    {mode==="execution" && <form className="delivery-form" onSubmit={event=>{event.preventDefault();assign.mutate();}}>
-      <label>执行人<select aria-label="执行人" required value={performer} onChange={event=>setPerformer(event.target.value)}><option value="">请选择执行人</option><optgroup label="人工账号">{data.performers.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</optgroup>
-        <optgroup label="已关联 Agent 会话">{[...new Map(data.executions.filter(row=>row.kind==="agent" && row.sessionId).map(row=>[row.sessionId,row])).values()].map(row=><option key={row.sessionId} value={`agent:${row.sessionId}`}>{row.name} · {row.accountName} · {row.sessionId?.slice(0,8)}</option>)}</optgroup></select></label>
-      <label>工作范围<textarea required maxLength={2000} value={scope} onChange={event=>setScope(event.target.value)} /></label>
-      <label>执行方式<select aria-label="执行方式" value={previousId} onChange={event=>setPreviousId(event.target.value)}><option value="">新增执行安排（可并行）</option>{data.executions.map(row=>{const finished=["completed","cancelled","handed_over","failed"].includes(row.status);return <option key={row.id} value={finished ? `followup:${row.id}` : row.id}>{finished ? "后续／返工" : "接手"} {row.name}：{row.scope.slice(0,40)}</option>;})}</select></label>
-      {previousId && <label>执行交接说明<textarea required maxLength={2000} value={note} onChange={event=>setNote(event.target.value)} /></label>}
-      <small>安排执行不改变 Builder，也不会停止正在运行的会话。Agent 使用现有派单和会话接入，关联后可选择并安排下一轮工作。</small>
-      <button className="secondary-button" disabled={assign.isPending || !performer || !scope.trim()}>确认安排</button>
-      {assign.isError && <p role="alert">{failure(assign.error)}</p>}
-    </form>}
+    {mode==="builder" && <Modal title="转交负责人" subtitle="交付与执行" onClose={()=>setMode(null)}>
+      <form className="delivery-form" onSubmit={event=>{event.preventDefault();transfer.mutate();}}>
+        <label>新的 Builder<select aria-label="新的 Builder" required value={target} onChange={event=>setTarget(event.target.value)}><option value="">请选择负责人</option>{data.candidates.filter(account=>account.id!==data.builderAccountId).map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
+        <label>交接说明<textarea required={Boolean(data.builderAccountId)} maxLength={2000} placeholder={data.builderAccountId ? undefined : "可不填，确认后默认记录「首次分配 builder」"} value={transferNote} onChange={event=>setTransferNote(event.target.value)} /></label>
+        <small>转交整体交付责任，保留当前条目状态及执行安排。</small>
+        {transfer.isError && <p role="alert">{failure(transfer.error)}</p>}
+        <div className="form-footer">
+          <button type="button" className="secondary-button" onClick={()=>setMode(null)}>取消</button>
+          <button type="submit" className="primary-button" disabled={transfer.isPending || !target}>确认转交</button>
+        </div>
+      </form>
+    </Modal>}
+    {mode==="execution" && <Modal title="安排执行／交接" subtitle="交付与执行" onClose={()=>setMode(null)}>
+      <form className="delivery-form" onSubmit={event=>{event.preventDefault();assign.mutate();}}>
+        <label>执行人<select aria-label="执行人" required value={performer} onChange={event=>setPerformer(event.target.value)}><option value="">请选择执行人</option><optgroup label="人工账号">{data.performers.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</optgroup>
+          <optgroup label="已关联 Agent 会话">{[...new Map(data.executions.filter(row=>row.kind==="agent" && row.sessionId).map(row=>[row.sessionId,row])).values()].map(row=><option key={row.sessionId} value={`agent:${row.sessionId}`}>{row.name} · {row.accountName} · {row.sessionId?.slice(0,8)}</option>)}</optgroup></select></label>
+        <label>工作范围<textarea required maxLength={2000} value={scope} onChange={event=>setScope(event.target.value)} /></label>
+        <label>执行方式<select aria-label="执行方式" value={previousId} onChange={event=>setPreviousId(event.target.value)}><option value="">新增执行安排（可并行）</option>{data.executions.map(row=>{const finished=["completed","cancelled","handed_over","failed"].includes(row.status);return <option key={row.id} value={finished ? `followup:${row.id}` : row.id}>{finished ? "后续／返工" : "接手"} {row.name}：{row.scope.slice(0,40)}</option>;})}</select></label>
+        {previousId && <label>执行交接说明<textarea required maxLength={2000} value={executionNote} onChange={event=>setExecutionNote(event.target.value)} /></label>}
+        <small>安排执行不改变 Builder，也不会停止正在运行的会话。Agent 使用现有派单和会话接入，关联后可选择并安排下一轮工作。</small>
+        {assign.isError && <p role="alert">{failure(assign.error)}</p>}
+        <div className="form-footer">
+          <button type="button" className="secondary-button" onClick={()=>setMode(null)}>取消</button>
+          <button type="submit" className="primary-button" disabled={assign.isPending || !performer || !scope.trim()}>确认安排</button>
+        </div>
+      </form>
+    </Modal>}
     <p className="account-note">本轮执行完成与条目交付状态分别记录。</p>
     {data.executions.length ? <ol className="execution-list">{data.executions.map(execution=><ExecutionRow key={execution.id} execution={execution} delivery={data} itemKey={item.key} onRefresh={refresh} />)}</ol> : <p className="account-note">暂无执行记录。可安排多人并行执行，或在交接时新增下一轮记录。</p>}
   </section>;

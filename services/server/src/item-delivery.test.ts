@@ -98,6 +98,15 @@ describe("Builder delivery responsibility",()=>{
     f.store.updateWorkItem(item.key,{sourceComponentId:f.component.id});expect(f.store.getWorkItem(item.key).builderAccountId).toBe(f.b.id);
     const timeline=f.store.getTimeline(item.key);expect(timeline.some(event=>event.eventType==="builder_changed" && event.payload.note==="Hand over delivery")).toBe(true);
   });
+  it("defaults the note for first assignments and still requires it for real handovers",async()=>{
+    const f=await fixture(); const item=f.create();
+    const first=await f.call("POST",`/api/v1/items/${item.key}/builder`,{accountId:f.a.id,expectedBuilderAccountId:null});
+    expect(first.statusCode).toBe(200);
+    expect(f.store.getTimeline(item.key).some(event=>event.eventType==="builder_changed" && event.payload.note==="首次分配 builder")).toBe(true);
+    const blank=await f.call("POST",`/api/v1/items/${item.key}/builder`,{accountId:f.b.id,expectedBuilderAccountId:f.a.id});
+    expect(blank.statusCode).toBe(400);
+    expect((await f.call("POST",`/api/v1/items/${item.key}/builder`,{accountId:f.b.id,expectedBuilderAccountId:f.a.id,note:"Hand over delivery"})).statusCode).toBe(200);
+  });
   it("limits candidates by current AI permission and refuses cross-product or unauthorized changes",async()=>{
     const f=await fixture();
     const builders=await f.call("GET",`/api/v1/products/${f.product.id}/builders`,undefined,f.viewerCookie);
