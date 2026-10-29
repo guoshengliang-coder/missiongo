@@ -8,8 +8,8 @@ describe("MissionGo interface language", () => {
     expect(resolveLocale("unknown")).toBe("zh-CN");
   });
 
-  it("restores an explicit English preference", () => {
-    expect(resolveLocale("en")).toBe("en");
+  it("uses Chinese even for a previously saved English preference", () => {
+    expect(resolveLocale("en")).toBe("zh-CN");
   });
 
   it("translates and interpolates interface copy", () => {

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 
 import type { WorkItemPriority, WorkItemStatus, WorkItemType } from "./types";
 
@@ -2248,12 +2248,11 @@ const ACTOR_LABELS: Record<Locale, Record<string, string>> = {
 
 const EVENT_LABELS: Record<Locale, Record<string, string>> = {
   en: { handover_human_confirmed: "Human handover confirmation", item_created: "Item created", item_updated: "Item updated", item_transferred_in: "Item transferred in", item_transferred_out: "Item transferred out", attachment_added: "Attachment added", attachment_removed: "Attachment deleted", attachment_replaced: "Attachment edited", derived_item_created: "Split off an item", comment_added: "Comment", comment_withdrawn: "Comment withdrawn", dispatched: "Dispatched to an agent" },
-  "zh-CN": { handover_human_confirmed: "人工确认交接", item_created: "已创建条目", item_updated: "已更新详情", item_transferred_in: "条目已迁入", item_transferred_out: "条目已迁出", attachment_added: "已添加附件", attachment_removed: "已删除附件", attachment_replaced: "已编辑附件", derived_item_created: "已衍生条目", comment_added: "评论", comment_withdrawn: "已撤回评论", dispatched: "已派给 Agent" },
+  "zh-CN": { builder_changed: "交付负责人变更", execution_assigned: "安排执行", execution_handed_over: "执行交接", execution_follow_up: "后续或返工执行", execution_updated: "执行进展", handover_human_confirmed: "人工确认交接", item_created: "已创建条目", item_updated: "已更新详情", item_transferred_in: "条目已迁入", item_transferred_out: "条目已迁出", attachment_added: "已添加附件", attachment_removed: "已删除附件", attachment_replaced: "已编辑附件", derived_item_created: "已衍生条目", comment_added: "评论", comment_withdrawn: "已撤回评论", dispatched: "已派给 Agent" },
 };
 
 interface I18nValue {
   readonly locale: Locale;
-  readonly toggleLocale: () => void;
   readonly t: (key: MessageKey, variables?: Readonly<Record<string, string | number>>) => string;
   readonly statusLabel: (status: WorkItemStatus) => string;
   readonly typeLabel: (type: WorkItemType) => string;
@@ -2271,7 +2270,8 @@ function interpolate(template: string, variables: Readonly<Record<string, string
 }
 
 export function resolveLocale(storedLocale: string | null): Locale {
-  return storedLocale === "en" ? "en" : "zh-CN";
+  void storedLocale;
+  return "zh-CN";
 }
 
 export function translate(
@@ -2284,7 +2284,7 @@ export function translate(
 }
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocale] = useState<Locale>(() => resolveLocale(localStorage.getItem("missiongo.locale")));
+  const locale = resolveLocale(null);
 
   useEffect(() => {
     localStorage.setItem("missiongo.locale", locale);
@@ -2295,7 +2295,6 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const value = useMemo<I18nValue>(() => {
     return {
       locale,
-      toggleLocale: () => setLocale((current) => current === "zh-CN" ? "en" : "zh-CN"),
       t: (key, variables) => translate(locale, key, variables),
       statusLabel: (status) => STATUS_LABELS[locale][status],
       typeLabel: (type) => TYPE_LABELS[locale][type],

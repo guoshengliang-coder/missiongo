@@ -1920,6 +1920,27 @@ export class MissionGoDatabase {
           .run(202610290126,new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610290609").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          ALTER TABLE components ADD COLUMN default_builder_account_id TEXT;
+          ALTER TABLE work_items ADD COLUMN builder_account_id TEXT;
+          ALTER TABLE work_items ADD COLUMN builder_assignment TEXT CHECK(builder_assignment IN ('automatic','manual'));
+          CREATE INDEX work_items_builder ON work_items(product_id,builder_account_id);
+          CREATE TABLE item_executions (
+            id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+            account_id TEXT NOT NULL, scope TEXT NOT NULL, previous_id TEXT REFERENCES item_executions(id),
+            kind TEXT NOT NULL DEFAULT 'human' CHECK(kind IN ('human','agent')), session_id TEXT,
+            status TEXT NOT NULL CHECK(status IN ('assigned','working','completed','blocked','cancelled','handed_over','failed')),
+            result TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT, updated_at TEXT NOT NULL
+          ) STRICT;
+          CREATE INDEX item_executions_item ON item_executions(item_id,created_at);
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610290609, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

@@ -49,6 +49,7 @@ export interface WorkItemListPage {
 }
 
 export interface ListItemsOptions {
+  readonly builder?: string;
   readonly status?: WorkItemStatus;
   readonly type?: WorkItemType;
   readonly search?: string;
@@ -314,6 +315,7 @@ export const api = {
   getBootstrap: (productId: string | null, options: ListItemsOptions = {}) => {
     const query = new URLSearchParams();
     if (productId) query.set("productId", productId);
+    if (options.builder) query.set("builder", options.builder);
     if (options.status) query.set("status", options.status);
     if (options.type) query.set("type", options.type);
     if (options.search) query.set("search", options.search);
@@ -407,6 +409,12 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ artifacts }),
     }),
+  listBuilders: (productId: string) => request<{builders: Array<{id: string; name: string}>; canConfigure: boolean}>(`/api/v1/products/${encodeURIComponent(productId)}/builders`),
+  setModuleBuilder: (productId: string, componentId: string, accountId: string | null) => request<Component>(`/api/v1/products/${encodeURIComponent(productId)}/components/${encodeURIComponent(componentId)}/builder`, {method:"PUT",body:JSON.stringify({accountId})}),
+  getDelivery: (itemKey: string) => request<ItemDelivery>(`/api/v1/items/${encodeURIComponent(itemKey)}/delivery`),
+  transferBuilder: (itemKey: string, input: {accountId: string | null; expectedBuilderAccountId: string | null; note: string}) => request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/builder`, {method:"POST",body:JSON.stringify(input)}),
+  assignExecution: (itemKey: string, input: {accountId?: string; kind?: "human" | "agent"; sessionId?: string; scope: string; previousId?: string; note?: string; followUp?: boolean}) => request(`/api/v1/items/${encodeURIComponent(itemKey)}/executions`, {method:"POST",body:JSON.stringify(input)}),
+  updateExecution: (itemKey: string, executionId: string, status: string, result: string) => request(`/api/v1/items/${encodeURIComponent(itemKey)}/executions/${encodeURIComponent(executionId)}`, {method:"PATCH",body:JSON.stringify({status,result})}),
   listComponents: (productId: string, options: { includeArchived?: boolean } = {}) =>
     request<Component[]>(
       `/api/v1/products/${encodeURIComponent(productId)}/components${options.includeArchived ? "?includeArchived=true" : ""}`,
@@ -423,6 +431,7 @@ export const api = {
     }),
   listItems: (productId: string, options: ListItemsOptions = {}) => {
     const params = new URLSearchParams({ productId });
+    if (options.builder) params.set("builder", options.builder);
     if (options.status) params.set("status", options.status);
     if (options.type) params.set("type", options.type);
     if (options.search?.trim()) params.set("search", options.search.trim());
@@ -662,3 +671,13 @@ export const api = {
       { method: "POST", body: JSON.stringify({ outcome }) },
     ),
 };
+
+export interface ItemExecution {
+  id: string; kind: "human" | "agent"; accountId: string; name: string; scope: string; previousId: string | null;
+  sessionId?: string; recorded?: boolean; sessionStatus?: string; accountName?: string; status: string; result: string; createdAt: string; startedAt: string | null; endedAt: string | null;
+}
+export interface ItemDelivery {
+  builderAccountId: string | null; builderName: string | null; builderNeedsReassignment: boolean;
+  canManage: boolean; currentAccountId: string; candidates: Array<{id: string; name: string}>;
+  performers: Array<{id: string; name: string}>; executions: ItemExecution[];
+}

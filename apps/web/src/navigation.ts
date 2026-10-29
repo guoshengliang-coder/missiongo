@@ -122,6 +122,7 @@ export function agentConsoleLayoutFromState(state: unknown): AgentConsoleLayout 
 }
 
 export interface ListFilters {
+  readonly builder?: string;
   readonly productId: string;
   readonly status: WorkItemStatus | "all";
   readonly type: WorkItemType | "all";
@@ -194,6 +195,7 @@ export function filtersFromUrl(url: URL = new URL(window.location.href)): ListFi
   const status = url.searchParams.get("status");
   const type = url.searchParams.get("type");
   return {
+    ...(url.searchParams.get("builder") ? {builder: url.searchParams.get("builder")!} : {}),
     productId: url.searchParams.get("product")?.trim() ?? "",
     status: status === "all" || (status && (ITEM_STATUSES as readonly string[]).includes(status))
       ? (status as WorkItemStatus | "all")
@@ -210,6 +212,7 @@ export function filtersToUrl(filters: ListFilters, url: URL = new URL(window.loc
     else next.searchParams.delete(name);
   };
   set("product", filters.productId);
+  set("builder", filters.builder ?? "");
   set("status", filters.status === DEFAULT_STATUS ? "" : filters.status);
   set("type", filters.type === "all" ? "" : filters.type);
   set("q", filters.search.trim());

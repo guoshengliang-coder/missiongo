@@ -51,7 +51,7 @@ test("unifies account permissions, filters products, opens account details and g
   await page.getByRole("combobox", { name: "按产品筛选", exact: true }).selectOption(other.id);
   await page.getByRole("searchbox", { name: "搜索账号", exact: true }).fill(account.email);
   const row = page.locator(".account-row").filter({ hasText: account.email });
-  await row.getByRole("button", { name: "修改", exact: true }).click();
+  await row.getByRole("button", { name: "修改权限", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/settings/admin/accounts/${account.id}`));
   await expect(page.locator(".account-row")).toHaveCount(1);
   const permission = page.getByRole("checkbox", { name: "Separate access · 操作", exact: true });

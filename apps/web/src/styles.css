@@ -2644,3 +2644,51 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .artifact-image { flex: 1; min-height: 0; overflow: auto; display: grid; place-items: center; padding: 16px; }
 .artifact-image img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .artifact-document { flex: 1; overflow: auto; margin: 0; padding: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* AND-303: compare actual product permissions along aligned account rows. */
+.account-access-list { gap: 0; }
+.account-access-list > .account-row { border-radius: 0; border-width: 0 0 1px; background: transparent; padding: 16px 0; }
+.account-row > .account-access-row { display: grid; grid-template-columns: minmax(160px, 1fr) auto auto auto; gap: 16px; }
+.account-access-identity { display: grid; min-width: 0; gap: 4px; }
+.account-access-identity small, .account-access-status { color: var(--muted); font-size: var(--text-sm); }
+.account-access-permissions { display: grid; grid-template-columns: repeat(3, 56px); gap: 8px; margin: 0; text-align: center; }
+.account-access-permissions dt { color: var(--muted); font-size: var(--text-xs); }
+.account-access-permissions dd { margin: 4px 0 0; font-size: var(--text-base); }
+.account-access-actions { display: flex; align-items: center; gap: 8px; }
+.account-more { position: relative; }
+.account-more > summary { cursor: pointer; list-style: none; display: flex; align-items: center; }
+.account-more > summary::-webkit-details-marker { display: none; }
+.account-more-actions { position: absolute; z-index: 10; right: 0; top: calc(100% + 8px); width: 240px; padding: 12px; display: grid; gap: 8px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.account-more-actions small { color: var(--muted); font-size: var(--text-xs); }
+@media (max-width: 1023px) {
+  .account-row > .account-access-row { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
+  .account-access-permissions { grid-column: 1; grid-row: 2; justify-content: start; }
+  .account-access-actions { grid-column: 2; grid-row: 2; }
+  .account-access-status { grid-column: 2; grid-row: 1; text-align: right; }
+}
+
+/* AND-304: keep responsibility and execution history readable in both panes. */
+.builder-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 12px; }
+.builder-filter label { color: var(--muted); font-size: var(--text-sm); }
+.builder-filter select, .delivery-form select, .module-builder-setting select { min-height: 44px; max-width: 100%; padding: 8px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.item-builder { color: var(--muted); font-size: var(--text-xs); }
+.delivery-panel { margin: 16px 0; padding: 16px 0; border-block: 1px solid var(--line); min-width: 0; }
+.delivery-heading, .execution-heading, .delivery-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.delivery-heading h3 { margin: 0; font-size: var(--text-base); }
+.delivery-heading p { margin: 8px 0; }
+.delivery-form { display: grid; gap: 12px; margin: 12px 0; }
+.delivery-form label { display: grid; gap: 6px; font-size: var(--text-sm); }
+.delivery-form textarea { width: 100%; min-height: 72px; resize: vertical; }
+.delivery-form small, .execution-row small { color: var(--muted); overflow-wrap: anywhere; }
+.execution-list { list-style: none; padding: 0; margin: 12px 0 0; }
+.execution-row { padding: 14px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.execution-row small { display: block; margin: 6px 0; font-size: var(--text-xs); }
+.execution-row p { margin: 8px 0; white-space: pre-wrap; }
+.execution-heading span { color: var(--muted); font-size: var(--text-sm); }
+.execution-result { padding-left: 12px; border-left: 2px solid var(--line-dark); }
+.execution-row summary { cursor: pointer; padding: 8px 0; }
+.module-builder-setting { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.module-builder-setting label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.module-builder-setting small { color: var(--muted); font-size: var(--text-xs); }
+
+.module-builder-setting .secondary-button { min-height: 44px; }

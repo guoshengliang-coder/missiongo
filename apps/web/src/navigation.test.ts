@@ -210,3 +210,11 @@ describe("status filter order (AND-197)", () => {
     expect(new Set(ITEM_STATUS_NAV_ORDER).size).toBe(ITEM_STATUS_NAV_ORDER.length);
   });
 });
+
+ it("preserves the delivery Builder filter across URL round trips", () => {
+  const url = new URL("https://example.test/?product=p1&builder=mine");
+  const filters = filtersFromUrl(url);
+  expect(filters.builder).toBe("mine");
+  expect(filtersToUrl(filters,url)).toContain("builder=mine");
+  expect(filtersToUrl({...filters,builder:""},url)).not.toContain("builder=");
+ });

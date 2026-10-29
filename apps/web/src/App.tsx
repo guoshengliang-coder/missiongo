@@ -1,3 +1,4 @@
+import { ItemDeliveryPanel, ModuleBuilderSetting } from "./item-delivery";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { Modal } from "./modal";
 import { StatusCheckButton } from "./status-check-panel";
@@ -30,7 +31,6 @@ import {
   ImageIcon,
   Inbox,
   KeyRound,
-  Languages,
   Lightbulb,
   ListTodo,
   LoaderCircle,
@@ -450,6 +450,7 @@ export function App() {
   const [statusFilter, setStatusFilter] = useState<WorkItemStatus | "all">(initialFilters.status);
   const [typeFilter, setTypeFilter] = useState<WorkItemType | "all">(initialFilters.type);
   const [search, setSearch] = useState(initialFilters.search);
+  const [builderFilter, setBuilderFilter] = useState(initialFilters.builder ?? "");
   const [captureOpen, setCaptureOpen] = useState(false);
   const settings = useSettingsNavigation();
   const [downloadsOpen, setDownloadsOpen] = useState(false);
@@ -953,6 +954,7 @@ export function App() {
             ...(initialFilters.status !== "all" ? { status: initialFilters.status } : {}),
             ...(initialFilters.type !== "all" ? { type: initialFilters.type } : {}),
             ...(initialFilters.search.trim() ? { search: initialFilters.search.trim() } : {}),
+            ...(initialFilters.builder ? { builder: initialFilters.builder } : {}),
             limit: ITEM_PAGE_SIZE,
           },
         );
@@ -979,7 +981,7 @@ export function App() {
         queryClient.setQueryData(
           // Must match how itemsQuery builds its key below, trim included, or the
           // list mounts under a different key and refetches what we just seeded.
-          ["items", data.productId, initialFilters.status, initialFilters.type, initialFilters.search.trim()],
+          ["items", data.productId, initialFilters.status, initialFilters.type, initialFilters.search.trim(), initialFilters.builder ?? ""],
           {
             pages: [{
               items: data.items,
@@ -1096,11 +1098,11 @@ export function App() {
   // stack, which belongs to opening and closing items.
   useEffect(() => {
     if (!selectedProductId || statisticsOpen) return;
-    const next = filtersToUrl({ productId: selectedProductId, status: statusFilter, type: typeFilter, search });
+    const next = filtersToUrl({ productId: selectedProductId, status: statusFilter, type: typeFilter, search, builder: builderFilter });
     if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
       history.replaceState(history.state, "", next);
     }
-  }, [search, selectedProductId, statusFilter, typeFilter, statisticsOpen]);
+  }, [search, selectedProductId, statusFilter, typeFilter, builderFilter, statisticsOpen]);
 
   useEffect(() => {
     const updateOnlineState = () => setIsOnline(navigator.onLine);
@@ -1130,10 +1132,12 @@ export function App() {
     return () => window.removeEventListener("keydown", handleShortcut);
   }, [statisticsOpen]);
 
+  const buildersQuery = useQuery({ queryKey: ["builders", selectedProductId], queryFn: () => api.listBuilders(selectedProductId), enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId) });
   const deferredSearch = useDeferredValue(search.trim());
   const itemsQuery = useInfiniteQuery({
-    queryKey: ["items", selectedProductId, statusFilter, typeFilter, deferredSearch],
+    queryKey: ["items", selectedProductId, statusFilter, typeFilter, deferredSearch, builderFilter],
     queryFn: ({ pageParam }) => api.listItems(selectedProductId, {
+      ...(builderFilter ? { builder: builderFilter } : {}),
       ...(statusFilter !== "all" ? { status: statusFilter } : {}),
       ...(typeFilter !== "all" ? { type: typeFilter } : {}),
       ...(deferredSearch ? { search: deferredSearch } : {}),
@@ -1155,7 +1159,7 @@ export function App() {
         data: query.state.data,
         dataUpdatedAt: query.state.dataUpdatedAt,
       })),
-      { productId: selectedProductId, type: typeFilter, search: deferredSearch },
+      { productId: selectedProductId, type: typeFilter, search: deferredSearch, builder: builderFilter },
     )
     : undefined);
   // Nothing to count yet: show a dash, not a 0 that is only the empty page talking.
@@ -1223,7 +1227,7 @@ export function App() {
    * see -- and across products, items whose repository is not the one the batch
    * would run in.
    */
-  const listScope = selectionScope({
+  const listScope = builderFilter + selectionScope({
     productId: selectedProductId,
     status: statusFilter,
     type: typeFilter,
@@ -1283,6 +1287,7 @@ export function App() {
   // match count and the clear button with it.
   const searchFilterActive = Boolean(search.trim());
   const clearFilters = () => {
+    setBuilderFilter("");
     setStatusFilter(DEFAULT_STATUS);
     setTypeFilter("all");
     setSearch("");
@@ -1312,7 +1317,6 @@ export function App() {
   if (sessionRefused || (!bootstrapQuery.isPending && !bootstrapQuery.data && !hasCachedScreen)) {
     return (
       <main className="connection-page">
-        <div className="page-language"><LanguageSwitch /></div>
         <Brand />
         <section className="connection-card">
           <div className="round-icon"><KeyRound size={24} /></div>
@@ -1356,7 +1360,6 @@ export function App() {
   if (products.length === 0) {
     return (
       <main className="onboarding-page">
-        <div className="page-language"><LanguageSwitch /></div>
         <header className="onboarding-header"><Brand /></header>
         <section className="onboarding-card">
           <div className="step-marker">01</div>
@@ -1560,7 +1563,6 @@ export function App() {
           }}
         ><Download size={15} /> {t("downloadsEntry")}</button>
         <div className="sidebar-utilities">
-          <LanguageSwitch sidebar />
           <button
             className="text-button sidebar-utility-button"
             onClick={() => {
@@ -1619,6 +1621,16 @@ export function App() {
             </div>
           </section>
 
+          <div className="builder-filter">
+            <label htmlFor="builder-filter">交付负责人 Builder</label>
+            <select id="builder-filter" value={builderFilter} onChange={event => setBuilderFilter(event.target.value)}>
+              <option value="">全部负责人</option><option value="mine">我负责的</option><option value="unassigned">待分配</option>
+              {(buildersQuery.data?.builders ?? []).map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
+              {builderFilter && !["mine","unassigned"].includes(builderFilter) && !buildersQuery.data?.builders.some(account => account.id === builderFilter) && <option value={builderFilter}>所选负责人（当前不可用）</option>}
+            </select>
+            <button type="button" className="secondary-button" aria-pressed={builderFilter === "mine"} onClick={() => setBuilderFilter(builderFilter === "mine" ? "" : "mine")}>我负责的</button>
+            {buildersQuery.isError && <span role="alert">负责人列表加载失败，请刷新重试。</span>}
+          </div>
           <div className="type-filters" aria-label={t("filterByType")}>
             <button className={typeFilter === "all" ? "active" : ""} aria-pressed={typeFilter === "all"} onClick={() => setTypeFilter("all")}>{t("allTypes")}</button>
             {ITEM_TYPES.map((type) => (
@@ -1913,21 +1925,6 @@ export function App() {
   );
 }
 
-function LanguageSwitch({ sidebar = false }: { sidebar?: boolean }) {
-  const { locale, t, toggleLocale } = useI18n();
-  return (
-    <button
-      className={sidebar ? "text-button sidebar-utility-button" : "language-button"}
-      onClick={toggleLocale}
-      aria-label={t("switchLanguage")}
-      title={t("switchLanguage")}
-    >
-      <Languages size={sidebar ? 15 : 17} />
-      <span>{sidebar ? t("switchLanguage") : locale === "zh-CN" ? "EN" : "中"}</span>
-    </button>
-  );
-}
-
 function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <div className={`brand ${compact ? "compact" : ""}`}>
@@ -2051,6 +2048,7 @@ function ItemRow({
             <span className="item-meta">
               <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={16} /></span>
               <code>{item.key}</code>
+              <small className="item-builder">Builder：{item.builderName ?? "待分配"}{item.builderNeedsReassignment ? " · 需重新分配" : ""}</small>
               {/* First of the badges, so the one that names the machine and
                   agent keeps its width when the line runs out. A failure calls
                   out that the item needs attention; a hand-off just says where
@@ -3050,6 +3048,7 @@ function DetailPane({
                 <h2>{item.title}</h2>
               </div>
             </div>
+            <ItemDeliveryPanel key={item.key} item={item} />
             <ItemRelations item={item} onOpenItem={onOpenItem} />
             {item.verificationReturn && <VerificationReturnCallout info={item.verificationReturn} />}
             {/* Read the item, then the evidence a person went and looked at --
@@ -3166,6 +3165,8 @@ function DetailPane({
                           </a>
                         </p>
                       )}
+                      {event.eventType === "builder_changed" && <p>{String(event.payload.fromName ?? "待分配")} → {String(event.payload.toName ?? "待分配")}：{String(event.payload.note ?? "")}</p>}
+                      {["execution_assigned","execution_handed_over","execution_follow_up","execution_updated"].includes(event.eventType) && <p>{String(event.payload.performer ?? "")}{event.payload.scope ? ` · ${String(event.payload.scope)}` : ""}{event.payload.status ? ` · ${String(event.payload.status)}` : ""} {String(event.payload.note ?? event.payload.result ?? "")}</p>}
                       {event.eventType === "handover_human_confirmed" && <p>{typeof event.payload.note === "string" ? event.payload.note : ""}</p>}
                       {typeof event.payload.completion === "object" && event.payload.completion !== null && "commit" in event.payload.completion && typeof event.payload.completion.commit === "string" && <p><code>{event.payload.completion.commit}</code></p>}
                       {/* Why it moved. Going back to Ready has to say so, which is
@@ -5047,6 +5048,7 @@ function ComponentSettingsRow({ component }: { component: Component }) {
           {archiveMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Archive size={15} />} {t("archive")}
         </button>
       )}
+      <ModuleBuilderSetting component={component} />
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
       {archiveMutation.isError && <InlineError message={errorMessage(archiveMutation.error, t("somethingWentWrong"))} />}
     </div>
