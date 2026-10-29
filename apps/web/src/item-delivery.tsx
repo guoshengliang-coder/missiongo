@@ -69,9 +69,9 @@ export function ItemDeliveryPanel({item}: {item:WorkItem}) {
   const data=query.data;
   return <section className="delivery-panel" aria-label="交付与执行">
     <div className="delivery-heading"><div><h3>交付与执行</h3><p>Builder：<strong>{data.builderName ?? "待分配"}</strong>{data.builderNeedsReassignment && <span role="status"> · 需重新分配</span>}</p></div>
-      {data.canManage && <div className="delivery-actions">
-        <button type="button" className="secondary-button" onClick={()=>{setMode(mode==="builder"?null:"builder");setTarget(data.builderAccountId ?? "");setNote("");transfer.reset();}}>转交负责人</button>
-        <button type="button" className="secondary-button" onClick={()=>{setMode(mode==="execution"?null:"execution");setNote("");assign.reset();}}>安排执行／交接</button>
+      {(data.canManageBuilder || data.canManage) && <div className="delivery-actions">
+        {data.canManageBuilder && <button type="button" className="secondary-button" onClick={()=>{setMode(mode==="builder"?null:"builder");setTarget(data.builderAccountId ?? "");setNote("");transfer.reset();}}>转交负责人</button>}
+        {data.canManage && <button type="button" className="secondary-button" onClick={()=>{setMode(mode==="execution"?null:"execution");setNote("");assign.reset();}}>安排执行／交接</button>}
       </div>}
     </div>
     {mode==="builder" && <form className="delivery-form" onSubmit={event=>{event.preventDefault();transfer.mutate();}}>

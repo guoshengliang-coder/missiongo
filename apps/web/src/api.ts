@@ -136,6 +136,7 @@ export interface ProductAccessEntry {
 }
 
 export interface Account {
+  readonly projectAdministratorProductIds?: readonly string[];
   readonly id: string;
   readonly email: string;
   readonly nickname?: string;
@@ -355,6 +356,8 @@ export const api = {
   createPersonalToken: (input: { name: string; scopes: string[]; days: number }) =>
     request<PersonalTokenCreated>("/api/v1/ai-personal-tokens", { method: "POST", body: JSON.stringify(input) }),
   listAccounts: () => request<{ accounts: Account[] }>("/api/v1/accounts"),
+  listProjectAdministrators: (productId: string) => request<{accountIds:string[]}>(`/api/v1/products/${encodeURIComponent(productId)}/administrators`),
+  setProjectAdministrators: (productId: string, accountIds: string[], expectedAccountIds: string[]) => request<{accountIds:string[]}>(`/api/v1/products/${encodeURIComponent(productId)}/administrators`, {method:"PUT",body:JSON.stringify({accountIds,expectedAccountIds})}),
   createAccount: (input: { email: string; password: string; role: AccountRole }) =>
     request<Account>("/api/v1/accounts", { method: "POST", body: JSON.stringify(input) }),
   updateAccount: (
@@ -678,6 +681,6 @@ export interface ItemExecution {
 }
 export interface ItemDelivery {
   builderAccountId: string | null; builderName: string | null; builderNeedsReassignment: boolean;
-  canManage: boolean; currentAccountId: string; candidates: Array<{id: string; name: string}>;
+  canManage: boolean; canManageBuilder: boolean; currentAccountId: string; candidates: Array<{id: string; name: string}>;
   performers: Array<{id: string; name: string}>; executions: ItemExecution[];
 }

@@ -24,9 +24,64 @@ async function fixture() {
   const call=(method:"GET"|"POST"|"PUT"|"PATCH",url:string,payload?:unknown,auth=cookie)=>app.inject({method,url,headers:{cookie:auth},...(payload!==undefined?{payload}:{})});
   const create=(sourceComponentId?:string)=>store.createWorkItem({productId:product.id,type:"task",priority:"normal",title:"Deliver a feature",description:"Scope",...(sourceComponentId?{sourceComponentId}:{})});
   const moduleUrl=`/api/v1/products/${product.id}/components/${component.id}/builder`;
-  return {app,store,accounts,product,other,component,a,b,viewer,aCookie,bCookie,viewerCookie,cookie,call,create,moduleUrl};
+  return {app,store,accounts,product,other,component,a,b,viewer,aCookie,bCookie,viewerCookie,cookie,call,create,moduleUrl,signIn};
 }
 describe("Builder delivery responsibility",()=>{
+  it("lets only system administrators grant project roles and rejects stale or invalid assignments",async()=>{
+    const f=await fixture(); const url=`/api/v1/products/${f.product.id}/administrators`;
+    expect((await f.call("GET",url)).json()).toEqual({accountIds:[]});
+    // Even a product creator or a future project administrator cannot grant roles.
+    const owned=f.store.createProduct({name:"Member owned",keyPrefix:"MO",createdByAccountId:f.a.id});
+    f.accounts.replacePermissions(f.a.id,[{productId:owned.id,canView:true,canOperate:true,canUseAi:true}]);
+    expect((await f.call("PUT",`/api/v1/products/${owned.id}/administrators`,{accountIds:[f.a.id],expectedAccountIds:[]},f.aCookie)).statusCode).toBe(404);
+    expect((await f.call("PUT",url,{accountIds:[f.viewer.id],expectedAccountIds:[]})).statusCode).toBe(200);
+    expect((await f.call("GET",url,undefined,f.viewerCookie)).statusCode).toBe(404);
+    expect((await f.call("PUT",url,{accountIds:[f.b.id],expectedAccountIds:[f.viewer.id]},f.viewerCookie)).statusCode).toBe(404);
+    expect((await f.call("PUT",url,{accountIds:[],expectedAccountIds:[]})).statusCode).toBe(409);
+    expect((await f.call("PUT",url,{accountIds:["missing"],expectedAccountIds:[f.viewer.id]})).statusCode).toBe(400);
+    f.accounts.updateAccount(f.b.id,{disabled:true});
+    expect((await f.call("PUT",url,{accountIds:[f.b.id],expectedAccountIds:[f.viewer.id]})).statusCode).toBe(400);
+    expect((await f.call("GET",url)).json()).toEqual({accountIds:[f.viewer.id]});
+    expect((await f.app.inject({method:"PUT",url,payload:{accountIds:[],expectedAccountIds:[f.viewer.id]}})).statusCode).toBe(401);
+  });
+  it("scopes project administrators to Builder assignments without granting operate or AI capabilities",async()=>{
+    const f=await fixture();const roleUrl=`/api/v1/products/${f.product.id}/administrators`;
+    f.accounts.replacePermissions(f.viewer.id,[]);
+    const first=f.create(), second=f.create();const delivery=`/api/v1/items/${first.key}`;
+    expect((await f.call("GET",`${delivery}/delivery`,undefined,f.viewerCookie)).statusCode).toBe(404);
+    await f.call("PUT",roleUrl,{accountIds:[f.viewer.id],expectedAccountIds:[]});
+    const products=(await f.call("GET","/api/v1/products",undefined,f.viewerCookie)).json();
+    expect(products).toHaveLength(1);expect(products[0]).toMatchObject({id:f.product.id,access:{canOperate:false,canUseAi:false,isProjectAdmin:true}});
+    expect(f.accounts.reachableProductIds(f.viewer,"view")).toEqual([f.product.id]);
+    expect(f.accounts.reachableProductIds(f.viewer,"operate")).toEqual([]);
+    const bootstrap=(await f.call("GET",`/api/v1/bootstrap?productId=${f.product.id}`,undefined,f.viewerCookie)).json();
+    expect(bootstrap.products).toHaveLength(1);expect(bootstrap.items).toHaveLength(2);
+    const info=(await f.call("GET",`${delivery}/delivery`,undefined,f.viewerCookie)).json();
+    expect(info).toMatchObject({canManageBuilder:true,canManage:false});
+    expect(info.candidates.map((row:{id:string})=>row.id)).not.toContain(f.viewer.id);
+    for(const item of [first,second]) expect((await f.call("POST",`/api/v1/items/${item.key}/builder`,{accountId:f.a.id,expectedBuilderAccountId:null,note:"Allocate delivery"},f.viewerCookie)).statusCode).toBe(200);
+    expect((await f.call("PUT",f.moduleUrl,{accountId:f.b.id},f.viewerCookie)).statusCode).toBe(200);
+    expect(f.create(f.component.id).builderAccountId).toBe(f.b.id);
+    expect((await f.call("POST",`${delivery}/executions`,{accountId:f.a.id,scope:"Unrelated permission"},f.viewerCookie)).statusCode).toBe(403);
+    expect((await f.call("PATCH",delivery,{title:"Unauthorized edit"},f.viewerCookie)).statusCode).toBe(404);
+    expect((await f.call("GET","/api/v1/accounts",undefined,f.viewerCookie)).statusCode).toBe(404);
+    expect((await f.call("GET",`/api/v1/products/${f.other.id}/builders`,undefined,f.viewerCookie)).statusCode).toBe(404);
+    const roster=(await f.call("GET","/api/v1/accounts")).json().accounts;
+    expect(roster.find((row:{id:string})=>row.id===f.viewer.id).projectAdministratorProductIds).toEqual([f.product.id]);
+    // Ordinary permission edits neither erase nor re-grant this role.
+    f.accounts.replacePermissions(f.viewer.id,[{productId:f.product.id,canView:true,canOperate:false,canUseAi:false}]);
+    expect(f.accounts.isProjectAdministrator(f.viewer,f.product.id)).toBe(true);
+    f.accounts.updateAccount(f.viewer.id,{disabled:true});
+    expect(f.accounts.isProjectAdministrator(f.accounts.getAccount(f.viewer.id),f.product.id)).toBe(false);
+    f.accounts.updateAccount(f.viewer.id,{disabled:false});
+    f.viewerCookie=await f.signIn(f.viewer.email);
+    await f.call("PUT",roleUrl,{accountIds:[],expectedAccountIds:[f.viewer.id]});
+    expect((await f.call("GET",`${delivery}/delivery`,undefined,f.viewerCookie)).json()).toMatchObject({canManageBuilder:false,canManage:false});
+    expect((await f.call("PUT",f.moduleUrl,{accountId:f.a.id},f.viewerCookie)).statusCode).toBe(403);
+    expect(f.accounts.allows(f.accounts.getAccount(f.viewer.id),f.product.id,"view")).toBe(true);
+    f.accounts.replacePermissions(f.viewer.id,[]);
+    expect((await f.call("GET",`${delivery}/delivery`,undefined,f.viewerCookie)).statusCode).toBe(404);
+  });
   it("assigns module defaults for new items only and leaves manual choices intact",async()=>{
     const f=await fixture();const old=f.create(f.component.id);
     expect((await f.call("PUT",f.moduleUrl,{accountId:f.a.id})).statusCode).toBe(200);

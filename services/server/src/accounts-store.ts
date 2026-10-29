@@ -594,7 +594,7 @@ export class AccountStore {
       .all(productId) as unknown as Array<PermissionRow & { account_id: string }>;
     const byAccount = new Map(rows.map((row) => [row.account_id, row]));
     return accounts
-      .filter((account) => !options.rosterHidden || account.role === "admin" || byAccount.has(account.id))
+      .filter((account) => !options.rosterHidden || account.role === "admin" || byAccount.has(account.id) || this.isProjectAdministrator(account,productId))
       .map((account) => {
         const row = byAccount.get(account.id);
         return {
@@ -720,6 +720,35 @@ export class AccountStore {
       .run(accountId, productId, now, now);
   }
 
+  /** Explicit project roles are independent of the ordinary capability rows. */
+  projectAdministratorIds(productId: string): string[] {
+    return (this.database.connection.prepare("SELECT account_id FROM product_administrators WHERE product_id=? ORDER BY account_id")
+      .all(productId) as unknown as Array<{account_id:string}>).map(row => row.account_id);
+  }
+
+  isProjectAdministrator(account: AccountSnapshot, productId: string): boolean {
+    return !account.disabledAt && Boolean(this.database.connection.prepare("SELECT 1 FROM product_administrators WHERE product_id=? AND account_id=?").get(productId,account.id));
+  }
+
+  administeredProductIds(accountId: string): string[] {
+    return (this.database.connection.prepare("SELECT product_id FROM product_administrators WHERE account_id=? ORDER BY product_id")
+      .all(accountId) as unknown as Array<{product_id:string}>).map(row => row.product_id);
+  }
+
+  replaceProjectAdministrators(productId: string, accountIds: string[], expectedAccountIds: string[], grantedBy: string): string[] {
+    return this.database.transaction(() => {
+      if (JSON.stringify(this.projectAdministratorIds(productId)) !== JSON.stringify([...new Set(expectedAccountIds)].sort())) {
+        throw conflict("project_administrators_changed", "项目管理员已发生变化，请刷新后重试。");
+      }
+      const ids = [...new Set(accountIds)].sort();
+      for (const id of ids) if (!this.findActive(id) && !this.projectAdministratorIds(productId).includes(id)) throw invalidInput("请选择未停用的账号作为项目管理员。");
+      this.database.connection.prepare("DELETE FROM product_administrators WHERE product_id=?").run(productId);
+      const insert = this.database.connection.prepare("INSERT INTO product_administrators(product_id,account_id,granted_by,created_at) VALUES (?,?,?,?)");
+      for (const id of ids) insert.run(productId,id,grantedBy,new Date().toISOString());
+      return ids;
+    });
+  }
+
   /**
    * Whether this account reaches this product with this capability.
    *
@@ -738,6 +767,7 @@ export class AccountStore {
    */
   allows(account: AccountSnapshot, productId: string, capability: ProductCapability): boolean {
     if (account.role === "admin" && !(capability === "ai" && this.hasAiLimit(account.id))) return true;
+    if (capability === "view" && this.isProjectAdministrator(account,productId)) return true;
     const row = this.database.connection
       .prepare("SELECT can_view, can_operate, can_use_ai FROM account_products WHERE account_id = ? AND product_id = ?")
       .get(account.id, productId) as unknown as PermissionRow | undefined;
@@ -754,7 +784,9 @@ export class AccountStore {
     const rows = this.database.connection
       .prepare(`SELECT product_id FROM account_products WHERE account_id = ? AND ${column} = 1`)
       .all(account.id) as unknown as Array<{ product_id: string }>;
-    return rows.map((row) => row.product_id);
+    const administered = capability === "view" && !account.disabledAt
+      ? this.database.connection.prepare("SELECT product_id FROM product_administrators WHERE account_id=?").all(account.id) as unknown as Array<{product_id:string}> : [];
+    return [...new Set([...rows,...administered].map(row => row.product_id))];
   }
 
   /** Whether this account has said anything at all about which products its AI clients may read. */

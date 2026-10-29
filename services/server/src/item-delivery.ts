@@ -32,10 +32,14 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
   const manages = (account: AccountSnapshot, item: ReturnType<MissionGoStore["getWorkItem"]>) =>
     !item.transferred && accounts.allows(account, item.productId, "operate") &&
     (account.role === "admin" || store.getProduct(item.productId).createdByAccountId === account.id || item.builderAccountId === account.id);
-  const writable = (request: FastifyRequest, key: string) => {
+  const configuresBuilders = (account: AccountSnapshot, productId: string) => accounts.isProjectAdministrator(account,productId) ||
+    accounts.allows(account,productId,"operate") && (account.role === "admin" || store.getProduct(productId).createdByAccountId === account.id);
+  const managesBuilder = (account: AccountSnapshot, item: ReturnType<MissionGoStore["getWorkItem"]>) =>
+    !item.transferred && (accounts.isProjectAdministrator(account,item.productId) || manages(account,item));
+  const writable = (request: FastifyRequest, key: string, builderOnly = false) => {
     const item = store.getWorkItem(key);
     const account = visible(request, item.productId);
-    if (!manages(account, item)) throw new MissionGoError("delivery_management_required", "Only the Builder or a product administrator with operate permission can manage delivery.", 403);
+    if (!(builderOnly ? managesBuilder(account,item) : manages(account,item))) throw new MissionGoError("delivery_management_required", "当前账号没有此项交付管理权限。", 403);
     store.assertWorkItemWritable(key);
     return { item, account };
   };
@@ -60,13 +64,12 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
   app.get("/api/v1/products/:productId/builders", async request => {
     const {productId} = request.params as {productId:string};
     const account = visible(request, productId);
-    const product = store.getProduct(productId);
-    return { canConfigure: accounts.allows(account,productId,"operate") && (account.role === "admin" || product.createdByAccountId === account.id), builders: candidates(productId).map(account => ({id:account.id, name:name(account.id)})) };
+    return { canConfigure: configuresBuilders(account,productId), builders: candidates(productId).map(account => ({id:account.id, name:name(account.id)})) };
   });
   app.put("/api/v1/products/:productId/components/:componentId/builder", async request => {
     const {productId,componentId} = request.params as {productId:string;componentId:string};
     const account = visible(request, productId);
-    if (!accounts.allows(account, productId, "operate") || !(account.role === "admin" || store.getProduct(productId).createdByAccountId === account.id)) throw new MissionGoError("product_ownership_required", "A product administrator is required.", 403);
+    if (!configuresBuilders(account,productId)) throw new MissionGoError("product_ownership_required", "A product administrator is required.", 403);
     const component = store.listComponents(productId, {includeArchived:true}).find(row => row.id === componentId);
     if (!component || component.archivedAt) throw notFound("Component");
     const {accountId} = body(request);
@@ -79,13 +82,13 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
     const {itemKey} = request.params as {itemKey:string}; const item = store.getWorkItem(itemKey);
     const account = visible(request, item.productId);
     return { builderAccountId: item.builderAccountId ?? null, builderName: item.builderName ?? null,
-      builderNeedsReassignment: item.builderNeedsReassignment ?? false, canManage: manages(account,item), currentAccountId: account.id,
+      builderNeedsReassignment: item.builderNeedsReassignment ?? false, canManage: manages(account,item), canManageBuilder: managesBuilder(account,item), currentAccountId: account.id,
       candidates: candidates(item.productId).map(row => ({id:row.id,name:name(row.id)})),
       performers: accounts.listAccounts().filter(row => !row.disabledAt && accounts.allows(row,item.productId,"view"))
         .map(row => ({id:row.id,name:name(row.id)})), executions: list(itemKey) };
   });
   app.post("/api/v1/items/:itemKey/builder", async request => {
-    const {itemKey} = request.params as {itemKey:string}; const {item,account} = writable(request,itemKey);
+    const {itemKey} = request.params as {itemKey:string}; const {item,account} = writable(request,itemKey,true);
     const input = body(request); const note = text(input.note,"Handover note");
     const target = input.accountId;
     if (target !== null && (typeof target !== "string" || !candidates(item.productId).some(row => row.id === target))) throw invalidInput("Choose an active Builder with AI permission on this product.");
