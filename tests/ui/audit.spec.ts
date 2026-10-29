@@ -304,6 +304,9 @@ test.describe("item media gallery on touch", () => {
 
   test("a left swipe opens the next attachment", async ({ page }) => {
     await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
+    // Image pixels are loaded near the viewport. Scroll the card, which is
+    // always present, before waiting for its thumbnail below the delivery panel.
+    await page.locator(".attachment-card").filter({ hasText: "screen-a.png" }).scrollIntoViewIfNeeded();
     await page.locator('.attachment-media-open img[alt="screen-a.png"]').click();
     const gallery = page.locator(".selected-media-lightbox[open]");
     const bounds = await gallery.locator(".media-gallery-stage").boundingBox();

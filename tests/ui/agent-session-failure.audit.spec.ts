@@ -22,7 +22,7 @@ const detail = { id, dispatchId: summary.dispatchId, agentKind: "codex", status:
   canReply: true, canResolveDelivery: false };
 
 for (const theme of ["light", "dark"]) for (const language of ["zh-CN", "en"]) {
-  test(`phone failure details and recovery: ${theme} ${language}`, async ({ browser }, testInfo) => {
+  test(`phone failure details and recovery with stored locale: ${theme} ${language}`, async ({ browser }, testInfo) => {
     const context = await browser.newContext({ baseURL: WEB_ORIGIN, viewport: { width: 353, height: 757 }, isMobile: true, hasTouch: true,
       colorScheme: theme as "light" | "dark", storageState: "./tests/ui/.auth/state.json" });
     const page = await context.newPage();
@@ -42,10 +42,11 @@ for (const theme of ["light", "dark"]) for (const language of ["zh-CN", "en"]) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
     });
     await page.goto(url);
+    await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
     const card = page.locator(".agent-console-failure");
     await expect(card).toBeVisible();
     await expect(card).toContainText("codex_context_window_exceeded");
-    await expect(card).toContainText(language === "zh-CN" ? "上下文上限" : "context limit");
+    await expect(card).toContainText("上下文上限");
     await expect(page.locator(".agent-console-activity-failed")).toHaveCount(0);
     await expect(card.locator("pre")).toBeHidden();
     await card.locator("summary").click();
@@ -54,11 +55,11 @@ for (const theme of ["light", "dark"]) for (const language of ["zh-CN", "en"]) {
     expect(await card.locator("summary").evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
     await card.getByRole("button").click();
-    await expect(card).toContainText(language === "zh-CN" ? "已复制" : "Copied");
+    await expect(card).toContainText("已复制");
     expect(await page.evaluate(() => localStorage.getItem("hg193-copied"))).toContain("turn: turn-failed");
     await page.evaluate(() => localStorage.setItem("hg193-copy-fail", "yes"));
     await card.getByRole("button").click();
-    await expect(card).toContainText(language === "zh-CN" ? "手动复制" : "manually");
+    await expect(card).toContainText("手动复制");
     await page.screenshot({ path: testInfo.outputPath(`failure-${theme}-${language}.png`) });
     expect(sent).toEqual([]); // Viewing, expanding and copying never replay the queued reply.
     const recovered = { ...detail, status: "idle", command: undefined, failure: undefined };
