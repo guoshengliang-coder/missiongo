@@ -25,13 +25,14 @@ export interface CachedListQuery {
  */
 export function cachedListSummary(
   queries: readonly CachedListQuery[],
-  filters: { readonly productId: string; readonly type: string; readonly search: string; readonly builder?: string },
+  filters: { readonly productId: string; readonly type: string; readonly search: string; readonly builder?: string; readonly advanced?: string },
 ): ListSummary | undefined {
   let newest: { summary: ListSummary; updatedAt: number } | undefined;
   for (const query of queries) {
-    const [root, productId, , type, search, builder] = query.queryKey;
+    const [root, productId, , type, search, builder, advanced] = query.queryKey;
     if (root !== "items" || productId !== filters.productId || type !== filters.type || search !== filters.search) continue;
     if ((builder ?? "") !== (filters.builder ?? "")) continue;
+    if ((advanced ?? "") !== (filters.advanced ?? "")) continue;
     const summary = (query.data as { pages?: ReadonlyArray<{ summary?: ListSummary }> } | undefined)?.pages?.[0]?.summary;
     if (!summary) continue;
     if (!newest || query.dataUpdatedAt > newest.updatedAt) newest = { summary, updatedAt: query.dataUpdatedAt };
