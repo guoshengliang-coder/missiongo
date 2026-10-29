@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
 import type { InsightQuery, InsightBatchStage } from "@missiongo/domain";
@@ -17,25 +17,38 @@ export function StatisticsBatches({ accountId, scopeKey, input, valid, onOpenIte
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<Record<string, string>>({});
-  const [activeId, setActiveId] = useState("");
+  const [activeId, setActiveId] = useState(() => new URL(window.location.href).searchParams.get("statsBatch") ?? "");
+  const [search, setSearch] = useState("");
+  const selectBatch = (id: string) => {
+    const url = new URL(window.location.href);
+    if (id) url.searchParams.set("statsBatch", id);
+    else url.searchParams.delete("statsBatch");
+    history.replaceState(history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    setActiveId(id); setStage("all"); setItemOffset(0); setDeleting(false); setItemsOpen(false);
+  };
+  useEffect(() => {
+    const sync = () => {setActiveId(new URL(window.location.href).searchParams.get("statsBatch") ?? "");setStage("all");setItemOffset(0);setDeleting(false);setItemsOpen(false);};
+    window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
+  }, []);
   const [candidateOffset, setCandidateOffset] = useState(0);
   const [stage, setStage] = useState<InsightBatchStage | "cancelled" | "all">("all");
   const [itemOffset, setItemOffset] = useState(0);
   const [itemsOpen, setItemsOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const list = useQuery({queryKey: ["insight-batches", accountId], queryFn: api.insightBatches, enabled: Boolean(accountId)});
-  const batchId = list.data?.batches.some(batch => batch.id === activeId) ? activeId : list.data?.batches[0]?.id;
+  const list = useQuery({queryKey: ["insight-batches", accountId, scopeKey], queryFn: api.insightBatches, enabled: Boolean(accountId)});
+  const batchId = activeId || undefined;
   const progress = useQuery({queryKey: ["insight-batch", accountId, scopeKey, batchId],
     queryFn: () => api.insightBatchProgress(batchId!), enabled: Boolean(accountId && batchId)});
   const candidates = useQuery({queryKey: ["insight-batch-candidates", accountId, scopeKey, input, candidateOffset],
     queryFn: () => api.projectInsightItems({...input, metric: "created", limit: 25, offset: candidateOffset}), enabled: Boolean(accountId && creating && valid)});
   const create = useMutation({mutationFn: () => api.createInsightBatch(name, Object.keys(selected)), onSuccess: async batch => {
-    await client.invalidateQueries({queryKey: ["insight-batches", accountId]});
-    setActiveId(batch.id); setCreating(false); setSelected({}); setName(""); setStage("all"); setItemOffset(0);
+    await client.invalidateQueries({queryKey: ["insight-batches", accountId, scopeKey]});
+    selectBatch(batch.id); setCreating(false); setSelected({}); setName(""); setStage("all"); setItemOffset(0);
   }});
   const remove = useMutation({mutationFn: () => api.deleteInsightBatch(batchId!), onSuccess: async () => {
-    await client.invalidateQueries({queryKey: ["insight-batches", accountId]});
-    setActiveId(""); setDeleting(false); setStage("all"); setItemOffset(0);
+    await client.invalidateQueries({queryKey: ["insight-batches", accountId, scopeKey]});
+    selectBatch(""); setDeleting(false); setStage("all"); setItemOffset(0);
   }});
   const data = progress.data;
   const labels = {delivered: text("已交付", "Delivered"), processing: text("处理中", "In progress"),
@@ -48,11 +61,11 @@ export function StatisticsBatches({ accountId, scopeKey, input, valid, onOpenIte
         {creating ? <X size={16}/> : <Plus size={16}/>}{creating ? text("收起", "Close") : text("创建批次", "Create batch")}
       </button></div>
     <p className="statistics-help">{text("保存一组固定条目，持续查看消化进度。批次仅自己可见，不随上方筛选增减；进度按当前状态计算。", "Save a fixed set of items and track its progress. Batches are private to your account, independent of report filters; progress uses current status.")}</p>
-    {list.isError && <p className="inline-error" role="alert">{localizedErrorText(list.error, t)}</p>}
+    {list.isError && <div role="alert"><p className="inline-error">{localizedErrorText(list.error, t)}</p><button type="button" className="secondary-button" onClick={() => void list.refetch()}>{text("重试", "Retry")}</button></div>}
     {list.isPending && accountId && <p role="status">{text("正在读取批次…", "Loading batches…")}</p>}
     {creating && <form className="statistics-batch-create" onSubmit={event => {event.preventDefault();create.mutate();}}>
       <label>{text("批次名称", "Batch name")}<input required maxLength={100} value={name} onChange={event => setName(event.target.value)} placeholder={text("例如：本周收到的 10 个反馈", "For example: 10 feedback items received this week")}/></label>
-      <p className="statistics-help">{text("候选条目按上方已应用的项目、类型和创建日期筛选。可跨页勾选；保存后成员固定，低优先级和暂停不会被移出。", "Candidates use the applied project, type and creation dates above. Select across pages; saved membership stays fixed, including low-priority and paused items.")}</p>
+      <p className="statistics-help">{text("候选条目按上方已应用的产品、类型和创建日期筛选。可跨页勾选；保存后成员固定，低优先级和暂停不会被移出。", "Candidates use the applied product, type and creation dates above. Select across pages; saved membership stays fixed, including low-priority and paused items.")}</p>
       {!valid && <p role="alert" className="inline-error">{text("请先应用有效的统计范围。", "Apply a valid report range first.")}</p>}
       {candidates.isPending && valid && <p role="status">{text("正在读取候选条目…", "Loading candidates…")}</p>}
       {candidates.isError && <p role="alert" className="inline-error">{localizedErrorText(candidates.error,t)}</p>}
@@ -74,9 +87,22 @@ export function StatisticsBatches({ accountId, scopeKey, input, valid, onOpenIte
       {create.isError && <p className="inline-error" role="alert">{localizedErrorText(create.error,t)}</p>}
     </form>}
     {list.isSuccess && !list.data.batches.length && !creating && <p className="statistics-empty">{text("还没有批次。先选定一组条目，再查看这批交付了多少、还有多少未处理。", "No batches yet. Select a group of items to track deliveries and remaining work.")}</p>}
-    {Boolean(list.data?.batches.length) && <div className="statistics-batch-toolbar">
-      <label>{text("查看批次", "Batch")}<select value={batchId ?? ""} onChange={event => {setActiveId(event.target.value);setStage("all");setItemOffset(0);setDeleting(false);remove.reset();}}>{list.data?.batches.map(batch => <option key={batch.id} value={batch.id}>{batch.name} · {batch.itemCount}</option>)}</select></label>
-      <button type="button" className="secondary-button" disabled={progress.isFetching} onClick={() => void progress.refetch()}><RefreshCw size={16}/>{text("刷新进度", "Refresh progress")}</button>
+    {!batchId && list.isSuccess && Boolean(list.data.batches.length) && <>
+      <div className="statistics-batch-toolbar"><label>{text("搜索批次", "Search batches")}<input type="search" value={search} onChange={event => setSearch(event.target.value)} /></label>
+        <button type="button" className="secondary-button" disabled={list.isFetching} onClick={() => void list.refetch()}><RefreshCw size={16}/>{text("刷新进度", "Refresh progress")}</button></div>
+      <div className="statistics-batch-list">
+        {list.data!.batches.filter(batch => batch.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())).map(batch => <button key={batch.id} type="button" className="settings-hub-row" onClick={() => {selectBatch(batch.id);remove.reset();}}>
+          <span><strong>{batch.name}</strong><small>{batch.itemCount} {text("条", "items")} · {new Date(batch.createdAt).toLocaleDateString(locale,{timeZone:"Asia/Shanghai"})}</small>
+            <small>{batch.unavailable ? text("部分条目不可用，交付率暂不计算", "Some items are unavailable; delivery rate cannot be calculated") : `${text("已交付", "Delivered")} ${batch.delivered} / ${batch.effective}`}</small></span>
+          <span className="statistics-batch-list-progress"><strong>{percent(batch.deliveryRate)}</strong><ChevronRight size={18}/></span>
+        </button>)}
+        {!list.data!.batches.some(batch => batch.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) && <p className="statistics-empty">{text("没有符合条件的批次。", "No batches match this search.")}</p>}
+      </div>
+    </>}
+    {batchId && <div className="statistics-batch-toolbar">
+      <button type="button" className="text-button" onClick={() => {selectBatch("");remove.reset();void list.refetch();}}><ChevronLeft size={16}/>{text("返回批次列表", "Back to batches")}</button>
+      <strong>{data?.batch.name ?? list.data?.batches.find(batch => batch.id === batchId)?.name}</strong>
+      <button type="button" className="secondary-button" disabled={progress.isFetching} onClick={() => {void progress.refetch();void list.refetch();}}><RefreshCw size={16}/>{text("刷新进度", "Refresh progress")}</button>
       <button type="button" className="text-button" onClick={() => setDeleting(true)}>{text("删除批次", "Delete batch")}</button>
     </div>}
     {deleting && <div className="statistics-batch-delete" role="group" aria-label={text("删除批次确认", "Confirm batch deletion")}><p>{text("仅删除这个批次记录，条目本身不受影响。", "Delete only this saved batch; its work items are unaffected.")}</p>
@@ -85,7 +111,7 @@ export function StatisticsBatches({ accountId, scopeKey, input, valid, onOpenIte
       {remove.isError && <p className="inline-error" role="alert">{localizedErrorText(remove.error,t)}</p>}</div>}
     {progress.isPending && batchId && <p role="status">{text("正在计算进度…", "Calculating progress…")}</p>}
     {progress.isError && <p role="alert" className="inline-error">{localizedErrorText(progress.error,t)}</p>}
-    {data && <>
+    {batchId && progress.isSuccess && data && <>
       <div className="statistics-batch-summary"><div><strong>{percent(data.deliveryRate)}</strong><span>{text("交付进度", "Delivered")} · {data.delivered} / {data.effective}</span></div>
         <p>{text("原始", "Original")} {data.total} · {text("取消", "Cancelled")} {data.cancelled} · {text("有效", "Effective")} {data.effective}<br/>{text("截至", "As of")} {new Date(data.dataAsOf).toLocaleString(locale,{timeZone:"Asia/Shanghai"})}</p></div>
       {data.unavailable > 0 && <p className="statistics-help" role="status">{text("存在已删除、迁出或失去查看权限的条目：", "Deleted, transferred or no longer visible items: ")}{data.unavailable}{text("。仍保留在原始数量中，交付率暂不计算。", ". Original membership is retained; delivery percentages are unavailable.")}</p>}

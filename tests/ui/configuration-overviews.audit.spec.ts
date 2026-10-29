@@ -1,0 +1,120 @@
+import { randomBytes } from "node:crypto";
+import { expect, test } from "@playwright/test";
+import { AUDIT_SOURCE } from "./audit-page.mjs";
+import { WEB_ORIGIN } from "./fixture.mjs";
+
+for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const) {
+  test.describe(`${width}px ${theme} configuration overviews`, () => {
+    test.use({ viewport: { width, height: 900 }, hasTouch: width === 375, isMobile: width === 375, colorScheme: theme });
+    test("lists products before details, searches and restores archived products after reload", async ({ page, request }) => {
+      const name = `Overview ${width} ${theme}`;
+      const product = await (await request.post("/api/v1/products", { data: { name, keyPrefix: `OV${width}${theme[0]!.toUpperCase()}` } })).json();
+      await page.goto(`/settings/products?product=${product.id}`);
+      const card = page.locator(`.settings-product-card[data-product-id="${product.id}"]`);
+      await expect(card).toBeVisible();
+      await expect(page.locator(".settings-product-card").nth(1)).toBeVisible();
+      await expect(page.getByRole("combobox", { name: "当前产品", exact: true })).toHaveCount(0);
+      await page.screenshot({ path: test.info().outputPath("product-list-all.png") });
+      await page.getByRole("searchbox", { name: "搜索产品" }).fill(name);
+      await expect(page.locator(".settings-product-card")).toHaveCount(1);
+      await page.screenshot({ path: test.info().outputPath("product-list.png") });
+      const audit = await page.evaluate(AUDIT_SOURCE) as { horizontalOverflow: number; text: Array<{ fontSize: number; fontWeight: number; contrast: number }>; targets: Array<{ width: number; height: number }> };
+      expect(audit.horizontalOverflow).toBeLessThanOrEqual(0);
+      expect(audit.text.filter(row => row.fontSize > 0 && row.fontSize < 11)).toEqual([]);
+      expect(audit.text.filter(row => row.contrast < (row.fontSize >= 24 || row.fontWeight >= 700 && row.fontSize >= 18.66 ? 3 : 4.5))).toEqual([]);
+      if (width === 375) expect(audit.targets.filter(row => row.width > 0 && row.height > 0 && (row.width < 44 || row.height < 44))).toEqual([]);
+      await card.click();
+      await expect(page).toHaveURL(new RegExp(`/settings/products/${product.id}\\?`));
+      await page.getByRole("navigation", { name: "设置位置" }).getByRole("button", { name: "产品配置", exact: true }).click();
+      await expect(card).toBeVisible();
+      await card.click();
+      await page.locator(".settings-hub-row").filter({ hasText: "基本资料" }).click();
+      page.once("dialog", dialog => dialog.accept());
+      await page.getByRole("button", { name: "归档", exact: true }).click();
+      await expect(page.getByRole("button", { name: "恢复", exact: true })).toBeVisible();
+      await page.reload();
+      await expect(page.getByRole("button", { name: "恢复", exact: true })).toBeVisible();
+      await page.goto("/settings/products");
+      await expect(card).toHaveCount(0);
+      await page.getByRole("combobox", { name: "产品状态" }).selectOption("archived");
+      await expect(card).toBeVisible();
+      await card.click();
+      await page.locator(".settings-hub-row").filter({ hasText: "基本资料" }).click();
+      await page.getByRole("button", { name: "恢复", exact: true }).click();
+      await expect(page.getByRole("button", { name: "归档", exact: true })).toBeVisible();
+      await page.goto("/settings/products");
+      await expect(card).toBeVisible();
+      expect((await (await request.get("/api/v1/products")).json()).some((value: { id: string }) => value.id === product.id)).toBe(true);
+    });
+  });
+}
+
+test("administrator overview shows assignments and enters explicitly scoped details", async ({ page, request }) => {
+  const product = await (await request.post("/api/v1/products", { data: { name: "Admin overview", keyPrefix: "AOV" } })).json();
+  const member = await (await request.post("/api/v1/accounts", { data: { email: "overview-admin@example.test", password: randomBytes(18).toString("base64url"), role: "member" } })).json();
+  expect((await request.put(`/api/v1/products/${product.id}/administrators`, { data: { accountIds: [member.id], expectedAccountIds: [] } })).status()).toBe(200);
+  await page.goto(`/settings/admin/project-administrators?product=${product.id}`);
+  const card = page.locator(`.settings-product-card[data-product-id="${product.id}"]`);
+  await expect(card).toContainText(member.email);
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
+  await card.click();
+  await expect(page.locator(".settings-page-title")).toContainText(`作用于产品：${product.name}`);
+  await expect(page.locator(".settings-page-title")).not.toContainText("影响整个工作空间");
+  await expect(page.getByRole("checkbox", { name: new RegExp(member.email) })).toBeChecked();
+  await page.getByRole("navigation", { name: "设置位置" }).getByRole("button", { name: "产品管理员", exact: true }).click();
+  await expect(card).toBeVisible();
+});
+
+test("owners choose among owned products without fetching the system account roster", async ({ page, request }) => {
+  const password = randomBytes(18).toString("base64url");
+  const email = "overview-owner@example.test";
+  await request.post("/api/v1/accounts", { data: { email, password, role: "member" } });
+  await request.post("/api/v1/auth/login", { data: { username: email, password } });
+  const a = await (await request.post("/api/v1/products", { data: { name: "Owned Alpha", keyPrefix: "OAL" } })).json();
+  const b = await (await request.post("/api/v1/products", { data: { name: "Owned Beta", keyPrefix: "OBE" } })).json();
+  const state = await request.storageState();
+  await page.context().clearCookies();
+  await page.context().addCookies(state.cookies.map(value => ({ name: value.name, value: value.value, url: WEB_ORIGIN })));
+  const rosterRequests: string[] = [];
+  page.on("request", req => { if (new URL(req.url()).pathname === "/api/v1/accounts") rosterRequests.push(req.url()); });
+  await page.goto(`/settings/admin/accounts?product=${a.id}`);
+  await expect(page.locator(".settings-product-card")).toHaveCount(2);
+  await page.locator(`.settings-product-card[data-product-id="${b.id}"]`).click();
+  await expect(page.locator(".settings-page-title")).toContainText(`作用于产品：${b.name}`);
+  await expect(page.getByRole("textbox", { name: "添加", exact: true })).toBeVisible();
+  expect(rosterRequests).toEqual([]);
+  await page.goto(`/settings/admin/accounts/${a.id}`);
+  await expect(page.getByRole("alert")).toHaveText("此设置不可用，或你没有访问权限。");
+  expect(rosterRequests).toEqual([]);
+});
+
+test("batch overview compares saved batches, restores selected detail and returns to the list", async ({ page, request }) => {
+  const product = await (await request.post("/api/v1/products", { data: { name: "Batch overview", keyPrefix: "BOV" } })).json();
+  const item = await (await request.post("/api/v1/items", { data: { productId: product.id, title: "Overview request", description: "Batch overview fixture", type: "task", priority: "normal" } })).json();
+  const a = await (await request.post("/api/v1/project-insights/batches", { data: { name: "Overview batch Alpha", itemKeys: [item.key] } })).json();
+  await request.post("/api/v1/project-insights/batches", { data: { name: "Overview batch Beta", itemKeys: [item.key] } });
+  await page.goto("/?statistics=1");
+  const list = page.locator(".statistics-batch-list");
+  await expect(list).toContainText("Overview batch Alpha");
+  await expect(list).toContainText("Overview batch Beta");
+  await expect(page.locator(".statistics-batch-summary")).toHaveCount(0);
+  await list.getByRole("button").filter({ hasText: "Overview batch Alpha" }).click();
+  await expect(page).toHaveURL(new RegExp(`statsBatch=${a.id}`));
+  await expect(page.locator(".statistics-batch-summary")).toBeVisible();
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`statsBatch=${a.id}`));
+  await page.reload();
+  await expect(page.locator(".statistics-batch-summary")).toBeVisible();
+  await page.getByRole("button", { name: "返回批次列表", exact: true }).click();
+  await expect(page).not.toHaveURL(/statsBatch=/);
+  await page.getByRole("searchbox", { name: "搜索批次" }).fill("Overview batch Beta");
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await expect(list).toContainText("0%");
+  await page.route("**/api/v1/project-insights/batches", route => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({code:"batch_load_failed",title:"Unable to load batches"}) }));
+  await page.locator(".statistics-batches").getByRole("button", { name: "刷新进度", exact: true }).click();
+  await expect(page.locator(".statistics-batches").getByRole("alert")).toBeVisible();
+  await expect(list).toHaveCount(0);
+  await page.unroute("**/api/v1/project-insights/batches");
+  await page.locator(".statistics-batches").getByRole("button", { name: "重试", exact: true }).click();
+  await expect(list).toContainText("Overview batch Beta");
+});

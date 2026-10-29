@@ -29,7 +29,7 @@ export function statisticsState(url = new URL(window.location.href)): {filters: 
 }
 export function statisticsStateUrl(filters: StatisticsFilters, selection: StatisticsSelection | null, url = new URL(window.location.href)) {
   const next = new URL(statisticsUrl(url),url);
-  for(const key of Array.from(next.searchParams.keys())) if(key.startsWith("stats")) next.searchParams.delete(key);
+  for(const key of Array.from(next.searchParams.keys())) if(key.startsWith("stats") && key !== "statsBatch") next.searchParams.delete(key);
   const values = {Project:filters.product,Period:filters.period,Type:filters.type,
     Start:filters.period==="custom" ? filters.start : "",End:filters.period==="custom" ? filters.end : "",
     Metric:selection?.metric,DetailProject:selection?.product,Day:selection?.day,EndDay:selection?.endDay,Status:selection?.status,Offset:selection?.offset};

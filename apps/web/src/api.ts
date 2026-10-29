@@ -1,6 +1,6 @@
 import type { AgentArtifactBundle, AgentArtifactState } from "@missiongo/domain";
 import type { CompletionReference } from "@missiongo/contracts";
-import type { InsightQuery, InsightSummary, InsightDetails, InsightDetailSelection, InsightBatch, InsightBatchProgress } from "@missiongo/domain";
+import type { InsightQuery, InsightSummary, InsightDetails, InsightDetailSelection, InsightBatch, InsightBatchSummary, InsightBatchProgress } from "@missiongo/domain";
 import type { ManagedDecision, ManagedDecisionGuard } from "@missiongo/domain";
 import { attachmentPreviewPath, attachmentThumbnailPath } from "./attachment-thumbnail";
 import type { FontScale } from "./font-scale";
@@ -277,7 +277,7 @@ export const api = {
     request<AgentArtifactState>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(id)}`),
   agentArtifactBundle: (sessionId: string, id: string) =>
     request<AgentArtifactBundle>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(id)}/bundle`),
-  insightBatches: () => request<{batches: InsightBatch[]}>("/api/v1/project-insights/batches"),
+  insightBatches: () => request<{batches: InsightBatchSummary[]}>("/api/v1/project-insights/batches"),
   createInsightBatch: (name: string, itemKeys: string[]) => request<InsightBatch>("/api/v1/project-insights/batches", {method: "POST", body: JSON.stringify({name,itemKeys})}),
   insightBatchProgress: (id: string) => request<InsightBatchProgress>(`/api/v1/project-insights/batches/${encodeURIComponent(id)}`),
   deleteInsightBatch: (id: string) => requestNoContent(`/api/v1/project-insights/batches/${encodeURIComponent(id)}`, {method: "DELETE"}),

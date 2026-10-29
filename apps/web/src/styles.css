@@ -2649,6 +2649,17 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .settings-hub-row strong { font-size: var(--text-base); font-weight: 650; overflow-wrap: anywhere; }
 .settings-hub-row small { color: var(--muted); font-size: var(--text-md); line-height: 1.65; overflow-wrap: anywhere; }
 .settings-hub-row svg { flex-shrink: 0; color: var(--muted); }
+/* Product overviews show the entire collection before opening an editor. */
+.settings-product-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.settings-product-card { display: flex; align-items: center; gap: 14px; min-width: 0; min-height: 100px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.settings-product-card > span:not(.product-badge) { display: grid; flex: 1; gap: 6px; min-width: 0; }
+.settings-product-card strong { font-size: var(--text-base); overflow-wrap: anywhere; }
+.settings-product-card small { color: var(--muted); font-size: var(--text-md); line-height: 1.65; overflow-wrap: anywhere; }
+.settings-product-card > svg { flex-shrink: 0; color: var(--muted); }
+.statistics-batch-list .settings-hub-row > .statistics-batch-list-progress { display: flex; align-items: center; flex-shrink: 0; gap: 12px; color: var(--accent-text); }
+.statistics-batch-toolbar input { min-height: 44px; width: 100%; min-width: 0; }
+@media (hover: hover) { .settings-product-card:hover { background: var(--row-hover); border-color: var(--accent-line); } }
+@media (max-width: 520px) { .settings-product-grid { grid-template-columns: minmax(0, 1fr); } }
 .settings-product-summary { margin-bottom: 24px; }
 .settings-product-summary strong { font-size: var(--text-xl); overflow-wrap: anywhere; }
 .settings-product-summary > span { margin-left: 12px; font-size: var(--text-sm); color: var(--muted); }

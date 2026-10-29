@@ -19,20 +19,20 @@ export function ProjectAdministratorsSettings({productId}: {productId:string}) {
     await Promise.all([client.invalidateQueries({queryKey:["products"]}),client.invalidateQueries({queryKey:["accounts"]}),client.invalidateQueries({queryKey:["product-access",productId]})]);
   }});
   useSettingsDraft(changed,save.isPending);
-  if(query.isPending || accounts.isPending) return <p role="status">正在加载项目管理员…</p>;
+  if(query.isPending || accounts.isPending) return <p role="status">正在加载产品管理员…</p>;
   if(query.isError || accounts.isError) return <p role="alert">{failure(query.error ?? accounts.error)}</p>;
-  return <section aria-label="项目管理员配置" className="project-administrators-settings">
-    <p className="settings-hub-intro">由系统管理员授予。项目管理员可以查看本项目、配置模块默认 Builder，并为所有条目分配或转交 Builder。支持设置多名项目管理员。</p>
+  return <section aria-label="产品管理员配置" className="project-administrators-settings">
+    <p className="settings-hub-intro">由系统管理员授予。产品管理员可以查看本产品、配置模块默认 Builder，并为所有条目分配或转交 Builder。支持设置多名产品管理员。</p>
     <p className="account-note">此角色不授予系统账号管理、执行安排或 AI 操作权限。取消角色后，账号原有的产品权限仍然保留。</p>
-    <fieldset disabled={save.isPending} className="project-administrator-choices"><legend>选择本项目的管理员</legend>
+    <fieldset disabled={save.isPending} className="project-administrator-choices"><legend>选择本产品的管理员</legend>
       {accounts.data.accounts.map(account=><label key={account.id} className="project-administrator-choice">
         <input type="checkbox" checked={selected.includes(account.id)} disabled={Boolean(account.disabledAt) && !selected.includes(account.id)} onChange={event=>setSelected(event.target.checked ? [...selected,account.id] : selected.filter(id=>id!==account.id))} />
-        <span><strong>{account.nickname || account.email}</strong>{account.nickname && <small>{account.email}</small>}<small>{account.disabledAt ? "已停用，角色不生效" : account.role === "admin" ? "系统管理员，已拥有所有项目的 Builder 管理权限" : "普通账号"}</small></span>
+        <span><strong>{account.nickname || account.email}</strong>{account.nickname && <small>{account.email}</small>}<small>{account.disabledAt ? "已停用，角色不生效" : account.role === "admin" ? "系统管理员，已拥有所有产品的 Builder 管理权限" : "普通账号"}</small></span>
       </label>)}
     </fieldset>
-    <div className="account-form-actions"><button type="button" className="primary-button" disabled={!changed || save.isPending} onClick={()=>save.mutate()}>保存项目管理员</button></div>
+    <div className="account-form-actions"><button type="button" className="primary-button" disabled={!changed || save.isPending} onClick={()=>save.mutate()}>保存产品管理员</button></div>
     {save.isError && <p role="alert">{failure(save.error)}</p>}
-    {save.isSuccess && !changed && <p role="status">项目管理员已保存</p>}
+    {save.isSuccess && !changed && <p role="status">产品管理员已保存</p>}
   </section>;
 }
 

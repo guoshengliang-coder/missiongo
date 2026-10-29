@@ -54,7 +54,7 @@ import {
   X,
 } from "lucide-react";
 
-import { api, ApiError, productIconUrl, type AuthenticatedUser, type BulkTransitionResult } from "./api";
+import { api, ApiError, type AuthenticatedUser, type BulkTransitionResult } from "./api";
 import { BootSkeleton } from "./BootSkeleton";
 import { clearPersistedQueryCache } from "./query-persistence";
 // Type-only: erased at compile time, so it does not pull the chunk into the boot.
@@ -180,7 +180,7 @@ import {
   clampListPaneWidth,
   readListPaneWidth,
 } from "./pane-layout";
-import { productBadgeColor } from "./product-color";
+import { ProductBadge } from "./product-badge";
 import { SessionLink } from "./session-link";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
@@ -1347,7 +1347,7 @@ export function App() {
   if (settings.route) {
     if (!bootstrapQuery.data) return <BootSkeleton />;
     return <SettingsPage route={settings.route} user={bootstrapQuery.data.user} products={products}
-      canUseAi={hasAnyAiPermission} selectedProductId={selectedProductId} navigate={settings.navigate} guard={settings.guard}
+      canUseAi={hasAnyAiPermission} navigate={settings.navigate} guard={settings.guard}
       onLoggedOut={() => { clearPersistedQueryCache(); window.location.reload(); }}
       renderProduct={(product, section) => <ProductSettings key={`${product.id}:${section}`} product={product} user={bootstrapQuery.data.user} section={section} componentId={settings.route?.componentId} onOpenComponent={componentId => settings.navigate({ section: "components", productId: product.id, componentId })} onSelected={() => undefined} />}
       renderNewProduct={() => <ProductForm onCreated={async product => {
@@ -2167,37 +2167,6 @@ function ItemRow({
     </article>
   );
 }
-/**
- * Products are told apart at a glance. An uploaded icon wins; otherwise the item
- * prefix -- the same AND / HG that labels every key in the list -- sits on a
- * colour derived from the product id, so a product is distinguishable the moment
- * it exists, with nothing to configure.
- */
-function ProductBadge({ product, size = 22 }: { product: Product; size?: number }) {
-  if (product.hasIcon) {
-    return (
-      <img
-        className="product-badge"
-        src={productIconUrl(product)}
-        alt=""
-        aria-hidden="true"
-        loading="lazy"
-        decoding="async"
-        style={{ width: size, height: size }}
-      />
-    );
-  }
-  return (
-    <span
-      className="product-badge generated"
-      aria-hidden="true"
-      style={{ width: size, height: size, background: productBadgeColor(product.id), fontSize: Math.max(11, Math.round(size * 0.38)) }}
-    >
-      {product.keyPrefix.slice(0, 3)}
-    </span>
-  );
-}
-
 /**
  * A native <select> cannot carry an icon in its options, so this is the listbox
  * pattern instead: a button that owns the value, and a list that behaves the way
@@ -5078,7 +5047,7 @@ function ProductForm({ onCreated }: { onCreated: (product: Product) => void | Pr
       <label>{t("productName")}<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Hermes Go" required autoFocus /></label>
       <label>{t("itemPrefix")}<input value={keyPrefix} onChange={(event) => setKeyPrefix(event.target.value.toUpperCase())} placeholder="HG" minLength={2} maxLength={10} required /><small>{t("prefixHelp")}</small></label>
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
-      <button className="primary-button wide" disabled={mutation.isPending}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />} {t("createWorkspace")}</button>
+      <button className="primary-button wide" disabled={mutation.isPending}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />} {t("addProduct")}</button>
     </form>
   );
 }

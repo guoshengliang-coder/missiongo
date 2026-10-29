@@ -1,6 +1,6 @@
 import { beforeEach,afterEach,describe,it,expect,vi } from "vitest";
 import { MissionGoStore } from "./store.js";
-import { createInsightBatch,insightBatchProgress,listInsightBatches,deleteInsightBatch } from "./insight-batches.js";
+import { createInsightBatch,insightBatchProgress,listInsightBatches,listInsightBatchSummaries,deleteInsightBatch } from "./insight-batches.js";
 let store: MissionGoStore;
 beforeEach(()=>{vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date("2026-10-01T00:00:00Z"));store=new MissionGoStore(":memory:");});
 afterEach(()=>{store.close();vi.useRealTimers();});
@@ -25,6 +25,7 @@ describe("fixed delivery batches",()=>{
   progress=insightBatchProgress(store,"owner",batch.id,[product.id]);
   expect(progress).toMatchObject({total:10,effective:9,delivered:5,waiting:2,cancelled:1});expect(progress.deliveryRate).toBeCloseTo(5/9);
   expect(progress.items).toHaveLength(10);
+  expect(listInsightBatchSummaries(store,"owner",[product.id])[0]).toMatchObject({id:batch.id,itemCount:10,effective:9,delivered:5,unavailable:0,deliveryRate:progress.deliveryRate});
  });
  it("uses status at each receipt deadline; later returns or cancellations do not rewrite observed history",()=>{
   const {product,items,batch,deliver}=fixture(3);at("2026-10-03T00:00:00Z");deliver(items[0]!.key);
@@ -42,10 +43,12 @@ describe("fixed delivery batches",()=>{
   at("2026-10-20T00:00:00Z");store.database.connection.prepare("DELETE FROM work_item_events WHERE item_id=?").run(items[0]!.id);
   expect(insightBatchProgress(store,"owner",batch.id,[product.id]).milestones[0]).toMatchObject({eligible:1,unknown:1,rate:null});
   expect(insightBatchProgress(store,"owner",batch.id,[])).toMatchObject({total:2,effective:2,unavailable:2,deliveryRate:null,items:[]});
+  expect(listInsightBatchSummaries(store,"owner",[])).toEqual([{...batch,effective:2,delivered:0,unavailable:2,deliveryRate:null}]);
  });
  it("isolates account ownership and removes only the saved report",()=>{
   const {product,items,batch}=fixture(1);
   expect(listInsightBatches(store,"other")).toEqual([]);
+  expect(listInsightBatchSummaries(store,"other",[product.id])).toEqual([]);
   expect(()=>insightBatchProgress(store,"other",batch.id,[product.id])).toThrow();
   expect(()=>deleteInsightBatch(store,"other",batch.id)).toThrow();
   deleteInsightBatch(store,"owner",batch.id);expect(listInsightBatches(store,"owner")).toEqual([]);
