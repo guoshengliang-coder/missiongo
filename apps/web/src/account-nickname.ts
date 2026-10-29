@@ -1,4 +1,4 @@
-import type { AuthenticatedUser } from "./api";
+import type { Account, AuthenticatedUser } from "./api";
 
 /**
  * The server's limit, counted the way the server counts it (`String.length`),
@@ -32,6 +32,17 @@ export function nicknameDraftChanged(draft: string, user: Pick<AuthenticatedUser
 }
 
 /**
+ * The name an account is listed under: its nickname, or the address up to the @.
+ *
+ * The same rule the server names accounts by (`accountDisplayName` in
+ * accounts-store.ts), applied here because the accounts list sends the email and
+ * the nickname, not the name it makes of them.
+ */
+export function accountDisplayName(account: Pick<Account, "email" | "nickname">): string {
+  return account.nickname?.trim() || account.email.split("@")[0] || account.email;
+}
+
+/**
  * What the account would be signed as if the field were saved as it stands, so
  * the example under the input follows the typing.
  *
@@ -40,7 +51,6 @@ export function nicknameDraftChanged(draft: string, user: Pick<AuthenticatedUser
  */
 export function draftDisplayName(draft: string, user: Pick<AuthenticatedUser, "username" | "nickname">): string {
   const parsed = parseNicknameDraft(draft);
-  const fallback = user.username.split("@")[0] || user.username;
-  if (!parsed.ok) return user.nickname ?? fallback;
-  return parsed.nickname ?? fallback;
+  const nickname = parsed.ok ? parsed.nickname : user.nickname;
+  return accountDisplayName(nickname ? { email: user.username, nickname } : { email: user.username });
 }
