@@ -5,6 +5,19 @@ import type { WorkItemPriority, WorkItemStatus, WorkItemType } from "./types";
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
+  artifactPreview: "File preview",
+  artifactLoading: "Getting the file from its source device…",
+  artifactWaiting: "The source device has not returned the file yet. Keep it online with the latest MissionGo app; this request will resume automatically.",
+  artifactNodeUnavailable: "The source device is unavailable or not connected to this conversation.",
+  artifactFileMissing: "The original file has been deleted or moved. Ask the Agent to generate it again.",
+  artifactUnsupported: "This file type is not supported for preview.",
+  artifactReferenceMissing: "The file reference could not be verified in the original conversation.",
+  artifactFileDenied: "This file or one of its resources cannot be accessed.",
+  artifactTooLarge: "This file exceeds the preview limit (20 MiB per file, 32 MiB and 64 resources total).",
+  artifactResourceMissing: "A local resource used by this file is missing. Ask the Agent to restore it.",
+  artifactFailed: "The file could not be loaded. Please try again.",
+  artifactSaved: "Saved; available even when the source device is offline.",
+  artifactHtmlHelp: "Interactive preview. External network resources are unavailable here.",
   statisticsEntry: "Statistics",
   privateWorkspace: "Sign in",
   connectTitle: "Sign in to MissionGo",
@@ -1085,6 +1098,19 @@ const EN_MESSAGES = {
 export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
+  artifactPreview: "文件预览",
+  artifactLoading: "正在从原设备获取文件…",
+  artifactWaiting: "原设备尚未返回文件。请保持设备在线并使用最新版 MissionGo；设备恢复后会自动继续获取。",
+  artifactNodeUnavailable: "原设备暂不可用，或尚未连接此会话。",
+  artifactFileMissing: "原文件已删除或移动，请让 Agent 重新生成。",
+  artifactUnsupported: "暂不支持预览这种文件类型。",
+  artifactReferenceMissing: "无法在原始会话中核实这个文件引用。",
+  artifactFileDenied: "无法访问这个文件或其中引用的资源。",
+  artifactTooLarge: "文件超过预览上限：单文件 20 MiB，总计 32 MiB、64 个资源。",
+  artifactResourceMissing: "文件引用的本地资源已丢失，请让 Agent 补齐。",
+  artifactFailed: "文件加载失败，请重试。",
+  artifactSaved: "已保存，原设备离线后仍可查看。",
+  artifactHtmlHelp: "可交互预览；此处无法加载外部网络资源。",
   statisticsEntry: "统计",
   privateWorkspace: "登录",
   connectTitle: "登录 MissionGo",

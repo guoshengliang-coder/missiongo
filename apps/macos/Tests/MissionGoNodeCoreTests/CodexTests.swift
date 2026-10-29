@@ -625,6 +625,19 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(server.params(of: "thread/read")?["threadId"] as? String, "external-exact")
     }
 
+    func testArtifactReadAcceptsExactUnloadedHistoryWithoutResumingOrListing() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            let result: [String: Any] = message["method"] as? String == "thread/read"
+                ? ["thread": ["id": "artifact-exact", "status": ["type": "notLoaded"], "turns": []]] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
+        }
+        _ = try await CodexAppServerControl(timeout: 5).readArtifactThread(socketPath: server.path, threadId: "artifact-exact")
+        server.waitUntilDone()
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read"])
+        XCTAssertEqual(server.params(of: "thread/read")?["threadId"] as? String, "artifact-exact")
+    }
+
     func testExternalReadRejectsUnloadedHistoryWithoutResumingIt() async throws {
         let server = try FakeAppServer { message in
             guard let id = message["id"] else { return [] }

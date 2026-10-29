@@ -70,6 +70,7 @@ import { agentLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
 import { MarkdownText } from "./markdown-text";
+import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { SessionLink } from "./session-link";
 import type { AgentSession, AgentSessionAttachment, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary, Dispatch, WorkItemAttachment } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
@@ -1132,7 +1133,9 @@ export function AgentSessionConsole({
                         {labelKey && <small>{t(labelKey)}</small>}
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
-                      {message.text && <MarkdownText>{message.text}</MarkdownText>}
+                      {message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
+                        ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} />
+                        : <MarkdownText>{message.text}</MarkdownText>)}
                       {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} />}
                       {message.questions && (
                         <AgentSessionQuestions

@@ -1428,6 +1428,21 @@ public struct APIClient: Sendable {
         try requireSuccess(response, operation: "回报结果")
     }
 
+    public func artifactJobs() async throws -> [AgentArtifactJob] {
+        struct Reply: Decodable { let jobs: [AgentArtifactJob] }
+        let response = try await send("GET", "/api/v1/node/agent-artifacts", body: Optional<String>.none, bearer: try nodeToken())
+        if response.status == 404 { return [] }
+        try requireSuccess(response, operation: "读取会话产物请求")
+        let reply: Reply = try decode(response, operation: "读取会话产物请求")
+        return reply.jobs
+    }
+
+    public func reportArtifact(id: String, result: AgentArtifactResult) async throws {
+        let response = try await send("POST", "/api/v1/node/agent-artifacts/\(APIClient.encodePathComponent(id))",
+            body: result, bearer: try nodeToken(), timeout: 120, gzipBody: true)
+        try requireSuccess(response, operation: "保存会话产物")
+    }
+
     public func listAgentSessions() async throws -> [NodeAgentSession] {
         struct Reply: Decodable { let sessions: [NodeAgentSession] }
         let response = try await send(

@@ -158,6 +158,11 @@ public struct ConsentedAgentAdapter: AgentAdapter {
         return try await base.launchManaged(job)
     }
 
+    public func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
+        guard access.state(for: agent) != nil else { throw AgentArtifactError.nodeUnavailable }
+        return try await base.artifactMessages(sessionRef: sessionRef)
+    }
+
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         guard access.state(for: agent) != nil else {
             throw LaunchError("\(agent.title) 本地集成未启用，会话暂不同步；请在 MissionGo 菜单中启用或重新检查。")

@@ -10,3 +10,4 @@ export * from "./work-item.js";
 
 export * from "./managed-execution.js";
 export * from "./project-insights.js";
+export * from "./agent-artifacts.js";

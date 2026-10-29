@@ -650,6 +650,10 @@ public struct CodexLauncher: AgentAdapter {
         return control.approvalSnapshot(socketPath: location.controlSocketPath, threadId: session.sessionRef)
     }
 
+    public func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
+        try await control.readArtifactThread(socketPath: location.controlSocketPath, threadId: sessionRef).messages
+    }
+
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         failureReplyReservations.withLock { reservations in
             if reservations[session.id] != session.command?.id { reservations[session.id] = nil }
