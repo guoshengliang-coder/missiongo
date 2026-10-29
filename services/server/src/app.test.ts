@@ -1658,6 +1658,63 @@ describe("MissionGo REST API", () => {
     expect(refused.statusCode).toBe(401);
   });
 
+  it("says why an MCP bearer token failed instead of one flat 401 (AND-306)", async () => {
+    const adminAccount = testAdminAccount();
+    const app = buildApp({ adminAccount, adminToken: "management-test-token", publicOrigin: "https://missiongo.test" });
+    apps.push(app);
+
+    const mcp = async (authorization?: string) => app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        ...(authorization ? { authorization } : {}),
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_current_account", arguments: {} } },
+    });
+
+    // No credential at all: the agent's token never reached the request.
+    const missing = await mcp();
+    expect(missing.statusCode).toBe(401);
+    expect(missing.json()).toMatchObject({ code: "authentication_required", reason: "token_missing" });
+    expect(missing.headers["www-authenticate"]).toContain('error="invalid_token"');
+
+    // Anything else unverifiable stays one vague "invalid": naming the
+    // difference would confirm guesses.
+    expect((await mcp("Bearer mgai_not-a-real-token")).json<{ reason: string }>().reason).toBe("token_invalid");
+    expect((await mcp("Bearer mgpat_never-minted-anywhere")).json<{ reason: string }>().reason).toBe("token_invalid");
+
+    // The holder's own expiry is theirs to know.
+    const stale = createAiAccessToken(
+      adminAccount,
+      { id: adminAccount.id, username: adminAccount.username, role: "admin" },
+      0,
+      "mgc_probe",
+      ["missiongo:read"],
+      Date.now() - (180 + 2) * 24 * 60 * 60 * 1000,
+    );
+    expect((await mcp(`Bearer ${stale.token}`)).json<{ reason: string }>().reason).toBe("token_expired");
+
+    // So is a revocation they (or the console) performed.
+    const revokedPat = app.missionGoAccounts.createPersonalAccessToken({
+      accountId: adminAccount.id,
+      name: "gone tomorrow",
+      scopes: ["missiongo:read"],
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    app.missionGoAccounts.revokeAiAuthorization(adminAccount.id, revokedPat.id);
+    expect((await mcp(`Bearer ${revokedPat.token}`)).json<{ reason: string }>().reason).toBe("token_revoked");
+
+    const expiredPat = app.missionGoAccounts.createPersonalAccessToken({
+      accountId: adminAccount.id,
+      name: "already over",
+      scopes: ["missiongo:read"],
+      expiresAt: new Date(Date.now() - 1_000),
+    });
+    expect((await mcp(`Bearer ${expiredPat.token}`)).json<{ reason: string }>().reason).toBe("token_expired");
+  });
+
   it("rotates refresh tokens without a browser and burns the family on replay (AND-288)", async () => {
     const adminAccount = testAdminAccount();
     const app = buildApp({ adminAccount, adminToken: "management-test-token", publicOrigin: "https://missiongo.test" });

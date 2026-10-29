@@ -162,8 +162,9 @@ public struct McpAuthSnapshot: Codable, Equatable, Sendable {
  *
  * The signed `mgai_` token is self-describing: its payload carries `exp`, so
  * the check is a base64url decode and a date comparison. A `mgpat_` personal
- * token stores only a hash server-side and carries no expiry to read -- it
- * reports nil rather than a guess.
+ * token stores only a hash server-side and carries no expiry to read — it is
+ * judged by matching its SHA-256 against the authorization list the heartbeat
+ * carries (AND-306), or reports nil when that list has not arrived yet.
  */
 public enum McpAuthorizationHealth {
     /// How far out an authorization starts warning rather than just working.
@@ -177,6 +178,44 @@ public enum McpAuthorizationHealth {
               let expiresAtMs = json["expiresAt"] as? Double
         else { return nil }
         let expiresAt = Date(timeIntervalSince1970: expiresAtMs)
+        return verdict(expiresAt: expiresAt, now: now)
+    }
+
+    /// A `mgpat_` token as matched against the account's live authorizations
+    /// (AND-306). The plaintext is hashed locally; only the digest is compared.
+    public static func report(personalAccessToken token: String?, authorizations: [AiAuthorizationEntry]?, now: Date = Date()) -> McpAuthSnapshot? {
+        guard let token, token.hasPrefix("mgpat_"), let authorizations else { return nil }
+        let digest = SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+        guard let match = authorizations.first(where: { $0.tokenHash == digest }) else { return nil }
+        guard let expiresAt = match.expiresAt else { return nil }
+        return verdict(expiresAt: expiresAt, now: now)
+    }
+
+    /// Whatever token OpenCode is currently configured with, without trusting
+    /// the one injection path: the environment variable first, and then the
+    /// config file an operator edits by hand (AND-306 — a `launchctl setenv`
+    /// value dies with the next reboot while the inline header lives on).
+    public static func openCodeToken(environment: [String: String] = ProcessInfo.processInfo.environment, home: String = NSString(string: "~").expandingTildeInPath, fileReader: (String) -> String? = { try? String(contentsOfFile: $0, encoding: .utf8) }) -> String? {
+        if let fromEnvironment = environment["MISSIONGO_TOKEN"], !fromEnvironment.isEmpty, !fromEnvironment.hasPrefix("{env:") {
+            return fromEnvironment
+        }
+        guard let text = fileReader("\(home)/.config/opencode/opencode.jsonc") else { return nil }
+        guard let json = try? JSONSerialization.jsonObject(with: Data(strippedJsoncComments(text).utf8)) as? [String: Any],
+              let servers = (json["mcp"] as? [String: Any])?["servers"] as? [String: Any],
+              let missiongo = servers["missiongo"] as? [String: Any],
+              let headers = missiongo["headers"] as? [String: Any],
+              let authorization = headers["Authorization"] as? String
+        else { return nil }
+        // `{env:MISSIONGO_TOKEN}` placeholders cannot be resolved here; that is
+        // the same missing-injection situation as an absent environment value.
+        guard !authorization.contains("{env:") else { return nil }
+        let token = authorization.hasPrefix("Bearer ") ? String(authorization.dropFirst("Bearer ".count)) : authorization
+        return token.isEmpty ? nil : token
+    }
+
+    /// The judgment both token shapes share, so a PAT and a signed token warn
+    /// on the same schedule.
+    private static func verdict(expiresAt: Date, now: Date) -> McpAuthSnapshot {
         if expiresAt <= now {
             return McpAuthSnapshot(state: "invalid", expiresAt: expiresAt, checkedAt: now)
         }
@@ -184,6 +223,23 @@ public enum McpAuthorizationHealth {
             return McpAuthSnapshot(state: "expiring", expiresAt: expiresAt, checkedAt: now)
         }
         return McpAuthSnapshot(state: "valid", expiresAt: expiresAt, checkedAt: now)
+    }
+
+    /// Best-effort `//` comment stripping for the JSONC config OpenCode ships.
+    /// Values this app reads are base64url tokens and header names; a `//`
+    /// inside a quoted string would be exotic here, and a failed parse simply
+    /// yields no token rather than a wrong one.
+    private static func strippedJsoncComments(_ text: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                guard let range = line.range(of: "//") else { return String(line) }
+                // A URL like https:// inside a quoted value would be cut by a
+                // naive split; only strip when the `//` sits outside quotes.
+                let before = line[..<range.lowerBound]
+                let quotes = before.filter { $0 == "\"" }.count
+                return quotes % 2 == 0 ? String(before) : String(line)
+            }
+            .joined(separator: "\n")
     }
 
     private static func padBase64(_ value: String) -> String {
@@ -892,17 +948,57 @@ public struct HeartbeatReply: Equatable, Sendable {
     public let products: [NodeProfile.Product]?
     public let expectedSkillVersion: String?
     public let supportsStatusChecks: Bool?
+    /// The account's live AI authorizations (AND-306), so a node can learn the
+    /// expiry of the token inside an agent config without that token ever
+    /// travelling. nil against an older server.
+    public let authorizations: [AiAuthorizationEntry]?
 
     public init(
         repos: [RepoMapping],
         products: [NodeProfile.Product]? = nil,
         expectedSkillVersion: String? = nil,
-        supportsStatusChecks: Bool? = nil
+        supportsStatusChecks: Bool? = nil,
+        authorizations: [AiAuthorizationEntry]? = nil
     ) {
         self.repos = repos
         self.products = products
         self.expectedSkillVersion = expectedSkillVersion
         self.supportsStatusChecks = supportsStatusChecks
+        self.authorizations = authorizations
+    }
+}
+
+/// One of the account's AI authorizations as the heartbeat lists it (AND-306).
+/// `tokenHash` is the SHA-256 hex of a PAT's plaintext: the node hashes the
+/// token it finds in an agent config locally and matches it here. The hash
+/// cannot sign anything, so carrying it on the node's own channel leaks
+/// nothing; OAuth authorizations have no hash to match.
+public struct AiAuthorizationEntry: Equatable, Sendable {
+    public let id: String
+    public let expiresAt: Date?
+    public let kind: String?
+    public let name: String?
+    public let tokenHash: String?
+
+    public init(id: String, expiresAt: Date? = nil, kind: String? = nil, name: String? = nil, tokenHash: String? = nil) {
+        self.id = id
+        self.expiresAt = expiresAt
+        self.kind = kind
+        self.name = name
+        self.tokenHash = tokenHash
+    }
+}
+
+extension AiAuthorizationEntry: Decodable {
+    private enum CodingKeys: String, CodingKey { case id, expiresAt, kind, name, tokenHash }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt).flatMap { try? Date($0, strategy: .iso8601) }
+        kind = try container.decodeIfPresent(String.self, forKey: .kind)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        tokenHash = try container.decodeIfPresent(String.self, forKey: .tokenHash)
     }
 }
 
@@ -1343,6 +1439,7 @@ public struct APIClient: Sendable {
             let products: [NodeProfile.Product]?
             let expectedSkillVersion: String?
             let supportsStatusChecks: Bool?
+            let authorizations: [AiAuthorizationEntry]?
         }
         let response = try await send(
             "POST", "/api/v1/node/heartbeat",
@@ -1360,7 +1457,8 @@ public struct APIClient: Sendable {
             repos: reply.repos ?? [],
             products: reply.products,
             expectedSkillVersion: reply.expectedSkillVersion,
-            supportsStatusChecks: reply.supportsStatusChecks
+            supportsStatusChecks: reply.supportsStatusChecks,
+            authorizations: reply.authorizations
         )
     }
 

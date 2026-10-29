@@ -239,6 +239,19 @@ private struct AgentStatusSection: View {
         }.count
     }
 
+    /// The caption under a row whose MissionGo authorization is dying or dead
+    /// (AND-306). Rounded whole days: "2 天后到期" at 30 hours left reads
+    /// truer than "1 天", and a deadline measured in hours is already urgent.
+    private func mcpAuthWarning(_ snapshot: McpAuthSnapshot) -> String {
+        guard snapshot.state == "expiring", let expiresAt = snapshot.expiresAt else {
+            return "MissionGo 授权已失效；使用它的会话会在第一个 MCP 调用处中断。"
+        }
+        let days = max(0, Int((expiresAt.timeIntervalSinceNow / 86_400).rounded()))
+        return days <= 0
+            ? "MissionGo 授权今天到期；请尽快在控制台换发并更新配置。"
+            : "MissionGo 授权约 \(days) 天后到期；请安排在控制台换发并更新配置。"
+    }
+
     var body: some View {
         MenuGroup(title: "Agent 状态", symbol: "cpu", meta: "\(readyCount) 个就绪", trailing: AnyView(
             Button("重新检查") { model.checkAllIntegrations() }
@@ -274,6 +287,17 @@ private struct AgentStatusSection: View {
                     .font(.system(size: 11))
                     .frame(minHeight: 32)
                     .accessibilityElement(children: .combine)
+                    // AND-306: the machine's own read of this agent's MissionGo
+                    // authorization, straight off the heartbeat. An agent can
+                    // be "ready" in every other respect and still be hours from
+                    // losing its item access; the row says so before it hurts.
+                    if let mcpAuth = model.loopState.agents.first(where: { $0.kind == agent.rawValue })?.mcpAuth,
+                       mcpAuth.state == "expiring" || mcpAuth.state == "invalid" {
+                        Text(mcpAuthWarning(mcpAuth))
+                            .font(.caption)
+                            .foregroundStyle(mcpAuth.state == "invalid" ? Color.red : Color.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let issue = state?.issue, !checking {
                         Text(issue)
                             .font(.caption)

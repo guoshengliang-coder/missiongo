@@ -950,7 +950,18 @@ final class AppModel: ObservableObject {
                     let mcp = try await control.missionGoMcpStatus()
                     guard access.isCurrent(agent, attempt: attempt) else { return }
                     version = found
-                    issue = OpenCodeProtocol.integrationIssue(for: mcp)
+                    // AND-306: pair the service's verdict with what this
+                    // machine can read of the token, so the advice names the
+                    // actual problem instead of a generic re-login.
+                    let localToken = McpAuthorizationHealth.openCodeToken()
+                    let localSnapshot = McpAuthorizationHealth.report(token: localToken)
+                    let localRead: OpenCodeProtocol.LocalAuthorizationRead
+                    if let localToken {
+                        localRead = localSnapshot?.state == "invalid" ? .dead : .alive
+                    } else {
+                        localRead = .absent
+                    }
+                    issue = OpenCodeProtocol.integrationIssue(for: mcp, localRead: localRead)
                 } catch {
                     version = ""
                     issue = error.localizedDescription
