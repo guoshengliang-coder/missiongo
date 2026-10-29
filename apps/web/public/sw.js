@@ -1,16 +1,17 @@
 // Bumped whenever the caching behaviour changes: `activate` deletes every cache
 // that is not this one, which is also how a client with a broken cache recovers.
 //
-// v4 is that recovery, for AND-35. This file is the only thing a browser checks
-// to decide whether to reinstall, and it is byte-identical from build to build,
-// so a client that cached a shell before v4 kept serving it indefinitely and had
-// no way out. Editing this file at all is what re-runs install; the bump is what
-// throws the poisoned cache away.
-//
-// Not bumped for the build-update notice: that changes no cached content, and
-// editing this file is already what makes browsers install the new worker.
-const CACHE_NAME = "missiongo-shell-v4";
+// v5 (AND-309) discards OAuth pages that v4 cached as both authorization URLs
+// and `/`. Authorization documents must always come from the server, even when
+// the browser already has a complete console shell and a signed-in session.
+const CACHE_NAME = "missiongo-shell-v5";
 const SHELL = ["/", "/icon.svg", "/manifest.webmanifest"];
+
+/** Only these routes render the shared index.html, never server documents. */
+function isShellPath(pathname) {
+  return pathname === "/" || pathname === "/index.html"
+    || /^\/(?:settings|sdk\/feedback|managed-decisions)(?:\/|$)/.test(pathname);
+}
 
 // A Response body can only be read once, and `caches.open()` is async: cloning
 // inside its `.then` runs after the body has already gone to the page, so the
@@ -38,11 +39,15 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
-  if (request.method !== "GET" || url.origin !== self.location.origin || url.pathname.startsWith("/api/") || url.pathname === "/mcp") {
+  if (request.method !== "GET" || url.origin !== self.location.origin
+    || /^\/(?:api|mcp|oauth)(?:\/|$)/.test(url.pathname)) {
     return;
   }
 
   if (request.mode === "navigate") {
+    // OAuth, discovery, health and downloads must not fall back to the console
+    // or overwrite its cached document. New server routes are excluded by default.
+    if (!isShellPath(url.pathname)) return;
     event.respondWith((async () => {
       // The document is `no-store`, so this used to be a full network round trip
       // on every single launch -- 142ms measured against production even with
@@ -53,7 +58,8 @@ self.addEventListener("fetch", (event) => {
       // and a deploy removes the old ones from the server, so a document whose
       // scripts now 404 renders nothing at all. That check guarded the offline
       // path before; serving from cache while online makes it load-bearing.
-      const cached = (await caches.match(request)) || (await caches.match("/"));
+      const cache = await caches.open(CACHE_NAME);
+      const cached = (await cache.match(request)) || (await cache.match("/"));
       if (cached && await shellIsComplete(cached.clone())) {
         const servedEntry = entryScriptOf(await cached.clone().text());
         event.waitUntil((async () => {
@@ -116,10 +122,13 @@ self.addEventListener("fetch", (event) => {
  * type, search -- so that fallback is the common path, not the rare one. It used
  * to be written once at install and never again, which left it pinned to
  * whichever build happened to be live the first time this browser opened the
- * site. Every route serves the same index.html, so the copy fetched for
+ * site. Every allowed shell route serves the same index.html, so the copy fetched for
  * `/?product=X` is the right thing to store under `/` as well.
  */
 async function putDocument(request, response) {
+  // A redirect or proxy error can return successful HTML that is not our app.
+  // Never let it replace the shared shell, even on an allowed navigation path.
+  if (!entryScriptOf(await response.clone().text())) return;
   const cache = await caches.open(CACHE_NAME);
   await Promise.all([cache.put(request, response.clone()), cache.put("/", response.clone())]);
 }
@@ -146,6 +155,7 @@ function entryScriptOf(html) {
 async function shellIsComplete(document) {
   try {
     const html = await document.text();
+    if (!entryScriptOf(html)) return false;
     const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map((match) => match[1]);
     const cache = await caches.open(CACHE_NAME);
     const found = await Promise.all(assets.map((asset) => cache.match(asset)));
