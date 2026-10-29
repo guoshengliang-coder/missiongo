@@ -1,3 +1,4 @@
+import { Modal } from "./modal";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -27,7 +28,7 @@ export function ExternalNativeConnectionPanel({ session }: { session: AgentSessi
   return <div>
     {session.canRegisterNative && session.refKind === "tracking" && <>
       <button type="button" className="secondary-button" onClick={() => setShowRegistration(!showRegistration)}>{t("agentExternalEnableReply")}</button>
-      {showRegistration && <div>
+      {showRegistration && <Modal title={t("agentExternalEnableReply")} subtitle={t("agentExternalSetup")} onClose={() => setShowRegistration(false)}><div>
         <p>{t("agentExternalRegisterDetail")}</p>
         <p>{registrationPrompt}</p>
         <button type="button" className="secondary-button" onClick={() => {
@@ -36,7 +37,7 @@ export function ExternalNativeConnectionPanel({ session }: { session: AgentSessi
           void navigator.clipboard.writeText(registrationPrompt).then(() => setCopied(true)).catch(() => setCopyError(true));
         }}>{t(copied ? "agentExternalRegistrationCopied" : "agentExternalCopyRegistration")}</button>
         {copyError && <p>{t("agentExternalCopyRegistrationFailed")}</p>}
-      </div>}
+      </div><div className="form-footer"><button type="button" className="primary-button" onClick={() => setShowRegistration(false)}>{t("close")}</button></div></Modal>}
     </>}
     {!session.canReply && (session.canRegisterNative || session.canConnectNative) && <details>
       <summary>{t("agentExternalSetup")}</summary>
@@ -46,8 +47,8 @@ export function ExternalNativeConnectionPanel({ session }: { session: AgentSessi
       <p>{t("agentExternalSetupClaude")}</p>
     </details>}
     {session.agentKind === "claude_code" && <span>{t("agentExternalClaudeLimit")}</span>}
-    {session.canConnectNative && !session.nativeConnection?.nodeId && !choosing && <button type="button" className="secondary-button" onClick={() => setChoosing(true)}>{t("agentExternalConnect")}</button>}
-    {choosing && <div>
+    {session.canConnectNative && !session.nativeConnection?.nodeId && !choosing && <button type="button" className="secondary-button" onClick={() => { setNodeId(""); mutation.reset(); setChoosing(true); }}>{t("agentExternalConnect")}</button>}
+    {choosing && <Modal title={t("agentExternalConnect")} subtitle={t("agentExternalChooseNode")} onClose={() => setChoosing(false)} dirty={Boolean(nodeId)} pending={mutation.isPending}><div className="dialog-form">
       <p>{t("agentExternalConnectDetail")}</p>
       <label>{t("agentExternalChooseNode")} <select aria-label={t("agentExternalChooseNode")} value={nodeId} onChange={(event) => setNodeId(event.target.value)}>
         <option value="">{t("agentExternalChooseNode")}</option>
@@ -55,7 +56,9 @@ export function ExternalNativeConnectionPanel({ session }: { session: AgentSessi
       </select></label>
       <button type="button" className="primary-button" disabled={!nodeId || mutation.isPending} onClick={() => mutation.mutate(nodeId)}>{t("agentExternalConnect")}</button>
       <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => setChoosing(false)}>{t("cancel")}</button>
-    </div>}
+      {nodes.isError && <p className="inline-error">{localizedErrorText(nodes.error, t)}</p>}
+      {mutation.isError && <p className="inline-error">{localizedErrorText(mutation.error, t)}</p>}
+    </div></Modal>}
     {session.canDisconnectNative && <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => mutation.mutate(null)}>{t("agentExternalDisconnect")}</button>}
     {nodes.isError && <p className="inline-error">{localizedErrorText(nodes.error, t)}</p>}
     {mutation.isError && <p className="inline-error">{localizedErrorText(mutation.error, t)}</p>}

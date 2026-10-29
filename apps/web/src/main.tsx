@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AndroidUpdateNotice } from "./AndroidUpdateNotice";
 import { BootSkeleton } from "./BootSkeleton";
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
+import { ConfirmProvider } from "./confirm-dialog";
 import { I18nProvider } from "./i18n";
 import { persistQueryCache, restorePersistedQueryCache } from "./query-persistence";
 import { hasUnsavedInput } from "./unsaved-changes";
@@ -40,6 +41,7 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <I18nProvider>
+      <ConfirmProvider>
         {/* Inside I18nProvider so the notice can be read in the reader's own
             language, and outside Suspense so it also covers the page chunk
             failing to arrive -- which is the same dead-chunk failure as AND-35,
@@ -55,6 +57,7 @@ createRoot(document.getElementById("root")!).render(
         </ErrorBoundary>
         <UpdateBanner />
         <AndroidUpdateNotice />
+      </ConfirmProvider>
       </I18nProvider>
     </QueryClientProvider>
   </StrictMode>,

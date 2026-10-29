@@ -1,3 +1,4 @@
+import { useConfirm } from "./confirm-dialog";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -245,6 +246,7 @@ export function AgentSessionConsole({
   onSelectSession: (sessionId: string | null, showConversation: boolean) => void;
   onBackToSessions: () => void;
 }) {
+  const confirm = useConfirm();
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
@@ -837,9 +839,9 @@ export function AgentSessionConsole({
                 type="button"
                 className="primary-button agent-console-bulk-submit"
                 disabled={selectedForArchive.size === 0 || bulkArchive.isPending}
-                onClick={() => {
+                onClick={async () => {
                   const ids = [...selectedForArchive];
-                  if (window.confirm(t("agentConsoleBulkArchiveConfirm", { count: ids.length }))) {
+                  if (await confirm(t("agentConsoleBulkArchiveConfirm", { count: ids.length }))) {
                     setBulkArchiveMessage(null);
                     bulkArchive.mutate(ids);
                   }
@@ -1017,10 +1019,10 @@ export function AgentSessionConsole({
                     type="button"
                     className="secondary-button"
                     disabled={retryDispatch.isPending || stopDispatch.isPending}
-                    onClick={() => {
+                    onClick={async () => {
                       const confirmation = selected.dispatchStatus === "delivered"
                         ? t("agentConsoleRetryTimedOutConfirm") : t("agentConsoleRetryConfirm");
-                      if (window.confirm(confirmation)) retryDispatch.mutate();
+                      if (await confirm(confirmation)) retryDispatch.mutate();
                     }}
                   ><RotateCcw size={15} />{t("agentConsoleRetry")}</button>
                 )}
@@ -1029,8 +1031,8 @@ export function AgentSessionConsole({
                     type="button"
                     className="secondary-button"
                     disabled={retryDispatch.isPending || stopDispatch.isPending}
-                    onClick={() => {
-                      if (window.confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate();
+                    onClick={async () => {
+                      if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate();
                     }}
                   ><Square size={16} />{t("agentConsoleStop")}</button>
                 )}
@@ -1039,13 +1041,13 @@ export function AgentSessionConsole({
                     type="button"
                     className="secondary-button"
                     disabled={archiveSession.isPending || pending}
-                    onClick={() => {
+                    onClick={async () => {
                       const archived = Boolean(selected.archivedAt);
                       const confirmation = selected.agentKind === "claude_code"
                         && (selected.status === "active" || selected.status === "stalled")
                         ? t("agentSessionArchiveClaudeConfirm")
                         : t("agentSessionArchiveConfirm");
-                      if (archived || window.confirm(confirmation)) archiveSession.mutate(!archived);
+                      if (archived || await confirm(confirmation)) archiveSession.mutate(!archived);
                     }}
                   >
                     {archiveSession.isPending

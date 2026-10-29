@@ -1,3 +1,4 @@
+import { useDialogDraft } from "./dialog-state";
 import { useState } from "react";
 import { CirclePause, CircleX, LoaderCircle, Undo2 } from "lucide-react";
 
@@ -45,6 +46,7 @@ export function TransitionNoteDialog({
 }) {
   const { t, transitionLabel } = useI18n();
   const [note, setNote] = useState("");
+  useDialogDraft(Boolean(note), pending);
   const copy = transitionNoteCopy(action.to);
   const cancelling = action.to === "cancelled";
   const quickReasons = ["cancelReasonSentByMistake", "cancelReasonDuplicate", "cancelReasonNoLongerNeeded"] as const;
@@ -87,7 +89,7 @@ export function TransitionNoteDialog({
       )}
 
       <div className="form-footer">
-        <button type="button" className="secondary-button" onClick={onCancel}>{t("cancel")}</button>
+        <button type="button" className="secondary-button" disabled={pending} onClick={onCancel}>{t("cancel")}</button>
         <button type="submit" className="primary-button" disabled={!note.trim() || pending}>
           {pending ? <LoaderCircle className="spin" size={16} /> : cancelling ? <CircleX size={16} /> : <Undo2 size={16} />}
           {transitionLabel(action.label)}

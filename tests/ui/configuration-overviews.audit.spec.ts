@@ -29,8 +29,8 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await expect(card).toBeVisible();
       await card.click();
       await page.locator(".settings-hub-row").filter({ hasText: "基本资料" }).click();
-      page.once("dialog", dialog => dialog.accept());
       await page.getByRole("button", { name: "归档", exact: true }).click();
+      await page.getByRole("dialog", { name: "确认操作", exact: true }).getByRole("button", { name: "确认", exact: true }).click();
       await expect(page.getByRole("button", { name: "恢复", exact: true })).toBeVisible();
       await page.reload();
       await expect(page.getByRole("button", { name: "恢复", exact: true })).toBeVisible();

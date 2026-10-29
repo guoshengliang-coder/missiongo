@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useDialogDraft } from "./dialog-state";
+import { useLayoutEffect } from "react";
 
 // How many forms currently hold input that only lives in memory. Read by the
 // version watcher, which must not reload a page out from under someone typing.
@@ -21,8 +22,13 @@ export function hasUnsavedInput(): boolean {
  * WebChromeClient.onJsBeforeUnload. The SDK's own editor is guarded natively instead, in
  * MissionGoFeedbackActivity.
  */
-export function useUnsavedChangesGuard(hasUnsavedInput: boolean): void {
-  useEffect(() => {
+export function useUnsavedChangesGuard(hasUnsavedInput: boolean, pending = false): void {
+  useDialogDraft(hasUnsavedInput, pending);
+  useBeforeUnloadGuard(hasUnsavedInput || pending);
+}
+
+export function useBeforeUnloadGuard(hasUnsavedInput: boolean): void {
+  useLayoutEffect(() => {
     if (!hasUnsavedInput) return undefined;
 
     const confirmLeaving = (event: BeforeUnloadEvent) => {

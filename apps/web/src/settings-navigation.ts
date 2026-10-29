@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SIDEBAR_HISTORY_MARKER } from "./navigation";
+import type { SettingsLeaveGuard } from "./settings-drafts";
+import { DIALOG_HISTORY_MARKER, SIDEBAR_HISTORY_MARKER } from "./navigation";
 import { SETTINGS_DEPTH, SETTINGS_INDEX, settingsRoute, settingsUrl, settingsExitUrl, type SettingsRoute } from "./settings-state";
 
 const ROOT_INDEX = "missiongo:settings-root-index";
@@ -7,7 +8,7 @@ const ROOT_URL = "missiongo:settings-root-url";
 /** Settings own their history entries, including cancellable Back and a direct return to the workspace. */
 export function useSettingsNavigation() {
   const [route, setRoute] = useState(settingsRoute);
-  const guard = useRef<() => boolean>(() => true);
+  const guard = useRef<SettingsLeaveGuard>(() => true);
   const snapshot = useRef({ url: window.location.href, state: history.state as Record<string, unknown> | null });
   const restoring = useRef(false);
   const approvedPop = useRef(false);
@@ -20,13 +21,14 @@ export function useSettingsNavigation() {
     history.pushState({ ...state, [SETTINGS_INDEX]: 1, [ROOT_INDEX]: 1, [ROOT_URL]: url, [SETTINGS_DEPTH]: 1 }, "", url);
     remember();
   }, []);
-  const navigate = useCallback((next: SettingsRoute | null, saved = false) => {
+  const navigate = useCallback((next: SettingsRoute | null, saved = false): void => {
     const currentUrl = `${location.pathname}${location.search}${location.hash}`;
     const url = next ? settingsUrl(next) : settingsExitUrl();
-    if (url === currentUrl || (!saved && !guard.current())) return;
+    if (url === currentUrl || (!saved && !guard.current(() => navigate(next, true)))) return;
     const current = { ...(history.state as Record<string, unknown> | null) };
     const fromDrawer = Boolean(current[SIDEBAR_HISTORY_MARKER]);
     delete current[SIDEBAR_HISTORY_MARKER];
+    delete current[DIALOG_HISTORY_MARKER];
     const index = Number(current[SETTINGS_INDEX]) || 0;
     const rootIndex = Number(current[ROOT_INDEX]) || 0;
     if (!next) {
@@ -57,12 +59,14 @@ export function useSettingsNavigation() {
     if (restoring.current) { restoring.current = false; remember(); return false; }
     const next = settingsRoute(); const previous = snapshot.current;
     const approved = approvedPop.current; approvedPop.current = false;
-    if (!approved && settingsRoute(new URL(previous.url)) && previous.url !== location.href && !guard.current()) {
+    if (!approved && settingsRoute(new URL(previous.url)) && previous.url !== location.href) {
       const oldIndex = Number(previous.state?.[SETTINGS_INDEX]) || 0;
       const nextIndex = Number(history.state?.[SETTINGS_INDEX]) || 0;
-      if (oldIndex !== nextIndex) { restoring.current = true; history.go(oldIndex - nextIndex); }
-      else history.pushState(previous.state, "", previous.url);
-      return false;
+      if (!guard.current(() => { approvedPop.current = true; if (oldIndex !== nextIndex) history.go(nextIndex - oldIndex); else history.back(); })) {
+        if (oldIndex !== nextIndex) { restoring.current = true; history.go(oldIndex - nextIndex); }
+        else history.pushState(previous.state, "", previous.url);
+        return false;
+      }
     }
     remember(); setRoute(next); return true;
   }, []);

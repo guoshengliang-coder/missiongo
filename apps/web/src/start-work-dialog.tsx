@@ -1,3 +1,4 @@
+import { useDialogDraft } from "./dialog-state";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Bot, CirclePause, LoaderCircle, Rocket, UserRound } from "lucide-react";
 
@@ -54,6 +55,8 @@ export function StartWorkDialog({
     onSuccess: onClaimed,
   });
 
+  useDialogDraft(false, claim.isPending);
+
   return (
     <div className="start-work">
       <button
@@ -102,7 +105,7 @@ export function StartWorkDialog({
       )}
 
       <div className="form-footer">
-        <button type="button" className="secondary-button" onClick={onClose}>{t("cancel")}</button>
+        <button type="button" className="secondary-button" disabled={claim.isPending} onClick={onClose}>{t("cancel")}</button>
       </div>
     </div>
   );

@@ -47,6 +47,7 @@ for (const width of [375, 1440]) {
         await expect(section.getByRole("button", { name: "已复制", exact: true })).toBeVisible();
         expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(minted.token);
         await section.locator(".account-add-form").screenshot({ path: test.info().outputPath("personal-token-reveal.png") });
+        await page.getByRole("button", { name: "我已保存令牌", exact: true }).click();
         const call = (token = minted.token) => request.post(`http://127.0.0.1:${SERVER_PORT}/mcp`, {
           headers: { authorization: `Bearer ${token}`, accept: "application/json, text/event-stream" },
           data: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_current_account", arguments: {} } },
@@ -76,8 +77,8 @@ for (const width of [375, 1440]) {
         await expect(row).toContainText("查看条目");
         await expect(row).toContainText("授权时间");
         await expect(row).toContainText("到期时间");
-        page.once("dialog", dialog => dialog.accept());
         await row.getByRole("button", { name: "撤销", exact: true }).click();
+        await page.getByRole("dialog", { name: "确认操作", exact: true }).getByRole("button", { name: "确认", exact: true }).click();
         await expect(row).toHaveCount(0);
         await expect(group.locator("summary")).toContainText("1 个连接");
         await expect(group.locator("summary")).not.toContainText("各连接权限不同");

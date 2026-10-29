@@ -1,3 +1,5 @@
+import { Modal } from "./modal";
+import { useConfirm } from "./confirm-dialog";
 import { useSettingsDraft } from "./settings-drafts";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -16,7 +18,7 @@ import {
   type PendingArrival,
 } from "./node-install";
 import { draftDisplayName, MAX_NODE_NICKNAME_LENGTH, nicknameDraftChanged, parseNicknameDraft } from "./node-nickname";
-import { deviceStartsOpen, hasRepoDrafts, repoCoverage } from "./node-summary";
+import { hasRepoDrafts, repoCoverage } from "./node-summary";
 import { startsInManualMode, suggestRepoCandidate } from "./repo-match";
 import type { DispatchNode, Product } from "./types";
 
@@ -135,7 +137,7 @@ export function NodeSettings({ products, nodeId, onOpenNode }: { products: reado
         )}
         {(nodeId ? nodes.filter(node => node.id === nodeId) : nodes).map(node => onOpenNode && !nodeId ? (
           <button key={node.id} type="button" className="settings-hub-row settings-device-row" onClick={() => onOpenNode(node.id)}><span><strong>{node.name || node.deviceName}</strong><small>{node.online ? t("settingsDeviceOnline") : t("settingsDeviceOffline")} · {node.agents.map(agent => { const key = agentLabelKey(agent.kind); return key ? t(key) : agent.kind; }).join(" · ")}</small></span><ChevronRight size={18} /></button>
-        ) : <NodeCard key={node.id} node={node} products={products} startsOpen={Boolean(nodeId) || deviceStartsOpen(nodes.length)} onChanged={() => queryClient.invalidateQueries({ queryKey: ["nodes"] })} />)}
+        ) : <NodeCard key={node.id} node={node} products={products} onChanged={() => queryClient.invalidateQueries({ queryKey: ["nodes"] })} />)}
         {nodeId && !nodesQuery.isLoading && !nodesQuery.isError && !nodes.some(node => node.id === nodeId) && <p role="alert">{t("settingsUnavailable")}</p>}
 
       </div>
@@ -226,29 +228,19 @@ function NodeInstallGuide({
   );
 }
 
-/**
- * One device: a row that says what it is and what it can take, opening onto the
- * form that changes it (AND-54). With every form laid out at once the screen was
- * a wall of fields before anyone could see how many Macs there were.
- *
- * A native <details> rather than rendering the form only when open: collapsed,
- * the form stays mounted, so a half-typed nickname or path survives both closing
- * the card and the heartbeat refetch.
- */
+/** Device facts and repository mappings stay on their dedicated page; nickname edits use a dialog. */
 function NodeCard({
   node,
   products,
-  startsOpen,
   onChanged,
 }: {
   node: DispatchNode;
   products: readonly Product[];
-  /** Read once, when the card first renders; after that the card is the person's to open. */
-  startsOpen: boolean;
   onChanged: () => void | Promise<unknown>;
 }) {
+  const confirm = useConfirm();
   const { formatTime, t } = useI18n();
-  const [open, setOpen] = useState(startsOpen);
+  const [editingName, setEditingName] = useState(false);
   /**
    * The nickname as typed. It starts from the nickname rather than the display
    * name: showing the device name as the field's value would make it look like a
@@ -311,6 +303,7 @@ function NodeCard({
     mutationFn: (nickname: string | null) => api.setNodeNickname(node.id, nickname),
     onSuccess: async (_updated, nickname) => {
       setNicknameDraft(nickname ?? "");
+      setEditingName(false);
       await onChanged();
     },
   });
@@ -341,17 +334,13 @@ function NodeCard({
 
   const state = node.revokedAt ? t("nodeRevoked") : node.online ? t("nodeOnline") : t("nodeOffline");
   const coverage = repoCoverage(node, products);
-  const unsaved = (!node.revokedAt && nicknameDraftChanged(nicknameDraft, node)) || hasRepoDrafts(drafts, saved);
+  const unsaved = (editingName && !node.revokedAt && nicknameDraftChanged(nicknameDraft, node)) || hasRepoDrafts(drafts, saved);
 
   useSettingsDraft(unsaved, nicknameMutation.isPending || reposMutation.isPending || revokeMutation.isPending);
 
   return (
-    <details
-      className={`node-card ${node.revokedAt ? "revoked" : ""}`}
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary className="node-summary">
+    <section className={`node-card ${node.revokedAt ? "revoked" : ""}`}>
+      <div className="node-summary">
         <ChevronRight size={16} />
         <strong className="node-summary-name">{node.name}</strong>
         <span className={`status-pill ${node.revokedAt ? "status-cancelled" : node.online ? "status-ready" : "status-inbox"}`}>{state}</span>
@@ -375,9 +364,24 @@ function NodeCard({
           </small>
         )}
         {unsaved && <small className="node-summary-unsaved">{t("nodeUnsaved")}</small>}
-      </summary>
+      </div>
       <div className="node-card-body">
-        <header>
+        <header><strong>{node.name}</strong><button type="button" className="secondary-button" disabled={Boolean(node.revokedAt)} onClick={() => { setNicknameDraft(node.nickname ?? ""); nicknameMutation.reset(); setEditingName(true); }}>{t("nodeNickname")}</button>
+          {!node.revokedAt && (
+            <button
+              type="button"
+              className="secondary-button sdk-token-revoke"
+              disabled={revokeMutation.isPending}
+              onClick={async () => {
+                if (await confirm(t("confirmRevokeNode", { name: node.name }))) revokeMutation.mutate();
+              }}
+            >
+              <Trash2 size={14} /> {t("revoke")}
+            </button>
+          )}
+        </header>
+        {editingName && <Modal title={t("nodeNickname")} subtitle={node.name} onClose={() => setEditingName(false)} dirty={nicknameDraftChanged(nicknameDraft, node)} pending={nicknameMutation.isPending}>
+          <div className="dialog-form">
           {/* No maxLength: the browser would silently cut a pasted name at the
               limit, where the message below says why it cannot be saved. */}
           <label className="node-name-field">{t("nodeNickname")}
@@ -393,39 +397,16 @@ function NodeCard({
               disabled={Boolean(node.revokedAt)}
             />
           </label>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={!parsedNickname.ok || !nicknameDraftChanged(nicknameDraft, node) || nicknameMutation.isPending || Boolean(node.revokedAt)}
-            onClick={() => {
-              if (parsedNickname.ok) nicknameMutation.mutate(parsedNickname.nickname);
-            }}
-          >
-            {nicknameMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
-          </button>
           {node.nickname && !node.revokedAt && (
             <button
               type="button"
               className="secondary-button"
               disabled={nicknameMutation.isPending}
-              onClick={() => nicknameMutation.mutate(null)}
+              onClick={() => setNicknameDraft("")}
             >
               {t("nodeRestoreDeviceName")}
             </button>
           )}
-          {!node.revokedAt && (
-            <button
-              type="button"
-              className="secondary-button sdk-token-revoke"
-              disabled={revokeMutation.isPending}
-              onClick={() => {
-                if (window.confirm(t("confirmRevokeNode", { name: node.name }))) revokeMutation.mutate();
-              }}
-            >
-              <Trash2 size={14} /> {t("revoke")}
-            </button>
-          )}
-        </header>
         <div className="node-nickname-notes">
           {node.nickname && <small>{t("nodeDeviceName", { name: node.deviceName })}</small>}
           {!node.revokedAt && <small>{t("nodeNicknameHelp", { example: sessionNameExample })}</small>}
@@ -442,6 +423,18 @@ function NodeCard({
             </div>
           )}
         </div>
+<div className="form-footer"><button type="button" className="secondary-button" disabled={nicknameMutation.isPending} onClick={() => { setNicknameDraft(node.nickname ?? ""); setEditingName(false); }}>{t("cancel")}</button>          <button
+            type="button"
+            className="primary-button"
+            disabled={!parsedNickname.ok || !nicknameDraftChanged(nicknameDraft, node) || nicknameMutation.isPending || Boolean(node.revokedAt)}
+            onClick={() => {
+              if (parsedNickname.ok) nicknameMutation.mutate(parsedNickname.nickname);
+            }}
+          >
+            {nicknameMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
+          </button>
+</div></div>
+        </Modal>}
         <div className="node-facts">
           <span className={`status-pill ${node.revokedAt ? "status-cancelled" : node.online ? "status-ready" : "status-inbox"}`}>{state}</span>
           <small>{node.lastSeenAt ? t("nodeLastSeen", { time: formatTime(node.lastSeenAt) }) : t("nodeNeverSeen")}</small>
@@ -497,6 +490,7 @@ function NodeCard({
               </div>
             </label>
           ))}
+          <div className="form-footer"><button type="button" className="secondary-button" disabled={reposMutation.isPending || Boolean(node.revokedAt)} onClick={() => { setDrafts({}); setManual({}); reposMutation.reset(); }}>{t("cancel")}</button>
           <button
             type="button"
             className="primary-button"
@@ -504,7 +498,7 @@ function NodeCard({
             onClick={() => reposMutation.mutate()}
           >
             {reposMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("saveRepoPaths")}
-          </button>
+          </button></div>
         </div>
 
         {/* The absolute-path rule is the server's, so its wording is the server's too. */}
@@ -512,7 +506,7 @@ function NodeCard({
           <div className="inline-error" key={index}><CirclePause size={16} /><span>{nodeErrorMessage(error, t("somethingWentWrong"))}</span></div>
         ))}
       </div>
-    </details>
+    </section>
   );
 }
 

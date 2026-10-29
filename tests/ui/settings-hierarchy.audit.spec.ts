@@ -54,16 +54,15 @@ test("unifies account permissions, filters products, opens account details and g
   await page.getByRole("searchbox", { name: "搜索账号", exact: true }).fill(account.email);
   const row = page.locator(".account-row").filter({ hasText: account.email });
   await row.getByRole("button", { name: "修改权限", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/settings/admin/accounts/${account.id}`));
+  await expect(page).toHaveURL(/\/settings\/admin\/accounts(?:\?|$)/);
   await expect(page.locator(".account-row")).toHaveCount(1);
   const permission = page.getByRole("checkbox", { name: "Separate access · 操作", exact: true });
   await permission.check();
-  page.once("dialog", dialog => dialog.dismiss());
-  await page.getByRole("navigation", { name: "设置位置" }).getByRole("button", { name: "账号与权限", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(permission).toBeChecked();
   await page.locator(".account-permissions-footer").getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.getByText("已保存。", { exact: true })).toBeVisible();
-  await page.getByRole("navigation", { name: "设置位置" }).getByRole("button", { name: "账号与权限", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("combobox", { name: "按产品筛选", exact: true })).toHaveValue(other.id);
   const stored = await (await request.get("/api/v1/accounts")).json();
   expect(stored.accounts.find((value: { id: string }) => value.id === account.id).permissions.find((value: { productId: string }) => value.productId === other.id).canOperate).toBe(true);
@@ -97,8 +96,8 @@ test("module details are restorable and refuse to silently discard a module edit
   await page.reload();
   const input = page.getByRole("textbox", { name: "模块名称", exact: true });
   await input.fill("Unsaved module");
-  page.once("dialog", dialog => dialog.dismiss());
   await page.getByRole("navigation", { name: "设置位置" }).getByRole("button", { name: "模块管理", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(input).toHaveValue("Unsaved module");
 });
 
@@ -160,15 +159,14 @@ test("an account with no products can create its first product inside product co
   await expect(page.getByRole("textbox", { name: "产品名称", exact: true })).toBeVisible();
 });
 
-test("declining to leave an account editor preserves the email draft even when Cancel was clicked", async ({ page, request }) => {
+test("passive close protects account drafts and explicit Cancel discards them", async ({ page, request }) => {
   const account = await (await request.post("/api/v1/accounts", { data: { email: "hierarchy-cancel@example.test", password: randomBytes(18).toString("base64url"), role: "member" } })).json();
   await page.goto(`/settings/admin/accounts/${account.id}`);
   const email = page.getByRole("textbox", { name: "邮箱", exact: true });
   await email.fill("unfinished-address@example.test");
-  page.once("dialog", dialog => dialog.dismiss());
-  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(email).toHaveValue("unfinished-address@example.test");
-  page.once("dialog", dialog => dialog.accept());
   await page.getByRole("button", { name: "取消", exact: true }).click();
   await expect(page).toHaveURL(/\/settings\/admin\/accounts(?:\?|$)/);
   await page.locator(".account-row").filter({ hasText: account.email }).getByRole("button", { name: "修改", exact: true }).click();

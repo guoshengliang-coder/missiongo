@@ -2761,6 +2761,28 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .personal-token-reveal { flex-direction: column; align-items: stretch; }
 }
 
+/* Temporary edits share one shape and one clearly emphasized commit action. */
+.danger-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; padding: 0 15px; border: 1px solid var(--danger-line); border-radius: var(--radius-md); background: var(--danger-bg-strong); color: var(--danger); font: inherit; font-weight: 700; cursor: pointer; }
+.danger-button:disabled { opacity: 0.58; cursor: not-allowed; }
+@media (hover: hover) { .danger-button:hover { background: var(--danger-bg); } }
+.dialog-form, .dialog-fields { display: grid; gap: 16px; min-width: 0; }
+.dialog-form label, .dialog-fields label { display: grid; gap: 7px; color: var(--ink); font-size: var(--text-base); font-weight: 650; }
+.modal input:not([type=checkbox]):not([type=radio]):not([type=file]), .modal textarea, .modal select { min-width: 0; max-width: 100%; padding: 10px 12px; border: 1px solid var(--line-dark); border-radius: var(--radius-md); background: var(--surface-field); color: var(--ink); font: inherit; }
+.modal .dialog-form input, .modal .dialog-form select { width: 100%; min-height: 44px; }
+.modal .account-password-form, .modal .account-add-form { padding: 0; border: 0; background: transparent; }
+.modal .form-footer, .modal .account-form-actions, .modal .account-permissions-footer, .modal .personal-token-actions { position: sticky; bottom: -22px; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; padding: 16px 0; margin-top: 12px; border-top: 1px solid var(--line); background: var(--surface-strong); }
+.modal-content { min-width: 0; }
+.modal-content[hidden] { display: none; }
+.confirmation-message { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+.account-signout { padding-top: 24px; border-top: 1px solid var(--line); }
+.account-signout .secondary-button { min-width: 120px; border-color: var(--line-dark); background: var(--surface-field); }
+.inline-form-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (pointer: coarse) {
+  .danger-button { min-width: 44px; min-height: 44px; }
+  .modal input, .modal textarea, .modal select { font-size: 16px; }
+}
+.modal-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.product-icon-draft { width: 80px; height: 80px; object-fit: contain; border-radius: var(--radius-md); }
 /* AND-308: list-local filters stay reachable while either pane scrolls. */
 .list-page { container-type: inline-size; container-name: list-pane; }
 .list-filter-bar { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; margin-bottom: 10px; padding: 4px 0 8px; background: var(--canvas); }

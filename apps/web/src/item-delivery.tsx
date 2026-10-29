@@ -37,7 +37,7 @@ export function ModuleBuilderSetting({component}: {component: Component}) {
       <option value="">未配置</option>{builders.data?.builders.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}
       {id && !builders.data?.builders.some(account=>account.id===id) && <option value={id}>原 Builder已不可用，请重新分配</option>}
     </select></label>
-    {changed && <button type="button" className="secondary-button" disabled={save.isPending || !builders.data?.canConfigure} onClick={()=>save.mutate()}>保存默认 Builder</button>}
+    {changed && <div className="inline-form-actions"><button type="button" className="secondary-button" disabled={save.isPending} onClick={() => setId(component.defaultBuilderAccountId ?? "")}>取消</button><button type="button" className="primary-button" disabled={save.isPending || !builders.data?.canConfigure} onClick={()=>save.mutate()}>保存默认 Builder</button></div>}
     <small>用于新条目自动分配，不改变已有条目的 Builder。</small>
     {(save.isError || builders.isError) && <p role="alert">{failure(save.error ?? builders.error)}</p>}
   </div>;
@@ -58,14 +58,14 @@ export function TransferBuilderModal({itemKey,delivery,onClose}: {itemKey:string
       onClose();
     },
   });
-  return <Modal title="转交 Builder" subtitle="交付与执行" onClose={onClose}>
+  return <Modal title="转交 Builder" subtitle="交付与执行" onClose={onClose} dirty={Boolean(target || note)} pending={transfer.isPending}>
     <form className="delivery-form" onSubmit={event=>{event.preventDefault();transfer.mutate();}}>
       <label>新的 Builder<select aria-label="新的 Builder" required value={target} onChange={event=>setTarget(event.target.value)}><option value="">请选择 Builder</option>{delivery.candidates.filter(account=>account.id!==delivery.builderAccountId).map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
       <label>交接说明<textarea required={Boolean(delivery.builderAccountId)} maxLength={2000} placeholder={delivery.builderAccountId ? undefined : "可不填，确认后默认记录「首次分配 builder」"} value={note} onChange={event=>setNote(event.target.value)} /></label>
       <small>转交整体交付责任，保留当前条目状态及执行安排。</small>
       {transfer.isError && <p role="alert">{failure(transfer.error)}</p>}
       <div className="form-footer">
-        <button type="button" className="secondary-button" onClick={onClose}>取消</button>
+        <button type="button" className="secondary-button" disabled={transfer.isPending} onClick={onClose}>取消</button>
         <button type="submit" className="primary-button" disabled={transfer.isPending || !target}>确认转交</button>
       </div>
     </form>
@@ -73,8 +73,9 @@ export function TransferBuilderModal({itemKey,delivery,onClose}: {itemKey:string
 }
 
 function ExecutionRow({execution,delivery,itemKey,onRefresh}: {execution: ItemExecution;delivery:ItemDelivery;itemKey:string;onRefresh:()=>Promise<unknown>}) {
-  const [status,setStatus]=useState("working"); const [result,setResult]=useState("");
-  const mutation=useMutation({mutationFn:()=>api.updateExecution(itemKey,execution.id,status,result),onSuccess:onRefresh});
+  const [editing,setEditing]=useState(false);
+  const [status,setStatus]=useState(execution.status); const [result,setResult]=useState("");
+  const mutation=useMutation({mutationFn:()=>api.updateExecution(itemKey,execution.id,status,result),onSuccess:async()=>{setEditing(false);setResult("");await onRefresh();}});
   const finished=["completed","cancelled","handed_over","failed"].includes(execution.status);
   const editable=!finished && (execution.kind==="human" || execution.recorded===true) && (delivery.canManage || delivery.currentAccountId===execution.accountId);
   return <li className="execution-row">
@@ -84,14 +85,15 @@ function ExecutionRow({execution,delivery,itemKey,onRefresh}: {execution: ItemEx
     <small>安排：{new Date(execution.createdAt).toLocaleString("zh-CN")}{execution.startedAt ? ` · 开始：${new Date(execution.startedAt).toLocaleString("zh-CN")}` : ""}{execution.endedAt ? ` · 结束：${new Date(execution.endedAt).toLocaleString("zh-CN")}` : ""}</small>
     {execution.kind==="agent" && <small>授权账号：{execution.accountName} · 会话：<code>{execution.sessionId}</code> · {execution.sessionStatus ? `会话状态：${executionLabels[execution.sessionStatus] ?? execution.sessionStatus} · ` : ""}执行结果以会话记录为准</small>}
     {execution.result && <p className="execution-result">{execution.result}</p>}
-    {editable && <details><summary>更新本轮执行</summary><form className="delivery-form" onSubmit={event=>{event.preventDefault();mutation.mutate();}}>
+    {editable && <button type="button" className="secondary-button" onClick={() => { setStatus(execution.status); setResult(""); mutation.reset(); setEditing(true); }}>更新本轮执行</button>}
+    {editing && <Modal title="更新本轮执行" subtitle={execution.name} onClose={()=>setEditing(false)} dirty={status!==execution.status || Boolean(result)} pending={mutation.isPending}><form className="delivery-form" onSubmit={event=>{event.preventDefault();mutation.mutate();}}>
       <label>执行状态<select value={status} onChange={event=>setStatus(event.target.value)} aria-label={`${execution.name} 执行状态`}>
         <option value="working">执行中</option><option value="completed">本轮完成</option><option value="blocked">受阻</option><option value="cancelled">取消本轮执行</option>
       </select></label>
       <label>结果／说明<textarea maxLength={2000} value={result} onChange={event=>setResult(event.target.value)} required={status!=="working"} /></label>
-      <button className="secondary-button" disabled={mutation.isPending}>保存执行进展</button>
+      <div className="form-footer"><button type="button" className="secondary-button" disabled={mutation.isPending} onClick={()=>setEditing(false)}>取消</button><button className="primary-button" disabled={mutation.isPending}>保存执行进展</button></div>
       {mutation.isError && <p role="alert">{failure(mutation.error)}</p>}
-    </form></details>}
+    </form></Modal>}
   </li>;
 }
 
@@ -117,7 +119,7 @@ export function ItemDeliveryPanel({item}: {item:WorkItem}) {
         <button type="button" className="secondary-button" onClick={()=>{setPerformer("");setScope("");setPreviousId("");setExecutionNote("");assign.reset();setMode("execution");}}>安排执行／交接</button>
       </div>}
     </div>
-    {EXECUTION_ASSIGNMENT_ENABLED && mode==="execution" && <Modal title="安排执行／交接" subtitle="交付与执行" onClose={()=>setMode(null)}>
+    {EXECUTION_ASSIGNMENT_ENABLED && mode==="execution" && <Modal title="安排执行／交接" subtitle="交付与执行" onClose={()=>setMode(null)} dirty={Boolean(scope || performer || previousId || executionNote)} pending={assign.isPending}>
       <form className="delivery-form" onSubmit={event=>{event.preventDefault();assign.mutate();}}>
         <label>执行人<select aria-label="执行人" required value={performer} onChange={event=>setPerformer(event.target.value)}><option value="">请选择执行人</option><optgroup label="人工账号">{data.performers.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</optgroup>
           <optgroup label="已关联 Agent 会话">{[...new Map(data.executions.filter(row=>row.kind==="agent" && row.sessionId).map(row=>[row.sessionId,row])).values()].map(row=><option key={row.sessionId} value={`agent:${row.sessionId}`}>{row.name} · {row.accountName} · {row.sessionId?.slice(0,8)}</option>)}</optgroup></select></label>
@@ -127,7 +129,7 @@ export function ItemDeliveryPanel({item}: {item:WorkItem}) {
         <small>安排执行不改变 Builder，也不会停止正在运行的会话。Agent 使用现有派单和会话接入，关联后可选择并安排下一轮工作。</small>
         {assign.isError && <p role="alert">{failure(assign.error)}</p>}
         <div className="form-footer">
-          <button type="button" className="secondary-button" onClick={()=>setMode(null)}>取消</button>
+          <button type="button" className="secondary-button" disabled={assign.isPending} onClick={()=>setMode(null)}>取消</button>
           <button type="submit" className="primary-button" disabled={assign.isPending || !performer || !scope.trim()}>确认安排</button>
         </div>
       </form>

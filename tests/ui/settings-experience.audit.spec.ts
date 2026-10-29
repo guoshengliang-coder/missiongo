@@ -59,15 +59,15 @@ test("protects unsaved input across categories, product changes and browser Back
   await page.getByRole("combobox", { name: "当前产品", exact: true }).selectOption(product.id);
   const input = page.getByRole("textbox", { name: "产品名称", exact: true });
   await input.fill("Unsaved settings name");
-  page.once("dialog", dialog => dialog.dismiss());
   await nav(page).getByRole("button", { name: "显示", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(input).toHaveValue("Unsaved settings name");
-  page.once("dialog", dialog => dialog.dismiss());
   await page.getByRole("combobox", { name: "当前产品", exact: true }).selectOption(fixture.productId);
+  await page.getByRole("dialog").getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(productPath(product.id)));
   await expect(page.getByRole("combobox", { name: "当前产品", exact: true })).toHaveValue(product.id);
-  page.once("dialog", dialog => dialog.dismiss());
   await page.goBack();
+  await page.getByRole("dialog").getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(productPath(product.id)));
   await expect(input).toHaveValue("Unsaved settings name");
 
@@ -122,8 +122,8 @@ test("shows one Agent at a time, keeps advanced choices optional and protects di
   await expect(page.getByRole("combobox", { name: "模型", exact: true })).toBeHidden();
   await page.getByText("模型与推理设置", { exact: true }).click();
   await expect(page.getByRole("combobox", { name: "模型", exact: true })).toBeVisible();
-  page.once("dialog", dialog => dialog.dismiss());
   await nav(page).getByRole("button", { name: "Agent 配置", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(page).toHaveURL(/\/settings\/dispatch/);
 });
 
@@ -165,10 +165,11 @@ test("keeps multiple devices compact and protects a device nickname draft", asyn
   await expect(page.locator(".node-card")).toHaveCount(0);
   await page.locator(".settings-device-row").first().click();
   const card = page.locator(".node-card").first();
-  const nickname = card.getByRole("textbox").first();
+  await card.getByRole("button", { name: "昵称", exact: true }).click();
+  const nickname = page.getByRole("dialog").getByRole("textbox");
   await nickname.fill("Unsubmitted device name");
-  page.once("dialog", dialog => dialog.dismiss());
-  await nav(page).getByRole("button", { name: "资料与安全", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(nickname).toHaveValue("Unsubmitted device name");
 });
 

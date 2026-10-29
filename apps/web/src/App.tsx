@@ -1,3 +1,5 @@
+import { useDialogDraft } from "./dialog-state";
+import { useConfirm } from "./confirm-dialog";
 import { itemFilterKey, type ItemFilters } from "@missiongo/domain";
 import { ListFilters } from "./list-filters";
 import { pickItemFilters } from "./item-filters";
@@ -1775,7 +1777,7 @@ export function App() {
       {!agentConsoleOpen && !selectedItemKey && <button className="mobile-fab mobile-only" onClick={openCapture} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
 
       {captureOpen && selectedProduct && (
-        <Modal title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={closeCapture}>
+        <Modal historyManaged title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={closeCapture}>
           <CaptureForm
             product={selectedProduct}
             onCreated={(item, failedUploads) => {
@@ -2743,6 +2745,7 @@ function DetailPane({
   sessionFailure: string | null | undefined;
   onOpenConsoleSession: (sessionId: string) => void;
 }) {
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
   const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
   const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey) });
@@ -3166,8 +3169,8 @@ function DetailPane({
                         <CommentBody
                           payload={event.payload}
                           readOnly={Boolean(item.transferred)}
-                          onWithdraw={() => {
-                            if (window.confirm(t("withdrawCommentConfirm"))) withdrawMutation.mutate(event.id);
+                          onWithdraw={async () => {
+                            if (await confirm(t("withdrawCommentConfirm"))) withdrawMutation.mutate(event.id);
                           }}
                         />
                       )}
@@ -3186,6 +3189,7 @@ function DetailPane({
         <Modal title={t("editItem", { key: item.key })} subtitle={t("editItemHelp")} onClose={() => setEditing(false)}>
           <EditItemForm
             item={item}
+            onCancel={() => setEditing(false)}
             onSaved={async (failedUploads) => {
               setEditing(false);
               await refreshItem();
@@ -3552,9 +3556,11 @@ function DiagnosticDetails({
   );
 }
 
-function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploads: number) => void }) {
-  const queryClient = useQueryClient();
+function EditItemForm({ item, onSaved, onCancel }: { item: WorkItem; onCancel: () => void; onSaved: (failedUploads: number) => void }) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const [partiallySaved, setPartiallySaved] = useState(false);
+  const [appliedRemovals, setAppliedRemovals] = useState<readonly string[]>([]);
   const [draft, setDraft] = useState<CaptureDraft>(() => ({
     title: item.title,
     description: item.report?.overview ?? item.description,
@@ -3569,41 +3575,27 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
     environment: environmentDraft(item.environment),
   }));
   const [files, setFiles] = useState<readonly File[]>([]);
+  const [removedAttachments, setRemovedAttachments] = useState<readonly string[]>([]);
+  const [replacementFiles, setReplacementFiles] = useState<Record<string, File>>({});
+  const remainingAttachments = item.attachments.filter(attachment => !removedAttachments.includes(attachment.id) && !appliedRemovals.includes(attachment.id));
   const [fileError, setFileError] = useState<string | null>(null);
   // Unlike the capture form, an edit in progress is mirrored nowhere: closing the tab
   // loses it. Captured once, from the first render, so it stays the value to compare against.
   const [savedDraft] = useState(draft);
-  useUnsavedChangesGuard(JSON.stringify(draft) !== JSON.stringify(savedDraft) || files.length > 0);
-
-  // Annotating replaces an attachment's bytes, filename and size, and adds a
-  // timeline entry, so it refreshes exactly what deleting one does.
-  const refreshAfterAttachmentChange = async () => {
-    setFileError(null);
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["item", item.key] }),
-      queryClient.invalidateQueries({ queryKey: ["items"] }),
-      queryClient.invalidateQueries({ queryKey: ["timeline", item.key] }),
-    ]);
-  };
-
-  const deleteAttachmentMutation = useMutation({
-    mutationFn: (attachmentId: string) => api.deleteAttachment(item.key, attachmentId),
-    onSuccess: refreshAfterAttachmentChange,
-    onError: (error) => setFileError(errorMessage(error, t("somethingWentWrong"))),
-  });
+  useUnsavedChangesGuard(JSON.stringify(draft) !== JSON.stringify(savedDraft) || files.length > 0 || removedAttachments.length > 0 || Object.keys(replacementFiles).length > 0);
 
   const addIncomingFiles = (incoming: readonly File[]) => {
     const diagnosticSlots = draft.diagnosticLog.trim() ? 1 : 0;
-    const result = validateIncomingFiles(files, incoming, t, Math.max(0, 10 - item.attachments.length - diagnosticSlots));
+    const result = validateIncomingFiles(files, incoming, t, Math.max(0, 10 - remainingAttachments.length - diagnosticSlots));
     setFiles(result.files);
     setFileError(result.error ?? null);
   };
-  const remainingDropSlots = Math.max(0, 10 - item.attachments.length - (draft.diagnosticLog.trim() ? 1 : 0) - files.length);
+  const remainingDropSlots = Math.max(0, 10 - remainingAttachments.length - (draft.diagnosticLog.trim() ? 1 : 0) - files.length);
   const { isDraggingFiles, dropHandlers } = useFileDropZone(addIncomingFiles, { canAccept: remainingDropSlots > 0 });
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const attachmentLimit = Math.max(0, 10 - item.attachments.length);
+      const attachmentLimit = Math.max(0, 10 - remainingAttachments.length);
       if (files.length + (draft.diagnosticLog.trim() ? 1 : 0) > attachmentLimit) {
         throw new Error(t("tooManyFiles", { count: attachmentLimit }));
       }
@@ -3625,15 +3617,30 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
           draft.environment.platform === item.environment?.platform ? item.environment?.metadata : undefined,
         ) ?? null,
       });
+      setPartiallySaved(true);
+      for (const id of removedAttachments) {
+        await api.deleteAttachment(item.key, id);
+        setAppliedRemovals(previous => [...previous, id]);
+        setRemovedAttachments(previous => previous.filter(value => value !== id));
+        setReplacementFiles(previous => { const next = { ...previous }; delete next[id]; return next; });
+      }
+      for (const [id, file] of Object.entries(replacementFiles)) {
+        if (removedAttachments.includes(id)) continue;
+        await api.replaceAttachment(item.key, id, file);
+        setReplacementFiles(previous => { const next = { ...previous }; delete next[id]; return next; });
+      }
       return uploadAttachmentsSequentially(item.key, filesWithDiagnosticLog(files, draft.diagnosticLog));
     },
     onSuccess: onSaved,
+    onError: async () => { await Promise.all([queryClient.invalidateQueries({ queryKey: ["item", item.key] }), queryClient.invalidateQueries({ queryKey: ["items"] }), queryClient.invalidateQueries({ queryKey: ["timeline", item.key] })]); },
   });
+
+  useDialogDraft(false, mutation.isPending);
 
   return (
     <form
       className="capture-form quick-capture-form"
-      onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}
+      onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending) mutation.mutate(); }}
       onKeyDown={(event) => {
         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
           event.preventDefault();
@@ -3657,16 +3664,18 @@ function EditItemForm({ item, onSaved }: { item: WorkItem; onSaved: (failedUploa
         files={files}
         onFiles={setFiles}
         fileError={fileError}
-        attachmentLimit={Math.max(0, 10 - item.attachments.length)}
+        attachmentLimit={Math.max(0, 10 - remainingAttachments.length)}
         existingItemKey={item.key}
-        existingAttachments={item.attachments}
-        onDeleteExistingAttachment={(attachmentId) => deleteAttachmentMutation.mutate(attachmentId)}
-        onExistingAttachmentReplaced={refreshAfterAttachmentChange}
-        deletingExistingAttachmentId={deleteAttachmentMutation.isPending ? deleteAttachmentMutation.variables : undefined}
+        existingAttachments={remainingAttachments}
+        onDeleteExistingAttachment={attachmentId => setRemovedAttachments(previous => [...previous, attachmentId])}
+        replacementFiles={replacementFiles}
+        onStageReplacement={(id, file) => setReplacementFiles(previous => ({ ...previous, [id]: file }))}
       />
-      {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
+      {mutation.isError && <InlineError message={partiallySaved ? `${t("partialItemSave")} ${errorMessage(mutation.error, t("somethingWentWrong"))}` : errorMessage(mutation.error, t("somethingWentWrong"))} />}
+      {removedAttachments.length > 0 && <p role="status" className="account-note">{t("stagedAttachmentRemoval", { count: removedAttachments.length })}<button type="button" className="text-button" disabled={mutation.isPending} onClick={() => setRemovedAttachments([])}>{t("undoAttachmentRemoval")}</button></p>}
       <div className="form-footer">
-        <button className="primary-button" disabled={mutation.isPending || !draft.title.trim() || !draft.description.trim() || !draft.environment.platform || diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES || files.length + (draft.diagnosticLog.trim() ? 1 : 0) > Math.max(0, 10 - item.attachments.length)}>
+        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>{t("cancel")}</button>
+        <button className="primary-button" disabled={mutation.isPending || !draft.title.trim() || !draft.description.trim() || !draft.environment.platform || diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES || files.length + (draft.diagnosticLog.trim() ? 1 : 0) > Math.max(0, 10 - remainingAttachments.length)}>
           {mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />} {t("saveChanges")}
         </button>
       </div>
@@ -3687,6 +3696,8 @@ function WorkItemFields({
   onDeleteExistingAttachment,
   onExistingAttachmentReplaced,
   deletingExistingAttachmentId,
+  replacementFiles,
+  onStageReplacement,
 }: {
   productId: string;
   draft: CaptureDraft;
@@ -3700,6 +3711,8 @@ function WorkItemFields({
   onDeleteExistingAttachment?: ((attachmentId: string) => void) | undefined;
   onExistingAttachmentReplaced?: (() => void | Promise<void>) | undefined;
   deletingExistingAttachmentId?: string | undefined;
+  replacementFiles?: Readonly<Record<string, File>>;
+  onStageReplacement?: (id: string, file: File) => void;
 }) {
   const { priorityLabel, t, typeLabel } = useI18n();
   const componentsQuery = useQuery({ queryKey: ["components", productId], queryFn: () => api.listComponents(productId) });
@@ -3829,6 +3842,8 @@ function WorkItemFields({
               attachment={attachment}
               onDelete={onDeleteExistingAttachment}
               onReplaced={onExistingAttachmentReplaced}
+              replacementFile={replacementFiles?.[attachment.id]}
+              onStageReplacement={onStageReplacement}
               deleting={deletingExistingAttachmentId === attachment.id}
             />
           ))}</div>
@@ -4056,6 +4071,8 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
     event.preventDefault();
     mutation.mutate("ready");
   };
+
+  useDialogDraft(false, mutation.isPending);
 
   return (
     <form
@@ -4358,6 +4375,8 @@ function AttachmentCard({
   onReplaced,
   onOpenMedia,
   deleting = false,
+  replacementFile,
+  onStageReplacement,
 }: {
   itemKey: string;
   attachment: WorkItemAttachment;
@@ -4365,7 +4384,10 @@ function AttachmentCard({
   onReplaced?: (() => void | Promise<void>) | undefined;
   onOpenMedia?: ((attachmentId: string) => void) | undefined;
   deleting?: boolean;
+  replacementFile?: File | undefined;
+  onStageReplacement?: ((id: string, file: File) => void) | undefined;
 }) {
+  const confirm = useConfirm();
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [annotating, setAnnotating] = useState(false);
@@ -4391,7 +4413,9 @@ function AttachmentCard({
     enabled: isImage && thumbnailEdge !== null,
     staleTime: Infinity,
   });
-  const thumbnailUrl = useObjectUrl(thumbnailQuery.data);
+  const stagedUrl = useObjectUrl(replacementFile);
+  const originalThumbnailUrl = useObjectUrl(thumbnailQuery.data);
+  const thumbnailUrl = stagedUrl ?? originalThumbnailUrl;
   // A log and a text document are both read as text, and only their head is
   // worth fetching for a preview. A PDF is neither: it can only be downloaded.
   const readsAsText = attachment.kind === "log"
@@ -4451,8 +4475,8 @@ function AttachmentCard({
   // identity across renders. A new File built inline would make that effect
   // re-run and revoke the URL the image is still loading from.
   const annotationSource = useMemo(
-    () => contentQuery.data ? new File([contentQuery.data], drawable.name, { type: drawable.type }) : null,
-    [drawable.name, drawable.type, contentQuery.data],
+    () => replacementFile ?? (contentQuery.data ? new File([contentQuery.data], drawable.name, { type: drawable.type }) : null),
+    [drawable.name, drawable.type, contentQuery.data, replacementFile],
   );
 
   const openImage = () => {
@@ -4483,6 +4507,11 @@ function AttachmentCard({
     setReplacing(true);
     setReplaceError("");
     try {
+      if (onStageReplacement) {
+        onStageReplacement(attachment.id, annotated);
+        setAnnotating(false);
+        return;
+      }
       await api.replaceAttachment(itemKey, attachment.id, annotated);
       // The cached blob is keyed by attachment id and never goes stale on its
       // own, so drop it or the card keeps showing the image before the marks.
@@ -4532,7 +4561,7 @@ function AttachmentCard({
         <span><strong>{referenceLabel ? `${referenceLabel} · ` : ""}{attachment.filename}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span>
         <span className="attachment-actions">
           <button type="button" onClick={() => void download()} aria-label={`${t("download")} ${attachment.filename}`} title={t("download")}><Download size={15} /></button>
-          {onReplaced && attachment.kind === "image" && isAnnotatableImage(drawable) && (
+          {(onReplaced || onStageReplacement) && attachment.kind === "image" && isAnnotatableImage(drawable) && (
             <button
               type="button"
               disabled={replacing || (annotating && !annotationSource)}
@@ -4544,15 +4573,17 @@ function AttachmentCard({
           {onDelete && <button
             type="button"
             disabled={deleting}
-            onClick={() => { if (window.confirm(t("confirmDeleteAttachment", { filename: attachment.filename }))) onDelete(attachment.id); }}
+            onClick={async () => { if (await confirm(t("confirmDeleteAttachment", { filename: attachment.filename }))) onDelete(attachment.id); }}
             aria-label={t("deleteAttachment", { filename: attachment.filename })}
             title={t("delete")}
           >{deleting ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}</button>}
         </span>
       </footer>
+      {replacementFile && <p role="status" className="account-note">{t("stagedAnnotation")}</p>}
       {replaceError && <InlineError message={replaceError} />}
       {annotating && annotationSource && (
         <ImageAnnotator
+          staged={Boolean(onStageReplacement)}
           file={annotationSource}
           onCancel={() => setAnnotating(false)}
           onSave={saveAnnotation}
@@ -4562,7 +4593,7 @@ function AttachmentCard({
         <MediaLightbox title={`${referenceLabel} · ${attachment.filename}`} onClose={() => setViewerOpen(false)}>
           {isImage && contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
           {isImage && contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
-          {isImage && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
+          {isImage && (stagedUrl || objectUrl) && <img src={stagedUrl ?? objectUrl!} alt={attachment.filename} />}
           {attachment.kind === "video" && objectUrl && <PlayableVideo src={objectUrl} autoPlay onDownload={() => void download()} />}
         </MediaLightbox>
       )}
@@ -4574,18 +4605,22 @@ function AttachmentCard({
 function ProductIconField({ product }: { product: Product }) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
+  const [editing, setEditing] = useState(false);
+  const [file, setFile] = useState<File | null>(null);
+  const preview = useObjectUrl(file ?? undefined);
   const inputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState("");
   const mutation = useMutation({
     mutationFn: (file: File | null) => file ? api.setProductIcon(product.id, file) : api.removeProductIcon(product.id),
     onSuccess: async () => {
+      setEditing(false);
+      setFile(null);
       setError("");
       await queryClient.invalidateQueries({ queryKey: ["products"] });
     },
     onError: (mutationError) => setError(errorMessage(mutationError, t("somethingWentWrong"))),
   });
 
-  useSettingsDraft(false, mutation.isPending);
 
   return (
     <div className="product-icon-field">
@@ -4594,17 +4629,26 @@ function ProductIconField({ product }: { product: Product }) {
         <strong>{t("productIcon")}</strong>
         <small>{t("productIconHelp")}</small>
         <div className="product-icon-actions">
-          <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => inputRef.current?.click()}>
+          <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => { setFile(null); setError(""); setEditing(true); }}>
             {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <ImageIcon size={15} />} {product.hasIcon ? t("replaceIcon") : t("uploadIcon")}
           </button>
           {product.hasIcon && (
-            <button type="button" className="text-button" disabled={mutation.isPending} onClick={() => mutation.mutate(null)}>
+            <button type="button" className="text-button" disabled={mutation.isPending} onClick={() => { setFile(null); setError(""); setEditing(true); }}>
               {t("useGeneratedIcon")}
             </button>
           )}
         </div>
         {error && <InlineError message={error} />}
       </div>
+      <small className="account-note">{t("iconSavedImmediately")}</small>
+      {editing && <Modal title={t("productIcon")} subtitle={product.name} onClose={() => setEditing(false)} dirty={Boolean(file)} pending={mutation.isPending}>
+        <div className="dialog-form">
+          {preview ? <img className="product-icon-draft" src={preview} alt={t("productIcon")} /> : <p className="account-note">{t("useGeneratedIcon")}</p>}
+          <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => inputRef.current?.click()}>{t("uploadIcon")}</button>
+          {error && <InlineError message={error} />}
+          <div className="form-footer"><button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => setEditing(false)}>{t("cancel")}</button><button type="button" className="primary-button" disabled={mutation.isPending || !file && !product.hasIcon} onClick={() => mutation.mutate(file)}>{t("save")}</button></div>
+        </div>
+      </Modal>}
       <input
         ref={inputRef}
         type="file"
@@ -4613,7 +4657,7 @@ function ProductIconField({ product }: { product: Product }) {
         onChange={(event) => {
           const file = event.target.files?.[0];
           event.target.value = "";
-          if (file) mutation.mutate(file);
+          if (file) setFile(file);
         }}
       />
     </div>
@@ -4635,6 +4679,7 @@ function ProductSettings({
   componentId?: string | undefined;
   onOpenComponent: (id: string) => void;
 }) {
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
   const { t } = useI18n();
   const activeSettingsTab = section;
@@ -4689,7 +4734,7 @@ function ProductSettings({
     },
   });
 
-  useSettingsDraft(name !== product.name || newComponentName.trim().length > 0, productMutation.isPending || componentMutation.isPending || archiveMutation.isPending);
+  useSettingsDraft(name !== product.name, productMutation.isPending || archiveMutation.isPending);
 
   return (
     <div className="product-settings">
@@ -4720,9 +4765,9 @@ function ProductSettings({
               type="button"
               className="secondary-button archive-button"
               disabled={archiveMutation.isPending || !mayArchive}
-              onClick={() => {
+              onClick={async () => {
                 if (product.archivedAt) archiveMutation.mutate(false);
-                else if (window.confirm(t("confirmArchiveProduct", { name: product.name }))) archiveMutation.mutate(true);
+                else if (await confirm(t("confirmArchiveProduct", { name: product.name }))) archiveMutation.mutate(true);
               }}
             >
               {archiveMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Archive size={15} />}
@@ -4739,7 +4784,7 @@ function ProductSettings({
             <div className="component-header-actions">
               <span>{componentsQuery.data?.length ?? 0}</span>
               {!componentId && (componentsQuery.data?.length ?? 0) > 0 && (
-                <button className="primary-button component-add-trigger" disabled={!canOperate} onClick={() => setAddingComponent((value) => !value)}><Plus size={15} /> {t("newComponent")}</button>
+                <button className="primary-button component-add-trigger" disabled={!canOperate} onClick={() => setAddingComponent(true)}><Plus size={15} /> {t("newComponent")}</button>
               )}
             </div>
           </header>
@@ -4752,19 +4797,19 @@ function ProductSettings({
             {!componentId && !componentsQuery.isLoading && components.length === 0 && !addingComponent && <div className="component-empty-state"><button className="primary-button" disabled={!canOperate} onClick={() => setAddingComponent(true)}><Plus size={17} /> {t("newComponent")}</button></div>}
           </div>
           {addingComponent && (
-            <div className="component-add-panel">
-              <header>
-                <h4>{t("newComponent")}</h4>
-                <button className="secondary-button component-add-cancel" disabled={componentMutation.isPending} onClick={closeComponentForm}><X size={15} /> {t("cancel")}</button>
-              </header>
-              <div className="component-add-row">
+            <Modal title={t("newComponent")} subtitle={product.name} onClose={closeComponentForm} dirty={Boolean(newComponentName || newComponentKind !== "android")} pending={componentMutation.isPending}>
+            <form className="dialog-form" onSubmit={event => { event.preventDefault(); if (newComponentName.trim() && !componentMutation.isPending) componentMutation.mutate(); }}>
+              <div className="dialog-fields">
                 <label>{t("componentName")}<input value={newComponentName} onChange={(event) => setNewComponentName(event.target.value)} placeholder={t("componentNamePlaceholder")} autoFocus /></label>
                 <label>{t("componentKind")}<select value={newComponentKind} onChange={(event) => setNewComponentKind(event.target.value as ComponentKind)}>{COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</select></label>
-                <button className="primary-button" disabled={!newComponentName.trim() || componentMutation.isPending} onClick={() => componentMutation.mutate()}>
+                <div className="form-footer"><button type="button" className="secondary-button" disabled={componentMutation.isPending} onClick={closeComponentForm}>{t("cancel")}</button>
+                <button type="submit" className="primary-button" disabled={!newComponentName.trim() || componentMutation.isPending}>
                   {componentMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createComponent")}
-                </button>
+                </button></div>
               </div>
-            </div>
+              {componentMutation.isError && <InlineError message={errorMessage(componentMutation.error, t("somethingWentWrong"))} />}
+            </form>
+            </Modal>
           )}
           {componentMutation.isError && <InlineError message={errorMessage(componentMutation.error, t("somethingWentWrong"))} />}
         </section>
@@ -4854,6 +4899,7 @@ function ReleaseArtifactsSettings({ product }: { product: Product }) {
 }
 
 function SdkTokenSettings({ product }: { product: Product }) {
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
   const { formatTime, t } = useI18n();
   const [name, setName] = useState("");
@@ -4877,7 +4923,7 @@ function SdkTokenSettings({ product }: { product: Product }) {
     onSuccess: async (token) => {
       setCreatedToken(token);
       setCopied(false);
-      setCreating(false);
+
       setName("");
       setSourceComponentId("");
       await queryClient.invalidateQueries({ queryKey: ["sdk-tokens"] });
@@ -4888,23 +4934,25 @@ function SdkTokenSettings({ product }: { product: Product }) {
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["sdk-tokens"] }),
   });
 
-  useSettingsDraft(Boolean(name || sourceComponentId), createMutation.isPending || revokeMutation.isPending);
+  useSettingsDraft(false, revokeMutation.isPending);
+
+  const closeToken = () => { if (createMutation.isPending) return; setCreating(false); setName(""); setSourceComponentId(""); setCreatedToken(null); createMutation.reset(); };
 
   const copyToken = async () => {
     if (!createdToken) return;
-    await navigator.clipboard.writeText(createdToken.token);
-    setCopied(true);
+    try { await navigator.clipboard.writeText(createdToken.token); setCopied(true); } catch { /* The token remains selectable for manual copying. */ }
   };
 
   return (
     <section className="product-settings-section" role="tabpanel">
       <header>
         <div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("sdkTokens")}</h3></div>
-        <div className="component-header-actions"><span>{tokens.filter((token) => !token.revokedAt).length}</span><button type="button" className="primary-button" onClick={() => setCreating(true)} disabled={creating}>{t("newSdkToken")}</button></div>
+        <div className="component-header-actions"><span>{tokens.filter((token) => !token.revokedAt).length}</span><button type="button" className="primary-button" onClick={() => { setCreatedToken(null); createMutation.reset(); setCreating(true); }} disabled={creating}>{t("newSdkToken")}</button></div>
       </header>
       <p className="account-note">{t("settingsSdkScopeHelp")}</p>
       <p className="component-management-help">{t("sdkTokensHelp")}</p>
 
+      {creating && <Modal title={t(createdToken ? "sdkTokenCreated" : "newSdkToken")} subtitle={product.name} onClose={closeToken} closeWarning={createdToken ? t("closeTokenWarning") : undefined} dirty={!createdToken && Boolean(name || sourceComponentId)} pending={createMutation.isPending}>
       {createdToken && (
         <div className="sdk-token-reveal">
           <p><KeyRound size={15} /> {t("sdkTokenCreated")}</p>
@@ -4917,8 +4965,8 @@ function SdkTokenSettings({ product }: { product: Product }) {
         </div>
       )}
 
-      {creating && <div className="component-add-panel">
-        <div className="component-add-row">
+      {!createdToken && <form className="dialog-form" onSubmit={event => { event.preventDefault(); if (name.trim() && !createMutation.isPending) createMutation.mutate(); }}>
+        <div className="dialog-fields">
           <label>{t("sdkTokenName")}<input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("sdkTokenNamePlaceholder")} maxLength={100} /></label>
           <label>{t("sdkTokenScope")}
             <select value={sourceComponentId} onChange={(event) => setSourceComponentId(event.target.value)}>
@@ -4926,13 +4974,16 @@ function SdkTokenSettings({ product }: { product: Product }) {
               {androidComponents.map((component) => <option key={component.id} value={component.id}>{component.name}</option>)}
             </select>
           </label>
-          <button className="primary-button" disabled={!name.trim() || createMutation.isPending} onClick={() => createMutation.mutate()}>
-            {createMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createSdkToken")}
-          </button>
+
         </div>
         {androidComponents.length === 0 && <p className="section-empty">{t("sdkTokenNeedsAndroidModule")}</p>}
-        <button type="button" className="secondary-button" disabled={createMutation.isPending} onClick={() => { setCreating(false); setName(""); setSourceComponentId(""); }}>{t("cancel")}</button>
-      </div>}
+        <div className="form-footer"><button type="button" className="secondary-button" disabled={createMutation.isPending} onClick={closeToken}>{t("cancel")}</button>          <button type="submit" className="primary-button" disabled={!name.trim() || createMutation.isPending}>
+            {createMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createSdkToken")}
+          </button></div>
+      </form>}
+        {createMutation.isError && <InlineError message={errorMessage(createMutation.error, t("somethingWentWrong"))} />}
+        {createdToken && <div className="form-footer"><button type="button" className="primary-button" onClick={closeToken}>{t("tokenCopiedDone")}</button></div>}
+      </Modal>}
       {createMutation.isError && <InlineError message={errorMessage(createMutation.error, t("somethingWentWrong"))} />}
       {revokeMutation.isError && <InlineError message={errorMessage(revokeMutation.error, t("somethingWentWrong"))} />}
 
@@ -4956,8 +5007,8 @@ function SdkTokenSettings({ product }: { product: Product }) {
                 type="button"
                 className="secondary-button sdk-token-revoke"
                 disabled={revokeMutation.isPending}
-                onClick={() => {
-                  if (window.confirm(t("confirmRevokeToken", { name: token.name }))) revokeMutation.mutate(token.id);
+                onClick={async () => {
+                  if (await confirm(t("confirmRevokeToken", { name: token.name }))) revokeMutation.mutate(token.id);
                 }}
               >
                 <Trash2 size={14} /> {t("revoke")}
@@ -4971,6 +5022,7 @@ function SdkTokenSettings({ product }: { product: Product }) {
 }
 
 function ComponentSettingsRow({ component }: { component: Component }) {
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
   const { t } = useI18n();
   const [name, setName] = useState(component.name);
@@ -5004,15 +5056,16 @@ function ComponentSettingsRow({ component }: { component: Component }) {
           {archiveMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />} {t("restore")}
         </button>
       ) : changed ? (
-        <button className="secondary-button" disabled={!name.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
+        <div className="inline-form-actions"><button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => { setName(component.name); setKind(component.kind); mutation.reset(); }}>{t("cancel")}</button>
+        <button className="primary-button" disabled={!name.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
           {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("save")}
-        </button>
+        </button></div>
       ) : (
         <button
           className="secondary-button archive-button"
           disabled={archiveMutation.isPending}
-          onClick={() => {
-            if (window.confirm(t("confirmArchiveComponent", { name: component.name }))) archiveMutation.mutate(true);
+          onClick={async () => {
+            if (await confirm(t("confirmArchiveComponent", { name: component.name }))) archiveMutation.mutate(true);
           }}
         >
           {archiveMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Archive size={15} />} {t("archive")}
@@ -5072,6 +5125,8 @@ function BulkVerifyDialog({ items, onClose, onDone }: {
     mutationFn: () => api.closeVerifications(items.map((item) => item.key)),
     onSuccess: (response) => onDone(response.results),
   });
+  useDialogDraft(false, mutation.isPending);
+
   return (
     <div className="bulk-verify">
       <p className="dispatch-note">{t("verifySelectedHelp")}</p>
@@ -5082,7 +5137,7 @@ function BulkVerifyDialog({ items, onClose, onDone }: {
         <div className="inline-error"><CirclePause size={16} /><span>{errorMessage(mutation.error, t("somethingWentWrong"))}</span></div>
       )}
       <div className="form-footer">
-        <button type="button" className="secondary-button" onClick={onClose}>{t("cancel")}</button>
+        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onClose}>{t("cancel")}</button>
         <button
           type="button"
           className="primary-button positive"
@@ -5114,6 +5169,8 @@ function BulkReleaseDialog({ items, onClose, onDone }: {
     mutationFn: () => api.releaseItems(items.map((item) => item.key), note.trim()),
     onSuccess: (response) => onDone(response.results),
   });
+  useDialogDraft(Boolean(note), mutation.isPending);
+
   return (
     <form
       className="bulk-verify"
@@ -5142,7 +5199,7 @@ function BulkReleaseDialog({ items, onClose, onDone }: {
         <div className="inline-error"><CirclePause size={16} /><span>{errorMessage(mutation.error, t("somethingWentWrong"))}</span></div>
       )}
       <div className="form-footer">
-        <button type="button" className="secondary-button" onClick={onClose}>{t("cancel")}</button>
+        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onClose}>{t("cancel")}</button>
         <button
           type="submit"
           className="primary-button"
