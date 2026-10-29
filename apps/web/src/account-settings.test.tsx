@@ -70,6 +70,32 @@ describe("account settings view mode", () => {
     expect(html).not.toContain('type="password"');
   });
 
+  it("names each account by its nickname, or the address before the @, and keeps the address under it", () => {
+    const queryClient = new QueryClient();
+    const stamp = "2026-09-15T00:00:00.000Z";
+    queryClient.setQueryData(["accounts"], {
+      accounts: [
+        { id: "account-1", email: "liangguosheng@xmiles.cn", nickname: "阿亮", role: "admin", createdAt: stamp, updatedAt: stamp, permissions: [] },
+        { id: "account-2", email: "chenyinghao@xmiles.cn", role: "member", createdAt: stamp, updatedAt: stamp, permissions: [] },
+      ],
+    });
+
+    const html = renderAccountUi(
+      <AccountManagement
+        user={{ id: "account-9", username: "viewer@xmiles.cn", displayName: "viewer", fontScale: "medium", consoleFontScale: "medium", role: "admin" }}
+        products={[]}
+      />,
+      queryClient,
+    );
+
+    // The nickname leads and the address follows; with no nickname the address before the @ does.
+    expect(html).toContain('<div class="account-access-identity"><strong>阿亮</strong><small>liangguosheng@xmiles.cn</small></div>');
+    expect(html).toContain('<div class="account-access-identity"><strong>chenyinghao</strong><small>chenyinghao@xmiles.cn</small></div>');
+    // The role moves beside the status, so neither account is named by its role.
+    expect(html).toContain('<span class="account-role is-admin">管理员</span>');
+    expect(html).toContain('<span class="account-role">普通用户</span>');
+  });
+
   it("renders the personal-token form with the PAT row naming its kind (AND-288)", () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData(["ai-authorizations"], {

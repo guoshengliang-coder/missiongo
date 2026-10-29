@@ -2651,6 +2651,10 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .account-row > .account-access-row { display: grid; grid-template-columns: minmax(160px, 1fr) auto auto auto; gap: 16px; }
 .account-access-identity { display: grid; min-width: 0; gap: 4px; }
 .account-access-identity small, .account-access-status { color: var(--muted); font-size: var(--text-sm); }
+/* The name leads and the address follows: two addresses can start the same way, and the role reads as a label rather than as the account's name. */
+.account-access-badges { display: flex; align-items: center; gap: 8px; }
+.account-role { padding: 2px 8px; color: var(--muted); background: var(--surface-inset); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 700; line-height: 1.5; white-space: nowrap; }
+.account-role.is-admin { color: var(--accent-text); background: var(--accent-bg); }
 .account-access-permissions { display: grid; grid-template-columns: repeat(3, 56px); gap: 8px; margin: 0; text-align: center; }
 .account-access-permissions dt { color: var(--muted); font-size: var(--text-xs); }
 .account-access-permissions dd { margin: 4px 0 0; font-size: var(--text-base); }
@@ -2664,7 +2668,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .account-row > .account-access-row { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
   .account-access-permissions { grid-column: 1; grid-row: 2; justify-content: start; }
   .account-access-actions { grid-column: 2; grid-row: 2; }
-  .account-access-status { grid-column: 2; grid-row: 1; text-align: right; }
+  .account-access-badges { grid-column: 2; grid-row: 1; justify-content: flex-end; }
 }
 
 /* AND-304: keep responsibility and execution history readable in both panes. */

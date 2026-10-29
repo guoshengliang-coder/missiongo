@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { closeAccountEditor, openAccountEditor, type AccountEditor } from "./account-edit-state";
 import {
+  accountDisplayName,
   draftDisplayName,
   MAX_ACCOUNT_NICKNAME_LENGTH,
   nicknameDraftChanged,
@@ -577,7 +578,7 @@ function AccountRow({
   return (
     <article className={account.disabledAt ? "account-row suspended" : "account-row"}>
       <header className="account-access-row">
-        <div className="account-access-identity"><strong>{account.email}</strong><small>{t(account.role === "admin" ? "administratorRole" : "memberRole")}</small></div>
+        <div className="account-access-identity"><strong>{accountDisplayName(account)}</strong><small>{account.email}</small></div>
         {filterProductId && <dl className="account-access-permissions">
           {(["canView", "canOperate", "canUseAi"] as const).map(field => {
             const cell = permissionCell(field, permission, administrator);
@@ -586,7 +587,10 @@ function AccountRow({
             return <div key={field}><dt>{label}</dt><dd title={account.disabledAt ? "账号已停用，配置权限不生效" : cell.byRole ? t("adminAccessByRole") : undefined}>{effective ? "✓" : "—"}<span className="sr-only">{effective ? "已授权" : "未授权"}</span></dd></div>;
           })}
         </dl>}
-        <span className="account-access-status">{account.disabledAt ? t("suspendedAccount") : "正常"}</span>
+        <div className="account-access-badges">
+          <span className={account.role === "admin" ? "account-role is-admin" : "account-role"}>{t(account.role === "admin" ? "administratorRole" : "memberRole")}</span>
+          <span className="account-access-status">{account.disabledAt ? t("suspendedAccount") : "正常"}</span>
+        </div>
         <div className="account-access-actions">
           <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setPermissionsOnly(Boolean(filterProductId)); setEditor(openAccountEditor(editor, editIntent)); }}>
             <Pencil size={15} /> {filterProductId ? "修改权限" : t("editAccount")}
