@@ -1,5 +1,8 @@
 import { useDialogDraft } from "./dialog-state";
 import { useConfirm } from "./confirm-dialog";
+import { itemFilterKey, type ItemFilters } from "@missiongo/domain";
+import { ListFilters } from "./list-filters";
+import { pickItemFilters } from "./item-filters";
 import { ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery } from "./item-delivery";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { Modal } from "./modal";
@@ -28,7 +31,6 @@ import {
   Download,
   ExternalLink,
   FileText,
-  Filter,
   Highlighter,
   ImageIcon,
   Inbox,
@@ -56,7 +58,7 @@ import {
   X,
 } from "lucide-react";
 
-import { api, ApiError, productIconUrl, type AuthenticatedUser, type BulkTransitionResult } from "./api";
+import { api, ApiError, type AuthenticatedUser, type BulkTransitionResult } from "./api";
 import { BootSkeleton } from "./BootSkeleton";
 import { clearPersistedQueryCache } from "./query-persistence";
 // Type-only: erased at compile time, so it does not pull the chunk into the boot.
@@ -182,7 +184,7 @@ import {
   clampListPaneWidth,
   readListPaneWidth,
 } from "./pane-layout";
-import { productBadgeColor } from "./product-color";
+import { ProductBadge } from "./product-badge";
 import { SessionLink } from "./session-link";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
@@ -442,7 +444,7 @@ const StatisticsCenter = lazy(() => import("./statistics-center").then(module =>
 
 export function App() {
   const queryClient = useQueryClient();
-  const { statusLabel, t, typeLabel } = useI18n();
+  const { statusLabel, t } = useI18n();
   const initialFilters = useRef(filtersFromUrl()).current;
   const [selectedProductId, setSelectedProductId] = useState(
     () => initialFilters.productId || localStorage.getItem("missiongo.product") || "",
@@ -453,6 +455,8 @@ export function App() {
   const [typeFilter, setTypeFilter] = useState<WorkItemType | "all">(initialFilters.type);
   const [search, setSearch] = useState(initialFilters.search);
   const [builderFilter, setBuilderFilter] = useState(initialFilters.builder ?? "");
+  const [advancedFilters, setAdvancedFilters] = useState<ItemFilters>(() => pickItemFilters(initialFilters));
+  const advancedFilterKey = itemFilterKey(advancedFilters);
   const [captureOpen, setCaptureOpen] = useState(false);
   const settings = useSettingsNavigation();
   const [downloadsOpen, setDownloadsOpen] = useState(false);
@@ -957,6 +961,7 @@ export function App() {
             ...(initialFilters.type !== "all" ? { type: initialFilters.type } : {}),
             ...(initialFilters.search.trim() ? { search: initialFilters.search.trim() } : {}),
             ...(initialFilters.builder ? { builder: initialFilters.builder } : {}),
+            ...pickItemFilters(initialFilters),
             limit: ITEM_PAGE_SIZE,
           },
         );
@@ -983,7 +988,7 @@ export function App() {
         queryClient.setQueryData(
           // Must match how itemsQuery builds its key below, trim included, or the
           // list mounts under a different key and refetches what we just seeded.
-          ["items", data.productId, initialFilters.status, initialFilters.type, initialFilters.search.trim(), initialFilters.builder ?? ""],
+          ["items", data.productId, initialFilters.status, initialFilters.type, initialFilters.search.trim(), initialFilters.builder ?? "", itemFilterKey(initialFilters)],
           {
             pages: [{
               items: data.items,
@@ -1100,11 +1105,11 @@ export function App() {
   // stack, which belongs to opening and closing items.
   useEffect(() => {
     if (!selectedProductId || statisticsOpen) return;
-    const next = filtersToUrl({ productId: selectedProductId, status: statusFilter, type: typeFilter, search, builder: builderFilter });
+    const next = filtersToUrl({ productId: selectedProductId, status: statusFilter, type: typeFilter, search, builder: builderFilter, ...advancedFilters });
     if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
       history.replaceState(history.state, "", next);
     }
-  }, [search, selectedProductId, statusFilter, typeFilter, builderFilter, statisticsOpen]);
+  }, [search, selectedProductId, statusFilter, typeFilter, builderFilter, advancedFilters, statisticsOpen]);
 
   useEffect(() => {
     const updateOnlineState = () => setIsOnline(navigator.onLine);
@@ -1137,8 +1142,9 @@ export function App() {
   const buildersQuery = useQuery({ queryKey: ["builders", selectedProductId], queryFn: () => api.listBuilders(selectedProductId), enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId) });
   const deferredSearch = useDeferredValue(search.trim());
   const itemsQuery = useInfiniteQuery({
-    queryKey: ["items", selectedProductId, statusFilter, typeFilter, deferredSearch, builderFilter],
+    queryKey: ["items", selectedProductId, statusFilter, typeFilter, deferredSearch, builderFilter, advancedFilterKey],
     queryFn: ({ pageParam }) => api.listItems(selectedProductId, {
+      ...advancedFilters,
       ...(builderFilter ? { builder: builderFilter } : {}),
       ...(statusFilter !== "all" ? { status: statusFilter } : {}),
       ...(typeFilter !== "all" ? { type: typeFilter } : {}),
@@ -1161,7 +1167,7 @@ export function App() {
         data: query.state.data,
         dataUpdatedAt: query.state.dataUpdatedAt,
       })),
-      { productId: selectedProductId, type: typeFilter, search: deferredSearch, builder: builderFilter },
+      { productId: selectedProductId, type: typeFilter, search: deferredSearch, builder: builderFilter, advanced: advancedFilterKey },
     )
     : undefined);
   // Nothing to count yet: show a dash, not a 0 that is only the empty page talking.
@@ -1229,7 +1235,7 @@ export function App() {
    * see -- and across products, items whose repository is not the one the batch
    * would run in.
    */
-  const listScope = builderFilter + selectionScope({
+  const listScope = advancedFilterKey + builderFilter + selectionScope({
     productId: selectedProductId,
     status: statusFilter,
     type: typeFilter,
@@ -1283,14 +1289,11 @@ export function App() {
     closeSidebar();
   };
 
-  // The status lives in the sidebar and the type in the tab row above the list,
-  // so a chip repeating either of them is the third place the same thing is
-  // shown. Only the search has nowhere else to appear, and it is what brings the
-  // match count and the clear button with it.
-  const searchFilterActive = Boolean(search.trim());
+  // Clearing list conditions preserves the product and sidebar status.
+  const listFiltersActive = Boolean(search.trim() || builderFilter || typeFilter !== "all" || advancedFilterKey !== itemFilterKey());
   const clearFilters = () => {
     setBuilderFilter("");
-    setStatusFilter(DEFAULT_STATUS);
+    setAdvancedFilters({});
     setTypeFilter("all");
     setSearch("");
     setMobileSearchOpen(false);
@@ -1349,7 +1352,7 @@ export function App() {
   if (settings.route) {
     if (!bootstrapQuery.data) return <BootSkeleton />;
     return <SettingsPage route={settings.route} user={bootstrapQuery.data.user} products={products}
-      canUseAi={hasAnyAiPermission} selectedProductId={selectedProductId} navigate={settings.navigate} guard={settings.guard}
+      canUseAi={hasAnyAiPermission} navigate={settings.navigate} guard={settings.guard}
       onLoggedOut={() => { clearPersistedQueryCache(); window.location.reload(); }}
       renderProduct={(product, section) => <ProductSettings key={`${product.id}:${section}`} product={product} user={bootstrapQuery.data.user} section={section} componentId={settings.route?.componentId} onOpenComponent={componentId => settings.navigate({ section: "components", productId: product.id, componentId })} onSelected={() => undefined} />}
       renderNewProduct={() => <ProductForm onCreated={async product => {
@@ -1419,6 +1422,8 @@ export function App() {
               // and the item asks for the default view "no matter what".
               setStatusFilter(DEFAULT_STATUS);
               setTypeFilter("all");
+              setBuilderFilter("");
+              setAdvancedFilters({});
               setSearch("");
               clearItemPage();
             }}
@@ -1623,38 +1628,21 @@ export function App() {
             </div>
           </section>
 
-          <div className="builder-filter">
-            <label htmlFor="builder-filter">交付负责人 Builder</label>
-            <select id="builder-filter" value={builderFilter} onChange={event => setBuilderFilter(event.target.value)}>
-              <option value="">全部负责人</option><option value="mine">我负责的</option><option value="unassigned">待分配</option>
-              {(buildersQuery.data?.builders ?? []).map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
-              {builderFilter && !["mine","unassigned"].includes(builderFilter) && !buildersQuery.data?.builders.some(account => account.id === builderFilter) && <option value={builderFilter}>所选负责人（当前不可用）</option>}
-            </select>
-            <button type="button" className="secondary-button" aria-pressed={builderFilter === "mine"} onClick={() => setBuilderFilter(builderFilter === "mine" ? "" : "mine")}>我负责的</button>
-            {buildersQuery.isError && <span role="alert">负责人列表加载失败，请刷新重试。</span>}
-          </div>
-          <div className="type-filters" aria-label={t("filterByType")}>
-            <button className={typeFilter === "all" ? "active" : ""} aria-pressed={typeFilter === "all"} onClick={() => setTypeFilter("all")}>{t("allTypes")}</button>
-            {ITEM_TYPES.map((type) => (
-              <button key={type} className={typeFilter === type ? "active" : ""} aria-pressed={typeFilter === type} onClick={() => setTypeFilter(type)}>
-                {typeLabel(type)}
-              </button>
-            ))}
-          </div>
-
-          {searchFilterActive && (
-            <div className="active-filters" role="status">
-              <Filter size={14} aria-hidden="true" />
-              <span className="active-filters-label">{t("filtersActive")}</span>
-              <button type="button" className="filter-chip" onClick={() => setSearch("")}>
-                {t("searchChip", { query: search.trim() })}<X size={12} aria-hidden="true" />
-              </button>
-              <span className="active-filters-count">
-                {t("filterMatchCount", { matched: statusFilter === "all" ? listedCount : (itemSummary?.byStatus[statusFilter] ?? items.length), total: itemSummary?.productTotal ?? items.length })}
-              </span>
-              <button type="button" className="text-button active-filters-clear" onClick={clearFilters}>{t("clearFilters")}</button>
-            </div>
-          )}
+          <ListFilters
+            key={selectedProductId}
+            productId={selectedProductId}
+            value={{ ...advancedFilters, builder: builderFilter, types: advancedFilters.types ?? (typeFilter === "all" ? [] : [typeFilter]) }}
+            search={search}
+            builders={buildersQuery.data?.builders ?? []}
+            buildersFailed={buildersQuery.isError}
+            onChange={({builder, types = [], ...rest}) => {
+              setBuilderFilter(builder);
+              setTypeFilter(types.length === 1 ? types[0]! : "all");
+              setAdvancedFilters({ ...rest, ...(types.length > 1 ? {types} : {}) });
+            }}
+            onClearSearch={() => setSearch("")}
+            onClear={clearFilters}
+          />
 
           {selectedItemKeys.size > 0
             && (selectionStatus === "pending_verification" || selectionStatus === "in_progress" || selectedProductCanUseAi) && (
@@ -1715,9 +1703,10 @@ export function App() {
               {!itemsQuery.isLoading && visibleItems.length === 0 && (
                 <div className="empty-list">
                   <div className="round-icon"><Lightbulb size={22} /></div>
-                  <h2>{(itemSummary?.total ?? 0) === 0 ? t("captureFirstSpark") : t("noMatchingItems")}</h2>
-                  <p>{(itemSummary?.total ?? 0) === 0 ? t("firstSparkHelp") : t("noMatchHelp")}</p>
-                  {(itemSummary?.total ?? 0) === 0 && <button className="primary-button" onClick={openCapture}><Plus size={17} /> {t("captureItem")}</button>}
+                  <h2>{!listFiltersActive && (itemSummary?.productTotal ?? 0) === 0 ? t("captureFirstSpark") : t("noMatchingItems")}</h2>
+                  <p>{!listFiltersActive && (itemSummary?.productTotal ?? 0) === 0 ? t("firstSparkHelp") : t("noMatchHelp")}</p>
+                  {listFiltersActive && <button className="secondary-button" onClick={clearFilters}>{t("clearListFilters")}</button>}
+                  {!listFiltersActive && (itemSummary?.productTotal ?? 0) === 0 && <button className="primary-button" onClick={openCapture}><Plus size={17} /> {t("captureItem")}</button>}
                 </div>
               )}
               {visibleItems.map((item) => (
@@ -2169,37 +2158,6 @@ function ItemRow({
     </article>
   );
 }
-/**
- * Products are told apart at a glance. An uploaded icon wins; otherwise the item
- * prefix -- the same AND / HG that labels every key in the list -- sits on a
- * colour derived from the product id, so a product is distinguishable the moment
- * it exists, with nothing to configure.
- */
-function ProductBadge({ product, size = 22 }: { product: Product; size?: number }) {
-  if (product.hasIcon) {
-    return (
-      <img
-        className="product-badge"
-        src={productIconUrl(product)}
-        alt=""
-        aria-hidden="true"
-        loading="lazy"
-        decoding="async"
-        style={{ width: size, height: size }}
-      />
-    );
-  }
-  return (
-    <span
-      className="product-badge generated"
-      aria-hidden="true"
-      style={{ width: size, height: size, background: productBadgeColor(product.id), fontSize: Math.max(11, Math.round(size * 0.38)) }}
-    >
-      {product.keyPrefix.slice(0, 3)}
-    </span>
-  );
-}
-
 /**
  * A native <select> cannot carry an icon in its options, so this is the listbox
  * pattern instead: a button that owns the value, and a list that behaves the way
@@ -5131,7 +5089,7 @@ function ProductForm({ onCreated }: { onCreated: (product: Product) => void | Pr
       <label>{t("productName")}<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Hermes Go" required autoFocus /></label>
       <label>{t("itemPrefix")}<input value={keyPrefix} onChange={(event) => setKeyPrefix(event.target.value.toUpperCase())} placeholder="HG" minLength={2} maxLength={10} required /><small>{t("prefixHelp")}</small></label>
       {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
-      <button className="primary-button wide" disabled={mutation.isPending}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />} {t("createWorkspace")}</button>
+      <button className="primary-button wide" disabled={mutation.isPending}>{mutation.isPending ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />} {t("addProduct")}</button>
     </form>
   );
 }

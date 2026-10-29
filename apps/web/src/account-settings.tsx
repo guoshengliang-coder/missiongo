@@ -672,7 +672,7 @@ function AccountRow({
           })}
         </dl>}
         <div className="account-access-badges">
-          <span className={account.role === "admin" ? "account-role is-admin" : "account-role"}>{projectAdministrator ? "项目管理员" : t(account.role === "admin" ? "administratorRole" : "memberRole")}</span>
+          <span className={account.role === "admin" ? "account-role is-admin" : "account-role"}>{t(projectAdministrator ? "settingsProjectAdministrators" : account.role === "admin" ? "administratorRole" : "memberRole")}</span>
           <span className="account-access-status">{account.disabledAt ? t("suspendedAccount") : "正常"}</span>
         </div>
         <div className="account-access-actions">

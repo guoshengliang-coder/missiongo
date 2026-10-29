@@ -8,8 +8,9 @@ const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.m
 const productPath = (id: string) => `/settings/products/${id}/product`;
 const nav = (page: Page) => page.getByRole("navigation", { name: "设置", exact: true });
 const hub = (page: Page, label: string) => page.locator(".settings-hub-row").filter({ has: page.getByText(label, { exact: true }) });
-async function openProduct(page: Page) {
+async function openProduct(page: Page, productId = fixture.productId) {
   await nav(page).getByRole("button", { name: "产品配置", exact: true }).click();
+  await page.locator(`.settings-product-card[data-product-id="${productId}"]`).click();
   await hub(page, "基本资料").click();
 }
 
@@ -82,7 +83,7 @@ test("protects unsaved input across categories, product changes and browser Back
   await expect(page.getByRole("button", { name: "保存产品", exact: true })).toBeDisabled();
   await nav(page).getByRole("button", { name: "显示", exact: true }).click();
   await expect(page).toHaveURL(/\/settings\/display/);
-  await openProduct(page);
+  await openProduct(page, product.id);
   await expect(page).toHaveURL(new RegExp(productPath(product.id)));
   await expect(input).toHaveValue("Unsaved settings name");
 });
@@ -151,7 +152,7 @@ test("creates a product in its own scope and opens the newly saved product witho
   await expect(page.locator(".settings-page-title")).toContainText("创建独立产品，不修改当前产品");
   await page.getByRole("textbox", { name: "产品名称", exact: true }).fill("Settings new product");
   await page.getByRole("textbox", { name: "条目前缀", exact: false }).fill("SNEW");
-  await page.getByRole("button", { name: "创建工作区", exact: true }).click();
+  await page.getByRole("button", { name: "添加产品", exact: true }).click();
   await expect(page).toHaveURL(/\/settings\/products\/[a-f0-9-]+(?:\?|$)/);
   await hub(page, "基本资料").click();
   await expect(page.getByRole("textbox", { name: "产品名称", exact: true })).toHaveValue("Settings new product");

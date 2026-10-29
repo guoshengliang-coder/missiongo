@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import { ArrowLeft, ChevronRight, Plus } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "./api";
+import { ProductSettingsList } from "./product-settings-list";
 import type { AuthenticatedUser } from "./api";
 import type { Product } from "./types";
 import { AccountSettings, AccountManagement, AiConnectionsSettings, DeepSeekSettings, ProductAccessSettings } from "./account-settings";
@@ -33,8 +36,8 @@ function revealSettingsField(field: HTMLElement, scroller: HTMLElement) {
   if (box.bottom > bottom - 10) scroller.scrollBy({ top: box.bottom - bottom + 10 });
 }
 
-export function SettingsPage({ route, user, products, canUseAi, selectedProductId, navigate, guard, onLoggedOut, renderProduct, renderNewProduct }: {
-  route: SettingsRoute; user: AuthenticatedUser; products: readonly Product[]; canUseAi: boolean; selectedProductId: string;
+export function SettingsPage({ route, user, products, canUseAi, navigate, guard, onLoggedOut, renderProduct, renderNewProduct }: {
+  route: SettingsRoute; user: AuthenticatedUser; products: readonly Product[]; canUseAi: boolean;
   navigate: (route: SettingsRoute | null) => void; guard: RefObject<SettingsLeaveGuard>; onLoggedOut: () => void;
   renderProduct: (product: Product, section: ProductSettingsSection) => ReactNode; renderNewProduct: () => ReactNode;
 }) {
@@ -54,13 +57,15 @@ export function SettingsPage({ route, user, products, canUseAi, selectedProductI
     resize(); viewport?.addEventListener("resize", resize); window.addEventListener("resize", resize);
     return () => { viewport?.removeEventListener("resize", resize); window.removeEventListener("resize", resize); };
   }, []);
-  const [lastProductId, setLastProductId] = useState(route.productId || selectedProductId);
-  useEffect(() => { if (route.productId) setLastProductId(route.productId); }, [route.productId]);
-  const product = products.find(value => value.id === (route.productId || lastProductId)) ?? (!route.productId ? products[0] : undefined);
+  // Settings retain archived products without adding them to the workspace switcher.
+  const catalogQuery = useQuery({ queryKey: ["products", "settings"], queryFn: () => api.listProducts({ includeArchived: true }) });
+  const catalog = catalogQuery.data ?? products;
+  const product = catalog.find(value => value.id === route.productId);
   const inProduct = PRODUCT_SETTINGS.includes(route.section as ProductSettingsSection) || ["products", "overview", "new-product"].includes(route.section);
   const inAgent = ["agent", "connections", "devices", "dispatch"].includes(route.section);
   const isAdmin = user.role === "admin";
-  const owned = products.filter(value => mayAdministerProduct(user, value));
+  const administrators = useQuery({ queryKey: ["accounts"], queryFn: api.listAccounts, enabled: isAdmin && route.section === "project-admins" && !route.productId });
+  const owned = catalog.filter(value => mayAdministerProduct(user, value));
   const canManage = isAdmin || owned.length > 0;
   const active = inProduct ? "products" : inAgent ? "agent" : route.section === "access" ? "accounts" : route.section;
   const groups = [
@@ -69,21 +74,26 @@ export function SettingsPage({ route, user, products, canUseAi, selectedProductI
     ...(canManage ? [{ label: "settingsSystem" as const, sections: ["accounts", ...(isAdmin ? ["project-admins", "ai"] as const : [])] as SettingsSection[] }] : []),
   ];
   const allowed = route.section === "access" ? Boolean(product && mayAdministerProduct(user, product))
-    : route.section === "accounts" || route.section === "ai" || route.section === "project-admins" ? isAdmin
+    : route.section === "accounts" ? isAdmin || !route.accountId && owned.length > 0
+    : route.section === "ai" || route.section === "project-admins" ? isAdmin && (!route.productId || Boolean(product))
     : route.section === "devices" || route.section === "dispatch" ? canUseAi
     : !inProduct || ["products", "new-product"].includes(route.section) || Boolean(product);
-  const go = (section: SettingsSection) => navigate(section === "products" && product ? { section: "overview", productId: product.id }
-    : section === "accounts" && !isAdmin ? { section: "access", productId: owned[0]?.id } : { section });
+  const go = (section: SettingsSection) => navigate({ section });
   useEffect(() => { content.current?.scrollTo({ top: 0 }); content.current?.focus({ preventScroll: true }); }, [route.section, route.productId, route.nodeId, route.componentId, route.accountId]);
   const scope = route.section === "new-product" ? t("settingsNewProductScope")
-    : route.section === "access" && !isAdmin || inProduct && route.section !== "products" ? t("settingsProductScope", { product: product?.name ?? "" })
-    : route.section === "accounts" || route.section === "access" && isAdmin || route.section === "ai" || route.section === "project-admins" ? t("settingsSystemScope")
+    : route.section === "access" || inProduct && route.section !== "products" || route.section === "project-admins" && route.productId ? t("settingsProductScope", { product: product?.name ?? "" })
+    : route.section === "project-admins" ? t("settingsProductAdministratorsHelp")
+    : route.section === "accounts" && !isAdmin ? t("settingsOwnerPermissionsHelp")
+    : route.section === "accounts" || route.section === "ai" ? t("settingsSystemScope")
     : route.section === "products" ? t("settingsProductsHelp") : t("settingsPersonalScope");
   const parent: SettingsRoute | undefined = route.nodeId ? { section: "devices" }
     : route.componentId ? { section: "components", productId: route.productId }
     : route.accountId ? { section: "accounts", filterProductId: route.filterProductId }
+    : route.section === "project-admins" && route.productId ? { section: "project-admins" }
+    : route.section === "access" ? { section: "overview", productId: route.productId }
     : inAgent && route.section !== "agent" ? { section: "agent" }
-    : inProduct && !["products", "overview"].includes(route.section) ? product ? { section: "overview", productId: product.id } : { section: "products" }
+    : route.section === "overview" || route.section === "new-product" ? { section: "products" }
+    : inProduct && route.section !== "products" ? { section: "overview", productId: route.productId }
     : undefined;
   const title = route.nodeId ? t("settingsDeviceDetail") : route.componentId ? t("settingsComponentDetail")
     : route.accountId ? t("settingsAccountDetail") : route.section === "ai" ? t("settingsModelsTitle") : t(LABELS[route.section]);
@@ -96,13 +106,24 @@ export function SettingsPage({ route, user, products, canUseAi, selectedProductI
       <div className="settings-hub-list">
         {entry("product", "settingsBasicHelp", { section: "product", productId: product.id })}
         {entry("components", "settingsComponentsHelp", { section: "components", productId: product.id })}
+        {isAdmin && entry("project-admins", "settingsProductAdministratorsDetailHelp", { section: "project-admins", productId: product.id })}
         {(isAdmin || product.access?.isProjectAdmin || mayAdministerProduct(user,product)) && entry("builders", "settingsBuilderAllocationHelp", {section:"builders",productId:product.id})}
         {entry("artifacts", "settingsArtifactsHelp", { section: "artifacts", productId: product.id })}
         {entry("tokens", "settingsSdkHelp", { section: "tokens", productId: product.id })}
       </div>
       {mayAdministerProduct(user, product) && <button type="button" className="text-button settings-access-shortcut" onClick={() => navigate(isAdmin ? { section: "accounts", filterProductId: product.id } : { section: "access", productId: product.id })}>{t("settingsManageProductAccess")}<ChevronRight size={16} /></button>}
-    </> : <div className="settings-empty"><h2>{t("settingsFirstProduct")}</h2><p>{t("settingsProductsHelp")}</p><button type="button" className="primary-button" onClick={() => navigate({ section: "new-product" })}><Plus size={16} />{t("addProduct")}</button></div>}
+    </> : <p role="alert">{t("settingsUnavailable")}</p>}
   </>;
+  const productList = (values: readonly Product[], onOpen: (value: Product) => void, description?: (value: Product) => ReactNode) =>
+    catalogQuery.isPending ? <p role="status">{t("settingsLoading")}</p>
+      : catalogQuery.isError ? <div role="alert"><p>{t("settingsProductsLoadFailed")}</p><button type="button" className="secondary-button" onClick={() => void catalogQuery.refetch()}>{t("retry")}</button></div>
+      : <ProductSettingsList products={values} onOpen={onOpen} description={description} />;
+  const administratorSummary = (value: Product) => {
+    if (administrators.isPending) return t("settingsLoading");
+    if (administrators.isError) return t("somethingWentWrong");
+    const names = administrators.data.accounts.filter(account => account.projectAdministratorProductIds?.includes(value.id)).map(account => `${account.nickname || account.email}${account.disabledAt ? ` · ${t("suspendedAccount")}` : ""}`);
+    return names.join("、") || t("settingsNoProductAdministrators");
+  };
   return (
     <SettingsDraftProvider guard={guard}>
       <div ref={shell} className={`settings-page ${route.section === "index" ? "settings-directory" : "settings-detail"}`}>
@@ -127,27 +148,36 @@ export function SettingsPage({ route, user, products, canUseAi, selectedProductI
             {parent && <nav className="settings-breadcrumb" aria-label={t("settingsLocation")}><button type="button" className="text-button" onClick={() => navigate(parent)}><ArrowLeft size={16} />{t(LABELS[parent.section])}</button><ChevronRight size={14} /><span>{title}</span></nav>}
             <header className="settings-page-title">
               <div><p>{scope}</p><h1>{title}</h1></div>
-              {(inProduct && route.section !== "new-product" || route.section === "access" && !isAdmin || route.section === "project-admins" && isAdmin) && products.length > 0 && <div className="settings-product-actions"><label>{t("settingsCurrentProduct")}<select value={product?.id ?? ""} onChange={event => navigate({ section: route.section === "products" ? "overview" : route.section, productId: event.target.value })}>
-                {!product && <option value="">{t("settingsUnavailable")}</option>}
-                {(route.section === "access" ? owned : products).map(value => <option key={value.id} value={value.id}>{value.name}{value.archivedAt ? ` · ${t("archived")}` : ""}</option>)}
-              </select></label>{inProduct && <button type="button" className="secondary-button" onClick={() => navigate({ section: "new-product" })}><Plus size={16} />{t("addProduct")}</button>}</div>}
+              {(inProduct && route.section !== "new-product" || route.section === "access" || route.section === "project-admins" && isAdmin) && <div className="settings-product-actions">
+                {route.productId && catalog.length > 0 && <label>{t("settingsCurrentProduct")}<select value={product?.id ?? ""} onChange={event => navigate({ section: route.section, productId: event.target.value })}>
+                  {!product && <option value="">{t("settingsUnavailable")}</option>}
+                  {(route.section === "access" && !isAdmin ? owned : catalog).map(value => <option key={value.id} value={value.id}>{value.name}{value.archivedAt ? ` · ${t("archived")}` : ""}</option>)}
+                </select></label>}
+                {inProduct && <button type="button" className="secondary-button" onClick={() => navigate({ section: "new-product" })}><Plus size={16} />{t("addProduct")}</button>}
+              </div>}
             </header>
             <div className="settings-page-body" key={`${route.section}:${product?.id ?? ""}:${route.nodeId ?? ""}:${route.componentId ?? ""}:${route.accountId ?? ""}`}>
-              {!allowed ? <p role="alert">{t("settingsUnavailable")}</p>
+              {catalogQuery.isPending && (route.productId && !product || route.section === "accounts" && !isAdmin) ? <p role="status">{t("settingsLoading")}</p>
+                : !allowed ? <p role="alert">{t("settingsUnavailable")}</p>
                 : route.section === "profile" ? <AccountSettings user={user} products={products} onLoggedOut={onLoggedOut} />
                 : route.section === "display" ? <DisplaySettings user={user} />
-                : route.section === "project-admins" ? product ? <ProjectAdministratorsSettings productId={product.id} /> : <p>{t("settingsUnavailable")}</p>
+                : route.section === "project-admins" ? route.productId && product ? <ProjectAdministratorsSettings productId={product.id} />
+                  : <>{administrators.isError && <div role="alert"><p>{t("somethingWentWrong")}</p><button type="button" className="secondary-button" onClick={() => void administrators.refetch()}>{t("retry")}</button></div>}{productList(catalog, value => navigate({ section: "project-admins", productId: value.id }), administratorSummary)}</>
                 : route.section === "builders" && product ? <ProjectBuilderSettings productId={product.id} />
                 : route.section === "agent" ? <><p className="settings-hub-intro">{t("settingsAgentHelp")}</p><div className="settings-hub-list">
                   {entry("connections", "settingsConnectionsHelp")}
                   {canUseAi && <>{entry("devices", "settingsDevicesHelp")}{entry("dispatch", "settingsDispatchHelp")}</>}
                 </div></>
-                : route.section === "products" || route.section === "overview" ? productHub
+                : route.section === "products" ? catalogQuery.isSuccess && !catalog.length
+                  ? <div className="settings-empty"><h2>{t("settingsFirstProduct")}</h2><p>{t("settingsProductsHelp")}</p></div>
+                  : productList(catalog, value => navigate({ section: "overview", productId: value.id }))
+                : route.section === "overview" ? productHub
+                : route.section === "accounts" && !isAdmin ? productList(owned, value => navigate({ section: "access", productId: value.id }))
                 : route.section === "access" && product && !isAdmin ? <ProductAccessSettings productId={product.id} user={user} />
                 : route.section === "connections" ? <AiConnectionsSettings />
                 : route.section === "devices" ? <NodeSettings products={products} nodeId={route.nodeId} onOpenNode={nodeId => navigate({ section: "devices", nodeId })} />
                 : route.section === "dispatch" ? <DispatchDefaultsSettings onOpenDevices={() => navigate({ section: "devices" })} />
-                : route.section === "accounts" || route.section === "access" && isAdmin ? <AccountManagement user={user} products={products} accountId={route.accountId} filterProductId={route.section === "access" ? product?.id : route.filterProductId} onNavigate={(accountId, filterProductId) => navigate({ section: "accounts", accountId, filterProductId })} />
+                : route.section === "accounts" || route.section === "access" && isAdmin ? <AccountManagement user={user} products={catalog} accountId={route.accountId} filterProductId={route.section === "access" ? product?.id : route.filterProductId} onNavigate={(accountId, filterProductId) => navigate({ section: "accounts", accountId, filterProductId })} />
                 : route.section === "ai" ? <><p className="settings-hub-intro">{t("settingsModelsHelp")}</p><DeepSeekSettings /></>
                 : route.section === "new-product" ? renderNewProduct()
                 : product ? renderProduct(product, route.section as ProductSettingsSection) : null}

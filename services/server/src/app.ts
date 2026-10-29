@@ -1,7 +1,8 @@
+import { parseItemFilters } from "./item-filters.js";
 import { AgentArtifacts, ARTIFACT_PREVIEW_POLICY, ARTIFACT_PREVIEW_SHELL } from "./agent-artifacts.js";
 import { localArtifactLinks } from "@missiongo/domain";
 import { join } from "node:path";
-import { listInsightBatches, createInsightBatch, insightBatchProgress, deleteInsightBatch } from "./insight-batches.js";
+import { listInsightBatchSummaries, createInsightBatch, insightBatchProgress, deleteInsightBatch } from "./insight-batches.js";
 import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema, humanConfirmationSchema } from "./status-checks.js";
 import { projectInsights } from "./project-insights.js";
 import { browserInsightSchema, browserInsightDetailSchema } from "./project-insights-query.js";
@@ -1883,7 +1884,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   };
   app.get("/api/v1/project-insights/batches", async (request, reply) => {
     reply.header("cache-control", "no-store");
-    return { batches: listInsightBatches(store, requireAccount(request).id) };
+    return { batches: listInsightBatchSummaries(store, requireAccount(request).id, insightProductScope(request)) };
   });
   app.post("/api/v1/project-insights/batches", async (request, reply) => {
     const accountId = requireAccount(request).id;
@@ -3851,7 +3852,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const builderAccountId = query.builder === "unassigned" ? null
       : query.builder === "mine" ? requireAccount(request).id
       : typeof query.builder === "string" && query.builder ? query.builder : undefined;
-    const builderFilter = builderAccountId !== undefined ? { builderAccountId } : {};
+    const builderFilter = { ...parseItemFilters(query, () => requireAccount(request).id), ...(builderAccountId !== undefined ? { builderAccountId } : {}) };
     const effectiveLimit = limit ?? 50;
     const items = store.listWorkItems({
       ...builderFilter,
@@ -3876,6 +3877,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(nextBeforeSequence !== undefined ? { nextBeforeSequence } : {}),
     };
   }
+
+  app.get("/api/v1/products/:productId/item-filter-options", async request => {
+    const { productId } = request.params as { productId: string };
+    requireProductPermission(request, productId);
+    const proposers = withCreatorNames(store.getWorkItemProposers(productId)).map(option => {
+      const creator = option.createdBy;
+      const kind = creator?.kind ?? "unknown";
+      const label = creator?.kind === "human" ? creator.name ?? "历史人员"
+        : creator?.kind === "agent" ? [creator.clientName, creator.agentName].filter(Boolean).join(" · ") || "Agent"
+        : creator?.kind === "sdk" ? creator.name ?? "SDK 来源" : "未记录提需者";
+      return { value: option.value, label, kind };
+    });
+    return { proposers };
+  });
 
   app.get("/api/v1/items", async (request) => {
     const query = request.query as Record<string, unknown>;

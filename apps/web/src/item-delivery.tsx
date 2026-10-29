@@ -35,15 +35,15 @@ export function ModuleBuilderSetting({component}: {component: Component}) {
   return <div className="module-builder-setting">
     <label>默认 Builder<select aria-label={`${component.name} 默认 Builder`} value={id} disabled={!builders.data?.canConfigure || Boolean(component.archivedAt) || save.isPending} onChange={event=>setId(event.target.value)}>
       <option value="">未配置</option>{builders.data?.builders.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}
-      {id && !builders.data?.builders.some(account=>account.id===id) && <option value={id}>原负责人已不可用，请重新分配</option>}
+      {id && !builders.data?.builders.some(account=>account.id===id) && <option value={id}>原 Builder已不可用，请重新分配</option>}
     </select></label>
     {changed && <div className="inline-form-actions"><button type="button" className="secondary-button" disabled={save.isPending} onClick={() => setId(component.defaultBuilderAccountId ?? "")}>取消</button><button type="button" className="primary-button" disabled={save.isPending || !builders.data?.canConfigure} onClick={()=>save.mutate()}>保存默认 Builder</button></div>}
-    <small>用于新条目自动分配，不改变已有条目的负责人。</small>
+    <small>用于新条目自动分配，不改变已有条目的 Builder。</small>
     {(save.isError || builders.isError) && <p role="alert">{failure(save.error ?? builders.error)}</p>}
   </div>;
 }
 
-/** 「转交负责人」从详情页的独立交付区块挪进了「更多」菜单，弹窗本身留在这里。 */
+/** 「转交 Builder」从详情页的独立交付区块挪进了「更多」菜单，弹窗本身留在这里。 */
 export function TransferBuilderModal({itemKey,delivery,onClose}: {itemKey:string;delivery:ItemDelivery;onClose:()=>void}) {
   const queryClient = useQueryClient();
   const [target,setTarget] = useState("");
@@ -58,9 +58,9 @@ export function TransferBuilderModal({itemKey,delivery,onClose}: {itemKey:string
       onClose();
     },
   });
-  return <Modal title="转交负责人" subtitle="交付与执行" onClose={onClose} dirty={Boolean(target || note)} pending={transfer.isPending}>
+  return <Modal title="转交 Builder" subtitle="交付与执行" onClose={onClose} dirty={Boolean(target || note)} pending={transfer.isPending}>
     <form className="delivery-form" onSubmit={event=>{event.preventDefault();transfer.mutate();}}>
-      <label>新的 Builder<select aria-label="新的 Builder" required value={target} onChange={event=>setTarget(event.target.value)}><option value="">请选择负责人</option>{delivery.candidates.filter(account=>account.id!==delivery.builderAccountId).map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
+      <label>新的 Builder<select aria-label="新的 Builder" required value={target} onChange={event=>setTarget(event.target.value)}><option value="">请选择 Builder</option>{delivery.candidates.filter(account=>account.id!==delivery.builderAccountId).map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
       <label>交接说明<textarea required={Boolean(delivery.builderAccountId)} maxLength={2000} placeholder={delivery.builderAccountId ? undefined : "可不填，确认后默认记录「首次分配 builder」"} value={note} onChange={event=>setNote(event.target.value)} /></label>
       <small>转交整体交付责任，保留当前条目状态及执行安排。</small>
       {transfer.isError && <p role="alert">{failure(transfer.error)}</p>}

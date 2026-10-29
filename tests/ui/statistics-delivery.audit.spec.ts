@@ -41,7 +41,7 @@ for (const width of [1440,375]) {
       expect(audit.horizontalOverflow).toBeLessThanOrEqual(0);
       await batch.getByRole("button",{name:"删除批次",exact:true}).click();
       await batch.getByRole("button",{name:"确认删除批次"}).click();
-      await expect(batch.locator(".statistics-batch-toolbar")).toHaveCount(0);
+      await expect(batch.getByRole("button",{name:"返回批次列表",exact:true})).toHaveCount(0);
     });
   });
 }

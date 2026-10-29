@@ -1,6 +1,8 @@
+import type { ItemFilters } from "@missiongo/domain";
+import { appendItemFilters } from "./item-filters";
 import type { AgentArtifactBundle, AgentArtifactState } from "@missiongo/domain";
 import type { CompletionReference } from "@missiongo/contracts";
-import type { InsightQuery, InsightSummary, InsightDetails, InsightDetailSelection, InsightBatch, InsightBatchProgress } from "@missiongo/domain";
+import type { InsightQuery, InsightSummary, InsightDetails, InsightDetailSelection, InsightBatch, InsightBatchSummary, InsightBatchProgress } from "@missiongo/domain";
 import type { ManagedDecision, ManagedDecisionGuard } from "@missiongo/domain";
 import { attachmentPreviewPath, attachmentThumbnailPath } from "./attachment-thumbnail";
 import type { FontScale } from "./font-scale";
@@ -48,7 +50,7 @@ export interface WorkItemListPage {
   };
 }
 
-export interface ListItemsOptions {
+export interface ListItemsOptions extends ItemFilters {
   readonly builder?: string;
   readonly status?: WorkItemStatus;
   readonly type?: WorkItemType;
@@ -277,7 +279,7 @@ export const api = {
     request<AgentArtifactState>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(id)}`),
   agentArtifactBundle: (sessionId: string, id: string) =>
     request<AgentArtifactBundle>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(id)}/bundle`),
-  insightBatches: () => request<{batches: InsightBatch[]}>("/api/v1/project-insights/batches"),
+  insightBatches: () => request<{batches: InsightBatchSummary[]}>("/api/v1/project-insights/batches"),
   createInsightBatch: (name: string, itemKeys: string[]) => request<InsightBatch>("/api/v1/project-insights/batches", {method: "POST", body: JSON.stringify({name,itemKeys})}),
   insightBatchProgress: (id: string) => request<InsightBatchProgress>(`/api/v1/project-insights/batches/${encodeURIComponent(id)}`),
   deleteInsightBatch: (id: string) => requestNoContent(`/api/v1/project-insights/batches/${encodeURIComponent(id)}`, {method: "DELETE"}),
@@ -316,6 +318,7 @@ export const api = {
   getBootstrap: (productId: string | null, options: ListItemsOptions = {}) => {
     const query = new URLSearchParams();
     if (productId) query.set("productId", productId);
+    appendItemFilters(query, options, true);
     if (options.builder) query.set("builder", options.builder);
     if (options.status) query.set("status", options.status);
     if (options.type) query.set("type", options.type);
@@ -412,6 +415,7 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ artifacts }),
     }),
+  getItemFilterOptions: (productId: string) => request<{proposers: Array<{value: string; label: string; kind: "human" | "agent" | "sdk" | "unknown"}>}>(`/api/v1/products/${encodeURIComponent(productId)}/item-filter-options`),
   listBuilders: (productId: string) => request<{builders: Array<{id: string; name: string}>; canConfigure: boolean}>(`/api/v1/products/${encodeURIComponent(productId)}/builders`),
   setModuleBuilder: (productId: string, componentId: string, accountId: string | null) => request<Component>(`/api/v1/products/${encodeURIComponent(productId)}/components/${encodeURIComponent(componentId)}/builder`, {method:"PUT",body:JSON.stringify({accountId})}),
   getDelivery: (itemKey: string) => request<ItemDelivery>(`/api/v1/items/${encodeURIComponent(itemKey)}/delivery`),
@@ -434,6 +438,7 @@ export const api = {
     }),
   listItems: (productId: string, options: ListItemsOptions = {}) => {
     const params = new URLSearchParams({ productId });
+    appendItemFilters(params, options, true);
     if (options.builder) params.set("builder", options.builder);
     if (options.status) params.set("status", options.status);
     if (options.type) params.set("type", options.type);

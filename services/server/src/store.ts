@@ -22,6 +22,7 @@ import {
   type WorkItemSnapshot,
   type WorkItemStatus,
   type WorkItemType,
+  type ItemFilters,
 } from "@missiongo/domain";
 
 import { AccountStore } from "./accounts-store.js";
@@ -883,8 +884,26 @@ export class MissionGoStore {
     });
   }
 
+  private proposerKeySql(): string {
+    return `CASE
+      WHEN proposer.actor_kind = 'agent' THEN json_array('agent', COALESCE(proposer.client_id, ''), COALESCE(json_extract(proposer.payload_json, '$.agentName'), ''))
+      WHEN json_extract(proposer.payload_json, '$.source') = 'android_sdk' THEN json_array('sdk', COALESCE((SELECT access_token_id FROM feedback_drafts WHERE id = json_extract(proposer.payload_json, '$.feedbackDraftId')), ''))
+      WHEN proposer.actor_kind = 'human' AND proposer.account_id IS NOT NULL THEN json_array('human', proposer.account_id)
+      ELSE json_array('unknown') END`;
+  }
+
+  getWorkItemProposers(productId: string): Array<{ value: string; createdBy?: WorkItemCreator }> {
+    this.getProduct(productId);
+    const rows = this.database.connection.prepare(`SELECT w.id, ${this.proposerKeySql()} AS value
+      FROM work_items w LEFT JOIN work_item_events proposer ON proposer.rowid = (
+        SELECT e.rowid FROM work_item_events e WHERE e.item_id = w.id AND e.event_type = 'item_created'
+        ORDER BY e.timeline_seq, e.created_at LIMIT 1)
+      WHERE w.product_id = ?`).all(productId) as Array<{id: string; value: string}>;
+    return [...new Map(rows.map(row => [row.value, {value: row.value, ...this.creatorOf(row.id)}])).values()];
+  }
+
   /** Filter clauses shared by the listing and its summary, so the two never disagree. */
-  private workItemFilter(input: {
+  private workItemFilter(input: ItemFilters & {
     productId: string;
     status?: WorkItemStatus;
     type?: WorkItemType;
@@ -914,6 +933,25 @@ export class MissionGoStore {
     }
     if (input.builderAccountId === null) clauses.push("builder_account_id IS NULL");
     else if (input.builderAccountId !== undefined) { clauses.push("builder_account_id = ?"); values.push(input.builderAccountId); }
+    const addValues = (column: string, entries: readonly string[] | undefined, allowed?: readonly string[]) => {
+      if (!entries?.length) return;
+      if (entries.length > 50 || entries.some(value => typeof value !== "string" || !value || value.length > 1000 || (allowed && !allowed.includes(value)))) throw invalidInput("Invalid list filter.");
+      clauses.push(`${column} IN (${entries.map(() => "?").join(",")})`);
+      values.push(...entries);
+    };
+    addValues("type", input.types, WORK_ITEM_TYPES);
+    addValues("priority", input.priorities, WORK_ITEM_PRIORITIES);
+    addValues("source_component_id", input.sourceComponentIds);
+    if (input.proposerKeys?.length) {
+      addValues(`COALESCE((SELECT ${this.proposerKeySql()} FROM work_item_events proposer WHERE proposer.item_id = work_items.id AND proposer.event_type = 'item_created' ORDER BY proposer.timeline_seq, proposer.created_at LIMIT 1), '["unknown"]')`, input.proposerKeys);
+    }
+    for (const [key, column, op] of [["createdFrom", "created_at", ">="], ["createdTo", "created_at", "<"], ["updatedFrom", "updated_at", ">="], ["updatedTo", "updated_at", "<"]] as const) {
+      const value = input[key];
+      if (value) {
+        if (!Number.isFinite(Date.parse(value))) throw invalidInput("Invalid date filter.");
+        clauses.push(`${column} ${op} ?`); values.push(value);
+      }
+    }
     const search = input.search?.trim();
     if (search) {
       if (search.length > 200) throw invalidInput("search must be 200 characters or fewer.");
@@ -972,13 +1010,7 @@ export class MissionGoStore {
     this.getProduct(input.productId);
     // The status filter is deliberately left out: each sidebar entry is a status,
     // so the counts have to describe what the other filters left behind.
-    const { clauses, values } = this.workItemFilter({
-      productId: input.productId,
-      includeCancelled: true,
-      ...(input.builderAccountId !== undefined ? { builderAccountId: input.builderAccountId } : {}),
-      ...(input.type !== undefined ? { type: input.type } : {}),
-      ...(input.search !== undefined ? { search: input.search } : {}),
-    });
+    const { clauses, values } = this.workItemFilter({ ...input, includeCancelled: true });
     const rows = this.database.connection
       .prepare(`SELECT status, COUNT(*) AS count FROM work_items WHERE ${clauses.join(" AND ")} GROUP BY status`)
       .all(...values) as unknown as Array<{ status: WorkItemStatus; count: number }>;

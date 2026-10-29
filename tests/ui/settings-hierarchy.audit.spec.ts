@@ -12,7 +12,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
     test("groups primary navigation, drills into Agent and product modules and keeps their scopes clear", async ({ page }) => {
       await page.goto(`/settings?product=${fixture.productId}`);
       const nav = page.getByRole("navigation", { name: "设置", exact: true });
-      await expect(nav.getByRole("button")).toHaveText(["资料与安全", "显示", "Agent 配置", "产品配置", "账号与权限", "项目管理员", "模型"]);
+      await expect(nav.getByRole("button")).toHaveText(["资料与安全", "显示", "Agent 配置", "产品配置", "账号与权限", "产品管理员", "模型"]);
       await nav.getByRole("button", { name: "Agent 配置", exact: true }).click();
       await expect(page.getByRole("heading", { level: 1 })).toHaveText("Agent 配置");
       await expect(page.locator(".settings-hub-row strong")).toHaveText(["连接与授权", "执行设备", "派单默认值"]);
@@ -23,7 +23,9 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await page.getByRole("navigation", { name: "设置位置" }).getByRole("button", { name: "Agent 配置", exact: true }).click();
       if (width === 375) await page.getByRole("button", { name: "设置目录", exact: true }).click();
       await nav.getByRole("button", { name: "产品配置", exact: true }).click();
-      await expect(page.locator(".settings-hub-row strong")).toHaveText(["基本资料", "模块管理", "Builder 分配", "发布配置", "SDK 接入"]);
+      await expect(page.getByRole("combobox", { name: "当前产品", exact: true })).toHaveCount(0);
+      await page.locator(`.settings-product-card[data-product-id="${fixture.productId}"]`).click();
+      await expect(page.locator(".settings-hub-row strong")).toHaveText(["基本资料", "模块管理", "产品管理员", "Builder 分配", "发布配置", "SDK 接入"]);
       await expect(page.locator(".settings-page-title")).toContainText("作用于产品：");
       await expect(page.getByRole("button", { name: "添加产品", exact: true })).toBeVisible();
       await page.screenshot({ path: test.info().outputPath("product-overview.png") });
@@ -117,6 +119,7 @@ test("dispatch defaults remain account-wide after a product switch", async ({ pa
     await page.getByRole("button", { name: "保存", exact: true }).click();
     expect((await saved).status()).toBe(200);
     await page.getByRole("navigation", { name: "设置", exact: true }).getByRole("button", { name: "产品配置", exact: true }).click();
+    await page.locator(`.settings-product-card[data-product-id="${fixture.productId}"]`).click();
     await page.getByRole("combobox", { name: "当前产品", exact: true }).selectOption(product.id);
     await page.getByRole("navigation", { name: "设置", exact: true }).getByRole("button", { name: "Agent 配置", exact: true }).click();
     await page.locator(".settings-hub-row").filter({ hasText: "派单默认值" }).click();

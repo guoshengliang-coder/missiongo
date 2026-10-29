@@ -15,11 +15,11 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await request.put(`/api/v1/accounts/${builder.id}/products`,{data:{permissions:[{productId:product.id,canView:true,canOperate:true,canUseAi:true}]}});
       const item=await (await request.post("/api/v1/items",{data:{productId:product.id,type:"task",priority:"normal",title:"Needs a delivery owner",description:"Project role test"}})).json();
       await page.goto(`/settings/admin/project-administrators/${product.id}?product=${product.id}`);
-      await expect(page.getByRole("heading",{level:1})).toHaveText("项目管理员");
+      await expect(page.getByRole("heading",{level:1})).toHaveText("产品管理员");
       const choice=page.getByRole("checkbox",{name:new RegExp(manager.email)});
       await choice.check();
-      await page.getByRole("button",{name:"保存项目管理员",exact:true}).click();
-      await expect(page.getByRole("status")).toHaveText("项目管理员已保存");
+      await page.getByRole("button",{name:"保存产品管理员",exact:true}).click();
+      await expect(page.getByRole("status")).toHaveText("产品管理员已保存");
       await page.reload();await expect(choice).toBeChecked();
       expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)).toBe(false);
       const audit=await page.evaluate(AUDIT_SOURCE) as {targets:Array<{width:number;height:number}>;text:Array<{fontSize:number;fontWeight:number;contrast:number}>};
@@ -46,18 +46,18 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
         await expect(memberPage.getByRole("region",{name:"交付与执行",exact:true})).toHaveCount(0);
         await expect(memberPage.getByRole("button",{name:"安排执行／交接",exact:true})).toHaveCount(0);
         await memberPage.locator(".detail-toolbar .detail-more-menu > summary").click();
-        await memberPage.getByRole("button",{name:"转交负责人",exact:true}).click();
+        await memberPage.getByRole("button",{name:"转交 Builder",exact:true}).click();
         await memberPage.getByRole("combobox",{name:"新的 Builder",exact:true}).selectOption(builder.id);
         await memberPage.getByLabel("交接说明",{exact:true}).fill("Project administrator allocates responsibility");
         await memberPage.getByRole("button",{name:"确认转交",exact:true}).click();
         await expect(eyebrow).toContainText(`Builder candidate-${suffix}`);
         await memberPage.screenshot({path:test.info().outputPath("project-admin-builder.png"),fullPage:true});
-        await choice.uncheck();await page.getByRole("button",{name:"保存项目管理员",exact:true}).click();
-        await expect(page.getByRole("status")).toHaveText("项目管理员已保存");
+        await choice.uncheck();await page.getByRole("button",{name:"保存产品管理员",exact:true}).click();
+        await expect(page.getByRole("status")).toHaveText("产品管理员已保存");
         expect((await context.request.get(`/api/v1/items/${item.key}/delivery`)).status()).toBe(404);
         expect((await (await context.request.get("/api/v1/products")).json())).toEqual([]);
         await memberPage.goto(`/settings/admin/project-administrators/${product.id}`);
-        await expect(memberPage.getByRole("button",{name:"保存项目管理员",exact:true})).toHaveCount(0);
+        await expect(memberPage.getByRole("button",{name:"保存产品管理员",exact:true})).toHaveCount(0);
       } finally { await context.close(); }
     });
   });
