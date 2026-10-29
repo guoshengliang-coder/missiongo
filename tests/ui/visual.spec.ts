@@ -49,6 +49,19 @@ for (const viewport of VIEWPORTS) {
           await page.waitForLoadState("networkidle");
           await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; animation: none !important; }" });
           await page.waitForTimeout(200);
+          // Lazy thumbnails start after IntersectionObserver, sometimes after
+          // networkidle. Never accept a temporarily stable loading placeholder.
+          if (pageUnderTest.name === "detail") {
+            await expect.poll(() => page.locator(".attachment-image").evaluateAll(cards =>
+              cards.filter(card => {
+                const box = card.getBoundingClientRect();
+                return box.width > 0 && box.height > 0 && box.top < innerHeight && box.bottom > 0;
+              }).every(card => {
+                const image = card.querySelector("img");
+                return image !== null && image.complete && image.naturalWidth > 0;
+              }),
+            ), { timeout: 15_000 }).toBe(true);
+          }
           await expect(page).toHaveScreenshot(`${pageUnderTest.name}-${viewport.name}-${theme}.png`, {
             fullPage: false,
             mask: [page.locator(".product-badge")],
