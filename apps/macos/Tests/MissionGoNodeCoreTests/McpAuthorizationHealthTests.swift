@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 
 @testable import MissionGoNodeCore
@@ -43,5 +44,67 @@ final class McpAuthorizationHealthTests: XCTestCase {
         XCTAssertFalse(try Regex("\\d{9,}\\},").firstMatch(in: json) != nil, "numeric date leaked into: \(json)")
         let decoded = try JSONDecoder().decode(McpAuthSnapshot.self, from: Data(json.utf8))
         XCTAssertEqual(decoded, snapshot)
+    }
+
+    // MARK: AND-306 — the OpenCode token source
+
+    /// The environment wins when it is actually set; the config file is the
+    /// fallback that survives a reboot.
+    func testOpenCodeTokenPrefersTheEnvironmentThenFallsBackToConfig() {
+        XCTAssertEqual(McpAuthorizationHealth.openCodeToken(environment: ["MISSIONGO_TOKEN": "mgai_env"], home: "/no/such/home", fileReader: { _ in nil }), "mgai_env")
+        let jsonc = """
+        {
+          // 注释行会被剥掉
+          "mcp": {
+            "servers": {
+              "missiongo": {
+                "url": "https://missiongo.example/mcp",
+                "headers": {"Authorization": "Bearer mgpat_inline"} // 行尾注释
+              }
+            }
+          }
+        }
+        """
+        XCTAssertEqual(
+            McpAuthorizationHealth.openCodeToken(environment: [:], home: "/tmp/home", fileReader: { $0.hasSuffix("opencode.jsonc") ? jsonc : nil }),
+            "mgpat_inline"
+        )
+        XCTAssertNil(McpAuthorizationHealth.openCodeToken(environment: [:], home: "/tmp/home", fileReader: { _ in nil }))
+    }
+
+    /// A `{env:…}` placeholder is the missing-injection situation, not a token:
+    /// reading it as one would report a fabricated verdict.
+    func testOpenCodeTokenRefusesUnresolvablePlaceholders() {
+        let jsonc = #"{"mcp":{"servers":{"missiongo":{"headers":{"Authorization":"Bearer {env:MISSIONGO_TOKEN}"}}}}}"#
+        XCTAssertNil(McpAuthorizationHealth.openCodeToken(environment: [:], home: "/tmp/home", fileReader: { _ in jsonc }))
+        XCTAssertNil(McpAuthorizationHealth.openCodeToken(environment: ["MISSIONGO_TOKEN": "{env:MISSIONGO_TOKEN}"], home: "/tmp/home", fileReader: { _ in jsonc }))
+    }
+
+    // MARK: AND-306 — a PAT judged against the account's live authorizations
+
+    func testPersonalAccessTokenIsMatchedLocallyByDigest() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let pat = "mgpat_" + String(repeating: "a", count: 43)
+        let digest = SHA256.hash(data: Data(pat.utf8)).map { String(format: "%02x", $0) }.joined()
+        let soon = AiAuthorizationEntry(
+            id: "auth-1",
+            expiresAt: now.addingTimeInterval(3 * 24 * 60 * 60),
+            kind: "pat",
+            name: "opencode inline",
+            tokenHash: digest
+        )
+        XCTAssertEqual(McpAuthorizationHealth.report(personalAccessToken: pat, authorizations: [soon], now: now)?.state, "expiring")
+
+        let dead = AiAuthorizationEntry(id: "auth-2", expiresAt: now.addingTimeInterval(-60), kind: "pat", tokenHash: digest)
+        XCTAssertEqual(McpAuthorizationHealth.report(personalAccessToken: pat, authorizations: [dead], now: now)?.state, "invalid")
+
+        let longLived = AiAuthorizationEntry(id: "auth-3", expiresAt: now.addingTimeInterval(300 * 24 * 60 * 60), kind: "pat", tokenHash: digest)
+        XCTAssertEqual(McpAuthorizationHealth.report(personalAccessToken: pat, authorizations: [longLived], now: now)?.state, "valid")
+
+        // No digest match, no list, no plaintext PAT: silence, never a guess.
+        XCTAssertNil(McpAuthorizationHealth.report(personalAccessToken: pat, authorizations: [], now: now))
+        XCTAssertNil(McpAuthorizationHealth.report(personalAccessToken: pat, authorizations: nil, now: now))
+        XCTAssertNil(McpAuthorizationHealth.report(personalAccessToken: nil, authorizations: [soon], now: now))
+        XCTAssertNil(McpAuthorizationHealth.report(personalAccessToken: "mgai_" + pat.dropFirst(5), authorizations: [soon], now: now))
     }
 }

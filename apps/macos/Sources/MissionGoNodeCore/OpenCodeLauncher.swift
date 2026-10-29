@@ -350,10 +350,35 @@ public enum OpenCodeProtocol {
     /// Integration setup checks the service's default location. A temporary
     /// failure there must not disable dispatches whose repository location is
     /// connected; launch checks the mapped repository before sending a prompt.
-    public static func integrationIssue(for status: String?) -> String? {
+    ///
+    /// AND-306: a `needs_auth` answer is split by what this machine could read
+    /// of the token itself. "Sign in via /mcps" is only the right advice when
+    /// a token exists and still looks alive; a missing or dead token needs a
+    /// config edit, and sending the person to re-login sends them down the
+    /// wrong path — the very trap of the 2026-10-29 outage. `localRead` nil
+    /// means the caller did not look, and the advice stays generic.
+    public enum LocalAuthorizationRead: Equatable, Sendable {
+        /// Nothing resolves to a token: no environment value, no config entry.
+        case absent
+        /// A token exists on this machine and its own expiry has passed.
+        case dead
+        /// A token exists and its locally readable expiry has not passed.
+        case alive
+        /// A token exists but its expiry cannot be read here (a `mgpat_` token).
+        case expiryUnreadable
+    }
+
+    public static func integrationIssue(for status: String?, localRead: LocalAuthorizationRead? = nil) -> String? {
         switch status {
         case "connected", "failed", "pending": return nil
-        case "needs_auth": return "OpenCode 的 missiongo MCP 需要授权；请在 OpenCode 的 /mcps 中登录。"
+        case "needs_auth":
+            if localRead == .dead {
+                return "OpenCode 的 missiongo 授权令牌已失效：请在 MissionGo 控制台换发令牌，并更新 OpenCode 配置（opencode.jsonc）中的 Authorization。"
+            }
+            if localRead == .absent {
+                return "OpenCode 的 missiongo 授权令牌缺失：请检查 OpenCode 配置（opencode.jsonc）中的 Authorization，或 MISSIONGO_TOKEN 环境变量。"
+            }
+            return "OpenCode 的 missiongo MCP 需要授权；请在 OpenCode 的 /mcps 中登录。"
         case nil: return "OpenCode 未返回 missiongo MCP；请检查共享服务的 MCP 配置。"
         default: return "OpenCode 的 missiongo MCP 状态无法识别；请在 OpenCode 的 /mcps 中检查。"
         }

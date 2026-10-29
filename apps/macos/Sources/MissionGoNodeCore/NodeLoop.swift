@@ -218,6 +218,7 @@ public final class NodeLoop: @unchecked Sendable {
     let onState: @Sendable (NodeLoopState) -> Void
     let skillReadiness: SkillReadiness?
     let attachmentCacheRoot: URL
+    let authorizationNotifier: AuthorizationNoticing
 
     private let state = Locked(NodeLoopState())
     private let stateContinuation: AsyncStream<NodeLoopState>.Continuation
@@ -230,6 +231,10 @@ public final class NodeLoop: @unchecked Sendable {
 
     private let agentCache = Locked<(agents: [DetectedAgent], at: Date)?>(nil)
     private let lastReposFingerprint = Locked<[RepoMapping]?>(nil)
+    /// The account's live AI authorizations from the latest heartbeat (AND-306),
+    /// used to judge a `mgpat_` token found in an agent config: the node hashes
+    /// it locally and matches the digest. One heartbeat old at most.
+    private let knownAuthorizations = Locked<[AiAuthorizationEntry]?>(nil)
     private struct CapacityState {
         var sessions: [NodeAgentSession] = []
         var reservations: [String: Date] = [:]
@@ -248,6 +253,7 @@ public final class NodeLoop: @unchecked Sendable {
         skillReadiness: SkillReadiness? = nil,
         attachmentCacheRoot: URL? = nil,
         log: @escaping @Sendable (String) -> Void = { NSLog("%@", $0) },
+        authorizationNotifier: AuthorizationNoticing = SystemAuthorizationNotifier(),
         onState: @escaping @Sendable (NodeLoopState) -> Void = { _ in }
     ) {
         self.managedRuntime = ManagedExecutionRuntime(root: (attachmentCacheRoot ?? FileManager.default.homeDirectoryForCurrentUser
@@ -263,6 +269,7 @@ public final class NodeLoop: @unchecked Sendable {
         self.attachmentCacheRoot = attachmentCacheRoot ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/MissionGo/ChatAttachments", isDirectory: true)
         self.log = log
+        self.authorizationNotifier = authorizationNotifier
         self.onState = onState
         let (stream, continuation) = AsyncStream.makeStream(of: NodeLoopState.self, bufferingPolicy: .bufferingNewest(1))
         states = stream
@@ -368,7 +375,8 @@ public final class NodeLoop: @unchecked Sendable {
                     let detectedAgents = await self.detectAgents()
                     var agents = await self.heartbeatAgents(
                         detectedAgents,
-                        expectedSkillVersion: self.currentState.expectedSkillVersion
+                        expectedSkillVersion: self.currentState.expectedSkillVersion,
+                        authorizations: self.knownAuthorizations.current
                     )
                     // The app supplies an in-memory list of mapped repositories.
                     // Heartbeats must not probe historical project directories.
@@ -381,9 +389,15 @@ public final class NodeLoop: @unchecked Sendable {
                     if beat.expectedSkillVersion != self.currentState.expectedSkillVersion {
                         agents = await self.heartbeatAgents(
                             detectedAgents,
-                            expectedSkillVersion: beat.expectedSkillVersion
+                            expectedSkillVersion: beat.expectedSkillVersion,
+                            authorizations: beat.authorizations ?? self.knownAuthorizations.current
                         )
                         beat = try await self.api.heartbeat(agents: agents, repoCandidates: candidates)
+                    }
+                    // AND-306: remember the account's live authorizations for the
+                    // next round's token judgment — one heartbeat old at most.
+                    if let authorizations = beat.authorizations {
+                        self.knownAuthorizations.withLock { $0 = authorizations }
                     }
                     self.noteReposChanged(beat.repos)
                     self.noteSuccess("上报心跳出错")
@@ -930,7 +944,8 @@ public final class NodeLoop: @unchecked Sendable {
 
     private func heartbeatAgents(
         _ detected: [DetectedAgent],
-        expectedSkillVersion: String?
+        expectedSkillVersion: String?,
+        authorizations: [AiAuthorizationEntry]? = nil
     ) async -> [DetectedAgent] {
         var reports: [DetectedAgent] = []
         var readyKinds = Set<String>()
@@ -960,9 +975,18 @@ public final class NodeLoop: @unchecked Sendable {
             // AND-289: where this machine knows an agent's MissionGo token,
             // report whether it still works -- a session dispatched against a
             // dead one dies on its first MCP call. Only the verdict travels.
+            // AND-306: the OpenCode token is read from the environment and
+            // then from the config file an operator edits by hand, because the
+            // injection chain is exactly what breaks in the field; a `mgpat_`
+            // token is judged against the account's live authorizations.
             let mcpAuth: McpAuthSnapshot?
             if agent.kind == "opencode" {
-                mcpAuth = McpAuthorizationHealth.report(token: ProcessInfo.processInfo.environment["MISSIONGO_TOKEN"])
+                let token = McpAuthorizationHealth.openCodeToken()
+                mcpAuth = McpAuthorizationHealth.report(token: token)
+                    ?? McpAuthorizationHealth.report(personalAccessToken: token, authorizations: authorizations)
+                if let notice = AuthorizationNoticeScheduler.notice(for: agent.kind, snapshot: mcpAuth) {
+                    authorizationNotifier.notify(notice)
+                }
             } else {
                 mcpAuth = nil
             }

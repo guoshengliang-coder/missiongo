@@ -40,7 +40,7 @@ import {
   createAdminSession,
   createAiAccessToken,
   expiredAdminSessionCookie,
-  readAiAccessToken,
+  inspectAiAccessToken,
   readAdminSession,
   type AdminAccountConfig,
   type AdminSessionUser,
@@ -797,48 +797,86 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    * The reach is read here rather than taken from the token, so unticking a
    * product in the console applies to authorizations already in the wild.
    */
-  const aiPrincipal = (token: string) => {
-    if (!options.adminAccount) return undefined;
+  /**
+   * AND-306: why an AI bearer token did not yield a principal. Only the
+   * holder's own facts are named -- a missing token, its own expiry, its own
+   * revocation, the account behind it being gone -- and everything else stays
+   * a single "invalid" so the answer cannot confirm guesses.
+   */
+  type AiPrincipalFailure = "token_missing" | "token_invalid" | "token_expired" | "token_revoked" | "account_inactive";
+
+  interface AiPrincipal {
+    readonly id: string;
+    readonly username: string;
+    readonly displayName: string;
+    readonly role: string;
+    readonly tokenId: string;
+    readonly clientId: string;
+    readonly scopes: readonly string[];
+    readonly credentialsAt: number;
+    readonly issuedAt: number;
+    readonly expiresAt: number;
+    readonly productIds: readonly string[] | "*";
+  }
+
+  const buildAiPrincipal = (token: string):
+    | { readonly principal: AiPrincipal; readonly failure?: undefined }
+    | { readonly principal?: undefined; readonly failure: AiPrincipalFailure } => {
     // A personal access token (AND-288): no signature to verify, the stored
     // hash is the whole check. Deliberately not tied to the account's
     // credentials_changed_at -- see personalAccessTokenAccount.
     if (token.startsWith("mgpat_")) {
-      const pat = accountStore.personalAccessTokenAccount(token);
-      if (!pat) return undefined;
-      const account = accountStore.activeAccount(pat.accountId);
-      if (!account) return undefined;
-      accountStore.touchAiAuthorization(pat.tokenId);
+      const inspected = accountStore.inspectPersonalAccessToken(token);
+      if (inspected.failure) return { failure: inspected.failure };
+      const account = accountStore.activeAccount(inspected.account.accountId);
+      if (!account) return { failure: "account_inactive" };
+      accountStore.touchAiAuthorization(inspected.account.tokenId);
       return {
-        id: account.id,
-        username: account.email,
-        displayName: accountDisplayName(account),
-        role: account.role,
-        tokenId: pat.tokenId,
-        clientId: "pat",
-        scopes: pat.scopes,
-        credentialsAt: accountStore.credentialsStamp(account),
-        issuedAt: 0,
-        expiresAt: pat.expiresAt,
-        productIds: accountStore.reachableProductIds(account, "ai"),
+        principal: {
+          id: account.id,
+          username: account.email,
+          displayName: accountDisplayName(account),
+          role: account.role,
+          tokenId: inspected.account.tokenId,
+          clientId: "pat",
+          scopes: inspected.account.scopes,
+          credentialsAt: accountStore.credentialsStamp(account),
+          issuedAt: 0,
+          expiresAt: inspected.account.expiresAt,
+          productIds: accountStore.reachableProductIds(account, "ai"),
+        },
       };
     }
-    const claims = readAiAccessToken(options.adminAccount, token);
-    if (!claims) return undefined;
+    const inspectedToken = inspectAiAccessToken(options.adminAccount!, token);
+    if (inspectedToken.failure) return { failure: inspectedToken.failure };
+    const claims = inspectedToken.claims;
     const account = accountStore.resolveActive(claims.id, claims.credentialsAt);
-    if (!account) return undefined;
+    if (!account) return { failure: "account_inactive" };
     // Cut off on its own, without touching the account's other clients. A token
     // with no record predates the table and is not refused by this -- see
     // ai_authorizations in the schema.
-    if (accountStore.aiAuthorizationRevoked(claims.tokenId)) return undefined;
+    if (accountStore.aiAuthorizationRevoked(claims.tokenId)) return { failure: "token_revoked" };
     accountStore.touchAiAuthorization(claims.tokenId);
     return {
-      ...claims,
-      username: account.email,
-      displayName: accountDisplayName(account),
-      role: account.role,
-      productIds: accountStore.reachableProductIds(account, "ai"),
+      principal: {
+        ...claims,
+        username: account.email,
+        displayName: accountDisplayName(account),
+        role: account.role,
+        productIds: accountStore.reachableProductIds(account, "ai"),
+      },
     };
   };
+
+  const aiPrincipalDetailed = (token: string):
+    | { readonly principal: AiPrincipal; readonly failure?: undefined }
+    | { readonly principal?: undefined; readonly failure: AiPrincipalFailure } => {
+    if (!options.adminAccount) return { failure: "token_invalid" };
+    if (!token) return { failure: "token_missing" };
+    return buildAiPrincipal(token);
+  };
+
+  const aiPrincipal = (token: string): AiPrincipal | undefined => aiPrincipalDetailed(token).principal;
 
   app.addContentTypeParser(
     "application/octet-stream",
@@ -1619,16 +1657,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       url: "/mcp",
       handler: async (request, reply) => {
         const token = suppliedBearerToken(request);
-        const principal = aiPrincipal(token);
+        // AND-306: the 401 says why. A client that sent nothing, one holding
+        // an expired token and one holding a revoked token all used to read
+        // the same "authentication_required", which sent the person debugging
+        // a dead agent down the wrong path (re-login when the token was simply
+        // past its expiry). The reason names only the holder's own facts.
+        const inspected = aiPrincipalDetailed(token);
+        const principal = inspected.principal;
         if (!principal || !principal.scopes.includes(MISSIONGO_READ_SCOPE)) {
+          const reason = principal ? "token_invalid" : inspected.failure ?? "token_invalid";
           return reply
-            .header("www-authenticate", `Bearer realm="MissionGo MCP", resource_metadata="${publicOrigin}/.well-known/oauth-protected-resource/mcp", scope="${MISSIONGO_READ_SCOPE}"`)
+            .header("www-authenticate", `Bearer realm="MissionGo MCP", error="invalid_token", resource_metadata="${publicOrigin}/.well-known/oauth-protected-resource/mcp", scope="${MISSIONGO_READ_SCOPE}"`)
             .status(401)
             .send({
               type: "urn:missiongo:problem:authentication_required",
               title: "A valid MCP bearer token is required.",
               status: 401,
               code: "authentication_required",
+              reason,
             });
         }
 
@@ -3274,6 +3320,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       products: nodeProducts(node.accountId),
       expectedSkillVersion,
       supportsStatusChecks: true,
+      // AND-306: this account's live AI authorizations, so a node can learn
+      // when the token inside an agent config expires without that token
+      // ever travelling. The node matches the SHA-256 it computes locally
+      // against tokenHash; OAuth authorizations carry no hash to match.
+      authorizations: accountStore.listAiAuthorizations(node.accountId).map((authorization) => ({
+        id: authorization.id,
+        expiresAt: authorization.expiresAt,
+        ...(authorization.kind ? { kind: authorization.kind } : {}),
+        ...(authorization.name ? { name: authorization.name } : {}),
+        ...(authorization.tokenHash ? { tokenHash: authorization.tokenHash } : {}),
+      })),
       repos: dispatchStore.recordHeartbeat(
         node.nodeId,
         agents.map((entry) => {

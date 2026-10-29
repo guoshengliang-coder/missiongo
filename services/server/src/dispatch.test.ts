@@ -266,6 +266,32 @@ describe("Registering a Mac by signing in", () => {
     expect((await agents()).ready).toBe(true);
   });
 
+  it("carries the account's live AI authorizations on the heartbeat (AND-306)", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+
+    // A PAT the node's agents might be holding somewhere on this Mac.
+    const pat = app.missionGoAccounts.createPersonalAccessToken({
+      accountId: (await app.inject({ method: "GET", url: "/api/v1/bootstrap", headers: { cookie } }))
+        .json<{ user: { id: string } }>().user.id,
+      name: "opencode inline",
+      scopes: ["missiongo:read", "missiongo:write"],
+      expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+    });
+
+    const beat = await heartbeat(app, node.token);
+    expect(beat.statusCode).toBe(200);
+    const authorizations = beat.json<{ authorizations: Array<{ id: string; expiresAt: string; kind?: string; name?: string; tokenHash?: string }> }>()
+      .authorizations;
+    const listed = authorizations.find((authorization) => authorization.id === pat.id);
+    // Enough for the node to match a locally hashed token and learn its
+    // expiry; the plaintext never travels and OAuth rows carry no hash.
+    expect(listed).toMatchObject({ kind: "pat", name: "opencode inline" });
+    expect(listed?.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(Date.parse(listed!.expiresAt)).toBeGreaterThan(Date.now());
+    expect(authorizations.every((authorization) => authorization.tokenHash === undefined || /^[0-9a-f]{64}$/.test(authorization.tokenHash))).toBe(true);
+  });
+
   it("trades a login carrying the node scope for a machine credential", async () => {
     const { app } = await signedInApp();
     const registered = await register(app, loginToken(app), { name: "Mac mini" });

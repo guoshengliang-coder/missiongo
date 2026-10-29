@@ -462,6 +462,21 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertTrue(OpenCodeProtocol.integrationIssue(for: nil)?.contains("配置") == true)
     }
 
+    /// AND-306: a `needs_auth` answer is split by what this machine can read
+    /// of the token. The generic re-login advice is only honest when a live
+    /// token exists; a missing or dead one needs a config edit — the exact
+    /// trap of the 2026-10-29 outage, where the token injection chain had
+    /// broken and "在 /mcps 中登录" pointed away from the real fix.
+    func testNeedsAuthNamesTheActualTokenProblem() {
+        XCTAssertTrue(OpenCodeProtocol.integrationIssue(for: "needs_auth", localRead: .dead)?.contains("已失效") == true)
+        XCTAssertTrue(OpenCodeProtocol.integrationIssue(for: "needs_auth", localRead: .absent)?.contains("缺失") == true)
+        // A token exists and looks alive, or the caller did not look: the old
+        // advice stands.
+        XCTAssertTrue(OpenCodeProtocol.integrationIssue(for: "needs_auth", localRead: .alive)?.contains("登录") == true)
+        XCTAssertTrue(OpenCodeProtocol.integrationIssue(for: "needs_auth", localRead: .expiryUnreadable)?.contains("登录") == true)
+        XCTAssertTrue(OpenCodeProtocol.integrationIssue(for: "needs_auth")?.contains("登录") == true)
+    }
+
     func testRetriesTransientFailedMcpStatusBeforeDispatch() async throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }

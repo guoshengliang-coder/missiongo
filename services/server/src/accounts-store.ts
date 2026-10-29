@@ -156,6 +156,13 @@ export interface AiAuthorizationSnapshot {
   readonly kind?: "oauth" | "pat";
   /** The name the account gave this personal access token. */
   readonly name?: string;
+  /**
+   * SHA-256 of a PAT's plaintext, hex. A hash cannot sign anything, so handing
+   * it to the account's own machines (AND-306: the node matches the token in an
+   * agent config against this list to learn its expiry) leaks nothing a
+   * database copy would not already hold. Undefined for OAuth rows.
+   */
+  readonly tokenHash?: string;
 }
 
 interface AiAuthorizationRow {
@@ -167,6 +174,7 @@ interface AiAuthorizationRow {
   last_used_at: string | null;
   kind?: "oauth" | "pat";
   name?: string | null;
+  token_hash?: string | null;
 }
 
 interface PermissionRow {
@@ -858,7 +866,7 @@ export class AccountStore {
   listAiAuthorizations(accountId: string, now = Date.now()): readonly AiAuthorizationSnapshot[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT id, client_id, scopes_json, issued_at, expires_at, last_used_at, kind, name
+        `SELECT id, client_id, scopes_json, issued_at, expires_at, last_used_at, kind, name, token_hash
          FROM ai_authorizations
          WHERE account_id = ? AND revoked_at IS NULL AND expires_at > ?
          ORDER BY issued_at DESC`,
@@ -873,6 +881,7 @@ export class AccountStore {
       ...(row.last_used_at ? { lastUsedAt: row.last_used_at } : {}),
       ...(row.kind && row.kind !== "oauth" ? { kind: row.kind } : {}),
       ...(row.kind === "pat" && row.name ? { name: row.name } : {}),
+      ...(row.token_hash ? { tokenHash: row.token_hash } : {}),
     }));
   }
 
@@ -916,6 +925,40 @@ export class AccountStore {
   }
 
   /**
+   * Why a `mgpat_` token did not resolve (AND-306). Revocation and expiry are
+   * the holder's own facts and safe to name; every other miss -- wrong hash,
+   * wrong kind, not a PAT at all -- stays one vague "invalid".
+   */
+  inspectPersonalAccessToken(token: string, now = Date.now()):
+    | { readonly account: { readonly accountId: string; readonly tokenId: string; readonly scopes: readonly string[]; readonly expiresAt: number }; readonly failure?: undefined }
+    | { readonly account?: undefined; readonly failure: "token_invalid" | "token_revoked" | "token_expired" } {
+    if (!token.startsWith("mgpat_")) return { failure: "token_invalid" };
+    const row = this.database.connection
+      .prepare(
+        `SELECT id, account_id, scopes_json, expires_at, revoked_at FROM ai_authorizations
+         WHERE token_hash = ? AND kind = 'pat'`,
+      )
+      .get(sha256Hex(token)) as unknown as {
+      id: string;
+      account_id: string;
+      scopes_json: string;
+      expires_at: string;
+      revoked_at: string | null;
+    } | undefined;
+    if (!row) return { failure: "token_invalid" };
+    if (row.revoked_at) return { failure: "token_revoked" };
+    if (Date.parse(row.expires_at) <= now) return { failure: "token_expired" };
+    return {
+      account: {
+        accountId: row.account_id,
+        tokenId: row.id,
+        scopes: JSON.parse(row.scopes_json) as string[],
+        expiresAt: Date.parse(row.expires_at) / 1_000,
+      },
+    };
+  }
+
+  /**
    * Resolve a presented `mgpat_` token to its account. Deliberately not bound
    * to credentials_changed_at: a token is the machine's credential, and
    * rotating a human's password should not silently stop every CI job -- the
@@ -927,25 +970,7 @@ export class AccountStore {
     readonly scopes: readonly string[];
     readonly expiresAt: number;
   } | undefined {
-    if (!token.startsWith("mgpat_")) return undefined;
-    const row = this.database.connection
-      .prepare(
-        `SELECT id, account_id, scopes_json, expires_at FROM ai_authorizations
-         WHERE token_hash = ? AND kind = 'pat' AND revoked_at IS NULL AND expires_at > ?`,
-      )
-      .get(sha256Hex(token), new Date(now).toISOString()) as unknown as {
-      id: string;
-      account_id: string;
-      scopes_json: string;
-      expires_at: string;
-    } | undefined;
-    if (!row) return undefined;
-    return {
-      accountId: row.account_id,
-      tokenId: row.id,
-      scopes: JSON.parse(row.scopes_json) as string[],
-      expiresAt: Date.parse(row.expires_at) / 1_000,
-    };
+    return this.inspectPersonalAccessToken(token, now).account;
   }
 
   // ---- Refresh tokens (AND-288) ----

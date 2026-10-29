@@ -256,11 +256,24 @@ export function createAiAccessToken(
  * the token is what makes "untick a product and the AI loses it now" true
  * rather than true in 180 days.
  */
-export function readAiAccessToken(
+export type AiAccessTokenFailure = "token_invalid" | "token_expired";
+
+export type AiAccessTokenInspection =
+  | { readonly claims: AiAccessClaims; readonly failure?: undefined }
+  | { readonly claims?: undefined; readonly failure: AiAccessTokenFailure };
+
+/**
+ * Verify an AI token's signature, shape and expiry, and say which of the two
+ * holder-visible failures it was (AND-306). The holder's own expiry is theirs
+ * to know; everything else collapses into one vague "invalid" so the answer
+ * cannot confirm or enumerate guesses. `readAiAccessToken` stays as the
+ * "just the claims" wrapper existing callers want.
+ */
+export function inspectAiAccessToken(
   config: AdminAccountConfig,
   token: string,
   now = Date.now(),
-): AiAccessClaims | undefined {
+): AiAccessTokenInspection {
   const payload = readSignedPayload<Partial<AiAccessPayload>>(token, "mgai_", config.sessionSecret);
   const nowSeconds = Math.floor(now / 1_000);
   if (
@@ -280,20 +293,30 @@ export function readAiAccessToken(
     || !Number.isSafeInteger(payload.credentialsAt)
     || !Number.isSafeInteger(payload.issuedAt)
     || !Number.isSafeInteger(payload.expiresAt)
-    || payload.expiresAt! <= nowSeconds
     || payload.issuedAt! > nowSeconds + 60
-  ) return undefined;
+  ) return { failure: "token_invalid" };
+  if (payload.expiresAt! <= nowSeconds) return { failure: "token_expired" };
   return {
-    id: payload.id,
-    username: payload.username,
-    role: payload.role,
-    tokenId: payload.tokenId,
-    clientId: payload.clientId,
-    scopes: payload.scopes,
-    credentialsAt: payload.credentialsAt!,
-    issuedAt: payload.issuedAt!,
-    expiresAt: payload.expiresAt!,
+    claims: {
+      id: payload.id,
+      username: payload.username,
+      role: payload.role,
+      tokenId: payload.tokenId,
+      clientId: payload.clientId,
+      scopes: payload.scopes,
+      credentialsAt: payload.credentialsAt!,
+      issuedAt: payload.issuedAt!,
+      expiresAt: payload.expiresAt!,
+    },
   };
+}
+
+export function readAiAccessToken(
+  config: AdminAccountConfig,
+  token: string,
+  now = Date.now(),
+): AiAccessClaims | undefined {
+  return inspectAiAccessToken(config, token, now).claims;
 }
 
 export function adminSessionCookie(config: AdminAccountConfig, token: string): string {
