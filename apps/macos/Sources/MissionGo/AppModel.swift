@@ -1151,6 +1151,12 @@ final class AppModel: ObservableObject {
         if Bundle.main.object(forInfoDictionaryKey: "MissionGoAllowsAdHocUpdates") as? Bool == true {
             details += "\n\n此安装使用 ad-hoc 签名；更新后 macOS 可能要求重新授予权限。"
         }
+        // macOS refuses to let a translocated copy replace itself. Saying where
+        // the update will land beats failing after the download has finished.
+        if AppUpdater.isTranslocated(bundle: Bundle.main.bundleURL) {
+            details += "\n\n当前 MissionGo 是从下载位置临时运行的副本（macOS 的 App Translocation）。"
+                + "更新会把它安装到「应用程序」，并从那里重新打开。"
+        }
         alert.informativeText = details
         // The notes live in a bounded, scrolling box: release after release they
         // are the only unbounded part of this alert, and a long one must never
