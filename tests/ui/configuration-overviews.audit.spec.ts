@@ -5,7 +5,7 @@ import { WEB_ORIGIN } from "./fixture.mjs";
 
 for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const) {
   test.describe(`${width}px ${theme} configuration overviews`, () => {
-    test.use({ viewport: { width, height: 900 }, hasTouch: width === 375, isMobile: width === 375, colorScheme: theme });
+    test.use({ viewport: { width, height: width === 375 ? 812 : 900 }, hasTouch: width === 375, isMobile: width === 375, colorScheme: theme });
     test("lists products before details, searches and restores archived products after reload", async ({ page, request }) => {
       const name = `Overview ${width} ${theme}`;
       const product = await (await request.post("/api/v1/products", { data: { name, keyPrefix: `OV${width}${theme[0]!.toUpperCase()}` } })).json();
