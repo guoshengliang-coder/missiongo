@@ -548,6 +548,7 @@ function AccountRow({
   const [nickname, setNickname] = useState(account.nickname ?? "");
   const [permissionsOnly, setPermissionsOnly] = useState(false);
   const permission = account.permissions.find(row => row.productId === filterProductId) ?? { canView: false, canOperate: false, canUseAi: false };
+  const projectAdministrator = Boolean(filterProductId && account.projectAdministratorProductIds?.includes(filterProductId));
   const administrator = account.role === "admin" ? { aiUnrestricted: !account.permissions.some(row => row.canUseAi) } : undefined;
   const editIntent = `account:${account.id}` as const;
   const open = editor === editIntent;
@@ -577,12 +578,12 @@ function AccountRow({
   return (
     <article className={account.disabledAt ? "account-row suspended" : "account-row"}>
       <header className="account-access-row">
-        <div className="account-access-identity"><strong>{account.email}</strong><small>{t(account.role === "admin" ? "administratorRole" : "memberRole")}</small></div>
+        <div className="account-access-identity"><strong>{account.email}</strong><small>{projectAdministrator ? "项目管理员" : t(account.role === "admin" ? "administratorRole" : "memberRole")}</small></div>
         {filterProductId && <dl className="account-access-permissions">
           {(["canView", "canOperate", "canUseAi"] as const).map(field => {
             const cell = permissionCell(field, permission, administrator);
             const label = t(field === "canView" ? "permissionView" : field === "canOperate" ? "permissionOperate" : "permissionUseAi");
-            const effective = cell.checked && !account.disabledAt;
+            const effective = (cell.checked || field === "canView" && projectAdministrator) && !account.disabledAt;
             return <div key={field}><dt>{label}</dt><dd title={account.disabledAt ? "账号已停用，配置权限不生效" : cell.byRole ? t("adminAccessByRole") : undefined}>{effective ? "✓" : "—"}<span className="sr-only">{effective ? "已授权" : "未授权"}</span></dd></div>;
           })}
         </dl>}
@@ -775,7 +776,7 @@ export function AccountManagement({ user, products, accountId, filterProductId, 
   if (accountsQuery.isError) return <InlineNote danger message={messageFor(accountsQuery.error, t, t("somethingWentWrong"))} />;
   const accounts = accountsQuery.data.accounts.filter(account => accountId ? account.id === accountId
     : (account.email.toLowerCase().includes(search.trim().toLowerCase()) || (account.nickname ?? "").toLowerCase().includes(search.trim().toLowerCase()))
-      && (!filter || account.role === "admin" || account.permissions.some(permission => permission.productId === filter && (permission.canView || permission.canOperate || permission.canUseAi))));
+      && (!filter || account.role === "admin" || account.projectAdministratorProductIds?.includes(filter) || account.permissions.some(permission => permission.productId === filter && (permission.canView || permission.canOperate || permission.canUseAi))));
   return <div className="account-management">
     {!accountId && <>
       <div className="account-management-header"><p className="account-note">{t("accountsHelp")}</p><button type="button" className="primary-button" disabled={editor !== null} onClick={() => setEditor(openAccountEditor(editor, "new-account"))}><Plus size={15} /> {t("addAccount")}</button></div>

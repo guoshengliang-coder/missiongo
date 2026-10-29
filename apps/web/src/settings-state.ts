@@ -1,9 +1,9 @@
 /** Settings have their own URLs; workspace query parameters survive the round trip. */
 export const SETTINGS_DEPTH = "missiongo:settings-depth";
 export const SETTINGS_INDEX = "missiongo:settings-index";
-export const PRODUCT_SETTINGS = ["product", "components", "artifacts", "tokens"] as const;
+export const PRODUCT_SETTINGS = ["product", "components", "builders", "artifacts", "tokens"] as const;
 export type ProductSettingsSection = typeof PRODUCT_SETTINGS[number];
-export type SettingsSection = ProductSettingsSection | "index" | "profile" | "display" | "agent" | "connections" | "devices" | "dispatch" | "products" | "overview" | "access" | "accounts" | "ai" | "new-product";
+export type SettingsSection = ProductSettingsSection | "index" | "profile" | "display" | "agent" | "connections" | "devices" | "dispatch" | "products" | "overview" | "access" | "accounts" | "project-admins" | "ai" | "new-product";
 export interface SettingsRoute { section: SettingsSection; productId?: string | undefined; nodeId?: string | undefined; componentId?: string | undefined; accountId?: string | undefined; filterProductId?: string | undefined }
 export function settingsRoute(url = new URL(window.location.href)): SettingsRoute | null {
   if (!/^\/settings(?:\/|$)/.test(url.pathname)) return null;
@@ -23,6 +23,7 @@ export function settingsRoute(url = new URL(window.location.href)): SettingsRout
     }
     if (parts[1] === "permissions" && parts[2]) return { section: "access", productId: parts[2] };
     if (parts[1] === "admin") {
+      if (parts[2] === "project-administrators") return {section:"project-admins",...(parts[3] ? {productId:parts[3]} : {})};
       if (parts[2] === "models" || parts[2] === "ai") return { section: "ai" };
       if (parts[2] === "accounts") return { section: "accounts", ...(parts[3] ? { accountId: parts[3] } : {}), ...(url.searchParams.get("settingsProduct") ? { filterProductId: url.searchParams.get("settingsProduct")! } : {}) };
     }
@@ -41,6 +42,7 @@ export function settingsUrl(route: SettingsRoute, url = new URL(window.location.
     : route.section === "access" ? `/settings/permissions/${encode(route.productId ?? "")}`
     : route.section === "accounts" ? `/settings/admin/accounts${route.accountId ? `/${encode(route.accountId)}` : ""}`
     : route.section === "ai" ? "/settings/admin/models"
+    : route.section === "project-admins" ? `/settings/admin/project-administrators${route.productId ? `/${encode(route.productId)}` : ""}`
     : route.section === "agent" ? "/settings/agent"
     : ["connections", "devices", "dispatch"].includes(route.section) ? `/settings/agent/${route.section}${route.nodeId ? `/${encode(route.nodeId)}` : ""}`
     : route.productId ? `/settings/products/${encode(route.productId)}${route.section === "overview" ? "" : `/${route.section}`}${route.componentId ? `/${encode(route.componentId)}` : ""}`

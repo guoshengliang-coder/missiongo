@@ -1703,7 +1703,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const withAccess = <T extends { readonly id: string }>(
     request: FastifyRequest,
     products: readonly T[],
-  ): Array<T & { access: { canOperate: boolean; canUseAi: boolean } }> => {
+  ): Array<T & { access: { canOperate: boolean; canUseAi: boolean; isProjectAdmin?: boolean } }> => {
     if (bearerAuthorized(request)) return products.map((product) => ({ ...product, access: { canOperate: true, canUseAi: true } }));
     const account = requireAccount(request);
     return products.map((product) => ({
@@ -1711,6 +1711,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       access: {
         canOperate: accountStore.allows(account, product.id, "operate"),
         canUseAi: accountStore.allows(account, product.id, "ai"),
+        ...(accountStore.isProjectAdministrator(account,product.id) ? {isProjectAdmin:true} : {}),
       },
     }));
   };
@@ -1899,8 +1900,27 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       accounts: accountStore.listAccounts().map((account) => ({
         ...account,
         permissions: accountStore.listPermissions(account.id),
+        projectAdministratorProductIds: accountStore.administeredProductIds(account.id),
       })),
     };
+  });
+
+  app.get("/api/v1/products/:productId/administrators", async request => {
+    const account = requireAccount(request);
+    if (account.role !== "admin") throw notFound("Product");
+    const {productId} = request.params as {productId:string};
+    store.getProduct(productId);
+    return {accountIds:accountStore.projectAdministratorIds(productId)};
+  });
+  app.put("/api/v1/products/:productId/administrators", async request => {
+    const account = requireAccount(request);
+    if (account.role !== "admin") throw notFound("Product");
+    const {productId} = request.params as {productId:string};
+    store.getProduct(productId);
+    const body = objectBody(request.body);
+    const ids = body.accountIds, expected = body.expectedAccountIds;
+    if (!Array.isArray(ids) || !Array.isArray(expected) || ![...ids,...expected].every(id => typeof id === "string")) throw invalidInput("accountIds and expectedAccountIds must be arrays of account IDs.");
+    return {accountIds:accountStore.replaceProjectAdministrators(productId,ids as string[],expected as string[],account.id)};
   });
 
   app.post("/api/v1/accounts", async (request, reply) => {

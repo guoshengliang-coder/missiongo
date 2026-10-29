@@ -2692,3 +2692,12 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .module-builder-setting small { color: var(--muted); font-size: var(--text-xs); }
 
 .module-builder-setting .secondary-button { min-height: 44px; }
+.project-administrators-settings, .project-builder-modules { display: grid; gap: 20px; }
+.project-administrator-choices { margin: 0; padding: 0; border: 0; min-width: 0; }
+.project-administrator-choices legend { margin-bottom: 12px; font-weight: 600; }
+.settings-page-body .project-administrator-choice { display: flex; flex-direction: row; align-items: center; gap: 12px; min-height: 60px; padding: 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.project-administrator-choice input { flex: 0 0 auto; width: 20px; height: 20px; }
+.project-administrator-choice span { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.project-administrator-choice small { color: var(--muted); font-size: var(--text-xs); }
+.project-builder-module { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); min-width: 0; }
+.project-builder-module h2 { font-size: var(--text-md); margin: 0 0 12px; }

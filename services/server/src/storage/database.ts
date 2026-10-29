@@ -1941,6 +1941,21 @@ export class MissionGoDatabase {
           .run(202610290609, new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610290931").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE product_administrators (
+            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            granted_by TEXT NOT NULL, created_at TEXT NOT NULL,
+            PRIMARY KEY(product_id,account_id)
+          ) STRICT;
+          CREATE INDEX product_administrators_account ON product_administrators(account_id);
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610290931, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }
