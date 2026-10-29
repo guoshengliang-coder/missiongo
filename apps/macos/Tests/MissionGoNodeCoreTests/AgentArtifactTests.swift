@@ -60,6 +60,20 @@ final class AgentArtifactTests: XCTestCase {
             XCTAssertThrowsError(try read(page)) { XCTAssertEqual($0 as? AgentArtifactError, .fileDenied) }
         }
     }
+    func testBlobDownloadScriptsDoNotBecomeCssDependencies() throws {
+        try fixture { root in
+            let page = root.appendingPathComponent("index.html")
+            let script = "const url=URL.createObjectURL(new Blob(['notes'],{type:'text/markdown'})); URL.revokeObjectURL(url); const example=\"<img src='not-a-resource.png'>\"; const cssExample=\"url(not-a-resource.png)\";"
+            try Data(("<script>" + script + "</script><script src='model.js'></script>").utf8).write(to: page)
+            try Data(script.utf8).write(to: root.appendingPathComponent("model.js"))
+            XCTAssertEqual(Set(try read(page).files.map(\.name)), ["index.html", "model.js"])
+            XCTAssertTrue(AgentArtifactReader.references(script, type: "text/javascript").isEmpty)
+        }
+    }
+    func testInlineStylesAndModulesStillCollectRealDependencies() throws {
+        let html = "<!-- <img src='comment.png'> --><style>/* url(comment.png) */ body{background:url(real.png)}</style><div style=\"background:URL('inline.png')\"></div><script type='module'>import './model.js';</script><img data-src='lazy.png' src='image.png'>"
+        XCTAssertEqual(Set(AgentArtifactReader.references(html, type: "text/html")), ["real.png", "inline.png", "./model.js", "image.png"])
+    }
     func testReportsMissingFilesAndDependenciesAndRestrictsTypes() throws {
         try fixture { root in
             XCTAssertThrowsError(try read(root.appendingPathComponent("missing.pdf"))) { XCTAssertEqual($0 as? AgentArtifactError, .fileMissing) }
