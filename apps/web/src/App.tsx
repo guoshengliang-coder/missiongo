@@ -1,4 +1,4 @@
-import { ItemDeliveryPanel, ModuleBuilderSetting } from "./item-delivery";
+import { ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery } from "./item-delivery";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { Modal } from "./modal";
 import { StatusCheckButton } from "./status-check-panel";
@@ -2796,6 +2796,9 @@ function DetailPane({
     queryFn: () => api.listItemDispatches(itemKey!),
     enabled: Boolean(itemKey),
   });
+  // Same cache entry the delivery panel reads, so the Builder can sit in the
+  // title line without a second request.
+  const deliveryQuery = useItemDelivery(itemKey);
   const item = itemQuery.data;
   const componentsQuery = useQuery({
     queryKey: ["components", item?.productId, "with-archived"],
@@ -2804,6 +2807,7 @@ function DetailPane({
   });
   const [editing, setEditing] = useState(false);
   const [transferring, setTransferring] = useState(false);
+  const [transferBuilderOpen, setTransferBuilderOpen] = useState(false);
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
 
   useEffect(() => {
@@ -2947,6 +2951,7 @@ function DetailPane({
           <details className="detail-more-menu" ref={moreActionsRef}>
             <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={19} /></summary>
             <div className="detail-more-menu-popover">
+              {deliveryQuery.data?.canManageBuilder && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferBuilderOpen(true); }}>{t("transferBuilder")}</button>}
               {!item.transferred && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}>{t("transferItem")}</button>}
               {secondaryActions.length === 0 && manualTargets.length === 0 && <span>{t("noMoreActions")}</span>}
               {secondaryActions.filter((action) => action.tone !== "danger").map((action) => (
@@ -3044,6 +3049,10 @@ function DetailPane({
                 <p className="eyebrow">
                   {typeLabel(item.type)} · {priorityLabel(item.priority)}
                   {detailCreator && <> · {t("createdBy", { name: detailCreator })}</>}
+                  {deliveryQuery.data && (
+                    <span className="eyebrow-nowrap"> · {t("builderLabel")} {deliveryQuery.data.builderName ?? t("builderUnassigned")}</span>
+                  )}
+                  {deliveryQuery.data?.builderNeedsReassignment && <> {t("builderNeedsReassignment")}</>}
                 </p>
                 <h2>{item.title}</h2>
               </div>
@@ -3212,6 +3221,9 @@ function DetailPane({
         </>
       </div>
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
+      {transferBuilderOpen && deliveryQuery.data && (
+        <TransferBuilderModal itemKey={item.key} delivery={deliveryQuery.data} onClose={() => setTransferBuilderOpen(false)} />
+      )}
       {editing && !item.transferred && (
         <Modal title={t("editItem", { key: item.key })} subtitle={t("editItemHelp")} onClose={() => setEditing(false)}>
           <EditItemForm

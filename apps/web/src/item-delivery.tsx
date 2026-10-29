@@ -5,11 +5,24 @@ import type { Component, WorkItem } from "./types";
 import { useSettingsDraft } from "./settings-drafts";
 import { Modal } from "./modal";
 
+// 「安排执行／交接」暂时隐藏：功能与后续流转还没定，入口先不出现。
+// 改回 true 即可恢复按钮和弹窗；后端接口与执行记录展示不受影响。
+const EXECUTION_ASSIGNMENT_ENABLED = false;
+
 const executionLabels: Record<string,string> = {
   assigned:"待执行", working:"执行中", completed:"本轮完成", blocked:"受阻", cancelled:"已取消", handed_over:"已交接",
   active:"会话运行中", idle:"会话空闲", suspended:"会话已暂停", stalled:"会话停滞", unavailable:"会话不可用", failed:"执行失败", waiting_for_input:"等待输入",
 };
 function failure(error: unknown) { return error instanceof Error ? error.message : "操作失败，请刷新后重试。"; }
+
+export function useItemDelivery(itemKey: string | null) {
+  return useQuery({
+    queryKey: ["delivery", itemKey],
+    queryFn: () => api.getDelivery(itemKey!),
+    enabled: Boolean(itemKey),
+    refetchInterval: 15_000,
+  });
+}
 
 export function ModuleBuilderSetting({component}: {component: Component}) {
   const queryClient = useQueryClient();
@@ -28,6 +41,35 @@ export function ModuleBuilderSetting({component}: {component: Component}) {
     <small>用于新条目自动分配，不改变已有条目的负责人。</small>
     {(save.isError || builders.isError) && <p role="alert">{failure(save.error ?? builders.error)}</p>}
   </div>;
+}
+
+/** 「转交负责人」从详情页的独立交付区块挪进了「更多」菜单，弹窗本身留在这里。 */
+export function TransferBuilderModal({itemKey,delivery,onClose}: {itemKey:string;delivery:ItemDelivery;onClose:()=>void}) {
+  const queryClient = useQueryClient();
+  const [target,setTarget] = useState("");
+  const [note,setNote] = useState("");
+  const transfer = useMutation({
+    mutationFn:()=>api.transferBuilder(itemKey,{accountId:target || null,expectedBuilderAccountId:delivery.builderAccountId,note}),
+    onSuccess:async()=>{
+      await Promise.all([
+        queryClient.invalidateQueries({queryKey:["delivery",itemKey]}),queryClient.invalidateQueries({queryKey:["item",itemKey]}),
+        queryClient.invalidateQueries({queryKey:["items"]}),queryClient.invalidateQueries({queryKey:["timeline",itemKey]}),
+      ]);
+      onClose();
+    },
+  });
+  return <Modal title="转交负责人" subtitle="交付与执行" onClose={onClose}>
+    <form className="delivery-form" onSubmit={event=>{event.preventDefault();transfer.mutate();}}>
+      <label>新的 Builder<select aria-label="新的 Builder" required value={target} onChange={event=>setTarget(event.target.value)}><option value="">请选择负责人</option>{delivery.candidates.filter(account=>account.id!==delivery.builderAccountId).map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
+      <label>交接说明<textarea required={Boolean(delivery.builderAccountId)} maxLength={2000} placeholder={delivery.builderAccountId ? undefined : "可不填，确认后默认记录「首次分配 builder」"} value={note} onChange={event=>setNote(event.target.value)} /></label>
+      <small>转交整体交付责任，保留当前条目状态及执行安排。</small>
+      {transfer.isError && <p role="alert">{failure(transfer.error)}</p>}
+      <div className="form-footer">
+        <button type="button" className="secondary-button" onClick={onClose}>取消</button>
+        <button type="submit" className="primary-button" disabled={transfer.isPending || !target}>确认转交</button>
+      </div>
+    </form>
+  </Modal>;
 }
 
 function ExecutionRow({execution,delivery,itemKey,onRefresh}: {execution: ItemExecution;delivery:ItemDelivery;itemKey:string;onRefresh:()=>Promise<unknown>}) {
@@ -55,39 +97,27 @@ function ExecutionRow({execution,delivery,itemKey,onRefresh}: {execution: ItemEx
 
 export function ItemDeliveryPanel({item}: {item:WorkItem}) {
   const queryClient=useQueryClient();
-  const query=useQuery({queryKey:["delivery",item.key],queryFn:()=>api.getDelivery(item.key),refetchInterval:15_000});
-  const [mode,setMode]=useState<"builder"|"execution"|null>(null);
-  const [target,setTarget]=useState("");const [transferNote,setTransferNote]=useState("");
+  const query=useItemDelivery(item.key);
+  const [mode,setMode]=useState<"execution"|null>(null);
   const [scope,setScope]=useState("");const [performer,setPerformer]=useState("");const [previousId,setPreviousId]=useState("");const [executionNote,setExecutionNote]=useState("");
   const refresh=async()=>{await Promise.all([
     queryClient.invalidateQueries({queryKey:["delivery",item.key]}),queryClient.invalidateQueries({queryKey:["item",item.key]}),
     queryClient.invalidateQueries({queryKey:["items"]}),queryClient.invalidateQueries({queryKey:["timeline",item.key]}),
   ]);};
-  const transfer=useMutation({mutationFn:()=>api.transferBuilder(item.key,{accountId:target || null,expectedBuilderAccountId:query.data?.builderAccountId ?? null,note:transferNote}),onSuccess:async()=>{setMode(null);setTransferNote("");await refresh();}});
   const assign=useMutation({mutationFn:()=>api.assignExecution(item.key,{...(performer.startsWith("agent:") ? {kind:"agent" as const,sessionId:performer.slice(6)} : {kind:"human" as const,accountId:performer}),scope,...(previousId ? {previousId:previousId.replace(/^followup:/,""),followUp:previousId.startsWith("followup:"),note:executionNote} : {})}),onSuccess:async()=>{setMode(null);setScope("");setExecutionNote("");setPreviousId("");await refresh();}});
-  if(query.isPending) return <section className="delivery-panel" aria-label="交付与执行"><p>正在加载交付信息…</p></section>;
-  if(query.isError) return <section className="delivery-panel"><p role="alert">{failure(query.error)}</p><button type="button" className="secondary-button" onClick={()=>query.refetch()}>重试</button></section>;
   const data=query.data;
-  return <section className="delivery-panel" aria-label="交付与执行">
-    <div className="delivery-heading"><div><h3>交付与执行</h3><p>Builder：<strong>{data.builderName ?? "待分配"}</strong>{data.builderNeedsReassignment && <span role="status"> · 需重新分配</span>}</p></div>
-      {(data.canManageBuilder || data.canManage) && <div className="delivery-actions">
-        {data.canManageBuilder && <button type="button" className="secondary-button" onClick={()=>{setTarget("");setTransferNote("");transfer.reset();setMode("builder");}}>转交负责人</button>}
-        {data.canManage && <button type="button" className="secondary-button" onClick={()=>{setPerformer("");setScope("");setPreviousId("");setExecutionNote("");assign.reset();setMode("execution");}}>安排执行／交接</button>}
+  // Builder 与转交入口已收进标题行和「更多」菜单；这里只留下真实存在的执行记录，
+  // 没有记录时不占任何空间（加载中或出错也不渲染）。
+  if(!data) return null;
+  const hasExecutions=data.executions.length>0;
+  if(!hasExecutions && !EXECUTION_ASSIGNMENT_ENABLED) return null;
+  return <section className="delivery-panel" aria-label={hasExecutions ? "执行记录" : "交付与执行"}>
+    <div className="delivery-heading"><h3>{hasExecutions ? "执行记录" : "交付与执行"}</h3>
+      {EXECUTION_ASSIGNMENT_ENABLED && data.canManage && <div className="delivery-actions">
+        <button type="button" className="secondary-button" onClick={()=>{setPerformer("");setScope("");setPreviousId("");setExecutionNote("");assign.reset();setMode("execution");}}>安排执行／交接</button>
       </div>}
     </div>
-    {mode==="builder" && <Modal title="转交负责人" subtitle="交付与执行" onClose={()=>setMode(null)}>
-      <form className="delivery-form" onSubmit={event=>{event.preventDefault();transfer.mutate();}}>
-        <label>新的 Builder<select aria-label="新的 Builder" required value={target} onChange={event=>setTarget(event.target.value)}><option value="">请选择负责人</option>{data.candidates.filter(account=>account.id!==data.builderAccountId).map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
-        <label>交接说明<textarea required={Boolean(data.builderAccountId)} maxLength={2000} placeholder={data.builderAccountId ? undefined : "可不填，确认后默认记录「首次分配 builder」"} value={transferNote} onChange={event=>setTransferNote(event.target.value)} /></label>
-        <small>转交整体交付责任，保留当前条目状态及执行安排。</small>
-        {transfer.isError && <p role="alert">{failure(transfer.error)}</p>}
-        <div className="form-footer">
-          <button type="button" className="secondary-button" onClick={()=>setMode(null)}>取消</button>
-          <button type="submit" className="primary-button" disabled={transfer.isPending || !target}>确认转交</button>
-        </div>
-      </form>
-    </Modal>}
-    {mode==="execution" && <Modal title="安排执行／交接" subtitle="交付与执行" onClose={()=>setMode(null)}>
+    {EXECUTION_ASSIGNMENT_ENABLED && mode==="execution" && <Modal title="安排执行／交接" subtitle="交付与执行" onClose={()=>setMode(null)}>
       <form className="delivery-form" onSubmit={event=>{event.preventDefault();assign.mutate();}}>
         <label>执行人<select aria-label="执行人" required value={performer} onChange={event=>setPerformer(event.target.value)}><option value="">请选择执行人</option><optgroup label="人工账号">{data.performers.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</optgroup>
           <optgroup label="已关联 Agent 会话">{[...new Map(data.executions.filter(row=>row.kind==="agent" && row.sessionId).map(row=>[row.sessionId,row])).values()].map(row=><option key={row.sessionId} value={`agent:${row.sessionId}`}>{row.name} · {row.accountName} · {row.sessionId?.slice(0,8)}</option>)}</optgroup></select></label>
@@ -102,7 +132,8 @@ export function ItemDeliveryPanel({item}: {item:WorkItem}) {
         </div>
       </form>
     </Modal>}
-    <p className="account-note">本轮执行完成与条目交付状态分别记录。</p>
-    {data.executions.length ? <ol className="execution-list">{data.executions.map(execution=><ExecutionRow key={execution.id} execution={execution} delivery={data} itemKey={item.key} onRefresh={refresh} />)}</ol> : <p className="account-note">暂无执行记录。可安排多人并行执行，或在交接时新增下一轮记录。</p>}
+    {hasExecutions
+      ? <ol className="execution-list">{data.executions.map(execution=><ExecutionRow key={execution.id} execution={execution} delivery={data} itemKey={item.key} onRefresh={refresh} />)}</ol>
+      : <p className="account-note">暂无执行记录。可安排多人并行执行，或在交接时新增下一轮记录。</p>}
   </section>;
 }
