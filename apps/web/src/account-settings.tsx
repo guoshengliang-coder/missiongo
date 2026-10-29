@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronRight, LoaderCircle, Pencil, Plus, Trash2, Unplug, UserRound, X } from "lucide-react";
+import { Check, ChevronRight, ClipboardCheck, LoaderCircle, Pencil, Plus, Trash2, Unplug, UserRound, X } from "lucide-react";
 
 import { MIN_PASSWORD_LENGTH } from "@missiongo/domain";
 
@@ -24,6 +24,7 @@ import {
   parseNicknameDraft,
 } from "./account-nickname";
 import { useI18n, type MessageKey } from "./i18n";
+import { Modal } from "./modal";
 import { useSettingsDraft } from "./settings-drafts";
 import { permissionCell } from "./product-permissions";
 import type { Product } from "./types";
@@ -384,16 +385,19 @@ export function AiConnectionsSettings() {
 
 /**
  * Mint a personal access token (AND-288): the browserless-machine half of the
- * account settings. The token appears once, here, in a copyable field;
- * afterwards only the named row in the connections list below remains.
+ * account settings. The name, scope and lifetime are asked for in a dialog that
+ * exists only while minting; the token appears once, here, in a copyable field,
+ * and afterwards only the named row in the connections list below remains.
  */
 function PersonalTokenForm() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
-  const [write, setWrite] = useState(false);
-  const [days, setDays] = useState(90);
+  const [write, setWrite] = useState(true);
+  const [days, setDays] = useState(365);
+  const [copied, setCopied] = useState(false);
+  const tokenRef = useRef<HTMLTextAreaElement>(null);
   const create = useMutation({
     mutationFn: () => api.createPersonalToken({
       name,
@@ -403,61 +407,97 @@ function PersonalTokenForm() {
     onSuccess: async () => {
       setCreating(false);
       setName("");
+      setCopied(false);
       await queryClient.invalidateQueries({ queryKey: ["ai-authorizations"] });
     },
   });
   const minted = create.data;
   useSettingsDraft(Boolean(name), create.isPending);
+  const closeForm = () => {
+    if (create.isPending) return;
+    setCreating(false);
+    setName("");
+  };
+  const copyToken = async () => {
+    if (!minted) return;
+    try {
+      await navigator.clipboard.writeText(minted.token);
+      setCopied(true);
+    } catch {
+      // No clipboard outside a secure context (a LAN address over http, some
+      // WebViews). Select the token instead so a long-press or ⌘C still works.
+      tokenRef.current?.select();
+    }
+  };
 
   return (
     <section className="account-authorizations" aria-labelledby="personal-token-title">
       <h3 id="personal-token-title">{t("personalTokens")}</h3>
       <p className="account-note">{t("personalTokensHelp")}</p>
       {!creating && <button type="button" className="primary-button" onClick={() => { create.reset(); setCreating(true); }}>{t("newPersonalToken")}</button>}
-      {creating && <div className="account-add-form">
-        <label>
-          {t("personalTokenName")}
-          <input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder={t("personalTokenNamePlaceholder")}
-            maxLength={80}
-          />
-        </label>
-        <label>
-          {t("personalTokenScopes")}
-          <select value={write ? "write" : "read"} onChange={(event) => setWrite(event.target.value === "write")}>
-            <option value="read">{t("personalTokenScopeRead")}</option>
-            <option value="write">{t("personalTokenScopeWrite")}</option>
-          </select>
-        </label>
-        <label>
-          {t("personalTokenLifetime")}
-          <select value={days} onChange={(event) => setDays(Number(event.target.value))}>
-            {[7, 30, 90, 365].map((choice) => (
-              <option key={choice} value={choice}>{t("personalTokenDays", { days: String(choice) })}</option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={!name.trim() || create.isPending}
-          onClick={() => create.mutate()}
-        >
-          {create.isPending ? <LoaderCircle className="spin" size={15} /> : null} {t("personalTokenCreate")}
-        </button>
-        <button type="button" className="secondary-button" disabled={create.isPending} onClick={() => { setCreating(false); setName(""); }}>{t("cancel")}</button>
-      </div>}
-      {create.isError && <InlineNote danger message={messageFor(create.error, t, t("somethingWentWrong"))} />}
+      {creating && (
+        <Modal title={t("newPersonalToken")} subtitle={t("personalTokens")} onClose={closeForm}>
+          <form
+            className="personal-token-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (name.trim() && !create.isPending) create.mutate();
+            }}
+          >
+            <label>
+              {t("personalTokenName")}
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder={t("personalTokenNamePlaceholder")}
+                maxLength={80}
+                data-initial-focus
+              />
+            </label>
+            <label>
+              {t("personalTokenScopes")}
+              <select value={write ? "write" : "read"} onChange={(event) => setWrite(event.target.value === "write")}>
+                <option value="read">{t("personalTokenScopeRead")}</option>
+                <option value="write">{t("personalTokenScopeWrite")}</option>
+              </select>
+            </label>
+            <label>
+              {t("personalTokenLifetime")}
+              <select value={days} onChange={(event) => setDays(Number(event.target.value))}>
+                {[7, 30, 90, 365].map((choice) => (
+                  <option key={choice} value={choice}>{t("personalTokenDays", { days: String(choice) })}</option>
+                ))}
+              </select>
+            </label>
+            {create.isError && <InlineNote danger message={messageFor(create.error, t, t("somethingWentWrong"))} />}
+            <div className="personal-token-actions">
+              <button type="button" className="secondary-button" disabled={create.isPending} onClick={closeForm}>{t("cancel")}</button>
+              <button type="submit" className="primary-button" disabled={!name.trim() || create.isPending}>
+                {create.isPending ? <LoaderCircle className="spin" size={15} /> : null} {t("personalTokenCreate")}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
       {minted && (
         <div className="account-add-form">
           <p><strong>{t("personalTokenCreated")}</strong> — {t("personalTokenCreatedHelp")}</p>
-          <label>
-            {t("personalTokens")}
-            <textarea readOnly rows={2} value={minted.token} autoComplete="off" spellCheck={false}
-              onFocus={(event) => event.currentTarget.select()} />
-          </label>
+          <label htmlFor="personal-token-value">{t("personalTokens")}</label>
+          <div className="personal-token-reveal">
+            <textarea
+              id="personal-token-value"
+              ref={tokenRef}
+              readOnly
+              rows={2}
+              value={minted.token}
+              autoComplete="off"
+              spellCheck={false}
+              onFocus={(event) => event.currentTarget.select()}
+            />
+            <button type="button" className="secondary-button" onClick={() => void copyToken()}>
+              {copied ? <Check size={15} /> : <ClipboardCheck size={15} />} {copied ? t("copied") : t("copyToken")}
+            </button>
+          </div>
         </div>
       )}
     </section>

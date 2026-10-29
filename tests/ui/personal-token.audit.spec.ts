@@ -5,7 +5,7 @@ import { SERVER_PORT } from "./fixture.mjs";
 for (const width of [375, 1440]) {
   for (const theme of ["light", "dark"] as const) {
     test.describe(`${width}px ${theme} personal tokens`, () => {
-      test.use({ viewport: { width, height: 900 }, hasTouch: width === 375, isMobile: width === 375, colorScheme: theme });
+      test.use({ viewport: { width, height: 900 }, hasTouch: width === 375, isMobile: width === 375, colorScheme: theme, permissions: ["clipboard-read", "clipboard-write"] });
 
       test("creates a scoped token once, lists it and revokes access", async ({ page, request }) => {
         await page.goto("/");
@@ -20,22 +20,33 @@ for (const width of [375, 1440]) {
         await expect(section).toBeVisible();
         await expect(section).toContainText("直接令牌授权");
         await section.getByRole("button", { name: "新建个人令牌", exact: true }).click();
-        await expect(section.getByRole("button", { name: "生成令牌", exact: true })).toBeDisabled();
+        const dialog = page.getByRole("dialog", { name: "新建个人令牌", exact: true });
+        await expect(dialog).toBeVisible();
+        await expect(dialog.getByRole("button", { name: "生成令牌", exact: true })).toBeDisabled();
+        // New tokens default to the write scope and the longest lifetime.
+        await expect(dialog.getByRole("combobox", { name: "权限", exact: true })).toHaveValue("write");
+        await expect(dialog.getByRole("combobox", { name: "有效期", exact: true })).toHaveValue("365");
         const name = `Token ${width} ${theme}`;
-        await section.getByLabel("名称", { exact: true }).fill(name);
-        await section.getByRole("combobox", { name: "权限", exact: true }).selectOption("write");
-        await section.getByRole("combobox", { name: "有效期", exact: true }).selectOption("7");
-        const overflow = await section.evaluate(element => element.scrollWidth > element.clientWidth);
+        await dialog.getByLabel("名称", { exact: true }).fill(name);
+        await dialog.getByRole("combobox", { name: "权限", exact: true }).selectOption("write");
+        await dialog.getByRole("combobox", { name: "有效期", exact: true }).selectOption("7");
+        const overflow = await dialog.evaluate(element => element.scrollWidth > element.clientWidth);
         expect(overflow).toBe(false);
-        await section.screenshot({ path: test.info().outputPath("personal-token-form.png") });
+        await dialog.screenshot({ path: test.info().outputPath("personal-token-form.png") });
 
         const response = page.waitForResponse(response => response.url().endsWith("/api/v1/ai-personal-tokens") && response.request().method() === "POST");
-        await section.getByRole("button", { name: "生成令牌", exact: true }).click();
+        await dialog.getByRole("button", { name: "生成令牌", exact: true }).click();
+        await expect(dialog).toHaveCount(0);
         const created = await response;
         expect(created.status()).toBe(201);
         const minted = await created.json();
         expect(minted.scopes).toEqual(["missiongo:read", "missiongo:write"]);
         await expect(section.getByRole("textbox", { name: "个人访问令牌", exact: true })).toHaveValue(minted.token);
+        // The reveal carries its own copy button; the clipboard really gets the token.
+        await section.getByRole("button", { name: "复制", exact: true }).click();
+        await expect(section.getByRole("button", { name: "已复制", exact: true })).toBeVisible();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(minted.token);
+        await section.locator(".account-add-form").screenshot({ path: test.info().outputPath("personal-token-reveal.png") });
         const call = (token = minted.token) => request.post(`http://127.0.0.1:${SERVER_PORT}/mcp`, {
           headers: { authorization: `Bearer ${token}`, accept: "application/json, text/event-stream" },
           data: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_current_account", arguments: {} } },
