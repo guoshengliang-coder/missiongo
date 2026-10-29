@@ -36,21 +36,43 @@ for (const width of [375, 1440]) {
         const minted = await created.json();
         expect(minted.scopes).toEqual(["missiongo:read", "missiongo:write"]);
         await expect(section.getByRole("textbox", { name: "个人访问令牌", exact: true })).toHaveValue(minted.token);
-        const call = () => request.post(`http://127.0.0.1:${SERVER_PORT}/mcp`, {
-          headers: { authorization: `Bearer ${minted.token}`, accept: "application/json, text/event-stream" },
+        const call = (token = minted.token) => request.post(`http://127.0.0.1:${SERVER_PORT}/mcp`, {
+          headers: { authorization: `Bearer ${token}`, accept: "application/json, text/event-stream" },
           data: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_current_account", arguments: {} } },
         });
         expect((await call()).status()).toBe(200);
 
+        const otherResponse = await request.post("/api/v1/ai-personal-tokens", {
+          data: { name, scopes: ["missiongo:read"], days: 7 },
+        });
+        expect(otherResponse.status()).toBe(201);
+        const other = await otherResponse.json();
+
         await page.getByRole("button", { name: "返回工作区", exact: true }).click();
         await openSettings();
+        // The second token was created outside the page; reload to read it
+        // without the still-fresh query cached by the first creation.
+        await page.reload();
         await expect(section.getByRole("textbox", { name: "个人访问令牌", exact: true })).toHaveCount(0);
-        const row = page.locator(".account-row").filter({ hasText: name });
-        await expect(row).toContainText("missiongo:write");
+        const group = page.getByRole("region", { name: "个人令牌", exact: true })
+          .locator(".ai-client-group").filter({ hasText: name });
+        await expect(group).toHaveCount(1);
+        await expect(group.locator("summary")).toContainText("2 个连接");
+        await expect(group.locator("summary")).toContainText("各连接权限不同");
+        await expect(group.getByRole("button", { name: "撤销", exact: true })).toHaveCount(0);
+        await group.locator("summary").click();
+        const row = group.locator(".ai-connection-entry").filter({ hasText: "修改条目" });
+        await expect(row).toContainText("查看条目");
+        await expect(row).toContainText("授权时间");
+        await expect(row).toContainText("到期时间");
         page.once("dialog", dialog => dialog.accept());
         await row.getByRole("button", { name: "撤销", exact: true }).click();
         await expect(row).toHaveCount(0);
+        await expect(group.locator("summary")).toContainText("1 个连接");
+        await expect(group.locator("summary")).not.toContainText("各连接权限不同");
         expect((await call()).status()).toBe(401);
+        expect((await call(other.token)).status()).toBe(200);
+        expect((await request.delete(`/api/v1/ai-authorizations/${other.id}`)).status()).toBe(204);
       });
     });
   }

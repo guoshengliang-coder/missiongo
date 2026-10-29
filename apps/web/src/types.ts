@@ -77,7 +77,7 @@ export interface Product {
    * server that predates it; the routes decide either way, this only decides
    * what the console offers.
    */
-  readonly access?: { readonly canOperate: boolean; readonly canUseAi: boolean };
+  readonly access?: { readonly canOperate: boolean; readonly canUseAi: boolean; readonly isProjectAdmin?: boolean };
   /**
    * Whether an icon has been uploaded. The bytes are fetched separately, from
    * `/api/v1/products/:id/icon`, so the product listing stays small enough not to
