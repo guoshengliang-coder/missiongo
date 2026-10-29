@@ -14,6 +14,8 @@ public protocol NodeAPI: Sendable {
     func claimNext(waitMs: Int, availableAgentKinds: [String]?) async throws -> DispatchRequest?
     func reportResult(dispatchId: String, report: DispatchReport) async throws
     func listAgentSessions() async throws -> [NodeAgentSession]
+    func artifactJobs() async throws -> [AgentArtifactJob]
+    func reportArtifact(id: String, result: AgentArtifactResult) async throws
     func downloadAgentSessionAttachment(sessionId: String, attachmentId: String) async throws -> Data
     func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws
     func reportExternalAgentSession(sessionId: String, generation: Int, report: AgentSessionReport) async throws
@@ -21,6 +23,8 @@ public protocol NodeAPI: Sendable {
 }
 
 public extension NodeAPI {
+    func artifactJobs() async throws -> [AgentArtifactJob] { [] }
+    func reportArtifact(id: String, result: AgentArtifactResult) async throws {}
     func statusCheckJournalScope() throws -> String? { nil }
     func claimStatusCheck() async throws -> StatusCheckJob? { nil }
     func reportStatusCheck(id: String, leaseToken: String, evidence: HandoverEvidence) async throws {}
@@ -297,8 +301,9 @@ public final class NodeLoop: @unchecked Sendable {
             async let claim: Void = claimLoop(stop: stop, fatal: fatal)
             async let sessions: Void = sessionLoop(stop: stop, fatal: fatal)
             async let managed: Void = managedLoop(stop: stop)
+            async let artifacts: Void = artifactLoop(stop: stop)
             async let statusChecks: Void = statusCheckLoop(stop: stop)
-            _ = await (heartbeat, claim, sessions, managed, statusChecks)
+            _ = await (heartbeat, claim, sessions, managed, artifacts, statusChecks)
         } onCancel: {
             stop.stop()
         }
@@ -313,6 +318,26 @@ public final class NodeLoop: @unchecked Sendable {
     }
 
     // MARK: Loops
+
+    private func artifactLoop(stop: StopSignal) async {
+        while !stop.isStopped {
+            let generation = stop.generation
+            do {
+                for job in try await api.artifactJobs() {
+                    let result: AgentArtifactResult
+                    do {
+                        guard let adapter = adapters.first(where: { $0.kind == job.agentKind }) else { throw AgentArtifactError.nodeUnavailable }
+                        let messages = try await adapter.artifactMessages(sessionRef: job.sessionRef)
+                        result = AgentArtifactResult(bundle: try AgentArtifactReader.read(job: job, messages: messages))
+                    } catch {
+                        result = AgentArtifactResult(error: (error as? AgentArtifactError)?.rawValue ?? "node_unavailable")
+                    }
+                    try await api.reportArtifact(id: job.id, result: result)
+                }
+            } catch { log("读取会话产物未完成：\(error.localizedDescription)") }
+            await stop.sleep(timing.sessionInterval, unlessWokenSince: generation)
+        }
+    }
 
     private func statusCheckLoop(stop: StopSignal) async {
         guard let scope = try? api.statusCheckJournalScope() else { return }

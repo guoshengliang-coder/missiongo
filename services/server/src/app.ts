@@ -1,3 +1,6 @@
+import { AgentArtifacts, ARTIFACT_PREVIEW_POLICY, ARTIFACT_PREVIEW_SHELL } from "./agent-artifacts.js";
+import { localArtifactLinks } from "@missiongo/domain";
+import { join } from "node:path";
 import { listInsightBatches, createInsightBatch, insightBatchProgress, deleteInsightBatch } from "./insight-batches.js";
 import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema, humanConfirmationSchema } from "./status-checks.js";
 import { projectInsights } from "./project-insights.js";
@@ -553,6 +556,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? false, trustProxy: options.trustProxy ?? false });
   const store = new MissionGoStore(options.databasePath ?? ":memory:");
   const dispatchStore = new DispatchStore(store.database);
+  const agentArtifacts = new AgentArtifacts(store.database, join(options.attachmentsPath ?? "./data/attachments", "agent-artifacts"));
   const agentSessionAttachments = new AgentSessionAttachments(store.database, options.attachmentsPath ?? "./data/attachments");
   const agentSessionStore = new AgentSessionStore(store.database, agentSessionAttachments);
   const externalSessionStore = new ExternalAgentSessionStore(store);
@@ -2385,6 +2389,66 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { ...session, canReply: session.replyable && !reason, canAttach: false, canResolveDelivery: Boolean(session.nativeConnection) && canOperate && canUseAi,
       ...(reason ? { replyBlockedReason: reason } : {}) };
   };
+
+  const artifactSession = (request: FastifyRequest, sessionId: string, operate = false) =>
+    externalSessionStore.has(sessionId) ? loadExternalSession(request, sessionId, operate) : loadAuthorizedAgentSession(request, sessionId, operate, false).session;
+  app.post("/api/v1/agent-sessions/:sessionId/artifacts", async (request) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const snapshot = artifactSession(request, sessionId);
+    const body = objectBody(request.body);
+    const messageId = stringField(body, "messageId")!;
+    const href = stringField(body, "href")!;
+    const message = snapshot.messages.find((entry) => entry.id === messageId && ["agent", "plan"].includes(entry.role));
+    if (!message?.sourceId || !localArtifactLinks(message.text).includes(href)) throw notFound("Agent artifact reference");
+    const accountId = requireAccountId(request);
+    const saved = agentArtifacts.saved(accountId, sessionId, message.sourceId, href);
+    if (saved) return saved;
+    artifactSession(request, sessionId, true);
+    const binding = consoleSessions.members(accountId, sessionId)
+      .map((member) => agentArtifacts.binding(accountId, member.id)).find(Boolean);
+    return agentArtifacts.request(accountId, sessionId, message.sourceId, href, binding);
+  });
+  app.get("/api/v1/agent-sessions/:sessionId/artifacts/:artifactId", async (request, reply) => {
+    const { sessionId, artifactId } = request.params as { sessionId: string; artifactId: string };
+    artifactSession(request, sessionId);
+    reply.header("cache-control", "private, no-store");
+    return agentArtifacts.get(requireAccountId(request), sessionId, artifactId);
+  });
+  app.get("/api/v1/agent-sessions/:sessionId/artifacts/:artifactId/preview", async (request, reply) => {
+    const { sessionId, artifactId } = request.params as { sessionId: string; artifactId: string };
+    artifactSession(request, sessionId);
+    if (agentArtifacts.get(requireAccountId(request), sessionId, artifactId).status !== "ready") throw notFound("Saved agent artifact");
+    return reply.type("text/html").header("cache-control", "private, no-store")
+      .header("content-security-policy", ARTIFACT_PREVIEW_POLICY).header("x-content-type-options", "nosniff")
+      .header("referrer-policy", "no-referrer").header("x-frame-options", "SAMEORIGIN").send(ARTIFACT_PREVIEW_SHELL);
+  });
+  // Return inert JSON, never active HTML from the authenticated application origin.
+  app.get("/api/v1/agent-sessions/:sessionId/artifacts/:artifactId/bundle", async (request, reply) => {
+    const { sessionId, artifactId } = request.params as { sessionId: string; artifactId: string };
+    artifactSession(request, sessionId);
+    reply.header("cache-control", "private, no-store").header("x-content-type-options", "nosniff");
+    return agentArtifacts.bundle(requireAccountId(request), sessionId, artifactId);
+  });
+  const authorizeArtifactNode = (accountId: string, sessionId: string) => {
+    const members = consoleSessions.members(accountId, sessionId);
+    for (const key of new Set(members.flatMap((member) => member.items.map((item) => item.key)))) {
+      requireNodeAccountPermission(accountId, store.getWorkItem(key).productId, false);
+    }
+  };
+  app.get("/api/v1/node/agent-artifacts", async (request) => {
+    const node = requireNode(request);
+    return { jobs: agentArtifacts.jobs(node.accountId, node.nodeId).filter((job) => {
+      try { authorizeArtifactNode(node.accountId, job.sessionId); return true; } catch { agentArtifacts.rejectJob(job.id); return false; }
+    }) };
+  });
+  app.post("/api/v1/node/agent-artifacts/:artifactId", { bodyLimit: 46 * 1024 * 1024 }, async (request, reply) => {
+    const node = requireNode(request);
+    const { artifactId } = request.params as { artifactId: string };
+    const job = agentArtifacts.authorizeJob(node.accountId, node.nodeId, artifactId);
+    authorizeArtifactNode(node.accountId, job.session_id);
+    await agentArtifacts.complete(node.accountId, node.nodeId, artifactId, request.body);
+    return reply.status(204).send();
+  });
 
   app.put("/api/v1/agent-sessions/:sessionId/native-connection", async (request) => {
     const { sessionId } = request.params as { sessionId: string };

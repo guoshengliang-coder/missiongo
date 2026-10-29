@@ -24,6 +24,8 @@ public protocol AgentAdapter: Sendable {
     /// Mirrors an already launched session and, when it is idle, delivers the
     /// one reply the server has queued for it.
     func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport
+    /// Read the exact transcript without delivering input, restoring or launching a session.
+    func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage]
     /// The models a dispatch may choose for this agent, for the heartbeat.
     /// nil for an adapter that cannot take a model at all. Any CLI probe must
     /// disable the user's hooks and must not send a model request.
@@ -31,6 +33,9 @@ public protocol AgentAdapter: Sendable {
 }
 
 public extension AgentAdapter {
+    func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
+        throw AgentArtifactError.nodeUnavailable
+    }
     func startManagedTurn(_ job: ManagedExecutionJob, receipt: ManagedRuntimeReceipt) async throws {
         throw LaunchError("Managed first turn is unsupported.")
     }
@@ -629,6 +634,19 @@ public struct SessionLauncher: AgentAdapter {
         let withScheme = raw.contains("://") ? raw : "https://\(raw)"
         guard let host = URL(string: withScheme)?.host, !host.isEmpty else { return nil }
         return host
+    }
+
+    public func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
+        let ref = try ClaudeExternalBridge.normalizedRef(sessionRef)
+        for root in [sessionsDirectory, sessionsDirectory + "/external"] {
+            let path = ClaudeHostStore.statePath(root: root, sessionRef: ref)
+            if FileManager.default.fileExists(atPath: path) {
+                let state = try ClaudeHostFiles.readState(path)
+                guard state.sessionRef == ref else { throw AgentArtifactError.referenceMissing }
+                return state.messages
+            }
+        }
+        throw AgentArtifactError.referenceMissing
     }
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {

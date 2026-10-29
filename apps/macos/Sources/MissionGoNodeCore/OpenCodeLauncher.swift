@@ -934,6 +934,10 @@ public struct OpenCodeLauncher: AgentAdapter {
         return LaunchResult(sessionName: name, sessionUrl: nil, sessionRef: id, logPath: nil)
     }
 
+    public func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
+        try await control.snapshot(id: sessionRef).messages
+    }
+
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         let snapshot = try await control.snapshot(id: session.sessionRef)
         // A pending choice is not in the message log: OpenCode blocks on a form

@@ -1906,6 +1906,20 @@ export class MissionGoDatabase {
           .run(202610282337,new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610290126").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE TABLE agent_artifacts (
+          id TEXT PRIMARY KEY, session_id TEXT NOT NULL, account_id TEXT NOT NULL,
+          node_id TEXT, binding_session_id TEXT, session_ref TEXT, agent_kind TEXT, source_id TEXT NOT NULL,
+          href TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','ready','failed')),
+          error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          UNIQUE(session_id,source_id,href)
+        ) STRICT;
+        CREATE INDEX agent_artifacts_pending ON agent_artifacts(node_id,status,created_at);`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610290126,new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

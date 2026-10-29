@@ -1,3 +1,4 @@
+import type { AgentArtifactBundle, AgentArtifactState } from "@missiongo/domain";
 import type { CompletionReference } from "@missiongo/contracts";
 import type { InsightQuery, InsightSummary, InsightDetails, InsightDetailSelection, InsightBatch, InsightBatchProgress } from "@missiongo/domain";
 import type { ManagedDecision, ManagedDecisionGuard } from "@missiongo/domain";
@@ -268,6 +269,12 @@ function insightSearch(input: InsightQuery & {productIds?: string[]} & Partial<I
 }
 
 export const api = {
+  requestAgentArtifact: (sessionId: string, messageId: string, href: string) =>
+    request<AgentArtifactState>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts`, { method: "POST", body: JSON.stringify({ messageId, href }) }),
+  agentArtifact: (sessionId: string, id: string) =>
+    request<AgentArtifactState>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(id)}`),
+  agentArtifactBundle: (sessionId: string, id: string) =>
+    request<AgentArtifactBundle>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(id)}/bundle`),
   insightBatches: () => request<{batches: InsightBatch[]}>("/api/v1/project-insights/batches"),
   createInsightBatch: (name: string, itemKeys: string[]) => request<InsightBatch>("/api/v1/project-insights/batches", {method: "POST", body: JSON.stringify({name,itemKeys})}),
   insightBatchProgress: (id: string) => request<InsightBatchProgress>(`/api/v1/project-insights/batches/${encodeURIComponent(id)}`),

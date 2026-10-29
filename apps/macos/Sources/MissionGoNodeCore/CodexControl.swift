@@ -20,6 +20,7 @@ public protocol CodexControl: Sendable {
     func startManagedThread(_ request: CodexThreadRequest) async throws -> ManagedRuntimeReceipt
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
+    func readArtifactThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func readManagedThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     /// `overrides` carry the settings a person chose for this conversation;
     /// Codex keeps turn-level overrides for the turns after it too.
@@ -43,6 +44,9 @@ public protocol CodexControl: Sendable {
 }
 
 public extension CodexControl {
+    func readArtifactThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        try await readThread(socketPath: socketPath, threadId: threadId)
+    }
     func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId)
     }
@@ -730,6 +734,10 @@ public struct CodexAppServerControl: CodexControl {
     }
     public func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false)
+    }
+    public func readArtifactThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        // Archived/unloaded transcripts remain eligible, but never resume a runtime or subscribe to approvals.
+        try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false, checkArchiveList: false)
     }
     public func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false, checkArchiveList: false, requireLoaded: true)
