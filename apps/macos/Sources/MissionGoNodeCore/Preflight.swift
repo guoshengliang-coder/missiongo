@@ -108,17 +108,19 @@ public enum Preflight {
     public static func check(
         repoPath: String,
         run: CommandRunner,
-        home: String = Paths.homeDirectory()
+        home: String = Paths.homeDirectory(),
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) async -> Result {
         guard let version = await claudeVersion(run: run) else {
             return .failed(reason: "本机找不到可用的 claude 命令：确认 Claude Code 已安装，且 claude --version 能正常运行。")
         }
 
-        guard let auth = await claudeAuthStatus(run: run) else {
-            return .failed(reason: "无法读取 claude auth status 的输出，无法确认登录状态。")
-        }
-        if !auth.loggedIn {
-            return .failed(reason: "Claude Code 未登录（authMethod=\(auth.authMethod)）：在本机运行一次 claude 完成登录后再派单。")
+        switch await ClaudeAuthentication.check(run: run, environment: environment, home: home) {
+        case .signedIn, .apiKeyConfigured: break
+        case .missing:
+            return .failed(reason: "Claude Code 未登录且未配置 API Key／网关认证：配置客户端认证，或运行 claude auth login 后重试。")
+        case .unreadable:
+            return .failed(reason: "无法确认 Claude Code 认证配置：检查 settings.json 的 env 和 claude auth status。")
         }
 
         if let problem = repositoryProblem(repoPath) {

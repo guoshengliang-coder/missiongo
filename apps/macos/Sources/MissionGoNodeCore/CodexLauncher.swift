@@ -285,15 +285,6 @@ public enum CodexPreflight {
         return Preflight.parseClaudeVersion(result.stdout) ?? Preflight.parseClaudeVersion(result.stderr)
     }
 
-    /// `codex login status` exits 0 when logged in and 1 with "Not logged in"
-    /// otherwise. nil when the answer is neither.
-    public static func isLoggedIn(binary: String, run: CommandRunner) async -> Bool? {
-        let result = await run(binary, ["login", "status"])
-        if result.code == 0 { return true }
-        let output = result.stdout + result.stderr
-        return output.localizedCaseInsensitiveContains("not logged in") ? false : nil
-    }
-
     public static func mcpState(binary: String, run: CommandRunner) async -> McpState {
         let result = await run(binary, ["mcp", "list", "--json"])
         guard result.code == 0 else { return .unreadable }
@@ -380,14 +371,14 @@ public enum CodexPreflight {
                 failureCode: "cli_missing", failureStage: "preflight"
             ))
         }
-        switch await isLoggedIn(binary: binary, run: run) {
-        case true?: break
-        case false?: return .failed(LaunchError(
-            "Codex 未登录：在本机运行 codex login，或在 ChatGPT App 里登录后再派单。",
+        switch await CodexAuthentication.check(binary: binary, run: run, environment: environment, location: location) {
+        case .signedIn, .apiKeyConfigured: break
+        case .missing: return .failed(LaunchError(
+            "Codex 未登录且未配置当前 provider 的 API Key／网关认证：配置客户端认证，或运行 codex login 后重试。",
             failureCode: "agent_auth_invalid", failureStage: "preflight"
         ))
-        case nil: return .failed(LaunchError(
-            "无法读取 codex login status 的输出，无法确认登录状态。",
+        case .unreadable: return .failed(LaunchError(
+            "无法确认 Codex 认证配置：检查 config.toml、auth.json 和 codex login status。",
             failureCode: "agent_auth_invalid", failureStage: "preflight"
         ))
         }

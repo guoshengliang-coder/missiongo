@@ -466,7 +466,7 @@ public struct SessionLauncher: AgentAdapter {
     }
 
     private func launchHosted(_ job: DispatchJob) async throws -> LaunchResult {
-        if case let .failed(reason) = await Preflight.check(repoPath: job.repoPath, run: run, home: home) {
+        if case let .failed(reason) = await Preflight.check(repoPath: job.repoPath, run: run, home: home, environment: environment.environment) {
             throw LaunchError(reason)
         }
 
@@ -555,7 +555,7 @@ public struct SessionLauncher: AgentAdapter {
     }
 
     private func launchLegacy(_ job: DispatchJob) async throws -> LaunchResult {
-        if case let .failed(reason) = await Preflight.check(repoPath: job.repoPath, run: run, home: home) {
+        if case let .failed(reason) = await Preflight.check(repoPath: job.repoPath, run: run, home: home, environment: environment.environment) {
             throw LaunchError(reason)
         }
 

@@ -10,8 +10,8 @@
 ## 1. 机器上要先具备什么
 
 - macOS 13 或更新。
-- **装了 Claude Code 并已登录**：终端里 `claude auth status` 显示已登录；没登录就运行 `claude auth login`。
-  桌面 App 的登录不算，CLI 的登录是独立的。客户端会检测这一项，没满足时直接在菜单里告诉你。
+- **装了 Claude Code 并配置好认证**：可以使用 CLI 账号登录，也可以使用 API Key／网关认证。
+  账号登录通过 `claude auth status` 检查；桌面 App 的登录不算，CLI 的登录是独立的。API Key 的支持范围见下文。
 - **仓库目录被 Claude Code 信任过**：在那个目录里手动运行一次 `claude`，选「Yes, I trust this folder」。
   没信任过的目录，会话一启动就会停在信任确认框上，而派出去的会话旁边没有人。
 
@@ -24,7 +24,7 @@
   stdio，不会创建这个 socket。客户端每次都实际连一次来判断通不通；连不上时，派单和菜单里的「启用 / 重新检查」
   会先自动运行一次 `codex app-server daemon start`（最多等 5 秒），仍连不上才失败，提示里带着该命令的输出。
   后台心跳不会运行它；`bootstrap` 会安装开机常驻服务，也不会自动运行。
-  另外终端里 `codex login status` 应显示已登录。
+  另外需配置 Codex 账号登录或 API Key／网关认证；`codex login status` 的未登录结果不会否定已识别的当前 provider API Key。
 - **Codex 配好了 missiongo MCP 并已登录**：
 
   ```bash
@@ -39,6 +39,19 @@
 - **在同一个 OpenCode 服务里配置并授权 `missiongo` MCP**。建议按 [AI 客户端接入说明](ai-client-setup.md) 设置 `codemode: false`，让 Skill 直接调用 MissionGo 工具。菜单的「重新检查」查询共享服务的默认位置；该位置暂时报 `failed` 或 `pending` 时不会暂停集成。派单仍按对应仓库查询，只有 `connected` 才发送提示词；显示 `needs_auth` 时，在 OpenCode 的 `/mcps` 中完成登录，再在 MissionGo 菜单点击 OpenCode「重新检查」。派单时暂时的 `failed`、`pending` 或空状态会短暂重查，仍无法确认时自动延后重试。MissionGo 节点的登录不等于 OpenCode 的 MCP 授权。
 - **把 MissionGo Skill 同步到 OpenCode 的原生 Skill 目录**。启用 OpenCode 集成时客户端会下载到 `~/.config/opencode/skills/missiongo/SKILL.md`，不会覆盖更新的本地副本或符号链接。已有 `~/.claude/skills/missiongo/` 的机器仍按 OpenCode 自身的兼容读取方式处理，但不作为 MissionGo 的同步目标。
 - 对于 Mac mini 运行共享服务、MacBook 和手机连接它的部署，只在 **Mac mini** 的 MissionGo 节点启用 OpenCode 并把产品仓库映射到 Mac mini 上的真实路径。手机和 MacBook 作为 OpenCode 远程界面使用，不需要承担这次派单的仓库执行。
+
+### API Key 和网关认证
+
+MissionGo 复用客户端的现有配置，不提供额外的 Key 输入框，也不保存或上报凭据内容：
+
+- Claude Code：读取用户级 `~/.claude/settings.json` 的 `env`（设置了 `CLAUDE_CONFIG_DIR` 时使用该目录），以及 MissionGo 进程继承的 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`。`env` 中的同名值覆盖继承值，包括空字符串。只有网关地址 `ANTHROPIC_BASE_URL` 不算配置了认证。配置方式见 [Claude Code 环境变量说明](https://code.claude.com/docs/en/env-vars)。
+- Codex：使用 `$CODEX_HOME`（默认 `~/.codex`）中的 `auth.json` API Key、进程继承的 `OPENAI_API_KEY`，或 `config.toml` **当前** `model_provider` 指定的 `env_key`／`experimental_bearer_token`。`requires_openai_auth = true` 时按 OpenAI 认证处理，忽略该 provider 的 `env_key`；其他 provider 的 Key 和旧 ChatGPT 登录不会补足当前网关缺失的凭据。配置方式见 [Codex 认证说明](https://learn.chatgpt.com/docs/auth)。
+
+启用集成、点击「重新检查」和派单预检使用相同的认证判断。Codex 配置由本机 CLI 的 `config/read` 解析；读取失败、JSON/TOML 损坏或当前认证缺失时不放行。未配置 API Key 的账号登录方式继续使用原有登录检查。凭据助手、无认证本地模型和按仓库设置的 Claude 认证不属于此处新增的配置识别范围。
+
+**“认证配置已识别”只表示本机找到了所需配置，不表示网关可达、Key 有效、余额足够或模型调用成功。** 后台心跳复用已启用集成的检查结果，不为探活发送模型请求；MCP 授权、Skill、控制通道及仓库信任仍按各自规则检查。修改配置后点击对应客户端的「重新检查」。
+
+Finder 启动的 MissionGo 不一定继承终端里的环境变量；「导入命令路径」只导入 PATH，不导入 Key，也不会在后台执行 shell 配置。使用环境变量认证时，须让 MissionGo 和运行会话的客户端进程都能取得变量；已有 Codex 后台服务还需在它自己的启动环境中提供变量。Key 仅存在于另一个终端时不能据此判定当前进程已配置。
 
 **客户端集成需要在本机明确启用。** 首次安装或从旧版本升级后，各集成都默认未启用。
 在菜单中分别点击「启用…」，确认用途后才运行该客户端的登录检查，并下载 Skill 到它自己的

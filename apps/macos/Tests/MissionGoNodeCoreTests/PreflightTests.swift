@@ -91,33 +91,33 @@ final class PreflightTests: XCTestCase {
 
     func testPassesWhenEverythingIsInPlace() async throws {
         let (home, repoPath) = try makeTrustedRepo(trusted: true)
-        let result = await Preflight.check(repoPath: repoPath, run: fakeClaude(), home: home)
+        let result = await Preflight.check(repoPath: repoPath, run: fakeClaude(), home: home, environment: [:])
         XCTAssertEqual(result, .ok(version: "2.1.232"))
     }
 
     func testReportsAMissingCLI() async throws {
         let (home, repoPath) = try makeTrustedRepo(trusted: true)
         let run = fakeClaude(version: CommandResult(code: -1, stdout: "", stderr: "not found"))
-        guard case let .failed(reason) = await Preflight.check(repoPath: repoPath, run: run, home: home) else {
+        guard case let .failed(reason) = await Preflight.check(repoPath: repoPath, run: run, home: home, environment: [:]) else {
             return XCTFail("expected a failure")
         }
         XCTAssertTrue(reason.contains("claude 命令"), reason)
     }
 
-    func testReportsALoggedOutCLIWithItsMethod() async throws {
+    func testReportsMissingLoginAndApiKey() async throws {
         let (home, repoPath) = try makeTrustedRepo(trusted: true)
         let run = fakeClaude(auth: ok(#"{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}"#))
-        guard case let .failed(reason) = await Preflight.check(repoPath: repoPath, run: run, home: home) else {
+        guard case let .failed(reason) = await Preflight.check(repoPath: repoPath, run: run, home: home, environment: [:]) else {
             return XCTFail("expected a failure")
         }
-        XCTAssertTrue(reason.contains("未登录（authMethod=none）"), reason)
+        XCTAssertTrue(reason.contains("未登录且未配置 API Key"), reason)
     }
 
     func testReportsAnUntrustedRepository() async throws {
         // The trust dialog waits forever, and a hung session is indistinguishable
         // from a working one in the console.
         let (home, repoPath) = try makeTrustedRepo(trusted: false)
-        guard case let .failed(reason) = await Preflight.check(repoPath: repoPath, run: fakeClaude(), home: home) else {
+        guard case let .failed(reason) = await Preflight.check(repoPath: repoPath, run: fakeClaude(), home: home, environment: [:]) else {
             return XCTFail("expected a failure")
         }
         XCTAssertTrue(reason.contains("信任确认"), reason)
@@ -125,11 +125,11 @@ final class PreflightTests: XCTestCase {
 
     func testReportsMissingRelativeOrNonGitPaths() async throws {
         let (home, repoPath) = try makeTrustedRepo(trusted: true, git: false)
-        let notGit = await Preflight.check(repoPath: repoPath, run: fakeClaude(), home: home)
+        let notGit = await Preflight.check(repoPath: repoPath, run: fakeClaude(), home: home, environment: [:])
         XCTAssertEqual(notGit, .failed(reason: "目录不是 git 仓库：\(repoPath)"))
-        let missing = await Preflight.check(repoPath: "\(home)/missing", run: fakeClaude(), home: home)
+        let missing = await Preflight.check(repoPath: "\(home)/missing", run: fakeClaude(), home: home, environment: [:])
         XCTAssertEqual(missing, .failed(reason: "仓库目录不存在：\(home)/missing"))
-        let relative = await Preflight.check(repoPath: "relative/path", run: fakeClaude(), home: home)
+        let relative = await Preflight.check(repoPath: "relative/path", run: fakeClaude(), home: home, environment: [:])
         XCTAssertEqual(relative, .failed(reason: "仓库路径必须是绝对路径：relative/path"))
     }
 
@@ -137,7 +137,7 @@ final class PreflightTests: XCTestCase {
         // A worktree records `.git` as a file.
         let (home, repoPath) = try makeTrustedRepo(trusted: true, git: false)
         try Data("gitdir: /elsewhere\n".utf8).write(to: URL(fileURLWithPath: "\(repoPath)/.git"))
-        let result = await Preflight.check(repoPath: repoPath, run: fakeClaude(), home: home)
+        let result = await Preflight.check(repoPath: repoPath, run: fakeClaude(), home: home, environment: [:])
         XCTAssertEqual(result, .ok(version: "2.1.232"))
     }
 }

@@ -69,7 +69,7 @@ func shortTemporaryDirectory() throws -> String {
 }
 
 /// A listening Unix socket at `path`, so the path is a socket and not a file.
-private func listeningSocket(at path: String) throws -> Int32 {
+func listeningSocket(at path: String) throws -> Int32 {
     let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)
