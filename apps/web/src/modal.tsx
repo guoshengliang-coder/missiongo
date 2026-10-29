@@ -89,7 +89,15 @@ export function Modal({ title, subtitle, onClose, children, wide = false, scroll
       // racing an asynchronous history.back() with the second mount.
       queueMicrotask(() => {
         if (lifecycle.current !== generation) return;
-        if (!historyManaged && history.state?.[DIALOG_HISTORY_MARKER]?.at(-1) === titleId) history.back();
+        if (!historyManaged && history.state?.[DIALOG_HISTORY_MARKER]?.at(-1) === titleId) {
+          // A form can apply URL-based filters before it closes. Carry that
+          // accepted URL to the parent entry before route listeners read it.
+          const acceptedUrl = window.location.href;
+          if (acceptedUrl !== url) window.addEventListener("popstate", () => {
+            if (window.location.href === url) history.replaceState(history.state, "", acceptedUrl);
+          }, { capture: true, once: true });
+          history.back();
+        }
         originalFocus?.focus();
       });
     };
