@@ -2670,7 +2670,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 /* AND-304: keep responsibility and execution history readable in both panes. */
 .builder-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 12px; }
 .builder-filter label { color: var(--muted); font-size: var(--text-sm); }
-.builder-filter select, .delivery-form select, .module-builder-setting select { min-height: 40px; max-width: 100%; padding: 8px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.builder-filter select, .delivery-form select, .module-builder-setting select { min-height: 44px; max-width: 100%; padding: 8px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .item-builder { color: var(--muted); font-size: var(--text-xs); }
 .delivery-panel { margin: 16px 0; padding: 16px 0; border-block: 1px solid var(--line); min-width: 0; }
 .delivery-heading, .execution-heading, .delivery-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
@@ -2690,3 +2690,5 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .module-builder-setting { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; }
 .module-builder-setting label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .module-builder-setting small { color: var(--muted); font-size: var(--text-xs); }
+
+.module-builder-setting .secondary-button { min-height: 44px; }
