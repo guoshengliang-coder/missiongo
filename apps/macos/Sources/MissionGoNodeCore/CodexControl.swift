@@ -103,11 +103,13 @@ public struct CodexApprovalOption: Codable, Equatable, Sendable {
     public let id: String
     public let kind: String
     public let detail: String?
+    public let label: String?
 
-    public init(id: String, kind: String, detail: String? = nil) {
+    public init(id: String, kind: String, detail: String? = nil, label: String? = nil) {
         self.id = id
         self.kind = kind
         self.detail = detail
+        self.label = label
     }
 }
 
@@ -1260,7 +1262,9 @@ final class CodexApprovalMonitor: @unchecked Sendable {
                         let denied = request.snapshot.options?.contains {
                             $0.id == decision.choice && ["decline", "cancel", "networkDeny"].contains($0.kind)
                         } == true
-                        publish(request.ended(denied ? "denied" : "approved"), pending: pending, threadId: threadId)
+                        let answeredQuestion = ["item/tool/requestUserInput", "tool/requestUserInput"].contains(request.method)
+                        publish(request.ended(answeredQuestion ? "resolved" : denied ? "denied" : "approved"),
+                            pending: pending, threadId: threadId)
                     }
                     do {
                         let message = try connection.receive(timeout: 1)

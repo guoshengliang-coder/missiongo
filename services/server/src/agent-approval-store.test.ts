@@ -103,6 +103,8 @@ it("persists only advertised scopes and discards decisions after a transport los
       action: "git status", startedAtMs: 1, options: [
         { id: "accept", kind: "once" as const }, { id: "acceptForSession", kind: "session" as const },
         { id: "execpolicy-2", kind: "rule" as const, detail: '"git" "status"' },
+        { id: "acceptAlways", kind: "always" as const },
+        { id: "choice-0", kind: "choice" as const, label: "Allow for this session", detail: "Current app only" },
       ] };
     approvals.record("node", "session", prompt);
     expect(approvals.get("session")?.options).toEqual(prompt.options);
@@ -121,6 +123,15 @@ it("persists only advertised scopes and discards decisions after a transport los
     expect(() => approvals.decide("session", "prompt", "accept")).toThrow();
     approvals.decide("session", "fresh", "execpolicy-2");
     expect(approvals.pendingForNode("session").approvalDecision?.choice).toBe("execpolicy-2");
+    approvals.record("node", "session", { ...prompt, id: "persistent" });
+    approvals.decide("session", "persistent", "acceptAlways");
+    expect(approvals.pendingForNode("session").approvalDecision?.choice).toBe("acceptAlways");
+    approvals.record("node", "session", { ...prompt, id: "native-label" });
+    expect(approvals.get("session")?.options?.find(option => option.id === "choice-0")?.label).toBe("Allow for this session");
+    approvals.decide("session", "native-label", "choice-0");
+    expect(approvals.pendingForNode("session").approvalDecision?.choice).toBe("choice-0");
+    expect(() => approvals.record("node", "session", { ...prompt, id: "missing-label",
+      options: [{ id: "choice-1", kind: "choice" }] })).toThrow("Invalid Codex approval options");
     approvals.record("node", "session", { ...prompt, id: "fresh", status: "approved" });
     approvals.record("node", "session", { ...prompt, id: "fresh", status: "reconnecting" });
     expect(approvals.get("session")?.status).toBe("approved");

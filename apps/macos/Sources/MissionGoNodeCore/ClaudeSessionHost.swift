@@ -503,8 +503,11 @@ public struct ClaudeStreamSnapshot: Sendable {
 
     public mutating func showExternalPermissionRequest(_ request: ClaudePermissionRequest) {
         let questions = (request.input["questions"] as? [[String: Any]] ?? []).compactMap { $0["question"] as? String }
+        let offered = request.asksThroughToolUse ? [] : [request.question.detail ?? "",
+            "可选答案：" + (request.question.options ?? []).joined(separator: " / ")]
+        let instructions = "请在桥接终端 /answer \(request.requestId) <答案或批准/拒绝> 明确回答；Web 文字不会批准工具。"
         upsert(AgentSessionMessage(sourceId: "permission-\(request.requestId)", turnId: latestTurnId(), role: "agent",
-            text: ([request.promptText] + questions + ["请在桥接终端 /answer \(request.requestId) <答案或批准/拒绝> 明确回答；Web 文字不会批准工具。"]).joined(separator: "\n")))
+            text: ([request.promptText] + questions + offered + [instructions]).filter { !$0.isEmpty }.joined(separator: "\n")))
     }
 
     /// An ordinary tool approval has no tool-use question of its own.
@@ -535,7 +538,11 @@ public struct ClaudeStreamSnapshot: Sendable {
                     header: question.header, title: question.title, detail: question.detail,
                     options: question.options, multiSelect: question.multiSelect, key: question.key,
                     kind: question.kind, placeholder: question.placeholder, custom: question.custom,
-                    answered: answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                    answered: question.key.map { key in
+                        let prefix = key + ": "
+                        let value = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return value.hasPrefix(prefix) ? String(value.dropFirst(prefix.count)) : value
+                    } ?? answer.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             }
         )

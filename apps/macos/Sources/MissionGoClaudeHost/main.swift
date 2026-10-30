@@ -363,6 +363,14 @@ private func run(configPath: String) throws {
                 try? FileManager.default.removeItem(atPath: path)
                 continue
             }
+            if !external, command.kind == "message",
+               permissions.head?.isStalePermissionAnswer(command.text)
+                    ?? command.text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("授权请求 ") {
+                snapshot.commandFinished(id: command.id, status: "failed", error: "授权请求已变化，请重新选择当前请求的授权范围。")
+                persist()
+                try? FileManager.default.removeItem(atPath: path)
+                continue
+            }
             if external && command.kind == "message" && !permissions.isEmpty {
                 snapshot.commandFinished(id: command.id, status: "failed", error: "此会话有待回答的权限或提问请求，请在本机桥接终端用 /answer 加请求 ID 明确回答。")
                 persist()
@@ -372,7 +380,7 @@ private func run(configPath: String) throws {
             if external && command.kind == "message" && snapshot.state.turnActive { continue }
             if external && command.kind == "permission_response" {
                 guard let head = permissions.head, head.requestId == command.permissionRequestId,
-                      let answered = permissions.answerHead(command.text) else {
+                      let answered = permissions.answerHead(command.text, boundRequestId: command.permissionRequestId) else {
                     snapshot.commandFinished(id: command.id, status: "failed", error: "请求已变化，未发送审批答案。")
                     persist()
                     try? FileManager.default.removeItem(atPath: path)

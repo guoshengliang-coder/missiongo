@@ -174,3 +174,79 @@ test("native authorization scopes survive navigation and reconnect with a fresh 
   await expect(panel.locator("button")).toHaveCount(2);
   await expect(panel.getByRole("button", { name: /本会话内允许|Allow for this session/ })).toHaveCount(0);
 });
+
+for (const scope of ["acceptForSession", "acceptAlways", "choice-2"]) {
+  test(`MCP authorization exposes native lifetimes and submits ${scope}`, async ({ page }, testInfo) => {
+    const offered = [
+      { id: "accept", kind: "once" }, { id: "acceptForSession", kind: "session" },
+      { id: "acceptAlways", kind: "always" },
+      { id: "choice-2", kind: "choice", label: "Always allow this app", detail: "Remember Chrome access" },
+      { id: "decline", kind: "decline" },
+    ];
+    let current = { ...approval, id: "mcp-scope", kind: "manual", status: "pending",
+      action: 'cua_repl: Allow Computer Use to use "Chrome"?', options: offered, decision: undefined as string | undefined };
+    const decisions: unknown[] = [];
+    await page.route("**/api/v1/agent-sessions**", async route => {
+      if (route.request().method() === "POST") {
+        const decision = route.request().postDataJSON() as { decision: string };
+        decisions.push(decision);
+        current = { ...current, decision: decision.decision };
+        return route.fulfill({ json: { approval: current } });
+      }
+      const session = { ...summary, approval: current };
+      return route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions"
+        ? { sessions: [session] } : { ...session, messages: [] } });
+    });
+    const panel = page.locator(".agent-console-approval");
+    for (const width of [375, 1440]) {
+      await page.goto("about:blank");
+      await page.setViewportSize({ width, height: 850 });
+      await page.goto('/?product=' + fixture.productId + '&console=agent&session=' + id);
+      await expect(panel.locator("button")).toHaveCount(5);
+      await expect(panel.getByRole("button", { name: /本会话内允许|Allow for this session/ })).toBeEnabled();
+      await expect(panel.getByRole("button", { name: /^(始终允许|Always allow)$/ })).toBeEnabled();
+      await expect(panel.getByRole("button", { name: "Always allow this app", exact: true })).toBeEnabled();
+      expect(decisions).toEqual([]); // Rendering or navigating must never choose a scope.
+      await panel.scrollIntoViewIfNeeded();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      const path = testInfo.outputPath(`mcp-scopes-${scope}-${width}.png`);
+      await page.screenshot({ path, animations: "disabled" });
+      await testInfo.attach(String(width), { path, contentType: "image/png" });
+    }
+    await panel.locator("button").nth(offered.findIndex(option => option.id === scope)).click();
+    await expect(panel.locator("button").first()).toBeDisabled();
+    expect(decisions).toEqual([{ decision: scope }]);
+  });
+}
+
+test("Claude authorization shows rule scope and sends the selected lifetime as its native answer", async ({ page }, testInfo) => {
+  const selected = "始终允许（当前项目本机设置，建议 1）";
+  const answer = "授权请求 fixture: " + selected;
+  const sent: unknown[] = [];
+  const session = { ...summary, agentKind: "claude_code", messages: [{ id: "permission-fixture", sourceId: "permission-fixture", role: "agent",
+    text: "Inspect the current working tree", questions: [{ header: "授权请求", title: "Claude Code 请求使用 Bash", key: "授权请求 fixture",
+      detail: '将记住规则 Bash(git status *)，保存到当前项目本机设置。',
+      options: ["批准", "本会话内允许（本会话，建议 1）", selected, "拒绝"] }] }] };
+  await page.route("**/api/v1/agent-sessions**", async route => {
+    if (route.request().method() === "POST") {
+      sent.push(route.request().postDataJSON());
+      return route.fulfill({ json: { command: { id: "answer", status: "queued" } } });
+    }
+    return route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions"
+      ? { sessions: [session] } : session });
+  });
+  await page.setViewportSize({ width: 375, height: 850 });
+  await page.goto('/?product=' + fixture.productId + '&console=agent&session=' + id);
+  const rule = page.getByText('将记住规则 Bash(git status *)，保存到当前项目本机设置。');
+  await expect(rule).toBeVisible();
+  await page.getByRole("button", { name: selected, exact: true }).click();
+  await expect(page.locator(".agent-console-reply textarea")).toHaveValue(answer);
+  expect(sent).toEqual([]); // Picking a question answer still requires sending it.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const path = testInfo.outputPath("claude-rule-scopes-phone.png");
+  await page.screenshot({ path, animations: "disabled" });
+  await testInfo.attach("claude", { path, contentType: "image/png" });
+  await page.locator(".agent-console-reply button[type=submit]").click();
+  await expect.poll(() => sent.length).toBe(1);
+  expect(sent[0]).toMatchObject({ text: answer });
+});

@@ -11,7 +11,7 @@ final class CodexApprovalTests: XCTestCase {
         ]]
     }
 
-    func testSimulatorPromptHasNoItemIdOrTimestampAndOnlyGrantsOneRequest() throws {
+    func testSimulatorPromptKeepsOneTimeApprovalAndOffersAdvertisedLifetimes() throws {
         for mode in ["form", "openai/form"] {
             let request = try XCTUnwrap(CodexApprovalRequest(elicitation(mode: mode), threadId: "thread-1"))
             XCTAssertEqual(request.snapshot.status, "pending")
@@ -22,7 +22,108 @@ final class CodexApprovalTests: XCTestCase {
             XCTAssertEqual((result["content"] as? [String: Any])?.count, 0)
             XCTAssertNil(result["scope"])
             XCTAssertNil(result["persist"])
+            XCTAssertNil(result["_meta"])
+            XCTAssertEqual(request.snapshot.options?.map(\.kind), ["once", "session", "always", "decline"])
             XCTAssertTrue(request.result(decision: "decline")["content"] is NSNull)
+        }
+    }
+
+    func testRequiredHumanCommandNeverOffersRememberedAuthorization() throws {
+        let message: [String: Any] = ["id": 9, "method": "item/commandExecution/requestApproval", "params": [
+            "threadId": "thread-1", "turnId": "turn-1", "kind": "humanCommand", "command": "git status",
+            "availableDecisions": ["accept", "acceptForSession", "decline", "cancel",
+                ["acceptWithExecpolicyAmendment": ["execpolicy_amendment": ["git", "status"]]]]]]
+        let request = try XCTUnwrap(CodexApprovalRequest(message, threadId: "thread-1"))
+        XCTAssertEqual(request.snapshot.options?.map(\.kind), ["once", "decline", "cancel"])
+        XCTAssertEqual(request.result(decision: "acceptForSession")["decision"] as? String, "cancel")
+    }
+
+    func testMcpPersistenceUsesOnlyAdvertisedLifetimesAndDoesNotEchoMetadata() throws {
+        let cases: [(Any?, [String])] = [(nil, []), ("session", ["session"]), ("always", ["always"]),
+            (["session", "always", "always"], ["session", "always"]), (true, []), (["unknown"], [])]
+        for (advertised, expected) in cases {
+            var message = elicitation()
+            var params = message["params"] as! [String: Any]
+            params["_meta"] = advertised.map { ["persist": $0, "tool_params": ["private": "not-returned"]] } ?? [:]
+            message["params"] = params
+            let request = try XCTUnwrap(CodexApprovalRequest(message, threadId: "thread-1"))
+            XCTAssertEqual(request.snapshot.options?.map(\.kind), ["once"] + expected + ["decline"])
+            XCTAssertNil(request.result(decision: "accept")["_meta"])
+            XCTAssertNil(request.result(decision: "decline")["_meta"])
+            for (scope, decision) in [("session", "acceptForSession"), ("always", "acceptAlways")] {
+                let result = request.result(decision: decision)
+                if expected.contains(scope) {
+                    XCTAssertEqual(result["action"] as? String, "accept")
+                    XCTAssertEqual(result["_meta"] as? [String: String], ["persist": scope])
+                    XCTAssertTrue((result["content"] as? [String: Any])?.isEmpty == true)
+                    XCTAssertNil(result["scope"])
+                } else {
+                    XCTAssertEqual(result["action"] as? String, "cancel")
+                }
+            }
+        }
+    }
+
+    func testMcpWithoutTurnIdStillOffersTheNativeScopes() throws {
+        var message = elicitation()
+        var params = message["params"] as! [String: Any]
+        params["turnId"] = NSNull()
+        message["params"] = params
+        let request = try XCTUnwrap(CodexApprovalRequest(message, threadId: "thread-1"))
+        XCTAssertFalse(request.snapshot.turnId.isEmpty)
+        XCTAssertEqual(request.snapshot.options?.map(\.kind), ["once", "session", "always", "decline"])
+    }
+
+    func testLegacyAppApprovalPreservesAllNativeLabelsAndAnswerShape() throws {
+        for method in ["item/tool/requestUserInput", "tool/requestUserInput"] {
+            let message: [String: Any] = ["id": 3, "method": method, "params": [
+                "threadId": "thread-1", "turnId": "turn-1", "questions": [[
+                    "id": "approval", "question": "Allow app?", "options": [
+                        ["label": "Allow once", "description": "This call"],
+                        ["label": "Allow for session", "description": "Current session"],
+                        ["label": "Always allow", "description": "Remember this tool"],
+                        ["label": "Decline", "description": "Do not run"]]]]]]
+            let request = try XCTUnwrap(CodexApprovalRequest(message, threadId: "thread-1"))
+            XCTAssertEqual(request.snapshot.options?.map(\.label), ["Allow once", "Allow for session", "Always allow", "Decline"])
+            let result = request.result(decision: "choice-2")
+            XCTAssertEqual(result["answers"] as? [String: [String: [String]]], ["approval": ["answers": ["Always allow"]]])
+            XCTAssertNil(result["decision"])
+            XCTAssertTrue((request.result(decision: "acceptAlways")["answers"] as? [String: Any])?.isEmpty == true)
+        }
+    }
+
+    func testNonemptyFormsCannotGainPersistenceEvenWhenMetadataOffersIt() throws {
+        let request = try XCTUnwrap(CodexApprovalRequest(elicitation(schema: ["type": "object",
+            "properties": ["token": ["type": "string"]]]), threadId: "thread-1"))
+        XCTAssertEqual(request.snapshot.status, "unavailable")
+        XCTAssertTrue(request.snapshot.options?.isEmpty == true)
+        XCTAssertEqual(request.result(decision: "acceptAlways")["action"] as? String, "cancel")
+    }
+
+    func testOversizedScopeCannotBeApprovedFromATruncatedPreview() throws {
+        let message: [String: Any] = ["id": 3, "method": "item/permissions/requestApproval", "params": [
+            "threadId": "thread-1", "turnId": "turn-1", "permissions": ["fileSystem": ["write": [String(repeating: "x", count: 5_000)]]]]]
+        XCTAssertEqual(CodexApprovalRequest(message, threadId: "thread-1")?.snapshot.status, "unavailable")
+    }
+
+    func testPersistentMcpDecisionTravelsOnOriginalSocket() throws {
+        for decision in ["acceptForSession", "acceptAlways"] {
+            let prompt = elicitation()
+            let server = try FakeAppServer { message in
+                guard let id = message["id"], let method = message["method"] as? String else { return [] }
+                let response: [String: Any] = ["id": id, "result": [:]]
+                return method == "thread/resume" ? [response, prompt] : [response]
+            }
+            let monitor = CodexApprovalMonitor()
+            defer { monitor.stop(threadId: "thread-1"); server.waitUntilDone() }
+            monitor.watch(socketPath: server.path, threadId: "thread-1")
+            wait { monitor.snapshot(threadId: "thread-1")?.status == "pending" }
+            let approval = try XCTUnwrap(monitor.snapshot(threadId: "thread-1"))
+            try monitor.answer(threadId: "thread-1", approvalId: approval.id, decision: decision)
+            wait { server.received.current.contains { $0.contains("\"_meta\"") } }
+            let messages = server.received.current.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            let result = try XCTUnwrap(messages.first { ($0["id"] as? Int) == 900 }?["result"] as? [String: Any])
+            XCTAssertEqual(result["_meta"] as? [String: String], ["persist": decision == "acceptAlways" ? "always" : "session"])
         }
     }
 

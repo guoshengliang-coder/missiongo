@@ -19,6 +19,8 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     var repliedForm: (formID: String, answer: [String: OpenCodeAnswerValue])?
     var repliedPermission: (requestID: String, decision: String)?
     var repliedPermissions: [(requestID: String, decision: String)] = []
+    var rejectedPermissionIDs: Set<String> = []
+    func rejectPermission(_ id: String) { rejectedPermissionIDs.insert(id) }
     var promptError: Error?
     var promptCount = 0
     var snapshotQueue: [(status: String, messages: [AgentSessionMessage], failure: String?)] = []
@@ -76,6 +78,7 @@ private actor StubOpenCodeControl: OpenCodeControlling {
         repliedForm = (formID, answer)
     }
     func replyPermission(id: String, requestID: String, decision: String) async throws {
+        if rejectedPermissionIDs.contains(requestID) { throw LaunchError("Fixture reply failed") }
         repliedPermission = (requestID, decision)
         repliedPermissions.append((requestID, decision))
     }
@@ -297,7 +300,7 @@ final class OpenCodeTests: XCTestCase {
         let control = StubOpenCodeControl(mcpStatus: "connected", choices: [choice])
         let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
             id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
-            command: AgentSessionCommand(id: "c1", kind: "message", text: "始终允许", status: "delivering")
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "授权请求 per_1: 始终允许", status: "delivering")
         ))
         XCTAssertEqual(report.commandStatus, "delivered")
         let replied = await control.repliedPermission
@@ -369,7 +372,7 @@ final class OpenCodeTests: XCTestCase {
         let control = StubOpenCodeControl(mcpStatus: "connected", choices: choices)
         let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
             id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
-            command: AgentSessionCommand(id: "c1", kind: "message", text: "始终允许", status: "delivering")
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "授权请求 per_1: 始终允许", status: "delivering")
         ))
         let replies = await control.repliedPermissions
         XCTAssertEqual(replies.map(\.requestID), ["per_1", "per_2", "per_3"])
@@ -377,6 +380,56 @@ final class OpenCodeTests: XCTestCase {
         for id in ["per_1", "per_2", "per_3"] {
             let card = try XCTUnwrap(report.messages.first { $0.sourceId == "permission-\(id)" && $0.questions?.first?.answered != nil })
             XCTAssertEqual(card.questions?.first?.answered, "始终允许")
+        }
+    }
+
+    func testAlwaysAllowDoesNotApproveDifferentResourcesOrSavedRules() async throws {
+        func ask(_ id: String, resources: [String], save: [String]) throws -> OpenCodeChoice {
+            try XCTUnwrap(OpenCodeProtocol.permissionChoice(["id": id, "action": "shell", "resources": resources, "save": save]))
+        }
+        let choices = try [ask("one", resources: ["git status"], save: ["git status *"]),
+            ask("same", resources: ["git status"], save: ["git status *"]),
+            ask("other-command", resources: ["git push"], save: ["git push *"]),
+            ask("broader-rule", resources: ["git status"], save: ["*"])]
+        XCTAssertTrue(choices[0].message.questions?.first?.detail?.contains("git status *") == true)
+        let control = StubOpenCodeControl(mcpStatus: nil, choices: choices)
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "授权请求 one: 始终允许", status: "delivering")))
+        let replies = await control.repliedPermissions
+        XCTAssertEqual(replies.map(\.requestID), ["one", "same"])
+        for id in ["other-command", "broader-rule"] {
+            XCTAssertNil(report.messages.last { $0.sourceId == "permission-\(id)" }?.questions?.first?.answered)
+        }
+    }
+
+    func testFailedDuplicatePermissionReplyIsNotMarkedApproved() async throws {
+        let choices = ["one", "failed"].map { id in
+            OpenCodeProtocol.permissionChoice(["id": id, "action": "shell", "resources": ["git status"], "save": ["git status *"]])!
+        }
+        let control = StubOpenCodeControl(mcpStatus: nil, choices: choices)
+        await control.rejectPermission("failed")
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: AgentSessionCommand(id: "c1", kind: "message", text: "授权请求 one: 始终允许", status: "delivering")))
+        XCTAssertNil(report.messages.last { $0.sourceId == "permission-failed" }?.questions?.first?.answered)
+    }
+
+    func testRememberedChoiceCannotAuthorizeAChangedPermissionRequest() async throws {
+        let choice = try XCTUnwrap(OpenCodeProtocol.permissionChoice(["id": "new", "action": "shell",
+            "resources": ["git status"], "save": ["git status *"]]))
+        XCTAssertNil(choice.answer(from: "授权请求 old: 始终允许"))
+        XCTAssertNil(choice.answer(from: "始终允许"))
+        for choices in [[choice], []] {
+            let control = StubOpenCodeControl(mcpStatus: nil, choices: choices)
+            let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+                id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+                command: AgentSessionCommand(id: "c1", kind: "message", text: "授权请求 old: 始终允许", status: "delivering")))
+            XCTAssertEqual(report.commandStatus, "failed")
+            let replies = await control.repliedPermissions
+            XCTAssertTrue(replies.isEmpty)
+            let prompt = await control.lastPrompt
+            XCTAssertNil(prompt)
         }
     }
 
