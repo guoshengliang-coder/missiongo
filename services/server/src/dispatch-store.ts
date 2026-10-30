@@ -921,17 +921,19 @@ export class DispatchStore {
         `SELECT w.item_key, d.id AS dispatch_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.created_at
          FROM work_items w
          JOIN work_item_events claim ON claim.item_id = w.id
-           AND claim.to_status = 'in_progress'
+           AND (claim.to_status = 'in_progress' OR claim.event_type = 'execution_taken_over')
            AND claim.actor_kind = 'agent'
-           AND claim.created_at = (
-             SELECT MAX(latest.created_at) FROM work_item_events latest
-             WHERE latest.item_id = w.id AND latest.to_status = 'in_progress'
+           AND claim.timeline_seq = (
+             SELECT MAX(latest.timeline_seq) FROM work_item_events latest
+             WHERE latest.item_id = w.id AND (latest.to_status = 'in_progress' OR latest.event_type = 'execution_taken_over')
            )
          JOIN dispatch_items di ON di.item_id = w.id
          JOIN dispatches d ON d.id = di.dispatch_id
            AND d.status = 'launched' AND d.created_at <= claim.created_at
+           AND (claim.event_type <> 'execution_taken_over' OR json_extract(claim.payload_json,'$.dispatchId')=d.id)
          JOIN nodes n ON n.id = d.node_id
          WHERE d.account_id = ? AND w.status = 'in_progress'
+           AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
          ORDER BY d.created_at DESC`,
       )
       .all(accountId) as unknown as Array<{

@@ -1983,11 +1983,13 @@ export class MissionGoDatabase {
           CREATE INDEX builder_execution_authorizations_item ON builder_execution_authorizations(item_id,revoked);
           CREATE TABLE builder_revoked_dispatches (
             dispatch_id TEXT PRIMARY KEY REFERENCES dispatches(id),
-            handover_id TEXT NOT NULL REFERENCES builder_handovers(id), stop_command_id TEXT
+            handover_id TEXT NOT NULL REFERENCES builder_handovers(id), stop_command_id TEXT,
+            requires_stop INTEGER NOT NULL DEFAULT 1 CHECK(requires_stop IN (0,1))
           ) STRICT;
           CREATE TABLE builder_revoked_external_sessions (
             session_id TEXT PRIMARY KEY REFERENCES external_agent_sessions(id),
-            handover_id TEXT NOT NULL REFERENCES builder_handovers(id)
+            handover_id TEXT NOT NULL REFERENCES builder_handovers(id),
+            requires_stop INTEGER NOT NULL DEFAULT 1 CHECK(requires_stop IN (0,1))
           ) STRICT;
         `);
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")

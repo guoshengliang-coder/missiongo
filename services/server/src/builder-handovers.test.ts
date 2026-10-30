@@ -224,4 +224,26 @@ describe("Builder execution handover",()=>{
     expect(f.db.prepare("SELECT COUNT(*) AS count FROM dispatch_items").get()).toMatchObject({count:2});
   });
 
+  it("shows the new Agent handler after a takeover without a second in-progress transition",async()=>{
+    const f=await fixture(),item=f.item(),{d,sessionId}=f.launch([item.key]);f.start(item.key,"agent");
+    f.transfer(item.key);f.snapshot(sessionId,f.stopCommand(d.id));
+    const next=f.dispatch([item.key],f.b.id,f.bNode.nodeId);f.dispatches.claimNextDispatch(f.bNode.nodeId);
+    f.dispatches.recordDispatchResult({nodeId:f.bNode.nodeId,dispatchId:next.id,status:"launched"});
+    f.sessions.createForDispatch({dispatchId:next.id,nodeId:f.bNode.nodeId,sessionRef:randomUUID()});
+    f.store.claimWorkItem({itemKey:item.key,agentId:"New agent",dispatchId:next.id,attribution:{accountId:f.b.id},idempotencyKey:randomUUID()});
+    expect(f.dispatches.listInProgressHandlers(f.a.id)).toEqual([]);
+    expect(f.dispatches.listInProgressHandlers(f.b.id)).toMatchObject([{itemKey:item.key,dispatchId:next.id}]);
+    expect(f.store.getTimeline(item.key).filter(e=>e.toStatus==="in_progress")).toHaveLength(1);
+  });
+
+  it("still stops a running session after a business completion event, and permanently fences closed history",async()=>{
+    const f=await fixture(),item=f.item(),{d,sessionId}=f.launch([item.key]);f.start(item.key);
+    f.store.transitionWorkItem({itemKey:item.key,to:"development_complete",actor:"human",reason:"resolution_submitted",attribution:{accountId:f.a.id}});
+    expect(f.transfer(item.key).builderHandover?.status).toBe("stopping");
+    const command=f.stopCommand(d.id);expect(command).toBeTruthy();f.snapshot(sessionId,command);
+    expect(f.store.getWorkItem(item.key)).toMatchObject({status:"development_complete",builderAccountId:f.b.id});
+    f.handovers.start(item.key,"admin",f.a.id,f.b.id,"Return ownership without reopening work");
+    expect(()=>f.sessions.enqueue(f.a.id,sessionId,"Revive old execution")).toThrow(/失效/);
+  });
+
 });

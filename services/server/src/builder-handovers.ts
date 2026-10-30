@@ -31,16 +31,20 @@ export class BuilderHandovers {
       JOIN nodes n ON n.id=d.node_id LEFT JOIN agent_sessions s ON s.dispatch_id=d.id
       WHERE di.item_id=? AND d.status IN ('queued','delivered','launched')
       AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
-      AND NOT EXISTS (SELECT 1 FROM work_item_events e WHERE e.item_id=di.item_id
-        AND e.created_at>=d.created_at AND e.to_status IN ('development_complete','pending_verification','done','cancelled'))`)
+      AND (d.status IN ('queued','delivered') OR s.status IN ('active','stalled','unavailable')
+        OR EXISTS (SELECT 1 FROM agent_session_commands c WHERE c.session_id=s.id AND c.status IN ('queued','delivering','delivery_unknown'))
+        OR NOT EXISTS (SELECT 1 FROM work_item_events e WHERE e.item_id=di.item_id
+          AND e.created_at>=d.created_at AND e.to_status IN ('development_complete','pending_verification','done','cancelled')))`)
       .all(itemId) as unknown as Execution[];
   }
 
   private external(itemId: string): Array<{ id: string }> {
     // Progress "completed" alone is not a physical stop proof for a connected native session.
     return this.db.prepare(`SELECT s.id FROM external_agent_sessions s JOIN external_agent_session_items i ON i.session_id=s.id
-      WHERE i.item_id=? AND NOT EXISTS (SELECT 1 FROM work_item_events e WHERE e.item_id=i.item_id
-        AND e.created_at>=s.created_at AND e.to_status IN ('development_complete','pending_verification','done','cancelled'))
+      WHERE i.item_id=? AND (json_extract(s.native_snapshot_json,'$.status') IN ('active','stalled','unavailable')
+        OR EXISTS (SELECT 1 FROM external_native_commands c WHERE c.session_id=s.id AND c.status IN ('queued','delivering','delivery_unknown'))
+        OR NOT EXISTS (SELECT 1 FROM work_item_events e WHERE e.item_id=i.item_id
+          AND e.created_at>=s.created_at AND e.to_status IN ('development_complete','pending_verification','done','cancelled')))
       AND NOT EXISTS (SELECT 1 FROM builder_revoked_external_sessions r WHERE r.session_id=s.id)`)
       .all(itemId) as Array<{ id: string }>;
   }
@@ -89,6 +93,13 @@ export class BuilderHandovers {
           .run(now,"已由 Builder 交接取消",execution.id);
       }
       for (const session of external) this.db.prepare("INSERT INTO builder_revoked_external_sessions(session_id,handover_id) VALUES (?,?)").run(session.id,id);
+      // Closed history needs no process stop, but its input authorization must never revive on a later A → B → A transfer.
+      this.db.prepare(`INSERT INTO builder_revoked_dispatches(dispatch_id,handover_id,requires_stop)
+        SELECT d.id,?,0 FROM dispatches d JOIN dispatch_items i ON i.dispatch_id=d.id WHERE i.item_id=?
+        AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)`).run(id,item.id);
+      this.db.prepare(`INSERT INTO builder_revoked_external_sessions(session_id,handover_id,requires_stop)
+        SELECT s.id,?,0 FROM external_agent_sessions s JOIN external_agent_session_items i ON i.session_id=s.id WHERE i.item_id=?
+        AND NOT EXISTS (SELECT 1 FROM builder_revoked_external_sessions r WHERE r.session_id=s.id)`).run(id,item.id);
       this.store.recordDeliveryEvent(itemKey,accountId,"builder_handover_started",{handoverId:id,from:item.builderAccountId ?? null,to:targetId,note});
       this.stop(id);
       return this.store.getWorkItem(itemKey);
@@ -115,7 +126,7 @@ export class BuilderHandovers {
 
   private stop(id: string) {
     const handover = this.db.prepare("SELECT * FROM builder_handovers WHERE id=?").get(id) as unknown as BuilderHandover;
-    if (this.db.prepare("SELECT 1 FROM builder_revoked_external_sessions WHERE handover_id=?").get(id)) {
+    if (this.db.prepare("SELECT 1 FROM builder_revoked_external_sessions WHERE handover_id=? AND requires_stop=1").get(id)) {
       this.block(handover,"外部会话没有可核实的停止控制通道，无法确认已停止。执行授权已冻结，不能启动接手任务。"); return;
     }
     if (this.db.prepare(`SELECT 1 FROM ai_executions WHERE item_id=? AND status IN ('created','running','waiting_for_human')
@@ -126,7 +137,7 @@ export class BuilderHandovers {
     }
     const rows = this.db.prepare(`SELECT d.id,d.account_id,d.status,s.id AS session_id,s.status AS session_status,
       d.agent_kind,n.last_seen_at,n.revoked_at FROM builder_revoked_dispatches r JOIN dispatches d ON d.id=r.dispatch_id
-      JOIN nodes n ON n.id=d.node_id LEFT JOIN agent_sessions s ON s.dispatch_id=d.id WHERE r.handover_id=?`).all(id) as unknown as Execution[];
+      JOIN nodes n ON n.id=d.node_id LEFT JOIN agent_sessions s ON s.dispatch_id=d.id WHERE r.handover_id=? AND r.requires_stop=1`).all(id) as unknown as Execution[];
     for (const row of rows) {
       if (row.status === "cancelled" && !row.session_id) continue;
       if (!row.session_id) { this.block(handover,"旧派单已送达节点但尚无可控会话，无法确认停止。"); return; }
@@ -167,7 +178,7 @@ export class BuilderHandovers {
       const rows = this.db.prepare(`SELECT d.status AS dispatch_status,s.status AS session_status,s.updated_at,s.turn_state_json,
         c.status AS command_status,c.delivered_at,n.last_seen_at,n.revoked_at FROM builder_revoked_dispatches r
         JOIN dispatches d ON d.id=r.dispatch_id JOIN nodes n ON n.id=d.node_id LEFT JOIN agent_sessions s ON s.dispatch_id=d.id
-        LEFT JOIN agent_session_commands c ON c.id=r.stop_command_id WHERE r.handover_id=?`).all(id) as unknown as Array<{
+        LEFT JOIN agent_session_commands c ON c.id=r.stop_command_id WHERE r.handover_id=? AND r.requires_stop=1`).all(id) as unknown as Array<{
           dispatch_status:string;session_status:string|null;updated_at:string|null;turn_state_json:string|null;
           command_status:string|null;delivered_at:string|null;last_seen_at:string|null;revoked_at:string|null;
         }>;
