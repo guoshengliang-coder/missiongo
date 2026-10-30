@@ -50,6 +50,7 @@ import {
   Rocket,
   RotateCcw,
   Search,
+  Send,
   Settings,
   Sparkles,
   Trash2,
@@ -2767,6 +2768,32 @@ function DetailPane({
   });
   const [editing, setEditing] = useState(false);
   const [transferring, setTransferring] = useState(false);
+  const detailPaneRef = useRef<HTMLElement>(null);
+
+  // Some mobile browsers shrink only the visual viewport when the keyboard
+  // opens. Keep the footer inside that viewport without covering the report.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const resize = () => {
+      const pane = detailPaneRef.current;
+      if (!pane) return;
+      if (viewport && viewport.scale !== 1) {
+        pane.style.removeProperty("--detail-visible-height");
+        return;
+      }
+      const bottom = viewport ? viewport.offsetTop + viewport.height : window.innerHeight;
+      pane.style.setProperty("--detail-visible-height", `${Math.max(0, bottom - pane.getBoundingClientRect().top)}px`);
+    };
+    resize();
+    viewport?.addEventListener("resize", resize);
+    viewport?.addEventListener("scroll", resize);
+    window.addEventListener("resize", resize);
+    return () => {
+      viewport?.removeEventListener("resize", resize);
+      viewport?.removeEventListener("scroll", resize);
+      window.removeEventListener("resize", resize);
+    };
+  }, [itemKey, item?.key]);
   const [transferBuilderOpen, setTransferBuilderOpen] = useState(false);
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
 
@@ -2883,7 +2910,7 @@ function DetailPane({
     : summarizedSession ? executionStatusLabel(summarizedSession.status)
     : dispatchStatusKey ? t(dispatchStatusKey) : null;
   return (
-    <section className="detail-pane">
+    <section className="detail-pane" ref={detailPaneRef}>
       <div className="detail-toolbar">
         <BackButton className="detail-back-button" onClick={onClose} label={t("backToList")} />
         <code>{item.key}</code>
@@ -3081,7 +3108,6 @@ function DetailPane({
                 <small>{t("newestFirst")}</small>
               </header>
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
-              {!item.transferred && <CommentComposer key={item.key} item={item} onPosted={refreshItem} onNotice={onNotice} />}
               <div className="timeline">
                 {groupTimeline(timelineQuery.data?.events ?? []).map(({ id, event, count, filenames }) => (
                   <div
@@ -3159,6 +3185,7 @@ function DetailPane({
             </section>
         </>
       </div>
+      {!item.transferred && <CommentComposer key={item.key} item={item} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
         <TransferBuilderModal itemKey={item.key} delivery={deliveryQuery.data} onClose={() => setTransferBuilderOpen(false)} />
@@ -3354,22 +3381,24 @@ function CommentComposer({ item, onPosted, onNotice }: {
     setFiles(result.files); setError(result.error ?? null);
   };
   const { isDraggingFiles, dropHandlers } = useFileDropZone(addFiles, { canAccept: remaining > 0 && !mutation.isPending });
-  return <form className="comment-form" {...dropHandlers}
+  return <form className="comment-form detail-composer" aria-label={t("addComment")} {...dropHandlers}
     onPaste={event => { const incoming = Array.from(event.clipboardData.files); if (incoming.length) { event.preventDefault(); addFiles(incoming); } }}
     onSubmit={event => { event.preventDefault(); if (!mutation.isPending && (text.trim() || files.length)) mutation.mutate(); }}>
     {isDraggingFiles && <FileDropOverlay remaining={remaining} />}
     <fieldset disabled={mutation.isPending}>
       <label className="sr-only" htmlFor="comment-draft">{t("addComment")}</label>
       <textarea id="comment-draft" value={text} onChange={event => setText(event.target.value)} placeholder={t("commentPlaceholder")} rows={2} />
-      <div className="comment-compose-actions">
+      <button type="submit" className="primary-button" disabled={!(text.trim() || files.length) || mutation.isPending}>
+        {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}
+        {t(mutation.isPending ? "commentSending" : "commentSend")}
+      </button>
+      <div className="detail-composer-files">
         <FilePicker files={files} onFiles={setFiles} remaining={remaining} disabled={mutation.isPending} />
-        <button type="submit" className="secondary-button" disabled={!(text.trim() || files.length) || mutation.isPending}>
-          {mutation.isPending && <LoaderCircle className="spin" size={16} />}{t("postComment")}
-        </button>
       </div>
       {files.some(file => file.type.startsWith("image/")) && <div className="comment-image-previews">{files.filter(file => file.type.startsWith("image/")).map((file, index) => <CommentImagePreview key={`${file.name}-${index}`} file={file} />)}</div>}
     </fieldset>
     {error && <InlineError message={error} />}
+    {mutation.isError && uploaded.current.size > 0 && <p className="detail-composer-hint">{t("commentUploadRetained")}</p>}
   </form>;
 }
 

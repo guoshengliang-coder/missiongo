@@ -14,7 +14,7 @@ for (const width of [353, 768, 1440]) for (const theme of ["light", "dark"] as c
       const item = await response.json();
       await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}`);
       const composer = page.locator(".comment-form");
-      const send = composer.getByRole("button", { name: "发表评论", exact: true });
+      const send = composer.getByRole("button", { name: "发送", exact: true });
       await expect(send).toBeDisabled();
       await composer.locator('input[type="file"]').first().setInputFiles([
         { name: "comment.png", mimeType: "image/png", buffer: png },
@@ -26,6 +26,7 @@ for (const width of [353, 768, 1440]) for (const theme of ["light", "dark"] as c
       await expect(composer.locator(".selected-files")).toHaveCount(0);
       const comment = page.locator(".comment-body").filter({ hasText: "comment.txt" });
       await expect(comment.locator(".attachment-card")).toHaveCount(2);
+      await comment.locator(".attachment-card").first().scrollIntoViewIfNeeded();
       await expect(comment.locator(".attachment-image img")).toBeVisible();
       await page.screenshot({ path: test.info().outputPath("comment-attachments.png") });
       await page.reload();
@@ -54,7 +55,7 @@ test("retains a failed comment and retries without duplicating uploaded files or
   const item = await response.json();
   await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}`);
   const composer = page.locator(".comment-form");
-  const send = composer.getByRole("button", { name: "发表评论", exact: true });
+  const send = composer.getByRole("button", { name: "发送", exact: true });
   await composer.getByRole("textbox").fill("Keep my draft");
   await composer.locator('input[type="file"]').first().setInputFiles({ name: "retry.txt", mimeType: "text/plain", buffer: Buffer.from("retry evidence") });
   let lost = false;
@@ -95,7 +96,7 @@ test("accepts pasted images and dropped files, rejects unsupported files, and su
     if (!lost && route.request().method() === "POST") { lost = true; await route.fetch(); await route.abort("failed"); }
     else await route.continue();
   });
-  const send = composer.getByRole("button", { name: "发表评论", exact: true });
+  const send = composer.getByRole("button", { name: "发送", exact: true });
   await send.click();
   await expect(composer.locator(":scope > .inline-error")).toBeVisible();
   await expect(send).toBeEnabled(); await send.click();
