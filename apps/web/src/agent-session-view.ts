@@ -25,6 +25,17 @@ export function visibleQuestions(questions: readonly AgentSessionQuestion[]): Ag
   return questions.filter((question) => question.withdrawn !== true);
 }
 
+export function planApprovalStatusKey(code: string): MessageKey {
+  const keys: Readonly<Record<string, MessageKey>> = {
+    checking: "agentPlanChecking", ai_disabled: "agentPlanAiDisabled", connection_unavailable: "agentPlanConnectionUnavailable",
+    reply_unavailable: "agentPlanReplyUnavailable", running: "agentPlanRunning", permission_required: "agentPlanPermissionRequired",
+    reply_pending: "agentPlanReplyPending", needs_answer: "agentPlanNeedsAnswer", not_approval: "agentPlanNotApproval",
+    uncertain: "agentPlanUncertain", context_too_large: "agentPlanContextTooLarge", recognition_failed: "agentPlanRecognitionFailed",
+    already_approved: "agentPlanAlreadyApproved", dismissed: "agentPlanDismissed", awaiting_source: "agentPlanAwaitingSource",
+  };
+  return keys[code] ?? "agentPlanUncertain";
+}
+
 /** True when a message exists only for a card that went away: it carried
  *  questions and every one is withdrawn, so nothing is left to show. The
  *  message is dropped whole — its text was the permission ask itself. */

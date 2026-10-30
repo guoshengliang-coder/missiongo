@@ -659,6 +659,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-attention-banner.dismissed { color: var(--muted); background: var(--surface-sunken); border-color: var(--line); }
 .agent-console-attention-banner details { min-width: 0; flex: 1; }
 .agent-console-attention-banner summary { cursor: pointer; font-size: var(--text-sm); font-weight: 750; }
+.agent-console-plan-approval-hint { margin-left: 8px; color: var(--muted); font-size: var(--text-xs); font-weight: 500; }
 .agent-console-attention-banner p { margin: 6px 0 0; font-size: var(--text-sm); line-height: 1.5; }
 .agent-console-attention-banner button { flex: 0 0 auto; min-height: 32px; display: inline-flex; align-items: center; gap: 6px; }
 .agent-console-connection-banner.offline { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-line); }
