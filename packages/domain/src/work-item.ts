@@ -82,8 +82,8 @@ export interface WorkItemReference {
  * - `sdk`: a report sent from an app through a feedback SDK token. No account
  *   is behind it; `name` is the token's name.
  * - `agent`: an AI recording a follow-up (AND-50). The authorizing account is
- *   kept, but the byline is the client and the agent -- an AI's item is not
- *   signed as the person who connected it, the same rule comments follow.
+ *   kept and resolved as the proposer name for assisted submission. The kind,
+ *   client and agent remain intact as provenance; comments sign their actual actor.
  *
  * Absent on items whose creation was never attributed: ones written before
  * events carried accounts, or through the operator token.
@@ -93,6 +93,8 @@ export type WorkItemCreator =
   | { readonly kind: "sdk"; readonly name?: string }
   | {
     readonly kind: "agent";
+    /** The person who authorized assisted submission; the actor stays agent. */
+    readonly name?: string;
     readonly accountId?: string;
     readonly clientId?: string;
     readonly clientName?: string;

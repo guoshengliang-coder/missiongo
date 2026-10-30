@@ -80,6 +80,8 @@ import { DispatchStore } from "./dispatch-store.js";
 import { ManagedExecutionStore } from "./managed-execution-store.js";
 import { registerManagedExecutionRoutes } from "./managed-execution-routes.js";
 import { registerItemDeliveryRoutes } from "./item-delivery.js";
+import { DingTalkNotifications } from "./dingtalk-notifications.js";
+import { registerDingTalkRoutes } from "./dingtalk-routes.js";
 import { registerManagedDecisionRoutes } from "./managed-decision-routes.js";
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { createMissionGoMcpHandler, type McpWriteTier } from "./mcp.js";
@@ -118,6 +120,9 @@ export interface BuildAppOptions {
   readonly release?: string;
   /** Replaced only by tests; production sends requests directly to DeepSeek. */
   readonly aiProviderFetch?: typeof fetch;
+  readonly dingtalkFetch?: typeof fetch;
+  /** Tests may drive the durable worker explicitly. */
+  readonly dingtalkWorker?: boolean;
   /** AND-150: FCM credentials for widget pushes. Absent means the push half stays off. */
   readonly widgetPushServiceAccount?: WidgetPushServiceAccount;
   /** Replaced only by tests; production talks to Google directly. */
@@ -575,6 +580,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.adminAccount?.sessionSecret ?? options.adminToken ?? "local-development-only",
     options.aiProviderFetch,
   );
+  const dingtalk = new DingTalkNotifications(store,accountStore,options.adminAccount?.sessionSecret ?? options.adminToken,options.publicOrigin,options.dingtalkFetch);
+  app.addHook("onReady",async()=>{if(options.dingtalkWorker!==false)dingtalk.start();});
   // AND-149/150: the summary behind GET /api/v1/widget/summary, shared with the
   // push service so a device is told to refresh exactly what the route serves.
   const widgetDevices = new WidgetDeviceStore(store.database);
@@ -947,6 +954,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (statusCheckTimer) clearInterval(statusCheckTimer);
     await Promise.allSettled(attentionClassifications.values());
     await widgetPush.close();
+    await dingtalk.close();
     await mcpHandler?.close();
     store.close();
   });
@@ -2274,6 +2282,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   registerItemDeliveryRoutes(app, { store, accounts: accountStore, requireAccount });
+  registerDingTalkRoutes(app,{store,accounts:accountStore,service:dingtalk,requireAccount});
   registerManagedDecisionRoutes(app, { db: store.database, accounts: accountStore, requireAccount,
     ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}) });
 
@@ -3939,9 +3948,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     requireProductPermission(request, productId);
     const proposers = withCreatorNames(store.getWorkItemProposers(productId)).map(option => {
       const creator = option.createdBy;
-      const kind = creator?.kind ?? "unknown";
+      const kind = creator?.kind === "agent" && creator.name ? "human" : creator?.kind ?? "unknown";
       const label = creator?.kind === "human" ? creator.name ?? "历史人员"
-        : creator?.kind === "agent" ? [creator.clientName, creator.agentName].filter(Boolean).join(" · ") || "Agent"
+        : creator?.kind === "agent" ? creator.name ?? ([creator.clientName, creator.agentName].filter(Boolean).join(" · ") || "Agent")
         : creator?.kind === "sdk" ? creator.name ?? "SDK 来源" : "未记录提需者";
       return { value: option.value, label, kind };
     });
@@ -4137,7 +4146,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    */
   function withCreatorNames<T extends { readonly createdBy?: WorkItemCreator }>(items: readonly T[]): T[] {
     const names = accountStore.displayNames(
-      items.flatMap((item) => (item.createdBy?.kind === "human" ? [item.createdBy.accountId] : [])),
+      items.flatMap((item) => (item.createdBy && item.createdBy.kind !== "sdk" && item.createdBy.accountId ? [item.createdBy.accountId] : [])),
     );
     return items.map((item) => {
       const creator = item.createdBy;
@@ -4145,9 +4154,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         const name = names.get(creator.accountId);
         return name ? { ...item, createdBy: { ...creator, name } } : item;
       }
-      if (creator?.kind === "agent" && creator.clientId) {
-        const { clientName } = withClientName({ clientId: creator.clientId });
-        return clientName ? { ...item, createdBy: { ...creator, clientName } } : item;
+      if (creator?.kind === "agent") {
+        const name = creator.accountId ? names.get(creator.accountId) : undefined;
+        const clientName = creator.clientId ? withClientName({ clientId: creator.clientId }).clientName : undefined;
+        return { ...item, createdBy: { ...creator,...(name ? {name} : {}),...(clientName ? {clientName} : {}) } };
       }
       return item;
     });

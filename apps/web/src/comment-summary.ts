@@ -89,8 +89,8 @@ export function commentPlainText(bodyKind: unknown, body: Readonly<Record<string
 /**
  * How an item's creator is named in the list and the detail header (AND-67).
  *
- * The same rule as a comment's byline: a person by their nickname, an AI by the
- * client that holds the token -- never by the person who connected it. A report
+ * Assisted submissions name the authorizing person and keep a separate source
+ * badge. Comments still sign the actual actor. An unowned AI item names its client. A report
  * sent from an app has no account at all; the SDK token it came through is the
  * closest thing to a sender. Undefined when nobody was recorded, so the caller
  * can leave the space empty rather than print a guess.
@@ -105,6 +105,7 @@ export function creatorLabel(
     const name = creator.name?.trim();
     return name ? `${labels.sdk} · ${name}` : labels.sdk;
   }
+  if (creator.name?.trim()) return creator.name.trim();
   const client = creator.clientName?.trim() || creator.agentName?.trim();
   return client ? `${labels.agent} · ${client}` : labels.agent;
 }

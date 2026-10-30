@@ -154,6 +154,7 @@ export type WorkItemCreator =
   | { readonly kind: "sdk"; readonly name?: string }
   | {
     readonly kind: "agent";
+    readonly name?: string;
     readonly accountId?: string;
     readonly clientId?: string;
     readonly clientName?: string;

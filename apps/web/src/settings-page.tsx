@@ -1,4 +1,5 @@
 import { BackButton } from "./back-button";
+import { DingTalkSettingsPage, DingTalkProjectSettings } from "./dingtalk-settings";
 import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import { ChevronRight, Plus } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -17,6 +18,7 @@ import { SettingsDraftProvider, type SettingsLeaveGuard } from "./settings-draft
 import { PRODUCT_SETTINGS, type SettingsRoute, type SettingsSection, type ProductSettingsSection } from "./settings-state";
 
 const LABELS: Record<SettingsSection, MessageKey> = {
+  dingtalk:"settingsDingTalk",notifications:"settingsNotifications",
   "project-admins": "settingsProjectAdministrators", builders: "settingsBuilderAllocation",
   agent: "settingsAgent", products: "settingsProducts", overview: "settingsProductOverview",
   index: "settingsEntry", profile: "settingsProfile", display: "displaySettings", connections: "settingsConnections",
@@ -72,11 +74,11 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
   const groups = [
     { label: "settingsPersonal" as const, sections: ["profile", "display", "agent"] as SettingsSection[] },
     { label: "settingsProduct" as const, sections: ["products"] as SettingsSection[] },
-    ...(canManage ? [{ label: "settingsSystem" as const, sections: ["accounts", ...(isAdmin ? ["project-admins", "ai"] as const : [])] as SettingsSection[] }] : []),
+    ...(canManage ? [{ label: "settingsSystem" as const, sections: ["accounts", ...(isAdmin ? ["project-admins", "ai", "dingtalk"] as const : [])] as SettingsSection[] }] : []),
   ];
   const allowed = route.section === "access" ? Boolean(product && mayAdministerProduct(user, product))
     : route.section === "accounts" ? isAdmin || !route.accountId && owned.length > 0
-    : route.section === "ai" || route.section === "project-admins" ? isAdmin && (!route.productId || Boolean(product))
+    : route.section === "ai" || route.section === "project-admins" || route.section === "dingtalk" ? isAdmin && (!route.productId || Boolean(product))
     : route.section === "devices" || route.section === "dispatch" ? canUseAi
     : !inProduct || ["products", "new-product"].includes(route.section) || Boolean(product);
   const go = (section: SettingsSection) => navigate({ section });
@@ -114,6 +116,7 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
         {isAdmin && entry("project-admins", "settingsProductAdministratorsDetailHelp", { section: "project-admins", productId: product.id })}
         {(isAdmin || product.access?.isProjectAdmin || mayAdministerProduct(user,product)) && entry("builders", "settingsBuilderAllocationHelp", {section:"builders",productId:product.id})}
         {entry("artifacts", "settingsArtifactsHelp", { section: "artifacts", productId: product.id })}
+        {entry("notifications", "settingsNotificationsHelp", {section:"notifications",productId:product.id})}
         {entry("tokens", "settingsSdkHelp", { section: "tokens", productId: product.id })}
       </div>
       {mayAdministerProduct(user, product) && <button type="button" className="text-button settings-access-shortcut" onClick={() => navigate(isAdmin ? { section: "accounts", filterProductId: product.id } : { section: "access", productId: product.id })}>{t("settingsManageProductAccess")}<ChevronRight size={16} /></button>}
@@ -158,6 +161,8 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
                 : !allowed ? <p role="alert">{t("settingsUnavailable")}</p>
                 : route.section === "profile" ? <AccountSettings user={user} products={products} onLoggedOut={onLoggedOut} />
                 : route.section === "display" ? <DisplaySettings user={user} />
+                : route.section === "dingtalk" ? <DingTalkSettingsPage />
+                : route.section === "notifications" && product ? <DingTalkProjectSettings productId={product.id} />
                 : route.section === "project-admins" ? route.productId && product ? <ProjectAdministratorsSettings productId={product.id} />
                   : <>{administrators.isError && <div role="alert"><p>{t("somethingWentWrong")}</p><button type="button" className="secondary-button" onClick={() => void administrators.refetch()}>{t("retry")}</button></div>}{productList(catalog, value => navigate({ section: "project-admins", productId: value.id }), administratorSummary)}</>
                 : route.section === "builders" && product ? <ProjectBuilderSettings productId={product.id} />
