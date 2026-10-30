@@ -49,7 +49,7 @@ for (const width of [320, 353, 375, 390, 768, 1440]) for (const theme of ["light
       await row.locator(".item-row-main").click();
       const summary = page.locator(".detail-dispatch-line");
       await expect(summary).toContainText("Codex · M5");
-      await expect(summary).toContainText("会话运行中");
+      await expect(summary).not.toContainText("会话运行中");
       await expect(summary).toContainText("启动于");
       const target = await summary.locator(".detail-dispatch-target").boundingBox();
       const jump = summary.getByRole("button", { name: "在控制台查看", exact: true });
@@ -108,10 +108,10 @@ for (const hasSession of [false, true]) {
     await page.route(`**/api/v1/items/${item.key}/dispatches`, route => route.fulfill({ json: { dispatches: [{ id: "failure", nodeName: "VeryLongNodeNameWithoutAnyBreaksForMobileWrapping", agentKind: "codex", mode: "plan", status: "failed", error: "会话启动失败：很长的可读失败原因用于验证换行", ...(hasSession ? { agentSessionId: "failed-session" } : {}), createdAt: new Date().toISOString(), itemKeys: [item.key] }] } }));
     await page.goto(`/?product=${product.id}&item=${item.key}`);
     const summary = page.locator(".detail-dispatch-line");
-    await expect(summary).toHaveClass(/failed/);
+    await expect(summary).not.toHaveClass(/failed/);
     await expect(summary).toContainText("派单于");
     await expect(summary).not.toContainText("启动于");
-    await expect(summary).toContainText("会话启动失败");
+    await expect(summary).not.toContainText("会话启动失败");
     await expect(summary.getByRole("button")).toHaveCount(hasSession ? 1 : 0);
     await expect(page.locator(".detail-title-block .item-builder")).toContainText("待分配");
     const history = page.locator(".execution-history");

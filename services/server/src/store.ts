@@ -1516,7 +1516,8 @@ export class MissionGoStore {
         return result;
       }
       if (item.status !== "ready") throw conflict("item_not_claimable", "Only a ready work item can be claimed.");
-      this.applyTransition(item, "in_progress", "agent", "claim", agentId, now, input.attribution ?? {});
+      this.applyTransition(item, "in_progress", "agent", "claim", agentId, now, input.attribution ?? {},
+        input.dispatchId ? { dispatchId: input.dispatchId } : {});
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
       return result;

@@ -96,6 +96,19 @@ describe("Builder execution handover",()=>{
     expect(()=>f.store.claimWorkItem({itemKey:item.key,agentId:"Old agent",dispatchId:d.id,attribution:{accountId:f.a.id},idempotencyKey:randomUUID()})).toThrow();
     expect(()=>f.dispatch([item.key],f.b.id,f.bNode.nodeId,true)).toThrow();
   });
+  it("shows only the authorized new Builder's startup or execution issue without changing the work stage",async()=>{
+    const f=await fixture(),item=f.item(),{d,sessionId}=f.launch([item.key]);f.start(item.key);
+    f.transfer(item.key);f.snapshot(sessionId,f.stopCommand(d.id));
+    const next=f.dispatch([item.key],f.b.id,f.bNode.nodeId);
+    f.dispatches.claimNextDispatch(f.bNode.nodeId);
+    f.dispatches.recordDispatchResult({nodeId:f.bNode.nodeId,dispatchId:next.id,status:"failed",error:"new Builder startup failed"});
+    expect(f.dispatches.listCurrentDispatches(f.a.id,item.key)).toEqual([]);
+    expect(f.dispatches.listCurrentDispatches(f.b.id,item.key)).toMatchObject([{
+      dispatchId:next.id,itemStatus:"in_progress",issue:{kind:"dispatch",reason:"new Builder startup failed"},
+    }]);
+    expect(f.store.getWorkItem(item.key).status).toBe("in_progress");
+    expect(f.dispatches.listDispatchesForItem(f.a.id,item.key)[0]!.id).toBe(d.id);
+  });
   it("cancels an old queued single-item dispatch through the authorized transfer, without launching anything",async()=>{
     const f=await fixture(),item=f.item(),d=f.dispatch([item.key]);
     const result=f.transfer(item.key,f.b.id,null);

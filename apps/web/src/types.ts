@@ -655,6 +655,9 @@ export interface ItemDispatchSummary {
   readonly agentKind: AgentKind;
   readonly status: Extract<DispatchStatus, "queued" | "delivered" | "launched" | "failed">;
   readonly createdAt: string;
+  readonly agentSessionId?: string;
+  readonly itemStatus?: WorkItemStatus;
+  readonly issue?: { readonly kind: "dispatch" | "execution"; readonly reason?: string };
 }
 
 /** An in-progress item's dispatch origin: the agent whose session claimed it. */
