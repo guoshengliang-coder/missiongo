@@ -798,7 +798,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .eyebrow-nowrap { white-space: nowrap; }
 .workspace-head h1 { margin: 0; font-size: clamp(27px, 3vw, 38px); letter-spacing: -0.045em; line-height: 1; }
 .workspace-head-side { display: flex; align-items: center; gap: 22px; }
-.refresh-button { width: 36px; padding: 0; display: inline-grid; place-items: center; flex: 0 0 auto; }
+.refresh-button { width: 38px; min-height: 38px; padding: 0; display: inline-grid; place-items: center; flex: 0 0 auto; }
 /* A background re-read on return to the foreground; small and out of the way. */
 .sync-indicator { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--muted); }
 .workspace-stats { display: flex; gap: 22px; color: var(--muted); font-size: var(--text-sm); }
@@ -1073,6 +1073,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .detail-back-button { margin-right: 5px; }
 .toolbar-spacer { flex: 1; }
 .detail-toolbar-actions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.detail-toolbar-actions .secondary-button { min-height: 38px; }
 .detail-more-menu { position: relative; flex: 0 0 auto; }
 .detail-more-menu > summary { width: 38px; min-height: 36px; padding: 0; list-style: none; }
 .detail-more-menu > summary::-webkit-details-marker { display: none; }
@@ -2867,9 +2868,19 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 @media (max-width: 520px) {
   .list-filter-dates { grid-template-columns: minmax(0, 1fr); }
 }
+/* Toolbar icon actions share the desktop size despite the generic button rule. */
+.secondary-button.agent-console-topbar-refresh, .secondary-button.agent-console-topbar-bulk { min-height: 38px; }
 /* Shared page-level back navigation (AND-311). */
-.icon-button.back-button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 0; color: var(--ink-2); background: var(--surface-inset); border: 1px solid var(--line); border-radius: var(--radius-md); }
-@media (hover: hover) { .icon-button.back-button:hover { background: var(--row-hover); } }
+.icon-button.back-button { width: 38px; height: 38px; min-width: 38px; min-height: 38px; padding: 0; color: inherit; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); }
+@media (hover: hover) { .icon-button.back-button:hover { border-color: var(--line-dark); background: var(--surface); } }
+/* Statistics toolbars use larger controls at every viewport size. */
+.statistics-header .icon-button.back-button, .statistics-batch-toolbar .icon-button.back-button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+@media (max-width: 1023px), (pointer: coarse) {
+  .icon-button.back-button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+  .detail-toolbar-actions .secondary-button { min-height: 44px; }
+  .refresh-button { width: 44px; min-height: 44px; }
+  .secondary-button.agent-console-topbar-refresh, .secondary-button.agent-console-topbar-bulk { width: 44px; min-height: 44px; }
+}
 .settings-page-header { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 12px; }
 .settings-page-header > strong { text-align: center; }
 .settings-nav-group { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface-strong); }
