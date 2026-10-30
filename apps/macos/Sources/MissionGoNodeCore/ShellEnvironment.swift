@@ -106,6 +106,11 @@ public struct ShellEnvironment: Sendable, Equatable {
     /// PATH lookup for a bare command name, the way `spawn("claude")` does it.
     /// `Process` needs an absolute executable; a name with a slash is used as is.
     public func which(_ command: String) -> String? {
+        let override = command == "claude" ? environment["MISSIONGO_CLAUDE_EXECUTABLE"]
+            : command == "codex" ? environment["MISSIONGO_CODEX_EXECUTABLE"] : nil
+        if let override, !override.isEmpty {
+            return Paths.isAbsolute(override) && FileManager.default.isExecutableFile(atPath: override) ? override : nil
+        }
         if command.contains("/") { return command }
         for directory in path.split(separator: ":") where !directory.isEmpty {
             let candidate = "\(directory)/\(command)"
@@ -135,17 +140,17 @@ public typealias CommandRunner = @Sendable (_ file: String, _ args: [String]) as
 public enum Commands {
     static let timeout: TimeInterval = 15
 
-    public static func runner(environment: ShellEnvironment) -> CommandRunner {
+    public static func runner(environment: ShellEnvironment, directory: String? = nil) -> CommandRunner {
         return { file, args in
             await withCheckedContinuation { continuation in
                 DispatchQueue.global().async {
-                    continuation.resume(returning: runSync(file, args, environment: environment))
+                    continuation.resume(returning: runSync(file, args, environment: environment, directory: directory))
                 }
             }
         }
     }
 
-    static func runSync(_ file: String, _ args: [String], environment: ShellEnvironment) -> CommandResult {
+    static func runSync(_ file: String, _ args: [String], environment: ShellEnvironment, directory: String? = nil) -> CommandResult {
         // A binary that is not installed and one that fails are the same thing to
         // every caller: not usable. Both come back as a non-zero code.
         guard let executable = environment.which(file) else {
@@ -155,6 +160,7 @@ public enum Commands {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args
         process.environment = environment.environment
+        if let directory { process.currentDirectoryURL = URL(fileURLWithPath: directory) }
         process.standardInput = FileHandle.nullDevice
         let stdout = Pipe()
         let stderr = Pipe()

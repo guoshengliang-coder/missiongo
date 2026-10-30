@@ -31,21 +31,34 @@ enum AuthenticationFiles {
 }
 
 public enum ClaudeAuthentication {
+    public static func effectiveEnvironment(
+        _ environment: [String: String], home: String = Paths.homeDirectory(), repoPath: String? = nil
+    ) throws -> [String: String] {
+        let directory = AuthenticationFiles.nonempty(environment["CLAUDE_CONFIG_DIR"]) ?? "\(home)/.claude"
+        var files = ["\(directory)/settings.json"]
+        if let repoPath {
+            files += ["\(repoPath)/.claude/settings.json", "\(repoPath)/.claude/settings.local.json"]
+        }
+        // Local managed env takes precedence over user/project settings.
+        files.append("/Library/Application Support/ClaudeCode/managed-settings.json")
+        var effective = environment
+        for file in files {
+            if let settings = try AuthenticationFiles.json(file), let values = settings["env"] {
+                guard let values = values as? [String: String] else { throw CocoaError(.fileReadCorruptFile) }
+                effective.merge(values) { _, configured in configured }
+            }
+        }
+        return effective
+    }
+
     public static func check(
         run: CommandRunner,
         environment: [String: String],
-        home: String = Paths.homeDirectory()
+        home: String = Paths.homeDirectory(), repoPath: String? = nil
     ) async -> LocalAuthentication {
-        let directory = AuthenticationFiles.nonempty(environment["CLAUDE_CONFIG_DIR"]) ?? "\(home)/.claude"
-        var effective = environment
+        let effective: [String: String]
         do {
-            if let settings = try AuthenticationFiles.json("\(directory)/settings.json"),
-               let values = settings["env"] {
-                guard let values = values as? [String: String] else { return .unreadable }
-                // Claude applies settings.env to its process environment, including
-                // explicit empty strings. Never resurrect a masked process key.
-                effective.merge(values) { _, configured in configured }
-            }
+            effective = try effectiveEnvironment(environment, home: home, repoPath: repoPath)
         } catch { return .unreadable }
         if ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"].contains(where: {
             AuthenticationFiles.nonempty(effective[$0]) != nil
@@ -59,15 +72,26 @@ public enum ClaudeAuthentication {
 }
 
 public enum CodexAuthentication {
+    static func hasConfiguration(location: CodexLocation, repoPath: String?) -> Bool {
+        if Paths.exists("\(location.codexHome)/config.toml") { return true }
+        guard let repoPath else { return false }
+        var directory = URL(fileURLWithPath: repoPath).standardizedFileURL
+        while directory.path != "/" {
+            if Paths.exists(directory.appendingPathComponent(".codex/config.toml").path) { return true }
+            if Paths.exists(directory.appendingPathComponent(".git").path) { break }
+            directory.deleteLastPathComponent()
+        }
+        return false
+    }
     public static func check(
-        binary: String, run: CommandRunner, environment: ShellEnvironment, location: CodexLocation
+        binary: String, run: CommandRunner, environment: ShellEnvironment, location: CodexLocation, repoPath: String? = nil
     ) async -> LocalAuthentication {
         // Codex owns TOML parsing and configuration layering. Do not try to
         // recognize a provider with regexes (comments/quoted tables can fool them).
         let config: [String: Any]
-        if Paths.exists("\(location.codexHome)/config.toml") {
+        if hasConfiguration(location: location, repoPath: repoPath) || environment.environment["MISSIONGO_CODEX_EXECUTABLE"] != nil {
             guard let loaded = await CodexConfigurationProbe.fetch(
-                binary: binary, environment: environment, location: location
+                binary: binary, environment: environment, location: location, cwd: repoPath
             ) else { return .unreadable }
             config = loaded
         } else { config = [:] }

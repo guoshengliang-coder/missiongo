@@ -180,7 +180,7 @@ final class ClaudeCodeStatusTests: XCTestCase {
     }
 
     func testEachProblemSaysHowToFixIt() {
-        XCTAssertEqual(ClaudeCodeStatus.notLoggedIn(version: "2.1.0").summary, "未登录")
+        XCTAssertEqual(ClaudeCodeStatus.notLoggedIn(version: "2.1.0").summary, "未识别认证配置")
         XCTAssertEqual(ClaudeCodeStatus.notLoggedIn(version: "2.1.0").fixHint?.contains("API Key／网关"), true)
         XCTAssertEqual(ClaudeCodeStatus.notLoggedIn(version: "2.1.0").fixCommand, "claude auth login")
         XCTAssertEqual(ClaudeCodeStatus.notInstalled.summary, "未安装")

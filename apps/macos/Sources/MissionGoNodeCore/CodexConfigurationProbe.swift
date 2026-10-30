@@ -7,18 +7,18 @@ import Foundation
 /// started or restarted here. Raw responses/errors must never be logged.
 enum CodexConfigurationProbe {
     static func fetch(
-        binary: String, environment: ShellEnvironment, location: CodexLocation
+        binary: String, environment: ShellEnvironment, location: CodexLocation, cwd: String? = nil
     ) async -> [String: Any]? {
         await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
-                continuation.resume(returning: fetchSync(binary: binary, environment: environment, location: location))
+                continuation.resume(returning: fetchSync(binary: binary, environment: environment, location: location, cwd: cwd))
             }
         }
     }
 
     static func fetchSync(
         binary: String, environment: ShellEnvironment, location: CodexLocation,
-        timeout: TimeInterval = 10
+        timeout: TimeInterval = 10, cwd: String? = nil
     ) -> [String: Any]? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
@@ -26,9 +26,9 @@ enum CodexConfigurationProbe {
         var childEnvironment = environment.environment
         childEnvironment["CODEX_HOME"] = location.codexHome
         process.environment = childEnvironment
-        // Avoid inheriting the node's cwd and accidentally loading a project's
-        // configuration. Provider/auth settings belong to this Codex home.
-        process.currentDirectoryURL = URL(fileURLWithPath: location.codexHome)
+        // A global check must not inherit the app's cwd. A dispatch must read
+        // the same project layers as the thread it will actually start.
+        process.currentDirectoryURL = URL(fileURLWithPath: cwd ?? location.codexHome)
         let input = Pipe()
         let output = Pipe()
         process.standardInput = input
@@ -81,7 +81,9 @@ enum CodexConfigurationProbe {
                     guard message["error"] == nil, message["result"] is [String: Any] else { return nil }
                     do {
                         try send(["method": "initialized"])
-                        try send(["id": 2, "method": "config/read", "params": ["includeLayers": false]])
+                        var params: [String: Any] = ["includeLayers": false]
+                        if let cwd { params["cwd"] = cwd }
+                        try send(["id": 2, "method": "config/read", "params": params])
                     } catch { return nil }
                     initialized = true
                 } else if Int(id) == 2 && initialized {

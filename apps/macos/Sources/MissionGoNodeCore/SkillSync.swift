@@ -71,10 +71,10 @@ public enum SkillSync {
 
     /// Called only after the person enables this specific integration. Do not
     /// even stat the disabled client's home directory.
-    public static func target(for agent: LocalAgent, home: String, codexHome: String) -> String {
+    public static func target(for agent: LocalAgent, home: String, codexHome: String, claudeConfigDirectory: String? = nil) -> String {
         let directory: String
         switch agent {
-        case .claudeCode: directory = "\(home)/.claude"
+        case .claudeCode: directory = AuthenticationFiles.nonempty(claudeConfigDirectory) ?? "\(home)/.claude"
         case .codex: directory = codexHome
         case .openCode: directory = "\(home)/.config/opencode"
         }
@@ -92,8 +92,8 @@ public enum SkillSync {
     }
 
     /// Every file that has to carry the service version before an agent is ready.
-    public static func targets(for agent: LocalAgent, home: String, codexHome: String) -> [String] {
-        let primary = target(for: agent, home: home, codexHome: codexHome)
+    public static func targets(for agent: LocalAgent, home: String, codexHome: String, claudeConfigDirectory: String? = nil) -> [String] {
+        let primary = target(for: agent, home: home, codexHome: codexHome, claudeConfigDirectory: claudeConfigDirectory)
         guard agent == .codex, let shared = sharedCodexTarget(home: home) else { return [primary] }
         return [primary, shared]
     }

@@ -135,7 +135,7 @@ final class LocalAuthenticationTests: XCTestCase {
         let binary = "\(root)/codex"
         try write(#"""
         #!/usr/bin/python3
-        import sys, json
+        import sys, json, os
         for line in sys.stdin:
             message = json.loads(line)
             method = message['method']
@@ -145,7 +145,9 @@ final class LocalAuthenticationTests: XCTestCase {
                 print(json.dumps({'method':'ignored/notification'}), flush=True)
                 continue
             elif method == 'config/read':
-                assert message['params'] == {'includeLayers': False}
+                assert message['params']['includeLayers'] is False
+                assert set(message['params']).issubset({'includeLayers', 'cwd'})
+                if 'cwd' in message['params']: assert os.path.realpath(message['params']['cwd']) == os.getcwd()
                 result = {'config': {'model_provider': 'gateway', 'model_providers': {'gateway': {'env_key': 'GATEWAY_KEY'}}}}
             else:
                 sys.exit(1)
