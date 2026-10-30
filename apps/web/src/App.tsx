@@ -8,7 +8,7 @@ import { pickItemFilters } from "./item-filters";
 import { ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { Modal } from "./modal";
-import { StatusCheckButton } from "./status-check-panel";
+import { StatusCheckButton, StatusCheckPanel } from "./status-check-panel";
 import { localizedErrorText } from "./error-text";
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
 import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -55,6 +55,7 @@ import {
   Sparkles,
   Trash2,
   Undo2,
+  UserRoundCog,
   Video,
   WifiOff,
   X,
@@ -2795,6 +2796,7 @@ function DetailPane({
     };
   }, [itemKey, item?.key]);
   const [transferBuilderOpen, setTransferBuilderOpen] = useState(false);
+  const [statusChecksOpen, setStatusChecksOpen] = useState(false);
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
 
   useEffect(() => {
@@ -2804,6 +2806,7 @@ function DetailPane({
 
   useEffect(() => {
     setEditing(openInEdit);
+    setStatusChecksOpen(false);
   }, [itemKey, openInEdit]);
 
   useEffect(() => {
@@ -2928,59 +2931,36 @@ function DetailPane({
               {quickActionLabel(item.status, t)}
             </button>
           )}
-          <StatusCheckButton productId={item.productId} itemKey={item.key} canOperate={!item.transferred} />
           <RefreshButton refreshing={itemQuery.isFetching || timelineQuery.isFetching} onRefresh={refreshItem} />
           <button className="secondary-button" disabled={item.transferred} onClick={() => setEditing(true)}>{t("edit")}</button>
-          <details className="detail-more-menu" ref={moreActionsRef}>
+          <details className="detail-more-menu" ref={moreActionsRef} onToggle={(event) => { if (!event.currentTarget.open) event.currentTarget.querySelector(".detail-move-menu")?.removeAttribute("open"); }}>
             <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={19} /></summary>
-            <div className="detail-more-menu-popover">
-              {deliveryQuery.data?.canManageBuilder && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferBuilderOpen(true); }}>{t("transferBuilder")}</button>}
-              {!item.transferred && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}>{t("transferItem")}</button>}
-              {secondaryActions.length === 0 && manualTargets.length === 0 && <span>{t("noMoreActions")}</span>}
-              {secondaryActions.filter((action) => action.tone !== "danger").map((action) => (
-                <button
-                  key={`${action.to}-${action.reason}`}
-                  type="button"
-                  disabled={transitionMutation.isPending}
-                  onClick={() => {
-                    moreActionsRef.current?.removeAttribute("open");
-                    startTransition(action);
-                  }}
-                >
-                  {transitionLabel(action.label)}
-                </button>
-              ))}
-              {manualTargets.length > 0 && (
-                <>
-                  <p className="menu-section-label">{t("moveDirectlyTo")}</p>
-                  {manualTargets.map((action) => (
-                    <button
-                      key={action.to}
-                      type="button"
-                      disabled={transitionMutation.isPending}
-                      onClick={() => {
-                        moreActionsRef.current?.removeAttribute("open");
-                        startTransition(action);
-                      }}
-                    >
-                      {statusLabel(action.to)}
-                    </button>
-                  ))}
-                </>
-              )}
+            <div className="detail-more-menu-popover detail-actions-popover">
+              {(deliveryQuery.data?.canManageBuilder || !item.transferred) && <div className="detail-action-group">
+                <p className="detail-action-heading">{t("actionGroupCollaboration")}</p>
+                {deliveryQuery.data?.canManageBuilder && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferBuilderOpen(true); }}><UserRoundCog size={17} aria-hidden="true" />{t("transferBuilder")}</button>}
+                {!item.transferred && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}><ArrowRight size={17} aria-hidden="true" />{t("transferItem")}</button>}
+              </div>}
+              {(secondaryActions.some((action) => action.tone !== "danger") || manualTargets.length > 0) && <div className="detail-action-group">
+                <p className="detail-action-heading">{t("actionGroupStatus")}</p>
+                {secondaryActions.filter((action) => action.tone !== "danger").map((action) => (
+                  <button key={`${action.to}-${action.reason}`} type="button" disabled={transitionMutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}>
+                    {action.to === "on_hold" ? <CirclePause size={17} aria-hidden="true" /> : <Undo2 size={17} aria-hidden="true" />}{transitionLabel(action.label)}
+                  </button>
+                ))}
+                {manualTargets.length > 0 && <details className="detail-move-menu">
+                  <summary><ArrowRight size={17} aria-hidden="true" /><span>{t("moveTo")}</span><ChevronRight className="detail-move-chevron" size={16} aria-hidden="true" /></summary>
+                  <div className="detail-move-popover">
+                    {manualTargets.map((action) => <button key={action.to} type="button" disabled={transitionMutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><CircleDot size={17} aria-hidden="true" />{statusLabel(action.to)}</button>)}
+                  </div>
+                </details>}
+              </div>}
+              <div className="detail-action-group">
+                <p className="detail-action-heading">{t("actionGroupTools")}</p>
+                <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setStatusChecksOpen(true); }}><ClipboardCheck size={17} aria-hidden="true" />{t("statusChecks")}</button>
+              </div>
               {secondaryActions.filter((action) => action.tone === "danger").map((action) => (
-                <button
-                  key={`${action.to}-${action.reason}`}
-                  type="button"
-                  className="danger"
-                  disabled={transitionMutation.isPending}
-                  onClick={() => {
-                    moreActionsRef.current?.removeAttribute("open");
-                    startTransition(action);
-                  }}
-                >
-                  {transitionLabel(action.label)}
-                </button>
+                <div className="detail-action-group" key={`${action.to}-${action.reason}`}><button type="button" className="danger" disabled={transitionMutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><X size={17} aria-hidden="true" />{transitionLabel(action.label)}</button></div>
               ))}
             </div>
           </details>
@@ -3187,6 +3167,7 @@ function DetailPane({
       </div>
       {!item.transferred && <CommentComposer key={item.key} item={item} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
+      {statusChecksOpen && <StatusCheckPanel key={item.key} productId={item.productId} itemKey={item.key} canOperate={!item.transferred} onClose={() => setStatusChecksOpen(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
         <TransferBuilderModal itemKey={item.key} delivery={deliveryQuery.data} onClose={() => setTransferBuilderOpen(false)} />
       )}
