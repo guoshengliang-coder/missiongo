@@ -3,6 +3,10 @@ import { expect, test } from "@playwright/test";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
 import { WEB_ORIGIN } from "./fixture.mjs";
 
+/** The header's single Back, scoped so the sidebar entry of the same name cannot match. */
+const up = (page: import("@playwright/test").Page, name: string) =>
+  page.locator(".settings-page-header").getByRole("button", { name, exact: true });
+
 for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const) {
   test.describe(`${width}px ${theme} configuration overviews`, () => {
     test.use({ viewport: { width, height: width === 375 ? 812 : 900 }, hasTouch: width === 375, isMobile: width === 375, colorScheme: theme });
@@ -25,7 +29,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       if (width === 375) expect(audit.targets.filter(row => row.width > 0 && row.height > 0 && (row.width < 44 || row.height < 44))).toEqual([]);
       await card.click();
       await expect(page).toHaveURL(new RegExp(`/settings/products/${product.id}\\?`));
-      await page.getByRole("navigation", { name: "设置位置" }).getByRole("button", { name: "产品配置", exact: true }).click();
+      await up(page, "产品配置").click();
       await expect(card).toBeVisible();
       await card.click();
       await page.locator(".settings-hub-row").filter({ hasText: "基本资料" }).click();
@@ -61,7 +65,7 @@ test("administrator overview shows assignments and enters explicitly scoped deta
   await expect(page.locator(".settings-page-title")).toContainText(`作用于产品：${product.name}`);
   await expect(page.locator(".settings-page-title")).not.toContainText("影响整个工作空间");
   await expect(page.getByRole("checkbox", { name: new RegExp(member.email) })).toBeChecked();
-  await page.getByRole("navigation", { name: "设置位置" }).getByRole("button", { name: "产品管理员", exact: true }).click();
+  await up(page, "产品管理员").click();
   await expect(card).toBeVisible();
 });
 

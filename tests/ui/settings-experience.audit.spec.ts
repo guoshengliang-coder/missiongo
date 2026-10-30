@@ -8,6 +8,8 @@ const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.m
 const productPath = (id: string) => `/settings/products/${id}/product`;
 const nav = (page: Page) => page.getByRole("navigation", { name: "设置", exact: true });
 const hub = (page: Page, label: string) => page.locator(".settings-hub-row").filter({ has: page.getByText(label, { exact: true }) });
+/** The header's single Back, which is scoped so the sidebar entry of the same name cannot match. */
+const up = (page: Page, name: string) => page.locator(".settings-page-header").getByRole("button", { name, exact: true });
 async function openProduct(page: Page, productId = fixture.productId) {
   await nav(page).getByRole("button", { name: "产品配置", exact: true }).click();
   await page.locator(`.settings-product-card[data-product-id="${productId}"]`).click();
@@ -39,12 +41,16 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await page.reload();
       await expect(page.getByRole("heading", { name: "基本资料", level: 1, exact: true })).toBeVisible();
       if (width === 375) {
-        await page.getByRole("button", { name: "设置目录", exact: true }).click();
+        // The header Back walks up one level at a time (AND-316).
+        await up(page, "产品概览").click();
+        await up(page, "产品配置").click();
+        await up(page, "设置目录").click();
         await expect(nav(page)).toBeVisible();
       }
       await nav(page).getByRole("button", { name: "显示", exact: true }).click();
       await expect(page.getByText("修改后自动保存。保存失败时会恢复之前的设置。", { exact: true })).toBeVisible();
-      await page.getByRole("button", { name: "返回工作区", exact: true }).click();
+      await up(page, "设置目录").click();
+      await up(page, "返回工作区").click();
       await expect(page).toHaveURL(new RegExp(`^https?://[^/]+/\\?product=${fixture.productId}$`));
       await expect(page.locator(".app-shell")).toBeVisible();
     });

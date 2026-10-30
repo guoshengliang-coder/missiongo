@@ -5,6 +5,9 @@ import { WEB_ORIGIN } from "./fixture.mjs";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string };
+/** The header's single Back, which is scoped so the sidebar entry of the same name cannot match. */
+const up = (page: import("@playwright/test").Page, name: string) =>
+  page.locator(".settings-page-header").getByRole("button", { name, exact: true });
 
 for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const) {
   test.describe(`${width}px ${theme} settings hierarchy`, () => {
@@ -20,8 +23,9 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await page.locator(".settings-hub-row").filter({ hasText: "派单默认值" }).click();
       await expect(page).toHaveURL(/\/settings\/agent\/dispatch/);
       await expect(page.locator(".settings-page-title")).toContainText("仅影响当前账号");
-      await page.getByRole("navigation", { name: "设置位置" }).getByRole("button", { name: "Agent 配置", exact: true }).click();
-      if (width === 375) await page.getByRole("button", { name: "设置目录", exact: true }).click();
+      // One Back, one level: the header names the section it returns to (AND-316).
+      await up(page, "Agent 配置").click();
+      await up(page, "设置目录").click();
       await nav.getByRole("button", { name: "产品配置", exact: true }).click();
       await expect(page.getByRole("combobox", { name: "当前产品", exact: true })).toHaveCount(0);
       await page.locator(`.settings-product-card[data-product-id="${fixture.productId}"]`).click();
@@ -42,6 +46,38 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
     });
   });
 }
+
+// AND-316: the report was two stacked back arrows on a phone. Every settings
+// screen now carries exactly one, and it moves one level -- the same level the
+// system Back gesture moves.
+test.describe("phone settings Back", () => {
+  test.use({ viewport: { width: 353, height: 757 }, hasTouch: true, isMobile: true });
+
+  test("offers a single Back per screen and moves exactly one level", async ({ page }) => {
+    await page.goto(`/settings/agent/devices?product=${fixture.productId}`);
+    await expect(page.locator(".settings-page-header").getByRole("button")).toHaveCount(1);
+    await expect(page.locator(".settings-directory-back, .settings-breadcrumb")).toHaveCount(0);
+    await up(page, "Agent 配置").click();
+    await expect(page).toHaveURL(/\/settings\/agent(?:\?|$)/);
+    await up(page, "设置目录").click();
+    await expect(page).toHaveURL(/\/settings(?:\?|$)/);
+    await up(page, "返回工作区").click();
+    await expect(page).toHaveURL(new RegExp(`^https?://[^/]+/\\?product=${fixture.productId}$`));
+  });
+
+  test("the header Back and the system Back walk the same history", async ({ page }) => {
+    await page.goto(`/settings?product=${fixture.productId}`);
+    await page.getByRole("navigation", { name: "设置", exact: true }).getByRole("button", { name: "Agent 配置", exact: true }).click();
+    await page.locator(".settings-hub-row").filter({ hasText: "派单默认值" }).click();
+    await expect(page).toHaveURL(/\/settings\/agent\/dispatch/);
+    // Going up pops the entry it came from, so the next system Back continues
+    // upwards instead of walking forward into the page just left.
+    await up(page, "Agent 配置").click();
+    await expect(page).toHaveURL(/\/settings\/agent(?:\?|$)/);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/settings(?:\?|$)/);
+  });
+});
 
 test("unifies account permissions, filters products, opens account details and guards permission drafts", async ({ page, request }) => {
   const created = await request.post("/api/v1/accounts", { data: { email: "hierarchy-member@example.test", password: randomBytes(18).toString("base64url"), role: "member" } });
@@ -96,7 +132,7 @@ test("module details are restorable and refuse to silently discard a module edit
   await page.reload();
   const input = page.getByRole("textbox", { name: "模块名称", exact: true });
   await input.fill("Unsaved module");
-  await page.getByRole("navigation", { name: "设置位置" }).getByRole("button", { name: "模块管理", exact: true }).click();
+  await up(page, "模块管理").click();
   await page.getByRole("dialog").getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(input).toHaveValue("Unsaved module");
 });

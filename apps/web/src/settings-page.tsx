@@ -96,6 +96,15 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
     : route.section === "overview" || route.section === "new-product" ? { section: "products" }
     : inProduct && route.section !== "products" ? { section: "overview", productId: route.productId }
     : undefined;
+  /**
+   * One level up, and only one (AND-316). The header holds the single Back the
+   * screen offers: to the section this page came from, to the settings directory
+   * when it has no parent, and to the workspace from the directory itself.
+   * A second "back to workspace" beside it read as two stacked arrows and made
+   * Back skip a level, so the parent's name is the label instead.
+   */
+  const up: SettingsRoute | null = parent ?? (route.section === "index" ? null : { section: "index" });
+  const upLabel = parent ? t(LABELS[parent.section]) : route.section === "index" ? t("settingsBackToWorkspace") : t("settingsDirectory");
   const title = route.nodeId ? t("settingsDeviceDetail") : route.componentId ? t("settingsComponentDetail")
     : route.accountId ? t("settingsAccountDetail") : route.section === "ai" ? t("settingsModelsTitle") : t(LABELS[route.section]);
   const entry = (section: SettingsSection, description: MessageKey, next: SettingsRoute = { section }) => <button type="button" className="settings-hub-row" onClick={() => navigate(next)}>
@@ -129,7 +138,7 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
     <SettingsDraftProvider guard={guard}>
       <div ref={shell} className={`settings-page ${route.section === "index" ? "settings-directory" : "settings-detail"}`}>
         <header className="settings-page-header">
-          <BackButton label={t("settingsBackToWorkspace")} onClick={() => navigate(null)} />
+          <BackButton label={upLabel} onClick={() => navigate(up)} />
           <strong>{t("settingsEntry")}</strong>
         </header>
         <div className="settings-page-layout">
@@ -145,8 +154,6 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
             const field = event.target;
             requestAnimationFrame(() => { if (content.current) revealSettingsField(field, content.current); });
           }}>
-            <div className="settings-directory-back"><BackButton label={t("settingsDirectory")} onClick={() => navigate({ section: "index" })} /></div>
-            {parent && <nav className="settings-breadcrumb" aria-label={t("settingsLocation")}><BackButton label={t(LABELS[parent.section])} onClick={() => navigate(parent)} /><ChevronRight size={14} /><span>{title}</span></nav>}
             <header className="settings-page-title">
               <div><p>{scope}</p><h1>{title}</h1></div>
               {(inProduct && route.section !== "new-product" || route.section === "access" || route.section === "project-admins" && isAdmin) && <div className="settings-product-actions">

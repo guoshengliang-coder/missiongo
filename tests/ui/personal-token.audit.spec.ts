@@ -60,7 +60,11 @@ for (const width of [375, 1440]) {
         expect(otherResponse.status()).toBe(201);
         const other = await otherResponse.json();
 
-        await page.getByRole("button", { name: "返回工作区", exact: true }).click();
+        // Leave settings one level at a time: connections -> Agent -> directory -> workspace (AND-316).
+        const back = page.locator(".settings-page-header").getByRole("button");
+        await back.click();
+        await back.click();
+        await back.click();
         await openSettings();
         // The second token was created outside the page; reload to read it
         // without the still-fresh query cached by the first creation.
