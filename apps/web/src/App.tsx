@@ -3999,7 +3999,9 @@ function WorkItemFields({
         <header><strong>{t(reportCopy.title)}</strong><small>{t(reportCopy.help)}</small></header>
         <label><FieldLabel required>{t(reportCopy.overview)}</FieldLabel><AutoGrowTextarea value={draft.description} onChange={(event) => updateDraft("description", event.target.value)} placeholder={t(reportCopy.placeholder)} rows={4} maxLength={20_000} required /></label>
         {showsBugFields && (
-          <div className="report-field-grid">
+          <details className="bug-optional-details">
+            <summary><ChevronRight size={16} /><span>{t("bugOptionalDetails")}</span></summary>
+            <div className="report-field-grid">
             <label><FieldLabel>{t("reproductionSteps")}</FieldLabel><AutoGrowTextarea value={draft.reproductionSteps} onChange={(event) => updateDraft("reproductionSteps", event.target.value)} placeholder={t("reproductionStepsPlaceholder")} rows={5} maxLength={20_000} /></label>
             <label><FieldLabel>{t("expectedOutcome")}</FieldLabel><AutoGrowTextarea value={draft.expectedOutcome} onChange={(event) => updateDraft("expectedOutcome", event.target.value)} placeholder={t("expectedOutcomePlaceholder")} rows={5} maxLength={20_000} /></label>
             <label><FieldLabel>{t("impact")}</FieldLabel><AutoGrowTextarea value={draft.impact} onChange={(event) => updateDraft("impact", event.target.value)} placeholder={t("impactPlaceholder")} rows={3} maxLength={10_000} /></label>
@@ -4012,7 +4014,8 @@ function WorkItemFields({
                 <option value="always">{t("frequencyAlways")}</option>
               </select>
             </label>
-          </div>
+            </div>
+          </details>
         )}
       </section>
       <details className="diagnostic-input-block" open={diagnosticsOpen}>
