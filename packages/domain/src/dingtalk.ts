@@ -1,8 +1,11 @@
+export type DingTalkDeliveryMode = "work_notice" | "robot";
 /** Server-owned DingTalk configuration. Secrets never appear in snapshots. */
 export interface DingTalkSettings {
   corpId: string;
   clientId: string;
   agentId: string;
+  deliveryMode: DingTalkDeliveryMode;
+  robotCode: string;
   configured: boolean;
   revision: number;
 }
@@ -10,6 +13,8 @@ export interface DingTalkSettingsInput {
   corpId: string;
   clientId: string;
   agentId: string;
+  deliveryMode?: DingTalkDeliveryMode;
+  robotCode?: string;
   clientSecret?: string;
   expectedRevision: number;
 }

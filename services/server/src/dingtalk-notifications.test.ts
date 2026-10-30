@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
 import { hashPassword } from "./admin-auth.js";
@@ -13,13 +14,14 @@ const apps:FastifyInstance[]=[];const dirs:string[]=[];
 const password="synthetic notification password",secret="synthetic-notification-encryption-key",passwordScrypt=hashPassword(password);
 afterEach(async()=>{await Promise.all(apps.splice(0).map(app=>app.close()));for(const dir of dirs.splice(0))rmSync(dir,{recursive:true,force:true});});
 async function fixture() {
-  const requests:Array<{url:string;body:Record<string,unknown>}>=[];
+  const requests:Array<{url:string;body:Record<string,unknown>;method:string;headers:Record<string,string>}>=[];
   let send:()=>Promise<Response>=async()=>Response.json({errcode:0,task_id:123});
   let result:Record<string,unknown>={errcode:0,send_result:{unread_user_id_list:["employee-one"]}};
   const fetchImpl=vi.fn(async(url:unknown,init?:RequestInit)=>{
-    requests.push({url:String(url),body:JSON.parse(String(init?.body??"{}"))});
+    requests.push({url:String(url),body:JSON.parse(String(init?.body??"{}")),method:init?.method??"GET",headers:Object.fromEntries(new Headers(init?.headers))});
     if(String(url).includes("/gettoken"))return Response.json({errcode:0,access_token:"synthetic-token",expires_in:7200});
     if(String(url).includes("/getsendresult"))return Response.json(result);
+    if(String(url).includes("/readStatus"))return Response.json(result);
     return send();
   }) as unknown as typeof fetch;
   const app=buildApp({dingtalkFetch:fetchImpl,dingtalkWorker:false,publicOrigin:"https://example.test",adminAccount:{id:"admin",username:"admin@example.test",passwordScrypt,sessionSecret:secret,cookieSecure:false}});apps.push(app);
@@ -95,6 +97,59 @@ describe("DingTalk configuration and mappings",()=>{
     const binding=f.service.bindings()[0]!;
     f.service.saveBinding(f.member.id,{userId:"employee-corrected",name:"",department:""},binding.revision,"admin");
     expect(f.service.tests()).toEqual({});
+  });
+});
+describe("DingTalk robot single-chat notices",()=>{
+  const configure=(f:Awaited<ReturnType<typeof fixture>>)=>f.service.saveSettings({corpId:"synthetic-corp",clientId:"synthetic-app",agentId:"",deliveryMode:"robot",robotCode:"synthetic-robot",clientSecret:"synthetic-client-secret",expectedRevision:f.service.settings().revision},"admin");
+  it("validates robot configuration, preserves old settings and reuses the same account mappings",async()=>{
+    const f=await fixture();f.config();f.bind();
+    expect(f.service.settings()).toMatchObject({deliveryMode:"work_notice",robotCode:""});
+    expect(()=>f.service.saveSettings({corpId:"synthetic-corp",clientId:"synthetic-app",agentId:"",deliveryMode:"robot",expectedRevision:1},"admin")).toThrow(/robotCode/);
+    configure(f);expect(f.service.settings()).toMatchObject({deliveryMode:"robot",robotCode:"synthetic-robot",agentId:"",configured:true});
+    expect(f.service.bindings()[0]?.userId).toBe("employee-one");
+    f.service.saveSettings({corpId:"synthetic-corp",clientId:"synthetic-app",agentId:"",expectedRevision:2},"admin");
+    expect(f.service.settings().deliveryMode).toBe("robot");
+    expect(JSON.stringify(f.service.settings())).not.toContain("synthetic-client-secret");
+    expect(()=>f.service.saveSettings({corpId:"synthetic-corp",clientId:"synthetic-app",agentId:"",deliveryMode:"work_notice",expectedRevision:3},"admin")).toThrow(/Agent ID/);
+  });
+  it("sends one robot DM and waits for a successful result that names the recipient",async()=>{
+    const f=await fixture();configure(f);f.bind();f.enable();const item=f.create();f.verify(item.key);
+    f.setSend(async()=>Response.json({processQueryKey:"synthetic-query",invalidStaffIdList:[],flowControlledStaffIdList:[]}));
+    await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
+    const sent=f.requests.find(r=>r.url.includes("/batchSend"))!;
+    expect(sent.method).toBe("POST");expect(sent.headers["x-acs-dingtalk-access-token"]).toBe("synthetic-token");
+    expect(sent.url).toBe("https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend");
+    expect(sent.body).toMatchObject({robotCode:"synthetic-robot",userIds:["employee-one"],msgKey:"sampleActionCard"});
+    const card=JSON.parse(sent.body.msgParam as string);expect(card.singleURL).toContain(`item=${item.key}`);expect(card.text).toContain("无需回复");expect(card.title).toBe("你提出的条目已进入待验证");
+    f.setResult({sendStatus:"PROCESSING",messageReadInfoList:[{userId:"employee-one",readStatus:"UNREAD"}]});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
+    f.setResult({sendStatus:"SUCCESS",messageReadInfoList:[{userId:"other-user",readStatus:"UNREAD"}]});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
+    f.setResult({sendStatus:"SUCCESS",messageReadInfoList:[{userId:"employee-one",readStatus:"UNREAD"}]});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("sent");
+    const query=f.requests.at(-1)!;expect(query.method).toBe("GET");expect(new URL(query.url).searchParams.get("processQueryKey")).toBe("synthetic-query");
+    expect(f.requests.some(r=>r.url.includes("asyncsend_v2")||r.url.includes("getsendresult"))).toBe(false);
+  });
+  it.each(["invalidStaffIdList","flowControlledStaffIdList"])("treats %s as an explicit failure without marking the request successful",async field=>{
+    const f=await fixture();configure(f);f.bind();f.enable();const item=f.create();f.verify(item.key);
+    f.setSend(async()=>Response.json({processQueryKey:"rejected-query",[field]:["employee-one"]}));
+    for(let i=0;i<3;i++){f.due();await f.service.drain();}
+    expect(f.service.list(item.id)[0]).toMatchObject({status:"failed",attempts:3});expect(f.requests.some(r=>r.url.includes("/readStatus"))).toBe(false);
+  });
+  it("shows useful robot errors, never records provider messages and does not resend ambiguous failures",async()=>{
+    const f=await fixture();configure(f);f.bind();
+    const test=f.service.test(f.member.id,"admin");
+    f.setSend(async()=>Response.json({code:"robot.oto.notExist",message:"synthetic-private-provider-text"},{status:400}));
+    await f.service.drain();expect(f.service.tests()[f.member.id]?.reason).toContain("打开机器人会话");
+    expect(JSON.stringify(f.service.tests())).not.toContain("synthetic-private-provider-text");
+    f.setSend(async()=>{throw new Error("network interrupted");});f.due();await f.service.drain();
+    expect(f.service.tests()[f.member.id]).toMatchObject({id:test.id,status:"uncertain"});
+    f.due();await f.service.drain();expect(f.requests.filter(r=>r.url.includes("/batchSend"))).toHaveLength(2);
+    expect(f.requests.find(r=>r.url.includes("/batchSend"))?.body.msgKey).toBe("sampleText");
+  });
+  it("does not query a robot task through another configuration after switching channels",async()=>{
+    const f=await fixture();configure(f);f.bind();f.enable();const item=f.create();f.verify(item.key);
+    f.setSend(async()=>Response.json({processQueryKey:"robot-query"}));await f.service.drain();
+    f.service.saveSettings({corpId:"synthetic-corp",clientId:"synthetic-app",agentId:"123",deliveryMode:"work_notice",expectedRevision:1},"admin");
+    f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("uncertain");
+    expect(f.requests.some(r=>r.url.includes("/getsendresult")||r.url.includes("/readStatus"))).toBe(false);
   });
 });
 describe("durable verification notification delivery",()=>{
@@ -186,9 +241,13 @@ describe("durable verification notification delivery",()=>{
     service.saveBinding(admin.id,{userId:"persistent-user",name:"",department:""},null,admin.id);service.saveProject(product.id,admin,true,false);
     const item=store.createWorkItem({productId:product.id,type:"task",priority:"normal",title:"Persistent queue",description:"Details",attribution:{accountId:admin.id}});store.transitionWorkItem({itemKey:item.key,to:"pending_verification",actor:"human",reason:"manual_override"});
     store.close();expect(readFileSync(path).includes(Buffer.from("synthetic-client-secret"))).toBe(false);
+    // Recreate the previously shipped settings shape before reopening: the
+    // upgrade must preserve encrypted credentials, bindings and pending jobs.
+    const old=new DatabaseSync(path);
+    old.exec("ALTER TABLE dingtalk_settings DROP COLUMN delivery_mode; ALTER TABLE dingtalk_settings DROP COLUMN robot_code; DELETE FROM schema_migrations WHERE version=202610301329;");old.close();
     store=new MissionGoStore(path);accounts=new AccountStore(store.database);const fetchMock=vi.fn(async(url:unknown)=>String(url).includes("gettoken")?Response.json({errcode:0,access_token:"synthetic-token",expires_in:7200}):Response.json({errcode:0,task_id:17}));
     service=new DingTalkNotifications(store,accounts,secret,"https://example.test",fetchMock as unknown as typeof fetch);
-    try{expect(service.settings().configured).toBe(true);expect(service.bindings()).toHaveLength(1);expect(service.list(item.id)).toHaveLength(1);await service.drain();expect(service.list(item.id)[0]?.status).toBe("accepted");}
+    try{expect(service.settings()).toMatchObject({configured:true,deliveryMode:"work_notice",robotCode:""});expect(service.bindings()).toHaveLength(1);expect(service.list(item.id)).toHaveLength(1);await service.drain();expect(service.list(item.id)[0]?.status).toBe("accepted");}
     finally{await service.close();store.close();}
   });
 });
