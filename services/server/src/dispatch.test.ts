@@ -708,6 +708,59 @@ describe("Dispatching the same item twice", () => {
     });
   });
 
+  it.each(["failed", "retry"] as const)("accepts daemon environment %s results and preserves the startup reason", async (status) => {
+    const { app, cookie, mission, mini } = await setup();
+    const { id } = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
+    const headers = { authorization: `Bearer ${mini.token}` };
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
+    expect((await app.inject({ method: "POST", url: `/api/v1/node/dispatches/${id}/result`, headers,
+      payload: { status, failureCode: "daemon_environment", failureStage: "preflight",
+        error: "Daemon environment differs; active sessions prevent restart", ...(status === "retry" ? { retryAfterSeconds: 30 } : {}) },
+    })).statusCode).toBe(204);
+    const history = await app.inject({ method: "GET", url: `/api/v1/items/${mission.itemKey}/dispatches`, headers: { cookie } });
+    expect(history.json()).toMatchObject({ dispatches: [{ id, status: status === "retry" ? "queued" : "failed",
+      failureCode: "daemon_environment", error: "Daemon environment differs; active sessions prevent restart" }] });
+    expect((await app.inject({ method: "GET", url: `/api/v1/items/${mission.itemKey}`, headers: { cookie } })).json()).toMatchObject({ status: "ready" });
+  });
+
+  it("retains rejected receipts without claiming a launch, scopes them to the node, and clears them on recovery", async () => {
+    const { app, cookie, mission, mini, laptop } = await setup();
+    const { id } = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
+    const headers = { authorization: `Bearer ${mini.token}` };
+    const resultUrl = `/api/v1/node/dispatches/${id}/result`;
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
+    const payload = { status: "failed", failureCode: "future_failure", error: "Original startup failure" };
+    expect((await app.inject({ method: "POST", url: resultUrl,
+      headers: { authorization: `Bearer ${laptop.token}` }, payload })).statusCode).toBe(404);
+    const history = () => app.inject({ method: "GET", url: `/api/v1/items/${mission.itemKey}/dispatches`, headers: { cookie } });
+    expect((await history()).body).not.toContain("resultRejection");
+    expect((await app.inject({ method: "POST", url: resultUrl, headers, payload })).statusCode).toBe(400);
+    const rejected = (await history()).json().dispatches[0];
+    expect(rejected).toMatchObject({ status: "delivered", diagnosticSnapshot: { resultRejection: {
+      launchError: "Original startup failure", reason: "Unsupported dispatch failure code.", receivedAt: expect.any(String),
+    } } });
+    expect(rejected.error).toContain("Original startup failure");
+    expect(rejected.agentSessionId).toBeUndefined();
+    const sessions = () => app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie } });
+    expect((await sessions()).json()).toMatchObject({ sessions: [{ dispatchId: id, dispatchStatus: "delivered",
+      dispatchResultRejected: true, status: "failed", retryable: false, lastError: expect.stringContaining("Original startup failure") }] });
+    // Malformed fields are also retained, even before recordDispatchResult is reached.
+    expect((await app.inject({ method: "POST", url: resultUrl, headers,
+      payload: { status: "retry", retryAfterSeconds: 1, error: "Retry could not start" } })).statusCode).toBe(400);
+    expect((await history()).body).toContain("Retry could not start");
+    expect((await app.inject({ method: "POST", url: resultUrl, headers,
+      payload: { status: "launched", sessionName: "Recovered", sessionUrl: "codex://threads/recovered-thread", sessionRef: "recovered-thread" },
+    })).statusCode).toBe(204);
+    const recovered = (await history()).json().dispatches[0];
+    expect(recovered.status).toBe("launched");
+    expect(recovered.error).toBeUndefined();
+    expect(recovered.diagnosticSnapshot.resultRejection).toBeUndefined();
+    expect((await sessions()).json().sessions[0].dispatchResultRejected).toBeUndefined();
+    // A late malformed receipt cannot overwrite the accepted result.
+    expect((await app.inject({ method: "POST", url: resultUrl, headers, payload })).statusCode).toBe(400);
+    expect((await history()).body).not.toContain("resultRejection");
+  });
+
   it("requeues a transient node failure with backoff and preserves MCP diagnostics", async () => {
     const { app, cookie, mission, mini } = await setup();
     const dispatch = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();

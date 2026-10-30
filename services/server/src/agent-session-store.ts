@@ -151,6 +151,7 @@ export interface AgentSessionListItem {
   readonly nodeRevoked: boolean;
   readonly mode: string;
   readonly dispatchStatus: string;
+  readonly dispatchResultRejected?: boolean;
   readonly sessionName?: string;
   readonly sessionUrl?: string;
   readonly createdAt: string;
@@ -322,6 +323,7 @@ interface SessionListRow {
   session_turn_state_json: string | null;
   dispatch_archived_at: string | null;
   dispatch_error: string | null;
+  dispatch_diagnostic_json: string | null;
   node_id: string;
   node_name: string;
   node_last_seen_at: string | null;
@@ -744,6 +746,7 @@ export class AgentSessionStore {
                 d.node_id, COALESCE(n.nickname, n.name) AS node_name, n.last_seen_at AS node_last_seen_at,
                 n.revoked_at AS node_revoked_at, d.mode, d.status AS dispatch_status,
                 d.session_name, d.session_url, d.error AS dispatch_error,
+                d.diagnostic_snapshot_json AS dispatch_diagnostic_json,
                 d.created_at, d.delivered_at, d.completed_at, d.archived_at AS dispatch_archived_at,
                 d.unread_at, d.read_at,
                 d.mode AS dispatch_mode, d.model AS dispatch_model, d.effort AS dispatch_effort,
@@ -787,9 +790,11 @@ export class AgentSessionStore {
         } | undefined
         : undefined;
       const command = row.session_id ? this.latestCommand(row.session_id) : undefined;
+      const resultRejected = !row.session_id && row.dispatch_status === "delivered"
+        && Boolean(row.dispatch_diagnostic_json && JSON.parse(row.dispatch_diagnostic_json).resultRejection);
       const deliveryTimedOut = !row.session_id && row.dispatch_status === "delivered"
         && deliveredDispatchTimedOut(row.delivered_at);
-      const inferredStatus: AgentSessionStatus = row.dispatch_status === "failed" || deliveryTimedOut
+      const inferredStatus: AgentSessionStatus = row.dispatch_status === "failed" || deliveryTimedOut || resultRejected
         ? "failed"
         : row.dispatch_status === "cancelled"
           ? "unavailable"
@@ -885,6 +890,7 @@ export class AgentSessionStore {
         nodeRevoked: Boolean(row.node_revoked_at),
         mode: row.mode,
         dispatchStatus: row.dispatch_status,
+        ...(resultRejected ? { dispatchResultRejected: true } : {}),
         ...(row.session_name ? { sessionName: row.session_name } : {}),
         ...(row.session_url ? { sessionUrl: row.session_url } : {}),
         createdAt: row.created_at,

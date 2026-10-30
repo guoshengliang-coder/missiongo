@@ -584,6 +584,19 @@ public enum DispatchPresentation {
         return lines.count > 1 ? first + "…" : first
     }
 
+    /// Keep the launch result and its upload error distinct.
+    public static func localLaunchProblem(_ launch: LocalLaunch) -> String? {
+        let startup = launch.report.error ?? failureHint(
+            code: launch.report.failureCode, stage: launch.report.failureStage, agentKind: launch.agentKind)
+        if !launch.reported {
+            let result = launch.report.status == .launched
+                ? "本机会话已启动，请先核对原会话，避免重复派单。"
+                : "本机启动错误：\(startup ?? "未知原因")"
+            return "派单结果回传失败：\(launch.resultReportError ?? "服务器未确认接收")\n\(result)"
+        }
+        return startup.map { "最近一次本机启动失败：\($0)" }
+    }
+
     /// What actually went wrong, kept separately from `error`: a dispatch that
     /// is later replaced has its `error` overwritten with "已被重新派单取代",
     /// but its failure code and diagnostic snapshot still say why it never ran.
@@ -599,6 +612,8 @@ public enum DispatchPresentation {
             return "missiongo MCP 未登录或授权失效：在对应客户端重新登录"
         case "mcp_timeout":
             return "MissionGo MCP 启动超时：重启 Codex 后台服务后重试"
+        case "daemon_environment":
+            return "Codex 后台服务环境与当前启动环境不一致或无法核实，请先核对本机环境"
         case "daemon_down":
             return "Codex 后台服务不可用：运行 codex app-server daemon start"
         case "skill_stale":

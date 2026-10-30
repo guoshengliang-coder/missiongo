@@ -21,14 +21,11 @@ struct DispatchesSection: View {
                 }
             }
             if let launch = model.latestLaunchFailure,
-               !model.recentDispatches.contains(where: { $0.id == launch.dispatchId }),
-               let problem = DispatchPresentation.failureHint(
-                   code: launch.report.failureCode, stage: launch.report.failureStage,
-                   agentKind: launch.agentKind
-               ) ?? DispatchPresentation.shortError(launch.report.error) {
+               (!launch.reported || !model.recentDispatches.contains(where: { $0.id == launch.dispatchId })),
+               let problem = DispatchPresentation.localLaunchProblem(launch) {
                 // The console list can be stale or unreachable; this Mac still
                 // knows why its most recent launch did not start.
-                WrappingCaption(text: "最近一次本机启动失败：\(problem)", color: .red)
+                WrappingCaption(text: problem, color: .red)
             }
             if model.recentDispatches.isEmpty {
                 if model.dispatchesError == nil {

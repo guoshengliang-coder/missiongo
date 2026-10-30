@@ -3477,32 +3477,46 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.post("/api/v1/node/dispatches/:dispatchId/result", async (request, reply) => {
     const node = requireNode(request);
     const { dispatchId } = request.params as { dispatchId: string };
-    const body = objectBody(request.body);
-    const status = stringField(body, "status")!;
-    if (status !== "launched" && status !== "failed" && status !== "retry") {
-      throw invalidInput("status must be launched, failed or retry.");
+    let status: string;
+    let sessionRef: string | undefined;
+    try {
+      const body = objectBody(request.body);
+      status = stringField(body, "status")!;
+      if (status !== "launched" && status !== "failed" && status !== "retry") {
+        throw invalidInput("status must be launched, failed or retry.");
+      }
+      const retryAfterSeconds = body.retryAfterSeconds === undefined ? undefined : Number(body.retryAfterSeconds);
+      if (retryAfterSeconds !== undefined && (!Number.isInteger(retryAfterSeconds) || retryAfterSeconds < 5 || retryAfterSeconds > 300)) {
+        throw invalidInput("retryAfterSeconds must be an integer from 5 to 300.");
+      }
+      const diagnosticSnapshot = body.diagnosticSnapshot;
+      if (diagnosticSnapshot !== undefined && (!diagnosticSnapshot || typeof diagnosticSnapshot !== "object" || Array.isArray(diagnosticSnapshot))) {
+        throw invalidInput("diagnosticSnapshot must be an object.");
+      }
+      sessionRef = stringField(body, "sessionRef", false);
+      dispatchStore.recordDispatchResult({
+        nodeId: node.nodeId,
+        dispatchId,
+        status,
+        ...(stringField(body, "sessionName", false) ? { sessionName: body.sessionName as string } : {}),
+        ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
+        ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
+        ...(stringField(body, "failureCode", false) ? { failureCode: body.failureCode as DispatchFailureCode } : {}),
+        ...(stringField(body, "failureStage", false) ? { failureStage: body.failureStage as DispatchFailureStage } : {}),
+        ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+        ...(diagnosticSnapshot === undefined ? {} : { diagnosticSnapshot: diagnosticSnapshot as DispatchDiagnosticSnapshot }),
+      });
+    } catch (error) {
+      if (error instanceof MissionGoError && error.statusCode === 400) {
+        const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+          ? request.body as Record<string, unknown> : {};
+        dispatchStore.recordRejectedDispatchResult({
+          nodeId: node.nodeId, dispatchId, reason: error.message,
+          ...(typeof body.error === "string" ? { launchError: body.error } : {}),
+        });
+      }
+      throw error;
     }
-    const retryAfterSeconds = body.retryAfterSeconds === undefined ? undefined : Number(body.retryAfterSeconds);
-    if (retryAfterSeconds !== undefined && (!Number.isInteger(retryAfterSeconds) || retryAfterSeconds < 5 || retryAfterSeconds > 300)) {
-      throw invalidInput("retryAfterSeconds must be an integer from 5 to 300.");
-    }
-    const diagnosticSnapshot = body.diagnosticSnapshot;
-    if (diagnosticSnapshot !== undefined && (!diagnosticSnapshot || typeof diagnosticSnapshot !== "object" || Array.isArray(diagnosticSnapshot))) {
-      throw invalidInput("diagnosticSnapshot must be an object.");
-    }
-    dispatchStore.recordDispatchResult({
-      nodeId: node.nodeId,
-      dispatchId,
-      status,
-      ...(stringField(body, "sessionName", false) ? { sessionName: body.sessionName as string } : {}),
-      ...(stringField(body, "sessionUrl", false) ? { sessionUrl: body.sessionUrl as string } : {}),
-      ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
-      ...(stringField(body, "failureCode", false) ? { failureCode: body.failureCode as DispatchFailureCode } : {}),
-      ...(stringField(body, "failureStage", false) ? { failureStage: body.failureStage as DispatchFailureStage } : {}),
-      ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
-      ...(diagnosticSnapshot === undefined ? {} : { diagnosticSnapshot: diagnosticSnapshot as DispatchDiagnosticSnapshot }),
-    });
-    const sessionRef = stringField(body, "sessionRef", false);
     if (status === "launched" && sessionRef) {
       agentSessionStore.createForDispatch({ dispatchId, nodeId: node.nodeId, sessionRef });
     }

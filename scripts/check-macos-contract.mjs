@@ -10,7 +10,7 @@
 // that the server never agreed to offer. Swift cannot import the TypeScript, so
 // this compares the two sources directly.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -53,6 +53,20 @@ for (const [agent, constant, swiftFile] of pairs) {
     failed = true;
   } else {
     console.log(`macOS client and server agree on ${agent} modes: ${serverModes.join(", ")}`);
+  }
+}
+
+// Every literal emitted by Swift must be understood by the result endpoint.
+for (const [argument, constant] of [["failureCode", "DISPATCH_FAILURE_CODES"], ["failureStage", "DISPATCH_FAILURE_STAGES"]]) {
+  const allowed = listIn(domain, new RegExp(`${constant}\\s*=\\s*\\[([^\\]]*)\\]`), constant);
+  for (const file of readdirSync(join(root, "apps/macos/Sources/MissionGoNodeCore")).filter((file) => file.endsWith(".swift"))) {
+    const source = read(`apps/macos/Sources/MissionGoNodeCore/${file}`);
+    for (const match of source.matchAll(new RegExp(`${argument}:\\s*(?:String\\s*=\\s*)?"([^"]+)"`, "g"))) {
+      if (!allowed.includes(match[1])) {
+        console.error(`${file} emits unsupported ${argument}: ${match[1]}`);
+        failed = true;
+      }
+    }
   }
 }
 

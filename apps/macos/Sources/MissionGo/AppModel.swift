@@ -268,7 +268,7 @@ final class AppModel: ObservableObject {
     /// next console refresh.
     var latestLaunchFailure: LocalLaunch? {
         guard let launch = loopState.recentLaunches.first,
-              launch.report.status != .launched else { return nil }
+              (launch.report.status != .launched || !launch.reported) else { return nil }
         return launch
     }
 
@@ -843,7 +843,7 @@ final class AppModel: ObservableObject {
         #endif
         refreshLaunchAtLogin()
         guard credential != nil else { return }
-        if let launch = loopState.recentLaunches.first, launch.report.status != .launched {
+        if let launch = latestLaunchFailure {
             acknowledgedLaunchFailureId = launch.dispatchId
         }
         refreshUnreadSessions()

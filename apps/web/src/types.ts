@@ -557,6 +557,7 @@ export interface AgentSessionSummary {
   readonly nodeRevoked: boolean;
   readonly mode: string;
   readonly dispatchStatus: DispatchStatus | "external";
+  readonly dispatchResultRejected?: boolean;
   readonly sessionName?: string;
   readonly sessionUrl?: string;
   readonly createdAt: string;
