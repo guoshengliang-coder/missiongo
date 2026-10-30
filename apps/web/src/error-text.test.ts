@@ -11,6 +11,10 @@ describe("localizedErrorText", () => {
     expect(localizedErrorText(error, t)).toBe("<errorSignedOut>");
   });
 
+  it("explains project operation permission instead of claiming the project is missing", () => {
+    expect(localizedErrorText(new ApiError(403, "product_operation_not_permitted", "Operation permission required."), t)).toBe("<captureReadOnly>");
+  });
+
   it("names the failures a person can act on", () => {
     expect(errorMessageKey(new ApiError(403, "forbidden", "Forbidden."))).toBe("errorForbidden");
     expect(errorMessageKey(new ApiError(404, "not_found", "Not found."))).toBe("errorNotFound");

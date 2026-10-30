@@ -1775,6 +1775,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!accountStore.allows(requireAccount(request), productId, capability)) throw notFound("Product");
   };
 
+  // For a product the caller already sees, explain a refused write without
+  // disguising it as a missing project. Unreachable products still return 404.
+  const requireCapturePermission = (request: FastifyRequest, productId: string): void => {
+    requireProductPermission(request, productId);
+    store.getProduct(productId);
+    if (!bearerAuthorized(request) && !accountStore.allows(requireAccount(request), productId, "operate")) {
+      throw new MissionGoError("product_operation_not_permitted", "Project operation permission is required to record work or generate a title.", 403);
+    }
+  };
+
   const requireItemPermission = (
     request: FastifyRequest,
     itemKey: string,
@@ -1867,7 +1877,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.post("/api/v1/ai/title", async (request) => {
     const body = objectBody(request.body);
     const productId = stringField(body, "productId")!;
-    requireProductPermission(request, productId, "operate");
+    requireCapturePermission(request, productId);
     const accountId = bearerAuthorized(request) ? "operator" : requireAccount(request).id;
     const now = Date.now();
     const current = titleRequests.get(accountId);
@@ -3935,7 +3945,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.post("/api/v1/items", async (request, reply) => {
     const body = objectBody(request.body);
     const environment = environmentBody(body.environment);
-    requireProductPermission(request, stringField(body, "productId")!, "operate");
+    requireCapturePermission(request, stringField(body, "productId")!);
     const item = store.createWorkItem({
       productId: stringField(body, "productId")!,
       ...(body.status !== undefined ? { status: enumField(body, "status", ["inbox", "ready"] as const)! } : {}),

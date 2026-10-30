@@ -756,6 +756,7 @@ export function App() {
    * the overlay cannot be doubled by StrictMode's second mount.
    */
   const openCapture = () => {
+    if (!selectedProductCanCapture) { setNotice(t("captureReadOnly")); return; }
     const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
     history.pushState({ ...state, [OVERLAY_HISTORY_MARKER]: true }, "");
     syncBackDepth();
@@ -1014,6 +1015,7 @@ export function App() {
   const products = productsQuery.data ?? bootstrapQuery.data?.products ?? [];
   const selectedProduct = products.find((product) => product.id === selectedProductId);
   const selectedProductCanUseAi = productAllowsAi(selectedProduct);
+  const selectedProductCanCapture = selectedProduct?.access?.canOperate === true;
   const hasAnyAiPermission = products.some(productAllowsAi);
 
   // The account's type size is the source of truth (AND-247). The boot script
@@ -1271,6 +1273,7 @@ export function App() {
       visibleItems,
       activeFilters: { status: statusFilter, type: typeFilter, search },
       createItem: async (input) => {
+        if (!selectedProductCanCapture) throw new Error(t("captureReadOnly"));
         const { platform, ...workItemInput } = input;
         const item = await api.createItem({ productId: selectedProduct.id, ...workItemInput, environment: { platform } });
         openItemPage(item.key);
@@ -1286,7 +1289,7 @@ export function App() {
       },
       reportError: (error) => setNotice(t("webToolError", { message: errorMessage(error, t("somethingWentWrong")) })),
     });
-  }, [items, queryClient, search, selectedProduct, statusFilter, t, typeFilter, visibleItems]);
+  }, [items, queryClient, search, selectedProduct, selectedProductCanCapture, statusFilter, t, typeFilter, visibleItems]);
 
   const selectStatus = (status: WorkItemStatus | "all") => {
     setStatusFilter(status);
@@ -1514,7 +1517,7 @@ export function App() {
               <button className="icon-button mobile-only mobile-search-close" onClick={() => setMobileSearchOpen(false)} aria-label={t("closeSearch")}><X size={18} /></button>
             </div>
             <button className="icon-button mobile-only mobile-search-trigger" onClick={() => setMobileSearchOpen(true)} aria-label={t("searchItems")}><Search size={19} /></button>
-            <button className="primary-button capture-button" onClick={openCapture}>
+            <button className="primary-button capture-button" disabled={!selectedProductCanCapture} title={!selectedProductCanCapture ? t("captureReadOnly") : undefined} onClick={openCapture}>
               <Plus size={18} /> <span>{t("capture")}</span>
             </button>
           </>
@@ -1706,9 +1709,9 @@ export function App() {
                 <div className="empty-list">
                   <div className="round-icon"><Lightbulb size={22} /></div>
                   <h2>{!listFiltersActive && (itemSummary?.productTotal ?? 0) === 0 ? t("captureFirstSpark") : t("noMatchingItems")}</h2>
-                  <p>{!listFiltersActive && (itemSummary?.productTotal ?? 0) === 0 ? t("firstSparkHelp") : t("noMatchHelp")}</p>
+                  <p>{!selectedProductCanCapture ? t("captureReadOnly") : !listFiltersActive && (itemSummary?.productTotal ?? 0) === 0 ? t("firstSparkHelp") : t("noMatchHelp")}</p>
                   {listFiltersActive && <button className="secondary-button" onClick={clearFilters}>{t("clearListFilters")}</button>}
-                  {!listFiltersActive && (itemSummary?.productTotal ?? 0) === 0 && <button className="primary-button" onClick={openCapture}><Plus size={17} /> {t("captureItem")}</button>}
+                  {!listFiltersActive && (itemSummary?.productTotal ?? 0) === 0 && <button className="primary-button" disabled={!selectedProductCanCapture} onClick={openCapture}><Plus size={17} /> {t("captureItem")}</button>}
                 </div>
               )}
               {visibleItems.map((item) => (
@@ -1776,7 +1779,7 @@ export function App() {
         />
       )}
 
-      {!agentConsoleOpen && !selectedItemKey && <button className="mobile-fab mobile-only" onClick={openCapture} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
+      {!agentConsoleOpen && !selectedItemKey && <button className="mobile-fab mobile-only" disabled={!selectedProductCanCapture} title={!selectedProductCanCapture ? t("captureReadOnly") : undefined} onClick={openCapture} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
 
       {captureOpen && selectedProduct && (
         <Modal historyManaged title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={closeCapture}>
@@ -3748,6 +3751,8 @@ function WorkItemFields({
   onStageReplacement?: (id: string, file: File) => void;
 }) {
   const { priorityLabel, t, typeLabel } = useI18n();
+  const productsQuery = useQuery({ queryKey: ["products"], queryFn: () => api.listProducts() });
+  const canOperate = productsQuery.data?.find(product => product.id === productId)?.access?.canOperate === true;
   const componentsQuery = useQuery({ queryKey: ["components", productId], queryFn: () => api.listComponents(productId) });
   const logBytes = diagnosticLogBytes(draft.diagnosticLog);
   const diagnosticSlots = draft.diagnosticLog.trim() ? 1 : 0;
@@ -3779,7 +3784,10 @@ function WorkItemFields({
     onDraft({ ...draft, [key]: value });
   };
   const titleMutation = useMutation({
-    mutationFn: () => api.generateTitle(productId, draft.description),
+    mutationFn: () => {
+      if (!canOperate) throw new Error(t("captureReadOnly"));
+      return api.generateTitle(productId, draft.description);
+    },
     onSuccess: ({ title }) => onDraft((current) => ({ ...current, title })),
   });
 
@@ -3846,14 +3854,14 @@ function WorkItemFields({
       </div>
       <div className="ai-title-field">
         <label><FieldLabel required>{t("whatNeedsAttention")}</FieldLabel><input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus data-initial-focus /></label>
-        <button type="button" className="secondary-button" disabled={titleMutation.isPending || !draft.description.trim()}
-          title={!draft.description.trim() ? t("aiTitleNeedsContent") : undefined}
+        <button type="button" className="secondary-button" disabled={!canOperate || titleMutation.isPending || !draft.description.trim()}
+          title={!canOperate ? t("captureReadOnly") : !draft.description.trim() ? t("aiTitleNeedsContent") : undefined}
           onClick={() => titleMutation.mutate()}>
           {titleMutation.isPending ? t("aiTitleGenerating") : t("aiTitleButton")}
         </button>
       </div>
       <small className="ai-title-privacy">{t("aiTitlePrivacy")}</small>
-      {titleMutation.isError && <InlineError message={errorMessage(titleMutation.error, t("somethingWentWrong"))} />}
+      {titleMutation.isError && <InlineError message={localizedErrorText(titleMutation.error, t)} />}
       <section className="attachment-picker-block capture-attachment-block">
         <div className="capture-attachment-heading">
           <div className="capture-attachment-copy"><strong><FieldLabel>{t("mediaAttachments")}</FieldLabel></strong><p>{t("mediaAttachmentsHelp")}</p></div>
@@ -4027,6 +4035,7 @@ function WorkItemFields({
 
 function CaptureForm({ product, onCreated }: { product: Product; onCreated: (item: WorkItem, failedUploads: number) => void }) {
   const { t } = useI18n();
+  const canOperate = product.access?.canOperate === true;
   const storageKey = captureDraftStorageKey(product.id);
   const [draft, setDraft] = useState<CaptureDraft>(() => parseCaptureDraft(localStorage.getItem(storageKey)));
   const [files, setFiles] = useState<readonly File[]>([]);
@@ -4073,6 +4082,7 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
 
   const mutation = useMutation({
     mutationFn: async (status: "inbox" | "ready") => {
+      if (!canOperate) throw new Error(t("captureReadOnly"));
       if (files.length + (draft.diagnosticLog.trim() ? 1 : 0) > 10) {
         throw new Error(t("tooManyFiles", { count: 10 }));
       }
@@ -4141,7 +4151,8 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
         onFiles={setFiles}
         fileError={fileError}
       />
-      {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
+      {!canOperate && <p role="status">{t("captureReadOnly")}</p>}
+      {mutation.isError && <InlineError message={localizedErrorText(mutation.error, t)} />}
       {filePersistenceWarning && <InlineError message={filePersistenceWarning} />}
       {mediaDeletion && files.some((file) => !isDiagnosticFile(file) && !isDocumentFile(file)) && (
         <label className="clear-gallery-option">
@@ -4155,12 +4166,12 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
         <button
           type="button"
           className="secondary-button"
-          disabled={mutation.isPending || !draft.title.trim() || diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES || files.length + (draft.diagnosticLog.trim() ? 1 : 0) > 10}
+          disabled={!canOperate || mutation.isPending || !draft.title.trim() || diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES || files.length + (draft.diagnosticLog.trim() ? 1 : 0) > 10}
           onClick={() => mutation.mutate("inbox")}
         >
           {mutation.isPending && mutation.variables === "inbox" ? <LoaderCircle className="spin" size={17} /> : <FileText size={17} />} {t("saveDraft")}
         </button>
-        <button className="primary-button" disabled={mutation.isPending || !draft.title.trim() || !draft.description.trim() || !draft.environment.platform || diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES || files.length + (draft.diagnosticLog.trim() ? 1 : 0) > 10}>
+        <button className="primary-button" disabled={!canOperate || mutation.isPending || !draft.title.trim() || !draft.description.trim() || !draft.environment.platform || diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES || files.length + (draft.diagnosticLog.trim() ? 1 : 0) > 10}>
           {mutation.isPending && mutation.variables === "ready" ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {t("submitForProcessing")}
         </button>
       </div>

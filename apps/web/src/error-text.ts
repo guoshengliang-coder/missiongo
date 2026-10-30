@@ -23,6 +23,7 @@ export function localizedErrorText(error: unknown, t: (key: MessageKey) => strin
 export function errorMessageKey(error: unknown): MessageKey | null {
   if (error instanceof ApiError) {
     if (error.status === 401 || error.code === "authentication_required") return "errorSignedOut";
+    if (error.code === "product_operation_not_permitted") return "captureReadOnly";
     if (error.status === 403) return "errorForbidden";
     if (error.status === 404) return "errorNotFound";
     if (error.status === 429 || error.code === "rate_limit_exceeded") return "errorRateLimited";
