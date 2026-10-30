@@ -5,6 +5,8 @@ import { SETTINGS_DEPTH, SETTINGS_INDEX, settingsRoute, settingsUrl, settingsExi
 
 const ROOT_INDEX = "missiongo:settings-root-index";
 const ROOT_URL = "missiongo:settings-root-url";
+/** The URL this entry was opened from, so going up can pop instead of pushing. */
+const PARENT_URL = "missiongo:settings-parent-url";
 /** Settings own their history entries, including cancellable Back and a direct return to the workspace. */
 export function useSettingsNavigation() {
   const [route, setRoute] = useState(settingsRoute);
@@ -35,18 +37,23 @@ export function useSettingsNavigation() {
       if (rootIndex > 0 && index >= rootIndex) {
         approvedPop.current = true; history.go(rootIndex - 1 - index); return;
       }
-      delete current[SETTINGS_DEPTH]; delete current[ROOT_INDEX]; delete current[ROOT_URL];
+      delete current[SETTINGS_DEPTH]; delete current[ROOT_INDEX]; delete current[ROOT_URL]; delete current[PARENT_URL];
       history.replaceState(current, "", url); remember(); setRoute(null); return;
     }
     if (next.section === "index" && typeof current[ROOT_URL] === "string"
       && settingsRoute(new URL(current[ROOT_URL], location.origin))?.section === "index" && index > rootIndex) {
       approvedPop.current = true; history.go(rootIndex - index); return;
     }
+    // Going up one level is a pop whenever the entry we came from is that level
+    // (AND-316). Pushing instead left the system Back gesture pointing forward:
+    // the phone walked back into the page the person had just left.
+    if (current[PARENT_URL] === url && index > rootIndex) { approvedPop.current = true; history.back(); return; }
     const opening = settingsRoute() === null;
     const nextIndex = index + 1;
     const root = opening ? nextIndex : rootIndex || nextIndex;
     const state = { ...current, [SETTINGS_INDEX]: nextIndex, [ROOT_INDEX]: root,
-      [ROOT_URL]: opening || !current[ROOT_URL] ? url : current[ROOT_URL], [SETTINGS_DEPTH]: nextIndex - root + 1 };
+      [ROOT_URL]: opening || !current[ROOT_URL] ? url : current[ROOT_URL], [SETTINGS_DEPTH]: nextIndex - root + 1,
+      [PARENT_URL]: currentUrl };
     if (fromDrawer) history.replaceState(state, "", url);
     else {
       // Establish an indexed parent for a directly opened settings URL too.
