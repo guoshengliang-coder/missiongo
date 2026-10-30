@@ -39,7 +39,7 @@ interface Row {
 const messages: Record<string, string> = {
   evidence_missing: "缺少可信证据，等待执行端上报或本机节点核实。", waiting_merge: "完成依据尚未核实集成。", waiting_confirmation: "等待登录用户确认集成或发布。",
   waiting_release: "仍有必需产物未核实发布。", waiting_node: "已排队，等待有仓库权限的本机节点检查。",
-  checking: "本机节点正在检查。", checked: "交接条件已核对。", needs_scope: "请确认本条需要发布哪些产物，或明确无需发布。",
+  checking: "本机节点正在检查。", checked: "交接条件已核对。", needs_scope: "已核实集成；可补充本条发布范围并核实发布，或由人工安排验证。",
   stale: "条目处理轮次已变化，旧交接记录已失效。", permission_failed: "检查未获授权，请核对本机 Git、gh/glab 登录和仓库权限。",
   failed: "检查未完成，可以查看本机检查记录并重试。", inactive: "条目当前不参与自动交接。",
 };
@@ -81,32 +81,34 @@ export class StatusChecks {
     }
     const round = this.round(item.id);
     if (!round) throw conflict("handover_round_missing", "The processing round has no recorded start.");
-    if (input.requiredArtifacts && (new Set(input.requiredArtifacts).size !== input.requiredArtifacts.length
-      || input.requiredArtifacts.some(a => !this.store.getProduct(item.productId).releaseArtifacts.includes(a)))) throw invalidInput("Use unique artifacts declared by this product.");
+    if (input.requiredArtifacts && new Set(input.requiredArtifacts).size !== input.requiredArtifacts.length) throw invalidInput("Use unique release artifact identifiers.");
     if (input.requiredArtifacts?.length === 0 && !input.noReleaseReason || input.noReleaseReason && input.requiredArtifacts?.length !== 0) {
       throw invalidInput("An empty release scope requires an explicit no-release reason; unknown scope must be omitted.");
     }
-    const required = input.requiredArtifacts ? JSON.stringify([...input.requiredArtifacts].sort()) : null;
     const existing = this.db.prepare("SELECT * FROM status_handovers WHERE item_id=? AND round_key=?").get(item.id, round) as unknown as Row | undefined;
+    const keepScope = existing && sameCompletion(this.completion(existing), completion) && input.requiredArtifacts === undefined;
+    const required = input.requiredArtifacts ? JSON.stringify([...input.requiredArtifacts].sort()) : keepScope ? existing.required_json : null;
+    const noReleaseReason = keepScope ? existing.no_release_reason : input.noReleaseReason ?? null;
     const now = new Date().toISOString();
     let id: string;
     if (existing) {
       id = existing.id;
-      if (!sameCompletion(this.completion(existing), completion) || existing.required_json !== required || existing.no_release_reason !== (input.noReleaseReason ?? null)) {
+      if (!sameCompletion(this.completion(existing), completion) || existing.required_json !== required || existing.no_release_reason !== noReleaseReason) {
         this.db.prepare(`UPDATE status_handovers SET account_id=?,pull_request_url=?,completion_json=?,required_json=?,no_release_reason=?,
           evidence_json=?,revision=revision+1,updated_at=?,lease_token=NULL,lease_until=NULL,requested_at=? WHERE id=?`)
-          .run(accountId, pullRequestUrl, JSON.stringify(completion), required, input.noReleaseReason ?? null,
+          .run(accountId, pullRequestUrl, JSON.stringify(completion), required, noReleaseReason,
             sameCompletion(this.completion(existing), completion) ? existing.evidence_json : "{}", now, now, id);
       }
     } else {
       id = randomUUID();
       this.db.prepare(`INSERT INTO status_handovers(id,item_id,account_id,round_key,pull_request_url,completion_json,required_json,no_release_reason,
-        created_at,updated_at,requested_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(id,item.id,accountId,round,pullRequestUrl,JSON.stringify(completion),required,input.noReleaseReason ?? null,now,now,now);
+        created_at,updated_at,requested_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(id,item.id,accountId,round,pullRequestUrl,JSON.stringify(completion),required,noReleaseReason,now,now,now);
     }
     // An explicit correction is also reflected in the recorded development handover.
-    if (existing && item.status === "development_complete" && sameCompletion(this.completion(existing), completion) && required !== existing.required_json) {
-      this.store.appendSystemEvent(item.id, "handover_scope_confirmed", { handoverId: id, requiredArtifacts: input.requiredArtifacts, noReleaseReason: input.noReleaseReason, accountId });
+    if (item.status === "development_complete" && required !== (existing?.required_json ?? null)) {
+      this.store.appendSystemEvent(item.id, "handover_scope_confirmed", { handoverId: id, requiredArtifacts: required ? JSON.parse(required) as string[] : undefined, ...(noReleaseReason ? {noReleaseReason} : {}), accountId });
     }
+    this.store.recordProductReleaseArtifacts(item.productId, input.requiredArtifacts ?? []);
     this.reconcile(id);
     return this.snapshot(id);
   }
@@ -116,9 +118,9 @@ export class StatusChecks {
     for (const row of rows) {
       if (this.store.getWorkItem(row.item_key).transferred) continue;
       const event = [...this.store.getTimeline(row.item_key)].reverse().find(e => !e.historySourceKey && e.eventType === "status_changed" && e.toStatus === "development_complete");
-      if (!event || !Array.isArray(event.payload.requiredArtifacts)) continue;
+      if (!event) continue;
       try { this.register(row.item_key, accountId, { completion: normalizeCompletion(event.payload),
-        requiredArtifacts: event.payload.requiredArtifacts as string[],
+        ...(Array.isArray(event.payload.requiredArtifacts) ? { requiredArtifacts: event.payload.requiredArtifacts as string[] } : {}),
         ...(typeof event.payload.noReleaseReason === "string" ? { noReleaseReason: event.payload.noReleaseReason } : {}) }); } catch { /* Invalid legacy records remain visible as missing evidence. */ }
     }
   }
@@ -173,7 +175,7 @@ export class StatusChecks {
     const releases = new Map((evidence.releases === undefined ? previous.releases ?? [] : []).map(r => [r.artifact,r]));
     for (const release of evidence.releases ?? []) {
       if (!merged || release.containsMergeCommit !== merged.commit) throw invalidInput("Release evidence must name the verified merge commit it contains.");
-      if (!(row.required_json ? JSON.parse(row.required_json) as string[] : this.store.getProduct(this.snapshot(id).productId).releaseArtifacts).includes(release.artifact)) throw invalidInput("Unknown product release artifact.");
+      if (row.required_json && !(JSON.parse(row.required_json) as string[]).includes(release.artifact)) throw invalidInput("Unknown handover release artifact.");
       releases.set(release.artifact,release);
     }
     const combined: HandoverEvidence = { ...(merged ? {merged} : {}), releases: [...releases.values()] };
@@ -183,6 +185,7 @@ export class StatusChecks {
       ${source.nodeId ? "AND lease_token=?" : ""}`).run(json,JSON.stringify({accountId:source.accountId,kind:source.human ? "human_confirmation" : "authorized_executor",...(source.note ? {note:source.note} : {}),...(source.nodeId ? {nodeId:source.nodeId} : {}),recordedAt:now}),
         json === row.evidence_json ? 0 : 1, now,id,row.revision,row.pull_request_url,...(source.nodeId ? [source.leaseToken!] : []));
     if (!saved.changes) throw conflict("handover_changed","The handover changed during this check; refresh before reporting again.");
+    this.store.recordProductReleaseArtifacts(this.snapshot(id).productId, [...new Set((evidence.releases ?? []).map(release => release.artifact))]);
     this.reconcile(id);
     if (evidence.failure && !["checked", "stale", "needs_scope"].includes(this.row(id).check_status)) this.state(this.row(id), evidence.failure);
     return this.snapshot(id);
@@ -195,21 +198,21 @@ export class StatusChecks {
       return;
     }
     const evidence = JSON.parse(row.evidence_json) as HandoverEvidence;
-    if (!row.required_json) {
-      this.state(row,"needs_scope");
-      this.db.prepare("UPDATE status_handovers SET requested_at=NULL WHERE id=?").run(id);
-      return;
-    }
     if (!evidence.merged) { this.state(row,this.completion(row).kind === "manual" ? "waiting_confirmation" : "waiting_merge"); return; }
-    const required = JSON.parse(row.required_json) as string[];
+    const required = row.required_json ? JSON.parse(row.required_json) as string[] : null;
     const reporter = JSON.parse(row.evidence_source_json) as {accountId?:string;kind?:string};
     const actor = reporter.kind === "human_confirmation" ? "human" as const : "system" as const;
     let item = this.store.getWorkItem(this.snapshot(id).itemKey);
     if (item.status === "in_progress") {
-      item = this.store.submitDevelopmentComplete({ itemKey: item.key, completion: this.completion(row), requiredArtifacts: required,
+      item = this.store.submitDevelopmentComplete({ itemKey: item.key, completion: this.completion(row), ...(required ? { requiredArtifacts: required } : {}),
         ...(row.no_release_reason ? { noReleaseReason: row.no_release_reason } : {}),
         summary: actor === "human" ? "用户已确认集成。" : "已由授权执行端核实集成，自动补齐开发交接。", attribution: { accountId: reporter.accountId ?? row.account_id },
         idempotencyKey: `status-check:${row.id}:development` }, { actor, occurredAt: evidence.merged.occurredAt, handoverId: row.id });
+    }
+    if (!required) {
+      this.state(row,"needs_scope");
+      this.db.prepare("UPDATE status_handovers SET requested_at=NULL WHERE id=?").run(id);
+      return;
     }
     if (!required.length) { this.state(row,"checked","已确认集成，明确无需发布；请人工安排验证。"); return; }
     const releases = required.map(a => evidence.releases?.find(r => r.artifact === a && r.containsMergeCommit === evidence.merged!.commit));
@@ -238,12 +241,15 @@ export class StatusChecks {
       }
       const evidence = JSON.parse(row.evidence_json) as HandoverEvidence;
       const required = row.required_json ? JSON.parse(row.required_json) as string[] : null;
-      if (!evidence.merged || !required || input.releases.length !== required.length
-        || new Set(input.releases.map(r => r.artifact)).size !== required.length || input.releases.some(r => !required.includes(r.artifact))) {
+      if (!evidence.merged || (required ? input.releases.length !== required.length
+        || new Set(input.releases.map(r => r.artifact)).size !== required.length || input.releases.some(r => !required.includes(r.artifact)) : input.releases.length > 0)) {
         throw invalidInput("Confirm integration and provide a version and source commit for every required artifact.");
       }
-      if (required.length === 0) {
+      if (!required?.length) {
         this.store.transitionWorkItem({ itemKey: this.snapshot(id).itemKey, to: "pending_verification", actor: "human", reason: "release_verified", note: input.note, attribution: { accountId } });
+        this.db.prepare("UPDATE status_handovers SET evidence_source_json=?,updated_at=?,requested_at=NULL,lease_token=NULL,lease_until=NULL WHERE id=?")
+          .run(JSON.stringify({accountId,kind:"human_confirmation",note:input.note,recordedAt:now}),now,id);
+        this.state(this.row(id), "checked", "已由用户安排人工验证。", now);
         this.store.appendSystemEvent(row.item_id, "handover_human_confirmed", { stage: "verification_arranged", accountId, note: input.note, handoverId: id });
         return this.snapshot(id);
       }

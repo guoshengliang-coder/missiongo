@@ -161,7 +161,7 @@ public enum HandoverVerifier {
         }
         guard let merged, commitPattern.matches(merged.commit) else { result.failure = "evidence_missing"; return result }
         result.merged = merged
-        guard let required = job.requiredArtifacts else { result.failure = "evidence_missing"; return result }
+        guard let required = job.requiredArtifacts else { return result }
         if required.isEmpty { return result }
         let common = await run("git", ["-C", job.repoPath, "rev-parse", "--git-common-dir"])
         let directory = common.stdout.trimmingCharacters(in: .whitespacesAndNewlines)

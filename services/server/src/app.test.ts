@@ -351,47 +351,32 @@ describe("Commenting over MCP", () => {
     expect(after.result?.structuredContent).toMatchObject({ candidates: [] });
   });
 
-  it("lets a product declare its own release artifacts instead of a fixed four (AND-276)", async () => {
+  it("learns task artifacts without manual product configuration and rejects clearing the inventory", async () => {
     const { app, call, readToken, writeToken, productId } = await commentingApp();
-    const updated = (await app.inject({
-      method: "PUT",
-      url: `/api/v1/products/${productId}/release-artifacts`,
-      headers: { authorization: "Bearer management-test-token" },
-      payload: { artifacts: ["web", "gateway", "connector"] },
-    })).json<{ releaseArtifacts: string[] }>();
-    expect(updated.releaseArtifacts).toEqual(["web", "gateway", "connector"]);
+    app.missionGoStore.setProductReleaseArtifacts(productId, []);
+    for (const artifacts of [null, [], ["web"]]) {
+      const result = await app.inject({method:"PUT",url:`/api/v1/products/${productId}/release-artifacts`,
+        headers:{authorization:"Bearer management-test-token"},payload:{artifacts}});
+      expect(result.statusCode).toBe(404);
+    }
+    await app.inject({method:"POST",url:"/api/v1/items/HG-1/transitions",headers:{authorization:"Bearer management-test-token"},payload:{to:"ready",reason:"triaged"}});
+    await call(writeToken, 1, "tools/call", {name:"claim_item",arguments:{itemKey:"HG-1",agentId:"agent",idempotencyKey:"auto-artifacts-claim"}});
+    const handed = await call(writeToken, 2, "tools/call", {name:"submit_development_complete",arguments:{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/503",requiredArtifacts:["gateway"],idempotencyKey:"auto-artifacts-complete"}});
+    expect(handed.result?.structuredContent).toMatchObject({item:{status:"development_complete"}});
+    const listed = await call(readToken, 3, "tools/call", {name:"list_products",arguments:{}});
+    expect(listed.result?.structuredContent).toMatchObject({products:[{id:productId,releaseArtifacts:["gateway"]}]});
+  });
 
-    const listed = await call(readToken, 1, "tools/call", { name: "list_products", arguments: {} });
-    expect(listed.result?.structuredContent).toMatchObject({
-      products: [{ id: productId, releaseArtifacts: ["web", "gateway", "connector"] }],
-    });
-
-    await app.inject({
-      method: "POST", url: "/api/v1/items/HG-1/transitions",
-      headers: { authorization: "Bearer management-test-token" },
-      payload: { to: "ready", reason: "triaged" },
-    });
-    await call(writeToken, 2, "tools/call", {
-      name: "claim_item", arguments: { itemKey: "HG-1", agentId: "opencode", idempotencyKey: "and-276-claim" },
-    });
-    const rejected = await call(writeToken, 3, "tools/call", {
-      name: "submit_development_complete",
-      arguments: {
-        itemKey: "HG-1", pullRequestUrl: "https://github.com/owner/repo/pull/503",
-        requiredArtifacts: ["androidApp"], idempotencyKey: "and-276-bad",
-      },
-    });
-    expect(rejected.result?.structuredContent).toBeUndefined();
-    const handed = await call(writeToken, 4, "tools/call", {
-      name: "submit_development_complete",
-      arguments: {
-        itemKey: "HG-1", pullRequestUrl: "https://github.com/owner/repo/pull/503",
-        requiredArtifacts: ["web", "gateway", "connector"], idempotencyKey: "and-276-good",
-      },
-    });
-    expect(handed.result?.structuredContent).toMatchObject({
-      item: { key: "HG-1", status: "development_complete" }, statusChanged: true,
-    });
+  it("allows MCP development completion without a release scope", async () => {
+    const {app,call,readToken,writeToken,productId} = await commentingApp();
+    app.missionGoStore.setProductReleaseArtifacts(productId, []);
+    await app.inject({method:"POST",url:"/api/v1/items/HG-1/transitions",headers:{authorization:"Bearer management-test-token"},payload:{to:"ready",reason:"triaged"}});
+    await call(writeToken,1,"tools/call",{name:"claim_item",arguments:{itemKey:"HG-1",agentId:"agent",idempotencyKey:"no-scope-claim"}});
+    const result = await call(writeToken,2,"tools/call",{name:"submit_development_complete",arguments:{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504",idempotencyKey:"no-scope-complete"}});
+    expect(result.result?.structuredContent).toMatchObject({item:{status:"development_complete"}});
+    await call(writeToken,3,"tools/call",{name:"register_item_handover",arguments:{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504",requiredArtifacts:["gateway"]}});
+    const candidates = await call(readToken,4,"tools/call",{name:"list_release_candidates",arguments:{productId}});
+    expect(candidates.result?.structuredContent).toMatchObject({candidates:[{itemKey:"HG-1",requiredArtifacts:["gateway"]}]});
   });
 
   it("refuses a handover without an https pull request", async () => {

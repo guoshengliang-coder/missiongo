@@ -61,7 +61,7 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
     return () => { viewport?.removeEventListener("resize", resize); window.removeEventListener("resize", resize); };
   }, []);
   // Settings retain archived products without adding them to the workspace switcher.
-  const catalogQuery = useQuery({ queryKey: ["products", "settings"], queryFn: () => api.listProducts({ includeArchived: true }) });
+  const catalogQuery = useQuery({ queryKey: ["products", "settings"], queryFn: () => api.listProducts({ includeArchived: true }), refetchOnMount: "always" });
   const catalog = catalogQuery.data ?? products;
   const product = catalog.find(value => value.id === route.productId);
   const inProduct = PRODUCT_SETTINGS.includes(route.section as ProductSettingsSection) || ["products", "overview", "new-product"].includes(route.section);

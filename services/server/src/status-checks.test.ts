@@ -9,7 +9,7 @@ afterEach(()=>{store.close();vi.useRealTimers();});
 const pr="https://github.com/example/project/pull/42";
 const merged={commit:"a".repeat(40),occurredAt:"2026-10-27T01:00:00Z"};
 const release=(artifact="web")=>({artifact,version:"1.2.0",sourceCommit:"b".repeat(40),containsMergeCommit:merged.commit,verifiedAt:"2026-10-27T01:00:00Z",receiptDigest:"c".repeat(64)});
-function seed(requiredArtifacts: string[] | undefined=["web"], noReleaseReason?:string) {
+function seed(requiredArtifacts: string[] | null=["web"], noReleaseReason?:string) {
  const product=store.createProduct({name:"Project",keyPrefix:"PRJ"});
  store.setProductReleaseArtifacts(product.id,["web","androidApp","androidSdk","macosApp"]);
  const item=store.createWorkItem({productId:product.id,title:"Fix",description:"Fix flow",type:"bug",priority:"normal",environment:{platform:"web"}});
@@ -38,10 +38,10 @@ describe("durable handover checks",()=>{
   expect(checks.report(handover.id,{releases:[release(),release("macosApp")]},{accountId:"account-1"}).itemStatus).toBe("pending_verification");
  });
  it("keeps unknown scope separate from explicit no-release work",()=>{
-  const {item,checks}=seed();
+  const {item,checks}=seed(null);
   const unknown=checks.register(item.key,"account-1",{pullRequestUrl:pr});
   expect(checks.report(unknown.id,{merged},{accountId:"account-1"}).status).toBe("needs_scope");
-  expect(store.getWorkItem(item.key).status).toBe("in_progress");
+  expect(store.getWorkItem(item.key).status).toBe("development_complete");
   expect(()=>checks.register(item.key,"account-1",{pullRequestUrl:pr,requiredArtifacts:[]})).toThrow(/reason/);
   const explicit=checks.register(item.key,"account-1",{pullRequestUrl:pr,requiredArtifacts:[],noReleaseReason:"Only a test; verify in CI"});
   expect(explicit).toMatchObject({status:"checked",itemStatus:"development_complete"});
@@ -149,4 +149,44 @@ describe("platform-independent handover", () => {
   expect(store.setProductReleaseArtifacts(product.id,["cli","server"]).releaseArtifacts).toEqual(["cli","server"]);
   expect(store.setProductReleaseArtifacts(product.id,null).releaseArtifacts).toEqual([]);
  });
+});
+
+
+describe("artifact inventory without manual configuration", () => {
+ it("registers and verifies a new artifact on an empty product", () => {
+  const {item, product, checks} = seed();
+  store.setProductReleaseArtifacts(product.id, []);
+  const handover = checks.register(item.key, "account-1", {pullRequestUrl:pr, requiredArtifacts:["gateway"]});
+  expect(store.getProduct(product.id).releaseArtifacts).toEqual(["gateway"]);
+  expect(checks.report(handover.id, {merged, releases:[release("gateway")]}, {accountId:"executor"}).itemStatus).toBe("pending_verification");
+ });
+ it("checks integration and lets a person arrange verification with no configured artifacts or scope", () => {
+  const {item, product, checks} = seed(null);
+  store.setProductReleaseArtifacts(product.id, []);
+  const handover = checks.register(item.key, "account-1", {pullRequestUrl:pr});
+  expect(handover.status).toBe("waiting_merge");
+  expect(checks.request(product.id, "account-1").queued).toBe(1);
+  expect(checks.report(handover.id, {merged}, {accountId:"executor"})).toMatchObject({itemStatus:"development_complete", status:"needs_scope", requiredArtifacts:null});
+  expect(store.getProduct(product.id).releaseArtifacts).toEqual([]);
+  expect(checks.confirm(handover.id, "human-1", {stage:"release", releases:[], note:"Review the integrated code directly"})).toMatchObject({itemStatus:"pending_verification",status:"checked",evidenceSource:"human_confirmation"});
+  expect(store.getWorkItem(item.key).status).not.toBe("done");
+ });
+ it("does not mistake incomplete release evidence for a complete scope", () => {
+  const {item, checks} = seed(null);
+  const handover = checks.register(item.key,"account-1",{pullRequestUrl:pr});
+  expect(checks.report(handover.id, {merged, releases:[release("newArtifact")]}, {accountId:"executor"})).toMatchObject({itemStatus:"development_complete", status:"needs_scope"});
+  expect(store.getProduct(item.productId).releaseArtifacts).toContain("newArtifact");
+  expect(checks.register(item.key,"account-1",{pullRequestUrl:pr, requiredArtifacts:["newArtifact","anotherArtifact"]})).toMatchObject({itemStatus:"development_complete",status:"waiting_release"});
+  expect(store.getDevelopmentReleaseScope(item.key)).toEqual(["anotherArtifact","newArtifact"]);
+  expect(store.submitForVerification({itemKey:item.key,pullRequestUrl:pr,deployedCommit:merged.commit,receiptDigest:"c".repeat(64),
+   releases:["newArtifact","anotherArtifact"].map(artifact=>({artifact,version:"1.2.0",sourceCommit:"b".repeat(40)})),idempotencyKey:"updated-scope-verification"}).status).toBe("pending_verification");
+ });
+});
+
+it("preserves an existing release scope when an association update omits it", () => {
+ const {item,checks,handover} = seed(["web", "macosApp"]);
+ const updated = checks.register(item.key,"account-1",{pullRequestUrl:pr});
+ expect(updated.requiredArtifacts).toEqual(["macosApp","web"]);
+ expect(checks.report(handover.id,{merged,releases:[release()]},{accountId:"executor"})).toMatchObject({itemStatus:"development_complete",status:"waiting_release"});
+ expect(()=>checks.confirm(handover.id,"human-1",{stage:"release",releases:[],note:"Arrange verification"})).toThrow(/every required artifact/);
 });

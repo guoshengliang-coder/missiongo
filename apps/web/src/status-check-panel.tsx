@@ -12,7 +12,7 @@ const copy: Record<string,[string,string]> = {
   checked:["交接已核对","Handover checked"], waiting_node:["等待本机节点检查","Waiting for a local node"],
   waiting_confirmation:["等待人工确认","Waiting for human confirmation"],
   checking:["正在检查","Checking"], waiting_merge:["等待核实集成","Waiting for merge evidence"],
-  waiting_release:["等待必需产物发布","Waiting for required releases"], needs_scope:["待确认发布范围","Release scope needs confirmation"],
+  waiting_release:["等待必需产物发布","Waiting for required releases"], needs_scope:["待安排验证","Verification needs arranging"],
   evidence_missing:["缺少可信证据","Evidence missing"], permission_failed:["本机仓库权限不足","Repository permission required on the node"],
   failed:["检查失败，可重试","Check failed; retry available"], stale:["处理轮次已变化，旧记录失效","Old record invalidated by a new work round"],
 };
@@ -36,7 +36,7 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
   const mayOperate = canOperate && product?.access?.canOperate !== false && products.isSuccess;
   const query = useQuery({queryKey:["status-checks",productId,itemKey,offset],queryFn:()=>api.statusChecks(productId,itemKey,offset),
     refetchInterval: q => q.state.data?.items.some(r=>["waiting_node","checking"].includes(r.status)) ? 5000 : false});
-  const refresh = async () => { await Promise.all([client.invalidateQueries({queryKey:["status-checks"]}),client.invalidateQueries({queryKey:["items"]}),client.invalidateQueries({queryKey:["item"]}),client.invalidateQueries({queryKey:["timeline"]})]); };
+  const refresh = async () => { await Promise.all([client.invalidateQueries({queryKey:["products"]}),client.invalidateQueries({queryKey:["status-checks"]}),client.invalidateQueries({queryKey:["items"]}),client.invalidateQueries({queryKey:["item"]}),client.invalidateQueries({queryKey:["timeline"]})]); };
   const mutation = useMutation({mutationFn:()=>api.requestStatusCheck(productId,itemKey),onSuccess:async()=>{setRequested(true);await refresh();}});
   const records = query.data?.items ?? [];
   const newest = records[0];
@@ -81,7 +81,7 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
       {zh && record.reason && <p className="dispatch-note">{record.reason}</p>}
       <p className="dispatch-note">{record.evidenceSource === "human_confirmation" ? (zh ? "来源：登录用户人工确认。" : "Source: signed-in user's confirmation.") : (zh ? "来源：授权执行端上报；服务端未独立访问代码托管平台。" : "Source: authorized executor report; the server does not independently check the repository host.")}</p>
       {mayOperate && ["in_progress","development_complete"].includes(record.itemStatus) && record.status !== "stale" &&
-        <button type="button" className="secondary-button" disabled={record.requiredArtifacts === null} onClick={()=>setConfirmation(record)}>{record.itemStatus === "in_progress" ? (zh ? "人工确认已集成" : "Confirm integration") : record.requiredArtifacts?.length === 0 ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication")}</button>}
+        <button type="button" className="secondary-button" onClick={()=>setConfirmation(record)}>{record.itemStatus === "in_progress" ? (zh ? "人工确认已集成" : "Confirm integration") : !record.requiredArtifacts?.length ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication")}</button>}
       <p className="dispatch-note">{zh ? "最近检查：" : "Last check: "}{record.checkedAt ? new Date(record.checkedAt).toLocaleString(locale) : (zh ? "尚未检查" : "Never")}</p>
     </article>)}</div>
     <div className="status-check-actions"><button type="button" className="secondary-button" disabled={offset === 0} onClick={()=>setOffset(Math.max(0,offset-100))}>{zh ? "上一页" : "Previous"}</button>
@@ -109,11 +109,11 @@ function ScopeEditor({itemKey,record,artifacts,onSaved,onCancel}:{itemKey:string
       : <label>{zh ? "完整提交编号" : "Full commit SHA"}<input required pattern="[a-f0-9]{40}" value={commit} onChange={e=>setCommit(e.target.value)} maxLength={40}/></label>}
     {kind === "commit" && <label>{zh ? "集成的目标分支" : "Integration target branch"}<input required value={branch} onChange={e=>setBranch(e.target.value)} maxLength={200}/></label>}
     {kind === "manual" && <label>{zh ? "需要人工确认的交付说明" : "Delivery details for human confirmation"}<textarea required value={description} onChange={e=>setDescription(e.target.value)} maxLength={4000}/></label>}
-    <fieldset><legend>{zh ? "本条需要发布的产物" : "Required release artifacts"}</legend>{artifacts.map(artifact=><label key={artifact}>
-      <input type="checkbox" disabled={noRelease} checked={selected.includes(artifact)} onChange={e=>setSelected(e.target.checked ? [...selected,artifact] : selected.filter(a=>a!==artifact))}/>{artifact}</label>)}</fieldset>
+    {artifacts.length > 0 && <fieldset><legend>{zh ? "本条需要发布的产物" : "Required release artifacts"}</legend>{artifacts.map(artifact=><label key={artifact}>
+      <input type="checkbox" disabled={noRelease} checked={selected.includes(artifact)} onChange={e=>setSelected(e.target.checked ? [...selected,artifact] : selected.filter(a=>a!==artifact))}/>{artifact}</label>)}</fieldset>}
     <label><input type="checkbox" checked={noRelease} onChange={e=>setNoRelease(e.target.checked)}/>{zh ? "明确无需发布" : "Explicitly no release required"}</label>
     {noRelease && <label>{zh ? "无需发布的依据和验证方式" : "Reason and verification method"}<textarea required value={reason} onChange={e=>setReason(e.target.value)} maxLength={4000}/></label>}
-    {!noRelease && !selected.length && <p className="dispatch-note">{zh ? "未选产物表示范围未知，不会按无需发布处理。" : "No selection means unknown scope, not no release required."}</p>}
+    {!noRelease && !selected.length && <p className="dispatch-note">{zh ? "发布范围可留空，不影响核实集成和标记开发完成；之后可由人工安排验证。" : "Release scope is optional and does not block integration checks or development completion. A person can arrange verification later."}</p>}
     {mutation.isError && <p className="inline-error" role="alert">{localizedErrorText(mutation.error,t)}</p>}
     <div className="form-footer"><button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>{t("cancel")}</button><button type="submit" className="primary-button" disabled={mutation.isPending}>{mutation.isPending && <LoaderCircle className="spin" size={16}/>} {zh ? "确认并保存关联" : "Confirm and save association"}</button></div>
   </form>;
@@ -125,10 +125,10 @@ function HumanConfirmation({record,onSaved,onCancel}:{record:StatusCheckRecord;o
   const [commit,setCommit] = useState("commit" in record.completion ? record.completion.commit : record.evidence.merged?.commit ?? "");
   const [note,setNote] = useState("");
   const [details,setDetails] = useState<Record<string,{version:string;sourceCommit:string}>>({});
-  const noRelease = record.requiredArtifacts?.length === 0;
+  const arrangeVerification = !record.requiredArtifacts?.length;
   const mutation = useMutation({mutationFn:()=>api.confirmHandover(record.itemKey,record.id,stage === "integration" ? {stage,commit:commit.trim(),note:note.trim()}
     : {stage,note:note.trim(),releases:(record.requiredArtifacts ?? []).map(artifact=>({artifact,version:details[artifact]?.version.trim() ?? "",sourceCommit:details[artifact]?.sourceCommit.trim() ?? ""}))}),onSuccess:async()=>{await onSaved();}});
-  const label = stage === "integration" ? (zh ? "人工确认已集成" : "Confirm integration") : noRelease ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication");
+  const label = stage === "integration" ? (zh ? "人工确认已集成" : "Confirm integration") : arrangeVerification ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication");
   useDialogDraft(Boolean(note) || Object.keys(details).length > 0 || commit !== ("commit" in record.completion ? record.completion.commit : record.evidence.merged?.commit ?? ""), mutation.isPending);
   return <form className="status-check-scope" onSubmit={e=>{e.preventDefault();if (!mutation.isPending) mutation.mutate();}}>
       <p className="dispatch-note">{zh ? "确认会记录你的账号和说明，不代表验收通过。" : "Your account and explanation will be recorded. This does not pass acceptance."}</p>

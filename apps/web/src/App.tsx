@@ -4875,81 +4875,18 @@ function ProductSettings({
   );
 }
 
-/**
- * The release artifacts a product declares (AND-276). The server stores the
- * effective list, so edits start from what the product reports; adding or
- * removing one saves immediately, and resetting sends null to restore the
- * built-in defaults. A product always names at least one artifact, so its last
- * one cannot be removed here.
- */
+/** Read-only inventory recorded by development and release handovers. */
 function ReleaseArtifactsSettings({ product }: { product: Product }) {
-  const queryClient = useQueryClient();
   const { t } = useI18n();
-  const [artifacts, setArtifacts] = useState<string[]>([...product.releaseArtifacts]);
-  const [draft, setDraft] = useState("");
-  // A new array arrives on every products refetch; the joined signature keeps the
-  // sync from firing on each render while still picking up a real change.
-  const signature = product.releaseArtifacts.join("\n");
-  useEffect(() => setArtifacts([...product.releaseArtifacts]), [product.id, signature]);
-
-  const mutation = useMutation({
-    mutationFn: (next: readonly string[] | null) => api.setProductReleaseArtifacts(product.id, next),
-    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["products"] }),
-    onError: () => setArtifacts([...product.releaseArtifacts]),
-  });
-
-  useSettingsDraft(draft.trim().length > 0, mutation.isPending);
-
-  const save = (next: readonly string[]) => {
-    setArtifacts([...next]);
-    mutation.mutate(next);
-  };
-
-  const addArtifact = () => {
-    const id = draft.trim();
-    if (!id || artifacts.includes(id)) return;
-    setDraft("");
-    save([...artifacts, id]);
-  };
-
   return (
     <section className="product-settings-section release-artifacts-settings" role="tabpanel">
       <header><div><h3>{t("releaseArtifacts")}</h3></div></header>
       <p className="component-management-help">{t("releaseArtifactsHelp")}</p>
-      <p className="settings-save-note" role="status">{mutation.isPending ? t("sdkSaving") : mutation.isSuccess ? t("permissionsSaved") : t("settingsImmediateChange")}</p>
-      <div className="release-artifact-list">
-        {artifacts.map((artifact) => (
-          <div key={artifact} className="release-artifact-row">
-            <code>{artifact}</code>
-            <button
-              type="button"
-              className="text-button"
-              disabled={mutation.isPending}
-              aria-label={`${t("delete")} ${artifact}`}
-              onClick={() => save(artifacts.filter((entry) => entry !== artifact))}
-            >
-              <Trash2 size={15} /> {t("delete")}
-            </button>
-          </div>
+      {product.releaseArtifacts.length ? <div className="release-artifact-list">
+        {product.releaseArtifacts.map((artifact) => (
+          <div key={artifact} className="release-artifact-row"><code>{artifact}</code></div>
         ))}
-      </div>
-      <div className="release-artifact-add">
-        <input
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={t("releaseArtifactPlaceholder")}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") { event.preventDefault(); addArtifact(); }
-          }}
-        />
-        <button type="button" className="primary-button" disabled={!draft.trim() || mutation.isPending} onClick={addArtifact}>
-          <Plus size={15} /> {t("addReleaseArtifact")}
-        </button>
-        <button type="button" className="text-button" disabled={mutation.isPending} onClick={() => mutation.mutate(null)}>
-          {t("releaseArtifactsReset")}
-        </button>
-      </div>
-      {mutation.isError && <InlineError message={errorMessage(mutation.error, t("somethingWentWrong"))} />}
+      </div> : <p className="settings-save-note" role="status">{t("releaseArtifactsEmpty")}</p>}
     </section>
   );
 }

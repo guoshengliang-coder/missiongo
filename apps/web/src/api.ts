@@ -423,11 +423,6 @@ export const api = {
     }),
   removeProductIcon: (productId: string) =>
     request<Product>(`/api/v1/products/${encodeURIComponent(productId)}/icon`, { method: "DELETE" }),
-  setProductReleaseArtifacts: (productId: string, artifacts: readonly string[] | null) =>
-    request<Product>(`/api/v1/products/${encodeURIComponent(productId)}/release-artifacts`, {
-      method: "PUT",
-      body: JSON.stringify({ artifacts }),
-    }),
   getItemFilterOptions: (productId: string) => request<{proposers: Array<{value: string; label: string; kind: "human" | "agent" | "sdk" | "unknown"}>}>(`/api/v1/products/${encodeURIComponent(productId)}/item-filter-options`),
   listBuilders: (productId: string) => request<{builders: Array<{id: string; name: string}>; canConfigure: boolean}>(`/api/v1/products/${encodeURIComponent(productId)}/builders`),
   setModuleBuilder: (productId: string, componentId: string, accountId: string | null) => request<Component>(`/api/v1/products/${encodeURIComponent(productId)}/components/${encodeURIComponent(componentId)}/builder`, {method:"PUT",body:JSON.stringify({accountId})}),
