@@ -1,3 +1,4 @@
+import { chooseOption } from "./select-helpers";
 import { expect, test } from "@playwright/test";
 
 import { SERVER_PORT } from "./fixture.mjs";
@@ -24,12 +25,12 @@ for (const width of [375, 1440]) {
         await expect(dialog).toBeVisible();
         await expect(dialog.getByRole("button", { name: "生成令牌", exact: true })).toBeDisabled();
         // New tokens default to the write scope and the longest lifetime.
-        await expect(dialog.getByRole("combobox", { name: "权限", exact: true })).toHaveValue("write");
-        await expect(dialog.getByRole("combobox", { name: "有效期", exact: true })).toHaveValue("365");
+        await expect(dialog.getByRole("combobox", { name: "权限", exact: true })).toHaveAttribute("data-value", "write");
+        await expect(dialog.getByRole("combobox", { name: "有效期", exact: true })).toHaveAttribute("data-value", "365");
         const name = `Token ${width} ${theme}`;
         await dialog.getByLabel("名称", { exact: true }).fill(name);
-        await dialog.getByRole("combobox", { name: "权限", exact: true }).selectOption("write");
-        await dialog.getByRole("combobox", { name: "有效期", exact: true }).selectOption("7");
+        await chooseOption(dialog.getByRole("combobox", { name: "权限", exact: true }), "write");
+        await chooseOption(dialog.getByRole("combobox", { name: "有效期", exact: true }), "7");
         const overflow = await dialog.evaluate(element => element.scrollWidth > element.clientWidth);
         expect(overflow).toBe(false);
         await dialog.screenshot({ path: test.info().outputPath("personal-token-form.png") });

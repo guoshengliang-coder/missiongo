@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CirclePause, LoaderCircle } from "lucide-react";
@@ -84,7 +85,7 @@ export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () 
       >
         <div className="field-row">
           <label>{t("dispatchNode")}
-            <select
+            <Select
               value={draft.nodeId ?? ""}
               onChange={(event) => {
                 const { nodeId: _previous, ...rest } = draft;
@@ -93,17 +94,17 @@ export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () 
             >
               <option value="">{t("dispatchDefaultsNodeAny")}</option>
               {nodes.map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}
-            </select>
+            </Select>
           </label>
           <label>{t("dispatchAgent")}
-            <select
+            <Select
               value={draft.agentKind ?? "claude_code"}
               onChange={(event) => update({ ...draft, agentKind: event.target.value as AgentKind })}
             >
               {Array.from(new Set([draft.agentKind ?? "claude_code", ...available])).map((kind) => (
                 <option key={kind} value={kind}>{label(agentLabelKey(kind), kind)}</option>
               ))}
-            </select>
+            </Select>
           </label>
         </div>
         {[draft.agentKind ?? "claude_code"].map((kind) => {
@@ -114,16 +115,16 @@ export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () 
               <legend>{label(agentLabelKey(kind), kind)}</legend>
               <div className="field-row">
                 <label>{t("dispatchMode")}
-                  <select value={dispatchModeOrDefault(kind, current.mode)} onChange={(event) => updateAgent(kind, { mode: event.target.value })}>
+                  <Select value={dispatchModeOrDefault(kind, current.mode)} onChange={(event) => updateAgent(kind, { mode: event.target.value })}>
                     {DISPATCH_MODES_BY_AGENT[kind].map((value) => (
                       <option key={value} value={value}>{label(dispatchModeLabelKey(kind, value), value)}</option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 <details className="settings-advanced"><summary>{t("settingsAdvancedModel")}</summary>
                 <div className="field-row">
                 <label>{t("dispatchModel")}
-                  <select
+                  <Select
                     value={current.model ?? ""}
                     onChange={(event) => updateAgent(kind, { model: event.target.value, effort: "" })}
                   >
@@ -144,15 +145,15 @@ export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () 
                     {current.model && !models.some((model) => model.id === current.model) && (
                       <option value={current.model}>{current.model}</option>
                     )}
-                  </select>
+                  </Select>
                 </label>
                 <label>{t("dispatchEffort")}
-                  <select value={current.effort ?? ""} onChange={(event) => updateAgent(kind, { effort: event.target.value })}>
+                  <Select value={current.effort ?? ""} onChange={(event) => updateAgent(kind, { effort: event.target.value })}>
                     <option value="">{t("dispatchModelLocal")}</option>
                     {effortOptions(models, current.model).map((value) => (
                       <option key={value} value={value}>{effortLabel(value)}</option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 </div>
                 </details>

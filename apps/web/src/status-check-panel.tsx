@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { useDialogDraft } from "./dialog-state";
 import type { CompletionReference } from "@missiongo/contracts";
 import { useEffect, useState } from "react";
@@ -102,9 +103,9 @@ function ScopeEditor({itemKey,record,artifacts,onSaved,onCancel}:{itemKey:string
   const [initialDraft] = useState(currentDraft);
   useDialogDraft(currentDraft !== initialDraft, mutation.isPending);
   return <form className="status-check-scope" onSubmit={event=>{event.preventDefault();mutation.mutate();}}>
-    <label>{zh ? "完成依据" : "Completion reference"}<select value={kind} onChange={e=>setKind(e.target.value as CompletionReference["kind"])}>
+    <label>{zh ? "完成依据" : "Completion reference"}<Select value={kind} onChange={e=>setKind(e.target.value as CompletionReference["kind"])}>
       <option value="github">GitHub PR</option><option value="gitlab">GitLab MR</option>
-      <option value="commit">{zh ? "本地 Git 提交" : "Local Git commit"}</option><option value="manual">{zh ? "人工确认" : "Human confirmation"}</option></select></label>
+      <option value="commit">{zh ? "本地 Git 提交" : "Local Git commit"}</option><option value="manual">{zh ? "人工确认" : "Human confirmation"}</option></Select></label>
     {kind === "github" || kind === "gitlab" ? <label>{kind === "github" ? "PR URL" : "MR URL"}<input type="url" required value={url} onChange={e=>setUrl(e.target.value)} maxLength={500}/></label>
       : <label>{zh ? "完整提交编号" : "Full commit SHA"}<input required pattern="[a-f0-9]{40}" value={commit} onChange={e=>setCommit(e.target.value)} maxLength={40}/></label>}
     {kind === "commit" && <label>{zh ? "集成的目标分支" : "Integration target branch"}<input required value={branch} onChange={e=>setBranch(e.target.value)} maxLength={200}/></label>}

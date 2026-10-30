@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, MoreHorizontal } from "lucide-react";
@@ -157,7 +158,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   return (
     <div className="agent-session-quick-settings">
       <div className="agent-session-quick-settings-row">
-        <select
+        <Select
           className="agent-settings-mode"
           aria-label={t("dispatchMode")}
           value={modeValue}
@@ -167,8 +168,8 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           {(session.agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[session.agentKind]).map((value) => (
             <option key={value} value={value}>{modeLabel(value)}</option>
           ))}
-        </select>
-        <select
+        </Select>
+        <Select
           className="agent-settings-model"
           aria-label={t("dispatchModel")}
           value={modelValue}
@@ -194,8 +195,8 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
                 </optgroup>
               )
           ))}
-        </select>
-        <select
+        </Select>
+        <Select
           className="agent-settings-effort"
           aria-label={t("dispatchEffort")}
           value={effortValue}
@@ -207,21 +208,21 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           {effortOptions(models, modelValue).filter((value) => value !== effortValue).map((value) => (
             <option key={value} value={value}>{effortLabel(value)}</option>
           ))}
-        </select>
+        </Select>
         <div className="agent-settings-more">
           <button type="button" className="secondary-button" aria-label={t("moreActions")} aria-expanded={moreOpen} onClick={() => (moreOpen ? closeMore() : openMore())}><MoreHorizontal size={18} /></button>
           {moreOpen && <div className="agent-settings-more-panel">
             <label>{t("dispatchMode")}
-              <select value={modeValue} disabled={apply.isPending} onChange={(event) => changeMode(event.target.value)}>
+              <Select value={modeValue} disabled={apply.isPending} onChange={(event) => changeMode(event.target.value)}>
                 {(session.agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[session.agentKind]).map((value) => <option key={value} value={value}>{modeLabel(value)}</option>)}
-              </select>
+              </Select>
             </label>
             <label>{t("dispatchEffort")}
-              <select value={effortValue} disabled={apply.isPending || !models} onChange={(event) => changeEffort(event.target.value)}>
+              <Select value={effortValue} disabled={apply.isPending || !models} onChange={(event) => changeEffort(event.target.value)}>
                 {effortValue && <option value={effortValue}>{shownEffort}</option>}
                 {!effortValue && <option value="">{shownEffort}</option>}
                 {effortOptions(models, modelValue).filter((value) => value !== effortValue).map((value) => <option key={value} value={value}>{effortLabel(value)}</option>)}
-              </select>
+              </Select>
             </label>
           </div>}
         </div>

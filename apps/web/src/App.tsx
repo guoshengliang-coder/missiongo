@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { DraftChatFile } from "./agent-chat-draft-file";
 import { BuilderBadge } from "./builder-badge";
 import { BackButton } from "./back-button";
@@ -12,7 +13,7 @@ import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics
 import { Modal } from "./modal";
 import { StatusCheckButton, StatusCheckPanel } from "./status-check-panel";
 import { localizedErrorText } from "./error-text";
-import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
+import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
 import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoginForm } from "./login-form";
 import {
@@ -2165,17 +2166,9 @@ function ItemRow({
     </article>
   );
 }
-/**
- * A native <select> cannot carry an icon in its options, so this is the listbox
- * pattern instead: a button that owns the value, and a list that behaves the way
- * a select does under the keyboard.
- */
+/** Product metadata uses the same combobox interaction and popup as forms. */
 function ProductSwitcher({
-  products,
-  selectedProductId,
-  unreadCounts,
-  unreadCountsLoaded,
-  onSelect,
+  products, selectedProductId, unreadCounts, unreadCountsLoaded, onSelect,
 }: {
   products: readonly Product[];
   selectedProductId: string;
@@ -2184,130 +2177,28 @@ function ProductSwitcher({
   onSelect: (productId: string) => void;
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const listRef = useRef<HTMLUListElement>(null);
-  const selectedIndex = Math.max(0, products.findIndex((product) => product.id === selectedProductId));
-  const selected = products[selectedIndex];
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const closeOnOutside = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", closeOnOutside);
-    return () => document.removeEventListener("mousedown", closeOnOutside);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    setActiveIndex(selectedIndex);
-    listRef.current?.focus();
-  }, [open, selectedIndex]);
-
-  const close = () => {
-    setOpen(false);
-    buttonRef.current?.focus();
+  const content = (id: string, expanded: boolean) => {
+    const product = products.find(entry => entry.id === id);
+    if (!product) return null;
+    return <>
+      <ProductBadge product={product} />
+      {expanded
+        ? <span className="product-switcher-option"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
+        : <span className="product-switcher-name">{product.name}</span>}
+      {unreadCounts && unreadCountsLoaded && <small className="agent-unread-badge"
+        aria-label={t("agentConsoleUnreadCount", { count: unreadCounts.get(id) ?? 0 })}>
+        {unreadCounts.get(id) ?? 0}
+      </small>}
+    </>;
   };
-
-  const choose = (index: number) => {
-    const product = products[index];
-    if (product) onSelect(product.id);
-    close();
-  };
-
-  const onListKeyDown = (event: ReactKeyboardEvent<HTMLUListElement>) => {
-    const moves: Readonly<Record<string, number>> = { ArrowDown: 1, ArrowUp: -1 };
-    if (event.key in moves) {
-      event.preventDefault();
-      setActiveIndex((current) => Math.min(products.length - 1, Math.max(0, current + moves[event.key]!)));
-    } else if (event.key === "Home") {
-      event.preventDefault();
-      setActiveIndex(0);
-    } else if (event.key === "End") {
-      event.preventDefault();
-      setActiveIndex(products.length - 1);
-    } else if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      choose(activeIndex);
-    } else if (event.key === "Escape" || event.key === "Tab") {
-      event.preventDefault();
-      close();
-    }
-  };
-
-  if (!selected) return null;
-  return (
-    <div className="product-switcher-wrap" ref={rootRef}>
-      <button
-        ref={buttonRef}
-        type="button"
-        className="product-switcher"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label={t("selectedProduct")}
-        onClick={() => setOpen((current) => !current)}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-            event.preventDefault();
-            setOpen(true);
-          }
-        }}
-      >
-        <ProductBadge product={selected} />
-        <span className="product-switcher-name">{selected.name}</span>
-        {unreadCounts && unreadCountsLoaded && (
-          <small
-            className="agent-unread-badge"
-            aria-label={t("agentConsoleUnreadCount", {
-              count: unreadCounts.get(selected.id) ?? 0,
-            })}
-            title={t("agentConsoleUnreadCount", { count: unreadCounts.get(selected.id) ?? 0 })}
-          >{unreadCounts.get(selected.id) ?? 0}</small>
-        )}
-        <ChevronDown size={14} aria-hidden="true" />
-      </button>
-      {open && (
-        <ul
-          ref={listRef}
-          className="product-switcher-list"
-          role="listbox"
-          tabIndex={-1}
-          aria-label={t("selectedProduct")}
-          aria-activedescendant={`product-option-${products[activeIndex]?.id ?? ""}`}
-          onKeyDown={onListKeyDown}
-        >
-          {products.map((product, index) => (
-            <li
-              key={product.id}
-              id={`product-option-${product.id}`}
-              role="option"
-              aria-selected={product.id === selectedProductId}
-              className={`${index === activeIndex ? "active" : ""} ${product.id === selectedProductId ? "selected" : ""}`}
-              onMouseEnter={() => setActiveIndex(index)}
-              onClick={() => choose(index)}
-            >
-              <ProductBadge product={product} />
-              {/* Named, because a bare `li > span` rule also caught the badge and
-                  stretched it to fill the row. */}
-              <span className="product-switcher-option"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
-              {unreadCounts && unreadCountsLoaded && (
-                <span
-                  className="agent-unread-badge"
-                  aria-label={t("agentConsoleUnreadCount", {
-                    count: unreadCounts.get(product.id) ?? 0,
-                  })}
-                  title={t("agentConsoleUnreadCount", { count: unreadCounts.get(product.id) ?? 0 })}
-                >{unreadCounts.get(product.id) ?? 0}</span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
+  if (!products.length) return null;
+  return <div className="product-switcher-wrap">
+    <Select className="product-switcher" aria-label={t("selectedProduct")}
+      value={selectedProductId} onChange={event => onSelect(event.target.value)}
+      renderValue={id => content(id, false)} renderOption={id => content(id, true)}>
+      {products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}
+    </Select>
+  </div>;
 }
 
 /** Below this the workspace shows one pane at a time, and so should the manager. */
@@ -2534,11 +2425,11 @@ function TransferItemDialog({ item, onClose }: { item: WorkItem; onClose: () => 
       </> : <>
         <p>{t("transferHelp")}</p>
         <label htmlFor="transfer-target">{t("transferTarget")}</label>
-        <select id="transfer-target" value={targetId} disabled={productsQuery.isLoading || mutation.isPending}
+        <Select id="transfer-target" value={targetId} disabled={productsQuery.isLoading || mutation.isPending}
           onChange={(event) => { setTargetId(event.target.value); setRequestId(crypto.randomUUID()); mutation.reset(); }}>
           <option value="">{t("transferChoose")}</option>
           {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
+        </Select>
         {productsQuery.isSuccess && !products.length && <p role="status">{t("transferNoTargets")}</p>}
       </>}
       {productsQuery.isError && <InlineError message={localizedErrorText(productsQuery.error, t)} />}
@@ -3817,7 +3708,7 @@ function WorkItemFields({
       </div>
       <div className="classification-row">
         <label><FieldLabel required={platformRequired}>{t("platform")}</FieldLabel>
-          <select
+          <Select
             value={draft.environment.platform}
             onChange={(event) => {
               const platform = event.target.value as EnvironmentDraft["platform"];
@@ -3832,10 +3723,10 @@ function WorkItemFields({
           >
             <option value="">{t("selectPlatform")}</option>
             {COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}
-          </select>
+          </Select>
         </label>
         <label><FieldLabel>{t("sourceComponent")}</FieldLabel>
-          <select
+          <Select
             value={draft.sourceComponentId}
             onChange={(event) => {
               const sourceComponentId = event.target.value;
@@ -3852,9 +3743,9 @@ function WorkItemFields({
           >
             <option value="">{t("allModules")}</option>
             {(componentsQuery.data ?? []).filter((component) => component.kind === draft.environment.platform).map((component) => <option key={component.id} value={component.id}>{component.name}</option>)}
-          </select>
+          </Select>
         </label>
-        <label><FieldLabel>{t("priority")}</FieldLabel><select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
+        <label><FieldLabel>{t("priority")}</FieldLabel><Select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</Select></label>
       </div>
       <div className="ai-title-field">
         <label><FieldLabel required>{t("whatNeedsAttention")}</FieldLabel><input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus data-initial-focus /></label>
@@ -3974,13 +3865,13 @@ function WorkItemFields({
             <label><FieldLabel>{t("expectedOutcome")}</FieldLabel><AutoGrowTextarea value={draft.expectedOutcome} onChange={(event) => updateDraft("expectedOutcome", event.target.value)} placeholder={t("expectedOutcomePlaceholder")} rows={5} maxLength={20_000} /></label>
             <label><FieldLabel>{t("impact")}</FieldLabel><AutoGrowTextarea value={draft.impact} onChange={(event) => updateDraft("impact", event.target.value)} placeholder={t("impactPlaceholder")} rows={3} maxLength={10_000} /></label>
             <label><FieldLabel>{t("occurrenceFrequency")}</FieldLabel>
-              <select value={draft.occurrenceFrequency} onChange={(event) => updateDraft("occurrenceFrequency", event.target.value as WorkItemOccurrenceFrequency)}>
+              <Select value={draft.occurrenceFrequency} onChange={(event) => updateDraft("occurrenceFrequency", event.target.value as WorkItemOccurrenceFrequency)}>
                 <option value="unknown">{t("frequencyUnknown")}</option>
                 <option value="once">{t("frequencyOnce")}</option>
                 <option value="intermittent">{t("frequencyIntermittent")}</option>
                 <option value="frequent">{t("frequencyFrequent")}</option>
                 <option value="always">{t("frequencyAlways")}</option>
-              </select>
+              </Select>
             </label>
             </div>
           </details>
@@ -4857,7 +4748,7 @@ function ProductSettings({
             <form className="dialog-form" onSubmit={event => { event.preventDefault(); if (newComponentName.trim() && !componentMutation.isPending) componentMutation.mutate(); }}>
               <div className="dialog-fields">
                 <label>{t("componentName")}<input value={newComponentName} onChange={(event) => setNewComponentName(event.target.value)} placeholder={t("componentNamePlaceholder")} autoFocus /></label>
-                <label>{t("componentKind")}<select value={newComponentKind} onChange={(event) => setNewComponentKind(event.target.value as ComponentKind)}>{COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</select></label>
+                <label>{t("componentKind")}<Select value={newComponentKind} onChange={(event) => setNewComponentKind(event.target.value as ComponentKind)}>{COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</Select></label>
                 <div className="form-footer"><button type="button" className="secondary-button" disabled={componentMutation.isPending} onClick={closeComponentForm}>{t("cancel")}</button>
                 <button type="submit" className="primary-button" disabled={!newComponentName.trim() || componentMutation.isPending}>
                   {componentMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {t("createComponent")}
@@ -4962,10 +4853,10 @@ function SdkTokenSettings({ product }: { product: Product }) {
         <div className="dialog-fields">
           <label>{t("sdkTokenName")}<input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("sdkTokenNamePlaceholder")} maxLength={100} /></label>
           <label>{t("sdkTokenScope")}
-            <select value={sourceComponentId} onChange={(event) => setSourceComponentId(event.target.value)}>
+            <Select value={sourceComponentId} onChange={(event) => setSourceComponentId(event.target.value)}>
               <option value="">{t("sdkTokenAnyModule")}</option>
               {androidComponents.map((component) => <option key={component.id} value={component.id}>{component.name}</option>)}
-            </select>
+            </Select>
           </label>
 
         </div>
@@ -5041,9 +4932,9 @@ function ComponentSettingsRow({ component }: { component: Component }) {
   return (
     <div className={`component-settings-row ${archived ? "archived" : ""}`}>
       <input value={name} onChange={(event) => setName(event.target.value)} aria-label={t("componentName")} disabled={archived} />
-      <select value={kind} onChange={(event) => setKind(event.target.value as ComponentKind)} aria-label={t("componentKind")} disabled={archived}>
+      <Select value={kind} onChange={(event) => setKind(event.target.value as ComponentKind)} aria-label={t("componentKind")} disabled={archived}>
         {COMPONENT_KINDS.map((value) => <option key={value} value={value}>{t(value)}</option>)}
-      </select>
+      </Select>
       {archived ? (
         <button className="secondary-button" disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate(false)}>
           {archiveMutation.isPending ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />} {t("restore")}

@@ -61,7 +61,7 @@ export function Modal({ title, subtitle, onClose, children, wide = false, scroll
     const dialog = dialogRef.current;
     const originalFocus = returnFocus.current;
     dialog?.showModal();
-    dialog?.querySelector<HTMLElement>("[data-initial-focus], input:not([type=hidden]):not(:disabled), textarea:not(:disabled), select:not(:disabled)")?.focus();
+    dialog?.querySelector<HTMLElement>("[data-initial-focus], input:not([type=hidden]):not(:disabled), textarea:not(:disabled), [role=combobox]:not(:disabled)")?.focus();
     const state = typeof history.state === "object" && history.state ? history.state : {};
     const ids: string[] = state[DIALOG_HISTORY_MARKER] ?? [];
     const ownState = historyManaged || ids.includes(titleId) ? state : { ...state, [DIALOG_HISTORY_MARKER]: [...ids, titleId] };
@@ -124,7 +124,7 @@ export function Modal({ title, subtitle, onClose, children, wide = false, scroll
       const panel = dialog.querySelector<HTMLElement>(".modal");
       if (panel) panel.style.maxHeight = `${Math.max(120, height - 36)}px`;
       requestAnimationFrame(() => {
-        if (document.activeElement instanceof HTMLElement && document.activeElement.matches("input, textarea, select")) document.activeElement.scrollIntoView({ block: "nearest" });
+        if (document.activeElement instanceof HTMLElement && document.activeElement.matches("input, textarea, [role=combobox]")) document.activeElement.scrollIntoView({ block: "nearest" });
       });
     };
     fit(); viewport?.addEventListener("resize", fit);
@@ -132,7 +132,7 @@ export function Modal({ title, subtitle, onClose, children, wide = false, scroll
   }, []);
   useEffect(() => {
     const dialog = dialogRef.current;
-    if (dialog && !dialog.contains(document.activeElement)) dialog.querySelector<HTMLElement>("[data-initial-focus], input:not([type=hidden]), textarea, select, button")?.focus();
+    if (dialog && !dialog.contains(document.activeElement)) dialog.querySelector<HTMLElement>("[data-initial-focus], input:not([type=hidden]), textarea, [role=combobox], button")?.focus();
   }, [title]);
   return (
     <dialog ref={dialogRef} className="modal-layer" aria-labelledby={titleId} aria-busy={pending}

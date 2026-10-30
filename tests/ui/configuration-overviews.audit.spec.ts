@@ -1,3 +1,4 @@
+import { chooseOption } from "./select-helpers";
 import { randomBytes } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
@@ -40,7 +41,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await expect(page.getByRole("button", { name: "恢复", exact: true })).toBeVisible();
       await page.goto("/settings/products");
       await expect(card).toHaveCount(0);
-      await page.getByRole("combobox", { name: "产品状态" }).selectOption("archived");
+      await chooseOption(page.getByRole("combobox", { name: "产品状态" }), "archived");
       await expect(card).toBeVisible();
       await card.click();
       await page.locator(".settings-hub-row").filter({ hasText: "基本资料" }).click();

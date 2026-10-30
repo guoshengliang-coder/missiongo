@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { useDialogDraft } from "./dialog-state";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -314,13 +315,13 @@ export function DispatchDialog({
       )}
 
       <label>{t("dispatchNode")}
-        <select value={nodeId} onChange={(event) => setNodeId(event.target.value)} disabled={nodes.length === 0}>
+        <Select value={nodeId} onChange={(event) => setNodeId(event.target.value)} disabled={nodes.length === 0}>
           {nodes.map((node) => (
             <option key={node.id} value={node.id} disabled={Boolean(ineligibility.get(node.id))}>
               {nodeLabel(node)}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
       {nodesQuery.isLoading && <p className="section-empty"><LoaderCircle className="spin" size={14} /></p>}
       {/* A failed request is not an empty machine room: saying "no devices"
@@ -346,7 +347,7 @@ export function DispatchDialog({
 
       <div className="field-row">
         <label>{t("dispatchAgent")}
-          <select
+          <Select
             value={agentKind}
             onChange={(event) => {
               const next = event.target.value as AgentKind;
@@ -367,20 +368,20 @@ export function DispatchDialog({
                 </option>
               );
             })}
-          </select>
+          </Select>
         </label>
         <label>{t("dispatchMode")}
-          <select value={mode} onChange={(event) => setMode(event.target.value)}>
+          <Select value={mode} onChange={(event) => setMode(event.target.value)}>
             {modes.map((value) => (
               <option key={value} value={value}>{modeLabel(agentKind, value)}</option>
             ))}
-          </select>
+          </Select>
         </label>
       </div>
       {modeHelp && <p className="dispatch-note">{t(modeHelp)}</p>}
       <div className="field-row">
         <label>{t("dispatchModel")}
-          <select value={model} onChange={(event) => setModel(event.target.value)} disabled={!models}>
+          <Select value={model} onChange={(event) => setModel(event.target.value)} disabled={!models}>
             <option value="">{t("dispatchModelLocal")}</option>
             {groupModelsByProvider(models ?? []).map((group) => (
               group.provider === null
@@ -395,15 +396,15 @@ export function DispatchDialog({
                   </optgroup>
                 )
             ))}
-          </select>
+          </Select>
         </label>
         <label>{t("dispatchEffort")}
-          <select value={effort} onChange={(event) => setEffort(event.target.value)} disabled={!models}>
+          <Select value={effort} onChange={(event) => setEffort(event.target.value)} disabled={!models}>
             <option value="">{t("dispatchModelLocal")}</option>
             {effortOptions(models, model || undefined).map((value) => (
               <option key={value} value={value}>{effortLabel(value)}</option>
             ))}
-          </select>
+          </Select>
         </label>
       </div>
       {nodeId && !models && nodesQuery.isFetched && <p className="dispatch-note">{t("dispatchModelUnsupported")}</p>}

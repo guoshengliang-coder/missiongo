@@ -1,3 +1,4 @@
+import { chooseOption } from "./select-helpers";
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
@@ -122,7 +123,7 @@ test("shows one Agent at a time, keeps advanced choices optional and protects di
   await page.route("**/api/v1/nodes", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ nodes: [{ id: "review-node", name: "Review Mac", deviceName: "Review Mac", agents: [{ kind: "claude_code", version: "1" }, { kind: "codex", version: "1" }], repos: [], repoCandidates: [], online: true, createdAt: new Date().toISOString() }] }) }));
   await page.goto("/settings/dispatch");
   await expect(page.locator(".dispatch-defaults-agent")).toHaveCount(1);
-  await page.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
+  await chooseOption(page.getByRole("combobox", { name: "Agent", exact: true }), "codex");
   await expect(page.locator(".dispatch-defaults-agent legend")).toHaveText("Codex");
   await expect(page.getByRole("combobox", { name: "模型", exact: true })).toBeHidden();
   await page.getByText("模型与推理设置", { exact: true }).click();

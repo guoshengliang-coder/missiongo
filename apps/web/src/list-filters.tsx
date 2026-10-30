@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { useEffect, useRef, useState } from "react";
 import { Filter, X } from "lucide-react";
 import type {
@@ -216,17 +217,17 @@ export function ListFilters({
       >
         <label className="list-filter-builder">
           <span>Builder</span>
-          <select
+          <Select anchorToLabel
             aria-label="Builder"
             value={value.builder}
             onChange={(e) => onChange({ ...value, builder: e.target.value })}
           >
             {builderOptions(true)}
-          </select>
+          </Select>
         </label>
         <label className="list-filter-type">
           <span>{word("类型", "Type")}</span>
-          <select
+          <Select anchorToLabel
             aria-label={word("类型", "Type")}
             value={
               value.types?.length === 1
@@ -258,7 +259,7 @@ export function ListFilters({
                 )}
               </option>
             )}
-          </select>
+          </Select>
         </label>
         <button
           className="secondary-button list-filter-more"
@@ -353,7 +354,7 @@ export function ListFilters({
           >
             <label className="list-filter-field">
               Builder
-              <select
+              <Select
                 data-initial-focus
                 aria-label={word("筛选 Builder", "Filter Builder")}
                 value={draft.builder}
@@ -362,7 +363,7 @@ export function ListFilters({
                 }
               >
                 {builderOptions()}
-              </select>
+              </Select>
             </label>
             <fieldset>
               <legend>{word("类型", "Type")}</legend>

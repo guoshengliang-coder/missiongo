@@ -1,3 +1,4 @@
+import { chooseOption } from "./select-helpers";
 import {readFileSync} from "node:fs";
 import {expect,test} from "@playwright/test";
 import {AUDIT_SOURCE} from "./audit-page.mjs";
@@ -25,8 +26,8 @@ for(const width of [375,1440])for(const theme of ["light","dark"] as const){
    await details.locator(".statistics-item-link").first().click();
    await expect(page.locator(".detail-toolbar")).toBeVisible();await page.goBack();
    await expect(page.getByRole("heading",{name:"产品统计",exact:true})).toBeVisible();
-   await expect(page.getByRole("combobox",{name:"产品范围",exact:true})).toHaveValue(fixture.productId);
-   await expect(page.getByRole("combobox",{name:"统计时间",exact:true})).toHaveValue("today");
+   await expect(page.getByRole("combobox",{name:"产品范围",exact:true})).toHaveAttribute("data-value", fixture.productId);
+   await expect(page.getByRole("combobox",{name:"统计时间",exact:true})).toHaveAttribute("data-value", "today");
    await expect(page).toHaveURL(/statsDay=/);
   });
  });
@@ -36,13 +37,13 @@ test("statistics entry, paging, empty filters and date validation",async({page,r
  for(let i=0;i<26;i++){const item=await request.post("/api/v1/items",{data:{productId:product.id,title:`Report task ${i}`,description:"Task for report paging",type:"task",priority:"normal",status:"inbox",environment:{platform:"web"}}});expect(item.status()).toBe(201);}
  await page.goto(`/?product=${product.id}`);await page.getByRole("button",{name:"统计",exact:true}).click();
  await expect(page.getByRole("heading",{name:"产品统计",exact:true})).toBeVisible();
- await page.getByRole("combobox",{name:"产品范围",exact:true}).selectOption(product.id);await page.getByRole("combobox",{name:"条目类型",exact:true}).selectOption("task");await page.getByRole("button",{name:"应用筛选",exact:true}).click();
+ await chooseOption(page.getByRole("combobox",{name:"产品范围",exact:true}), product.id);await chooseOption(page.getByRole("combobox",{name:"条目类型",exact:true}), "task");await page.getByRole("button",{name:"应用筛选",exact:true}).click();
  await page.locator(".statistics-metric").filter({has:page.getByRole("heading",{name:"新增条目",exact:true})}).getByRole("button").click();
  const details=page.getByRole("region",{name:"条目明细",exact:true});await expect(details.locator(".statistics-item-link")).toHaveCount(25);
  await details.getByRole("button",{name:"下一页",exact:true}).click();await expect(details.locator(".statistics-item-link")).toHaveCount(1);
  await details.locator(".statistics-item-link").click();await expect(page.locator(".detail-toolbar")).toBeVisible();await page.goBack();await expect(page.getByRole("region",{name:"条目明细",exact:true}).locator(".statistics-item-link")).toHaveCount(1);await expect(page).toHaveURL(/statsOffset=25/);
- await page.getByRole("combobox",{name:"条目类型",exact:true}).selectOption("idea");await page.getByRole("button",{name:"应用筛选",exact:true}).click();await page.locator(".statistics-metric").filter({has:page.getByRole("heading",{name:"新增条目",exact:true})}).getByRole("button").click();await expect(page.getByText("此筛选下没有条目。",{exact:true})).toBeVisible();
- await page.getByRole("combobox",{name:"统计时间",exact:true}).selectOption("custom");await page.getByLabel("开始日期",{exact:true}).fill("2026-10-10");await page.getByLabel("结束日期",{exact:true}).fill("2026-10-09");await page.getByRole("button",{name:"应用筛选",exact:true}).click();await expect(page.getByRole("alert")).toContainText("请选择有效日期");
+ await chooseOption(page.getByRole("combobox",{name:"条目类型",exact:true}), "idea");await page.getByRole("button",{name:"应用筛选",exact:true}).click();await page.locator(".statistics-metric").filter({has:page.getByRole("heading",{name:"新增条目",exact:true})}).getByRole("button").click();await expect(page.getByText("此筛选下没有条目。",{exact:true})).toBeVisible();
+ await chooseOption(page.getByRole("combobox",{name:"统计时间",exact:true}), "custom");await page.getByLabel("开始日期",{exact:true}).fill("2026-10-10");await page.getByLabel("结束日期",{exact:true}).fill("2026-10-09");await page.getByRole("button",{name:"应用筛选",exact:true}).click();await expect(page.getByRole("alert")).toContainText("请选择有效日期");
  await page.getByRole("button",{name:"返回工作区",exact:true}).click();await expect(page.getByRole("heading",{name:"产品统计",exact:true})).toHaveCount(0);
 });
 test("revoked scope or failed fetch hides old report data and supports retry",async({page})=>{

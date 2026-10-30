@@ -1,3 +1,4 @@
+import { chooseOption } from "./select-helpers";
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
@@ -52,7 +53,7 @@ for (const width of [375, 768, 1440]) {
       const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(`/?product=${fixture.productId}&console=agent&session=external-native`);
       await page.getByRole("button", { name: "同步原生会话" }).click();
-      await page.getByRole("combobox", { name: "会话所在节点" }).selectOption("fixture-node");
+      await chooseOption(page.getByRole("combobox", { name: "会话所在节点" }), "fixture-node");
       await page.getByRole("button", { name: "同步原生会话" }).click();
       await expect(page.getByText("等待 Fixture node 确认这条原生会话。同步成功前暂不开放回复。")).toBeVisible();
       await expect(page.locator(".agent-console-reply textarea")).toHaveCount(0);

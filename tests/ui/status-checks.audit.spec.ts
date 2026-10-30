@@ -1,3 +1,4 @@
+import { chooseOption } from "./select-helpers";
 import {readFileSync} from "node:fs";
 import {expect,test} from "@playwright/test";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string};
@@ -65,7 +66,7 @@ test("local manual confirmation records integration and offline publication", as
  await page.locator(".detail-toolbar").getByRole("button",{name:"状态检查",exact:true}).click();
  const dialog=page.getByRole("dialog");
  await dialog.getByRole("button",{name:"关联完成依据 / 确认发布范围",exact:true}).click();
- await dialog.getByRole("combobox",{name:"完成依据",exact:true}).selectOption("manual");
+ await chooseOption(dialog.getByRole("combobox",{name:"完成依据",exact:true}), "manual");
  await dialog.getByLabel("完整提交编号",{exact:true}).fill("a".repeat(40));
  await dialog.getByLabel("需要人工确认的交付说明",{exact:true}).fill("CLI delivered on an offline machine");
  await dialog.getByLabel("cli",{exact:true}).check();
@@ -101,7 +102,7 @@ test("an empty product inventory does not block manual integration or arranging 
  await page.locator(".detail-toolbar").getByRole("button",{name:"状态检查",exact:true}).click();
  const dialog = page.getByRole("dialog");
  await dialog.getByRole("button",{name:"关联完成依据 / 确认发布范围",exact:true}).click();
- await dialog.getByRole("combobox",{name:"完成依据",exact:true}).selectOption("manual");
+ await chooseOption(dialog.getByRole("combobox",{name:"完成依据",exact:true}), "manual");
  await dialog.getByLabel("完整提交编号",{exact:true}).fill("a".repeat(40));
  await dialog.getByLabel("需要人工确认的交付说明",{exact:true}).fill("Review integrated changes directly");
  await dialog.getByRole("button",{name:"确认并保存关联",exact:true}).click();

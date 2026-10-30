@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { BackButton } from "./back-button";
 import { useConfirm } from "./confirm-dialog";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
@@ -808,7 +809,7 @@ export function AgentSessionConsole({
           </label>
           <label className="agent-console-agent-filter">
             <span>{t("agentConsoleAgentFilter")}</span>
-            <select
+            <Select
               aria-label={t("agentConsoleAgentFilter")}
               value={agentFilter}
               onChange={(event) => chooseAgent(event.target.value as AgentKindFilter)}
@@ -817,7 +818,7 @@ export function AgentSessionConsole({
               <option value="codex">{t("agentCodex")}</option>
               <option value="opencode">{t("agentOpenCode")}</option>
               <option value="claude_code">{t("agentClaudeCode")}</option>
-            </select>
+            </Select>
           </label>
         </div>
         {bulkMode && bulkAvailable && (
@@ -889,10 +890,10 @@ export function AgentSessionConsole({
                 ["version", healthVersion, setHealthVersion, healthQuery.data.groups.versions],
                 ["code", healthCode, setHealthCode, healthQuery.data.groups.codes],
               ] as const).map(([kind, value, update, options]) => (
-                <select key={kind} aria-label={t(`dispatchHealth${kind[0]!.toUpperCase()}${kind.slice(1)}` as "dispatchHealthNode")} value={value} onChange={(event) => update(event.target.value)}>
+                <Select key={kind} aria-label={t(`dispatchHealth${kind[0]!.toUpperCase()}${kind.slice(1)}` as "dispatchHealthNode")} value={value} onChange={(event) => update(event.target.value)}>
                   <option value="all">{t(`dispatchHealthAll${kind[0]!.toUpperCase()}${kind.slice(1)}s` as "dispatchHealthAllNodes")}</option>
                   {options.map((option) => <option key={option.key} value={option.key}>{option.key} ({option.failed}/{option.total})</option>)}
-                </select>
+                </Select>
               ))}
             </div>
             {healthFailures.slice(0, 5).map((dispatch) => (
