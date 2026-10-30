@@ -420,8 +420,10 @@ export function AgentSessionConsole({
     && (healthVersion === "all" || dispatchVersion(dispatch) === healthVersion)
     && (healthCode === "all" || (dispatch.failureCode ?? "unknown") === healthCode)
   )), [healthAgent, healthCode, healthNode, healthQuery.data?.recentFailures, healthVersion]);
+  const planApprovalLocks = useRef(new Set<string>());
   const send = useMutation({
-    mutationFn: async ({ sessionId, text, files }: { sessionId: string; text: string; files: readonly File[]; occurredAt: string }) => {
+    mutationFn: async ({ sessionId, text, files, planApprovalRevision }: { sessionId: string; text: string; files: readonly File[]; occurredAt: string; planApprovalRevision?: string }) => {
+      if (planApprovalRevision) return api.approveAgentSessionPlan(sessionId, planApprovalRevision);
       const uploaded: AgentSessionAttachment[] = [];
       try {
         for (const file of files) uploaded.push(await api.uploadAgentSessionAttachment(sessionId, file));
@@ -432,18 +434,21 @@ export function AgentSessionConsole({
       }
     },
     onSuccess: (created, input) => {
-      setReplyFor(input.sessionId, "");
-      setReplyFiles([]);
-      setReplyFileError(null);
+      if (!input.planApprovalRevision) {
+        setReplyFor(input.sessionId, "");
+        setReplyFiles([]);
+        setReplyFileError(null);
+      }
       queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current
-        ? { ...current, command: created }
+        ? { ...current, command: created, planApproval: undefined }
         : current);
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
       ]);
     },
-    onError: () => {
+    onError: (_error, input) => {
+      if (input.planApprovalRevision) planApprovalLocks.current.delete(`${input.sessionId}:${input.planApprovalRevision}`);
       if (selected?.agentSessionId) void queryClient.invalidateQueries({ queryKey: ["agent-session", selected.agentSessionId] });
     },
   });
@@ -602,6 +607,17 @@ export function AgentSessionConsole({
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
   const approval = sessionQuery.data ? sessionQuery.data.approval : selected?.approval;
+  const planApproval = sessionQuery.data?.canReply && selected?.canReply && selected.status === "idle"
+    && sessionQuery.data.status === "idle" && sessionQuery.data.turnState?.turnActive !== true
+    && !pending && !approvalNeedsAction(approval) ? sessionQuery.data.planApproval : undefined;
+  const approvePlan = () => {
+    if (!planApproval || !selected?.agentSessionId || pending || sendingSelected) return;
+    const key = `${selected.agentSessionId}:${planApproval.revision}`;
+    if (planApprovalLocks.current.has(key)) return;
+    planApprovalLocks.current.add(key);
+    send.mutate({ sessionId: selected.agentSessionId, text: "批准", files: [],
+      occurredAt: new Date().toISOString(), planApprovalRevision: planApproval.revision });
+  };
   // A turn in progress reads as running for every agent that reports one —
   // Claude's own instrumentation, Codex mapping its active thread, OpenCode
   // reporting an active session without a pending question (AND-223).
@@ -1150,15 +1166,20 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
-                {(selected.needsAttention || selected.attention.dismissed) && selected.attention.reason && (
+                {(selected.needsAttention || selected.attention.dismissed || planApproval) && (selected.attention.reason || planApproval) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}`} role="status">
                     <BellRing size={16} />
                     <details>
                       <summary>{selected.attention.dismissed
                         ? t("agentAttentionDismissedTitle")
-                        : attentionLabel(selected, t)}</summary>
-                      <p>{selected.attention.reason}</p>
+                        : planApproval ? t("agentAttentionApproval") : attentionLabel(selected, t)}</summary>
+                      <p>{planApproval?.reason ?? selected.attention.reason}</p>
+                      {planApproval && <p>“{planApproval.evidence}”</p>}
                     </details>
+                    {planApproval && !selected.attention.dismissed && (
+                      <button type="button" className="primary-button" disabled={sendingSelected || dismissAttention.isPending}
+                        onClick={approvePlan}>{t("agentPlanApprove")}</button>
+                    )}
                     {selected.needsAttention
                       && selected.status !== "stalled"
                       && selected.agentSessionId

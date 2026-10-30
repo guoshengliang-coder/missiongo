@@ -42,6 +42,7 @@ export function errorMessageKey(error: unknown): MessageKey | null {
       agent_command_pending: "errorAgentCommandPending",
       agent_reply_changed: "errorAgentReplyChanged",
       agent_attention_changed: "errorAgentAttentionChanged",
+      agent_plan_approval_changed: "errorAgentPlanApprovalChanged",
       dispatch_not_retryable: "errorDispatchNotRetryable",
     };
     if (Object.hasOwn(conflictKeys, error.code)) return conflictKeys[error.code]!;

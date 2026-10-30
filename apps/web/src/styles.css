@@ -655,7 +655,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-messages { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 11px; padding: 18px 22px; overflow-y: auto; overscroll-behavior: contain; }
 .agent-console-dispatch { display: flex; align-items: center; gap: 9px; padding: 9px 11px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); }
 .agent-console-connection-banner { display: flex; align-items: flex-start; gap: 9px; padding: 11px 13px; color: var(--amber); background: var(--warn-bg); background: color-mix(in srgb, var(--amber) 10%, var(--surface)); border: 1px solid var(--warn-line); border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line)); border-radius: var(--radius-md); }
-.agent-console-attention-banner { display: flex; align-items: center; gap: 9px; padding: 7px 10px; color: var(--warn-text); background: var(--warn-bg); border: 1px solid var(--warn-line); border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line)); border-radius: var(--radius-md); }
+.agent-console-attention-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 7px 10px; color: var(--warn-text); background: var(--warn-bg); border: 1px solid var(--warn-line); border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line)); border-radius: var(--radius-md); }
 .agent-console-attention-banner.dismissed { color: var(--muted); background: var(--surface-sunken); border-color: var(--line); }
 .agent-console-attention-banner details { min-width: 0; flex: 1; }
 .agent-console-attention-banner summary { cursor: pointer; font-size: var(--text-sm); font-weight: 750; }
