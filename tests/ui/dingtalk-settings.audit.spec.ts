@@ -12,13 +12,13 @@ async function audit(page: Page, touch: boolean) {
   }
 }
 
-for (const viewport of [{ width: 1366, height: 950 }, { width: 375, height: 812 }]) {
-  test.describe(`DingTalk settings ${viewport.width}`, () => {
-    test.use({ viewport, hasTouch: viewport.width === 375, isMobile: viewport.width === 375, colorScheme: viewport.width === 375 ? "dark" : "light" });
+for (const viewport of [{ width: 1440, height: 900 }, { width: 375, height: 812 }]) for (const theme of ["light", "dark"] as const) {
+  test.describe(`DingTalk settings ${viewport.width} ${theme}`, () => {
+    test.use({ viewport, hasTouch: viewport.width === 375, isMobile: viewport.width === 375, colorScheme: theme });
     test("shows summaries and uses dialogs for configuration, bindings and CSV imports", async ({ page, request }, info) => {
-      const suffix = String(viewport.width);
+      const suffix = `${viewport.width}-${theme}`;
       const account = await (await request.post("/api/v1/accounts", { data: { email: `dingtalk-${suffix}@example.test`, password: "synthetic-notification-password", role: "member" } })).json();
-      const product = await (await request.post("/api/v1/products", { data: { name: `Notification project ${suffix}`, keyPrefix: `NT${suffix}` } })).json();
+      const product = await (await request.post("/api/v1/products", { data: { name: `Notification project ${suffix}`, keyPrefix: `NT${viewport.width}${theme === "light" ? "L" : "D"}` } })).json();
       await page.goto("/settings/admin/dingtalk");
       await expect(page.locator(".dingtalk-settings details")).toHaveCount(0);
       await expect(page.locator(".dingtalk-settings form")).toHaveCount(0);
@@ -102,7 +102,7 @@ for (const viewport of [{ width: 1366, height: 950 }, { width: 375, height: 812 
     });
 
     test("protects binding drafts, confirms removal and shows test progress without sending on open", async ({ page, request }, info) => {
-      const suffix = String(viewport.width);
+      const suffix = `${viewport.width}-${theme}`;
       const account = await (await request.post("/api/v1/accounts", { data: { email: `dingtalk-dialog-${suffix}@example.test`, password: "synthetic-notification-password", role: "member" } })).json();
       const config = await (await request.get("/api/v1/dingtalk/settings")).json();
       expect((await request.put("/api/v1/dingtalk/settings", { data: { corpId: "synthetic-corp", clientId: "synthetic-app", agentId: "123", clientSecret: "synthetic-client-secret", expectedRevision: config.revision } })).ok()).toBe(true);
