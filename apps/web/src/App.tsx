@@ -3041,7 +3041,7 @@ function DetailPane({
                 <h2>{item.title}</h2>
               </div>
             </div>
-            <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} />
+            <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} />} />
             <ItemRelations item={item} onOpenItem={onOpenItem} />
             {item.verificationReturn && <VerificationReturnCallout info={item.verificationReturn} />}
             {/* Read the item, then the evidence a person went and looked at --
@@ -3101,7 +3101,6 @@ function DetailPane({
                 </details>
               )}
             </section>
-            <DispatchHistory itemKey={item.key} />
             <section className="timeline-block">
               <header className="timeline-head">
                 <h3>{t("timeline")}</h3>
@@ -3222,37 +3221,6 @@ function DetailPane({
           />
         </Modal>
       )}
-    </section>
-  );
-}
-
-/**
- * Every dispatch this item has been part of.
- *
- * Its own section rather than timeline lines alone, because a dispatch has a
- * life after the event: the machine picks it up, the session starts or fails to,
- * and the link to that session is the thing worth clicking later.
- */
-function DispatchHistory({ itemKey }: { itemKey: string }) {
-  const { t } = useI18n();
-  const dispatchesQuery = useQuery({
-    queryKey: ["dispatches", itemKey],
-    queryFn: () => api.listItemDispatches(itemKey),
-  });
-  const dispatches = dispatchesQuery.data?.dispatches ?? [];
-
-  return (
-    <section className="dispatch-block">
-      <h3>{t("dispatchHistory")}</h3>
-      {/* Said here as well as in the dialog: this is where somebody wonders why
-          the item is still "ready" after it was sent somewhere. */}
-      <p className="component-management-help">{t("dispatchDoesNotClaim")}</p>
-      {dispatchesQuery.isLoading && <LoaderCircle className="spin" size={18} />}
-      {dispatchesQuery.isError && <InlineError message={errorMessage(dispatchesQuery.error, t("somethingWentWrong"))} />}
-      {!dispatchesQuery.isLoading && dispatches.length === 0 && <p className="section-empty">{t("noDispatches")}</p>}
-      {dispatches.map((dispatch) => (
-        <DispatchRow key={dispatch.id} dispatch={dispatch} itemKey={itemKey} />
-      ))}
     </section>
   );
 }

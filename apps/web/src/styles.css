@@ -2736,8 +2736,11 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .delivery-form label { display: grid; gap: 6px; font-size: var(--text-sm); }
 .delivery-form textarea { width: 100%; min-height: 72px; resize: vertical; }
 .delivery-form small, .execution-row small { color: var(--muted); overflow-wrap: anywhere; }
-.execution-list { list-style: none; padding: 0; margin: 12px 0 0; }
-.execution-row { padding: 14px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.execution-list { list-style: decimal; padding: 0 0 0 24px; margin: 4px 0 0; }
+.execution-row { padding: 8px 0 8px 4px; overflow-wrap: anywhere; }
+.execution-row + .execution-row { margin-top: 8px; }
+.execution-row::marker { color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
+.execution-heading strong { font-size: var(--text-sm); }
 .execution-row small { display: block; margin: 6px 0; font-size: var(--text-xs); }
 .execution-row p { margin: 8px 0; white-space: pre-wrap; }
 .execution-heading span { color: var(--muted); font-size: var(--text-sm); }
