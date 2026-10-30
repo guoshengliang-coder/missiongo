@@ -18,6 +18,7 @@ import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, ty
 
 import {
   AGENT_KINDS,
+  nodeConnectionState,
   parseCodexSessionFailure,
   formatFeedbackLog,
   TRANSITION_REASONS,
@@ -62,6 +63,7 @@ import { McpAttachmentUploads, MCP_UPLOAD_CHUNK_BYTES } from "./mcp-attachment-u
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES, MEBIBYTE } from "./attachment-storage.js";
 import { AgentSessionAttachments, type AgentSessionAttachment } from "./agent-session-attachments.js";
 import { AgentApprovalStore, type AgentApproval } from "./agent-approval-store.js";
+import { PlanApprovalService } from "./plan-approval.js";
 import { BROWSER_UNREADABLE_IMAGE_TYPES, heicToJpeg } from "./image-decode.js";
 import { AiTitleService } from "./ai-title.js";
 import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
@@ -619,6 +621,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     log: app.log,
   });
   const attentionClassifications = new Map<string, Promise<void>>();
+  const planApprovals = new PlanApprovalService((content, latestText) => aiTitle.classifyPlanApproval(content, latestText));
   const scheduleAttentionClassification = (sessionId: string): void => {
     if (!aiTitle.attentionEnabled() || attentionClassifications.has(sessionId)) return;
     const candidate = agentSessionStore.pendingAttention(sessionId);
@@ -2532,10 +2535,39 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return loadExternalSession(request, sessionId);
   });
 
+  const planApprovalContext = (request: FastifyRequest, sessionId: string, operate = false) => {
+    const members = consoleSessions.members(requireAccountId(request), sessionId);
+    const available = aiTitle.attentionEnabled() && !members.some((row) => row.attention.dismissed
+      || (row.command && ["queued", "delivering", "delivery_unknown"].includes(row.command.status)));
+    if (externalSessionStore.has(sessionId)) {
+      const session = loadExternalSession(request, sessionId, operate, operate);
+      return { session, enabled: available && session.nativeConnection?.state === "connected" };
+    }
+    const loaded = loadAuthorizedAgentSession(request, sessionId, operate);
+    const node = dispatchStore.getNode(loaded.account.id, loaded.dispatch.nodeId);
+    return { session: agentSessionResponse(loaded), enabled: available
+      && !node.revokedAt && nodeConnectionState(node.lastSeenAt) === "online" };
+  };
+
   app.get("/api/v1/agent-sessions/:sessionId", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
-    if (externalSessionStore.has(sessionId)) return loadExternalSession(request, sessionId);
-    return agentSessionResponse(loadAuthorizedAgentSession(request, sessionId));
+    const { session, enabled } = planApprovalContext(request, sessionId);
+    const planApproval = planApprovals.inspect(session, enabled);
+    return { ...session, ...(planApproval ? { planApproval } : {}) };
+  });
+
+  // One scoped action: an explicitly clicked, content-bound chat approval. Never a tool permission decision.
+  app.post("/api/v1/agent-sessions/:sessionId/plan-approval", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const revision = stringField(objectBody(request.body), "revision")!;
+    const command = store.database.transaction(() => {
+      const external = externalSessionStore.has(sessionId);
+      const { session, enabled } = planApprovalContext(request, sessionId, true);
+      return planApprovals.approve(session, revision, enabled, () => external
+        ? externalNativeStore.enqueue(requireAccountId(request), sessionId, "批准")
+        : agentSessionStore.enqueue(requireAccountId(request), sessionId, "批准"));
+    });
+    return reply.status(201).send(command);
   });
 
   app.post("/api/v1/agent-sessions/:sessionId/approvals/:approvalId/decision", async (request) => {

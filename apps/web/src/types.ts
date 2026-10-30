@@ -495,6 +495,7 @@ export interface AgentSessionAttachment {
 }
 
 export interface AgentSession {
+  readonly planApproval?: { readonly revision: string; readonly reason: string; readonly evidence: string } | undefined;
   readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: { id: string; runId: string; stageId: string; generation: number; role: string; state: string; stopRequested: boolean };
   readonly source?: "dispatch" | "external";

@@ -611,6 +611,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text, ...(attachmentIds.length ? { attachmentIds } : {}) }),
     }),
+  approveAgentSessionPlan: (sessionId: string, revision: string) =>
+    request<AgentSessionCommand>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/plan-approval`, {
+      method: "POST", body: JSON.stringify({ revision }),
+    }),
   uploadAgentSessionAttachment: async (sessionId: string, file: File) => {
     const response = await attachmentRequest(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attachments`, {
       method: "POST",
