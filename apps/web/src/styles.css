@@ -1232,7 +1232,12 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 /* A person's reason for moving the item. Wraps like a comment, because that is
    what it is -- several lines of what failed, not a label. */
 .timeline-note { margin: 4px 0 0; color: var(--ink); font-size: var(--text-sm); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.transition-note-form { display: grid; gap: 16px; }
+.transition-note-field { display: grid; gap: 8px; min-width: 0; }
+.transition-note-field label { font-size: var(--text-base); font-weight: 650; }
 .transition-note-form textarea { width: 100%; resize: vertical; }
+.transition-note-suggestions { display: grid; gap: 8px; }
+.transition-note-suggestions > span { color: var(--muted); font-size: var(--text-xs); }
 .transition-note-quick-reasons { display: flex; flex-wrap: wrap; gap: 8px; }
 .transition-note-quick-reasons button { min-height: 44px; }
 .comment-body { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-top: 8px; }
