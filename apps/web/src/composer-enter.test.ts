@@ -64,7 +64,10 @@ describe("reply composers", () => {
 
   it("leaves the long-form textareas on Enter-as-newline", () => {
     const appSource = readFileSync(fileURLToPath(new URL("./App.tsx", import.meta.url)), "utf8");
-    const reportFields = appSource.match(/<AutoGrowTextarea[\s\S]{0,200}?\/>/g) ?? [];
+    const fields = appSource.match(/<AutoGrowTextarea[\s\S]{0,300}?\/>/g) ?? [];
+    const commentField = fields.find(field => field.includes('id="comment-draft"'));
+    expect(commentField).toContain("submitOnEnter");
+    const reportFields = fields.filter(field => field !== commentField);
 
     expect(reportFields.length).toBeGreaterThan(0);
     for (const field of reportFields) expect(field).not.toContain("submitOnEnter");
