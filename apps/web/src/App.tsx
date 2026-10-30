@@ -3897,6 +3897,7 @@ function WorkItemFields({
             accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm"
             allowedExtensions={["png", "jpg", "jpeg", "webp", "gif", "heic", "mp4", "mov", "webm"]}
             buttonLabel={t("add")}
+            addIcon
           />
         </div>
         {existingItemKey && existingMediaAttachments.length > 0 && (
@@ -3936,6 +3937,7 @@ function WorkItemFields({
             accept=".md,.txt,.csv,.json,.pdf,.html,text/markdown,text/plain,text/csv,application/json,application/pdf,text/html"
             allowedExtensions={["md", "txt", "csv", "json", "pdf", "html"]}
             buttonLabel={t("add")}
+            addIcon
           />
         </div>
         {existingItemKey && existingDocumentAttachments.length > 0 && (
@@ -3963,6 +3965,7 @@ function WorkItemFields({
             accept=".zip,application/zip,application/x-zip-compressed"
             allowedExtensions={["zip"]}
             buttonLabel={t("add")}
+            addIcon
           />
         </div>
         {existingItemKey && existingArchiveAttachments.length > 0 && (
@@ -4228,6 +4231,7 @@ function FilePicker({
   accept = "image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.md,.txt,.csv,.json,.pdf,.html,.zip",
   allowedExtensions,
   buttonLabel,
+  addIcon = false,
 }: {
   files?: readonly File[];
   onFiles: (files: readonly File[]) => void;
@@ -4238,6 +4242,7 @@ function FilePicker({
   accept?: string;
   allowedExtensions?: readonly string[];
   buttonLabel?: string;
+  addIcon?: boolean;
 }) {
   const { t } = useI18n();
   const [error, setError] = useState<string | null>(null);
@@ -4271,7 +4276,7 @@ function FilePicker({
     <div className="file-picker">
       <div className="file-picker-actions">
         <label className={`secondary-button file-picker-button ${disabled || remaining < 1 ? "disabled" : ""}`}>
-          {disabled ? <LoaderCircle className="spin" size={16} /> : <Paperclip size={16} />}
+          {disabled ? <LoaderCircle className="spin" size={16} /> : addIcon ? <Plus size={16} /> : <Paperclip size={16} />}
           {buttonLabel ?? t("addAttachments")}
           <input
             type="file"
