@@ -159,6 +159,7 @@ export interface CreateAttachmentMetadataInput {
   readonly storageFilename: string;
   readonly contentType: string;
   readonly sizeBytes: number;
+  readonly uploadRetry?: { readonly key: string; readonly fingerprint: string };
   readonly feedbackDraftId?: string;
   readonly clientAttachmentId?: string;
   readonly contentSha256?: string;
@@ -270,6 +271,8 @@ export interface StructuredCommentBody {
 /** Everything else people and agents say: questions, answers, side findings. */
 export interface FreeCommentBody {
   readonly text: string;
+  /** IDs of attachments belonging to this item, displayed with this comment. */
+  readonly attachmentIds?: readonly string[];
 }
 
 export type CommentBody = StructuredCommentBody | FreeCommentBody;

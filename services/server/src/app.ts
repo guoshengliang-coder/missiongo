@@ -4152,7 +4152,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       actorKind: "human",
       bodyKind,
       body: bodyKind === "free"
-        ? { text: stringField(body, "text")! }
+        ? { text: stringField(body, "text", false) ?? "", ...(body.attachmentIds !== undefined ? { attachmentIds: stringArrayField(body, "attachmentIds")! } : {}) }
         : {
           understanding: stringField(body, "understanding")!,
           finding: stringField(body, "finding")!,
@@ -4161,6 +4161,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           openQuestions: stringArrayField(body, "openQuestions") ?? [],
         },
       ...(stringField(body, "summary", false) !== undefined ? { summary: body.summary as string } : {}),
+      ...(stringField(body, "idempotencyKey", false) ? { idempotencyKey: `human-comment:${sessionUser(request)?.id ?? "local"}:${stringField(body, "idempotencyKey")}` } : {}),
       ...(sessionUser(request) ? { attribution: { accountId: sessionUser(request)!.id } } : {}),
     });
     return reply.status(201).send(withAuthorNames([comment])[0]);
@@ -4184,6 +4185,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const attachment = await attachmentStorage.save(
       store, key, filename, contentType, request.body, undefined,
       sessionUser(request) ? { accountId: sessionUser(request)!.id } : undefined,
+      request.headers["x-missiongo-upload-id"] === undefined ? undefined
+        : `human-upload:${sessionUser(request)?.id ?? "local"}:${headerText(request.headers["x-missiongo-upload-id"], "X-MissionGo-Upload-Id")}`,
     );
     return reply.status(201).send(publicAttachment(attachment));
   });

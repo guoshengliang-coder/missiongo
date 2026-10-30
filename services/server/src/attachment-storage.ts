@@ -120,10 +120,16 @@ export class AttachmentStorage {
     bytes: Buffer,
     feedbackUpload?: { readonly draftId: string; readonly clientAttachmentId: string },
     attribution?: EventAttribution,
+    requestKey?: string,
   ): Promise<AttachmentRecord> {
     store.assertWorkItemWritable(itemKey);
     const { filename, extension, rule, contentType } = validateUpload(encodedFilename, suppliedContentType, bytes);
 
+    const uploadRetry = requestKey ? { key: requestKey, fingerprint: JSON.stringify([filename, contentType, createHash("sha256").update(bytes).digest("hex")]) } : undefined;
+    if (uploadRetry) {
+      const repeated = store.getAttachmentUpload(itemKey, uploadRetry.key, uploadRetry.fingerprint);
+      if (repeated) return repeated;
+    }
     const contentSha256 = feedbackUpload ? createHash("sha256").update(bytes).digest("hex") : undefined;
     const existing = feedbackUpload
       ? store.getFeedbackAttachmentUpload(feedbackUpload.draftId, feedbackUpload.clientAttachmentId)
@@ -144,7 +150,7 @@ export class AttachmentStorage {
     const path = this.resolveStoredFile(storageFilename);
     await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
     try {
-      return store.createAttachmentMetadata({
+      const attachment = store.createAttachmentMetadata({
         itemKey,
         kind: rule.kind,
         filename,
@@ -152,12 +158,16 @@ export class AttachmentStorage {
         contentType,
         sizeBytes: bytes.length,
         ...(attribution ? { attribution } : {}),
+        ...(uploadRetry ? { uploadRetry } : {}),
         ...(feedbackUpload ? {
           feedbackDraftId: feedbackUpload.draftId,
           clientAttachmentId: feedbackUpload.clientAttachmentId,
           contentSha256: contentSha256!,
         } : {}),
       });
+      // Concurrent retries can both write bytes; only one metadata receipt wins.
+      if (attachment.storageFilename !== storageFilename) await unlink(path);
+      return attachment;
     } catch (error) {
       await unlink(path).catch(() => undefined);
       throw error;

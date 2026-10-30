@@ -2836,3 +2836,26 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 @media (max-width: 520px) {
   .list-filter-dates { grid-template-columns: minmax(0, 1fr); }
 }
+/* Shared page-level back navigation (AND-311). */
+.icon-button.back-button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 0; color: var(--ink-2); background: var(--surface-inset); border: 1px solid var(--line); border-radius: var(--radius-md); }
+@media (hover: hover) { .icon-button.back-button:hover { background: var(--row-hover); } }
+.settings-page-header { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 12px; }
+.settings-page-header > strong { text-align: center; }
+.settings-nav-group { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface-strong); }
+.settings-page-nav .settings-nav-group button { min-height: 48px; border: 0; border-radius: 0; }
+.settings-page-nav .settings-nav-group button + button { border-top: 1px solid var(--line); }
+.settings-directory-back { min-height: 60px; padding-block: 8px; }
+@media (max-width: 1023px) {
+  .settings-page-title { top: 60px; }
+  .settings-page-nav section + section { margin-top: 28px; }
+  .settings-page-nav h2 { margin-bottom: 10px; }
+}
+/* The composer keeps its files and send action together at every width. */
+.comment-form { position: relative; display: flex; flex-direction: column; align-items: stretch; }
+.comment-form > fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.comment-compose-actions { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.comment-compose-actions .file-picker { flex: 1; min-width: 0; }
+.comment-compose-actions > button { min-height: 44px; flex: 0 0 auto; }
+.comment-image-previews { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.comment-image-previews img { width: 72px; height: 72px; border: 1px solid var(--line); border-radius: var(--radius-sm); object-fit: cover; }
+.comment-body .attachment-block, .comment-withdrawn .attachment-block, .comment-collapsible .attachment-block { margin-top: 12px; }

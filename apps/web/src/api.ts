@@ -459,13 +459,14 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
-  uploadAttachment: async (itemKey: string, file: File) => {
+  uploadAttachment: async (itemKey: string, file: File, uploadId?: string) => {
     const response = await attachmentRequest(`/api/v1/items/${encodeURIComponent(itemKey)}/attachments`, {
       method: "POST",
       headers: {
         "content-type": "application/octet-stream",
         "x-missiongo-content-type": file.type || "application/octet-stream",
         "x-missiongo-filename": encodeURIComponent(file.name),
+        ...(uploadId ? { "x-missiongo-upload-id": uploadId } : {}),
       },
       body: file,
     });
@@ -550,7 +551,7 @@ export const api = {
     }),
   getTimeline: (itemKey: string) =>
     request<{ events: WorkItemEvent[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/timeline`),
-  createComment: (itemKey: string, input: { text: string }) =>
+  createComment: (itemKey: string, input: { text: string; attachmentIds?: readonly string[]; idempotencyKey?: string }) =>
     request<WorkItemComment>(`/api/v1/items/${encodeURIComponent(itemKey)}/comments`, {
       method: "POST",
       body: JSON.stringify(input),

@@ -1,3 +1,4 @@
+import { BackButton } from "./back-button";
 import { Modal } from "./modal";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -101,7 +102,7 @@ export function StatisticsBatches({ accountId, scopeKey, input, valid, onOpenIte
       </div>
     </>}
     {batchId && <div className="statistics-batch-toolbar">
-      <button type="button" className="text-button" onClick={() => {selectBatch("");remove.reset();void list.refetch();}}><ChevronLeft size={16}/>{text("返回批次列表", "Back to batches")}</button>
+      <BackButton label={text("返回批次列表", "Back to batches")} onClick={() => {selectBatch("");remove.reset();void list.refetch();}} />
       <strong>{data?.batch.name ?? list.data?.batches.find(batch => batch.id === batchId)?.name}</strong>
       <button type="button" className="secondary-button" disabled={progress.isFetching} onClick={() => {void progress.refetch();void list.refetch();}}><RefreshCw size={16}/>{text("刷新进度", "Refresh progress")}</button>
       <button type="button" className="text-button" onClick={() => setDeleting(true)}>{text("删除批次", "Delete batch")}</button>

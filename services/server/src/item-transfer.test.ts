@@ -35,6 +35,24 @@ async function seed() {
 }
 
 describe("project transfer", () => {
+  it("remaps attachment references on active and withdrawn comments without changing source evidence", async () => {
+    const { store, storage, item, transfer } = await seed();
+    const first = await storage.save(store, item.key, "first.txt", "text/plain", Buffer.from("first"));
+    const second = await storage.save(store, item.key, "second.txt", "text/plain", Buffer.from("second"));
+    const active = store.createComment({ itemKey: item.key, actorKind: "human", bodyKind: "free", body: { text: "", attachmentIds: [first.id] } });
+    const withdrawn = store.createComment({ itemKey: item.key, actorKind: "human", bodyKind: "free", body: { text: "Old", attachmentIds: [second.id] } });
+    store.withdrawComment({ itemKey: item.key, commentId: withdrawn.id });
+    const moved = transfer();
+    const attachments = store.listAttachments(moved.key);
+    const comments = store.listComments(moved.key, { includeWithdrawn: true });
+    expect(comments[0]?.body).toEqual({ text: "", attachmentIds: [attachments[0]!.id] });
+    expect(comments[1]?.body).toEqual({ text: "Old", attachmentIds: [attachments[1]!.id] });
+    expect(store.listComments(item.key)[0]?.body).toEqual(active.body);
+    expect(store.getWithdrawnCommentAttachmentIds(moved.key)).toEqual(new Set([attachments[1]!.id]));
+    await storage.replace(store, moved.key, attachments[0]!.id, "first.txt", "text/plain", Buffer.from("edited copy"));
+    expect((await readFile(storage.resolveStoredFile(first.storageFilename))).toString()).toBe("first");
+  });
+
   it("copies evidence independently, preserves bylines, timestamps, withdrawal and history order, and freezes the original", async () => {
     const { store, storage, item, component, transfer } = await seed();
     const attachment = await storage.save(store, item.key, "evidence.log", "text/plain", Buffer.from("original evidence"));

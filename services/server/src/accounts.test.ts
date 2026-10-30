@@ -130,6 +130,27 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
+describe("Comment attachment permissions", () => {
+  it("rejects attachment-only comments and uploads from a view-only member", async () => {
+    const { app, adminCookie, memberCookie, member, shared } = await twoAccountWorkspace();
+    const key = await createItem(app, adminCookie, shared.id, "Attachment permission");
+    const upload = await app.inject({ method: "POST", url: `/api/v1/items/${key}/attachments`,
+      headers: { cookie: adminCookie, "content-type": "application/octet-stream", "x-missiongo-filename": "evidence.txt",
+        "x-missiongo-content-type": "text/plain" }, payload: Buffer.from("evidence") });
+    expect(upload.statusCode).toBe(201);
+    await app.inject({ method: "PUT", url: `/api/v1/accounts/${member.id}/products`, headers: { cookie: adminCookie },
+      payload: { permissions: [{ productId: shared.id, canView: true, canOperate: false, canUseAi: false }] } });
+    const headers = { cookie: memberCookie };
+    expect((await app.inject({ method: "POST", url: `/api/v1/items/${key}/comments`, headers,
+      payload: { text: "", attachmentIds: [upload.json<{ id: string }>().id] } })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: `/api/v1/items/${key}/attachments`, headers: {
+      ...headers, "content-type": "application/octet-stream", "x-missiongo-filename": "other.txt", "x-missiongo-content-type": "text/plain",
+    }, payload: Buffer.from("other") })).statusCode).toBe(404);
+    expect(app.missionGoStore.listComments(key)).toHaveLength(0);
+    expect(app.missionGoStore.listAttachments(key)).toHaveLength(1);
+  });
+});
+
 describe("Seeding the environment administrator", () => {
   it("reuses ADMIN_ACCOUNT_ID, so the account_id already on nodes and events still resolves", async () => {
     const app = open(join(await temporaryDirectory(), "missiongo.sqlite"));

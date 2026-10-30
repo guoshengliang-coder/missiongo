@@ -1,10 +1,10 @@
+import { BackButton } from "./back-button";
 import { useConfirm } from "./confirm-dialog";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ArrowDown,
-  ArrowLeft,
   BellRing,
   Bot,
   CircleAlert,
@@ -1007,12 +1007,7 @@ export function AgentSessionConsole({
         {selected && (
           <>
             <header className="agent-console-conversation-head">
-              <button
-                type="button"
-                className="icon-button agent-console-conversation-back"
-                aria-label={t("agentConsoleBackToSessions")}
-                onClick={onBackToSessions}
-              ><ArrowLeft size={19} /></button>
+              <BackButton className="agent-console-conversation-back" label={t("agentConsoleBackToSessions")} onClick={onBackToSessions} />
               <span className="agent-console-avatar"><AgentIcon kind={selected.agentKind} size={18} /></span>
               <div className="agent-console-heading">
                 <h2>{sessionTitle(selected)}</h2>

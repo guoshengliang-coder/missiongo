@@ -1,5 +1,6 @@
+import { BackButton } from "./back-button";
 import { useEffect, useRef, type ReactNode, type RefObject } from "react";
-import { ArrowLeft, ChevronRight, Plus } from "lucide-react";
+import { ChevronRight, Plus } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import { ProductSettingsList } from "./product-settings-list";
@@ -128,24 +129,24 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
     <SettingsDraftProvider guard={guard}>
       <div ref={shell} className={`settings-page ${route.section === "index" ? "settings-directory" : "settings-detail"}`}>
         <header className="settings-page-header">
-          <button type="button" className="text-button" onClick={() => navigate(null)}><ArrowLeft size={17} /> {t("settingsBackToWorkspace")}</button>
+          <BackButton label={t("settingsBackToWorkspace")} onClick={() => navigate(null)} />
           <strong>{t("settingsEntry")}</strong>
         </header>
         <div className="settings-page-layout">
           <nav className="settings-page-nav" aria-label={t("settingsEntry")}>
             {groups.map(group => <section key={group.label}>
               <h2>{t(group.label)}</h2>
-              {group.sections.map(section => <button type="button" key={section} aria-current={active === section ? "page" : undefined} onClick={() => go(section)}>
+              <div className="settings-nav-group">{group.sections.map(section => <button type="button" key={section} aria-current={active === section ? "page" : undefined} onClick={() => go(section)}>
                 <span>{t(LABELS[section])}</span><ChevronRight size={16} />
-              </button>)}
+              </button>)}</div>
             </section>)}
           </nav>
           {route.section !== "index" && <main className="settings-page-main" ref={content} tabIndex={-1} onFocusCapture={event => {
             const field = event.target;
             requestAnimationFrame(() => { if (content.current) revealSettingsField(field, content.current); });
           }}>
-            <button type="button" className="text-button settings-directory-back" onClick={() => navigate({ section: "index" })}><ArrowLeft size={16} /> {t("settingsDirectory")}</button>
-            {parent && <nav className="settings-breadcrumb" aria-label={t("settingsLocation")}><button type="button" className="text-button" onClick={() => navigate(parent)}><ArrowLeft size={16} />{t(LABELS[parent.section])}</button><ChevronRight size={14} /><span>{title}</span></nav>}
+            <div className="settings-directory-back"><BackButton label={t("settingsDirectory")} onClick={() => navigate({ section: "index" })} /></div>
+            {parent && <nav className="settings-breadcrumb" aria-label={t("settingsLocation")}><BackButton label={t(LABELS[parent.section])} onClick={() => navigate(parent)} /><ChevronRight size={14} /><span>{title}</span></nav>}
             <header className="settings-page-title">
               <div><p>{scope}</p><h1>{title}</h1></div>
               {(inProduct && route.section !== "new-product" || route.section === "access" || route.section === "project-admins" && isAdmin) && <div className="settings-product-actions">
