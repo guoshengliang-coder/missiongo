@@ -195,7 +195,8 @@ import { ProductBadge } from "./product-badge";
 import { SessionLink } from "./session-link";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
-import { agentUnreadCounts, agentSessionDispatchFailed, agentSessionsRefetchInterval } from "./agent-session-view";
+import { currentDispatchForStatus, dispatchIssueLabelKey } from "./dispatch-attention";
+import { agentUnreadCounts, agentSessionsRefetchInterval } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { useMediaQuery } from "./use-media-query";
@@ -1207,17 +1208,10 @@ export function App() {
     () => new Map((activeDispatchesQuery.data?.handlers ?? []).map((handler) => [handler.itemKey, handler])),
     [activeDispatchesQuery.data],
   );
-  // A dispatch that launched keeps reading "sent to {node}" for good, so a row
-  // whose session then died has to take the failure from the session behind it
-  // (AND-180). `null` is a failed session with no error text of its own.
-  const sessionFailures = useMemo(() => {
-    const byItem = new Map<string, string | null>();
-    for (const session of allAgentSessions) {
-      if (!agentSessionDispatchFailed(session)) continue;
-      for (const item of session.items) byItem.set(item.key, session.lastError ?? null);
-    }
-    return byItem;
-  }, [allAgentSessions]);
+  const currentDispatches = useMemo(
+    () => dispatchesByItem(activeDispatchesQuery.data?.current ?? []),
+    [activeDispatchesQuery.data],
+  );
   const agentConsoleListFetching = useIsFetching({ queryKey: ["agent-sessions"] });
   const agentConsoleConversationFetching = useIsFetching({ queryKey: ["agent-session"] });
   const agentConsoleRefreshing = agentConsoleListFetching + agentConsoleConversationFetching > 0;
@@ -1729,7 +1723,7 @@ export function App() {
                     || (selectedProductCanUseAi && isDispatchable(item.status))}
                   selectable={selectedItemKeys.has(item.key) || canJoinSelection(item.status, selectionStatus)}
                   dispatchSummary={latestDispatches.get(item.key)}
-                  sessionFailure={sessionFailures.get(item.key)}
+                  currentDispatch={currentDispatches.get(item.key)}
                   handlerSummary={inProgressHandlers.get(item.key)}
                   onToggleChecked={() => setSelectedItemKeys((current) => toggleItemSelection(current, item, selectionStatus))}
                   sourceComponent={item.sourceComponentId ? componentsById.get(item.sourceComponentId) : undefined}
@@ -1761,7 +1755,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} onTakeOver={(item) => setDispatchBatch([item])} sessionFailure={sessionFailures.get(selectedItemKey)} onOpenConsoleSession={openAgentSession} />
+            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} onTakeOver={(item) => setDispatchBatch([item])} onOpenConsoleSession={openAgentSession} />
           </div>
         )}
       </main>
@@ -1949,7 +1943,7 @@ function ItemRow({
   selectionVisible,
   selectable,
   dispatchSummary,
-  sessionFailure,
+  currentDispatch,
   handlerSummary,
   onToggleChecked,
   onOpen,
@@ -1969,8 +1963,8 @@ function ItemRow({
   selectable: boolean;
   /** The latest dispatch attempt for this ready cycle, if there is one. */
   dispatchSummary: ItemDispatchSummary | undefined;
-  /** The error from the session behind that dispatch, when it died before claiming (AND-180). */
-  sessionFailure: string | null | undefined;
+  /** Current-stage attempt and its own session error, independent of historical attribution. */
+  currentDispatch: ItemDispatchSummary | undefined;
   /** The agent behind the item's in-progress claim, when it came from a dispatch. */
   handlerSummary: ItemDispatchHandler | undefined;
   onToggleChecked: () => void;
@@ -2001,15 +1995,13 @@ function ItemRow({
   // in-progress item keeps its handler instead: the claim is what says an agent
   // is on it now, and a person who took over an unclaimed launch must not read
   // as that agent (AND-163).
-  const handlerBadge = item.status === "in_progress" && handlerSummary ? handlerSummary : undefined;
-  const latestDispatch = handlerBadge ? undefined : dispatchSummary;
+  const currentAttempt = currentDispatchForStatus(item.status, currentDispatch);
+  const issue = currentAttempt?.issue;
+  const handlerBadge = item.status === "in_progress" && handlerSummary && !issue ? handlerSummary : undefined;
+  const latestDispatch = handlerBadge ? undefined : currentAttempt ?? dispatchSummary;
   const dispatchAgentKey = latestDispatch ? agentLabelKey(latestDispatch.agentKind) : null;
   const pendingDispatchStatusKey = latestDispatch ? activeDispatchStatusKey(latestDispatch.status) : null;
-  // A launch that later fell over still carries `launched`, so the row calls it
-  // a failure when the session behind it did (AND-180).
-  const sessionFailed = sessionFailure !== undefined;
-  const dispatchFailed = latestDispatch !== undefined
-    && (latestDispatch.status === "failed" || sessionFailed);
+  const dispatchFailed = Boolean(issue);
   return (
     <article
       className={`item-row ${selected ? "selected" : ""} ${selectionVisible ? "has-select" : ""}`}
@@ -2081,29 +2073,22 @@ function ItemRow({
               ) : latestDispatch ? (
                 <small
                   className={dispatchFailed ? "item-dispatch-badge" : "item-handler-badge"}
-                  title={t(
-                    dispatchFailed
-                      ? sessionFailed && sessionFailure
-                        ? "dispatchSessionFailedTitle"
-                        : "failedDispatchBadgeTitle"
-                      : "itemDispatchBadgeTitle",
-                    {
-                      agent: dispatchAgentKey ? t(dispatchAgentKey) : latestDispatch.agentKind,
-                      node: latestDispatch.nodeName,
-                      status: pendingDispatchStatusKey ? t(pendingDispatchStatusKey) : latestDispatch.status,
-                      time: formatTime(latestDispatch.createdAt),
-                      at: new Date(latestDispatch.createdAt).toLocaleString(locale, {
-                        month: "short",
-                        day: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      }),
-                      reason: sessionFailure ?? "",
-                    },
-                  )}
+                  title={issue
+                    ? t("currentDispatchIssueTitle", {
+                        agent: dispatchAgentKey ? t(dispatchAgentKey) : latestDispatch.agentKind,
+                        node: latestDispatch.nodeName,
+                        reason: issue.reason || t("dispatchIssueUnknownReason"),
+                      })
+                    : t("itemDispatchBadgeTitle", {
+                        agent: dispatchAgentKey ? t(dispatchAgentKey) : latestDispatch.agentKind,
+                        node: latestDispatch.nodeName,
+                        status: currentAttempt && pendingDispatchStatusKey ? t(pendingDispatchStatusKey) : t("dispatchHistoryAttribution"),
+                        time: formatTime(latestDispatch.createdAt),
+                        at: new Date(latestDispatch.createdAt).toLocaleString(locale),
+                      })}
                 >
-                  {dispatchFailed
-                    ? t("failedDispatchBadge")
+                  {issue
+                    ? t(dispatchIssueLabelKey(issue))
                     : t("itemDispatchBadge", {
                         agent: dispatchAgentKey ? t(dispatchAgentKey) : latestDispatch.agentKind,
                         node: latestDispatch.nodeName,
@@ -2476,6 +2461,10 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
     onSuccess: async (updated) => {
       setNoteAction(null);
       await applyConfirmedItemTransition(queryClient, updated);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ACTIVE_DISPATCHES_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: ["dispatches", updated.key] }),
+      ]);
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
@@ -2617,7 +2606,6 @@ function DetailPane({
   onOpenItem,
   onStartWork,
   onTakeOver,
-  sessionFailure,
   onOpenConsoleSession,
 }: {
   itemKey: string | null;
@@ -2628,8 +2616,6 @@ function DetailPane({
   onOpenItem: (itemKey: string) => void;
   onStartWork: (item: WorkItem) => void;
   onTakeOver: (item: WorkItem) => void;
-  /** The error from the session behind the item's latest launch, when it died before finishing (AND-180). */
-  sessionFailure: string | null | undefined;
   onOpenConsoleSession: (sessionId: string) => void;
 }) {
   const confirm = useConfirm();
@@ -2637,12 +2623,13 @@ function DetailPane({
   const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
   const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey) });
   const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey) });
-  // The same cache entry the dispatch history below reads: the newest record is
-  // the one the detail's own line reports (AND-217).
+  // History and current-stage attention arrive together, so an error always
+  // belongs to the dispatch whose target and console link the header shows.
   const dispatchesQuery = useQuery({
     queryKey: ["dispatches", itemKey],
     queryFn: () => api.listItemDispatches(itemKey!),
     enabled: Boolean(itemKey),
+    refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
   });
   // Same cache entry the delivery panel reads, so the Builder can sit in the
   // title line without a second request.
@@ -2726,6 +2713,10 @@ function DetailPane({
     onSuccess: async (updated) => {
       setNoteAction(null);
       await applyConfirmedItemTransition(queryClient, updated);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ACTIVE_DISPATCHES_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: ["dispatches", updated.key] }),
+      ]);
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
@@ -2776,17 +2767,13 @@ function DetailPane({
   const documentAttachments = item.attachments.filter((attachment) => attachment.kind === "document");
   const archiveAttachments = item.attachments.filter((attachment) => attachment.kind === "archive");
   const mediaAttachments = item.attachments.filter(isMediaAttachment);
-  // The newest hand-off, whatever status the item is in, so the detail says
-  // where the work went even for a finished item (AND-217). The server orders
-  // this newest first.
-  const latestDispatch = dispatchesQuery.data?.dispatches[0];
+  const currentAttempt = currentDispatchForStatus(item.status, dispatchesQuery.data?.current);
+  const latestDispatch = dispatchesQuery.data?.dispatches.find(dispatch => dispatch.id === currentAttempt?.dispatchId)
+    ?? dispatchesQuery.data?.dispatches[0];
   const dispatchAgentKey = latestDispatch ? agentLabelKey(latestDispatch.agentKind) : null;
-  // A launch that later fell over still carries `launched`; the session behind
-  // it is what failed (AND-180).
-  const dispatchSessionFailed = sessionFailure !== undefined;
-  const dispatchFailed = latestDispatch !== undefined
-    && (latestDispatch.status === "failed" || dispatchSessionFailed);
-  const dispatchFailureReason = latestDispatch?.status === "failed" ? latestDispatch.error : sessionFailure ?? "";
+  const issue = currentAttempt?.issue;
+  const dispatchFailed = Boolean(issue);
+  const dispatchFailureReason = issue?.reason ?? "";
   // Only a dispatch that reached a session can be opened in the console; one
   // that failed before starting left nothing to jump to (AND-217).
   const jumpSessionId = latestDispatch?.agentSessionId;
@@ -2795,7 +2782,8 @@ function DetailPane({
   // have their own start time, which must not be presented as a session launch.
   const summarizedSession = deliveryQuery.data?.executions.find(execution =>
     Boolean(jumpSessionId) && execution.kind === "agent" && execution.recorded !== true && execution.sessionId === jumpSessionId);
-  const dispatchStateLabel = dispatchFailed ? t("failedDispatchBadge")
+  const dispatchStateLabel = issue ? t(dispatchIssueLabelKey(issue))
+    : !currentAttempt ? null
     : summarizedSession ? executionStatusLabel(summarizedSession.status)
     : dispatchStatusKey ? t(dispatchStatusKey) : null;
   return (

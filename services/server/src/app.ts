@@ -2345,6 +2345,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/dispatches/active", async (request) => ({
     active: dispatchStore.listActiveDispatches(requireAccountId(request)),
     latest: dispatchStore.listLatestDispatches(requireAccountId(request)),
+    current: dispatchStore.listCurrentDispatches(requireAccountId(request)),
     handlers: dispatchStore.listInProgressHandlers(requireAccountId(request)),
   }));
 
@@ -2406,7 +2407,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/items/:itemKey/dispatches", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
     const key = requireItemPermission(request, itemKey);
-    return { dispatches: dispatchStore.listDispatchesForItem(requireAccountId(request), key) };
+    return {
+      dispatches: dispatchStore.listDispatchesForItem(requireAccountId(request), key),
+      current: dispatchStore.listCurrentDispatches(requireAccountId(request), key)[0],
+    };
   });
 
   const authorizedDispatch = (request: FastifyRequest, dispatchId: string, operate = false) => {

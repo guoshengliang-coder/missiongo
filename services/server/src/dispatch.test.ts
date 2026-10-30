@@ -566,6 +566,7 @@ describe("A machine's nickname (AND-39)", () => {
 });
 
 describe("Dispatching the same item twice", () => {
+  const nodeHeaders = (token: string) => ({ authorization: `Bearer ${token}` });
   async function mappedNode(app: FastifyInstance, cookie: string, name = "Mac mini") {
     const node = await registeredNode(app, name);
     await heartbeat(app, node.token);
@@ -602,6 +603,121 @@ describe("Dispatching the same item twice", () => {
     }
     return { app, cookie, databasePath, mission, mini, laptop };
   }
+
+  async function currentView(f: Awaited<ReturnType<typeof setup>>) {
+    const list = (await f.app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie: f.cookie } })).json();
+    const detail = (await f.app.inject({ method: "GET", url: `/api/v1/items/${f.mission.itemKey}/dispatches`, headers: { cookie: f.cookie } })).json();
+    expect(detail.current).toEqual(list.current.find((entry: { itemKey: string }) => entry.itemKey === f.mission.itemKey));
+    return detail;
+  }
+
+  async function launchAttempt(f: Awaited<ReturnType<typeof setup>>, node = f.mini, force = false) {
+    const response = await dispatchTo(f.app, f.cookie, node.nodeId, [f.mission.itemKey], force);
+    expect(response.statusCode, response.body).toBe(201);
+    const id = response.json<{ id: string }>().id;
+    await f.app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: nodeHeaders(node.token) });
+    const launched = await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${id}/result`,
+      headers: nodeHeaders(node.token), payload: { status: "launched", sessionName: "current attempt", sessionRef: randomUUID() } });
+    expect(launched.statusCode).toBe(204);
+    return id;
+  }
+
+  it("exposes a current startup failure with its own reason, and keeps all history outside active stages", async () => {
+    const f = await setup();
+    const id = (await dispatchTo(f.app, f.cookie, f.mini.nodeId, [f.mission.itemKey])).json<{ id: string }>().id;
+    await f.app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: nodeHeaders(f.mini.token) });
+    await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${id}/result`, headers: nodeHeaders(f.mini.token),
+      payload: { status: "failed", error: "startup reason" } });
+    expect((await currentView(f)).current).toMatchObject({ dispatchId: id, itemStatus: "ready", issue: { kind: "dispatch", reason: "startup reason" } });
+    const db = new DatabaseSync(f.databasePath);
+    try {
+      for (const status of ["inbox", "development_complete", "pending_verification", "done", "cancelled", "on_hold"]) {
+        db.prepare("UPDATE work_items SET status=? WHERE item_key=?").run(status, f.mission.itemKey);
+        const view = await currentView(f);
+        expect(view.current, status).toBeUndefined();
+        expect(view.dispatches).toHaveLength(1);
+        expect(view.dispatches[0]).toMatchObject({ id, status: "failed", error: "startup reason" });
+      }
+    } finally { db.close(); }
+  });
+
+  it("never attaches a failed old session to a newer attempt, including same-millisecond attempts", async () => {
+    const f = await setup();
+    const old = await launchAttempt(f);
+    const db = new DatabaseSync(f.databasePath);
+    try {
+      db.prepare("UPDATE agent_sessions SET status='failed',last_error='old session error' WHERE dispatch_id=?").run(old);
+      expect((await currentView(f)).current).toMatchObject({ dispatchId: old, issue: { kind: "execution", reason: "old session error" } });
+      // Model a duplicate attempt retained from before the stricter redispatch guard.
+      db.prepare("UPDATE dispatches SET status='failed' WHERE id=?").run(old);
+      const nextResponse = await dispatchTo(f.app, f.cookie, f.laptop.nodeId, [f.mission.itemKey], true);
+      expect(nextResponse.statusCode, nextResponse.body).toBe(201);
+      const next = nextResponse.json<{ id: string }>().id;
+      db.prepare("UPDATE dispatches SET status='launched' WHERE id=?").run(old);
+      db.prepare("UPDATE dispatches SET created_at=(SELECT created_at FROM dispatches WHERE id=?) WHERE id=?").run(old, next);
+      expect((await currentView(f)).current).toMatchObject({ dispatchId: next, status: "queued" });
+      expect((await currentView(f)).current.issue).toBeUndefined();
+      await f.app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: nodeHeaders(f.laptop.token) });
+      await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${next}/result`, headers: nodeHeaders(f.laptop.token),
+        payload: { status: "failed", error: "new startup error" } });
+      expect((await currentView(f)).current).toMatchObject({ dispatchId: next, issue: { kind: "dispatch", reason: "new startup error" } });
+    } finally { db.close(); }
+  });
+
+  it("uses the explicitly claimed dispatch, and distinguishes execution failure from waiting or simple unavailability", async () => {
+    const f = await setup();
+    const owned = await launchAttempt(f);
+    const seed = new DatabaseSync(f.databasePath);
+    seed.prepare("UPDATE dispatches SET status='failed' WHERE id=?").run(owned);
+    const newer = await launchAttempt(f, f.laptop, true);
+    seed.prepare("UPDATE dispatches SET status='launched' WHERE id=?").run(owned);
+    seed.close();
+    f.app.missionGoStore.claimWorkItem({ itemKey: f.mission.itemKey, agentId: "codex", dispatchId: owned,
+      attribution: { accountId: accountsByApp.get(f.app)!.id }, idempotencyKey: "explicit-claim" });
+    const timeline = f.app.missionGoStore.getTimeline(f.mission.itemKey);
+    expect(timeline.find(event => event.toStatus === "in_progress")?.payload.dispatchId).toBe(owned);
+    const db = new DatabaseSync(f.databasePath);
+    try {
+      db.prepare("UPDATE agent_sessions SET status='failed',last_error='unrelated newer error' WHERE dispatch_id=?").run(newer);
+      for (const [status, error, expected] of [
+        ["failed", "owned error", true], ["failed", null, true],
+        ["unavailable", "sync failed", true], ["unavailable", null, false],
+        ["active", null, false], ["idle", null, false], ["suspended", null, false], ["stalled", null, false],
+      ] as const) {
+        db.prepare("UPDATE agent_sessions SET status=?,last_error=? WHERE dispatch_id=?").run(status, error, owned);
+        const current = (await currentView(f)).current;
+        expect(current.dispatchId).toBe(owned);
+        expect(Boolean(current.issue), status).toBe(expected);
+        if (expected) expect(current.issue).toEqual({ kind: "execution", ...(error ? { reason: error } : {}) });
+      }
+      const handlers = (await f.app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie: f.cookie } })).json().handlers;
+      expect(handlers[0].dispatchId).toBe(owned);
+    } finally { db.close(); }
+  });
+
+  it("does not resurrect an earlier failure after a manual claim and return, even with identical timestamps", async () => {
+    const f = await setup();
+    const old = await launchAttempt(f);
+    const db = new DatabaseSync(f.databasePath);
+    try {
+      db.prepare("UPDATE agent_sessions SET status='failed',last_error='old cycle error' WHERE dispatch_id=?").run(old);
+      for (const [to, reason] of [["in_progress", "claim"], ["ready", "manual_override"]]) {
+        const moved = await f.app.inject({ method: "POST", url: `/api/v1/items/${f.mission.itemKey}/transitions`, headers: { cookie: f.cookie },
+          payload: { to, reason, note: "new work round" } });
+        expect(moved.statusCode, moved.body).toBe(200);
+        expect((await currentView(f)).current).toBeUndefined();
+      }
+      db.prepare("UPDATE work_item_events SET created_at='2026-01-01T00:00:00.000Z' WHERE item_id=(SELECT id FROM work_items WHERE item_key=?)").run(f.mission.itemKey);
+      db.prepare("UPDATE dispatches SET created_at='2026-01-01T00:00:00.000Z' WHERE id=?").run(old);
+      expect((await currentView(f)).current).toBeUndefined();
+      expect((await currentView(f)).dispatches[0].id).toBe(old);
+      db.prepare("UPDATE dispatches SET status='failed' WHERE id=?").run(old);
+      const retryResponse = await dispatchTo(f.app, f.cookie, f.laptop.nodeId, [f.mission.itemKey]);
+      expect(retryResponse.statusCode, retryResponse.body).toBe(201);
+      const retry = retryResponse.json<{ id: string }>().id;
+      expect((await currentView(f)).current).toMatchObject({ dispatchId: retry, status: "queued" });
+    } finally { db.close(); }
+  });
 
   it("refuses an item already dispatched and not yet claimed, to any machine", async () => {
     // An item stays ready until its session claims it — in plan mode, hours

@@ -121,6 +121,19 @@ export interface DispatchSnapshot {
   readonly archivedAt?: string;
 }
 
+/** A current-stage read model; the dispatch/session history is never rewritten. */
+export interface CurrentItemDispatch {
+  readonly itemStatus: "ready" | "in_progress";
+  readonly dispatchId: string;
+  readonly itemKey: string;
+  readonly nodeName: string;
+  readonly agentKind: string;
+  readonly status: string;
+  readonly createdAt: string;
+  readonly agentSessionId?: string;
+  readonly issue?: { readonly kind: "dispatch" | "execution"; readonly reason?: string };
+}
+
 export interface DispatchHealthGroup {
   readonly key: string;
   readonly total: number;
@@ -904,6 +917,87 @@ export class DispatchStore {
   }
 
   /**
+   * Current attention is separate from the last historical hand-off. Ready work
+   * uses the newest attempt since its last state transition; in-progress work
+   * uses the dispatch explicitly recorded by its latest claim/takeover. Legacy
+   * claims without that link remain historical rather than guessing ownership.
+   * timeline_seq distinguishes a return and re-dispatch within one millisecond.
+   */
+  listCurrentDispatches(accountId: string, itemKey?: string): CurrentItemDispatch[] {
+    const rows = this.database.connection.prepare(`
+      SELECT w.item_key, w.status AS item_status, d.id AS dispatch_id, COALESCE(n.nickname,n.name) AS node_name,
+             d.agent_kind, d.status, d.created_at, d.delivered_at, d.error,
+             d.diagnostic_snapshot_json, s.id AS session_id, s.status AS session_status, s.last_error
+      FROM work_items w
+      JOIN dispatch_items di ON di.item_id=w.id
+      JOIN dispatches d ON d.id=di.dispatch_id
+      JOIN nodes n ON n.id=d.node_id
+      LEFT JOIN agent_sessions s ON s.dispatch_id=d.id
+      WHERE d.account_id=? AND d.status<>'cancelled'
+        AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
+        AND (? IS NULL OR w.item_key=?)
+        AND (
+          (w.status='ready'
+            AND NOT EXISTS (
+              SELECT 1 FROM dispatch_items newer_item JOIN dispatches newer ON newer.id=newer_item.dispatch_id
+              WHERE newer_item.item_id=w.id
+                AND (newer.created_at>d.created_at OR (newer.created_at=d.created_at AND newer.rowid>d.rowid))
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM work_item_events boundary
+              WHERE boundary.item_id=w.id AND boundary.to_status IS NOT NULL
+                AND boundary.from_status IS NOT boundary.to_status
+                AND boundary.timeline_seq > COALESCE((
+                  SELECT MAX(sent.timeline_seq) FROM work_item_events sent
+                  WHERE sent.item_id=w.id AND sent.event_type='dispatched'
+                    AND json_extract(sent.payload_json,'$.dispatchId')=d.id
+                ), -1)
+            )
+          )
+          OR (w.status='in_progress' AND (EXISTS (
+            SELECT 1 FROM work_item_events claim
+            WHERE claim.item_id=w.id AND claim.actor_kind='agent'
+              AND json_extract(claim.payload_json,'$.dispatchId')=d.id
+              AND claim.timeline_seq=(
+                SELECT MAX(latest.timeline_seq) FROM work_item_events latest
+                WHERE latest.item_id=w.id AND (latest.to_status IS NOT NULL OR latest.event_type='execution_taken_over')
+              )
+          ) OR EXISTS (
+            SELECT 1 FROM builder_handovers h
+            WHERE h.item_id=w.id AND h.status='completed' AND h.claimed_at IS NULL
+              AND h.resume_dispatch_id=d.id AND h.to_account_id=d.account_id
+              AND h.rowid=(SELECT latest.rowid FROM builder_handovers latest WHERE latest.item_id=w.id ORDER BY latest.created_at DESC,latest.rowid DESC LIMIT 1)
+          )))
+        )
+    `).all(accountId, itemKey ?? null, itemKey ?? null) as unknown as Array<{
+      item_key: string; item_status: "ready" | "in_progress"; dispatch_id: string; node_name: string; agent_kind: string;
+      status: string; created_at: string; delivered_at: string | null; error: string | null;
+      diagnostic_snapshot_json: string | null; session_id: string | null;
+      session_status: string | null; last_error: string | null;
+    }>;
+    return rows.map(row => {
+      const timedOut = !row.session_id && row.status === "delivered" && deliveredDispatchTimedOut(row.delivered_at);
+      const rejected = !row.session_id && row.status === "delivered"
+        && Boolean(row.diagnostic_snapshot_json && JSON.parse(row.diagnostic_snapshot_json).resultRejection);
+      const dispatchFailed = row.status === "failed" || timedOut || rejected;
+      const executionFailed = row.status === "launched"
+        && (row.session_status === "failed" || (row.session_status === "unavailable" && Boolean(row.last_error)));
+      const reason = dispatchFailed
+        ? row.error ?? (timedOut ? "Mac 领取派单后超过 10 分钟仍未报告启动结果。请确认来源会话不存在，再手动重新派单。" : undefined)
+        : row.last_error ?? undefined;
+      return {
+        itemStatus: row.item_status, dispatchId: row.dispatch_id, itemKey: row.item_key, nodeName: row.node_name,
+        agentKind: row.agent_kind, status: row.status, createdAt: row.created_at,
+        ...(row.session_id ? { agentSessionId: row.session_id } : {}),
+        ...(dispatchFailed || executionFailed ? { issue: {
+          kind: dispatchFailed ? "dispatch" as const : "execution" as const,
+          ...(reason ? { reason } : {}),
+        } } : {}),
+      };
+    });
+  }
+
+  /**
    * For the console: in-progress items claimed through a dispatch, so the list
    * and the detail can say which agent is on them. The claim event is the tie
    * between the two -- a launch nobody claimed (the person started the work
@@ -930,7 +1024,7 @@ export class DispatchStore {
          JOIN dispatch_items di ON di.item_id = w.id
          JOIN dispatches d ON d.id = di.dispatch_id
            AND d.status = 'launched' AND d.created_at <= claim.created_at
-           AND (claim.event_type <> 'execution_taken_over' OR json_extract(claim.payload_json,'$.dispatchId')=d.id)
+           AND (json_extract(claim.payload_json,'$.dispatchId') IS NULL OR json_extract(claim.payload_json,'$.dispatchId')=d.id)
          JOIN nodes n ON n.id = d.node_id
          WHERE d.account_id = ? AND w.status = 'in_progress'
            AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
