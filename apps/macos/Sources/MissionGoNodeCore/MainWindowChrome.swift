@@ -7,10 +7,13 @@ public final class MainWindowController: NSObject, NSWindowDelegate {
     public let window: NSWindow
     private let onOpen: () -> Void
     private let onClose: () -> Void
+    private let onStow: (() -> Void)?
 
-    public init(title: String, contentView: NSView, onOpen: @escaping () -> Void = {}, onClose: @escaping () -> Void = {}) {
+    public init(title: String, contentView: NSView, onOpen: @escaping () -> Void = {}, onClose: @escaping () -> Void = {},
+                onStow: (() -> Void)? = nil) {
         self.onOpen = onOpen
         self.onClose = onClose
+        self.onStow = onStow
         let height = MainWindowSizing.contentHeight(measuredHeight: nil, availableHeight: NSScreen.main?.visibleFrame.height)
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 440, height: height),
@@ -28,7 +31,30 @@ public final class MainWindowController: NSObject, NSWindowDelegate {
         window.contentMinSize = NSSize(width: 390, height: min(260, height))
         window.isReleasedWhenClosed = false
         window.delegate = self
+        if onStow != nil {
+            let button = NSButton(title: "收起到菜单栏", target: self, action: #selector(stow))
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.toolTip = "隐藏窗口和 Dock 图标，后台任务继续运行；点击菜单栏图标重新打开"
+            button.sizeToFit()
+            let accessory = NSTitlebarAccessoryViewController()
+            accessory.layoutAttribute = .right
+            accessory.view = NSView(frame: NSRect(x: 0, y: 0, width: button.frame.width + 12, height: 28))
+            button.setFrameOrigin(NSPoint(x: 0, y: (28 - button.frame.height) / 2))
+            accessory.view.addSubview(button)
+            window.addTitlebarAccessoryViewController(accessory)
+        }
         window.center()
+    }
+
+    @objc private func stow() { onStow?() }
+
+    /// Order out rather than close or minimize. The node keeps running, and a
+    /// later show reuses this window, its content and its user-selected size.
+    public func hide() {
+        let wasVisible = window.isVisible && !window.isMiniaturized
+        window.orderOut(nil)
+        if wasVisible { onClose() }
     }
 
     public func show() {

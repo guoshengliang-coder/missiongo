@@ -25,13 +25,16 @@ struct MissionGoApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model: AppModel
+    private let defaults: UserDefaults
+    static let menuBarOnlyKey = "menuBarOnly"
 
     override convenience init() {
         self.init(model: .shared)
     }
 
-    init(model: AppModel) {
+    init(model: AppModel, defaults: UserDefaults = .standard) {
         self.model = model
+        self.defaults = defaults
         super.init()
     }
 
@@ -46,7 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             title: Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "应用",
             contentView: content,
             onOpen: { [model] in model.menuDidOpen() },
-            onClose: { [model] in model.menuDidClose() }
+            onClose: { [model] in model.menuDidClose() },
+            onStow: { [weak self] in self?.stowToMenuBar() }
         )
     }()
     private(set) var settingsWindow: NSWindow?
@@ -55,9 +59,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var phaseObservation: AnyCancellable?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // The Dock stays visible even when the window closes, so its number
-        // remains useful alongside the menu-bar badge.
-        NSApp.setActivationPolicy(.regular)
+        // A remembered explicit stow starts quietly, including at login.
+        // Ordinary close/minimize never change this preference.
+        NSApp.setActivationPolicy(defaults.bool(forKey: Self.menuBarOnlyKey) ? .accessory : .regular)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -89,8 +93,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // sign-in action is immediately visible. Signed-in startup stays quiet.
         phaseObservation = model.$phase
             .removeDuplicates()
-            .sink { [mainWindow] phase in
-                if phase == .signedOut { mainWindow.show() }
+            .sink { [weak self] phase in
+                // Login must remain reachable even in menu-bar-only mode,
+                // without erasing the user's remembered startup preference.
+                if phase == .signedOut { self?.presentMainWindow(rememberMode: false) }
             }
         // Started here rather than from a view: the machine has to go online at
         // login even if nobody ever opens the menu.
@@ -98,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showLocalSettings() {
+        restoreDock(rememberMode: true)
         let window: NSWindow
         if let existing = settingsWindow {
             window = existing
@@ -120,7 +127,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showMainWindow() {
+        presentMainWindow(rememberMode: true)
+    }
+
+    private func presentMainWindow(rememberMode: Bool) {
+        restoreDock(rememberMode: rememberMode)
         mainWindow.show()
+    }
+
+    private func restoreDock(rememberMode: Bool) {
+        NSApp.setActivationPolicy(.regular)
+        if rememberMode { defaults.set(false, forKey: Self.menuBarOnlyKey) }
+    }
+
+    func stowToMenuBar() {
+        // Never remove the Dock entry unless the menu-bar recovery path exists.
+        guard let statusItem, statusItem.isVisible, statusItem.button != nil,
+              NSApp.setActivationPolicy(.accessory) else { return }
+        mainWindow.hide()
+        settingsWindow?.orderOut(nil)
+        defaults.set(true, forKey: Self.menuBarOnlyKey)
     }
 
     private func updateStatusItem() {
@@ -145,7 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Double-clicking the app again while it runs is how people look for it.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        mainWindow.show()
+        showMainWindow()
         return false
     }
 }

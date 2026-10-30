@@ -84,7 +84,10 @@ final class MainWindowLayoutTests: XCTestCase {
                 previewCredential: NodeCredential(serverUrl: "https://example.invalid", nodeId: "preview", name: "UI preview", token: "unused"),
                 unread: unread, agentVersions: [:]
             )
-            let delegate = AppDelegate(model: model)
+            let suite = "MainWindowLayoutTests.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let delegate = AppDelegate(model: model, defaults: defaults)
             delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
             let window = delegate.mainWindow.window
             defer {
@@ -114,6 +117,126 @@ final class MainWindowLayoutTests: XCTestCase {
             XCTAssertTrue(window.isVisible, "Opening settings does not dismiss main UI")
             delegate.showLocalSettings()
             XCTAssertTrue(delegate.settingsWindow === settings)
+        }
+    }
+
+    func testStowButtonHidesWindowsAndDockAndAllEntryPointsRestoreThem() async throws {
+        let unread = try snapshot(sessionCount: 2)
+        try await MainActor.run {
+            _ = NSApplication.shared
+            let previousPolicy = NSApp.activationPolicy()
+            let suite = "MenuBarStowTests.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            let model = AppModel(
+                previewCredential: NodeCredential(serverUrl: "https://example.invalid", nodeId: "preview", name: "UI preview", token: "unused"),
+                unread: unread, agentVersions: [:])
+            let delegate = AppDelegate(model: model, defaults: defaults)
+            delegate.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
+            delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+            let window = delegate.mainWindow.window
+            defer {
+                window.close()
+                delegate.settingsWindow?.close()
+                if let item = delegate.statusItem { NSStatusBar.system.removeStatusItem(item) }
+                defaults.removePersistentDomain(forName: suite)
+                NSApp.setActivationPolicy(previousPolicy)
+            }
+            let menuButton = try XCTUnwrap(delegate.statusItem?.button)
+            menuButton.performClick(nil)
+            window.setContentSize(NSSize(width: 390, height: 420))
+            let frame = window.frame
+            window.layoutIfNeeded()
+            let accessory = try XCTUnwrap(window.titlebarAccessoryViewControllers.first)
+            let stow = try XCTUnwrap(descendants(accessory.view, of: NSButton.self).first)
+            XCTAssertEqual(stow.title, "收起到菜单栏")
+            let stowFrame = stow.convert(stow.bounds, to: nil)
+            let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
+            XCTAssertGreaterThan(stowFrame.minX, close.convert(close.bounds, to: nil).maxX)
+            XCTAssertLessThanOrEqual(stowFrame.maxX, window.frame.width)
+            for kind: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+                let button = try XCTUnwrap(window.standardWindowButton(kind))
+                XCTAssertTrue(button.isEnabled)
+                XCTAssertFalse(button.isHiddenOrHasHiddenAncestor)
+            }
+            if let directory = ProcessInfo.processInfo.environment["MISSIONGO_UI_CAPTURE_DIRECTORY"],
+               let frameView = window.contentView?.superview {
+                for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                    window.appearance = NSAppearance(named: appearance)
+                    frameView.layoutSubtreeIfNeeded()
+                    window.displayIfNeeded()
+                    let bitmap = try XCTUnwrap(frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds))
+                    frameView.cacheDisplay(in: frameView.bounds, to: bitmap)
+                    let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                    try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("stow-\(appearance.rawValue).png"))
+                }
+            }
+            delegate.showLocalSettings()
+            let settings = try XCTUnwrap(delegate.settingsWindow)
+            stow.performClick(nil)
+            XCTAssertFalse(window.isVisible)
+            XCTAssertFalse(settings.isVisible)
+            XCTAssertEqual(NSApp.activationPolicy(), .accessory)
+            XCTAssertTrue(try XCTUnwrap(UserDefaults(suiteName: suite)).bool(forKey: AppDelegate.menuBarOnlyKey))
+            XCTAssertTrue(delegate.statusItem?.isVisible == true)
+            XCTAssertTrue(menuButton.title.contains("2"), "Unread badge survives stowing")
+            XCTAssertNotNil(model.credential, "Stowing preserves the signed-in state")
+
+            menuButton.performClick(nil)
+            XCTAssertEqual(NSApp.activationPolicy(), .regular)
+            XCTAssertFalse(defaults.bool(forKey: AppDelegate.menuBarOnlyKey))
+            XCTAssertTrue(window.isVisible)
+            XCTAssertTrue(delegate.mainWindow.window === window)
+            XCTAssertEqual(window.frame, frame)
+            XCTAssertFalse(settings.isVisible)
+            window.performClose(nil)
+            XCTAssertEqual(NSApp.activationPolicy(), .regular, "Ordinary close keeps the Dock")
+            XCTAssertFalse(defaults.bool(forKey: AppDelegate.menuBarOnlyKey))
+
+            delegate.stowToMenuBar()
+            XCTAssertFalse(delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false))
+            XCTAssertTrue(window.isVisible)
+            XCTAssertEqual(NSApp.activationPolicy(), .regular)
+            delegate.stowToMenuBar()
+            delegate.showLocalSettings()
+            XCTAssertTrue(settings.isVisible)
+            XCTAssertEqual(NSApp.activationPolicy(), .regular)
+            XCTAssertFalse(defaults.bool(forKey: AppDelegate.menuBarOnlyKey))
+        }
+    }
+
+    func testRememberedStowStartsQuietlyButSignedOutStillShowsLogin() async throws {
+        let unread = try snapshot(sessionCount: 0)
+        try await MainActor.run {
+            _ = NSApplication.shared
+            let previousPolicy = NSApp.activationPolicy()
+            let suite = "MenuBarStartupTests.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defaults.set(true, forKey: AppDelegate.menuBarOnlyKey)
+            let model = AppModel(
+                previewCredential: NodeCredential(serverUrl: "https://example.invalid", nodeId: "preview", name: "UI preview", token: "unused"),
+                unread: unread, agentVersions: [:])
+            let delegate = AppDelegate(model: model, defaults: try XCTUnwrap(UserDefaults(suiteName: suite)))
+            delegate.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
+            delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+            defer {
+                delegate.mainWindow.window.close()
+                if let item = delegate.statusItem { NSStatusBar.system.removeStatusItem(item) }
+                defaults.removePersistentDomain(forName: suite)
+                NSApp.setActivationPolicy(previousPolicy)
+            }
+            XCTAssertEqual(NSApp.activationPolicy(), .accessory)
+            XCTAssertFalse(delegate.mainWindow.window.isVisible)
+            XCTAssertNil(delegate.settingsWindow)
+            let loginDelegate = AppDelegate(model: AppModel(previewDeviceLogin: nil), defaults: defaults)
+            loginDelegate.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
+            loginDelegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+            defer {
+                loginDelegate.mainWindow.window.close()
+                if let item = loginDelegate.statusItem { NSStatusBar.system.removeStatusItem(item) }
+            }
+            XCTAssertTrue(loginDelegate.mainWindow.window.isVisible, "Login overrides quiet startup")
+            XCTAssertEqual(NSApp.activationPolicy(), .regular)
+            XCTAssertTrue(defaults.bool(forKey: AppDelegate.menuBarOnlyKey), "Forced login does not erase the saved mode")
         }
     }
 }
