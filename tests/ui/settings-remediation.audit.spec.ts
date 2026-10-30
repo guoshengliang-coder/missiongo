@@ -2,6 +2,9 @@ import { expect, test } from "@playwright/test";
 for (const width of [375, 1440]) {
   test.describe(`${width}px settings remediation`, () => {
     test.use({ viewport: { width, height: 900 } });
+    test.afterEach(async ({ request }) => {
+      await request.post("/api/v1/auth/font-scale", { data: { fontScale: "medium" } });
+    });
     test("previews drafts, cancels without saving, retries failure and saves only on confirmation", async ({ page, request }) => {
       await request.post("/api/v1/auth/font-scale", { data: { fontScale: "medium" } });
       await page.goto("/settings/display");
