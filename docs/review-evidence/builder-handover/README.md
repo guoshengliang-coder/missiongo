@@ -13,3 +13,5 @@
 ![手机深色](phone-dark.png)
 ![桌面浅色](desktop-light.png)
 ![桌面深色](desktop-dark.png)
+
+Linux 视觉基线由 [CI 41065771171](https://github.com/guoshengliang-coder/missiongo/actions/runs/41065771171) 在提交 `cbe1cab` 上使用仓库规定的 `update_ui_snapshots` 流程生成。298 项完整 UI 审计通过；14 张原有列表/详情截图因 Builder 从「待分配」变为合成处理账号、以及对应文字换行而更新。未改变的基线保持原样。
