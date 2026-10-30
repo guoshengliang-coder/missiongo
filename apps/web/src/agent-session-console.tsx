@@ -30,6 +30,7 @@ import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
 import { AgentIcon } from "./agent-icons";
 import {
   activityLabelKey,
+  dispatchActivityLabelKey,
   approvalNeedsAction,
   agentChatMessages,
   agentSessionDetailRefetchInterval,
@@ -178,18 +179,6 @@ function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI1
   if (session.attention.kind === "action") return t("agentAttentionAction");
   if (session.attention.kind === "instruction") return t("agentAttentionInstruction");
   return t("agentAttentionUncertain");
-}
-
-function dispatchActivityLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>["t"]): string {
-  if (session.source === "external") return t("agentExternalSource");
-  if (session.dispatchStatus === "queued") return t("agentConsoleDispatchQueued");
-  if (session.dispatchStatus === "delivered" && session.status === "failed") return t("agentConsoleDispatchTimedOut");
-  if (session.dispatchStatus === "delivered") return t("agentConsoleDispatchLaunching");
-  if (session.dispatchStatus === "cancelled") return t("agentConsoleDispatchCancelled");
-  if (session.dispatchStatus === "failed") return t("agentConsoleDispatchFailed");
-  return session.agentKind === "claude_code"
-    ? t(session.sessionUrl ? "agentConsoleClaudeManaged" : "agentConsoleClaudeLocal")
-    : t("agentConsoleDispatchLaunched");
 }
 
 function dispatchVersion(dispatch: Dispatch): string {
@@ -1134,7 +1123,7 @@ export function AgentSessionConsole({
                 {!selected.agentSessionId && (
                   <div className="agent-console-dispatch-state">
                     <Bot size={20} />
-                    <strong>{dispatchActivityLabel(selected, t)}</strong>
+                    <strong>{t(dispatchActivityLabelKey(selected))}</strong>
                     {selected.sessionUrl && <p>{t("agentConsoleOpenExternalHelp")}</p>}
                   </div>
                 )}

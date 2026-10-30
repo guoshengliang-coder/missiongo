@@ -1062,9 +1062,9 @@ export class DispatchStore {
     const existingDiagnostic = row.diagnostic_snapshot_json
       ? JSON.parse(row.diagnostic_snapshot_json) as DispatchDiagnosticSnapshot
       : {};
-    const diagnosticSnapshot = input.diagnosticSnapshot
-      ? { ...existingDiagnostic, ...input.diagnosticSnapshot }
-      : undefined;
+    // An accepted result supersedes an earlier rejected receipt.
+    const diagnosticSnapshot = { ...existingDiagnostic, ...input.diagnosticSnapshot };
+    delete diagnosticSnapshot.resultRejection;
     if (input.status === "retry") {
       const retryAfterSeconds = Math.min(Math.max(input.retryAfterSeconds ?? 30, 5), 300);
       const retryNotBefore = new Date(Date.now() + retryAfterSeconds * 1_000).toISOString();
@@ -1079,7 +1079,7 @@ export class DispatchStore {
           input.error?.slice(0, 2_000) || null,
           input.failureCode ?? "mcp_timeout",
           input.failureStage ?? "mcp",
-          diagnosticSnapshot ? JSON.stringify(diagnosticSnapshot) : row.diagnostic_snapshot_json,
+          JSON.stringify(diagnosticSnapshot),
           retryNotBefore,
           input.dispatchId,
         );
@@ -1107,12 +1107,34 @@ export class DispatchStore {
         input.error?.slice(0, 2_000) || null,
         input.status === "failed" ? input.failureCode ?? "unknown" : null,
         input.status === "failed" ? input.failureStage ?? "unknown" : null,
-        diagnosticSnapshot ? JSON.stringify(diagnosticSnapshot) : null,
+        JSON.stringify(diagnosticSnapshot),
         now,
         input.status,
         now,
         input.dispatchId,
       );
+  }
+
+  recordRejectedDispatchResult(input: {
+    nodeId: string; dispatchId: string; reason: string; launchError?: string;
+  }): void {
+    const row = this.database.connection.prepare(
+      "SELECT diagnostic_snapshot_json FROM dispatches WHERE id = ? AND node_id = ? AND status = 'delivered'",
+    ).get(input.dispatchId, input.nodeId) as { diagnostic_snapshot_json: string | null } | undefined;
+    if (!row) return;
+    const now = new Date().toISOString();
+    const reason = input.reason.slice(0, 500);
+    const launchError = input.launchError?.slice(0, 1_000);
+    const snapshot: DispatchDiagnosticSnapshot = {
+      ...(row.diagnostic_snapshot_json ? JSON.parse(row.diagnostic_snapshot_json) : {}),
+      resultRejection: { receivedAt: now, reason, ...(launchError ? { launchError } : {}) },
+    };
+    const error = `派单结果已回传，但被服务器拒收：${reason}`
+      + (launchError ? `\n本机启动错误：${launchError}` : "");
+    this.database.connection.prepare(
+      `UPDATE dispatches SET error = ?, diagnostic_snapshot_json = ?, unread_at = ?
+       WHERE id = ? AND node_id = ? AND status = 'delivered'`,
+    ).run(error, JSON.stringify(snapshot), now, input.dispatchId, input.nodeId);
   }
 
   getDispatch(accountId: string, dispatchId: string): DispatchSnapshot {

@@ -72,6 +72,7 @@ export type DispatchStatus = (typeof DISPATCH_STATUSES)[number];
 export const DISPATCH_FAILURE_CODES = [
   "skill_stale",
   "daemon_down",
+  "daemon_environment",
   "resource_exhausted",
   "mcp_timeout",
   "mcp_auth",
@@ -114,6 +115,12 @@ export interface AgentResourceSnapshot {
 }
 
 export interface DispatchDiagnosticSnapshot {
+  /** A received result that failed validation, rather than a silent node. */
+  readonly resultRejection?: {
+    readonly receivedAt: string;
+    readonly reason: string;
+    readonly launchError?: string;
+  };
   readonly nodeClientVersion?: string;
   readonly agentVersion?: string;
   readonly skill?: AgentSkillSnapshot;

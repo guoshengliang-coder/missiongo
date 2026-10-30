@@ -136,7 +136,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dispatchWarning = model.unacknowledgedLaunchFailure != nil ? " ⚠︎" : ""
         button.title = unread + dispatchWarning
         var description = model.unreadCount.map { $0 > 0 ? "\(label)，未读会话 \($0)" : label } ?? label
-        if model.unacknowledgedLaunchFailure != nil { description += "，最近一次派单启动失败" }
+        if let launch = model.unacknowledgedLaunchFailure {
+            description += launch.reported ? "，最近一次派单启动失败" : "，派单结果回传失败"
+        }
         button.toolTip = description
         button.setAccessibilityLabel(description)
     }

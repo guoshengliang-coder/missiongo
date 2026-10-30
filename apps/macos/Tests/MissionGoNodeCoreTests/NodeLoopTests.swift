@@ -17,6 +17,8 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     let attachmentData = Locked<[String: Data]>([:])
     let queue: Locked<[Result<DispatchRequest?, Error>]>
     let heartbeatResult: Locked<Result<HeartbeatReply, Error>>
+    let resultReportError = Locked<APIError?>(nil)
+    let resultReportAttempts = Locked(0)
     let reportFailuresBeforeSuccess: Locked<Int>
 
     init(
@@ -47,6 +49,8 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     }
 
     func reportResult(dispatchId: String, report: DispatchReport) async throws {
+        resultReportAttempts.withLock { $0 += 1 }
+        if let error = resultReportError.current { throw error }
         let fail = reportFailuresBeforeSuccess.withLock { remaining -> Bool in
             guard remaining > 0 else { return false }
             remaining -= 1
@@ -346,6 +350,35 @@ final class NodeLoopTests: XCTestCase {
         NodeLoop.refreshConnection(&state, now: time.addingTimeInterval(62))
         XCTAssertEqual(state.connection, .online)
         XCTAssertNil(state.lastError)
+    }
+
+    func testRejectedResultKeepsBothErrorsWithoutStartingAnotherSession() async throws {
+        for started in [false, true] {
+            let api = FakeAPI(claims: [.success(request)])
+            api.resultReportError.withLock { $0 = .http(operation: "回报结果", status: 400, detail: "Unsupported dispatch failure code.") }
+            let adapter = FakeAdapter(outcome: started
+                ? .success(LaunchResult(sessionName: "existing-session", sessionUrl: nil, logPath: nil))
+                : .failure(LaunchError("Original environment failure", failureCode: "daemon_environment", failureStage: "preflight")))
+            let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Test Mac", timing: fastTiming(), log: { _ in })
+            let task = Task { try await loop.run() }
+            await waitUntil { !loop.currentState.recentLaunches.isEmpty }
+            task.cancel()
+            try await task.value
+            let launch = try XCTUnwrap(loop.currentState.recentLaunches.first)
+            XCTAssertFalse(launch.reported)
+            XCTAssertTrue(launch.resultReportError?.contains("400") == true)
+            XCTAssertEqual(adapter.jobs.current.count, 1)
+            XCTAssertEqual(api.resultReportAttempts.current, 5)
+            let problem = try XCTUnwrap(DispatchPresentation.localLaunchProblem(launch))
+            XCTAssertTrue(problem.contains("400"))
+            if started {
+                XCTAssertEqual(launch.report.status, .launched)
+                XCTAssertTrue(problem.contains("本机会话已启动"))
+            } else {
+                XCTAssertEqual(launch.report.error, "Original environment failure")
+                XCTAssertTrue(problem.contains("Original environment failure"))
+            }
+        }
     }
 
     func testLaunchesAClaimedDispatchAndReportsTheSession() async throws {

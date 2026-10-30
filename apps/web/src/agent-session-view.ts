@@ -1,5 +1,7 @@
 import type { AgentKind } from "@missiongo/domain";
 
+import type { MessageKey } from "./i18n";
+
 import type {
   AgentApproval,
   AgentSession,
@@ -646,4 +648,18 @@ export function externalProgressLabelKey(session: Pick<AgentSessionSummary, "sta
   if (session.status === "unavailable") return "agentExternalStale" as const;
   return ({ working: "agentExternalWorking", waiting_for_input: "agentExternalWaiting", blocked: "agentExternalBlocked",
     completed: "agentExternalCompleted", failed: "agentExternalFailed" } as const)[session.progressStatus ?? "working"];
+}
+
+export function dispatchActivityLabelKey(session: Pick<AgentSessionSummary,
+  "source" | "dispatchResultRejected" | "dispatchStatus" | "status" | "agentKind" | "sessionUrl">): MessageKey {
+  if (session.source === "external") return "agentExternalSource";
+  if (session.dispatchResultRejected) return "agentConsoleDispatchResultRejected";
+  if (session.dispatchStatus === "queued") return "agentConsoleDispatchQueued";
+  if (session.dispatchStatus === "delivered" && session.status === "failed") return "agentConsoleDispatchTimedOut";
+  if (session.dispatchStatus === "delivered") return "agentConsoleDispatchLaunching";
+  if (session.dispatchStatus === "cancelled") return "agentConsoleDispatchCancelled";
+  if (session.dispatchStatus === "failed") return "agentConsoleDispatchFailed";
+  return session.agentKind === "claude_code"
+    ? session.sessionUrl ? "agentConsoleClaudeManaged" : "agentConsoleClaudeLocal"
+    : "agentConsoleDispatchLaunched";
 }
