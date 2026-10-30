@@ -22,6 +22,10 @@ Builder 使用独立的标签与加重人员名，列表和详情一致；空间
 - `npx playwright test --project=audit tests/ui/item-mobile-clarity.audit.spec.ts`：14 项检查通过，覆盖 320、353、375、390、768、1440px 的明暗主题，及失败状态、无会话入口、未知启动时间；实际测量可见文字字号与对比度。
 - `npx playwright test --project=audit tests/ui/builder-delivery.audit.spec.ts`：4 项分配、转交、人工执行与多轮交接回归通过。
 
+## CI 测量修正
+
+首次 Linux 界面套件有 231 项通过，迁移对话框的一项旧断言把 Chromium 的 `43.99993896484375px` 当作小于 44px。该断言现与共享界面审计一样按整 CSS 像素测量，不改变迁移行为或按钮尺寸。
+
 ## 人工回归
 
 1. 在手机列表查看已分配、待分配、需重新分配的条目，确认编号与 Builder 一眼可区分。
