@@ -217,7 +217,7 @@ export function ListFilters({
       >
         <label className="list-filter-builder">
           <span>Builder</span>
-          <Select
+          <Select anchorToLabel
             aria-label="Builder"
             value={value.builder}
             onChange={(e) => onChange({ ...value, builder: e.target.value })}
@@ -227,7 +227,7 @@ export function ListFilters({
         </label>
         <label className="list-filter-type">
           <span>{word("类型", "Type")}</span>
-          <Select
+          <Select anchorToLabel
             aria-label={word("类型", "Type")}
             value={
               value.types?.length === 1

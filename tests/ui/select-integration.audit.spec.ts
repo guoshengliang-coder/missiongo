@@ -4,7 +4,7 @@ import { chooseOption } from "./select-helpers";
 
 for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const) {
   test.describe(`${width}px ${theme} single-select integration`, () => {
-    test.use({ viewport: { width, height: 1000 }, hasTouch: width === 375, isMobile: width === 375, colorScheme: theme });
+    test.use({ viewport: { width, height: width === 375 ? 812 : 900 }, hasTouch: width === 375, isMobile: width === 375, colorScheme: theme });
     test("workspace Builder has a visible boundary and opens below the filter", async ({ page }) => {
       const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string };
       await page.goto(`/?product=${fixture.productId}&status=ready`);
@@ -25,6 +25,8 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await expect(menu).toHaveAttribute("data-side", "bottom");
       const triggerBounds = await control.boundingBox(), menuBounds = await menu.boundingBox();
       expect(menuBounds!.y).toBeGreaterThanOrEqual(triggerBounds!.y + triggerBounds!.height + 4);
+      const labelBounds = await control.locator("..").boundingBox();
+      expect(Math.abs(menuBounds!.x - labelBounds!.x)).toBeLessThanOrEqual(1);
       await page.screenshot({ path: test.info().outputPath(`workspace-select-${width}-${theme}.png`) });
       await control.press("Escape");
       await expect(control).toBeFocused();

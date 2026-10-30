@@ -4,6 +4,7 @@ import { Check, ChevronDown } from "lucide-react";
 
 interface Choice { value: string; label: string; disabled: boolean; group?: string | undefined }
 interface Props extends Omit<SelectHTMLAttributes<HTMLSelectElement>, "multiple" | "size"> {
+  anchorToLabel?: boolean;
   renderValue?: (value: string) => ReactNode;
   renderOption?: (value: string) => ReactNode;
 }
@@ -28,7 +29,7 @@ function choicesOf(children: ReactNode, group?: string, disabled = false): Choic
  * users interact with the button/listbox on every platform. No UA menu is opened.
  * Portals go beside a modal's content, inside its top layer and outside scrollers.
  * This also works on the browser baseline, without the newer Popover API. */
-export function Select({ children, value, defaultValue, onChange, className = "", style, id, disabled, renderValue, renderOption, ...props }: Props) {
+export function Select({ children, value, defaultValue, onChange, className = "", style, id, disabled, anchorToLabel = false, renderValue, renderOption, ...props }: Props) {
   const generatedId = useId();
   const controlId = id ?? `select-${generatedId}`;
   const listId = `${controlId}-list`;
@@ -79,9 +80,10 @@ export function Select({ children, value, defaultValue, onChange, className = ""
     const trigger = triggerRef.current;
     const menu = menuRef.current;
     if (!trigger || !menu) return;
+    const anchorElement = anchorToLabel ? trigger.closest("label") ?? trigger : trigger;
     const fit = () => {
       if (trigger.matches(":disabled")) { setOpen(false); return; }
-      const anchor = trigger.getBoundingClientRect();
+      const anchor = anchorElement.getBoundingClientRect();
       const viewport = window.visualViewport;
       const x = viewport?.offsetLeft ?? 0, y = viewport?.offsetTop ?? 0;
       const width = viewport?.width ?? window.innerWidth, height = viewport?.height ?? window.innerHeight;
@@ -101,6 +103,7 @@ export function Select({ children, value, defaultValue, onChange, className = ""
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(trigger);
+    if (anchorElement !== trigger) observer.observe(anchorElement);
     window.addEventListener("resize", fit);
     window.addEventListener("scroll", fit, true);
     window.visualViewport?.addEventListener("resize", fit);
@@ -109,7 +112,7 @@ export function Select({ children, value, defaultValue, onChange, className = ""
       observer.disconnect(); window.removeEventListener("resize", fit); window.removeEventListener("scroll", fit, true);
       window.visualViewport?.removeEventListener("resize", fit); window.visualViewport?.removeEventListener("scroll", fit);
     };
-  }, [open, optionsKey]);
+  }, [open, optionsKey, anchorToLabel]);
 
   useEffect(() => {
     if (open && active >= 0) document.getElementById(`${listId}-${active}`)?.scrollIntoView({ block: "nearest" });
