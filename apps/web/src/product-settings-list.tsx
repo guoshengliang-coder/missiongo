@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { useState, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { ProductBadge } from "./product-badge";
@@ -20,11 +21,11 @@ export function ProductSettingsList({ products, onOpen, description, actions }: 
   return <section className="settings-product-list" aria-label={t("settingsProducts")}>
     <div className="settings-list-toolbar">
       <label className="settings-toolbar-search"><span className="sr-only">{t("settingsSearchProducts")}</span><input placeholder={t("settingsSearchProducts")} type="search" value={search} onChange={event => setSearch(event.target.value)} /></label>
-      <label><span className="sr-only">{t("settingsProductStatus")}</span><select value={status} onChange={event => setStatus(event.target.value)}>
+      <label><span className="sr-only">{t("settingsProductStatus")}</span><Select value={status} onChange={event => setStatus(event.target.value)}>
         <option value="active">{t("settingsActiveProducts")}</option>
         <option value="archived">{t("settingsArchivedProducts")}</option>
         <option value="all">{t("settingsAllProducts")}</option>
-      </select></label>
+      </Select></label>
       {actions}
     </div>
     <p className="account-note" role="status">{t("settingsProductCount", { count: visible.length })}</p>

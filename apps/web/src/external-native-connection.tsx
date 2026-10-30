@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { Modal } from "./modal";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -50,10 +51,10 @@ export function ExternalNativeConnectionPanel({ session }: { session: AgentSessi
     {session.canConnectNative && !session.nativeConnection?.nodeId && !choosing && <button type="button" className="secondary-button" onClick={() => { setNodeId(""); mutation.reset(); setChoosing(true); }}>{t("agentExternalConnect")}</button>}
     {choosing && <Modal title={t("agentExternalConnect")} subtitle={t("agentExternalChooseNode")} onClose={() => setChoosing(false)} dirty={Boolean(nodeId)} pending={mutation.isPending}><div className="dialog-form">
       <p>{t("agentExternalConnectDetail")}</p>
-      <label>{t("agentExternalChooseNode")} <select aria-label={t("agentExternalChooseNode")} value={nodeId} onChange={(event) => setNodeId(event.target.value)}>
+      <label>{t("agentExternalChooseNode")} <Select aria-label={t("agentExternalChooseNode")} value={nodeId} onChange={(event) => setNodeId(event.target.value)}>
         <option value="">{t("agentExternalChooseNode")}</option>
         {nodes.data?.nodes.filter((node) => !node.revokedAt && node.agents.some((agent) => agent.kind === session.agentKind)).map((node) => <option value={node.id} key={node.id}>{node.name}</option>)}
-      </select></label>
+      </Select></label>
       <button type="button" className="primary-button" disabled={!nodeId || mutation.isPending} onClick={() => mutation.mutate(nodeId)}>{t("agentExternalConnect")}</button>
       <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => setChoosing(false)}>{t("cancel")}</button>
       {nodes.isError && <p className="inline-error">{localizedErrorText(nodes.error, t)}</p>}

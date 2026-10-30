@@ -1,3 +1,4 @@
+import { chooseOption } from "./select-helpers";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -103,8 +104,7 @@ test("a manual product pick survives the 5s session refetch", async ({ page }) =
   await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
   await expect.poll(() => listFetches).toBeGreaterThanOrEqual(1);
 
-  await page.locator("button.product-switcher").click();
-  await page.locator(`#product-option-${otherProduct.id}`).click();
+  await chooseOption(page.getByRole("combobox", { name: "当前产品", exact: true }), otherProduct.id);
 
   // The bounce-back fired on the refetch after a switch, so wait past at least
   // one refetch that happened after the pick before asserting it held.

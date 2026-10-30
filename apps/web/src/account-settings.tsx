@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { useConfirm } from "./confirm-dialog";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -461,18 +462,18 @@ function PersonalTokenForm() {
             </label>
             <label>
               {t("personalTokenScopes")}
-              <select value={write ? "write" : "read"} onChange={(event) => setWrite(event.target.value === "write")}>
+              <Select value={write ? "write" : "read"} onChange={(event) => setWrite(event.target.value === "write")}>
                 <option value="read">{t("personalTokenScopeRead")}</option>
                 <option value="write">{t("personalTokenScopeWrite")}</option>
-              </select>
+              </Select>
             </label>
             <label>
               {t("personalTokenLifetime")}
-              <select value={days} onChange={(event) => setDays(Number(event.target.value))}>
+              <Select value={days} onChange={(event) => setDays(Number(event.target.value))}>
                 {[7, 30, 90, 365].map((choice) => (
                   <option key={choice} value={choice}>{t("personalTokenDays", { days: String(choice) })}</option>
                 ))}
-              </select>
+              </Select>
             </label>
             {create.isError && <InlineNote danger message={messageFor(create.error, t, t("somethingWentWrong"))} />}
             <div className="personal-token-actions">
@@ -772,10 +773,10 @@ function NewAccountForm({ onCancel, onCreated }: { onCancel: () => void; onCreat
       </label>
       <label>
         {t("accountRole")}
-        <select value={role} onChange={(event) => setRole(event.target.value as AccountRole)}>
+        <Select value={role} onChange={(event) => setRole(event.target.value as AccountRole)}>
           <option value="member">{t("memberRole")}</option>
           <option value="admin">{t("administratorRole")}</option>
-        </select>
+        </Select>
       </label>
       {tooShort && <p className="account-note">{t("passwordTooShort", { count: MIN_PASSWORD_LENGTH })}</p>}
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
@@ -817,7 +818,7 @@ export function AccountManagement({ user, products, accountId, filterProductId, 
     {!accountId && <>
       <div className="settings-list-toolbar">
         <label className="settings-toolbar-search"><span className="sr-only">{t("settingsSearchAccounts")}</span><input type="search" placeholder={t("settingsSearchAccounts")} value={search} disabled={editor !== null} onChange={event => setSearch(event.target.value)} /></label>
-        <label><span className="sr-only">{t("settingsFilterProduct")}</span><select value={filter} disabled={editor !== null} onChange={event => onNavigate ? onNavigate(undefined, event.target.value || undefined) : setLocalFilter(event.target.value)}><option value="">{t("settingsAllProducts")}</option>{products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</select></label>
+        <label><span className="sr-only">{t("settingsFilterProduct")}</span><Select value={filter} disabled={editor !== null} onChange={event => onNavigate ? onNavigate(undefined, event.target.value || undefined) : setLocalFilter(event.target.value)}><option value="">{t("settingsAllProducts")}</option>{products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</Select></label>
         <button type="button" className="primary-button" disabled={editor !== null} onClick={() => setEditor(openAccountEditor(editor, "new-account"))}><Plus size={15} />{t("addAccount")}</button>
         {(search || filter) && <button type="button" className="text-button" onClick={() => { setSearch(""); if (onNavigate) onNavigate(undefined); else setLocalFilter(""); }}>{t("clearListFilters")}</button>}
       </div>

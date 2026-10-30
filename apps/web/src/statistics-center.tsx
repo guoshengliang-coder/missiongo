@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { BackButton } from "./back-button";
 import { StatisticsBatches } from "./statistics-batches";
 import { useEffect, useRef, useState, type MouseEvent } from "react";
@@ -62,10 +63,10 @@ export function StatisticsCenter({products,accountId,onClose,onOpenItem}:{produc
     </header>
     <div className="statistics-content">
       <form className={`statistics-filters ${draft.period === "custom" ? "has-custom-dates" : ""}`} onSubmit={event=>{event.preventDefault();if(!statisticsDatesValid(draft)){setFilterError(true);return;}setFilterError(false);setFilters({...draft});setSelection(null);}}>
-        <label>{label("产品范围","Products")}<select value={draft.product} onChange={e=>setDraft({...draft,product:e.target.value})}><option value="all">{label("全部可见产品","All visible products")}</option>{products.map(p=><option value={p.id} key={p.id}>{p.name}</option>)}{draft.product!=="all"&&!products.some(p=>p.id===draft.product)&&<option value={draft.product}>{label("产品不可用","Unavailable product")}</option>}</select></label>
-        <label>{label("统计时间","Period")}<select value={draft.period} onChange={e=>setDraft({...draft,period:e.target.value as StatisticsFilters["period"]})}>
-          <option value="today">{label("今天","Today")}</option><option value="yesterday">{label("昨天","Yesterday")}</option><option value="last7Days">{label("最近 7 天","Last 7 days")}</option><option value="thisMonth">{label("本月","This month")}</option><option value="custom">{label("自定义时间","Custom dates")}</option></select></label>
-        <label>{label("条目类型","Item type")}<select value={draft.type} onChange={e=>setDraft({...draft,type:e.target.value as StatisticsFilters["type"]})}><option value="all">{label("全部类型","All types")}</option>{ITEM_TYPES.map(type=><option value={type} key={type}>{typeLabel(type)}</option>)}</select></label>
+        <label>{label("产品范围","Products")}<Select value={draft.product} onChange={e=>setDraft({...draft,product:e.target.value})}><option value="all">{label("全部可见产品","All visible products")}</option>{products.map(p=><option value={p.id} key={p.id}>{p.name}</option>)}{draft.product!=="all"&&!products.some(p=>p.id===draft.product)&&<option value={draft.product}>{label("产品不可用","Unavailable product")}</option>}</Select></label>
+        <label>{label("统计时间","Period")}<Select value={draft.period} onChange={e=>setDraft({...draft,period:e.target.value as StatisticsFilters["period"]})}>
+          <option value="today">{label("今天","Today")}</option><option value="yesterday">{label("昨天","Yesterday")}</option><option value="last7Days">{label("最近 7 天","Last 7 days")}</option><option value="thisMonth">{label("本月","This month")}</option><option value="custom">{label("自定义时间","Custom dates")}</option></Select></label>
+        <label>{label("条目类型","Item type")}<Select value={draft.type} onChange={e=>setDraft({...draft,type:e.target.value as StatisticsFilters["type"]})}><option value="all">{label("全部类型","All types")}</option>{ITEM_TYPES.map(type=><option value={type} key={type}>{typeLabel(type)}</option>)}</Select></label>
         {draft.period === "custom" && (
           <div className="statistics-date-range" role="group" aria-label={label("自定义日期范围", "Custom date range")}>
             <label>{label("开始日期", "Start date")}<input type="date" required max={statisticsToday()} value={draft.start} onClick={openDatePicker} onChange={e => setDraft({...draft, start: e.target.value})}/></label>

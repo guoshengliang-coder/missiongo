@@ -1,3 +1,4 @@
+import { chooseOption } from "./select-helpers";
 import { randomBytes } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
@@ -36,7 +37,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
         await expect(memberPage.locator(".settings-hub-row").filter({hasText:"Builder 分配"})).toBeVisible();
         await memberPage.locator(".settings-hub-row").filter({hasText:"Builder 分配"}).click();
         const defaults=memberPage.getByRole("region",{name:"模块 Builder 分配"});
-        await defaults.getByRole("combobox",{name:"Delivery module 默认 Builder",exact:true}).selectOption(builder.id);
+        await chooseOption(defaults.getByRole("combobox",{name:"Delivery module 默认 Builder",exact:true}), builder.id);
         await defaults.getByRole("button",{name:"保存默认 Builder",exact:true}).click();
         await expect(defaults.getByRole("button",{name:"保存默认 Builder",exact:true})).toHaveCount(0);
         expect((await (await request.get(`/api/v1/products/${product.id}/components`)).json()).find((row:{id:string})=>row.id===module.id).defaultBuilderAccountId).toBe(builder.id);
@@ -47,7 +48,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
         await expect(memberPage.getByRole("button",{name:"安排执行／交接",exact:true})).toHaveCount(0);
         await memberPage.locator(".detail-toolbar .detail-more-menu > summary").click();
         await memberPage.getByRole("button",{name:"转交 Builder",exact:true}).click();
-        await memberPage.getByRole("combobox",{name:"新的 Builder",exact:true}).selectOption(builder.id);
+        await chooseOption(memberPage.getByRole("combobox",{name:"新的 Builder",exact:true}), builder.id);
         await memberPage.getByLabel("交接说明",{exact:true}).fill("Project administrator allocates responsibility");
         await memberPage.getByRole("button",{name:"确认转交",exact:true}).click();
         await expect(eyebrow).toContainText(`Builder candidate-${suffix}`);

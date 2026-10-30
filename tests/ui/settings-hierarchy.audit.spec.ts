@@ -1,3 +1,4 @@
+import { chooseOption } from "./select-helpers";
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { expect, test } from "@playwright/test";
@@ -86,7 +87,7 @@ test("unifies account permissions, filters products, opens account details and g
   await request.put(`/api/v1/accounts/${account.id}/products`, { data: { permissions: [{ productId: other.id, canView: true, canOperate: false, canUseAi: false }] } });
   await page.goto(`/settings/admin/accounts?settingsProduct=${fixture.productId}&product=${fixture.productId}`);
   await expect(page.locator(".account-row").filter({ hasText: account.email })).toHaveCount(0);
-  await page.getByRole("combobox", { name: "按产品筛选", exact: true }).selectOption(other.id);
+  await chooseOption(page.getByRole("combobox", { name: "按产品筛选", exact: true }), other.id);
   await page.getByRole("searchbox", { name: "搜索账号", exact: true }).fill(account.email);
   const row = page.locator(".account-row").filter({ hasText: account.email });
   await row.getByRole("button", { name: "修改权限", exact: true }).click();
@@ -99,7 +100,7 @@ test("unifies account permissions, filters products, opens account details and g
   await expect(permission).toBeChecked();
   await page.locator(".account-permissions-footer").getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByRole("combobox", { name: "按产品筛选", exact: true })).toHaveValue(other.id);
+  await expect(page.getByRole("combobox", { name: "按产品筛选", exact: true })).toHaveAttribute("data-value", other.id);
   const stored = await (await request.get("/api/v1/accounts")).json();
   expect(stored.accounts.find((value: { id: string }) => value.id === account.id).permissions.find((value: { productId: string }) => value.productId === other.id).canOperate).toBe(true);
 });
@@ -150,7 +151,7 @@ test("dispatch defaults remain account-wide after a product switch", async ({ pa
   await page.route("**/api/v1/nodes", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ nodes: [{ id: "defaults-node", name: "Default Mac", deviceName: "Default Mac", online: true, agents: [{ kind: "claude_code", version: "1" }, { kind: "codex", version: "1" }], repos: [], repoCandidates: [], createdAt: new Date().toISOString() }] }) }));
   try {
     await page.goto(`/settings/agent/dispatch?product=${fixture.productId}`);
-    await page.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
+    await chooseOption(page.getByRole("combobox", { name: "Agent", exact: true }), "codex");
     const saved = page.waitForResponse(response => response.url().endsWith("/api/v1/dispatch-defaults") && response.request().method() === "PUT");
     await page.getByRole("button", { name: "保存", exact: true }).click();
     expect((await saved).status()).toBe(200);
@@ -159,7 +160,7 @@ test("dispatch defaults remain account-wide after a product switch", async ({ pa
     await page.goto(`/settings/products/${product.id}`);
     await page.getByRole("navigation", { name: "设置", exact: true }).getByRole("button", { name: "Agent 配置", exact: true }).click();
     await page.locator(".settings-hub-row").filter({ hasText: "派单默认值" }).click();
-    await expect(page.getByRole("combobox", { name: "Agent", exact: true })).toHaveValue("codex");
+    await expect(page.getByRole("combobox", { name: "Agent", exact: true })).toHaveAttribute("data-value", "codex");
     await expect(page.locator(".settings-page-title")).not.toContainText("仅影响当前账号");
     const current = await (await request.get("/api/v1/dispatch-defaults")).json();
     expect(current.agentKind).toBe("codex");

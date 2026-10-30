@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { Modal } from "./modal";
 import { useConfirm } from "./confirm-dialog";
 import { useSettingsDraft } from "./settings-drafts";
@@ -450,7 +451,7 @@ function NodeCard({
               <span>{product.name} <code>{product.keyPrefix}</code></span>
               <div className="node-repo-choice">
                 {candidates.length > 0 && (
-                  <select
+                  <Select
                     value={isManual ? MANUAL_OPTION : value}
                     disabled={Boolean(node.revokedAt)}
                     onChange={(event) => {
@@ -472,7 +473,7 @@ function NodeCard({
                       </option>
                     ))}
                     <option value={MANUAL_OPTION}>{t("repoEnterManually")}</option>
-                  </select>
+                  </Select>
                 )}
                 {isManual && (
                   <input

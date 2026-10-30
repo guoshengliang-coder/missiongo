@@ -47,7 +47,6 @@
   "literal-colour | apps/web/src/styles.css | .priority-urgent { box-shadow } 0 0 0 3px rgba(219,91,96,0.12)",
   "literal-colour | apps/web/src/styles.css | .product-badge.generated { color } #fff",
   "literal-colour | apps/web/src/styles.css | .product-settings-tabs button.active { box-shadow } 0 1px 4px rgba(27, 37, 33, .09)",
-  "literal-colour | apps/web/src/styles.css | .product-switcher-list { box-shadow } 0 14px 38px rgba(23, 32, 51, .18)",
   "literal-colour | apps/web/src/styles.css | .selected-media-lightbox > section { border } 1px solid rgba(255,255,255,.16)",
   "literal-colour | apps/web/src/styles.css | .selected-media-lightbox > section { box-shadow } 0 24px 80px rgba(0,0,0,.42)",
   "literal-colour | apps/web/src/styles.css | .selected-media-lightbox::backdrop { background } rgba(11, 16, 27, .82)",

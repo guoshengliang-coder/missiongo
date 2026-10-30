@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { type ChangeEvent, type FormEvent, useEffect, useState } from "react";
 import { Bug, Check, ChevronRight, FileText, Highlighter, Image as ImageIcon, Lightbulb, ListTodo, LoaderCircle, Paperclip, StickyNote } from "lucide-react";
 
@@ -287,7 +288,7 @@ export function SdkFeedbackPage() {
                 value={draft.sourceComponentName ? `${draft.productName} · ${draft.sourceComponentName}` : draft.productName}
                 readOnly
               /></label>
-              <label><span className="field-label">{t("priority")}</span><select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</select></label>
+              <label><span className="field-label">{t("priority")}</span><Select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)}>{PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</Select></label>
             </div>
             <div className="ai-title-field sdk-ai-title-field">
               <label><span className="field-label">{t("whatNeedsAttention")}<span className="field-requirement required">{t("requiredField")}</span></span><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={500} placeholder={t("clearSpecificTitle")} required autoFocus /></label>

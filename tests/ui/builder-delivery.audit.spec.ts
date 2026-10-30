@@ -1,3 +1,4 @@
+import { chooseOption } from "./select-helpers";
 import { randomBytes } from "node:crypto";
 import { expect, test } from "@playwright/test";
 
@@ -13,7 +14,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await request.put(`/api/v1/accounts/${member.id}/products`,{data:{permissions:[{productId:product.id,canView:true,canOperate:true,canUseAi:true}]}});
       await page.goto(`/settings/products/${product.id}/components/${module.id}?product=${product.id}`);
       const setting=page.locator(".module-builder-setting");
-      await setting.getByRole("combobox",{name:"Web module 默认 Builder"}).selectOption(user.id);
+      await chooseOption(setting.getByRole("combobox",{name:"Web module 默认 Builder"}), user.id);
       await setting.getByRole("button",{name:"保存默认 Builder",exact:true}).click();
       await expect(setting.getByRole("button",{name:"保存默认 Builder",exact:true})).toHaveCount(0);
       const item=await (await request.post("/api/v1/items",{data:{productId:product.id,sourceComponentId:module.id,type:"task",priority:"normal",title:"Deliver Builder workflow",description:"Delivery scope",environment:{platform:"web"}}})).json();
@@ -24,10 +25,10 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await expect(page.locator(".item-row")).toHaveCount(2);
       await expect(page.getByRole("button",{name:"Switch to English",exact:true})).toHaveCount(0);
       await expect(page.locator("html")).toHaveAttribute("lang","zh-CN");
-      await page.getByRole("combobox",{name:"Builder",exact:true}).selectOption("mine");
+      await chooseOption(page.getByRole("combobox",{name:"Builder",exact:true}), "mine");
       await expect(page.locator(".item-row")).toHaveCount(1);
       await expect(page).toHaveURL(/builder=mine/);
-      await page.reload();await expect(page.getByRole("combobox",{name:"Builder",exact:true})).toHaveValue("mine");
+      await page.reload();await expect(page.getByRole("combobox",{name:"Builder",exact:true})).toHaveAttribute("data-value", "mine");
       await expect(page.locator(".item-row")).toHaveCount(1);
       await page.locator(".item-row-main").click();
       const eyebrow=page.locator(".detail-title-block .eyebrow");
@@ -48,7 +49,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await expect(panel.locator(".execution-row").first()).toContainText("已交接");
       const second=panel.locator(".execution-row").nth(1);
       await second.getByText("更新本轮执行",{exact:true}).click();
-      await second.getByRole("combobox").selectOption("completed");
+      await chooseOption(second.getByRole("combobox"), "completed");
       await second.getByLabel("结果／说明",{exact:true}).fill("Integration complete");
       await second.getByRole("button",{name:"保存执行进展",exact:true}).click();
       await expect(second.locator(".execution-heading")).toContainText("本轮完成");
@@ -67,13 +68,13 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       expect(await panel.evaluate(node=>node.scrollWidth>node.clientWidth)).toBe(false);
       await page.locator(".detail-toolbar .detail-more-menu > summary").click();
       await page.getByRole("button",{name:"转交 Builder",exact:true}).click();
-      await page.getByLabel("新的 Builder",{exact:true}).selectOption(member.id);
+      await chooseOption(page.getByLabel("新的 Builder",{exact:true}), member.id);
       await page.getByLabel("交接说明",{exact:true}).fill("Take responsibility through verification");
       await page.getByRole("button",{name:"确认转交",exact:true}).click();
       await expect(eyebrow).toContainText(`Builder builder-${suffix}`);
       const stored=await (await request.get(`/api/v1/items/${item.key}`)).json();expect(stored.status).toBe("inbox");
       await page.goto(`/?product=${product.id}&status=inbox&builder=mine`);await expect(page.locator(".item-row")).toHaveCount(0);
-      await page.getByRole("combobox",{name:"Builder",exact:true}).selectOption(member.id);await expect(page.locator(".item-row")).toHaveCount(1);
+      await chooseOption(page.getByRole("combobox",{name:"Builder",exact:true}), member.id);await expect(page.locator(".item-row")).toHaveCount(1);
       await page.goto(`/settings/admin/accounts?product=${product.id}&settingsProduct=${product.id}`);
       const row=page.locator(".account-row").filter({hasText:member.email});
       await expect(row.locator(".account-access-permissions dd")).toHaveCount(3);
