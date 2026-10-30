@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activityLabelKey,
+  dispatchActivityLabelKey,
   agentChatMessages,
   approvalNeedsAction,
   agentUnreadCounts,
@@ -537,5 +538,15 @@ describe("authorization intervention visibility (AND-272)", () => {
       expect(approvalNeedsAction({ ...approval, status: "denied", retryId: "retry", retryStatus })).toBe(false);
     }
     expect(approvalNeedsAction({ ...approval, status: "denied", retryId: "retry", retryStatus: "failed", retryError: "offline" })).toBe(true);
+  });
+});
+
+describe("dispatch result rejection", () => {
+  it("distinguishes a rejected receipt from silence, while preserving launch state labels", () => {
+    const session = { dispatchStatus: "delivered", status: "failed", agentKind: "codex" } as const;
+    expect(dispatchActivityLabelKey(session)).toBe("agentConsoleDispatchTimedOut");
+    expect(dispatchActivityLabelKey({ ...session, dispatchResultRejected: true })).toBe("agentConsoleDispatchResultRejected");
+    expect(dispatchActivityLabelKey({ ...session, status: "active" })).toBe("agentConsoleDispatchLaunching");
+    expect(dispatchActivityLabelKey({ ...session, dispatchStatus: "launched" })).toBe("agentConsoleDispatchLaunched");
   });
 });

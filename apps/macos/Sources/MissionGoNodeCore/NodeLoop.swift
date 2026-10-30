@@ -103,8 +103,9 @@ public struct LocalLaunch: Equatable, Sendable, Identifiable {
     public let startedAt: Date
     public let report: DispatchReport
     public let logPath: String?
-    /// False when the server never heard the result, after every retry.
+    /// False when the server did not acknowledge the result, after every retry.
     public let reported: Bool
+    public var resultReportError: String? = nil
 }
 
 /// Stops the loops the way an `AbortSignal` did: sleeps end early, but a request
@@ -468,12 +469,12 @@ public final class NodeLoop: @unchecked Sendable {
                         if report.status != .launched {
                             _ = self.capacity.withLock { $0.reservations.removeValue(forKey: request.dispatchId) }
                         }
-                        let record = { (reported: Bool) in
+                        let record = { (result: (reported: Bool, error: String?)) in
                             self.recordLaunch(LocalLaunch(
                                 dispatchId: request.dispatchId, itemKeys: request.itemKeys,
                                 agentKind: request.agentKind, mode: request.mode,
                                 repoPath: request.repoPath, startedAt: startedAt, report: report,
-                                logPath: logPath, reported: reported
+                                logPath: logPath, reported: result.reported, resultReportError: result.error
                             ))
                         }
                         do {
@@ -481,7 +482,7 @@ public final class NodeLoop: @unchecked Sendable {
                         } catch {
                             // The session may be running even though the credential is
                             // gone; the menu should still show it and its link.
-                            record(false)
+                            record((false, error.localizedDescription))
                             throw error
                         }
                     } else {
@@ -1083,22 +1084,25 @@ public final class NodeLoop: @unchecked Sendable {
     }
 
     /// True once the server has the result. Rethrows only a revoked credential.
-    private func reportWithRetry(_ dispatchId: String, _ report: DispatchReport, stop: StopSignal) async throws -> Bool {
+    private func reportWithRetry(_ dispatchId: String, _ report: DispatchReport, stop: StopSignal) async throws -> (reported: Bool, error: String?) {
+        var lastError: String?
         for attempt in 1...max(1, timing.resultReportAttempts) {
             do {
                 try await api.reportResult(dispatchId: dispatchId, report: report)
-                return true
+                return (true, nil)
             } catch let error as APIError {
                 if case .credentialRevoked = error { throw error }
+                lastError = error.localizedDescription
                 log("回报派单 \(dispatchId) 的结果失败（第 \(attempt) 次）：\(error.localizedDescription)")
             } catch {
+                lastError = error.localizedDescription
                 log("回报派单 \(dispatchId) 的结果失败（第 \(attempt) 次）：\(error.localizedDescription)")
             }
-            if attempt == timing.resultReportAttempts { return false }
+            if attempt == timing.resultReportAttempts { return (false, lastError) }
             await stop.sleep(timing.resultRetryDelay)
-            if stop.isStopped { return false }
+            if stop.isStopped { return (false, lastError) }
         }
-        return false
+        return (false, lastError)
     }
 
     private func recordLaunch(_ launch: LocalLaunch) {
