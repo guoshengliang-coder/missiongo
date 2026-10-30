@@ -371,7 +371,7 @@ public enum CodexPreflight {
                 failureCode: "cli_missing", failureStage: "preflight"
             ))
         }
-        switch await CodexAuthentication.check(binary: binary, run: run, environment: environment, location: location) {
+        switch await CodexAuthentication.check(binary: binary, run: run, environment: environment, location: location, repoPath: repoPath) {
         case .signedIn, .apiKeyConfigured: break
         case .missing: return .failed(LaunchError(
             "Codex 未登录且未配置当前 provider 的 API Key／网关认证：配置客户端认证，或运行 codex login 后重试。",
@@ -390,6 +390,9 @@ public enum CodexPreflight {
                 "连不上 Codex 的控制通道（\(location.controlSocketPath)）：它由 codex app-server daemon 提供，MissionGo 自动运行 \(daemonStartCommand) 后仍然没有连上（\(output)）。在本机终端运行这条命令查看原因。",
                 failureCode: "daemon_down", failureStage: "daemon"
             ))
+        }
+        if let issue = await CodexDaemonEnvironment.ensure(binary: binary, environment: environment, location: location, run: run, repoPath: repoPath) {
+            return .failed(LaunchError(issue.reason, failureCode: "daemon_environment", failureStage: "preflight", retryAfterSeconds: issue.retryAfterSeconds))
         }
         switch await mcpState(binary: binary, run: run) {
         case .ready: break

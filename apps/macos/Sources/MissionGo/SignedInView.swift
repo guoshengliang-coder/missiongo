@@ -503,8 +503,10 @@ struct LocalSettingsView: View {
                         Text("管理允许在这台 Mac 上执行任务的客户端。")
                             .foregroundStyle(.secondary)
                         IntegrationRow(agent: .claudeCode)
+                        ClientLaunchSettingsView(agent: .claudeCode)
                         Divider()
                         IntegrationRow(agent: .codex)
+                        ClientLaunchSettingsView(agent: .codex)
                         Divider()
                         IntegrationRow(agent: .openCode)
                         Divider()
@@ -525,6 +527,30 @@ struct LocalSettingsView: View {
             model.refreshProfile()
             model.refreshDispatches()
         }
+    }
+}
+
+private struct ClientLaunchSettingsView: View {
+    @EnvironmentObject var model: AppModel
+    let agent: LocalAgent
+    @State private var settings = ClientLaunchSettings()
+
+    var body: some View {
+        DisclosureGroup("\(agent.title) 配置来源") {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("自动复用终端环境", isOn: $settings.automaticShell)
+                Text("支持 .zshrc / .zprofile；配置仅在本机读取，项目设置在目标仓库检查。")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextField("环境配置脚本路径（可选）", text: $settings.setupScript)
+                    .disabled(!settings.automaticShell)
+                TextField("自定义启动器路径（可选）", text: $settings.executable)
+                Text("使用函数、别名或临时参数时，可将环境设置提取到脚本；启动器须转发客户端参数。这里仅填写文件路径。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("保存并重新检查") { model.applyLaunchSettings(agent, settings: settings) }
+                    .disabled(!model.checkingIntegrations.isEmpty)
+            }.padding(.top, 6)
+        }
+        .onAppear { settings = ClientLaunchSettings.load(agent) }
     }
 }
 

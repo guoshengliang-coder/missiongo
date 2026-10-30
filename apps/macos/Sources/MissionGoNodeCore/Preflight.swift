@@ -115,7 +115,7 @@ public enum Preflight {
             return .failed(reason: "本机找不到可用的 claude 命令：确认 Claude Code 已安装，且 claude --version 能正常运行。")
         }
 
-        switch await ClaudeAuthentication.check(run: run, environment: environment, home: home) {
+        switch await ClaudeAuthentication.check(run: run, environment: environment, home: home, repoPath: repoPath) {
         case .signedIn, .apiKeyConfigured: break
         case .missing:
             return .failed(reason: "Claude Code 未登录且未配置 API Key／网关认证：配置客户端认证，或运行 claude auth login 后重试。")

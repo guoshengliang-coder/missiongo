@@ -587,7 +587,11 @@ public struct SessionLauncher: AgentAdapter {
         let exitCode = Locked<Int32?>(nil)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = command.args
+        var arguments = command.args
+        if arguments.count > 2, arguments[2] == "claude", let launcher = environment.which("claude") {
+            arguments[2] = launcher
+        }
+        process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: job.repoPath, isDirectory: true)
         process.environment = ClaudeProcessEnvironment.unattended(environment.environment)
         process.standardInput = FileHandle.nullDevice

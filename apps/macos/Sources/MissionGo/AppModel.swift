@@ -155,6 +155,8 @@ final class AppModel: ObservableObject {
     private let defaults = UserDefaults.standard
     private let bundleServerUrl = Bundle.main.object(forInfoDictionaryKey: "MissionGoServerURL") as? String
     private var environment: ShellEnvironment?
+    private var clientEnvironments: [LocalAgent: ShellEnvironment] = [:]
+    private let sessionAdapters: [LocalAgent: RefreshingAgentAdapter.SessionCache] = [.claudeCode: .init(), .codex: .init()]
     private var started = false
     #if DEBUG
     private var isPreview = false
@@ -301,6 +303,14 @@ final class AppModel: ObservableObject {
                 environment = ShellEnvironment.resolve()
             }
             self.environment = environment
+            for agent in [LocalAgent.claudeCode, .codex] where integrations.state(for: agent)?.version != nil {
+                do {
+                    clientEnvironments[agent] = try await ClientLaunchSettings.load(agent).resolve(agent: agent, base: environment)
+                } catch {
+                    let attempt = integrations.begin(agent)
+                    integrations.finish(agent, attempt: attempt, version: nil, issue: error.localizedDescription)
+                }
+            }
             let credential: NodeCredential?
             do {
                 if defaults.bool(forKey: DefaultsKey.credentialUnavailable) {
@@ -469,6 +479,42 @@ final class AppModel: ObservableObject {
 
     // MARK: Node loop
 
+    private func refreshingAdapter(_ agent: LocalAgent, base: ShellEnvironment, serverUrl: String) -> RefreshingAgentAdapter {
+        let settings = ClientLaunchSettings.load(agent)
+        let initial = clientEnvironments[agent] ?? base
+        let access = integrations
+        let make: @Sendable (ShellEnvironment, String?) -> any AgentAdapter = { environment, cwd in
+            let runner = Commands.runner(environment: environment, directory: cwd ?? Paths.homeDirectory())
+            if agent == .claudeCode { return SessionLauncher(environment: environment, run: runner) }
+            return CodexLauncher(environment: environment, serverUrl: serverUrl, run: runner)
+        }
+        return RefreshingAgentAdapter(base: make(initial, nil), sessions: sessionAdapters[agent] ?? .init()) { cwd in
+            guard let attempt = access.state(for: agent)?.attempt else { throw LaunchError("客户端集成已停用。") }
+            let resolved = try await settings.resolve(agent: agent, base: base, cwd: cwd)
+            guard access.isCurrent(agent, attempt: attempt) else { throw LaunchError("客户端配置已变更或集成已停用，请重新检查。") }
+            return make(resolved, cwd)
+        }
+    }
+
+    func applyLaunchSettings(_ agent: LocalAgent, settings: ClientLaunchSettings) {
+        guard checkingIntegrations.isEmpty else { return }
+        let previous = ClientLaunchSettings.load(agent)
+        if settings.automaticShell && (!previous.automaticShell || previous.setupScript != settings.setupScript) {
+            let alert = NSAlert()
+            alert.messageText = "允许自动复用终端环境？"
+            alert.informativeText = "将为此客户端运行交互式登录 Shell（包括 .zshrc、.zprofile）及你指定的环境脚本。授权后启动、重新检查和派单会按需读取，心跳复用结果。Shell 配置中的自定义命令可能触发系统权限请求。仅保存授权及文件路径，认证值仅在内存中传给客户端。可随时关闭。"
+            alert.addButton(withTitle: "允许")
+            alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        settings.save(agent)
+        clientEnvironments.removeValue(forKey: agent)
+        // Pause before changing runtime configuration. A queued launch cannot
+        // use the previous adapter while the explicit check is in progress.
+        if integrations.state(for: agent) != nil { _ = integrations.begin(agent) }
+        _ = checkIntegration(agent)
+    }
+
     private func startLoop(_ credential: NodeCredential) {
         stopLoop()
         guard let environment else { return }
@@ -489,13 +535,14 @@ final class AppModel: ObservableObject {
         timing.agentDetectTTL = 0
         let snapshot = candidateSnapshot
         let access = integrations
-        let codexHome = CodexLocation(environment: environment).codexHome
+        let codexHome = CodexLocation(environment: clientEnvironments[.codex] ?? environment).codexHome
+        let claudeConfigDirectory = clientEnvironments[.claudeCode]?.environment["CLAUDE_CONFIG_DIR"]
         let loop = NodeLoop(
             api: APIClient(serverUrl: credential.serverUrl, token: credential.token),
             managedExecutionEnabled: ProcessInfo.processInfo.environment["MISSIONGO_MANAGED_EXECUTION"] == "1",
             adapters: [
-                ConsentedAgentAdapter(agent: .claudeCode, base: SessionLauncher(environment: environment), access: integrations),
-                ConsentedAgentAdapter(agent: .codex, base: CodexLauncher(environment: environment, serverUrl: credential.serverUrl), access: integrations),
+                ConsentedAgentAdapter(agent: .claudeCode, base: refreshingAdapter(.claudeCode, base: environment, serverUrl: credential.serverUrl), access: integrations),
+                ConsentedAgentAdapter(agent: .codex, base: refreshingAdapter(.codex, base: environment, serverUrl: credential.serverUrl), access: integrations),
                 ConsentedAgentAdapter(agent: .openCode, base: OpenCodeLauncher(), access: integrations),
             ],
             fallbackNodeName: credential.name,
@@ -511,7 +558,7 @@ final class AppModel: ObservableObject {
                     return current
                 }
                 let targets = SkillSync.targets(
-                    for: agent, home: Paths.homeDirectory(), codexHome: codexHome
+                    for: agent, home: Paths.homeDirectory(), codexHome: codexHome, claudeConfigDirectory: claudeConfigDirectory
                 )
                 let localVersion = SkillSync.localVersion(at: targets.first ?? "")
                 let attempt = skillTracker.begin(
@@ -921,7 +968,17 @@ final class AppModel: ObservableObject {
                 checkingIntegrations.remove(agent)
                 refreshIntegrationStates()
             }
-            let runner = Commands.runner(environment: environment)
+            let resolved: ShellEnvironment
+            do {
+                resolved = agent == .openCode ? environment : try await ClientLaunchSettings.load(agent).resolve(agent: agent, base: environment)
+            } catch {
+                access.finish(agent, attempt: attempt, version: nil, issue: error.localizedDescription)
+                return
+            }
+            guard access.isCurrent(agent, attempt: attempt) else { return }
+            clientEnvironments[agent] = resolved
+            let environment = resolved
+            let runner = Commands.runner(environment: environment, directory: Paths.homeDirectory())
             let run: CommandRunner = { file, args in
                 guard access.isCurrent(agent, attempt: attempt) else {
                     return CommandResult(code: -1, stdout: "", stderr: "集成已停用")
@@ -932,13 +989,31 @@ final class AppModel: ObservableObject {
             let issue: String?
             switch agent {
             case .claudeCode:
-                let status = await ClaudeCodeStatus.check(run: run, environment: environment.environment)
+                var status = await ClaudeCodeStatus.check(run: run, environment: environment.environment)
+                if case .notLoggedIn = status {
+                    for repo in repos where Paths.isDirectory(repo.repoPath) {
+                        guard access.isCurrent(agent, attempt: attempt) else { return }
+                        let projectRun = Commands.runner(environment: environment, directory: repo.repoPath)
+                        let projectStatus = await ClaudeCodeStatus.check(run: projectRun, environment: environment.environment, repoPath: repo.repoPath)
+                        if projectStatus.isReady { status = projectStatus; break }
+                    }
+                }
                 guard access.isCurrent(agent, attempt: attempt) else { return }
                 claude = status
                 if case let .ready(value) = status { version = value; issue = nil }
                 else { version = ""; issue = status.summary + "。" + (status.fixHint ?? "") }
             case .codex:
-                let status = await CodexStatus.check(environment: environment, location: CodexLocation(environment: environment), run: run)
+                var status = await CodexStatus.check(environment: environment, location: CodexLocation(environment: environment), run: run)
+                switch status {
+                case .notLoggedIn, .mcpMissing, .mcpNotLoggedIn:
+                    for repo in repos where Paths.isDirectory(repo.repoPath) {
+                        guard access.isCurrent(agent, attempt: attempt) else { return }
+                        let projectRun = Commands.runner(environment: environment, directory: repo.repoPath)
+                        let projectStatus = await CodexStatus.check(environment: environment, location: CodexLocation(environment: environment), run: projectRun, repoPath: repo.repoPath)
+                        if projectStatus.isReady { status = projectStatus; break }
+                    }
+                default: break
+                }
                 guard access.isCurrent(agent, attempt: attempt) else { return }
                 codex = status
                 if case let .ready(value) = status { version = value; issue = nil }
@@ -974,7 +1049,8 @@ final class AppModel: ObservableObject {
             }
             let targets = SkillSync.targets(
                 for: agent, home: Paths.homeDirectory(),
-                codexHome: CodexLocation(environment: environment).codexHome
+                codexHome: CodexLocation(environment: environment).codexHome,
+                claudeConfigDirectory: environment.environment["CLAUDE_CONFIG_DIR"]
             )
             let syncAttempt = skillTracker.begin(
                 agent.rawValue, localVersion: SkillSync.localVersion(at: targets.first ?? ""),
@@ -998,6 +1074,7 @@ final class AppModel: ObservableObject {
             refreshSkillStates()
             access.finish(agent, attempt: attempt, version: result.syncState == "ready" ? version : nil,
                           issue: result.reason)
+            if result.syncState == "ready", agent != .openCode { startLoop(credential) }
         }
     }
 
@@ -1017,9 +1094,11 @@ final class AppModel: ObservableObject {
             return
         }
         let tracker = skillSyncTracker
+        let resolved = clientEnvironments[agent] ?? environment
         let targets = SkillSync.targets(
             for: agent, home: Paths.homeDirectory(),
-            codexHome: CodexLocation(environment: environment).codexHome
+            codexHome: CodexLocation(environment: resolved).codexHome,
+            claudeConfigDirectory: resolved.environment["CLAUDE_CONFIG_DIR"]
         )
         let attempt = tracker.begin(
             agent.rawValue, localVersion: SkillSync.localVersion(at: targets.first ?? ""),
