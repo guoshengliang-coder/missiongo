@@ -20,10 +20,10 @@ for (const width of [353, 768, 1440]) for (const theme of ["light", "dark"] as c
         { name: "comment.png", mimeType: "image/png", buffer: png },
         { name: "comment.txt", mimeType: "text/plain", buffer: Buffer.from("file evidence") },
       ]);
-      await expect(composer.locator(".comment-image-previews img")).toHaveCount(1);
+      await expect(composer.locator(".agent-chat-draft-file-preview img")).toHaveCount(1);
       await expect(send).toBeEnabled();
       await send.click();
-      await expect(composer.locator(".selected-files")).toHaveCount(0);
+      await expect(composer.locator(".agent-chat-draft-files")).toHaveCount(0);
       const comment = page.locator(".comment-body").filter({ hasText: "comment.txt" });
       await expect(comment.locator(".attachment-card")).toHaveCount(2);
       await comment.locator(".attachment-card").first().scrollIntoViewIfNeeded();
@@ -86,11 +86,11 @@ test("accepts pasted images and dropped files, rejects unsupported files, and su
   }, [...png]);
   const data = await page.evaluateHandle(() => { const transfer = new DataTransfer(); transfer.items.add(new File(["evidence"], "dropped.txt", { type: "text/plain" })); return transfer; });
   await composer.dispatchEvent("drop", { dataTransfer: data });
-  await expect(composer.locator(".selected-files")).toContainText("pasted.png");
-  await expect(composer.locator(".selected-files")).toContainText("dropped.txt");
+  await expect(composer.locator('.agent-chat-draft-file[title="pasted.png"]')).toBeVisible();
+  await expect(composer.locator(".agent-chat-draft-files")).toContainText("dropped.txt");
   await composer.locator('input[type="file"]').first().setInputFiles({ name: "unsupported.exe", mimeType: "application/octet-stream", buffer: Buffer.from("data") });
   await expect(composer.locator(".inline-error")).toBeVisible();
-  await expect(composer.locator(".selected-files")).not.toContainText("unsupported.exe");
+  await expect(composer.locator(".agent-chat-draft-files")).not.toContainText("unsupported.exe");
   let lost = false;
   await page.route(`**/api/v1/items/${item.key}/attachments`, async route => {
     if (!lost && route.request().method() === "POST") { lost = true; await route.fetch(); await route.abort("failed"); }
@@ -100,7 +100,7 @@ test("accepts pasted images and dropped files, rejects unsupported files, and su
   await send.click();
   await expect(composer.locator(":scope > .inline-error")).toBeVisible();
   await expect(send).toBeEnabled(); await send.click();
-  await expect(composer.locator(".selected-files")).toHaveCount(0);
+  await expect(composer.locator(".agent-chat-draft-files")).toHaveCount(0);
   const comments = await (await page.request.get(`/api/v1/items/${item.key}/comments`)).json();
   const attachments = await (await page.request.get(`/api/v1/items/${item.key}/attachments`)).json();
   expect(comments.comments).toHaveLength(1); expect(attachments.attachments).toHaveLength(2);

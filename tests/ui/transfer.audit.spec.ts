@@ -22,7 +22,7 @@ for (const viewport of [{ name: "phone", width: 375, height: 812 }, { name: "des
         await page.request.post(`/api/v1/items/${item.key}/comments`, { data: { bodyKind: "free", text: "Evidence recorded before transfer." } });
         await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}`);
         await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
-        const more = page.locator(".detail-toolbar .detail-more-menu summary");
+        const more = page.locator(".detail-toolbar .detail-more-menu > summary");
         await more.click();
         await page.getByRole("button", { name: "迁移条目", exact: true }).click();
         const dialog = page.getByRole("dialog");

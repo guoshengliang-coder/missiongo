@@ -1092,7 +1092,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .detail-actions-popover { width: 218px; overflow: visible; padding: 6px; }
 .detail-action-group + .detail-action-group { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--line); }
 .detail-action-heading { margin: 0; padding: 7px 10px 4px; color: var(--muted); font-size: var(--text-xs); font-weight: 600; }
-.detail-actions-popover button, .detail-move-menu > summary { min-height: 38px; display: flex; align-items: center; gap: 10px; font-size: var(--text-sm); font-weight: 600; }
+.detail-actions-popover button, .detail-move-menu > summary { min-height: 44px; display: flex; align-items: center; gap: 10px; font-size: var(--text-sm); font-weight: 600; }
 .detail-actions-popover button svg, .detail-move-menu > summary svg { flex: 0 0 auto; }
 .detail-actions-popover button.danger { margin: 0; padding: 0 10px; border: 0; border-radius: var(--radius-sm); }
 .detail-move-menu { position: relative; }
@@ -2886,6 +2886,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 }
 .settings-page-header { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 12px; }
 .settings-page-header > strong { text-align: center; }
+.settings-page-header .icon-button.back-button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
 .settings-nav-group { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface-strong); }
 .settings-page-nav .settings-nav-group button { min-height: 48px; border: 0; border-radius: 0; }
 .settings-page-nav .settings-nav-group button + button { border-top: 1px solid var(--line); }

@@ -44,7 +44,7 @@ for (const viewport of [
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       if (viewport.touch) {
         expect((await send.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-        expect((await composer.locator(".file-picker-button").first().boundingBox())!.height).toBeGreaterThanOrEqual(44);
+        expect((await composer.getByRole("button", { name: "添加附件", exact: true }).boundingBox())!.height).toBeGreaterThanOrEqual(44);
       }
       await composer.locator('input[type="file"]').first().setInputFiles(attachment("remove-me.txt"));
       await composer.getByRole("button", { name: "移除 remove-me.txt", exact: true }).click();
@@ -55,7 +55,7 @@ for (const viewport of [
       await page.screenshot({ path: test.info().outputPath("composer.png") });
       await send.click();
       await expect(composer.locator("textarea")).toHaveValue("");
-      await expect(composer.locator(".selected-files")).toHaveCount(0);
+      await expect(composer.locator(".agent-chat-draft-files")).toHaveCount(0);
       await expect(send).toBeDisabled();
       await expect(page.locator(".timeline")).toContainText(`Reply from ${viewport.name} ${theme}`);
       const stored = await (await request.get(`/api/v1/items/${item.key}`)).json();
@@ -88,11 +88,11 @@ test("retries failed files without re-uploading successful parts", async ({ page
   await expect(composer.locator(".inline-error")).toBeVisible();
   await expect(composer.locator("textarea")).toHaveValue("Only one copy of this reply");
   expect(comments).toBe(0);
-  await expect(composer.locator(".selected-files")).toContainText("retry.txt");
+  await expect(composer.locator(".agent-chat-draft-files")).toContainText("retry.txt");
   await expect(composer.locator(".detail-composer-hint")).toContainText("重试不会重复上传");
   fail = false;
   await composer.getByRole("button", { name: "发送", exact: true }).click();
-  await expect(composer.locator(".selected-files")).toHaveCount(0);
+  await expect(composer.locator(".agent-chat-draft-files")).toHaveCount(0);
   await expect(composer.locator(".inline-error")).toHaveCount(0);
   expect(comments).toBe(1);
   expect(uploads).toEqual(["success.txt", "retry.txt", "retry.txt"]);
@@ -114,7 +114,7 @@ test("retains failed text while reusing a successfully uploaded attachment", asy
   await composer.getByRole("button", { name: "发送", exact: true }).click();
   await expect(composer.locator(".inline-error")).toBeVisible();
   await expect(composer.locator("textarea")).toHaveValue("Keep this reply for retry");
-  await expect(composer.locator(".selected-files")).toContainText("already-sent.txt");
+  await expect(composer.locator(".agent-chat-draft-files")).toContainText("already-sent.txt");
   fail = false;
   await composer.getByRole("button", { name: "发送", exact: true }).click();
   await expect(composer.locator("textarea")).toHaveValue("");
