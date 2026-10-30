@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ItemDelivery, type ItemExecution } from "./api";
 import type { Component, WorkItem } from "./types";
 import { useSettingsDraft } from "./settings-drafts";
+import { useI18n } from "./i18n";
 import { Modal } from "./modal";
 
 // 「安排执行／交接」暂时隐藏：功能与后续流转还没定，入口先不出现。
@@ -13,6 +14,7 @@ const executionLabels: Record<string,string> = {
   assigned:"待执行", working:"执行中", completed:"本轮完成", blocked:"受阻", cancelled:"已取消", handed_over:"已交接",
   active:"会话运行中", idle:"会话空闲", suspended:"会话已暂停", stalled:"会话停滞", unavailable:"会话不可用", failed:"执行失败", waiting_for_input:"等待输入",
 };
+export function executionStatusLabel(status: string) { return executionLabels[status] ?? status; }
 function failure(error: unknown) { return error instanceof Error ? error.message : "操作失败，请刷新后重试。"; }
 
 export function useItemDelivery(itemKey: string | null) {
@@ -72,15 +74,18 @@ export function TransferBuilderModal({itemKey,delivery,onClose}: {itemKey:string
   </Modal>;
 }
 
-function ExecutionRow({execution,delivery,itemKey,onRefresh}: {execution: ItemExecution;delivery:ItemDelivery;itemKey:string;onRefresh:()=>Promise<unknown>}) {
+function ExecutionRow({execution,delivery,itemKey,onRefresh,summarized}: {execution: ItemExecution;delivery:ItemDelivery;itemKey:string;onRefresh:()=>Promise<unknown>;summarized:boolean}) {
+  const { t } = useI18n();
   const [editing,setEditing]=useState(false);
   const [status,setStatus]=useState(execution.status); const [result,setResult]=useState("");
   const mutation=useMutation({mutationFn:()=>api.updateExecution(itemKey,execution.id,status,result),onSuccess:async()=>{setEditing(false);setResult("");await onRefresh();}});
   const finished=["completed","cancelled","handed_over","failed"].includes(execution.status);
   const editable=!finished && (execution.kind==="human" || execution.recorded===true) && (delivery.canManage || delivery.currentAccountId===execution.accountId);
   return <li className="execution-row">
-    <div className="execution-heading"><strong>{execution.name}</strong><span>{execution.kind==="agent" ? "Agent" : "人工"} · {executionLabels[execution.status] ?? execution.status}</span></div>
-    <p>{execution.scope}</p>
+    {summarized ? <div className="execution-heading"><strong>{t("currentSessionDetails")}</strong></div> : <>
+      <div className="execution-heading"><strong>{execution.name}</strong><span>{execution.kind==="agent" ? "Agent" : "人工"} · {executionLabels[execution.status] ?? execution.status}</span></div>
+      <p>{execution.scope}</p>
+    </>}
     {execution.previousId && <small>接续执行：{delivery.executions.find(row=>row.id===execution.previousId)?.name ?? "历史执行"}</small>}
     <small>安排：{new Date(execution.createdAt).toLocaleString("zh-CN")}{execution.startedAt ? ` · 开始：${new Date(execution.startedAt).toLocaleString("zh-CN")}` : ""}{execution.endedAt ? ` · 结束：${new Date(execution.endedAt).toLocaleString("zh-CN")}` : ""}</small>
     {execution.kind==="agent" && <small>授权账号：{execution.accountName} · 会话：<code>{execution.sessionId}</code> · {execution.sessionStatus ? `会话状态：${executionLabels[execution.sessionStatus] ?? execution.sessionStatus} · ` : ""}执行结果以会话记录为准</small>}
@@ -97,7 +102,8 @@ function ExecutionRow({execution,delivery,itemKey,onRefresh}: {execution: ItemEx
   </li>;
 }
 
-export function ItemDeliveryPanel({item}: {item:WorkItem}) {
+export function ItemDeliveryPanel({item,summarizedSessionId}: {item:WorkItem;summarizedSessionId?:string | undefined}) {
+  const { t } = useI18n();
   const queryClient=useQueryClient();
   const query=useItemDelivery(item.key);
   const [mode,setMode]=useState<"execution"|null>(null);
@@ -114,7 +120,7 @@ export function ItemDeliveryPanel({item}: {item:WorkItem}) {
   const hasExecutions=data.executions.length>0;
   if(!hasExecutions && !EXECUTION_ASSIGNMENT_ENABLED) return null;
   return <section className="delivery-panel" aria-label={hasExecutions ? "执行记录" : "交付与执行"}>
-    <div className="delivery-heading"><h3>{hasExecutions ? "执行记录" : "交付与执行"}</h3>
+    <div className="delivery-heading">{!hasExecutions && <h3>交付与执行</h3>}
       {EXECUTION_ASSIGNMENT_ENABLED && data.canManage && <div className="delivery-actions">
         <button type="button" className="secondary-button" onClick={()=>{setPerformer("");setScope("");setPreviousId("");setExecutionNote("");assign.reset();setMode("execution");}}>安排执行／交接</button>
       </div>}
@@ -135,7 +141,10 @@ export function ItemDeliveryPanel({item}: {item:WorkItem}) {
       </form>
     </Modal>}
     {hasExecutions
-      ? <ol className="execution-list">{data.executions.map(execution=><ExecutionRow key={execution.id} execution={execution} delivery={data} itemKey={item.key} onRefresh={refresh} />)}</ol>
+      ? <details className="execution-history">
+          <summary>{t("executionHistory", { count: data.executions.length })}</summary>
+          <ol className="execution-list">{data.executions.map(execution=><ExecutionRow key={execution.id} execution={execution} delivery={data} itemKey={item.key} onRefresh={refresh} summarized={execution.kind === "agent" && execution.recorded !== true && Boolean(summarizedSessionId) && execution.sessionId === summarizedSessionId} />)}</ol>
+        </details>
       : <p className="account-note">暂无执行记录。可安排多人并行执行，或在交接时新增下一轮记录。</p>}
   </section>;
 }

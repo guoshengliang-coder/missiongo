@@ -892,7 +892,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
    28px column beside the text had nothing left to hold and squeezed the whole
    text block into it -- on both shells, since this is the base rule. */
 .item-row-main { flex: 1; min-width: 0; display: block; padding: 0; color: inherit; background: transparent; border: 0; text-align: left; cursor: pointer; }
-.type-icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--radius-md); }
+.type-icon { flex: 0 0 auto; width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--radius-md); }
 .type-icon.large { width: 40px; height: 40px; border-radius: var(--radius-lg); }
 .type-idea { color: var(--type-idea-fg); background: var(--type-idea-bg); }
 .type-requirement { color: var(--type-requirement-fg); background: var(--type-requirement-bg); }
@@ -904,7 +904,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
    block. Centring only holds within a flex line, so a badge wrapping to a second
    line used to drag the icon onto the seam between the two -- 11px off the key.
    Inside the line it can only ever centre on the key's own line. */
-.item-meta { min-width: 0; display: flex; align-items: center; gap: 4px 8px; }
+.item-meta { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .detail-toolbar code { color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: var(--text-xs); font-weight: 750; }
 /* The key is an address, not a heading: one token beside the title without
    competing with it. --muted, not the lighter --muted-soft the design's #737373
@@ -1093,19 +1093,20 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 @media (hover: hover) { .toolbar-primary-action:hover { color: var(--primary-fg); background: var(--primary-bg-hover); } }
 .toolbar-primary-action.positive { color: var(--primary-fg); border-color: var(--mint-dark); background: var(--mint-dark); }
 .detail-title-block { display: flex; gap: 13px; align-items: flex-start; margin-bottom: 27px; }
-.detail-title-block h2 { max-width: 680px; margin: 0; font-size: clamp(22px, 2.3vw, 30px); letter-spacing: -0.035em; line-height: 1.17; }
-.detail-title-block .eyebrow { margin-top: 2px; word-break: keep-all; }
+.detail-title-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.detail-title-block h2 { overflow-wrap: anywhere; max-width: 680px; margin: 0; font-size: clamp(22px, 2.3vw, 30px); letter-spacing: -0.035em; line-height: 1.17; }
+.detail-title-block .eyebrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 2px; letter-spacing: normal; text-transform: none; overflow-wrap: anywhere; }
 /* Between the toolbar and the title: the agent and machine the work was last
    handed to, moved out of the toolbar where it only ever fit one status
    (AND-217). Quiet for a plain hand-off, danger-coloured for a failure. */
-.detail-dispatch-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 20px; padding: 8px 11px; color: var(--muted); background: var(--tile-bg); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); }
+.detail-dispatch-line { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 0 0 20px; padding: 8px 11px; color: var(--muted); background: var(--tile-bg); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); }
 .detail-dispatch-line.failed { color: var(--danger); background: var(--danger-bg-strong); border-color: var(--danger-line); }
-.detail-dispatch-target { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.detail-dispatch-target { min-width: 0; display: grid; gap: 3px; overflow-wrap: anywhere; }
 .detail-dispatch-target strong { color: var(--ink); font-weight: 700; }
 .detail-dispatch-line.failed .detail-dispatch-target strong { color: var(--danger); }
 .detail-dispatch-target small { color: var(--muted); }
-.detail-dispatch-reason { min-width: 0; overflow-wrap: anywhere; }
-.detail-dispatch-jump { flex: 0 0 auto; margin-left: auto; }
+.detail-dispatch-reason { grid-column: 2 / -1; min-width: 0; overflow-wrap: anywhere; }
+.detail-dispatch-jump { grid-column: 3; grid-row: 1; min-height: 44px; padding-inline: 10px; white-space: nowrap; }
 .verification-return-callout { margin: 0 0 24px; padding: 15px 17px; color: var(--ink); background: var(--danger-bg); border: 1px solid var(--danger); border-left-width: 4px; border-radius: var(--radius-md); }
 .verification-return-callout strong { display: flex; align-items: center; gap: 7px; color: var(--danger); font-size: var(--text-sm); }
 .verification-return-callout small { display: block; margin-top: 5px; color: var(--ink-2); font-size: var(--text-xs); }
@@ -2724,7 +2725,15 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 
 /* AND-304: keep responsibility and execution history readable in both panes. */
 .delivery-form select, .module-builder-setting select { min-height: 44px; max-width: 100%; padding: 8px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-md); }
-.item-builder { color: var(--muted); font-size: var(--text-xs); }
+.item-builder { flex: 0 1 auto; max-width: 100%; min-width: 0; display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 2px 7px; padding: 3px 7px; color: var(--ink); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 400; letter-spacing: normal; text-transform: none; overflow-wrap: anywhere; }
+.item-builder-label { flex: 0 0 auto; padding-right: 7px; border-right: 1px solid var(--line-dark); color: var(--muted); }
+.item-builder strong { min-width: 0; font-weight: 700; }
+.item-builder-warning { color: var(--warn-text); }
+.execution-history > summary { min-height: 44px; display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: var(--text-base); font-weight: 700; list-style: none; }
+.execution-history > summary::before { content: "▸"; }
+.execution-history[open] > summary::before { content: "▾"; }
+.execution-history > summary::-webkit-details-marker { display: none; }
+.delivery-heading:empty { display: none; }
 .delivery-panel { margin: 16px 0; padding: 16px 0; border-block: 1px solid var(--line); min-width: 0; }
 .delivery-heading, .execution-heading, .delivery-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .delivery-heading h3 { margin: 0; font-size: var(--text-base); }

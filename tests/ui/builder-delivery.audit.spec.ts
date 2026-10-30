@@ -44,6 +44,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await request.post(`/api/v1/items/${item.key}/executions`,{data:{kind:"human",accountId:member.id,scope:"Finish integration",previousId:firstExecutionId,note:"Frontend ready for integration"}});
       await page.reload();
       await expect(panel.locator(".execution-row")).toHaveCount(2);
+      await panel.locator(".execution-history > summary").click();
       await expect(panel.locator(".execution-row").first()).toContainText("已交接");
       const second=panel.locator(".execution-row").nth(1);
       await second.getByText("更新本轮执行",{exact:true}).click();
@@ -59,6 +60,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await request.post(`/api/v1/items/${item.key}/executions`,{data:{kind:"human",accountId:user.id,scope:"Handle verification feedback",previousId:secondExecutionId,followUp:true,note:"Follow up after verification"}});
       await page.reload();
       await expect(panel.locator(".execution-row")).toHaveCount(3);
+      await panel.locator(".execution-history > summary").click();
       await expect(panel.locator(".execution-row").nth(1)).toContainText("Integration complete");
       await expect(panel.locator(".execution-row").nth(1)).toContainText("本轮完成");
       await panel.screenshot({path:test.info().outputPath("builder-executions.png")});
