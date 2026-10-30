@@ -1159,13 +1159,13 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .environment-fields > p, .capture-attachment-copy p { margin: 0 0 12px; color: var(--muted); font-size: var(--text-xs); font-weight: 500; line-height: 1.5; }
 .environment-fields .field-row { row-gap: 10px; }
 .attachment-picker-block { display: flex; flex-direction: column; gap: 12px; padding: 14px; background: var(--surface-inset); border: 1px solid var(--line); border-radius: var(--radius-lg); }
-.capture-attachment-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.capture-attachment-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .capture-attachment-copy { min-width: 0; }
 .attachment-picker-block strong { display: block; margin-bottom: 4px; font-size: var(--text-xs); }
 .capture-attachment-copy p { margin-bottom: 0; }
 .file-picker { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .file-picker-actions { display: flex; justify-content: flex-end; gap: 7px; }
-.file-picker-button { white-space: nowrap; }
+.file-picker-button { flex-direction: row; white-space: nowrap; }
 .file-picker-button.disabled { opacity: 0.55; cursor: wait; }
 .file-picker-button input { position: absolute; width: 1px; height: 1px; padding: 0; opacity: 0; pointer-events: none; }
 .selected-files { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
@@ -2008,7 +2008,6 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .selected-media-lightbox img, .selected-media-lightbox video { max-height: calc(100vh - 50px - var(--safe-top) - var(--safe-bottom)); max-height: calc(100dvh - 50px - var(--safe-top) - var(--safe-bottom)); }
   .product-settings-grid, .component-settings-row, .component-add-row { grid-template-columns: 1fr; }
   .component-list-head { display: none; }
-  .capture-attachment-heading { align-items: flex-start; }
   .capture-attachment-heading .file-picker { flex: 0 0 auto; align-items: flex-end; }
   .capture-attachment-heading .file-picker-actions { flex-wrap: nowrap; }
   .diagnostic-input-heading { flex-direction: column; }
