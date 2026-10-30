@@ -640,7 +640,7 @@ describe("Dispatching the same item twice", () => {
     const first = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
     await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${mini.token}` } });
 
-    expect((await dispatchTo(app, cookie, laptop.nodeId, [mission.itemKey], true)).statusCode).toBe(201);
+    expect((await dispatchTo(app, cookie, laptop.nodeId, [mission.itemKey], true)).statusCode).toBe(409);
     const history = await app.inject({ method: "GET", url: `/api/v1/items/${mission.itemKey}/dispatches`, headers: { cookie } });
     const earlier = history.json<{ dispatches: Array<{ id: string; status: string }> }>().dispatches.find((d) => d.id === first.id);
     expect(earlier?.status).toBe("delivered");
@@ -920,7 +920,7 @@ describe("Dispatching the same item twice", () => {
     expect(again.json()).toMatchObject({ itemKeys: [mission.itemKey], round: 2, reworkItemKeys: [mission.itemKey] });
   });
 
-  it("counts rounds per item, ignoring dispatches that never reached a machine", async () => {
+  it("ignores replaced queues in rounds and protects an already delivered item in a new batch", async () => {
     const { app, cookie, mission, mini, laptop } = await setup();
     const other = await app.inject({
       method: "POST",
@@ -941,10 +941,10 @@ describe("Dispatching the same item twice", () => {
     await dispatchTo(app, cookie, laptop.nodeId, [mission.itemKey], true);
     expect((await claim(laptop.token)).json()).toMatchObject({ round: 1, reworkItemKeys: [] });
 
-    // Delivered to the laptop and gone: the next one is the second session on it,
-    // and a batch takes the highest round among its items.
-    await dispatchTo(app, cookie, mini.nodeId, [fresh, mission.itemKey], true);
-    expect((await claim(mini.token)).json()).toMatchObject({ itemKeys: [fresh, mission.itemKey], round: 2, reworkItemKeys: [] });
+    // A delivered session needs a verified stop, not a checkbox declaring it gone.
+    const refused = await dispatchTo(app, cookie, mini.nodeId, [fresh, mission.itemKey], true);
+    expect(refused.statusCode).toBe(409);
+    expect((await claim(mini.token)).statusCode).toBe(204);
   });
 });
 

@@ -1,3 +1,4 @@
+import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover } from "./builder-authority.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import {
@@ -681,7 +682,10 @@ export class DispatchStore {
           .prepare("SELECT id, item_key, status, product_id FROM work_items WHERE item_key = ?")
           .get(key) as unknown as { id: string; item_key: string; status: string; product_id: string } | undefined;
         if (!row) throw notFound(`Work item ${key}`);
-        if (row.status !== "ready") {
+        assertBuilderExecution(this.database,row.id,input.accountId);
+        const handover = latestBuilderHandover(this.database,row.id);
+        if (row.status !== "ready" && !(row.status === "in_progress" && handover?.status === "completed"
+          && handover.to_account_id === input.accountId && !handover.claimed_at)) {
           throw conflict("item_not_dispatchable", `${row.item_key} is not ready, so it cannot be dispatched.`);
         }
         return row;
@@ -694,7 +698,10 @@ export class DispatchStore {
       // told to carry on anyway. Refuse unless the person says the earlier
       // session is gone.
       const active = this.dispatchesFor(items.map((item) => item.id));
-      if (active.length > 0 && !input.force) {
+      const unsafe = active.some(entry => entry.accountId !== input.accountId || entry.status !== "queued"
+        || (this.database.connection.prepare("SELECT COUNT(*) AS count FROM dispatch_items WHERE dispatch_id=?").get(entry.dispatchId) as {count:number}).count
+          !== keys.filter(key => active.some(other => other.dispatchId === entry.dispatchId && other.itemKey === key)).length);
+      if (active.length > 0 && (!input.force || unsafe)) {
         const described = active
           .map((entry) => `${entry.itemKey} → ${entry.nodeName}（${entry.status}）`)
           .join("、");
@@ -723,9 +730,9 @@ export class DispatchStore {
       if (input.force) {
         const queuedIds = [...new Set(active.filter((entry) => entry.status === "queued").map((entry) => entry.dispatchId))];
         const cancel = this.database.connection.prepare(
-          "UPDATE dispatches SET status = 'cancelled', completed_at = ?, error = ? WHERE id = ? AND status = 'queued'",
+          "UPDATE dispatches SET status = 'cancelled', completed_at = ?, error = ? WHERE id = ? AND account_id = ? AND status = 'queued'",
         );
-        for (const queuedId of queuedIds) cancel.run(now, "已被重新派单取代", queuedId);
+        for (const queuedId of queuedIds) cancel.run(now, "已被重新派单取代", queuedId,input.accountId);
       }
       const dispatchId = randomUUID();
       const diagnosticSnapshot: DispatchDiagnosticSnapshot = {
@@ -744,6 +751,11 @@ export class DispatchStore {
           dispatchId, input.accountId, node.id, input.agentKind, input.mode,
           input.model ?? null, input.effort ?? null, repoPath, JSON.stringify(diagnosticSnapshot), now,
         );
+      for (const item of items) {
+        const handover = latestBuilderHandover(this.database,item.id);
+        if (handover?.status === "completed") this.database.connection.prepare("UPDATE builder_handovers SET resume_dispatch_id=? WHERE id=? AND claimed_at IS NULL")
+          .run(dispatchId,handover.id);
+      }
       const insertItem = this.database.connection.prepare(
         "INSERT INTO dispatch_items (dispatch_id, item_id, position) VALUES (?, ?, ?)",
       );
@@ -770,6 +782,7 @@ export class DispatchStore {
    */
   private dispatchesFor(itemIds: readonly string[]): Array<{
     dispatchId: string;
+    accountId: string;
     itemKey: string;
     nodeName: string;
     agentKind: string;
@@ -780,7 +793,7 @@ export class DispatchStore {
     const placeholders = itemIds.map(() => "?").join(", ");
     return this.database.connection
       .prepare(
-        `SELECT d.id AS dispatch_id, w.item_key, COALESCE(n.nickname, n.name) AS node_name,
+        `SELECT d.id AS dispatch_id, d.account_id, w.item_key, COALESCE(n.nickname, n.name) AS node_name,
                 d.agent_kind, d.status, d.created_at
          FROM dispatch_items di
          JOIN dispatches d ON d.id = di.dispatch_id
@@ -790,15 +803,17 @@ export class DispatchStore {
            AND NOT EXISTS (
              SELECT 1 FROM work_item_events e
              WHERE e.item_id = di.item_id AND e.created_at >= d.created_at
-               AND e.to_status IN ('in_progress', 'development_complete', 'pending_verification', 'done')
+               AND e.to_status IN ('development_complete', 'pending_verification', 'done', 'cancelled')
            )
+           AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
          ORDER BY d.created_at DESC`,
       )
       .all(...itemIds)
       .map((row) => {
-        const record = row as { dispatch_id: string; item_key: string; node_name: string; agent_kind: string; status: string; created_at: string };
+        const record = row as { dispatch_id: string; account_id: string; item_key: string; node_name: string; agent_kind: string; status: string; created_at: string };
         return {
           dispatchId: record.dispatch_id,
+          accountId: record.account_id,
           itemKey: record.item_key,
           nodeName: record.node_name,
           agentKind: record.agent_kind,
@@ -957,6 +972,7 @@ export class DispatchStore {
           `SELECT d.id, d.agent_kind, d.mode, d.model, d.effort, d.repo_path, COALESCE(n.nickname, n.name) AS node_name
            FROM dispatches d JOIN nodes n ON n.id = d.node_id
            WHERE d.node_id = ? AND d.status = 'queued'
+             AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
              AND (d.retry_not_before IS NULL OR d.retry_not_before <= ?)${agentFilter}
            ORDER BY d.created_at LIMIT 1`,
         )
@@ -1043,6 +1059,7 @@ export class DispatchStore {
         id: string; status: string; diagnostic_snapshot_json: string | null;
       } | undefined;
     if (!row) throw notFound("Dispatch");
+    assertDispatchExecution(this.database,input.dispatchId);
     const sessionUrl = input.sessionUrl?.trim();
     // The URL is shown to a person as a link, so only accept one that a click
     // can safely follow: an https address, or a bare Codex thread link.

@@ -114,6 +114,8 @@ export interface WorkItem {
   readonly builderAccountId?: string;
   readonly builderName?: string;
   readonly builderNeedsReassignment?: boolean;
+  readonly builderHandover?: { readonly id: string; readonly status: "stopping" | "blocked" | "completed";
+    readonly reason: string; readonly targetAccountId: string | null; readonly canTakeOver: boolean };
   readonly id: string;
   readonly key: string;
   readonly productId: string;

@@ -1,3 +1,4 @@
+import { assertDispatchExecution, dispatchExecutionRevoked } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import { sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
@@ -639,6 +640,7 @@ export class AgentSessionStore {
     if (this.managedBinding(sessionId)) throw conflict("managed_session_control", "Use the scoped coordinator control for a managed session.");
   }
   createForDispatch(input: { dispatchId: string; nodeId: string; sessionRef: string }): string {
+    assertDispatchExecution(this.database,input.dispatchId);
     const dispatch = this.database.connection
       .prepare("SELECT agent_kind FROM dispatches WHERE id = ? AND node_id = ?")
       .get(input.dispatchId, input.nodeId) as unknown as { agent_kind: string } | undefined;
@@ -717,7 +719,7 @@ export class AgentSessionStore {
       })),
       ...(this.attachments ? { attachmentMessages: this.attachmentMessages(sessionId) } : {}),
       ...(command ? { command: this.mapCommand(command) } : {}),
-      replyable: !this.managedBinding(sessionId) && !this.itemsCompleted(sessionId),
+      replyable: !dispatchExecutionRevoked(this.database,row.dispatch_id) && !this.managedBinding(sessionId) && !this.itemsCompleted(sessionId),
     };
   }
 
@@ -910,7 +912,7 @@ export class AgentSessionStore {
           && itemRows.length > 0 && itemRows.every((item) => item.status === "ready"),
         stoppable: row.dispatch_status === "queued"
           || Boolean(row.session_id && (row.session_status === "active" || row.session_status === "stalled")),
-        replyable: row.session_id ? !this.managedBinding(row.session_id) && !this.itemsCompleted(row.session_id) : false,
+        replyable: row.session_id ? !dispatchExecutionRevoked(this.database,row.dispatch_id) && !this.managedBinding(row.session_id) && !this.itemsCompleted(row.session_id) : false,
         settings: sessionSettings(
           row,
           Boolean(row.session_id) && !archivedAt && !(row.session_id && (this.itemsCompleted(row.session_id) || this.managedBinding(row.session_id))),
@@ -991,6 +993,9 @@ export class AgentSessionStore {
    * Mac apply each request once and report which one it is on.
    */
   requestSettings(accountId: string, sessionId: string, change: AgentRunSettings): AgentSessionSettings {
+    const binding = this.database.connection.prepare("SELECT dispatch_id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.id=? AND d.account_id=?")
+      .get(sessionId,accountId) as {dispatch_id:string}|undefined;
+    if (binding) assertDispatchExecution(this.database,binding.dispatch_id);
     this.requireManualSession(sessionId);
     const row = this.database.connection
       .prepare(
@@ -1074,6 +1079,9 @@ export class AgentSessionStore {
   }
 
   enqueue(accountId: string, sessionId: string, textValue: string, attachmentIds: readonly string[] = [], managedControl = false): AgentSessionCommand {
+    const binding = this.database.connection.prepare("SELECT dispatch_id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.id=? AND d.account_id=?")
+      .get(sessionId,accountId) as {dispatch_id:string}|undefined;
+    if (binding) assertDispatchExecution(this.database,binding.dispatch_id);
     if (!managedControl) this.requireManualSession(sessionId);
     const text = textValue.trim();
     if (!text && attachmentIds.length === 0) throw invalidInput("text or attachments are required.");
@@ -1373,6 +1381,7 @@ export class AgentSessionStore {
     const rows = [...managedRows, ...ordinaryRows];
     return rows.map((row) => {
       const managed = this.managedBinding(row.id);
+      const revoked = dispatchExecutionRevoked(this.database,row.dispatch_id);
       const pending = this.pendingCommand(row.id);
       const command = pending?.kind === "interrupt" ? pending : (managed && (managed.stopRequested || !["running", "waiting"].includes(managed.state))) ? undefined : pending;
       const autoArchived = row.archive_reason === "auto";
@@ -1390,13 +1399,13 @@ export class AgentSessionStore {
         // Node uses this field for ordinary claim-next capacity. Managed
         // ownership remains in managedExecution, including unknown/stop states.
         occupiesExecutionSlot: !managed && !row.archived_at && (row.status === "active" || row.status === "stalled"),
-        ...(command && command.status !== "delivery_unknown" ? { command: this.mapCommand(command) } : {}),
+        ...(command && (!revoked || command.kind === "interrupt") && command.status !== "delivery_unknown" ? { command: this.mapCommand(command) } : {}),
         ...(row.archive_source === "missiongo" && row.archived_at && row.agent_kind === "codex"
           && !row.source_archived_at && !row.source_archive_error
           ? { archiveInSource: true as const }
           : {}),
-        ...(row.source_restore_pending ? { restoreInSource: true as const } : {}),
-        ...(row.desired_settings_json && (row.settings_revision ?? 0) > 0
+        ...(!revoked && row.source_restore_pending ? { restoreInSource: true as const } : {}),
+        ...(!revoked && row.desired_settings_json && (row.settings_revision ?? 0) > 0
           ? {
               desiredSettings: {
                 ...(JSON.parse(row.desired_settings_json) as AgentRunSettings),
@@ -1816,6 +1825,7 @@ export class AgentSessionStore {
         // lost.
         const reaped = current.status === "failed" && current.error === COMMAND_DELIVERY_TIMEOUT_ERROR;
         if (input.commandStatus === "delivering") {
+          if (current.kind !== "interrupt") assertDispatchExecution(this.database,session.dispatch_id);
           const managed = this.managedBinding(input.sessionId);
           if (managed && (managed.stopRequested || managed.state === "unknown" || managed.state === "terminal")) {
             throw conflict("execution_stopped", "Managed input permission is no longer active.");
