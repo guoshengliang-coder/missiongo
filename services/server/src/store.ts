@@ -1,4 +1,5 @@
 import { completionPayload, normalizeCompletion, sameCompletion } from "./completion.js";
+import { enqueueVerificationNotification } from "./dingtalk-notifications.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 
@@ -886,6 +887,7 @@ export class MissionGoStore {
 
   private proposerKeySql(): string {
     return `CASE
+      WHEN proposer.actor_kind IN ('human','agent') AND proposer.account_id IS NOT NULL AND COALESCE(json_extract(proposer.payload_json, '$.source'),'') <> 'android_sdk' THEN json_array('human', proposer.account_id)
       WHEN proposer.actor_kind = 'agent' THEN json_array('agent', COALESCE(proposer.client_id, ''), COALESCE(json_extract(proposer.payload_json, '$.agentName'), ''))
       WHEN json_extract(proposer.payload_json, '$.source') = 'android_sdk' THEN json_array('sdk', COALESCE((SELECT access_token_id FROM feedback_drafts WHERE id = json_extract(proposer.payload_json, '$.feedbackDraftId')), ''))
       WHEN proposer.actor_kind = 'human' AND proposer.account_id IS NOT NULL THEN json_array('human', proposer.account_id)
@@ -1870,7 +1872,7 @@ export class MissionGoStore {
         : conflict("invalid_state_transition", decision.message);
     }
     this.database.connection.prepare("UPDATE work_items SET status = ?, updated_at = ? WHERE id = ?").run(to, now, current.id);
-    this.insertEvent(
+    const eventId = this.insertEvent(
       current.id,
       "status_changed",
       actor,
@@ -1880,6 +1882,11 @@ export class MissionGoStore {
       now,
       attribution,
     );
+    if (to === "pending_verification") {
+      const creator = this.creatorOf(current.id).createdBy;
+      enqueueVerificationNotification(this.database,eventId,current.id,current.product_id,
+        creator && creator.kind !== "sdk" ? creator.accountId : undefined,now);
+    }
     // Every status write passes here, so this is the one place a hand-off can
     // notice that its last open item just finished (AND-129).
     if (to === "done" || to === "cancelled") autoArchiveForItem(this.database, current.id, now);

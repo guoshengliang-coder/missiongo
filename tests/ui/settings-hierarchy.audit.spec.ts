@@ -15,7 +15,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
     test("groups primary navigation, drills into Agent and product modules and keeps their scopes clear", async ({ page }) => {
       await page.goto(`/settings?product=${fixture.productId}`);
       const nav = page.getByRole("navigation", { name: "设置", exact: true });
-      await expect(nav.getByRole("button")).toHaveText(["资料与安全", "显示", "Agent 配置", "产品配置", "账号与权限", "产品管理员", "模型"]);
+      await expect(nav.getByRole("button")).toHaveText(["资料与安全", "显示", "Agent 配置", "产品配置", "账号与权限", "产品管理员", "模型", "钉钉集成"]);
       await nav.getByRole("button", { name: "Agent 配置", exact: true }).click();
       await expect(page.getByRole("heading", { level: 1 })).toHaveText("Agent 配置");
       await expect(page.locator(".settings-hub-row strong")).toHaveText(["连接与授权", "执行设备", "派单默认值"]);
@@ -29,7 +29,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await nav.getByRole("button", { name: "产品配置", exact: true }).click();
       await expect(page.getByRole("combobox", { name: "当前产品", exact: true })).toHaveCount(0);
       await page.locator(`.settings-product-card[data-product-id="${fixture.productId}"]`).click();
-      await expect(page.locator(".settings-hub-row strong")).toHaveText(["基本资料", "模块管理", "产品管理员", "Builder 分配", "发布配置", "SDK 接入"]);
+      await expect(page.locator(".settings-hub-row strong")).toHaveText(["基本资料", "模块管理", "产品管理员", "Builder 分配", "发布配置", "通知", "SDK 接入"]);
       await expect(page.locator(".settings-page-title")).toContainText("产品概览");
       await expect(page.getByRole("button", { name: "添加产品", exact: true })).toHaveCount(0);
       await page.screenshot({ path: test.info().outputPath("product-overview.png") });

@@ -7,6 +7,7 @@ import { itemFilterKey, type ItemFilters } from "@missiongo/domain";
 import { ListFilters } from "./list-filters";
 import { pickItemFilters } from "./item-filters";
 import { ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
+import { ItemDingTalkNotifications } from "./dingtalk-settings";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { Modal } from "./modal";
 import { StatusCheckButton, StatusCheckPanel } from "./status-check-panel";
@@ -2145,6 +2146,7 @@ function ItemRow({
           <strong>{contextPrimary}</strong>
           {shortCreator && <i className="sep">·</i>}
           {shortCreator && <span className="item-creator" title={creator}>{shortCreator}</span>}
+          {item.createdBy?.kind === "agent" && item.createdBy.name && <small className="item-assisted-source">{t("aiAssistedSubmission")}</small>}
           <i className="sep">·</i>
           <span className="item-stamp">{formatTime(item.updatedAt)}</span>
         </span>
@@ -3019,6 +3021,7 @@ function DetailPane({
                   <span>
                     {typeLabel(item.type)} · {priorityLabel(item.priority)}
                     {detailCreator && <> · {t("createdBy", { name: detailCreator })}</>}
+                    {item.createdBy?.kind === "agent" && item.createdBy.name && <> · {t("aiAssistedSubmission")}{item.createdBy.clientName ? ` · ${item.createdBy.clientName}` : ""}</>}
                   </span>
                   {deliveryQuery.data && <BuilderBadge name={deliveryQuery.data.builderName} needsReassignment={deliveryQuery.data.builderNeedsReassignment} />}
                 </p>
@@ -3027,6 +3030,7 @@ function DetailPane({
             </div>
             <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} />} />
             <ItemRelations item={item} onOpenItem={onOpenItem} />
+            <ItemDingTalkNotifications key={`dingtalk:${item.key}`} itemKey={item.key} pending={item.status==="pending_verification"} />
             {item.verificationReturn && <VerificationReturnCallout info={item.verificationReturn} />}
             {/* Read the item, then the evidence a person went and looked at --
                 screenshots, documents, logs. The captured environment is the

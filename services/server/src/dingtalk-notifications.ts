@@ -1,0 +1,319 @@
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
+import type { DingTalkSettings, DingTalkSettingsInput, DingTalkBinding, DingTalkBindingInput, DingTalkImportRow, DingTalkImportPreview, DingTalkNotification, DingTalkProjectSettings } from "@missiongo/domain";
+import type { MissionGoStore } from "./store.js";
+import type { MissionGoDatabase } from "./storage/database.js";
+import type { AccountSnapshot, AccountStore } from "./accounts-store.js";
+import { conflict, invalidInput, notFound, MissionGoError } from "./errors.js";
+
+interface ConfigRow { corp_id: string; client_id: string; agent_id: string; encrypted_secret: string; revision: number }
+interface JobRow {
+  id: string; event_id: string | null; item_id: string | null; account_id: string | null;
+  kind: "verification" | "test"; status: DingTalkNotification["status"]; reason: string;
+  attempts: number; task_id: string | null; recipient: string | null; config_revision: number | null;
+  binding_revision: string | null;
+  created_at: string; updated_at: string;
+}
+class ProviderError extends Error {
+  constructor(readonly code: number) { super(`钉钉接口返回错误（${code}），请检查应用权限、凭据和接收人范围。`); }
+}
+const now = () => new Date().toISOString();
+const after = (ms: number) => new Date(Date.now() + ms).toISOString();
+function text(value: unknown, label: string, max = 100, required = true): string {
+  if (typeof value !== "string" || value.trim().length > max || required && !value.trim() || Array.from(value).some(char=>char.charCodeAt(0)<32)) throw invalidInput(`${label} 无效。`);
+  return value.trim();
+}
+function identifier(value: unknown, label: string): string {
+  const result = text(value,label);
+  // DingTalk accepts comma-separated recipients. A binding must name exactly one.
+  if (/[\s,;]/u.test(result)) throw invalidInput(`${label} 只能填写一个标识，不能包含空白、逗号或分号。`);
+  return result;
+}
+
+/** Called inside the status transaction, never from HTTP hooks or a history scan. */
+export function enqueueVerificationNotification(database: MissionGoDatabase, eventId: string, itemId: string, productId: string, accountId: string | undefined, at: string): void {
+  const enabled = database.connection.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(productId) as {enabled:number} | undefined;
+  database.connection.prepare(`INSERT INTO dingtalk_notifications
+    (id,event_id,item_id,account_id,kind,status,reason,next_at,created_at,updated_at)
+    VALUES (?,?,?,?,'verification',?,?,?,?,?)`).run(randomUUID(),eventId,itemId,accountId ?? null,
+      enabled?.enabled ? "queued" : "skipped",enabled?.enabled ? "" : "项目未开启通知",at,at,at);
+}
+
+/** One-way work notices. Credentials and provider response bodies never enter logs. */
+export class DingTalkNotifications {
+  private readonly db;
+  private readonly key: Buffer | undefined;
+  private token: { value: string; expiresAt: number; revision: number } | undefined;
+  private tokenRequest: {revision:number;promise:Promise<string>} | undefined;
+  private running: Promise<void> | undefined;
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private closed = false;
+  constructor(private readonly store: MissionGoStore, private readonly accounts: AccountStore, secret: string | undefined, private readonly origin: string | undefined, private readonly fetchImpl: typeof fetch = fetch) {
+    this.db = store.database.connection;
+    this.key = secret ? createHash("sha256").update("missiongo-dingtalk-v1\0").update(secret).digest() : undefined;
+  }
+  private config(): ConfigRow | undefined { return this.db.prepare("SELECT * FROM dingtalk_settings WHERE id=1").get() as unknown as ConfigRow | undefined; }
+  settings(): DingTalkSettings {
+    const row = this.config();
+    return {corpId:row?.corp_id ?? "",clientId:row?.client_id ?? "",agentId:row?.agent_id ?? "",configured:Boolean(row && this.key),revision:row?.revision ?? 0};
+  }
+  private audit(actor: string, action: string, subject: string, details: unknown = {}) {
+    this.db.prepare("INSERT INTO dingtalk_audit(id,actor_account_id,action,subject,details_json,created_at) VALUES(?,?,?,?,?,?)")
+      .run(randomUUID(),actor,action,subject,JSON.stringify(details),now());
+  }
+  saveSettings(input: DingTalkSettingsInput, actor: string): DingTalkSettings {
+    if (!this.key) throw invalidInput("请先为服务器配置持久化会话密钥，再保存钉钉凭据。");
+    const corpId=identifier(input.corpId,"组织 ID"),clientId=identifier(input.clientId,"Client ID"),agentId=identifier(input.agentId,"Agent ID");
+    if (!/^\d+$/.test(agentId)) throw invalidInput("Agent ID 必须为数字。");
+    return this.store.database.transaction(() => {
+      const previous=this.config();
+      if (input.expectedRevision !== (previous?.revision ?? 0)) throw conflict("dingtalk_settings_changed","配置已被修改，请刷新后重试。");
+      if (previous && previous.corp_id !== corpId && this.db.prepare("SELECT 1 FROM dingtalk_bindings LIMIT 1").get()) throw conflict("dingtalk_organization_bound","更换组织前，请先解除现有人员绑定。");
+      let encrypted=previous?.encrypted_secret;
+      if (input.clientSecret !== undefined) {
+        const secret=text(input.clientSecret,"Client Secret",512);
+        const nonce=randomBytes(12),cipher=createCipheriv("aes-256-gcm",this.key!,nonce);
+        const ciphertext=Buffer.concat([cipher.update(secret,"utf8"),cipher.final()]);
+        encrypted=Buffer.concat([nonce,cipher.getAuthTag(),ciphertext]).toString("base64");
+      } else if (!previous || previous.corp_id !== corpId || previous.client_id !== clientId) throw invalidInput("首次配置或更换组织、应用时必须填写 Client Secret。");
+      this.db.prepare(`INSERT INTO dingtalk_settings(id,corp_id,client_id,agent_id,encrypted_secret,revision,updated_at) VALUES(1,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET corp_id=excluded.corp_id,client_id=excluded.client_id,agent_id=excluded.agent_id,encrypted_secret=excluded.encrypted_secret,revision=excluded.revision,updated_at=excluded.updated_at`)
+        .run(corpId,clientId,agentId,encrypted!, (previous?.revision ?? 0)+1,now());
+      this.token=undefined; this.audit(actor,"configure","integration");
+      return this.settings();
+    });
+  }
+  bindings(): DingTalkBinding[] {
+    return (this.db.prepare("SELECT account_id AS accountId,user_id AS userId,name,department,revision FROM dingtalk_bindings ORDER BY account_id").all() as unknown as DingTalkBinding[]);
+  }
+  private validateBinding(input: DingTalkBindingInput): DingTalkBindingInput {
+    if (!input || typeof input!=="object" || Array.isArray(input)) throw invalidInput("绑定格式无效。");
+    return {userId:identifier(input.userId,"钉钉企业用户 ID"),name:text(input.name,"姓名",100,false),department:text(input.department,"部门",200,false)};
+  }
+  saveBinding(accountId: string, input: DingTalkBindingInput | null, expectedRevision: string | null, actor: string): DingTalkBinding[] {
+    return this.store.database.transaction(() => {
+      this.accounts.getAccount(accountId);
+      const existing=this.bindings().find(b=>b.accountId===accountId);
+      if ((existing?.revision ?? null) !== expectedRevision) throw conflict("dingtalk_binding_changed","绑定已被修改，请刷新后重试。");
+      if (input === null) {
+        this.db.prepare("DELETE FROM dingtalk_bindings WHERE account_id=?").run(accountId);
+        this.audit(actor,"unbind",accountId,{previous:existing});
+      } else {
+        const config=this.config(); if (!config) throw invalidInput("请先保存钉钉组织和应用配置。");
+        const value=this.validateBinding(input);
+        if (this.db.prepare("SELECT 1 FROM dingtalk_bindings WHERE corp_id=? AND user_id=? AND account_id<>?").get(config.corp_id,value.userId,accountId)) throw conflict("dingtalk_user_already_bound","该钉钉用户已绑定其他账号。");
+        this.db.prepare(`INSERT INTO dingtalk_bindings(account_id,corp_id,user_id,name,department,revision,updated_at) VALUES(?,?,?,?,?,?,?)
+          ON CONFLICT(account_id) DO UPDATE SET corp_id=excluded.corp_id,user_id=excluded.user_id,name=excluded.name,department=excluded.department,revision=excluded.revision,updated_at=excluded.updated_at`)
+          .run(accountId,config.corp_id,value.userId,value.name,value.department,randomUUID(),now());
+        this.audit(actor,"bind",accountId,{previous:existing,current:value});
+      }
+      return this.bindings();
+    });
+  }
+  preview(rows: DingTalkImportRow[]): DingTalkImportPreview {
+    if (!Array.isArray(rows) || !rows.length || rows.length > 500) throw invalidInput("每次导入 1 至 500 行。");
+    const accounts=this.accounts.listAccounts(),bindings=this.bindings(),seenEmails=new Set<string>(),seenUsers=new Set<string>();
+    const result: DingTalkImportPreview["rows"] = rows.map(row=>{
+      const email=text(row.email,"邮箱",254).toLowerCase(),value=this.validateBinding(row);
+      const account=accounts.find(a=>a.email.toLowerCase()===email);
+      let issue= !account ? "MissionGo 账号不存在" : account.disabledAt ? "账号已停用" : undefined;
+      if (seenEmails.has(email)) issue="邮箱重复";
+      if (seenUsers.has(value.userId)) issue="钉钉用户 ID 重复";
+      const owner=bindings.find(b=>b.userId===value.userId);
+      if (owner && owner.accountId !== account?.id) issue="钉钉用户已绑定其他账号";
+      seenEmails.add(email);seenUsers.add(value.userId);
+      return {email,...value,...(account?{accountId:account.id}:{}),...(issue?{issue}:{})};
+    });
+    return {rows:result,fingerprint:createHash("sha256").update(JSON.stringify({rows:result,bindings,revision:this.settings().revision})).digest("hex")};
+  }
+  importBindings(rows: DingTalkImportRow[], fingerprint: string, actor: string): DingTalkBinding[] {
+    return this.store.database.transaction(()=>{
+      const preview=this.preview(rows);
+      if (preview.fingerprint !== fingerprint) throw conflict("dingtalk_import_changed","账号或绑定已变化，请重新预览导入。");
+      if (preview.rows.some(row=>row.issue)) throw invalidInput("请先修正预览中的所有问题。");
+      for (const row of preview.rows) this.saveBinding(row.accountId!,row,this.bindings().find(b=>b.accountId===row.accountId)?.revision ?? null,actor);
+      return this.bindings();
+    });
+  }
+  project(productId: string, account: AccountSnapshot): DingTalkProjectSettings {
+    const product=this.store.getProduct(productId);
+    if (!this.accounts.allows(account,productId,"view")) throw notFound("Product");
+    const row=this.db.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(productId) as {enabled:number}|undefined;
+    return {enabled:Boolean(row?.enabled),canConfigure:account.role==="admin" || this.accounts.isProjectAdministrator(account,productId) || product.createdByAccountId===account.id,integrationConfigured:this.settings().configured};
+  }
+  saveProject(productId: string, account: AccountSnapshot, enabled: boolean, expectedEnabled: boolean): DingTalkProjectSettings {
+    return this.store.database.transaction(()=>{
+      const current=this.project(productId,account);
+      if (!current.canConfigure) throw new MissionGoError("dingtalk_configuration_required","需要项目管理权限。",403);
+      if (current.enabled !== expectedEnabled) throw conflict("dingtalk_project_changed","项目通知开关已变化，请刷新后重试。");
+      this.db.prepare("INSERT INTO dingtalk_projects(product_id,enabled,updated_at) VALUES(?,?,?) ON CONFLICT(product_id) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at").run(productId,enabled?1:0,now());
+      this.audit(account.id,"project_switch",productId,{enabled});return this.project(productId,account);
+    });
+  }
+  private snapshot(row: JobRow): DingTalkNotification { return {id:row.id,kind:row.kind,status:row.status,reason:row.reason,attempts:row.attempts,createdAt:row.created_at,updatedAt:row.updated_at}; }
+  list(itemId: string): DingTalkNotification[] {
+    return (this.db.prepare("SELECT * FROM dingtalk_notifications WHERE item_id=? ORDER BY created_at DESC,rowid DESC LIMIT 100").all(itemId) as unknown as JobRow[]).map(row=>this.snapshot(row));
+  }
+  tests(): Record<string,DingTalkNotification> {
+    const rows=this.db.prepare(`SELECT n.* FROM dingtalk_notifications n JOIN dingtalk_bindings b ON b.account_id=n.account_id
+      WHERE n.kind='test' AND n.binding_revision=b.revision AND n.config_revision=(SELECT revision FROM dingtalk_settings WHERE id=1)
+      ORDER BY n.created_at,n.rowid`).all() as unknown as JobRow[];
+    return Object.fromEntries(rows.filter(row=>row.account_id).map(row=>[row.account_id!,this.snapshot(row)]));
+  }
+  test(accountId: string, actor: string): DingTalkNotification {
+    if (!this.settings().configured) throw invalidInput("请先配置钉钉应用。");
+    if (!this.accounts.findActive(accountId) || !this.bindings().some(b=>b.accountId===accountId)) throw invalidInput("请选择已绑定、未停用的账号。");
+    if (this.db.prepare("SELECT 1 FROM dingtalk_notifications WHERE kind='test' AND account_id=? AND (created_at>? OR status IN('queued','sending','accepted'))").get(accountId,after(-30_000))) throw new MissionGoError("dingtalk_test_limited","请等待上次测试完成，至少间隔 30 秒。",429);
+    const id=randomUUID(),at=now();
+    const binding=this.bindings().find(b=>b.accountId===accountId)!;
+    this.db.prepare("INSERT INTO dingtalk_notifications(id,account_id,kind,status,next_at,created_at,updated_at,recipient,config_revision,binding_revision) VALUES(?,?,'test','queued',?,?,?,?,?,?)")
+      .run(id,accountId,at,at,at,binding.userId,this.settings().revision,binding.revision);
+    this.audit(actor,"test",accountId);return this.snapshot(this.job(id)!);
+  }
+  retry(itemKey: string, id: string, actor: string): void {
+    const item=this.store.getWorkItem(itemKey),job=this.job(id);
+    if (!job || job.item_id!==item.id) throw notFound("Notification");
+    if (!["failed","skipped","uncertain"].includes(job.status) || !this.current(job)) throw conflict("dingtalk_retry_unavailable","只能补发当前待验证轮次中失败、跳过或结果不明的通知。");
+    this.db.prepare("UPDATE dingtalk_notifications SET status='queued',reason='',task_id=NULL,next_at=?,updated_at=? WHERE id=?").run(now(),now(),id);
+    this.audit(actor,"retry",id);
+  }
+  private job(id: string) { return this.db.prepare("SELECT * FROM dingtalk_notifications WHERE id=?").get(id) as unknown as JobRow | undefined; }
+  private current(job: JobRow): boolean {
+    if (job.kind==="test") return true;
+    const latest=this.db.prepare(`SELECT e.id,w.status FROM work_item_events e JOIN work_items w ON w.id=e.item_id
+      WHERE e.item_id=? AND e.event_type='status_changed' AND e.to_status='pending_verification' AND e.history_source_key IS NULL ORDER BY e.timeline_seq DESC LIMIT 1`).get(job.item_id!) as {id:string;status:string}|undefined;
+    return latest?.id===job.event_id && latest.status==="pending_verification";
+  }
+  private eligibility(job: JobRow): string | undefined {
+    if (!job.account_id) return "未记录具体提需者账号";
+    const account=this.accounts.findActive(job.account_id);if (!account) return "提需者账号不存在或已停用";
+    if (job.item_id) {
+      const item=this.db.prepare("SELECT product_id FROM work_items WHERE id=?").get(job.item_id) as {product_id:string}|undefined;
+      if (!item || !this.accounts.allows(account,item.product_id,"view")) return "提需者没有项目查看权限";
+      if (!(this.db.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(item.product_id) as {enabled:number}|undefined)?.enabled) return "项目未开启通知";
+      if (!this.current(job)) return "条目已离开本轮待验证";
+    }
+    if (!this.settings().configured) return "钉钉应用未配置";
+    if (!this.origin && job.kind==="verification") return "服务器未配置公开访问地址";
+    if (!this.bindings().some(b=>b.accountId===job.account_id)) return "提需者未绑定钉钉";
+    if(job.kind==="test" && (job.binding_revision!==this.bindings().find(b=>b.accountId===job.account_id)?.revision || job.config_revision!==this.settings().revision)) return "绑定或应用配置已变化，请重新测试";
+    return undefined;
+  }
+  private update(id: string, status: JobRow["status"], reason: string, delay = 0): void {
+    this.db.prepare("UPDATE dingtalk_notifications SET status=?,reason=?,next_at=?,lease_until=NULL,updated_at=? WHERE id=?").run(status,reason,after(delay),now(),id);
+  }
+  private decrypt(config: ConfigRow): string {
+    try {
+      const bytes=Buffer.from(config.encrypted_secret,"base64"),decipher=createDecipheriv("aes-256-gcm",this.key!,bytes.subarray(0,12));
+      decipher.setAuthTag(bytes.subarray(12,28));return Buffer.concat([decipher.update(bytes.subarray(28)),decipher.final()]).toString("utf8");
+    } catch { throw invalidInput("无法解密钉钉凭据，请管理员重新保存密钥。"); }
+  }
+  private async json(url: string, init?: RequestInit): Promise<Record<string,unknown>> {
+    const response=await this.fetchImpl(url,{...init,redirect:"error",signal:AbortSignal.timeout(10_000)});
+    if (!response.ok) throw new Error("钉钉服务暂时不可用");
+    const body=await response.json() as Record<string,unknown>;
+    if (typeof body.errcode==="number" && body.errcode!==0) throw new ProviderError(body.errcode);
+    return body;
+  }
+  private async accessToken(config: ConfigRow): Promise<string> {
+    if (this.token?.revision===config.revision && this.token.expiresAt>Date.now()) return this.token.value;
+    if (!this.tokenRequest || this.tokenRequest.revision!==config.revision) {
+      const url=new URL("https://oapi.dingtalk.com/gettoken");url.searchParams.set("appkey",config.client_id);url.searchParams.set("appsecret",this.decrypt(config));
+      const request={revision:config.revision,promise:Promise.resolve("")};
+      request.promise=this.json(url.href).then(body=>{
+        if (typeof body.access_token!=="string" || typeof body.expires_in!=="number" || body.expires_in<=0) throw new Error("钉钉凭据响应无效");
+        if(this.config()?.revision===config.revision)this.token={value:body.access_token,expiresAt:Date.now()+Math.max(0,body.expires_in-60)*1000,revision:config.revision};
+        return body.access_token;
+      }).finally(()=>{if(this.tokenRequest===request)this.tokenRequest=undefined;});
+      this.tokenRequest=request;
+    }
+    const token=await this.tokenRequest.promise;
+    if (this.config()?.revision!==config.revision) throw new Error("发送期间配置已变化");
+    return token;
+  }
+  async checkConnection(): Promise<void> {
+    const config=this.config();if(!config)throw invalidInput("请先保存钉钉配置。");
+    try {await this.accessToken(config);} catch {throw invalidInput("应用凭据验证失败，请检查配置和网络。");}
+  }
+  private async api(path: string, token: string, body: unknown) {
+    const url=new URL(`https://oapi.dingtalk.com/topapi/message/corpconversation/${path}`);url.searchParams.set("access_token",token);
+    try { return await this.json(url.href,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}); }
+    catch(error) { if (error instanceof ProviderError && [40014,42001,40001,88].includes(error.code)) this.token=undefined;throw error; }
+  }
+  private message(job: JobRow): Record<string,unknown> {
+    if (job.kind==="test") return {msgtype:"text",text:{content:`这是一条账号绑定测试通知。收到后无需回复。\n测试编号：${job.id}`}};
+    const item=this.db.prepare("SELECT item_key,title,product_id FROM work_items WHERE id=?").get(job.item_id!) as {item_key:string;title:string;product_id:string};
+    const event=this.db.prepare("SELECT payload_json,timeline_seq,from_status FROM work_item_events WHERE id=?").get(job.event_id!) as {payload_json:string;timeline_seq:number;from_status:string};
+    const payload=JSON.parse(event.payload_json) as Record<string,unknown>;
+    const published=payload.reason==="release_verified" && typeof payload.receiptDigest==="string" && Array.isArray(payload.releases) && payload.releases.length>0;
+    const title=published?"你提出的条目已发布，请验证":"你提出的条目已进入待验证";
+    const previous=this.db.prepare(`SELECT payload_json FROM work_item_events WHERE item_id=? AND event_type='status_changed'
+      AND to_status='development_complete' AND timeline_seq<? AND history_source_key IS NULL ORDER BY timeline_seq DESC LIMIT 1`).get(job.item_id!,event.timeline_seq) as {payload_json:string}|undefined;
+    const completion=previous && event.from_status==="development_complete"?JSON.parse(previous.payload_json) as Record<string,unknown>:{};
+    const lines=[`${item.item_key} · ${item.title}`,`项目：${this.store.getProduct(item.product_id).name}`];
+    if (typeof completion.note==="string") lines.push(`处理结果：${completion.note.slice(0,700)}`);
+    if (published) for (const release of payload.releases as Array<{artifact?:unknown;version?:unknown}>) {
+      if (typeof release.artifact==="string" && typeof release.version==="string") lines.push(`验证版本：${release.artifact} ${release.version}`);
+    }
+    lines.push("验证说明：请在条目中查看处理记录，确认验证环境后进行验证。",`交付时间：${job.created_at}`,`通知编号：${job.id}`);
+    const url=new URL(this.origin!);url.searchParams.set("product",item.product_id);url.searchParams.set("item",item.item_key);
+    return {msgtype:"action_card",action_card:{title,markdown:`${title}\n\n${lines.map(line=>line.replace(/[\\`*_{}[\]<>#!|]/g," ")).join("\n\n")}`,single_title:"查看条目并验证",single_url:url.href}};
+  }
+  private async send(job: JobRow): Promise<void> {
+    const claimed=this.db.prepare(`UPDATE dingtalk_notifications SET status='sending',attempts=attempts+1,lease_until=?,updated_at=?
+      WHERE id=? AND status='queued'`).run(after(60_000),now(),job.id);
+    if(!claimed.changes)return;
+    job=this.job(job.id)!;
+    const reason=this.eligibility(job);if(reason){this.update(job.id,"skipped",reason);return;}
+    const config=this.config()!;
+    let token: string;
+    try {token=await this.accessToken(config);} catch {this.fail(job,"无法获取应用访问凭证，请检查配置或稍后重试。");return;}
+    // All network waits finish before the last permission / binding check.
+    const changed=this.eligibility(job);if(changed){this.update(job.id,"skipped",changed);return;}
+    if (this.config()?.revision!==config.revision) {this.fail(job,"应用配置已变化，请重试。");return;}
+    const binding=this.bindings().find(b=>b.accountId===job.account_id)!;
+    const message=this.message(job);
+    this.db.prepare("UPDATE dingtalk_notifications SET recipient=?,config_revision=?,binding_revision=? WHERE id=?").run(binding.userId,config.revision,binding.revision,job.id);
+    try {
+      const body=await this.api("asyncsend_v2",token,{agent_id:config.agent_id,userid_list:binding.userId,to_all_user:false,msg:message});
+      if (typeof body.task_id!=="number" && typeof body.task_id!=="string") throw new Error("missing task");
+      this.db.prepare("UPDATE dingtalk_notifications SET status='accepted',task_id=?,reason='钉钉已受理，等待发送结果',next_at=?,lease_until=NULL,updated_at=? WHERE id=? AND status='sending' AND attempts=?").run(String(body.task_id),after(2000),now(),job.id,job.attempts);
+    } catch(error) {
+      if(error instanceof ProviderError) this.fail(job,error.message);
+      else this.db.prepare("UPDATE dingtalk_notifications SET status='uncertain',reason='发送结果不明，请先核实接收情况再手动补发，以免重复通知。',lease_until=NULL,updated_at=? WHERE id=? AND status='sending' AND attempts=?").run(now(),job.id,job.attempts);
+    }
+  }
+  private fail(job: JobRow, reason: string): void {
+    const attempts=job.attempts;
+    this.db.prepare("UPDATE dingtalk_notifications SET status=?,reason=?,task_id=NULL,next_at=?,lease_until=NULL,updated_at=? WHERE id=? AND attempts=? AND status IN('sending','accepted')")
+      .run(attempts<3?"queued":"failed",reason,after(30_000*attempts),now(),job.id,attempts);
+  }
+  private async poll(job: JobRow): Promise<void> {
+    const config=this.config();
+    if (!config || config.revision!==job.config_revision) {this.update(job.id,"uncertain","应用配置已变化，无法核实此前发送结果。");return;}
+    if (Date.now()-Date.parse(job.updated_at)>23*60*60_000) {this.update(job.id,"uncertain","发送结果查询已超时，请人工核实接收情况。");return;}
+    // Claim a poll lease too, so overlapping server processes do not race updates.
+    const lock=this.db.prepare("UPDATE dingtalk_notifications SET lease_until=? WHERE id=? AND status='accepted' AND (lease_until IS NULL OR lease_until<?)").run(after(60_000),job.id,now());
+    if(!lock.changes)return;
+    try {
+      const token=await this.accessToken(config);
+      const body=await this.api("getsendresult",token,{agent_id:config.agent_id,task_id:job.task_id});
+      const result=body.send_result as Record<string,unknown>|undefined;
+      const has=(key:string)=>Array.isArray(result?.[key]) && (result![key] as unknown[]).includes(job.recipient);
+      const forbidden=Array.isArray(result?.forbidden_list) && result.forbidden_list.some(value=>value && typeof value==="object" && (value as {userid?:unknown}).userid===job.recipient);
+      if (has("failed_user_id_list") || has("invalid_user_id_list") || has("forbidden_user_id_list") || forbidden) this.fail(job,"钉钉未发送成功，请检查用户 ID、应用可使用范围或发送频率。");
+      else if(has("read_user_id_list") || has("unread_user_id_list")) this.update(job.id,"sent","钉钉确认发送成功；不代表已读或验收通过。");
+      else this.db.prepare("UPDATE dingtalk_notifications SET next_at=?,lease_until=NULL WHERE id=?").run(after(15_000),job.id);
+    } catch { this.db.prepare("UPDATE dingtalk_notifications SET next_at=?,lease_until=NULL WHERE id=?").run(after(30_000),job.id); }
+  }
+  drain(): Promise<void> {
+    if (this.running) return this.running;
+    this.running=this.process().finally(()=>{this.running=undefined;});return this.running;
+  }
+  private async process(): Promise<void> {
+    this.db.prepare("UPDATE dingtalk_notifications SET status='uncertain',reason='发送进程中断，结果不明，请人工核实后补发。',lease_until=NULL,updated_at=? WHERE status='sending' AND lease_until<?").run(now(),now());
+    const jobs=this.db.prepare("SELECT * FROM dingtalk_notifications WHERE status IN('queued','accepted') AND next_at<=? AND (lease_until IS NULL OR lease_until<?) ORDER BY next_at LIMIT 20").all(now(),now()) as unknown as JobRow[];
+    for(const job of jobs){if(this.closed)break;try{if(job.status==="accepted")await this.poll(job);else await this.send(job);}catch{this.update(job.id,"failed","通知处理失败，请检查配置后重试。");}}
+  }
+  start(): void { this.timer=setInterval(()=>{void this.drain().catch(()=>{});},2000);this.timer.unref();void this.drain().catch(()=>{}); }
+  async close(): Promise<void> {this.closed=true;if(this.timer)clearInterval(this.timer);await this.running;}
+}

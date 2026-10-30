@@ -121,7 +121,7 @@ describe("AND-308 combined list filters", () => {
     ).toBe(3);
   });
 
-  it("keeps human proposers separate from Agent authorizing accounts and exposes only the product's sources", async () => {
+  it("groups AI-assisted submissions under their proposer account and keeps unowned sources distinct", async () => {
     const f = await fixture();
     const human = f.create("task", "normal");
     const agent = f.store.createDerivedWorkItem({
@@ -135,6 +135,7 @@ describe("AND-308 combined list filters", () => {
       attribution: { accountId: "admin", clientId: "synthetic-client" },
       idempotencyKey: "synthetic-proposer-agent",
     });
+    const unowned=f.store.createDerivedWorkItem({productId:f.product.id,type:"task",priority:"normal",status:"inbox",title:"Unowned AI proposal",description:"x",agentName:"Synthetic Agent",idempotencyKey:"synthetic-proposer-unowned"});
     f.store.createWorkItem({
       productId: f.other.id,
       type: "task",
@@ -158,7 +159,7 @@ describe("AND-308 combined list filters", () => {
       (await f.query({ proposerKeys: ["mine"] }))
         .json()
         .items.map((i: { key: string }) => i.key),
-    ).toEqual([human.key]);
+    ).toEqual([agent.key,human.key]);
     const agentKey = choices.find(
       (p: { kind: string }) => p.kind === "agent",
     ).value;
@@ -166,10 +167,10 @@ describe("AND-308 combined list filters", () => {
       (await f.query({ proposerKeys: [agentKey] }))
         .json()
         .items.map((i: { key: string }) => i.key),
-    ).toEqual([agent.key]);
+    ).toEqual([unowned.key]);
     expect(
       (await f.query({ proposerKeys: ["mine", agentKey] })).json().items,
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     expect(JSON.stringify(choices)).not.toContain("outside");
     expect(
       (

@@ -7,6 +7,7 @@ import { AUTO_ARCHIVE_BACKFILL_SQL } from "../auto-archive.js";
 import { INITIAL_SCHEMA, MANAGED_RUN_SCHEMA } from "./schema.js";
 import { MANAGED_EXECUTION_SCHEMA } from "./managed-execution-schema.js";
 import { DECISION_SCHEMA } from "./decision-schema.js";
+import { DINGTALK_SCHEMA } from "./dingtalk-schema.js";
 
 const LEGACY_CODEX_THREAD_LINK = /^codex:\/\/threads\/[A-Za-z0-9-]{1,100}$/;
 
@@ -1954,6 +1955,13 @@ export class MissionGoDatabase {
         `);
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
           .run(202610290931, new Date().toISOString());
+      });
+    }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610300816").get()) {
+      this.transaction(() => {
+        this.connection.exec(DINGTALK_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610300816, new Date().toISOString());
       });
     }
     this.connection.exec("PRAGMA optimize;");

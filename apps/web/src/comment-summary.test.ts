@@ -112,7 +112,8 @@ describe("who created an item (AND-67)", () => {
     expect(creatorLabel({ kind: "sdk" }, labels)).toBe("SDK");
   });
 
-  it("names an AI's item by its client, never by the account behind it", () => {
+  it("names assisted submissions by the resolved account and falls back for unowned history", () => {
+    expect(creatorLabel({kind:"agent",accountId:"a1",name:"阿亮",clientName:"Codex"},labels)).toBe("阿亮");
     expect(creatorLabel({ kind: "agent", accountId: "a1", clientName: "Claude Code", agentName: "Claude Code · M4" }, labels))
       .toBe("AI · Claude Code");
     expect(creatorLabel({ kind: "agent", agentName: "Codex · nuc" }, labels)).toBe("AI · Codex · nuc");
