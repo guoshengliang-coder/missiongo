@@ -1439,6 +1439,11 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .report-input-block > header { display: flex; flex-direction: column; gap: 4px; }
 .report-input-block > header strong { color: var(--ink); font-size: var(--text-xs); }
 .report-input-block > header small { color: var(--muted); font-size: var(--text-xs); font-weight: 500; line-height: 1.5; }
+.bug-optional-details summary { display: flex; align-items: center; gap: 6px; min-height: 32px; color: var(--muted); font-size: var(--text-xs); font-weight: 700; list-style: none; cursor: pointer; }
+.bug-optional-details summary::-webkit-details-marker { display: none; }
+.bug-optional-details summary svg { flex: 0 0 auto; transition: transform 140ms ease; }
+.bug-optional-details[open] summary svg { transform: rotate(90deg); }
+.bug-optional-details[open] .report-field-grid { margin-top: 8px; }
 .report-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 12px; }
 .diagnostic-input-block { display: flex; flex-direction: column; gap: 10px; padding: 14px; background: var(--surface-inset); border: 1px solid var(--line); border-radius: var(--radius-lg); }
 .diagnostic-input-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; list-style: none; cursor: pointer; }
