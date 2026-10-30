@@ -1,10 +1,11 @@
+import { BuilderBadge } from "./builder-badge";
 import { BackButton } from "./back-button";
 import { useDialogDraft } from "./dialog-state";
 import { useConfirm } from "./confirm-dialog";
 import { itemFilterKey, type ItemFilters } from "@missiongo/domain";
 import { ListFilters } from "./list-filters";
 import { pickItemFilters } from "./item-filters";
-import { ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery } from "./item-delivery";
+import { ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { Modal } from "./modal";
 import { StatusCheckButton } from "./status-check-panel";
@@ -2037,7 +2038,7 @@ function ItemRow({
             <span className="item-meta">
               <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={16} /></span>
               <code>{item.key}</code>
-              <small className="item-builder">Builder：{item.builderName ?? "待分配"}{item.builderNeedsReassignment ? " · 需重新分配" : ""}</small>
+              <BuilderBadge name={item.builderName} needsReassignment={item.builderNeedsReassignment} />
               {/* First of the badges, so the one that names the machine and
                   agent keeps its width when the line runs out. A failure calls
                   out that the item needs attention; a hand-off just says where
@@ -2874,6 +2875,13 @@ function DetailPane({
   // that failed before starting left nothing to jump to (AND-217).
   const jumpSessionId = latestDispatch?.agentSessionId;
   const dispatchStatusKey = latestDispatch ? dispatchStatusLabelKey(latestDispatch.status) : null;
+  // An inferred execution uses the session creation time. Recorded work rounds
+  // have their own start time, which must not be presented as a session launch.
+  const summarizedSession = deliveryQuery.data?.executions.find(execution =>
+    Boolean(jumpSessionId) && execution.kind === "agent" && execution.recorded !== true && execution.sessionId === jumpSessionId);
+  const dispatchStateLabel = dispatchFailed ? t("failedDispatchBadge")
+    : summarizedSession ? executionStatusLabel(summarizedSession.status)
+    : dispatchStatusKey ? t(dispatchStatusKey) : null;
   return (
     <section className="detail-pane">
       <div className="detail-toolbar">
@@ -2967,16 +2975,16 @@ function DetailPane({
                 <Bot size={16} aria-hidden="true" />
                 <span className="detail-dispatch-target">
                   <strong>
-                    {dispatchFailed
-                      ? t("failedDispatchBadge")
-                      : t("itemDispatchBadge", {
-                          agent: dispatchAgentKey ? t(dispatchAgentKey) : latestDispatch.agentKind,
-                          node: latestDispatch.nodeName,
-                        })}
+                    {t("itemDispatchBadge", {
+                      agent: dispatchAgentKey ? t(dispatchAgentKey) : latestDispatch.agentKind,
+                      node: latestDispatch.nodeName,
+                    })}
                   </strong>
                   <small>
-                    {!dispatchFailed && dispatchStatusKey && <>{t(dispatchStatusKey)} · </>}
-                    {formatTime(latestDispatch.createdAt)}
+                    {dispatchStateLabel && <>{dispatchStateLabel} · </>}
+                    {summarizedSession?.startedAt
+                      ? t("sessionStartedTime", { time: formatTime(summarizedSession.startedAt) })
+                      : t("dispatchTime", { time: formatTime(latestDispatch.createdAt) })}
                   </small>
                 </span>
                 {dispatchFailed && dispatchFailureReason && <span className="detail-dispatch-reason">{dispatchFailureReason}</span>}
@@ -2984,28 +2992,29 @@ function DetailPane({
                   <button
                     type="button"
                     className="secondary-button detail-dispatch-jump"
+                    aria-label={t("openDispatchInConsole")}
+                    title={t("openDispatchInConsole")}
                     onClick={() => onOpenConsoleSession(jumpSessionId)}
                   >
-                    <ExternalLink size={15} aria-hidden="true" /> {t("openDispatchInConsole")}
+                    <ExternalLink size={15} aria-hidden="true" /><span>{t("consoleShort")}</span>
                   </button>
                 )}
               </div>
             )}
             <div className="detail-title-block">
               <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
-              <div>
+              <div className="detail-title-copy">
                 <p className="eyebrow">
-                  {typeLabel(item.type)} · {priorityLabel(item.priority)}
-                  {detailCreator && <> · {t("createdBy", { name: detailCreator })}</>}
-                  {deliveryQuery.data && (
-                    <span className="eyebrow-nowrap"> · {t("builderLabel")} {deliveryQuery.data.builderName ?? t("builderUnassigned")}</span>
-                  )}
-                  {deliveryQuery.data?.builderNeedsReassignment && <> {t("builderNeedsReassignment")}</>}
+                  <span>
+                    {typeLabel(item.type)} · {priorityLabel(item.priority)}
+                    {detailCreator && <> · {t("createdBy", { name: detailCreator })}</>}
+                  </span>
+                  {deliveryQuery.data && <BuilderBadge name={deliveryQuery.data.builderName} needsReassignment={deliveryQuery.data.builderNeedsReassignment} />}
                 </p>
                 <h2>{item.title}</h2>
               </div>
             </div>
-            <ItemDeliveryPanel key={item.key} item={item} />
+            <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} />
             <ItemRelations item={item} onOpenItem={onOpenItem} />
             {item.verificationReturn && <VerificationReturnCallout info={item.verificationReturn} />}
             {/* Read the item, then the evidence a person went and looked at --

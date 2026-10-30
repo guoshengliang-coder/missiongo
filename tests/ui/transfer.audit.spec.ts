@@ -38,7 +38,9 @@ for (const viewport of [{ name: "phone", width: 375, height: 812 }, { name: "des
         expect(audit.text.filter((text) => text.contrast < (text.fontSize >= 24 || (text.fontSize >= 18.66 && text.fontWeight >= 700) ? 3 : 4.5))).toEqual([]);
         const confirm = dialog.getByRole("button", { name: "迁移条目", exact: true });
         const box = await confirm.boundingBox();
-        expect(box!.height).toBeGreaterThanOrEqual(44);
+        // Chromium can report 43.99993896484375 for a 44px control.
+        // Match the shared audit's whole-CSS-pixel measurement.
+        expect(Math.round(box!.height)).toBeGreaterThanOrEqual(44);
         mkdirSync("test-results/and-278", { recursive: true });
         await page.screenshot({ path: `test-results/and-278/transfer-${viewport.name}-${theme}.png` });
         await confirm.click();
