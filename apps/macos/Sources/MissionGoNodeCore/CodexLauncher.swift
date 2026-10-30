@@ -391,9 +391,8 @@ public enum CodexPreflight {
                 failureCode: "daemon_down", failureStage: "daemon"
             ))
         }
-        if let issue = await CodexDaemonEnvironment.ensure(binary: binary, environment: environment, location: location, run: run, repoPath: repoPath) {
-            return .failed(LaunchError(issue.reason, failureCode: "daemon_environment", failureStage: "preflight", retryAfterSeconds: issue.retryAfterSeconds))
-        }
+        // Environment equality cannot establish whether a request will succeed.
+        // Actual control-channel, MCP and thread/turn failures remain authoritative.
         switch await mcpState(binary: binary, run: run) {
         case .ready: break
         case .missing:

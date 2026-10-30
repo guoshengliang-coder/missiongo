@@ -1016,8 +1016,10 @@ final class AppModel: ObservableObject {
                 }
                 guard access.isCurrent(agent, attempt: attempt) else { return }
                 codex = status
-                if case let .ready(value) = status { version = value; issue = nil }
-                else { version = ""; issue = status.summary + "。" + (status.fixHint ?? "") }
+                switch status {
+                case let .ready(value), let .readyWithNotice(value, _): version = value; issue = nil
+                default: version = ""; issue = status.summary + "。" + (status.fixHint ?? "")
+                }
             case .openCode:
                 do {
                     let control = OpenCodeHTTPControl()

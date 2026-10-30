@@ -298,6 +298,9 @@ private struct AgentStatusSection: View {
                             .foregroundStyle(mcpAuth.state == "invalid" ? Color.red : Color.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    if agent == .codex, ready, !checking, let notice = model.codex.advisory {
+                        WrappingCaption(text: notice)
+                    }
                     if let issue = state?.issue, !checking {
                         Text(issue)
                             .font(.caption)
@@ -684,6 +687,9 @@ private struct IntegrationRow: View {
             }
             if !checking, state?.version != nil, agent != .openCode {
                 WrappingCaption(text: "认证配置已识别，未进行模型调用验证。")
+                if agent == .codex, state?.issue == nil, let notice = model.codex.advisory {
+                    WrappingCaption(text: notice)
+                }
             }
             if agent == .claudeCode {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {

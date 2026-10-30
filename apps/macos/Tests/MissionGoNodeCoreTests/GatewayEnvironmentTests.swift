@@ -121,6 +121,26 @@ final class GatewayEnvironmentTests: XCTestCase {
         XCTAssertNil(CodexDaemonEnvironment.decode([0, 0, 0, 0]))
     }
 
+    func testDaemonEnvironmentDifferencesArePrivateAdvisories() throws {
+        let expected = ["CUSTOM_KEY": "new-fixture-secret", "HTTPS_PROXY": "https://new-proxy.example"]
+        let actual = ["CUSTOM_KEY": "old-fixture-secret", "HTTPS_PROXY": "https://old-proxy.example"]
+        let configuration: [String: Any] = ["model_provider": "gateway", "model_providers": ["gateway": ["env_key": "CUSTOM_KEY"]]]
+        let notice = try XCTUnwrap(CodexDaemonEnvironment.advisory(expected: expected, actual: actual, configuration: configuration))
+        for value in Array(expected.values) + Array(actual.values) {
+            XCTAssertFalse(notice.contains(value), "environment values must not enter UI or reports")
+        }
+        XCTAssertNil(CodexDaemonEnvironment.advisory(expected: expected, actual: expected, configuration: configuration))
+        XCTAssertNotNil(CodexDaemonEnvironment.advisory(expected: ["CUSTOM_KEY": ""], actual: actual, configuration: configuration),
+                        "a removed key is still advisory, not proof that stored login or another route will fail")
+        let status = CodexStatus.readyWithNotice(version: "fixture", reason: notice)
+        XCTAssertTrue(status.isReady)
+        XCTAssertFalse(status.needsAttention)
+        XCTAssertEqual(status.summary, "fixture")
+        XCTAssertEqual(status.advisory, notice)
+        XCTAssertNil(status.fixHint)
+        XCTAssertNil(status.fixCommand(serverUrl: nil))
+    }
+
     func testHiddenProcessEnvironmentIsUnknownRatherThanAnEmptyConfiguration() {
         var argc: Int32 = 2
         var bytes = withUnsafeBytes(of: &argc) { Array($0) }

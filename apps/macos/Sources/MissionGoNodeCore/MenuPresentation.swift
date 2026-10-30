@@ -337,7 +337,7 @@ public enum CodexStatus: Equatable, Sendable {
     /// at an app that is plainly already open. The check starts the daemon
     /// itself, so this means that start did not bring the socket up.
     case daemonNotRunning(version: String, path: String)
-    case environmentMismatch(version: String, reason: String)
+    case readyWithNotice(version: String, reason: String)
     case mcpMissing(version: String)
     case mcpNotLoggedIn(version: String)
     case ready(version: String)
@@ -359,11 +359,12 @@ public enum CodexStatus: Equatable, Sendable {
         if case .failed = await CodexPreflight.ensureDaemon(binary: binary, location: location, run: run, wait: daemonWait) {
             return .daemonNotRunning(version: version, path: location.controlSocketPath)
         }
-        if let issue = await CodexDaemonEnvironment.ensure(binary: binary, environment: environment, location: location, run: run, repoPath: repoPath) {
-            return .environmentMismatch(version: version, reason: issue.reason)
-        }
         switch await CodexPreflight.mcpState(binary: binary, run: run) {
-        case .ready: return .ready(version: version)
+        case .ready:
+            if let notice = await CodexDaemonEnvironment.advisory(binary: binary, environment: environment, location: location, repoPath: repoPath) {
+                return .readyWithNotice(version: version, reason: notice)
+            }
+            return .ready(version: version)
         case .missing, .disabled: return .mcpMissing(version: version)
         case .notLoggedIn: return .mcpNotLoggedIn(version: version)
         case .unreadable: return .unreadable(version: version)
@@ -371,14 +372,16 @@ public enum CodexStatus: Equatable, Sendable {
     }
 
     public var isReady: Bool {
-        if case .ready = self { return true }
-        return false
+        switch self {
+        case .ready, .readyWithNotice: return true
+        default: return false
+        }
     }
 
     /// Worth drawing attention to: installed, but a dispatch would fail.
     public var needsAttention: Bool {
         switch self {
-        case .checking, .notInstalled, .ready: return false
+        case .checking, .notInstalled, .ready, .readyWithNotice: return false
         default: return true
         }
     }
@@ -390,20 +393,23 @@ public enum CodexStatus: Equatable, Sendable {
         case .notLoggedIn: return "未识别认证配置"
         case .unreadable: return "无法确认状态"
         case .daemonNotRunning: return "后台服务未运行"
-        case .environmentMismatch: return "后台服务环境待刷新"
         case .mcpMissing: return "未配置 missiongo MCP"
         case .mcpNotLoggedIn: return "missiongo MCP 未登录"
-        case let .ready(version): return version
+        case let .ready(version), let .readyWithNotice(version, _): return version
         }
+    }
+
+    public var advisory: String? {
+        if case let .readyWithNotice(_, reason) = self { return reason }
+        return nil
     }
 
     public var fixHint: String? {
         switch self {
-        case .checking, .notInstalled, .ready: return nil
+        case .checking, .notInstalled, .ready, .readyWithNotice: return nil
         case .notLoggedIn: return "终端已配置 API Key／网关时，在本机设置的 Codex「配置来源」开启自动复用终端环境；也支持当前 provider 配置或 codex login"
         case .unreadable: return "检查 config.toml、auth.json，并在终端运行 codex login status 和 codex mcp list 查看"
         case let .daemonNotRunning(_, path): return "Codex 派单要通过 app-server 的控制通道 \(path)，它由 codex app-server daemon 提供。MissionGo 自动运行 codex app-server daemon start 后仍然没有连上：在终端运行它查看原因。派单时 MissionGo 也会自动尝试启动；codex app-server daemon bootstrap 可以让它开机常驻。"
-        case let .environmentMismatch(_, reason): return reason
         case .mcpMissing: return "若终端已能使用 MissionGo，先检查 Codex 配置来源与仓库映射并重新检查；否则添加 missiongo MCP 并登录"
         case .mcpNotLoggedIn: return "在终端运行 codex mcp login missiongo"
         }
@@ -415,7 +421,7 @@ public enum CodexStatus: Equatable, Sendable {
         case .mcpMissing: return CodexPreflight.mcpSetupCommand(serverUrl: serverUrl)
         case .mcpNotLoggedIn: return "codex mcp login missiongo"
         case .daemonNotRunning: return CodexPreflight.daemonStartCommand
-        case .checking, .notInstalled, .unreadable, .environmentMismatch, .ready: return nil
+        case .checking, .notInstalled, .unreadable, .readyWithNotice, .ready: return nil
         }
     }
 }

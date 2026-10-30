@@ -1110,6 +1110,41 @@ final class CodexPreflightTests: XCTestCase {
         XCTAssertEqual(daemon.starts.current, 0, "a daemon that answers is left alone")
     }
 
+    func testUnverifiableDaemonEnvironmentDoesNotBlockOrRestartButMcpStillBlocks() async throws {
+        let installed = try codexOnPath()
+        let environment = ShellEnvironment(path: installed.path, base: ["MISSIONGO_CHECK_DAEMON_ENV": "1", "HTTPS_PROXY": "https://fixture-proxy.example"])
+        let root = try shortTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let location = CodexLocation(codexHome: "\(root)/codex")
+        try FileManager.default.createDirectory(atPath: "\(location.codexHome)/app-server-control", withIntermediateDirectories: true)
+        let listener = try listeningSocket(at: location.controlSocketPath)
+        defer { _ = close(listener) }
+        // Repeated health checks connect without exchanging protocol messages.
+        // Keep this passive fixture's accept queue from filling between checks.
+        XCTAssertEqual(listen(listener, 32), 0)
+        try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: location.skillPath).deletingLastPathComponent().path, withIntermediateDirectories: true)
+        try Data("fixture".utf8).write(to: URL(fileURLWithPath: location.skillPath))
+        let daemon = FakeDaemon()
+        try FileManager.default.createDirectory(atPath: "\(root)/.git", withIntermediateDirectories: true)
+        // The fixture cannot answer config/read. Unknown environment comparison
+        // must not mask a working socket, login and MCP, or trigger a restart.
+        let status = await CodexStatus.check(environment: environment, location: location, run: fakeCodex(daemon: daemon))
+        XCTAssertTrue(status.isReady)
+        XCTAssertFalse(status.needsAttention)
+        XCTAssertNotNil(status.advisory)
+        let allowed = await CodexPreflight.check(repoPath: root, environment: environment, location: location, serverUrl: nil, run: fakeCodex(daemon: daemon))
+        XCTAssertEqual(allowed, .ok(version: "0.154.0"))
+        XCTAssertEqual(daemon.starts.current, 0)
+
+        let missingMcp = fakeCodex(mcp: ok("[]"), daemon: daemon)
+        let blockedStatus = await CodexStatus.check(environment: environment, location: location, run: missingMcp)
+        XCTAssertEqual(blockedStatus, .mcpMissing(version: "0.154.0"))
+        let blocked = await CodexPreflight.check(repoPath: root, environment: environment, location: location, serverUrl: nil, run: missingMcp)
+        guard case let .failed(error) = blocked else { return XCTFail("unavailable MCP must still block dispatch") }
+        XCTAssertEqual(error.failureCode, "mcp_auth")
+        XCTAssertEqual(daemon.starts.current, 0)
+    }
+
     func testTheMenuStartsAStoppedDaemonAndSaysReady() async throws {
         // Nothing starts the daemon after a reboot; the check the operator asks
         // for starts it instead of sending them to a terminal.
