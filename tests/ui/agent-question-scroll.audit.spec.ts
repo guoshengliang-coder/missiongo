@@ -101,6 +101,7 @@ for (const viewport of [
           await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
         } else {
           await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
+          await page.locator(".execution-history > summary").click();
           await page.locator(".agent-session-toggle").click();
         }
         const area = page.locator(surface === "console" ? ".agent-console-messages" : ".agent-session-messages");
