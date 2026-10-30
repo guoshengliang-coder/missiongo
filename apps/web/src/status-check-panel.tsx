@@ -23,7 +23,7 @@ export function StatusCheckButton({productId,itemKey,canOperate}:{productId:stri
   return <><button type="button" className={itemKey ? "icon-button" : "secondary-button status-check-entry"} aria-label={locale === "zh-CN" ? "检查状态" : "Check status"} title={locale === "zh-CN" ? "检查状态" : "Check status"} onClick={()=>setOpen(true)}><ClipboardCheck size={16}/>{!itemKey && <span className="status-check-entry-label">{locale === "zh-CN" ? "检查状态" : "Check status"}</span>}</button>
     {open && <StatusCheckPanel key={itemKey ?? productId} productId={productId} {...(itemKey ? {itemKey} : {})} canOperate={canOperate} onClose={()=>setOpen(false)}/>}</>;
 }
-function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{productId:string;itemKey?:string;canOperate:boolean;onClose:()=>void}) {
+export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{productId:string;itemKey?:string;canOperate:boolean;onClose:()=>void}) {
   const {locale,t,statusLabel} = useI18n(); const zh = locale === "zh-CN";
   const [confirmation, setConfirmation] = useState<StatusCheckRecord | null>(null);
   const [scopeRecord, setScopeRecord] = useState<StatusCheckRecord>();

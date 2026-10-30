@@ -1,3 +1,4 @@
+import { DraftChatFile } from "./agent-chat-draft-file";
 import { BuilderBadge } from "./builder-badge";
 import { BackButton } from "./back-button";
 import { useDialogDraft } from "./dialog-state";
@@ -8,7 +9,7 @@ import { pickItemFilters } from "./item-filters";
 import { ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { Modal } from "./modal";
-import { StatusCheckButton } from "./status-check-panel";
+import { StatusCheckButton, StatusCheckPanel } from "./status-check-panel";
 import { localizedErrorText } from "./error-text";
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
 import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -55,6 +56,7 @@ import {
   Sparkles,
   Trash2,
   Undo2,
+  UserRoundCog,
   Video,
   WifiOff,
   X,
@@ -2795,6 +2797,7 @@ function DetailPane({
     };
   }, [itemKey, item?.key]);
   const [transferBuilderOpen, setTransferBuilderOpen] = useState(false);
+  const [statusChecksOpen, setStatusChecksOpen] = useState(false);
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
 
   useEffect(() => {
@@ -2804,6 +2807,7 @@ function DetailPane({
 
   useEffect(() => {
     setEditing(openInEdit);
+    setStatusChecksOpen(false);
   }, [itemKey, openInEdit]);
 
   useEffect(() => {
@@ -2928,59 +2932,36 @@ function DetailPane({
               {quickActionLabel(item.status, t)}
             </button>
           )}
-          <StatusCheckButton productId={item.productId} itemKey={item.key} canOperate={!item.transferred} />
           <RefreshButton refreshing={itemQuery.isFetching || timelineQuery.isFetching} onRefresh={refreshItem} />
           <button className="secondary-button" disabled={item.transferred} onClick={() => setEditing(true)}>{t("edit")}</button>
-          <details className="detail-more-menu" ref={moreActionsRef}>
+          <details className="detail-more-menu" ref={moreActionsRef} onToggle={(event) => { if (!event.currentTarget.open) event.currentTarget.querySelector(".detail-move-menu")?.removeAttribute("open"); }}>
             <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={19} /></summary>
-            <div className="detail-more-menu-popover">
-              {deliveryQuery.data?.canManageBuilder && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferBuilderOpen(true); }}>{t("transferBuilder")}</button>}
-              {!item.transferred && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}>{t("transferItem")}</button>}
-              {secondaryActions.length === 0 && manualTargets.length === 0 && <span>{t("noMoreActions")}</span>}
-              {secondaryActions.filter((action) => action.tone !== "danger").map((action) => (
-                <button
-                  key={`${action.to}-${action.reason}`}
-                  type="button"
-                  disabled={transitionMutation.isPending}
-                  onClick={() => {
-                    moreActionsRef.current?.removeAttribute("open");
-                    startTransition(action);
-                  }}
-                >
-                  {transitionLabel(action.label)}
-                </button>
-              ))}
-              {manualTargets.length > 0 && (
-                <>
-                  <p className="menu-section-label">{t("moveDirectlyTo")}</p>
-                  {manualTargets.map((action) => (
-                    <button
-                      key={action.to}
-                      type="button"
-                      disabled={transitionMutation.isPending}
-                      onClick={() => {
-                        moreActionsRef.current?.removeAttribute("open");
-                        startTransition(action);
-                      }}
-                    >
-                      {statusLabel(action.to)}
-                    </button>
-                  ))}
-                </>
-              )}
+            <div className="detail-more-menu-popover detail-actions-popover">
+              {(deliveryQuery.data?.canManageBuilder || !item.transferred) && <div className="detail-action-group">
+                <p className="detail-action-heading">{t("actionGroupCollaboration")}</p>
+                {deliveryQuery.data?.canManageBuilder && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferBuilderOpen(true); }}><UserRoundCog size={17} aria-hidden="true" />{t("transferBuilder")}</button>}
+                {!item.transferred && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}><ArrowRight size={17} aria-hidden="true" />{t("transferItem")}</button>}
+              </div>}
+              {(secondaryActions.some((action) => action.tone !== "danger") || manualTargets.length > 0) && <div className="detail-action-group">
+                <p className="detail-action-heading">{t("actionGroupStatus")}</p>
+                {secondaryActions.filter((action) => action.tone !== "danger").map((action) => (
+                  <button key={`${action.to}-${action.reason}`} type="button" disabled={transitionMutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}>
+                    {action.to === "on_hold" ? <CirclePause size={17} aria-hidden="true" /> : <Undo2 size={17} aria-hidden="true" />}{transitionLabel(action.label)}
+                  </button>
+                ))}
+                {manualTargets.length > 0 && <details className="detail-move-menu">
+                  <summary><ArrowRight size={17} aria-hidden="true" /><span>{t("moveTo")}</span><ChevronRight className="detail-move-chevron" size={16} aria-hidden="true" /></summary>
+                  <div className="detail-move-popover">
+                    {manualTargets.map((action) => <button key={action.to} type="button" disabled={transitionMutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><CircleDot size={17} aria-hidden="true" />{statusLabel(action.to)}</button>)}
+                  </div>
+                </details>}
+              </div>}
+              <div className="detail-action-group">
+                <p className="detail-action-heading">{t("actionGroupTools")}</p>
+                <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setStatusChecksOpen(true); }}><ClipboardCheck size={17} aria-hidden="true" />{t("statusChecks")}</button>
+              </div>
               {secondaryActions.filter((action) => action.tone === "danger").map((action) => (
-                <button
-                  key={`${action.to}-${action.reason}`}
-                  type="button"
-                  className="danger"
-                  disabled={transitionMutation.isPending}
-                  onClick={() => {
-                    moreActionsRef.current?.removeAttribute("open");
-                    startTransition(action);
-                  }}
-                >
-                  {transitionLabel(action.label)}
-                </button>
+                <div className="detail-action-group" key={`${action.to}-${action.reason}`}><button type="button" className="danger" disabled={transitionMutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><X size={17} aria-hidden="true" />{transitionLabel(action.label)}</button></div>
               ))}
             </div>
           </details>
@@ -3186,6 +3167,7 @@ function DetailPane({
       </div>
       {!item.transferred && <CommentComposer key={item.key} item={item} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
+      {statusChecksOpen && <StatusCheckPanel key={item.key} productId={item.productId} itemKey={item.key} canOperate={!item.transferred} onClose={() => setStatusChecksOpen(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
         <TransferBuilderModal itemKey={item.key} delivery={deliveryQuery.data} onClose={() => setTransferBuilderOpen(false)} />
       )}
@@ -3313,6 +3295,7 @@ function CommentComposer({ item, onPosted, onNotice }: {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<readonly File[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const uploaded = useRef(new Map<File, string>());
   const uploadIds = useRef(new Map<File, string>());
   const attempt = useRef({ fingerprint: "", key: "" });
@@ -3355,25 +3338,27 @@ function CommentComposer({ item, onPosted, onNotice }: {
     {isDraggingFiles && <FileDropOverlay remaining={remaining} />}
     <fieldset disabled={mutation.isPending}>
       <label className="sr-only" htmlFor="comment-draft">{t("addComment")}</label>
-      <textarea id="comment-draft" value={text} onChange={event => setText(event.target.value)} placeholder={t("commentPlaceholder")} rows={2} />
-      <button type="submit" className="primary-button" disabled={!(text.trim() || files.length) || mutation.isPending}>
-        {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}
-        {t(mutation.isPending ? "commentSending" : "commentSend")}
-      </button>
-      <div className="detail-composer-files">
-        <FilePicker files={files} onFiles={setFiles} remaining={remaining} disabled={mutation.isPending} />
+      {files.length > 0 && <div className="agent-chat-draft-files">
+        {files.map((file, index) => <DraftChatFile key={`${file.name}-${file.lastModified}-${index}`} file={file} disabled={mutation.isPending}
+          onRemove={() => setFiles(current => current.filter((_, fileIndex) => fileIndex !== index))} />)}
+      </div>}
+      <div className="detail-composer-row">
+        <AutoGrowTextarea id="comment-draft" value={text} onChange={event => setText(event.target.value)} placeholder={t("commentPlaceholder")} rows={1} maximumHeight={240} submitOnEnter />
+        <div className="agent-chat-send-actions">
+          <input ref={fileInputRef} type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.md,.txt,.csv,.json,.pdf,.html,.zip"
+            onChange={event => { addFiles(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ""; }} />
+          <button type="button" className="secondary-button agent-chat-icon-button" disabled={remaining < 1 || mutation.isPending}
+            title={t("addAttachments")} aria-label={t("addAttachments")} onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>
+          <button type="submit" className="primary-button agent-chat-icon-button" disabled={!(text.trim() || files.length) || mutation.isPending}
+            title={t(mutation.isPending ? "commentSending" : "commentSend")} aria-label={t(mutation.isPending ? "commentSending" : "commentSend")}>
+            {mutation.isPending ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
+          </button>
+        </div>
       </div>
-      {files.some(file => file.type.startsWith("image/")) && <div className="comment-image-previews">{files.filter(file => file.type.startsWith("image/")).map((file, index) => <CommentImagePreview key={`${file.name}-${index}`} file={file} />)}</div>}
     </fieldset>
     {error && <InlineError message={error} />}
     {mutation.isError && uploaded.current.size > 0 && <p className="detail-composer-hint">{t("commentUploadRetained")}</p>}
   </form>;
-}
-
-function CommentImagePreview({ file }: { file: File }) {
-  const [url, setUrl] = useState("");
-  useEffect(() => { const next = URL.createObjectURL(file); setUrl(next); return () => URL.revokeObjectURL(next); }, [file]);
-  return <img src={url || undefined} alt={file.name} />;
 }
 
 function CommentBody({
@@ -3880,6 +3865,7 @@ function WorkItemFields({
             accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm"
             allowedExtensions={["png", "jpg", "jpeg", "webp", "gif", "heic", "mp4", "mov", "webm"]}
             buttonLabel={t("add")}
+            addIcon
           />
         </div>
         {existingItemKey && existingMediaAttachments.length > 0 && (
@@ -3919,6 +3905,7 @@ function WorkItemFields({
             accept=".md,.txt,.csv,.json,.pdf,.html,text/markdown,text/plain,text/csv,application/json,application/pdf,text/html"
             allowedExtensions={["md", "txt", "csv", "json", "pdf", "html"]}
             buttonLabel={t("add")}
+            addIcon
           />
         </div>
         {existingItemKey && existingDocumentAttachments.length > 0 && (
@@ -3946,6 +3933,7 @@ function WorkItemFields({
             accept=".zip,application/zip,application/x-zip-compressed"
             allowedExtensions={["zip"]}
             buttonLabel={t("add")}
+            addIcon
           />
         </div>
         {existingItemKey && existingArchiveAttachments.length > 0 && (
@@ -3967,7 +3955,9 @@ function WorkItemFields({
         <header><strong>{t(reportCopy.title)}</strong><small>{t(reportCopy.help)}</small></header>
         <label><FieldLabel required>{t(reportCopy.overview)}</FieldLabel><AutoGrowTextarea value={draft.description} onChange={(event) => updateDraft("description", event.target.value)} placeholder={t(reportCopy.placeholder)} rows={4} maxLength={20_000} required /></label>
         {showsBugFields && (
-          <div className="report-field-grid">
+          <details className="bug-optional-details">
+            <summary><ChevronRight size={16} /><span>{t("bugOptionalDetails")}</span></summary>
+            <div className="report-field-grid">
             <label><FieldLabel>{t("reproductionSteps")}</FieldLabel><AutoGrowTextarea value={draft.reproductionSteps} onChange={(event) => updateDraft("reproductionSteps", event.target.value)} placeholder={t("reproductionStepsPlaceholder")} rows={5} maxLength={20_000} /></label>
             <label><FieldLabel>{t("expectedOutcome")}</FieldLabel><AutoGrowTextarea value={draft.expectedOutcome} onChange={(event) => updateDraft("expectedOutcome", event.target.value)} placeholder={t("expectedOutcomePlaceholder")} rows={5} maxLength={20_000} /></label>
             <label><FieldLabel>{t("impact")}</FieldLabel><AutoGrowTextarea value={draft.impact} onChange={(event) => updateDraft("impact", event.target.value)} placeholder={t("impactPlaceholder")} rows={3} maxLength={10_000} /></label>
@@ -3980,7 +3970,8 @@ function WorkItemFields({
                 <option value="always">{t("frequencyAlways")}</option>
               </select>
             </label>
-          </div>
+            </div>
+          </details>
         )}
       </section>
       <details className="diagnostic-input-block" open={diagnosticsOpen}>
@@ -4208,6 +4199,7 @@ function FilePicker({
   accept = "image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.md,.txt,.csv,.json,.pdf,.html,.zip",
   allowedExtensions,
   buttonLabel,
+  addIcon = false,
 }: {
   files?: readonly File[];
   onFiles: (files: readonly File[]) => void;
@@ -4218,6 +4210,7 @@ function FilePicker({
   accept?: string;
   allowedExtensions?: readonly string[];
   buttonLabel?: string;
+  addIcon?: boolean;
 }) {
   const { t } = useI18n();
   const [error, setError] = useState<string | null>(null);
@@ -4251,7 +4244,7 @@ function FilePicker({
     <div className="file-picker">
       <div className="file-picker-actions">
         <label className={`secondary-button file-picker-button ${disabled || remaining < 1 ? "disabled" : ""}`}>
-          {disabled ? <LoaderCircle className="spin" size={16} /> : <Paperclip size={16} />}
+          {disabled ? <LoaderCircle className="spin" size={16} /> : addIcon ? <Plus size={16} /> : <Paperclip size={16} />}
           {buttonLabel ?? t("addAttachments")}
           <input
             type="file"

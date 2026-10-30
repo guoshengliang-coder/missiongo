@@ -328,7 +328,17 @@ test("cancellation quick reasons replace text without submitting", async ({ page
   await page.locator('summary[aria-label="更多操作"]').click();
   await page.locator('summary[aria-label="更多操作"] + .detail-more-menu-popover .danger').click();
   const dialog = page.locator("dialog[open]", { has: page.getByText("为什么要取消？") });
-  const note = dialog.locator("textarea");
+  const note = dialog.getByRole("textbox", { name: "请填写取消原因" });
+  await expect(note).toHaveAccessibleDescription(/会写进时间线/);
+  const quickReasons = dialog.getByRole("group", { name: "快捷填写" });
+  for (const width of [1280, 375]) {
+    await page.setViewportSize({ width, height: 812 });
+    const inputBounds = await note.boundingBox();
+    const suggestionsBounds = await quickReasons.boundingBox();
+    expect(inputBounds).not.toBeNull();
+    expect(suggestionsBounds).not.toBeNull();
+    expect(suggestionsBounds!.y).toBeGreaterThan(inputBounds!.y + inputBounds!.height);
+  }
   await note.fill("已有文字");
   await dialog.getByRole("button", { name: "重复了" }).click();
   await expect(note).toHaveValue("重复了");
