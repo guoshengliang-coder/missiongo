@@ -2900,23 +2900,28 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .dingtalk-settings { display: grid; gap: 24px; }
 .dingtalk-section { display: grid; gap: 12px; min-width: 0; }
 .dingtalk-section h2 { margin: 0; font-size: var(--text-xl); }
-.dingtalk-form { display: grid; gap: 12px; padding: 12px 0; min-width: 0; }
-.dingtalk-form label, .dingtalk-section > label:not(.project-administrator-choice) { display: grid; gap: 6px; min-width: 0; }
-.dingtalk-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; border: 0; padding: 0; margin: 0; min-width: 0; }
-.dingtalk-fields label { display: grid; gap: 6px; min-width: 0; }
-.dingtalk-settings input, .dingtalk-settings textarea { width: 100%; min-width: 0; }
-.dingtalk-binding-list { display: grid; gap: 8px; }
-.dingtalk-binding { border-bottom: 1px solid var(--line); padding: 8px 0; }
-.dingtalk-binding summary { display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; min-height: 44px; }
-.dingtalk-binding summary > span:first-child { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
-.dingtalk-binding summary > span:last-child { flex-shrink: 0; font-size: var(--text-sm); }
+.dingtalk-section > label:not(.project-administrator-choice) { display: grid; gap: 6px; min-width: 0; }
+.dingtalk-settings input { width: 100%; min-width: 0; }
+.dingtalk-section-heading, .dingtalk-binding-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.dingtalk-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.dingtalk-info-grid, .dingtalk-binding-info { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px 24px; margin: 0; min-width: 0; }
+.dingtalk-info-grid > div, .dingtalk-binding-info > div { display: grid; align-content: start; gap: 4px; min-width: 0; }
+.dingtalk-info-grid dt, .dingtalk-binding-info dt { color: var(--muted); font-size: var(--text-sm); }
+.dingtalk-info-grid dd, .dingtalk-binding-info dd { margin: 0; overflow-wrap: anywhere; }
+.dingtalk-binding-list { display: grid; }
+.dingtalk-binding { display: grid; gap: 12px; border-bottom: 1px solid var(--line); padding: 16px 0; min-width: 0; }
+.dingtalk-binding-identity { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.dingtalk-binding-identity > span { font-size: var(--text-sm); }
+.dingtalk-binding-info { font-size: var(--text-sm); }
+.dingtalk-last-test { overflow-wrap: anywhere; }
+.dingtalk-binding p { margin: 0; }
 .dingtalk-binding small, .dingtalk-notice-state small { color: var(--muted); }
 .dingtalk-notice-state { display: grid; gap: 4px; overflow-wrap: anywhere; }
 .dingtalk-import-preview { display: grid; gap: 12px; padding-left: 24px; overflow-wrap: anywhere; }
 .dingtalk-import-preview li { padding: 8px; }
 .dingtalk-import-preview li > span, .dingtalk-import-preview li > small { display: block; }
 .dingtalk-item-notices { padding: 12px 0; border-bottom: 1px solid var(--line); }
-.dingtalk-item-notices summary, .dingtalk-section > summary { cursor: pointer; min-height: 44px; align-content: center; }
+.dingtalk-item-notices summary { cursor: pointer; min-height: 44px; align-content: center; }
 .item-assisted-source { color: var(--muted); font-size: var(--text-xs); }
 
 
