@@ -251,8 +251,11 @@ test.describe("attachments a browser cannot read natively", () => {
   test("an iPhone HEIC is drawn from the server's decoded copy", async ({ page }) => {
     await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
     await page.waitForLoadState("networkidle");
-    const thumbnail = page.locator('.attachment-media-open img[alt="iphone.heic"]');
-    await thumbnail.scrollIntoViewIfNeeded();
+    // The thumbnail is mounted lazily; scroll its card before waiting for the
+    // image, including when the persistent composer reduces the reading area.
+    const card = page.locator(".attachment-card", { hasText: "iphone.heic" });
+    await card.scrollIntoViewIfNeeded();
+    const thumbnail = card.locator('.attachment-media-open img[alt="iphone.heic"]');
     await expect(thumbnail).toBeVisible();
     // naturalWidth is 0 for an image the browser failed to decode -- which is
     // what a raw HEIC is to Chromium.
