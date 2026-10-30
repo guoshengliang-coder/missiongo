@@ -1,3 +1,4 @@
+import { assertExternalExecution } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import { nodeConnectionState } from "@missiongo/domain";
@@ -125,6 +126,7 @@ export class ExternalNativeSessionStore {
     };
   }
   enqueue(accountId: string, id: string, textValue: string): AgentSessionCommand {
+    assertExternalExecution(this.store.database,id);
     const text = textValue.trim();
     if (!text || text.length > 20_000) throw invalidInput("Reply text must contain 1 to 20000 characters.");
     return this.store.database.transaction(() => {

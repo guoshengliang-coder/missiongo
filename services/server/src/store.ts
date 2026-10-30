@@ -1,3 +1,4 @@
+import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover } from "./builder-authority.js";
 import { completionPayload, normalizeCompletion, sameCompletion } from "./completion.js";
 import { enqueueVerificationNotification } from "./dingtalk-notifications.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -1493,10 +1494,28 @@ export class MissionGoStore {
 
       const item = this.getWorkItemRow(input.itemKey);
       if (!item) throw notFound("Work item");
-      if (item.status !== "ready") {
-        throw conflict("item_not_claimable", "Only a ready work item can be claimed.");
+      assertBuilderExecution(this.database,item.id,input.attribution?.accountId);
+      if (input.dispatchId) {
+        assertDispatchExecution(this.database,input.dispatchId);
+        if (!this.database.connection.prepare(`SELECT 1 FROM dispatches d JOIN dispatch_items di ON di.dispatch_id=d.id
+          WHERE d.id=? AND di.item_id=? AND d.account_id=? AND d.status IN ('delivered','launched')`)
+          .get(input.dispatchId,item.id,input.attribution?.accountId ?? "")) throw conflict("dispatch_not_claimable","此派单不具备该条目的有效执行授权。");
       }
       const now = new Date().toISOString();
+      if (item.status === "in_progress") {
+        const handover = latestBuilderHandover(this.database,item.id);
+        if (!handover || handover.status !== "completed" || !input.dispatchId
+          || handover.resume_dispatch_id !== input.dispatchId || handover.claimed_at
+          || handover.to_account_id !== input.attribution?.accountId) {
+          throw conflict("item_not_claimable", "Only a ready work item can be claimed, unless this is the new Builder's authorized takeover.");
+        }
+        this.database.connection.prepare("UPDATE builder_handovers SET claimed_at=? WHERE id=?").run(now,handover.id);
+        this.insertEvent(item.id,"execution_taken_over","agent",null,null,{handoverId:handover.id,dispatchId:input.dispatchId},now,input.attribution ?? {});
+        const result = this.getWorkItem(item.item_key);
+        this.saveIdempotentResult(idempotencyKey,operation,result,now);
+        return result;
+      }
+      if (item.status !== "ready") throw conflict("item_not_claimable", "Only a ready work item can be claimed.");
       this.applyTransition(item, "in_progress", "agent", "claim", agentId, now, input.attribution ?? {});
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
@@ -1888,6 +1907,19 @@ export class MissionGoStore {
         ? invalidInput(decision.message, "transition_note_required")
         : conflict("invalid_state_transition", decision.message);
     }
+    assertBuilderExecution(this.database,current.id,attribution.accountId,actor !== "human" || to === "in_progress");
+    if (to === "in_progress" && !current.builder_account_id && attribution.accountId) {
+      const accounts = new AccountStore(this.database);
+      const account = accounts.listAccounts().find(row => row.id === attribution.accountId);
+      if (account && !account.disabledAt && accounts.allows(account,current.product_id,"operate")) {
+        const assigned = this.database.connection.prepare("UPDATE work_items SET builder_account_id=?,builder_assignment='automatic' WHERE id=? AND builder_account_id IS NULL")
+          .run(account.id,current.id);
+        if (assigned.changes) this.insertEvent(current.id,"builder_changed",actor,null,null,
+          {from:null,to:account.id,fromName:"待分配",toName:account.nickname || account.email.split("@")[0],note:"首次开始处理，自动认领 Builder"},now,attribution);
+      }
+    }
+    if (to === "in_progress") this.database.connection.prepare("UPDATE builder_handovers SET claimed_at=? WHERE item_id=? AND status='completed' AND claimed_at IS NULL")
+      .run(now,current.id);
     this.database.connection.prepare("UPDATE work_items SET status = ?, updated_at = ? WHERE id = ?").run(to, now, current.id);
     const eventId = this.insertEvent(
       current.id,
@@ -2335,7 +2367,7 @@ export class MissionGoStore {
     if (module.archivedAt || !module.defaultBuilderAccountId) return;
     const accounts = new AccountStore(this.database);
     const account = accounts.listAccounts().find(entry => entry.id === module.defaultBuilderAccountId);
-    if (!account || account.disabledAt || !accounts.allows(account, productId, "ai")) return;
+    if (!account || account.disabledAt || !accounts.allows(account, productId, "ai") || !accounts.allows(account, productId, "operate")) return;
     this.database.connection.prepare(`UPDATE work_items SET builder_account_id = ?, builder_assignment = 'automatic'
       WHERE id = ? AND builder_account_id IS NULL AND builder_assignment IS NULL`).run(account.id, itemId);
   }
@@ -2351,7 +2383,14 @@ export class MissionGoStore {
     const account = accounts.listAccounts().find(entry => entry.id === row.builder_account_id);
     return { builderAccountId: row.builder_account_id,
       builderName: account ? account.nickname || account.email.split("@")[0]! : "已删除账号",
-      builderNeedsReassignment: !account || Boolean(account.disabledAt) || !accounts.allows(account, row.product_id, "ai") };
+      builderNeedsReassignment: !account || Boolean(account.disabledAt) || !accounts.allows(account, row.product_id, "ai") || !accounts.allows(account, row.product_id, "operate") };
+  }
+
+  private builderHandoverOf(row: WorkItemRow): Pick<WorkItemSnapshot,"builderHandover"> {
+    const handover = latestBuilderHandover(this.database,row.id);
+    if (!handover) return {};
+    return {builderHandover:{id:handover.id,status:handover.status,reason:handover.reason,
+      targetAccountId:handover.to_account_id,canTakeOver:handover.status === "completed" && row.status === "in_progress" && !handover.claimed_at}};
   }
 
   private mapWorkItem(row: WorkItemRow): WorkItemSnapshot {
@@ -2363,6 +2402,7 @@ export class MissionGoStore {
       id: row.id,
       key: row.item_key,
       ...this.builderOf(row),
+      ...this.builderHandoverOf(row),
       productId: row.product_id,
       ...(row.source_component_id ? { sourceComponentId: row.source_component_id } : {}),
       affectedComponentIds: this.getAffectedComponentIds(row.id),

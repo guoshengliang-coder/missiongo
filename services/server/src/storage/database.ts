@@ -1964,6 +1964,38 @@ export class MissionGoDatabase {
           .run(202610300816, new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610301320").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE builder_handovers (
+            id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+            from_account_id TEXT, to_account_id TEXT, initiated_by TEXT NOT NULL, note TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('stopping','blocked','completed')), reason TEXT NOT NULL DEFAULT '',
+            resume_dispatch_id TEXT, claimed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+          ) STRICT;
+          CREATE INDEX builder_handovers_item ON builder_handovers(item_id,created_at);
+          CREATE UNIQUE INDEX builder_handovers_pending ON builder_handovers(item_id) WHERE status <> 'completed';
+          CREATE TABLE builder_execution_authorizations (
+            id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+            account_id TEXT NOT NULL, client_id TEXT NOT NULL, dispatch_id TEXT, revoked INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+          ) STRICT;
+          CREATE INDEX builder_execution_authorizations_item ON builder_execution_authorizations(item_id,revoked);
+          CREATE TABLE builder_revoked_dispatches (
+            dispatch_id TEXT PRIMARY KEY REFERENCES dispatches(id),
+            handover_id TEXT NOT NULL REFERENCES builder_handovers(id), stop_command_id TEXT,
+            requires_stop INTEGER NOT NULL DEFAULT 1 CHECK(requires_stop IN (0,1))
+          ) STRICT;
+          CREATE TABLE builder_revoked_external_sessions (
+            session_id TEXT PRIMARY KEY REFERENCES external_agent_sessions(id),
+            handover_id TEXT NOT NULL REFERENCES builder_handovers(id),
+            requires_stop INTEGER NOT NULL DEFAULT 1 CHECK(requires_stop IN (0,1))
+          ) STRICT;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610301320, new Date().toISOString());
+      });
+    }
     if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610301329").get()) {
       this.transaction(() => {
         if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610301329").get()) return;

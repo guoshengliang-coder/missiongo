@@ -2979,3 +2979,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   :root button.single-select.single-select, .single-select-menu { border: 1px solid ButtonText; }
   .single-select-option[aria-selected=true] { outline: 1px solid Highlight; outline-offset: -1px; }
 }
+
+.builder-handover-notice { margin: 16px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.builder-handover-notice p { margin: 8px 0; overflow-wrap: anywhere; }
+.builder-handover-notice button { min-height: 44px; }

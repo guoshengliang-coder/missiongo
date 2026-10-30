@@ -1,3 +1,5 @@
+import { BuilderHandovers } from "./builder-handovers.js";
+import { assertBuilderExecution } from "./builder-authority.js";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AccountSnapshot, AccountStore } from "./accounts-store.js";
@@ -22,12 +24,13 @@ function text(value: unknown, label: string, max = 2000): string {
 /** Cookie-only domain operations. Builder responsibility never bypasses product permissions. */
 export function registerItemDeliveryRoutes(app: FastifyInstance, {store, accounts, requireAccount}: Options) {
   const db = store.database.connection;
+  const handovers = new BuilderHandovers(store);
   const visible = (request: FastifyRequest, productId: string) => {
     const account = requireAccount(request);
     if (!accounts.allows(account, productId, "view")) throw notFound("Product");
     return account;
   };
-  const candidates = (productId: string) => accounts.listAccounts().filter(account => !account.disabledAt && accounts.allows(account, productId, "ai"));
+  const candidates = (productId: string) => accounts.listAccounts().filter(account => !account.disabledAt && accounts.allows(account, productId, "operate") && accounts.allows(account, productId, "ai"));
   const name = (id: string) => accounts.displayNames([id]).get(id) ?? "已删除账号";
   const manages = (account: AccountSnapshot, item: ReturnType<MissionGoStore["getWorkItem"]>) =>
     !item.transferred && accounts.allows(account, item.productId, "operate") &&
@@ -79,37 +82,35 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
     return store.listComponents(productId).find(row => row.id === componentId);
   });
   app.get("/api/v1/items/:itemKey/delivery", async request => {
-    const {itemKey} = request.params as {itemKey:string}; const item = store.getWorkItem(itemKey);
+    const {itemKey} = request.params as {itemKey:string}; let item = store.getWorkItem(itemKey);
     const account = visible(request, item.productId);
-    return { builderAccountId: item.builderAccountId ?? null, builderName: item.builderName ?? null,
+    if (item.builderHandover) { handovers.reconcile(item.builderHandover.id); item = store.getWorkItem(itemKey); }
+    return { builderHandover: item.builderHandover,
+      canTakeOver: Boolean(item.builderHandover?.canTakeOver && item.builderAccountId === account.id && accounts.allows(account,item.productId,"operate") && accounts.allows(account,item.productId,"ai")), builderAccountId: item.builderAccountId ?? null, builderName: item.builderName ?? null,
       builderNeedsReassignment: item.builderNeedsReassignment ?? false, canManage: manages(account,item), canManageBuilder: managesBuilder(account,item), currentAccountId: account.id,
       candidates: candidates(item.productId).map(row => ({id:row.id,name:name(row.id)})),
       performers: accounts.listAccounts().filter(row => !row.disabledAt && accounts.allows(row,item.productId,"view"))
         .map(row => ({id:row.id,name:name(row.id)})), executions: list(itemKey) };
   });
-  app.post("/api/v1/items/:itemKey/builder", async request => {
+  app.post("/api/v1/items/:itemKey/builder", async request => store.database.transaction(() => {
     const {itemKey} = request.params as {itemKey:string}; const {item,account} = writable(request,itemKey,true);
     const input = body(request);
     const target = input.accountId;
     if (target !== null && (typeof target !== "string" || !candidates(item.productId).some(row => row.id === target))) throw invalidInput("Choose an active Builder with AI permission on this product.");
     const draft = typeof input.note === "string" ? input.note.trim() : "";
     if (draft.length > 2000) throw invalidInput("Handover note is too long (max 2000).");
-    return store.database.transaction(() => {
-      // Compare with what the user saw: two simultaneous transfers must not silently overwrite each other.
-      const current = store.getWorkItem(itemKey);
-      if ((current.builderAccountId ?? null) !== input.expectedBuilderAccountId) throw conflict("builder_changed", "The Builder changed. Refresh before transferring.");
-      // A first assignment has no prior owner to hand over from, so an empty note defaults instead of blocking.
-      const note = draft || (current.builderAccountId == null ? "首次分配 builder" : "");
-      if (!note) throw invalidInput("Handover note is required (max 2000).");
-      db.prepare("UPDATE work_items SET builder_account_id=?,builder_assignment='manual',updated_at=? WHERE id=?")
-        .run(target as string | null, new Date().toISOString(), item.id);
-      store.recordDeliveryEvent(itemKey,account.id,"builder_changed",{from:current.builderAccountId ?? null,to:target,note,
-        fromName:current.builderName ?? "待分配",toName:target ? name(target as string) : "待分配"});
-      return store.getWorkItem(itemKey);
-    });
-  });
+    const note = draft || (item.builderAccountId == null ? "首次分配 builder" : "");
+    if (!note) throw invalidInput("Handover note is required (max 2000).");
+    return handovers.start(itemKey,account.id,target as string | null,input.expectedBuilderAccountId,note);
+  }));
+  app.post("/api/v1/items/:itemKey/builder-handover/:handoverId/retry", async request => store.database.transaction(() => {
+    const {itemKey,handoverId} = request.params as {itemKey:string;handoverId:string};
+    writable(request,itemKey,true);
+    return handovers.retry(itemKey,handoverId);
+  }));
   app.post("/api/v1/items/:itemKey/executions", async (request,reply) => {
     const {itemKey} = request.params as {itemKey:string}; const {item,account} = writable(request,itemKey);
+    assertBuilderExecution(store.database,item.id,account.id);
     const input = body(request); const scope = text(input.scope,"Execution scope");
     const kind = input.kind ?? "human";
     if (kind !== "human" && kind !== "agent") throw invalidInput("Unsupported performer type.");
@@ -149,6 +150,7 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
   app.patch("/api/v1/items/:itemKey/executions/:executionId", async request => {
     const {itemKey,executionId} = request.params as {itemKey:string;executionId:string};
     const item = store.getWorkItem(itemKey); const account = visible(request,item.productId); store.assertWorkItemWritable(itemKey);
+    assertBuilderExecution(store.database,item.id,account.id);
     const input = body(request); const status = input.status;
     if (typeof status !== "string" || !["working","completed","blocked","cancelled"].includes(status)) throw invalidInput("Unsupported execution status.");
     const result = status === "working" ? "" : text(input.result,"Execution result");

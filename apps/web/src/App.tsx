@@ -7,7 +7,7 @@ import { useConfirm } from "./confirm-dialog";
 import { itemFilterKey, type ItemFilters } from "@missiongo/domain";
 import { ListFilters } from "./list-filters";
 import { pickItemFilters } from "./item-filters";
-import { ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
+import { BuilderHandoverNotice, ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
 import { ItemDingTalkNotifications } from "./dingtalk-settings";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { Modal } from "./modal";
@@ -1759,7 +1759,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} sessionFailure={sessionFailures.get(selectedItemKey)} onOpenConsoleSession={openAgentSession} />
+            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} onTakeOver={(item) => setDispatchBatch([item])} sessionFailure={sessionFailures.get(selectedItemKey)} onOpenConsoleSession={openAgentSession} />
           </div>
         )}
       </main>
@@ -2629,6 +2629,7 @@ function DetailPane({
   onNotice,
   onOpenItem,
   onStartWork,
+  onTakeOver,
   sessionFailure,
   onOpenConsoleSession,
 }: {
@@ -2639,6 +2640,7 @@ function DetailPane({
   onNotice: (message: string) => void;
   onOpenItem: (itemKey: string) => void;
   onStartWork: (item: WorkItem) => void;
+  onTakeOver: (item: WorkItem) => void;
   /** The error from the session behind the item's latest launch, when it died before finishing (AND-180). */
   sessionFailure: string | null | undefined;
   onOpenConsoleSession: (sessionId: string) => void;
@@ -2864,6 +2866,7 @@ function DetailPane({
         </div>
       </div>
       <div className="detail-scroll">
+        {deliveryQuery.data && <BuilderHandoverNotice itemKey={item.key} delivery={deliveryQuery.data} onTakeOver={() => onTakeOver(item)} />}
         {(item.transferred || item.transferredFrom) && <div className="transfer-banner" role="status">
           {item.transferred && <p>{t("transferReadOnly")}</p>}
           {item.transferredTo && <button type="button" className="text-button" onClick={() => onOpenItem(item.transferredTo!.key)}>{t("transferDestination", { key: item.transferredTo.key })}</button>}
@@ -3016,6 +3019,7 @@ function DetailPane({
                           </a>
                         </p>
                       )}
+                      {event.eventType.startsWith("builder_handover_") && <p>{String(event.payload.reason ?? event.payload.note ?? "正在停止旧执行并交接 Builder")}</p>}
                       {event.eventType === "builder_changed" && <p>{String(event.payload.fromName ?? "待分配")} → {String(event.payload.toName ?? "待分配")}：{String(event.payload.note ?? "")}</p>}
                       {["execution_assigned","execution_handed_over","execution_follow_up","execution_updated"].includes(event.eventType) && <p>{String(event.payload.performer ?? "")}{event.payload.scope ? ` · ${String(event.payload.scope)}` : ""}{event.payload.status ? ` · ${String(event.payload.status)}` : ""} {String(event.payload.note ?? event.payload.result ?? "")}</p>}
                       {event.eventType === "handover_human_confirmed" && <p>{typeof event.payload.note === "string" ? event.payload.note : ""}</p>}

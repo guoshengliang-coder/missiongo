@@ -1,3 +1,5 @@
+import { BuilderHandovers } from "./builder-handovers.js";
+import { assertDispatchExecution, assertExternalExecution, dispatchExecutionRevoked } from "./builder-authority.js";
 import { parseItemFilters } from "./item-filters.js";
 import { AgentArtifacts, ARTIFACT_PREVIEW_POLICY, ARTIFACT_PREVIEW_SHELL } from "./agent-artifacts.js";
 import { localArtifactLinks } from "@missiongo/domain";
@@ -2374,27 +2376,30 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         }
       }
     }
-    const dispatch = dispatchStore.createDispatch({
-      accountId,
-      nodeId: stringField(body, "nodeId")!,
-      agentKind: stringField(body, "agentKind")! as AgentKind,
-      mode: stringField(body, "mode")!,
-      ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
-      ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
-      itemKeys: authorizedKeys,
-      force: body.force === true,
+    const dispatch = store.database.transaction(() => {
+      const dispatch = dispatchStore.createDispatch({
+        accountId,
+        nodeId: stringField(body, "nodeId")!,
+        agentKind: stringField(body, "agentKind")! as AgentKind,
+        mode: stringField(body, "mode")!,
+        ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
+        ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
+        itemKeys: authorizedKeys,
+        force: body.force === true,
+      }, true);
+      for (const itemId of dispatchStore.listDispatchItemIds(dispatch.id)) {
+        store.appendSystemEvent(itemId, "dispatched", {
+          dispatchId: dispatch.id,
+          nodeName: dispatch.nodeName,
+          agentKind: dispatch.agentKind,
+          mode: dispatch.mode,
+          ...(dispatch.model ? { model: dispatch.model } : {}),
+          ...(dispatch.effort ? { effort: dispatch.effort } : {}),
+          itemKeys: dispatch.itemKeys,
+        });
+      }
+      return dispatch;
     });
-    for (const itemId of dispatchStore.listDispatchItemIds(dispatch.id)) {
-      store.appendSystemEvent(itemId, "dispatched", {
-        dispatchId: dispatch.id,
-        nodeName: dispatch.nodeName,
-        agentKind: dispatch.agentKind,
-        mode: dispatch.mode,
-        ...(dispatch.model ? { model: dispatch.model } : {}),
-        ...(dispatch.effort ? { effort: dispatch.effort } : {}),
-        itemKeys: dispatch.itemKeys,
-      });
-    }
     return reply.status(201).send(dispatch);
   });
 
@@ -2407,6 +2412,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const authorizedDispatch = (request: FastifyRequest, dispatchId: string, operate = false) => {
     const account = requireAccount(request);
     const dispatch = dispatchStore.getDispatch(account.id, dispatchId);
+    if (operate) assertDispatchExecution(store.database,dispatchId);
     for (const itemKey of new Set(consoleSessions.members(account.id, dispatchId).flatMap((row) => row.items.map((item) => item.key)))) {
       const key = requireItemPermission(request, itemKey, operate ? "operate" : "view");
       if (operate && !accountStore.allows(account, store.getWorkItem(key).productId, "ai")) {
@@ -2424,6 +2430,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   ) => {
     const account = requireAccount(request);
     const session = agentSessionStore.getForAccount(account.id, sessionId);
+    if (operate && session.dispatchId) assertDispatchExecution(store.database,session.dispatchId);
     if (operate && session.managedExecution) throw conflict("managed_session_control", "Use the scoped coordinator control for this managed session.");
     if (!session.dispatchId) throw notFound("Dispatch");
     const dispatch = dispatchStore.getDispatch(account.id, session.dispatchId);
@@ -2464,6 +2471,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   };
 
   const loadExternalSession = (request: FastifyRequest, sessionId: string, operate = false, useAi = false) => {
+    if (operate) assertExternalExecution(store.database,sessionId);
     const account = requireAccount(request);
     const keys = [...new Set(consoleSessions.members(account.id, sessionId).flatMap((row) => row.items.map((item) => item.key)))];
     const items = keys.map((key) => store.getWorkItem(key));
@@ -3175,7 +3183,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             stopRequested: session.managedExecution.stopRequested || !starting || !options.managedExecution?.enabled } };
         }
       }
-      const approvalControl = session.agentKind === "codex" ? agentApprovalStore.pendingForNode(session.id) : {};
+      const approvalControl = session.agentKind === "codex" && !dispatchExecutionRevoked(store.database,session.dispatchId ?? "") ? agentApprovalStore.pendingForNode(session.id) : {};
       return !acceptsAttachments && session.command?.attachments?.length
         ? { ...session, command: undefined, ...approvalControl }
         : { ...session, ...approvalControl };
@@ -3355,6 +3363,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         agentApprovalStore.recordRetry(node.nodeId, sessionId, stringField(body, "approvalRetryId")!,
           status, stringField(body, "approvalRetryError", false));
       }
+      new BuilderHandovers(store).forSession(sessionId);
       scheduleAttentionClassification(sessionId);
       return reply.status(204).send();
     },

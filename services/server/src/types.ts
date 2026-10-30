@@ -310,6 +310,7 @@ export interface CreateCommentInput {
 }
 
 export interface ClaimWorkItemInput {
+  readonly dispatchId?: string;
   readonly itemKey: string;
   /** Which AI is picking it up, recorded on the timeline so a person can tell them apart. */
   readonly agentId: string;

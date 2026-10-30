@@ -1,3 +1,4 @@
+import { assertBuilderExecution, latestBuilderHandover } from "./builder-authority.js";
 import { completionFields, normalizeCompletion, sameCompletion } from "./completion.js";
 import type { CompletionReference } from "@missiongo/contracts";
 import { createHash, randomUUID } from "node:crypto";
@@ -54,7 +55,7 @@ export class StatusChecks {
   }
   private round(itemId: string): string | null {
     const row = this.db.prepare(`SELECT id FROM work_item_events WHERE item_id=? AND history_source_key IS NULL
-      AND event_type='status_changed' AND to_status='in_progress' ORDER BY timeline_seq DESC LIMIT 1`).get(itemId) as { id: string } | undefined;
+      AND (event_type='status_changed' AND to_status='in_progress' OR event_type='execution_taken_over' OR event_type='builder_changed' AND json_extract(payload_json,'$.handoverId') IS NOT NULL) ORDER BY timeline_seq DESC LIMIT 1`).get(itemId) as { id: string } | undefined;
     return row?.id ?? null;
   }
   private completion(row: Row): CompletionReference {
@@ -62,7 +63,9 @@ export class StatusChecks {
   }
   private valid(row: Row): boolean {
     const item = this.db.prepare("SELECT status,product_id FROM work_items WHERE id=?").get(row.item_id) as { status: string; product_id: string } | undefined;
-    return Boolean(item && !this.store.getProduct(item.product_id).archivedAt && this.round(row.item_id) === row.round_key
+    const builder = latestBuilderHandover(this.store.database,row.item_id);
+    return Boolean((!builder || builder.status === "completed" && (builder.to_account_id === null || builder.to_account_id === row.account_id))
+      && item && !this.store.getProduct(item.product_id).archivedAt && this.round(row.item_id) === row.round_key
       && ["in_progress", "development_complete"].includes(item.status) && !this.db.prepare("SELECT 1 FROM item_transfers WHERE source_item_id=?").get(row.item_id));
   }
   private state(row: Row, status: string, reason = messages[status] ?? status, now = new Date().toISOString()) {
@@ -74,6 +77,7 @@ export class StatusChecks {
     const pullRequestUrl = "url" in completion ? completion.url : "";
     this.store.assertWorkItemWritable(itemKey);
     const item = this.store.getWorkItem(itemKey);
+    assertBuilderExecution(this.store.database,item.id,accountId);
     if (!["in_progress", "development_complete"].includes(item.status)) throw conflict("handover_not_active", "Register a handover for active work only.");
     if (item.status === "development_complete") {
       const current = [...this.store.getTimeline(itemKey)].reverse().find(e => !e.historySourceKey && e.eventType === "status_changed" && e.toStatus === "development_complete");

@@ -65,14 +65,31 @@ export function TransferBuilderModal({itemKey,delivery,onClose}: {itemKey:string
     <form className="delivery-form" onSubmit={event=>{event.preventDefault();transfer.mutate();}}>
       <label>新的 Builder<Select aria-label="新的 Builder" required value={target} onChange={event=>setTarget(event.target.value)}><option value="">请选择 Builder</option>{delivery.candidates.filter(account=>account.id!==delivery.builderAccountId).map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</Select></label>
       <label>交接说明<textarea required={Boolean(delivery.builderAccountId)} maxLength={2000} placeholder={delivery.builderAccountId ? undefined : "可不填，确认后默认记录「首次分配 builder」"} value={note} onChange={event=>setNote(event.target.value)} /></label>
-      <small>转交整体交付责任，保留当前条目状态及执行安排。</small>
+      <small>系统会取消旧排队派单并请求停止旧执行，确认停止后转交。条目状态和历史成果保留；新 Builder 自行选择机器和 Agent 接手。</small>
       {transfer.isError && <p role="alert">{failure(transfer.error)}</p>}
       <div className="form-footer">
         <button type="button" className="secondary-button" disabled={transfer.isPending} onClick={onClose}>取消</button>
-        <button type="submit" className="primary-button" disabled={transfer.isPending || !target}>确认转交</button>
+        <button type="submit" className="primary-button" disabled={transfer.isPending || !target || Boolean(delivery.builderHandover && delivery.builderHandover.status !== "completed")}>确认转交</button>
       </div>
     </form>
   </Modal>;
+}
+
+export function BuilderHandoverNotice({itemKey,delivery,onTakeOver}: {itemKey:string;delivery:ItemDelivery;onTakeOver:()=>void}) {
+  const queryClient = useQueryClient();
+  const handover = delivery.builderHandover;
+  const retry = useMutation({mutationFn:()=>api.retryBuilderHandover(itemKey,handover!.id),onSuccess:async()=>{
+    await Promise.all([queryClient.invalidateQueries({queryKey:["delivery",itemKey]}),queryClient.invalidateQueries({queryKey:["item",itemKey]}),queryClient.invalidateQueries({queryKey:["items"]}),queryClient.invalidateQueries({queryKey:["timeline",itemKey]})]);
+  }});
+  if (!handover) return null;
+  return <section className="builder-handover-notice" aria-label="Builder 交接进度" role="status">
+    <strong>{handover.status === "blocked" ? "交接受阻" : handover.status === "stopping" ? "交接中" : "交接完成"}</strong>
+    <p>{handover.status === "completed" ? `Builder 已转交给 ${delivery.builderName ?? "待分配"}，条目状态和历史成果已保留。`
+      : handover.reason || "正在等待旧执行停止确认，暂时不能启动或继续执行。"}</p>
+    {handover.status === "blocked" && delivery.canManageBuilder && <button type="button" className="secondary-button" disabled={retry.isPending} onClick={()=>retry.mutate()}>重试交接</button>}
+    {delivery.canTakeOver && <button type="button" className="primary-button" onClick={onTakeOver}>选择机器和 Agent 接手</button>}
+    {retry.isError && <p role="alert">{failure(retry.error)}</p>}
+  </section>;
 }
 
 function ExecutionRow({execution,delivery,itemKey,onRefresh,summarized,dispatchDetails}: {execution: ItemExecution;delivery:ItemDelivery;itemKey:string;onRefresh:()=>Promise<unknown>;summarized:boolean;dispatchDetails?:ReactNode}) {

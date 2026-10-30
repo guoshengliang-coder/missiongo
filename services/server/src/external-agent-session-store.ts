@@ -1,3 +1,4 @@
+import { assertBuilderExecution, assertExternalExecution } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import type { AgentKind } from "@missiongo/domain";
@@ -65,6 +66,8 @@ export class ExternalAgentSessionStore {
   register(owner: ExternalSessionOwner, identity: ExternalSessionIdentity, itemKey: string, sessionId?: string): string {
     const item = this.store.getWorkItem(itemKey);
     return this.store.database.transaction(() => {
+      assertBuilderExecution(this.store.database,item.id,owner.accountId);
+      if (sessionId) assertExternalExecution(this.store.database,sessionId);
       if (identity.autoConnect && (identity.refKind !== "native" || !["codex", "opencode", "claude_code"].includes(identity.agentKind))) {
         throw invalidInput("Automatic connection requires a native Codex, Claude Code or OpenCode session ID.");
       }

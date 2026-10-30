@@ -427,6 +427,7 @@ export const api = {
   listBuilders: (productId: string) => request<{builders: Array<{id: string; name: string}>; canConfigure: boolean}>(`/api/v1/products/${encodeURIComponent(productId)}/builders`),
   setModuleBuilder: (productId: string, componentId: string, accountId: string | null) => request<Component>(`/api/v1/products/${encodeURIComponent(productId)}/components/${encodeURIComponent(componentId)}/builder`, {method:"PUT",body:JSON.stringify({accountId})}),
   getDelivery: (itemKey: string) => request<ItemDelivery>(`/api/v1/items/${encodeURIComponent(itemKey)}/delivery`),
+  retryBuilderHandover: (itemKey: string, handoverId: string) => request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/builder-handover/${encodeURIComponent(handoverId)}/retry`, {method:"POST"}),
   transferBuilder: (itemKey: string, input: {accountId: string | null; expectedBuilderAccountId: string | null; note: string}) => request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/builder`, {method:"POST",body:JSON.stringify(input)}),
   assignExecution: (itemKey: string, input: {accountId?: string; kind?: "human" | "agent"; sessionId?: string; scope: string; previousId?: string; note?: string; followUp?: boolean}) => request(`/api/v1/items/${encodeURIComponent(itemKey)}/executions`, {method:"POST",body:JSON.stringify(input)}),
   updateExecution: (itemKey: string, executionId: string, status: string, result: string) => request(`/api/v1/items/${encodeURIComponent(itemKey)}/executions/${encodeURIComponent(executionId)}`, {method:"PATCH",body:JSON.stringify({status,result})}),
@@ -698,6 +699,7 @@ export interface ItemExecution {
   sessionId?: string; recorded?: boolean; sessionStatus?: string; accountName?: string; status: string; result: string; createdAt: string; startedAt: string | null; endedAt: string | null;
 }
 export interface ItemDelivery {
+  builderHandover?: WorkItem["builderHandover"]; canTakeOver?: boolean;
   builderAccountId: string | null; builderName: string | null; builderNeedsReassignment: boolean;
   canManage: boolean; canManageBuilder: boolean; currentAccountId: string; candidates: Array<{id: string; name: string}>;
   performers: Array<{id: string; name: string}>; executions: ItemExecution[];
