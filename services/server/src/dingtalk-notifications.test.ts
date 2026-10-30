@@ -13,7 +13,7 @@ import { AccountStore } from "./accounts-store.js";
 const apps:FastifyInstance[]=[];const dirs:string[]=[];
 const password="synthetic notification password",secret="synthetic-notification-encryption-key",passwordScrypt=hashPassword(password);
 afterEach(async()=>{await Promise.all(apps.splice(0).map(app=>app.close()));for(const dir of dirs.splice(0))rmSync(dir,{recursive:true,force:true});});
-async function fixture() {
+async function fixture(cardTemplateId?:string) {
   const requests:Array<{url:string;body:Record<string,unknown>;method:string;headers:Record<string,string>}>=[];
   let send:()=>Promise<Response>=async()=>Response.json({errcode:0,task_id:123});
   let result:Record<string,unknown>={errcode:0,send_result:{unread_user_id_list:["employee-one"]}};
@@ -32,7 +32,7 @@ async function fixture() {
   const member=accounts.createAccount({email:"person@example.test",role:"member",password});accounts.changeOwnNickname(member.id,"测试提需者");
   accounts.replacePermissions(member.id,[{productId:product.id,canView:true,canOperate:true,canUseAi:true}]);
   const memberCookie=await login(member.email),db=store.database.connection;
-  const service=new DingTalkNotifications(store,accounts,secret,"https://example.test",fetchImpl);
+  const service=new DingTalkNotifications(store,accounts,secret,"https://example.test",fetchImpl,cardTemplateId);
   const call=(method:"GET"|"POST"|"PUT",url:string,payload?:unknown,auth=cookie)=>app.inject({method,url,headers:{cookie:auth},...(payload===undefined?{}:{payload})});
   const config=()=>service.saveSettings({corpId:"synthetic-corp",clientId:"synthetic-app",agentId:"123",clientSecret:"synthetic-client-secret",expectedRevision:0},"admin");
   const bind=()=>service.saveBinding(member.id,{userId:"employee-one",name:"测试人员",department:"测试部门"},null,"admin");
@@ -101,6 +101,22 @@ describe("DingTalk configuration and mappings",()=>{
 });
 describe("DingTalk robot single-chat notices",()=>{
   const configure=(f:Awaited<ReturnType<typeof fixture>>)=>f.service.saveSettings({corpId:"synthetic-corp",clientId:"synthetic-app",agentId:"",deliveryMode:"robot",robotCode:"synthetic-robot",clientSecret:"synthetic-client-secret",expectedRevision:f.service.settings().revision},"admin");
+  it("delivers the configured interactive template and polls its carrier key",async()=>{
+    const f=await fixture("synthetic-template.schema");configure(f);f.bind();f.enable();const item=f.create();f.verify(item.key);
+    const job=f.service.list(item.id)[0]!;
+    f.setSend(async()=>Response.json({success:true,result:{outTrackId:job.id,deliverResults:[{spaceType:"IM_ROBOT",spaceId:"employee-one",success:true,carrierId:"card-query"}]}}));
+    await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
+    const sent=f.requests.find(r=>r.url.endsWith("/card/instances/createAndDeliver"))!;
+    expect(sent.body).toMatchObject({cardTemplateId:"synthetic-template.schema",outTrackId:job.id,openSpaceId:"dtv1.card//IM_ROBOT.employee-one",imRobotOpenDeliverModel:{robotCode:"synthetic-robot"},cardData:{cardParamMap:{projectItem:`Notice project ｜ ${item.key}`,itemTitle:"A verification item",verification:expect.stringContaining("请查看条目中的验收环境"),itemUrl:expect.stringContaining(`item=${item.key}`)}}});
+    f.setResult({sendStatus:"SUCCESS",messageReadInfoList:[{userId:"employee-one",readStatus:"UNREAD"}]});f.due();await f.service.drain();
+    expect(f.service.list(item.id)[0]?.status).toBe("sent");expect(new URL(f.requests.at(-1)!.url).searchParams.get("processQueryKey")).toBe("card-query");
+  });
+  it("does not claim success or retry an ambiguous interactive card response",async()=>{
+    const f=await fixture("synthetic-template.schema");configure(f);f.bind();f.enable();const item=f.create();f.verify(item.key);
+    f.setSend(async()=>Response.json({success:true,result:{deliverResults:[]}}));await f.service.drain();
+    expect(f.service.list(item.id)[0]?.status).toBe("uncertain");f.due();await f.service.drain();
+    expect(f.requests.filter(r=>r.url.endsWith("/card/instances/createAndDeliver"))).toHaveLength(1);
+  });
   it("validates robot configuration, preserves old settings and reuses the same account mappings",async()=>{
     const f=await fixture();f.config();f.bind();
     expect(f.service.settings()).toMatchObject({deliveryMode:"work_notice",robotCode:""});
@@ -120,7 +136,9 @@ describe("DingTalk robot single-chat notices",()=>{
     expect(sent.method).toBe("POST");expect(sent.headers["x-acs-dingtalk-access-token"]).toBe("synthetic-token");
     expect(sent.url).toBe("https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend");
     expect(sent.body).toMatchObject({robotCode:"synthetic-robot",userIds:["employee-one"],msgKey:"sampleActionCard"});
-    const card=JSON.parse(sent.body.msgParam as string);expect(card.singleURL).toContain(`item=${item.key}`);expect(card.text).toContain("无需回复");expect(card.title).toBe("你提出的条目已进入待验证");
+    const card=JSON.parse(sent.body.msgParam as string);expect(card.singleURL).toContain(`item=${item.key}`);expect(card.text).toContain("无需回复");expect(card.title).toBe("待验证 · 需要你验收");
+    expect(card.text).toContain(`### 待验证 · 需要你验收\n\nNotice project ｜ ${item.key}\n\n**A verification item**`);
+    expect(card.text).toContain("请查看条目中的验收环境");expect(card.text).not.toContain("交付时间");expect(card.text).not.toContain("通知编号");expect(card.singleTitle).toBe("查看条目并验收");
     f.setResult({sendStatus:"PROCESSING",messageReadInfoList:[{userId:"employee-one",readStatus:"UNREAD"}]});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
     f.setResult({sendStatus:"SUCCESS",messageReadInfoList:[{userId:"other-user",readStatus:"UNREAD"}]});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
     f.setResult({sendStatus:"SUCCESS",messageReadInfoList:[{userId:"employee-one",readStatus:"UNREAD"}]});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("sent");
@@ -195,22 +213,32 @@ describe("durable verification notification delivery",()=>{
     f.store.transitionWorkItem({itemKey:item.key,to:"ready",actor:"human",reason:"verification_failed",note:"Needs another round"});f.verify(item.key);
     await Promise.all([f.service.drain(),f.service.drain()]);
     expect(f.requests.filter(r=>r.url.includes("asyncsend_v2"))).toHaveLength(1);
-    const message=f.requests.at(-1)!.body.msg as {action_card:{title:string;single_url:string}};
-    expect(message.action_card.title).toBe("你提出的条目已进入待验证");expect(message.action_card.single_url).toContain(`item=${item.key}`);
+    const message=f.requests.at(-1)!.body.msg as {action_card:{title:string;single_url:string;markdown:string}};
+    expect(message.action_card.title).toBe("待验证 · 需要你验收");expect(message.action_card.single_url).toContain(`item=${item.key}`);
+    expect(message.action_card.markdown).toContain(`Notice project ｜ ${item.key}\n\n**A verification item**`);expect(message.action_card.markdown).toContain("**验收提示**");
     expect(f.service.list(item.id)[0]?.status).toBe("accepted");
     f.setResult({errcode:0,send_result:{}});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
     f.setResult({errcode:0,send_result:{unread_user_id_list:["employee-one"]}});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("sent");
     expect(()=>f.service.retry(item.key,f.service.list(item.id)[0]!.id,"admin")).toThrow(/只能补发/);
     expect(()=>f.verify(item.key)).toThrow();expect(f.service.list(item.id)).toHaveLength(2);
   });
-  it("uses release evidence and the matching development summary for published wording",async()=>{
+  it("uses release evidence for platform-specific acceptance instructions",async()=>{
     const f=await fixture();f.config();f.bind();f.enable();const item=f.create();
     f.store.transitionWorkItem({itemKey:item.key,to:"in_progress",actor:"human",reason:"manual_override"});
     const completion={kind:"commit" as const,commit:"a".repeat(40),targetBranch:"main"};
-    f.store.submitDevelopmentComplete({itemKey:item.key,completion,requiredArtifacts:["web"],summary:"Fixed the reported behavior",idempotencyKey:"synthetic-completion"});
-    f.store.submitForVerification({itemKey:item.key,completion,deployedCommit:"b".repeat(40),receiptDigest:"c".repeat(64),releases:[{artifact:"web",version:"synthetic-v1",sourceCommit:"b".repeat(40)}],idempotencyKey:"synthetic-verification"});
+    f.store.submitDevelopmentComplete({itemKey:item.key,completion,requiredArtifacts:["web","androidApp","macosApp","windowsApp","gateway"],summary:"Fixed the reported behavior",idempotencyKey:"synthetic-completion"});
+    f.store.submitForVerification({itemKey:item.key,completion,deployedCommit:"b".repeat(40),receiptDigest:"c".repeat(64),releases:["web","androidApp","macosApp","windowsApp","gateway"].map(artifact=>({artifact,version:"synthetic-v1",sourceCommit:"b".repeat(40)})),idempotencyKey:"synthetic-verification"});
     await f.service.drain();const msg=JSON.stringify(f.requests.at(-1)?.body.msg);
-    expect(msg).toContain("已发布");expect(msg).toContain("synthetic-v1");expect(msg).toContain("Fixed the reported behavior");
+    expect(msg).toContain("**验收版本**");expect(msg).toContain("Web：synthetic-v1");expect(msg).toContain("Android App：synthetic-v1");expect(msg).toContain("macOS App：synthetic-v1");expect(msg).toContain("Windows App：synthetic-v1");
+    expect(msg).toContain("重新打开网站");expect(msg).toContain("下载并安装上述版本");expect(msg).toContain("其他产物");expect(msg).not.toContain("Fixed the reported behavior");
+  });
+  it("does not let item content inject card formatting",async()=>{
+    const f=await fixture();f.config();f.bind();f.enable();
+    const item=f.store.createWorkItem({productId:f.product.id,title:"Title **bold** [link](https://example.test)",description:"Details",type:"requirement",priority:"normal",attribution:{accountId:f.member.id}});
+    f.verify(item.key);await f.service.drain();
+    const message=f.requests.at(-1)!.body.msg as {action_card:{markdown:string}};
+    expect(message.action_card.markdown).toMatch(/Title\s+bold\s+link \(https:\/\/example\.test\)/);
+    expect(message.action_card.markdown).not.toContain("[link](");
   });
   it("rechecks current access, account activity, bindings and stale rounds before sending",async()=>{
     const f=await fixture();f.config();f.bind();f.enable();
