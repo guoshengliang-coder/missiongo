@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { AUDIT_SOURCE } from "./audit-page.mjs";
 
 for (const width of [320, 353, 375, 390, 768, 1440]) for (const theme of ["light", "dark"] as const) {
   test.describe(`${width}px ${theme} item information`, () => {
@@ -65,6 +66,12 @@ for (const width of [320, 353, 375, 390, 768, 1440]) for (const theme of ["light
       await expect(history.locator(".execution-list")).toBeHidden();
       await page.locator(".detail-pane").screenshot({ path: testInfo.outputPath("detail-collapsed.png") });
       await page.screenshot({ path: testInfo.outputPath("viewport.png") });
+      const audit = await page.evaluate(AUDIT_SOURCE) as { text: Array<{ sample: string; fontSize: number; fontWeight: number; contrast: number }> };
+      for (const text of audit.text) {
+        expect(text.fontSize, text.sample).toBeGreaterThanOrEqual(11);
+        const large = text.fontSize >= 24 || text.fontSize >= 18.66 && text.fontWeight >= 700;
+        expect(text.contrast, text.sample).toBeGreaterThanOrEqual(large ? 3 : 4.5);
+      }
       await history.locator("summary").click();
       const rows = history.locator(".execution-row");
       await expect(rows).toHaveCount(4);

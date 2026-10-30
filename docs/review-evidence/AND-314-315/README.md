@@ -19,7 +19,7 @@ Builder 使用独立的标签与加重人员名，列表和详情一致；空间
 
 - `npm run check`：1,237 项测试通过，2 项原有测试跳过；静态检查、类型检查及构建通过。
 - `npx playwright test --project=audit tests/ui/audit.spec.ts`：67 项可读性、触控、溢出和现有交互检查通过。
-- `npx playwright test --project=audit tests/ui/item-mobile-clarity.audit.spec.ts`：14 项检查通过，覆盖 320、353、375、390、768、1440px 的明暗主题，及失败状态、无会话入口、未知启动时间。
+- `npx playwright test --project=audit tests/ui/item-mobile-clarity.audit.spec.ts`：14 项检查通过，覆盖 320、353、375、390、768、1440px 的明暗主题，及失败状态、无会话入口、未知启动时间；实际测量可见文字字号与对比度。
 - `npx playwright test --project=audit tests/ui/builder-delivery.audit.spec.ts`：4 项分配、转交、人工执行与多轮交接回归通过。
 
 ## 人工回归
