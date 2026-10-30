@@ -1,11 +1,11 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import type { DingTalkSettings, DingTalkSettingsInput, DingTalkBinding, DingTalkBindingInput, DingTalkImportRow, DingTalkImportPreview, DingTalkNotification, DingTalkProjectSettings } from "@missiongo/domain";
+import type { DingTalkDeliveryMode, DingTalkSettings, DingTalkSettingsInput, DingTalkBinding, DingTalkBindingInput, DingTalkImportRow, DingTalkImportPreview, DingTalkNotification, DingTalkProjectSettings } from "@missiongo/domain";
 import type { MissionGoStore } from "./store.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import type { AccountSnapshot, AccountStore } from "./accounts-store.js";
 import { conflict, invalidInput, notFound, MissionGoError } from "./errors.js";
 
-interface ConfigRow { corp_id: string; client_id: string; agent_id: string; encrypted_secret: string; revision: number }
+interface ConfigRow { corp_id: string; client_id: string; agent_id: string; delivery_mode: DingTalkDeliveryMode; robot_code: string; encrypted_secret: string; revision: number }
 interface JobRow {
   id: string; event_id: string | null; item_id: string | null; account_id: string | null;
   kind: "verification" | "test"; status: DingTalkNotification["status"]; reason: string;
@@ -14,7 +14,13 @@ interface JobRow {
   created_at: string; updated_at: string;
 }
 class ProviderError extends Error {
-  constructor(readonly code: number) { super(`钉钉接口返回错误（${code}），请检查应用权限、凭据和接收人范围。`); }
+  constructor(readonly code: number | string) {
+    const safeCode = /^[\w.-]{1,120}$/.test(String(code)) ? String(code) : "unknown";
+    const guidance = safeCode === "robot.oto.notExist" ? "没有有效的机器人单聊会话，请在钉钉确认该成员可使用机器人，并尝试打开机器人会话。"
+      : safeCode === "chatbotId.notAllow.sendOTO" ? "机器人尚未允许主动单聊，请在钉钉后台启用并发布机器人及应用。"
+      : "请检查应用权限（机器人需企业内机器人发送消息权限）、凭据和接收人范围。";
+    super(`钉钉接口返回错误（${safeCode}），${guidance}`);
+  }
 }
 const now = () => new Date().toISOString();
 const after = (ms: number) => new Date(Date.now() + ms).toISOString();
@@ -38,7 +44,7 @@ export function enqueueVerificationNotification(database: MissionGoDatabase, eve
       enabled?.enabled ? "queued" : "skipped",enabled?.enabled ? "" : "项目未开启通知",at,at,at);
 }
 
-/** One-way work notices. Credentials and provider response bodies never enter logs. */
+/** One-way work notices or robot DMs. Provider response bodies never enter logs. */
 export class DingTalkNotifications {
   private readonly db;
   private readonly key: Buffer | undefined;
@@ -54,7 +60,7 @@ export class DingTalkNotifications {
   private config(): ConfigRow | undefined { return this.db.prepare("SELECT * FROM dingtalk_settings WHERE id=1").get() as unknown as ConfigRow | undefined; }
   settings(): DingTalkSettings {
     const row = this.config();
-    return {corpId:row?.corp_id ?? "",clientId:row?.client_id ?? "",agentId:row?.agent_id ?? "",configured:Boolean(row && this.key),revision:row?.revision ?? 0};
+    return {corpId:row?.corp_id ?? "",clientId:row?.client_id ?? "",agentId:row?.agent_id ?? "",deliveryMode:row?.delivery_mode ?? "work_notice",robotCode:row?.robot_code ?? "",configured:Boolean(row && this.key),revision:row?.revision ?? 0};
   }
   private audit(actor: string, action: string, subject: string, details: unknown = {}) {
     this.db.prepare("INSERT INTO dingtalk_audit(id,actor_account_id,action,subject,details_json,created_at) VALUES(?,?,?,?,?,?)")
@@ -62,11 +68,17 @@ export class DingTalkNotifications {
   }
   saveSettings(input: DingTalkSettingsInput, actor: string): DingTalkSettings {
     if (!this.key) throw invalidInput("请先为服务器配置持久化会话密钥，再保存钉钉凭据。");
-    const corpId=identifier(input.corpId,"组织 ID"),clientId=identifier(input.clientId,"Client ID"),agentId=identifier(input.agentId,"Agent ID");
-    if (!/^\d+$/.test(agentId)) throw invalidInput("Agent ID 必须为数字。");
+    const corpId=identifier(input.corpId,"组织 ID"),clientId=identifier(input.clientId,"Client ID");
     return this.store.database.transaction(() => {
       const previous=this.config();
       if (input.expectedRevision !== (previous?.revision ?? 0)) throw conflict("dingtalk_settings_changed","配置已被修改，请刷新后重试。");
+      const deliveryMode=input.deliveryMode===undefined ? previous?.delivery_mode ?? "work_notice" : input.deliveryMode;
+      if (deliveryMode!=="work_notice" && deliveryMode!=="robot") throw invalidInput("通知方式无效。");
+      const agentId=text(input.agentId,"Agent ID",100,deliveryMode==="work_notice");
+      if (agentId && !/^\d+$/.test(agentId)) throw invalidInput("Agent ID 必须为数字。");
+      const robotCode=input.robotCode===undefined ? previous?.robot_code ?? "" : text(input.robotCode,"机器人编码",100,false);
+      if (robotCode && !/^[A-Za-z0-9_-]+$/.test(robotCode)) throw invalidInput("机器人编码只能包含字母、数字、下划线和连字符，请勿填写 Webhook 地址。");
+      if (deliveryMode==="robot" && !robotCode) throw invalidInput("机器人单聊通知需要填写 robotCode。");
       if (previous && previous.corp_id !== corpId && this.db.prepare("SELECT 1 FROM dingtalk_bindings LIMIT 1").get()) throw conflict("dingtalk_organization_bound","更换组织前，请先解除现有人员绑定。");
       let encrypted=previous?.encrypted_secret;
       if (input.clientSecret !== undefined) {
@@ -75,9 +87,9 @@ export class DingTalkNotifications {
         const ciphertext=Buffer.concat([cipher.update(secret,"utf8"),cipher.final()]);
         encrypted=Buffer.concat([nonce,cipher.getAuthTag(),ciphertext]).toString("base64");
       } else if (!previous || previous.corp_id !== corpId || previous.client_id !== clientId) throw invalidInput("首次配置或更换组织、应用时必须填写 Client Secret。");
-      this.db.prepare(`INSERT INTO dingtalk_settings(id,corp_id,client_id,agent_id,encrypted_secret,revision,updated_at) VALUES(1,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET corp_id=excluded.corp_id,client_id=excluded.client_id,agent_id=excluded.agent_id,encrypted_secret=excluded.encrypted_secret,revision=excluded.revision,updated_at=excluded.updated_at`)
-        .run(corpId,clientId,agentId,encrypted!, (previous?.revision ?? 0)+1,now());
+      this.db.prepare(`INSERT INTO dingtalk_settings(id,corp_id,client_id,agent_id,delivery_mode,robot_code,encrypted_secret,revision,updated_at) VALUES(1,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET corp_id=excluded.corp_id,client_id=excluded.client_id,agent_id=excluded.agent_id,delivery_mode=excluded.delivery_mode,robot_code=excluded.robot_code,encrypted_secret=excluded.encrypted_secret,revision=excluded.revision,updated_at=excluded.updated_at`)
+        .run(corpId,clientId,agentId,deliveryMode,robotCode,encrypted!, (previous?.revision ?? 0)+1,now());
       this.token=undefined; this.audit(actor,"configure","integration");
       return this.settings();
     });
@@ -209,8 +221,11 @@ export class DingTalkNotifications {
   }
   private async json(url: string, init?: RequestInit): Promise<Record<string,unknown>> {
     const response=await this.fetchImpl(url,{...init,redirect:"error",signal:AbortSignal.timeout(10_000)});
-    if (!response.ok) throw new Error("钉钉服务暂时不可用");
     const body=await response.json() as Record<string,unknown>;
+    if (!response.ok) {
+      if (response.status>=400 && response.status<500) throw new ProviderError(typeof body.errcode==="number" && body.errcode!==0 ? body.errcode : typeof body.code==="string" ? body.code : `HTTP_${response.status}`);
+      throw new Error("钉钉服务暂时不可用");
+    }
     if (typeof body.errcode==="number" && body.errcode!==0) throw new ProviderError(body.errcode);
     return body;
   }
@@ -237,7 +252,19 @@ export class DingTalkNotifications {
   private async api(path: string, token: string, body: unknown) {
     const url=new URL(`https://oapi.dingtalk.com/topapi/message/corpconversation/${path}`);url.searchParams.set("access_token",token);
     try { return await this.json(url.href,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}); }
-    catch(error) { if (error instanceof ProviderError && [40014,42001,40001,88].includes(error.code)) this.token=undefined;throw error; }
+    catch(error) { if (error instanceof ProviderError && (typeof error.code==="number" && [40014,42001,40001,88].includes(error.code) || error.code==="HTTP_401")) this.token=undefined;throw error; }
+  }
+  private async robotApi(path: "batchSend" | "readStatus", token: string, body: Record<string, unknown>) {
+    const url=new URL(`https://api.dingtalk.com/v1.0/robot/oToMessages/${path}`);
+    const headers={"content-type":"application/json","x-acs-dingtalk-access-token":token};
+    if(path==="readStatus") for(const [key,value] of Object.entries(body)) url.searchParams.set(key,String(value));
+    try {return await this.json(url.href,path==="readStatus" ? {headers} : {method:"POST",headers,body:JSON.stringify(body)});}
+    catch(error){if(error instanceof ProviderError && /token|HTTP_401/i.test(String(error.code)))this.token=undefined;throw error;}
+  }
+  private robotMessage(job: JobRow, message: Record<string, unknown>) {
+    if(job.kind==="test") return {msgKey:"sampleText",msgParam:JSON.stringify({content:`这是一条机器人单聊测试通知。此账号仅发送系统通知，请到 MissionGo 处理，无需回复。\n测试编号：${job.id}`})};
+    const card=message.action_card as {title:string;markdown:string;single_title:string;single_url:string};
+    return {msgKey:"sampleActionCard",msgParam:JSON.stringify({title:card.title,text:card.markdown+"\n\n此账号仅发送系统通知，请到 MissionGo 处理，无需回复。",singleTitle:card.single_title,singleURL:card.single_url})};
   }
   private message(job: JobRow): Record<string,unknown> {
     if (job.kind==="test") return {msgtype:"text",text:{content:`这是一条账号绑定测试通知。收到后无需回复。\n测试编号：${job.id}`}};
@@ -274,9 +301,21 @@ export class DingTalkNotifications {
     const message=this.message(job);
     this.db.prepare("UPDATE dingtalk_notifications SET recipient=?,config_revision=?,binding_revision=? WHERE id=?").run(binding.userId,config.revision,binding.revision,job.id);
     try {
-      const body=await this.api("asyncsend_v2",token,{agent_id:config.agent_id,userid_list:binding.userId,to_all_user:false,msg:message});
-      if (typeof body.task_id!=="number" && typeof body.task_id!=="string") throw new Error("missing task");
-      this.db.prepare("UPDATE dingtalk_notifications SET status='accepted',task_id=?,reason='钉钉已受理，等待发送结果',next_at=?,lease_until=NULL,updated_at=? WHERE id=? AND status='sending' AND attempts=?").run(String(body.task_id),after(2000),now(),job.id,job.attempts);
+      let taskId: string;
+      if(config.delivery_mode==="robot") {
+        const body=await this.robotApi("batchSend",token,{robotCode:config.robot_code,userIds:[binding.userId],...this.robotMessage(job,message)});
+        const invalid=body.invalidStaffIdList,limited=body.flowControlledStaffIdList;
+        if([invalid,limited].some(value=>Array.isArray(value)&&value.includes(binding.userId))) {
+          this.fail(job,"机器人未发送成功，请检查企业 userId、应用可使用范围或发送频率。");return;
+        }
+        if(typeof body.processQueryKey!=="string" || !body.processQueryKey.trim())throw new Error("missing robot task");
+        taskId=body.processQueryKey;
+      } else {
+        const body=await this.api("asyncsend_v2",token,{agent_id:config.agent_id,userid_list:binding.userId,to_all_user:false,msg:message});
+        if (typeof body.task_id!=="number" && typeof body.task_id!=="string") throw new Error("missing task");
+        taskId=String(body.task_id);
+      }
+      this.db.prepare("UPDATE dingtalk_notifications SET status='accepted',task_id=?,reason='钉钉已受理，等待发送结果',next_at=?,lease_until=NULL,updated_at=? WHERE id=? AND status='sending' AND attempts=?").run(taskId,after(2000),now(),job.id,job.attempts);
     } catch(error) {
       if(error instanceof ProviderError) this.fail(job,error.message);
       else this.db.prepare("UPDATE dingtalk_notifications SET status='uncertain',reason='发送结果不明，请先核实接收情况再手动补发，以免重复通知。',lease_until=NULL,updated_at=? WHERE id=? AND status='sending' AND attempts=?").run(now(),job.id,job.attempts);
@@ -296,6 +335,14 @@ export class DingTalkNotifications {
     if(!lock.changes)return;
     try {
       const token=await this.accessToken(config);
+      if(config.delivery_mode==="robot") {
+        const body=await this.robotApi("readStatus",token,{robotCode:config.robot_code,processQueryKey:job.task_id});
+        const recipient=Array.isArray(body.messageReadInfoList) && body.messageReadInfoList.some(value=>value && typeof value==="object" && (value as {userId?:unknown}).userId===job.recipient && ["READ","UNREAD"].includes(String((value as {readStatus?:unknown}).readStatus)));
+        if(body.sendStatus==="SUCCESS" && recipient) this.update(job.id,"sent","钉钉确认机器人单聊发送成功；不代表验收通过。");
+        else if(body.sendStatus==="RECALLED") this.update(job.id,"skipped","机器人消息已撤回，未自动重新发送。");
+        else this.db.prepare("UPDATE dingtalk_notifications SET next_at=?,lease_until=NULL WHERE id=?").run(after(15_000),job.id);
+        return;
+      }
       const body=await this.api("getsendresult",token,{agent_id:config.agent_id,task_id:job.task_id});
       const result=body.send_result as Record<string,unknown>|undefined;
       const has=(key:string)=>Array.isArray(result?.[key]) && (result![key] as unknown[]).includes(job.recipient);

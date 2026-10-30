@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { DingTalkSettings, DingTalkBinding, DingTalkBindingInput, DingTalkNotification, DingTalkNotificationStatus, DingTalkImportRow, DingTalkImportPreview } from "@missiongo/domain";
+import type { DingTalkDeliveryMode, DingTalkSettings, DingTalkBinding, DingTalkBindingInput, DingTalkNotification, DingTalkNotificationStatus, DingTalkImportRow, DingTalkImportPreview } from "@missiongo/domain";
 import { api } from "./api";
 import { useSettingsDraft } from "./settings-drafts";
 import { parseDingTalkCsv } from "./dingtalk-csv";
 import { Modal } from "./modal";
+import { Select } from "./select";
 
 const failure = (error: unknown) => error instanceof Error ? error.message : "操作失败，请重试。";
 const statusLabels: Record<DingTalkNotificationStatus, string> = { queued: "等待发送", sending: "正在发送", accepted: "已受理，待确认结果", sent: "发送成功", failed: "发送失败", skipped: "未发送", uncertain: "发送结果不明" };
 const inProgress = (notice: DingTalkNotification | undefined) => Boolean(notice && ["queued", "sending", "accepted"].includes(notice.status));
+const deliveryLabel = (mode: DingTalkDeliveryMode) => mode === "robot" ? "机器人单聊通知" : "个人工作通知";
 
 function NotificationState({ notice }: { notice: DingTalkNotification }) {
   return <span className="dingtalk-notice-state"><strong>{statusLabels[notice.status]}</strong>{notice.reason && <small>{notice.reason}</small>}</span>;
@@ -24,9 +26,10 @@ function CancelDialogButton({ label = "取消" }: { label?: string }) {
 
 function ApplicationInfo({ settings }: { settings: DingTalkSettings }) {
   return <dl className="dingtalk-info-grid">
+    <div><dt>通知方式</dt><dd>{deliveryLabel(settings.deliveryMode)}</dd></div>
     <div><dt>组织 ID（CorpId）</dt><dd>{settings.corpId || "未配置"}</dd></div>
     <div><dt>Client ID（AppKey）</dt><dd>{settings.clientId || "未配置"}</dd></div>
-    <div><dt>Agent ID</dt><dd>{settings.agentId || "未配置"}</dd></div>
+    {settings.deliveryMode === "robot" ? <div><dt>机器人编码（robotCode）</dt><dd>{settings.robotCode || "未配置"}</dd></div> : <div><dt>Agent ID</dt><dd>{settings.agentId || "未配置"}</dd></div>}
     <div><dt>Client Secret（AppSecret）</dt><dd>{settings.configured ? "已配置" : "未配置"}</dd></div>
   </dl>;
 }
@@ -39,24 +42,31 @@ function IntegrationEditor({ settings, onClose, onSaved }: { settings: DingTalkS
   const [corpId, setCorpId] = useState(original.corpId);
   const [clientId, setClientId] = useState(original.clientId);
   const [agentId, setAgentId] = useState(original.agentId);
+  const [deliveryMode, setDeliveryMode] = useState<DingTalkDeliveryMode>(original.deliveryMode);
+  const [robotCode, setRobotCode] = useState(original.robotCode);
   const [secret, setSecret] = useState("");
-  const dirty = corpId !== original.corpId || clientId !== original.clientId || agentId !== original.agentId || Boolean(secret);
+  const dirty = corpId !== original.corpId || clientId !== original.clientId || agentId !== original.agentId || deliveryMode !== original.deliveryMode || robotCode !== original.robotCode || Boolean(secret);
   const save = useMutation({
-    mutationFn: () => api.saveDingtalkSettings({ corpId, clientId, agentId, ...(secret ? { clientSecret: secret } : {}), expectedRevision: original.revision }),
+    mutationFn: () => api.saveDingtalkSettings({ corpId, clientId, agentId, deliveryMode, robotCode, ...(secret ? { clientSecret: secret } : {}), expectedRevision: original.revision }),
     onSuccess: async data => {
       setSecret("");
       client.setQueryData(["dingtalk-settings"], data);
-      await client.invalidateQueries({ queryKey: ["dingtalk-project"] });
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["dingtalk-project"] }),
+        client.invalidateQueries({ queryKey: ["dingtalk-bindings"] }),
+      ]);
       onSaved();
     },
   });
   return <Modal title={original.configured ? "修改钉钉配置" : "配置钉钉应用"} subtitle="组织与应用" onClose={onClose} dirty={dirty} pending={save.isPending}>
     <form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!save.isPending) save.mutate(); }}>
+      <label>通知方式<Select aria-label="通知方式" value={deliveryMode} onChange={event => setDeliveryMode(event.target.value as DingTalkDeliveryMode)}><option value="robot">机器人单聊通知</option><option value="work_notice">个人工作通知</option></Select></label>
       <label>组织 ID（CorpId）<input required maxLength={100} value={corpId} onChange={event => setCorpId(event.target.value)} /></label>
       <label>Client ID（AppKey）<input required maxLength={100} value={clientId} onChange={event => setClientId(event.target.value)} autoComplete="off" /></label>
-      <label>Agent ID<input required inputMode="numeric" pattern="[0-9]+" maxLength={100} value={agentId} onChange={event => setAgentId(event.target.value)} /></label>
+      {deliveryMode === "robot" ? <label>机器人编码（robotCode）<input required maxLength={100} value={robotCode} onChange={event => setRobotCode(event.target.value)} placeholder="填写钉钉后台显示的 robotCode" autoComplete="off" /></label> : <label>Agent ID<input required inputMode="numeric" pattern="[0-9]+" maxLength={100} value={agentId} onChange={event => setAgentId(event.target.value)} /></label>}
       <label>Client Secret（AppSecret）<input type="password" autoComplete="new-password" maxLength={512} value={secret} placeholder={original.configured ? "已配置；留空保留原密钥" : "请输入应用密钥"} required={!original.configured} onChange={event => setSecret(event.target.value)} /></label>
       <p className="account-note">填写同一组织、同一企业内部应用的凭据。密钥加密保存在服务器；更换组织前需解除现有人员绑定。</p>
+      {deliveryMode === "robot" && <p className="account-note">在钉钉开放平台为此应用启用机器人，开通“企业内机器人发送消息权限”，并发布机器人及应用。此处仅发送单向通知，不接入聊天问答。机器人名称和头像在钉钉后台设置。</p>}
       {save.isError && <p role="alert">{failure(save.error)}</p>}
       <div className="form-footer"><CancelDialogButton /><button className="primary-button" disabled={!dirty || save.isPending}>{save.isPending ? "正在保存…" : "保存钉钉配置"}</button></div>
     </form>
@@ -68,7 +78,7 @@ function CredentialCheckDialog({ settings, onClose }: { settings: DingTalkSettin
   return <Modal title="检查应用凭据" subtitle="组织与应用" onClose={onClose} pending={check.isPending}>
     <div className="dialog-form">
       <ApplicationInfo settings={settings} />
-      <p className="account-note">此检查只验证应用访问凭据。请通过人员测试通知，进一步确认 Agent ID、用户 ID 与应用可使用范围。</p>
+      <p className="account-note">此检查只验证应用访问凭据。请通过人员测试通知，进一步确认{settings.deliveryMode === "robot" ? "机器人编码、发送权限" : "Agent ID"}、用户 ID 与应用可使用范围。</p>
       {check.isError && <p role="alert">{failure(check.error)}</p>}
       {check.isSuccess && <p role="status">应用凭据可用。请继续发送人员测试通知，确认实际送达。</p>}
       <div className="form-footer"><CancelDialogButton label="关闭" /><button type="button" className="primary-button" disabled={check.isPending} onClick={() => check.mutate()}>{check.isPending ? "正在检查…" : "检查应用凭据"}</button></div>
@@ -87,7 +97,7 @@ function IntegrationSummary() {
       <button type="button" className="secondary-button" disabled={!query.data.configured} onClick={() => setDialog("check")}>检查应用凭据</button>
       <button type="button" className="secondary-button" onClick={() => { setSaved(false); setDialog("edit"); }}>{query.data.configured ? "修改配置" : "配置应用"}</button>
     </div></div>
-    <p className="account-note">通过企业内部应用发送个人工作通知，应用可使用范围须覆盖接收人。</p>
+    <p className="account-note">{query.data.deliveryMode === "robot" ? "以企业内部应用机器人的身份，在个人单聊会话中发送系统通知。" : "通过企业内部应用发送个人工作通知；如需机器人会话，请在“修改配置”中切换通知方式。"}应用可使用范围须覆盖接收人。</p>
     <ApplicationInfo settings={query.data} />
     {saved && <p role="status">钉钉配置已保存。</p>}
     {dialog === "edit" && <IntegrationEditor settings={query.data} onClose={() => setDialog(null)} onSaved={() => { setSaved(true); setDialog(null); }} />}
@@ -127,6 +137,7 @@ function BindingEditorDialog({ accountId, email, binding, onClose, onSaved }: { 
 
 function BindingTestDialog({ accountId, email, binding, test, disabled, onClose }: { accountId: string; email: string; binding: DingTalkBinding | undefined; test: DingTalkNotification | undefined; disabled: boolean; onClose: () => void }) {
   const client = useQueryClient();
+  const settings = useQuery({ queryKey: ["dingtalk-settings"], queryFn: api.dingtalkSettings });
   const [, tick] = useState(0);
   useEffect(() => {
     if (!test) return;
@@ -146,15 +157,19 @@ function BindingTestDialog({ accountId, email, binding, test, disabled, onClose 
   return <Modal title="发送测试通知" subtitle={email} onClose={onClose} pending={send.isPending}>
     <div className="dialog-form">
       <dl className="dingtalk-info-grid">
+        <div><dt>通知方式</dt><dd>{settings.data ? deliveryLabel(settings.data.deliveryMode) : "正在加载…"}</dd></div>
         <div><dt>接收人</dt><dd>{binding?.name || email}</dd></div>
         <div><dt>钉钉企业用户 ID（userId）</dt><dd>{binding?.userId || "未绑定"}</dd></div>
+        {settings.data?.deliveryMode === "robot" && <div><dt>机器人编码（robotCode）</dt><dd>{settings.data.robotCode}</dd></div>}
       </dl>
       <p className="account-note">向以上人员发送一条账号绑定测试通知，收到后无需回复。测试不依赖项目通知开关。</p>
+      {settings.data?.deliveryMode === "robot" && <p className="account-note">请到钉钉的机器人单聊会话查看通知。首次触达是否需要打开会话，以这次测试为准。</p>}
+      {settings.isError && <p role="alert">{failure(settings.error)}</p>}
       {(!binding || disabled) && <p role="alert">{disabled ? "账号已停用，无法发送测试通知。" : "人员绑定已解除，请先重新绑定。"}</p>}
       {send.isError && <p role="alert">{failure(send.error)}</p>}
       {test && <div role="status"><NotificationState notice={test} /><p className="account-note">测试时间：{new Date(test.createdAt).toLocaleString()}</p></div>}
       {(limited || inProgress(test)) && <p className="account-note">请等待上次测试完成，至少间隔 30 秒后再发送。</p>}
-      <div className="form-footer"><CancelDialogButton label="关闭" /><button type="button" className="primary-button" disabled={!binding || disabled || send.isPending || inProgress(test) || limited} onClick={() => send.mutate()}>{send.isPending ? "正在提交…" : "发送测试通知"}</button></div>
+      <div className="form-footer"><CancelDialogButton label="关闭" /><button type="button" className="primary-button" disabled={!binding || disabled || !settings.data?.configured || settings.isError || send.isPending || inProgress(test) || limited} onClick={() => send.mutate()}>{send.isPending ? "正在提交…" : "发送测试通知"}</button></div>
     </div>
   </Modal>;
 }
@@ -241,7 +256,7 @@ export function DingTalkProjectSettings({productId}:{productId:string}) {
   useSettingsDraft(Boolean(query.data && enabled!==query.data.enabled),save.isPending);
   if(query.isPending)return <p role="status">正在加载通知配置…</p>;
   if(query.isError)return <p role="alert">{failure(query.error)}</p>;
-  return <section className="dingtalk-section"><h2>待验证通知</h2><p className="account-note">进入待验证时，通过钉钉个人工作通知提醒提需者；开启后不补发历史条目。</p>
+  return <section className="dingtalk-section"><h2>待验证通知</h2><p className="account-note">进入待验证时，通过管理员配置的钉钉通知方式提醒提需者；开启后不补发历史条目。</p>
     {!query.data.integrationConfigured && <p role="status">钉钉应用尚未配置，请联系系统管理员。</p>}
     <label className="project-administrator-choice"><input type="checkbox" checked={enabled} disabled={!query.data.canConfigure || save.isPending} onChange={event=>setEnabled(event.target.checked)} /><span>进入待验证时通知提需者</span></label>
     <p className="account-note">接收人须由管理员在“管理设置 → 钉钉集成”中绑定，且具有本项目查看权限。条目详情中可查看发送结果和未发送原因。</p>

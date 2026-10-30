@@ -24,6 +24,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 375, height: 812 
       await expect(page.locator(".dingtalk-settings form")).toHaveCount(0);
       await page.getByRole("button", { name: /^(配置应用|修改配置)$/ }).click();
       const dialog = page.getByRole("dialog");
+      await dialog.getByRole("combobox", { name: "通知方式", exact: true }).click();
+      await page.getByRole("option", { name: "个人工作通知", exact: true }).click();
       await dialog.getByLabel("组织 ID（CorpId）", { exact: true }).fill("synthetic-corp");
       await dialog.getByLabel("Client ID（AppKey）", { exact: true }).fill("synthetic-app");
       await dialog.getByLabel("Agent ID", { exact: true }).fill("123");
@@ -99,6 +101,42 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 375, height: 812 
       await expect(dialog).toBeVisible();
       await page.getByRole("button", { name: "继续编辑", exact: true }).click();
       await expect(page.getByRole("checkbox", { name: "进入待验证时通知提需者", exact: true })).not.toBeChecked();
+    });
+
+    test("configures robot single-chat notifications in the same dialog and identifies the test channel", async ({ page, request }, info) => {
+      const suffix = `${viewport.width}-${theme}`;
+      const account = await (await request.post("/api/v1/accounts", { data: { email: `robot-${suffix}@example.test`, password: "synthetic-notification-password", role: "member" } })).json();
+      await page.goto("/settings/admin/dingtalk");
+      await page.getByRole("button", { name: "修改配置", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      await dialog.getByRole("combobox", { name: "通知方式", exact: true }).click();
+      await page.getByRole("option", { name: "机器人单聊通知", exact: true }).click();
+      await expect(dialog.getByLabel("Agent ID", { exact: true })).toHaveCount(0);
+      await dialog.getByLabel("机器人编码（robotCode）", { exact: true }).fill(`synthetic-robot-${suffix}`);
+      await expect(dialog.getByText(/企业内机器人发送消息权限/)).toBeVisible();
+      await audit(page, viewport.width === 375);
+      await page.screenshot({ path: info.outputPath("dingtalk-robot-config.png") });
+      await dialog.getByRole("button", { name: "保存钉钉配置", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(page.locator(".dingtalk-info-grid").getByText(`synthetic-robot-${suffix}`, { exact: true })).toBeVisible();
+      await expect(page.locator(".dingtalk-info-grid").getByText("机器人单聊通知", { exact: true })).toBeVisible();
+      const settings = await (await request.get("/api/v1/dingtalk/settings")).json();
+      expect(settings).toMatchObject({deliveryMode:"robot",robotCode:`synthetic-robot-${suffix}`});
+      expect((await request.put(`/api/v1/dingtalk/bindings/${account.id}`, { data: { binding: { userId: `robot-user-${suffix}`, name: "机器人接收人", department: "测试部门" }, expectedRevision: null } })).ok()).toBe(true);
+      await page.reload();
+      const binding = page.getByRole("article", { name: account.email, exact: true });
+      let sends = 0;
+      await page.route(`**/api/v1/dingtalk/bindings/${account.id}/test`, route => { sends++; return route.fulfill({status:403,json:{title:"模拟机器人权限未开通"}}); });
+      await binding.getByRole("button", { name: "测试通知", exact: true }).click();
+      await expect(dialog.getByText("机器人单聊通知", { exact: true })).toBeVisible();
+      await expect(dialog.getByText(`synthetic-robot-${suffix}`, { exact: true })).toBeVisible();
+      expect(sends).toBe(0);
+      await dialog.getByRole("button", { name: "发送测试通知", exact: true }).click();
+      await expect(dialog.getByRole("alert")).toHaveText("模拟机器人权限未开通");
+      expect(sends).toBe(1);
+      await audit(page, viewport.width === 375);
+      await page.screenshot({ path: info.outputPath("dingtalk-robot-test.png") });
+      await dialog.getByRole("button", { name: "关闭", exact: true }).last().click();
     });
 
     test("protects binding drafts, confirms removal and shows test progress without sending on open", async ({ page, request }, info) => {

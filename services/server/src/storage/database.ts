@@ -1964,6 +1964,17 @@ export class MissionGoDatabase {
           .run(202610300816, new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610301329").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610301329").get()) return;
+        this.connection.exec(`
+          ALTER TABLE dingtalk_settings ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'work_notice' CHECK(delivery_mode IN ('work_notice','robot'));
+          ALTER TABLE dingtalk_settings ADD COLUMN robot_code TEXT NOT NULL DEFAULT '';
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610301329, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }
