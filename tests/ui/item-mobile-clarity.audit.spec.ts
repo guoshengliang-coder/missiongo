@@ -26,7 +26,7 @@ for (const width of [320, 353, 375, 390, 768, 1440]) for (const theme of ["light
           { ...execution, id: "recorded", recorded: true, scope: "本轮具体实现范围", status: "working", previousId: "human", result: "本轮阶段结果" },
         ],
       } }));
-      await page.route(`**/api/v1/items/${item.key}/dispatches`, route => route.fulfill({ json: { dispatches: [{ id: "mobile-dispatch", nodeId: "node", nodeName: "M5", agentKind: "codex", mode: "plan", status: "launched", agentSessionId: session, createdAt: stamp, itemKeys: [item.key] }] } }));
+      await page.route(`**/api/v1/items/${item.key}/dispatches`, route => route.fulfill({ json: { dispatches: [{ id: "mobile-dispatch", nodeId: "node", nodeName: "M5", agentKind: "codex", mode: "plan", status: "launched", agentSessionId: session, createdAt: stamp, itemKeys: [item.key, "OTHER-1"] }] } }));
       const sessionSummary = {
         id: session, agentSessionId: session, dispatchId: "mobile-dispatch", nodeId: "node", nodeName: "M5",
         nodeConnectionState: "online", nodeRevoked: false, agentKind: "codex", mode: "plan", status: "active",
@@ -75,8 +75,17 @@ for (const width of [320, 353, 375, 390, 768, 1440]) for (const theme of ["light
       await history.locator("summary").click();
       const rows = history.locator(".execution-row");
       await expect(rows).toHaveCount(4);
+      await expect(history.locator(".execution-list")).toHaveCSS("list-style-type", "decimal");
+      const headingSize = await rows.nth(0).locator(".execution-heading strong").evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+      const summarySize = await history.locator("summary").evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+      expect(headingSize).toBeLessThan(summarySize);
+      await expect(rows.nth(0)).toHaveCSS("border-top-style", "none");
       await expect(rows.nth(0)).toContainText("当前会话详情");
       await expect(rows.nth(0)).not.toContainText("Agent 会话执行");
+      await expect(rows.nth(0)).toContainText("M5");
+      await expect(rows.nth(0)).toContainText("OTHER-1");
+      await expect(history.locator(".dispatch-row")).toHaveCount(1);
+      await expect(page.locator(".dispatch-block")).toHaveCount(0);
       await expect(rows.nth(1)).toContainText("历史会话结果");
       await expect(rows.nth(2)).toContainText("人工回归验收");
       await expect(rows.nth(3)).toContainText("本轮具体实现范围");
@@ -105,8 +114,25 @@ for (const hasSession of [false, true]) {
     await expect(summary).toContainText("会话启动失败");
     await expect(summary.getByRole("button")).toHaveCount(hasSession ? 1 : 0);
     await expect(page.locator(".detail-title-block .item-builder")).toContainText("待分配");
-    await expect(page.locator(".execution-history")).toHaveCount(0);
+    const history = page.locator(".execution-history");
+    await history.locator("summary").click();
+    await expect(history.locator(".execution-row")).toHaveCount(1);
+    await expect(history).toContainText("会话启动失败");
     expect(await summary.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
     await page.locator(".detail-pane").screenshot({ path: testInfo.outputPath("failure.png") });
   });
 }
+
+
+test("queued dispatch remains visible when execution loading fails", async ({ page, request }) => {
+  const product = await (await request.post("/api/v1/products", { data: { name: "History errors", keyPrefix: "HER" } })).json();
+  const item = await (await request.post("/api/v1/items", { data: { productId: product.id, type: "bug", priority: "normal", title: "派单仍可查看", description: "记录" } })).json();
+  await page.route(`**/api/v1/items/${item.key}/delivery`, route => route.fulfill({ status: 500, json: { error: "unavailable" } }));
+  await page.route(`**/api/v1/items/${item.key}/dispatches`, route => route.fulfill({ json: { dispatches: [{ id: "queued", nodeName: "M5", agentKind: "codex", mode: "plan", status: "pending", createdAt: new Date().toISOString(), itemKeys: [item.key] }] } }));
+  await page.goto(`/?product=${product.id}&item=${item.key}`);
+  const panel = page.locator(".delivery-panel");
+  await expect(panel.getByRole("alert")).toContainText("执行记录加载失败", { timeout: 15000 });
+  await panel.locator("summary").click();
+  await expect(panel.locator(".execution-row")).toHaveCount(1);
+  await expect(panel).toContainText("M5");
+});
