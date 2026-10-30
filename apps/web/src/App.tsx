@@ -1,3 +1,4 @@
+import { BackButton } from "./back-button";
 import { useDialogDraft } from "./dialog-state";
 import { useConfirm } from "./confirm-dialog";
 import { itemFilterKey, type ItemFilters } from "@missiongo/domain";
@@ -13,7 +14,6 @@ import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient 
 import { LoginForm } from "./login-form";
 import {
   BarChart3,
-  ArrowLeft,
   Archive,
   ArrowRight,
   BellRing,
@@ -1394,9 +1394,7 @@ export function App() {
           <Menu size={20} />
         </button>}
         {agentConsoleOpen ? (
-          <button type="button" className="icon-button agent-console-topbar-back" onClick={closeAgentConsole} aria-label={t("agentConsoleBack")}>
-            <ArrowLeft size={20} />
-          </button>
+          <BackButton className="agent-console-topbar-back" onClick={closeAgentConsole} label={t("agentConsoleBack")} />
         ) : (
           <>
             <Brand compact />
@@ -2803,7 +2801,6 @@ function DetailPane({
     ]);
   };
 
-  const [commentDraft, setCommentDraft] = useState("");
 
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
   const transitionMutation = useMutation({
@@ -2813,16 +2810,6 @@ function DetailPane({
       setNoteAction(null);
       await applyConfirmedItemTransition(queryClient, updated);
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
-    },
-    onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
-  });
-
-  const commentMutation = useMutation({
-    mutationFn: (text: string) => api.createComment(itemKey!, { text }),
-    onSuccess: async () => {
-      setCommentDraft("");
-      await queryClient.invalidateQueries({ queryKey: ["timeline", itemKey] });
-      onNotice(t("commentPosted"));
     },
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
   });
@@ -2843,7 +2830,7 @@ function DetailPane({
     return (
       <section className="detail-pane detail-error-state">
         <InlineError message={errorMessage(itemQuery.error, t("somethingWentWrong"))} />
-        <button className="secondary-button" onClick={onClose}><ArrowLeft size={17} /> {t("backToList")}</button>
+        <BackButton onClick={onClose} label={t("backToList")} />
       </section>
     );
   }
@@ -2890,7 +2877,7 @@ function DetailPane({
   return (
     <section className="detail-pane">
       <div className="detail-toolbar">
-        <button className="secondary-button detail-back-button" onClick={onClose} aria-label={t("backToList")}><ArrowLeft size={17} /> {t("backToList")}</button>
+        <BackButton className="detail-back-button" onClick={onClose} label={t("backToList")} />
         <code>{item.key}</code>
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <span className="toolbar-spacer" />
@@ -3085,26 +3072,7 @@ function DetailPane({
                 <small>{t("newestFirst")}</small>
               </header>
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
-              {!item.transferred && <form
-                className="comment-form"
-                onSubmit={(formEvent) => {
-                  formEvent.preventDefault();
-                  const text = commentDraft.trim();
-                  if (text) commentMutation.mutate(text);
-                }}
-              >
-                <label className="sr-only" htmlFor="comment-draft">{t("addComment")}</label>
-                <textarea
-                  id="comment-draft"
-                  value={commentDraft}
-                  onChange={(changeEvent) => setCommentDraft(changeEvent.target.value)}
-                  placeholder={t("commentPlaceholder")}
-                  rows={2}
-                />
-                <button type="submit" className="secondary-button" disabled={!commentDraft.trim() || commentMutation.isPending}>
-                  {t("postComment")}
-                </button>
-              </form>}
+              {!item.transferred && <CommentComposer key={item.key} item={item} onPosted={refreshItem} onNotice={onNotice} />}
               <div className="timeline">
                 {groupTimeline(timelineQuery.data?.events ?? []).map(({ id, event, count, filenames }) => (
                   <div
@@ -3168,6 +3136,7 @@ function DetailPane({
                       {event.eventType === "comment_added" && (
                         <CommentBody
                           payload={event.payload}
+                          item={item}
                           readOnly={Boolean(item.transferred)}
                           onWithdraw={async () => {
                             if (await confirm(t("withdrawCommentConfirm"))) withdrawMutation.mutate(event.id);
@@ -3333,24 +3302,97 @@ function commentHeading(event: WorkItemEvent, analysisLabel: string, commentLabe
   return event.actorKind === "agent" && event.payload.bodyKind === "structured" ? analysisLabel : commentLabel;
 }
 
+function CommentComposer({ item, onPosted, onNotice }: {
+  item: WorkItem; onPosted: () => Promise<void>; onNotice: (message: string) => void;
+}) {
+  const { t } = useI18n();
+  const [text, setText] = useState("");
+  const [files, setFiles] = useState<readonly File[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const uploaded = useRef(new Map<File, string>());
+  const uploadIds = useRef(new Map<File, string>());
+  const attempt = useRef({ fingerprint: "", key: "" });
+  const existingIds = new Set(item.attachments.map(attachment => attachment.id));
+  const selectedAlreadyCounted = files.filter(file => existingIds.has(uploaded.current.get(file) ?? "")).length;
+  const capacity = Math.max(0, 10 - item.attachments.length + selectedAlreadyCounted);
+  const remaining = Math.max(0, capacity - files.length);
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const attachmentIds: string[] = [];
+      for (const file of files) {
+        let id = uploaded.current.get(file);
+        if (!id) {
+          let uploadId = uploadIds.current.get(file);
+          if (!uploadId) { uploadId = crypto.randomUUID(); uploadIds.current.set(file, uploadId); }
+          id = (await api.uploadAttachment(item.key, file, uploadId)).id;
+          uploaded.current.set(file, id);
+        }
+        attachmentIds.push(id);
+      }
+      const fingerprint = JSON.stringify({ text: text.trim(), attachmentIds });
+      if (attempt.current.fingerprint !== fingerprint) attempt.current = { fingerprint, key: crypto.randomUUID() };
+      return api.createComment(item.key, { text: text.trim(), attachmentIds, idempotencyKey: attempt.current.key });
+    },
+    onSuccess: async () => {
+      setText(""); setFiles([]); setError(null); uploaded.current.clear(); uploadIds.current.clear(); attempt.current = { fingerprint: "", key: "" };
+      await onPosted(); onNotice(t("commentPosted"));
+    },
+    onError: async (failure) => { setError(errorMessage(failure, t("somethingWentWrong"))); await onPosted(); },
+  });
+  const addFiles = (incoming: readonly File[]) => {
+    if (mutation.isPending) return;
+    const result = validateIncomingFiles(files, incoming, t, capacity);
+    setFiles(result.files); setError(result.error ?? null);
+  };
+  const { isDraggingFiles, dropHandlers } = useFileDropZone(addFiles, { canAccept: remaining > 0 && !mutation.isPending });
+  return <form className="comment-form" {...dropHandlers}
+    onPaste={event => { const incoming = Array.from(event.clipboardData.files); if (incoming.length) { event.preventDefault(); addFiles(incoming); } }}
+    onSubmit={event => { event.preventDefault(); if (!mutation.isPending && (text.trim() || files.length)) mutation.mutate(); }}>
+    {isDraggingFiles && <FileDropOverlay remaining={remaining} />}
+    <fieldset disabled={mutation.isPending}>
+      <label className="sr-only" htmlFor="comment-draft">{t("addComment")}</label>
+      <textarea id="comment-draft" value={text} onChange={event => setText(event.target.value)} placeholder={t("commentPlaceholder")} rows={2} />
+      <div className="comment-compose-actions">
+        <FilePicker files={files} onFiles={setFiles} remaining={remaining} disabled={mutation.isPending} />
+        <button type="submit" className="secondary-button" disabled={!(text.trim() || files.length) || mutation.isPending}>
+          {mutation.isPending && <LoaderCircle className="spin" size={16} />}{t("postComment")}
+        </button>
+      </div>
+      {files.some(file => file.type.startsWith("image/")) && <div className="comment-image-previews">{files.filter(file => file.type.startsWith("image/")).map((file, index) => <CommentImagePreview key={`${file.name}-${index}`} file={file} />)}</div>}
+    </fieldset>
+    {error && <InlineError message={error} />}
+  </form>;
+}
+
+function CommentImagePreview({ file }: { file: File }) {
+  const [url, setUrl] = useState("");
+  useEffect(() => { const next = URL.createObjectURL(file); setUrl(next); return () => URL.revokeObjectURL(next); }, [file]);
+  return <img src={url || undefined} alt={file.name} />;
+}
+
 function CommentBody({
   payload,
+  item,
   onWithdraw,
   readOnly = false,
 }: {
   readonly payload: Readonly<Record<string, unknown>>;
+  readonly item: WorkItem;
   readonly readOnly?: boolean;
   readonly onWithdraw: () => void;
 }) {
   const { t } = useI18n();
   const body = (payload.body ?? {}) as Readonly<Record<string, unknown>>;
   const withdrawn = typeof payload.withdrawnAt === "string";
-  const rendered = payload.bodyKind === "structured"
+  const attachmentIds = Array.isArray(body.attachmentIds) ? body.attachmentIds : [];
+  const attachments = item.attachments.filter(attachment => attachmentIds.includes(attachment.id));
+  const textContent = payload.bodyKind === "structured"
     ? <AnalysisDetails payload={body} />
     : typeof body.text === "string" && body.text
       ? <MarkdownText className="comment-text">{body.text}</MarkdownText>
       : null;
-  if (!rendered) return null;
+  if (!textContent && !attachmentIds.length) return null;
+  const rendered = <>{textContent}{attachmentIds.length > 0 && <AttachmentSection itemKey={item.key} attachments={attachments} />}</>;
 
   // Agents write a lot, and at length. A long comment folds behind one line so
   // a timeline of them can be skimmed; a short one is already its own summary,

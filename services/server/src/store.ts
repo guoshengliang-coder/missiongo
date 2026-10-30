@@ -1104,8 +1104,20 @@ export class MissionGoStore {
     return this.getWorkItem(itemKey);
   }
 
+  getAttachmentUpload(itemKey: string, key: string, fingerprint: string): AttachmentRecord | undefined {
+    this.validateIdempotencyKey(key);
+    const repeated = this.getIdempotentResult<{ attachmentId: string; fingerprint: string }>(key, `upload_attachment:${itemKey.toUpperCase()}`);
+    if (!repeated) return undefined;
+    if (repeated.fingerprint !== fingerprint) throw invalidInput("Upload request key already used for a different file.");
+    return this.getAttachmentRecord(itemKey, repeated.attachmentId);
+  }
+
   createAttachmentMetadata(input: CreateAttachmentMetadataInput): AttachmentRecord {
     this.assertWorkItemWritable(input.itemKey);
+    if (input.uploadRetry) {
+      const repeated = this.getAttachmentUpload(input.itemKey, input.uploadRetry.key, input.uploadRetry.fingerprint);
+      if (repeated) return repeated;
+    }
     const item = this.getWorkItemRow(input.itemKey);
     if (!item) throw notFound("Work item");
     if (!isOneOf(input.kind, ATTACHMENT_KINDS)) throw invalidInput("Unsupported attachment kind.");
@@ -1170,6 +1182,8 @@ export class MissionGoStore {
         contentType: input.contentType,
         sizeBytes: input.sizeBytes,
       }, now, input.attribution);
+      if (input.uploadRetry) this.saveIdempotentResult(input.uploadRetry.key, `upload_attachment:${input.itemKey.toUpperCase()}`,
+        { attachmentId: id, fingerprint: input.uploadRetry.fingerprint }, now);
     });
     return this.getAttachmentRecord(input.itemKey, id);
   }
@@ -1299,6 +1313,12 @@ export class MissionGoStore {
     return this.getWorkItem(input.itemKey);
   }
 
+  getWithdrawnCommentAttachmentIds(itemKey: string): ReadonlySet<string> {
+    return new Set(this.listComments(itemKey, { includeWithdrawn: true })
+      .filter(comment => comment.withdrawnAt && comment.bodyKind === "free")
+      .flatMap(comment => (comment.body as FreeCommentBody).attachmentIds ?? []));
+  }
+
   /**
    * Events and comments in one ordered stream. They live in separate tables --
    * an event is an immutable fact, a comment can be withdrawn -- but a reader
@@ -1348,7 +1368,9 @@ export class MissionGoStore {
         return entry;
       });
 
-    return [...events, ...comments].sort((left, right) => sequences.get(left.id)! - sequences.get(right.id)!);
+    const hidden = options.includeWithdrawn ? new Set<string>() : this.getWithdrawnCommentAttachmentIds(itemKey);
+    return [...events.filter(event => !hidden.has(event.payload.attachmentId as string)), ...comments]
+      .sort((left, right) => sequences.get(left.id)! - sequences.get(right.id)!);
   }
 
   private commentAsTimelineEntry(comment: WorkItemCommentSnapshot): WorkItemEventSnapshot {
@@ -1388,6 +1410,14 @@ export class MissionGoStore {
 
       const item = this.getWorkItemRow(input.itemKey);
       if (!item) throw notFound("Work item");
+      if (input.bodyKind === "free") {
+        for (const attachmentId of (body as FreeCommentBody).attachmentIds ?? []) {
+          this.getAttachmentRecord(item.item_key, attachmentId);
+          const linked = this.database.connection.prepare(`SELECT 1 FROM work_item_comments c, json_each(c.body_json, '$.attachmentIds') a
+            WHERE c.item_id = ? AND a.value = ? LIMIT 1`).get(item.id, attachmentId);
+          if (linked) throw invalidInput("Attachment already belongs to a comment.");
+        }
+      }
       const now = new Date().toISOString();
       const id = randomUUID();
       const attribution = input.attribution ?? {};
@@ -1656,9 +1686,17 @@ export class MissionGoStore {
 
   private validateCommentBody(bodyKind: CommentBodyKind, body: CommentBody): CommentBody {
     if (bodyKind === "free") {
-      const text = requiredText((body as FreeCommentBody).text, "Comment text");
+      const free = body as FreeCommentBody;
+      if (typeof free.text !== "string") throw invalidInput("Comment text must be a string.");
+      const text = free.text.trim();
+      const ids = free.attachmentIds;
+      if (ids !== undefined && (!Array.isArray(ids) || ids.length > 10
+        || ids.some(id => typeof id !== "string" || !id.trim()) || new Set(ids).size !== ids.length)) {
+        throw invalidInput("A comment can have at most 10 unique attachment IDs.");
+      }
+      if (!text && !ids?.length) throw invalidInput("A comment needs text or attachments.");
       if (text.length > 20_000) throw invalidInput("A comment must be 20,000 characters or fewer.");
-      return { text };
+      return { text, ...(ids?.length ? { attachmentIds: [...ids] } : {}) };
     }
     const structured = body as StructuredCommentBody;
     const understanding = requiredText(structured.understanding, "Understanding");

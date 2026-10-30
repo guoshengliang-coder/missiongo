@@ -1,7 +1,8 @@
+import { BackButton } from "./back-button";
 import { StatisticsBatches } from "./statistics-batches";
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, BarChart3, ChevronLeft, ChevronRight, LoaderCircle, RefreshCw, X } from "lucide-react";
+import { BarChart3, ChevronLeft, ChevronRight, LoaderCircle, RefreshCw, X } from "lucide-react";
 import type { InsightMetric, InsightMetrics } from "@missiongo/domain";
 import { api } from "./api";
 import { localizedErrorText } from "./error-text";
@@ -55,7 +56,7 @@ export function StatisticsCenter({products,accountId,onClose,onOpenItem}:{produc
     </div>;
   };
   return <main className="statistics-center">
-    <header className="statistics-header"><button type="button" className="icon-button" onClick={onClose} aria-label={label("返回工作区","Back to workspace")}><ArrowLeft size={20}/></button>
+    <header className="statistics-header"><BackButton onClick={onClose} label={label("返回工作区","Back to workspace")} />
       <div className="statistics-heading"><p className="eyebrow"><BarChart3 size={14}/>{label("工作流与交付","WORKFLOW & DELIVERY")}</p><h1>{label("产品统计","Product statistics")}</h1></div>
       <button type="button" className="secondary-button" disabled={!accountId||query.isFetching} onClick={()=>{void query.refetch();if(selection)void details.refetch();}}><RefreshCw size={16} className={query.isFetching ? "spin" : ""}/>{label("刷新","Refresh")}</button>
     </header>

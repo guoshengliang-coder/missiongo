@@ -105,6 +105,50 @@ describe("Commenting over MCP", () => {
     return { app, call, readToken, writeToken, productId: product.id, adminAccount };
   }
 
+  it("links attachment-only comments, retries uploads and comments, and omits withdrawn evidence from MCP", async () => {
+    const { app, call, writeToken } = await commentingApp();
+    const headers = { authorization: "Bearer management-test-token" };
+    const upload = (id: string, content = "comment evidence", filename = "note.txt") => app.inject({
+      method: "POST", url: "/api/v1/items/HG-1/attachments",
+      headers: { ...headers, "content-type": "application/octet-stream", "x-missiongo-filename": filename,
+        "x-missiongo-content-type": "text/plain", "x-missiongo-upload-id": id }, payload: Buffer.from(content),
+    });
+    const response = await upload("retry-file");
+    expect(response.statusCode).toBe(201);
+    const attachment = response.json<{ id: string }>();
+    expect((await upload("retry-file")).json()).toEqual(response.json());
+    expect((await upload("retry-file", "changed")).statusCode).toBe(400);
+    expect((await upload("unsupported", "data", "note.docx")).statusCode).toBe(400);
+    expect(app.missionGoStore.listAttachments("HG-1")).toHaveLength(1);
+    const post = (payload: Record<string, unknown>, itemKey = "HG-1") => app.inject({
+      method: "POST", url: `/api/v1/items/${itemKey}/comments`, headers, payload,
+    });
+    expect((await post({ text: " " })).statusCode).toBe(400);
+    expect((await post({ text: "", attachmentIds: [attachment.id, attachment.id] })).statusCode).toBe(400);
+    const other = app.missionGoStore.createWorkItem({ productId: app.missionGoStore.getWorkItem("HG-1").productId,
+      type: "note", priority: "normal", title: "Other", description: "" });
+    expect((await post({ text: "", attachmentIds: [attachment.id] }, other.key)).statusCode).toBe(404);
+    const payload = { text: "", attachmentIds: [attachment.id], idempotencyKey: "retry-comment" };
+    const created = await post(payload);
+    expect(created.statusCode).toBe(201);
+    expect((await post(payload)).json()).toEqual(created.json());
+    expect((await post({ ...payload, idempotencyKey: "different-comment" })).statusCode).toBe(400);
+    expect(app.missionGoStore.listComments("HG-1")).toHaveLength(1);
+    const context = (await call(writeToken, 1, "tools/call", { name: "get_item_context", arguments: { itemKey: "HG-1" } })).result?.structuredContent;
+    expect(context).toMatchObject({ attachmentCount: 1, timeline: expect.arrayContaining([
+      expect.objectContaining({ eventType: "comment_added", payload: expect.objectContaining({ body: { text: "", attachmentIds: [attachment.id] } }) }),
+    ]) });
+    expect((await app.inject({ method: "POST", url: `/api/v1/items/HG-1/comments/${created.json<{ id: string }>().id}/withdraw`, headers })).statusCode).toBe(200);
+    const withdrawn = (await call(writeToken, 2, "tools/call", { name: "get_item_context", arguments: { itemKey: "HG-1" } })).result?.structuredContent;
+    expect(withdrawn).toMatchObject({ attachmentCount: 0, item: { attachments: [] } });
+    expect(JSON.stringify(withdrawn)).not.toContain(attachment.id);
+    const read = await call(writeToken, 3, "tools/call", { name: "get_attachment", arguments: { itemKey: "HG-1", attachmentId: attachment.id } });
+    expect(read.result?.isError).toBe(true);
+    expect(app.missionGoStore.getTimeline("HG-1", { includeWithdrawn: true })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventType: "comment_added", payload: expect.objectContaining({ withdrawnAt: expect.any(String) }) }),
+    ]));
+  });
+
   it("keeps human confirmation behind a signed-in console session", async () => {
     const { app, call, productId, writeToken } = await commentingApp();
     const store = app.missionGoStore;

@@ -91,12 +91,14 @@ export function transferWorkItem(store: MissionGoStore, storage: AttachmentStora
       for (const comment of comments) {
         const id = randomUUID();
         idMap.set(comment.id, id);
+        const originalBody = JSON.parse((db.prepare("SELECT body_json FROM work_item_comments WHERE id = ?").get(comment.id) as { body_json: string }).body_json);
+        if (Array.isArray(originalBody.attachmentIds)) originalBody.attachmentIds = originalBody.attachmentIds.map((value: string) => idMap.get(value) ?? value);
         db.prepare(`INSERT INTO work_item_comments
           (id, item_id, actor_kind, account_id, client_id, execution_id, body_kind, body_json, agent_name, summary,
            timeline_seq, created_at, withdrawn_at, withdrawn_by, history_source_key)
-          SELECT ?, ?, actor_kind, account_id, client_id, NULL, body_kind, body_json, agent_name, summary,
+          SELECT ?, ?, actor_kind, account_id, client_id, NULL, body_kind, ?, agent_name, summary,
            timeline_seq, created_at, withdrawn_at, withdrawn_by, COALESCE(history_source_key, ?)
-          FROM work_item_comments WHERE id = ?`).run(id, target.id, key, comment.id);
+          FROM work_item_comments WHERE id = ?`).run(id, target.id, JSON.stringify(originalBody), key, comment.id);
       }
       const events = db.prepare(`SELECT id, payload_json FROM work_item_events WHERE item_id = ?
         AND event_type NOT IN ('dispatched', 'derived_item_created') ORDER BY timeline_seq`).all(source.id) as { id: string; payload_json: string }[];
