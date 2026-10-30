@@ -614,8 +614,9 @@ export interface AgentApproval {
   readonly startedAtMs: number;
   readonly options?: readonly {
     readonly id: string;
-    readonly kind: "once" | "turn" | "session" | "rule" | "networkAllow" | "networkDeny" | "decline" | "cancel";
+    readonly kind: "once" | "turn" | "session" | "always" | "choice" | "rule" | "networkAllow" | "networkDeny" | "decline" | "cancel";
     readonly detail?: string;
+    readonly label?: string;
   }[];
   readonly decision?: string;
   readonly retryId?: string;

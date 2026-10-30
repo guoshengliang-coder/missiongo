@@ -69,6 +69,77 @@ final class ClaudePermissionRequestTests: XCTestCase {
         XCTAssertEqual(redirected["message"] as? String, "不要建这个文件，跳过这一步")
     }
 
+    func testNativeSuggestedSessionAndPersistentRulesAreSelectableAndReturnedExactly() throws {
+        let destinations = ["session", "localSettings", "projectSettings", "userSettings"]
+        let suggestions: [[String: Any]] = destinations.map { ["type": "addRules", "destination": $0,
+            "behavior": "allow", "rules": [["toolName": "Bash", "ruleContent": "git status *"]]] }
+        let request = try XCTUnwrap(ClaudePermissionRequest(event: ["type": "control_request", "request_id": "r-1",
+            "request": ["subtype": "can_use_tool", "tool_name": "Bash", "input": ["command": "git status"],
+                "permission_suggestions": suggestions]]))
+        let options = try XCTUnwrap(request.question.options)
+        XCTAssertEqual(options.count, 6)
+        XCTAssertTrue(options[1].contains("本会话内允许"))
+        XCTAssertTrue(options[2].contains("始终允许"))
+        XCTAssertTrue(request.question.detail?.contains("git status *") == true)
+        for (index, suggestion) in suggestions.enumerated() {
+            let result = request.result(answer: request.answerKey + ": " + options[index + 1])
+            XCTAssertEqual(result["behavior"] as? String, "allow")
+            let updates = try XCTUnwrap(result["updatedPermissions"] as? [[String: Any]])
+            XCTAssertEqual(updates.count, 1)
+            XCTAssertEqual(updates[0] as NSDictionary, suggestion as NSDictionary)
+        }
+        XCTAssertNil(request.result(answer: "批准")["updatedPermissions"])
+        XCTAssertEqual(request.result(answer: "始终允许")["behavior"] as? String, "deny")
+    }
+
+    func testPersistentAllowSuggestionCanBeNarrowedToTheNativeSessionDestination() throws {
+        let suggestion: [String: Any] = ["type": "addRules", "destination": "localSettings", "behavior": "allow",
+            "rules": [["toolName": "Bash", "ruleContent": "git status *"]]]
+        let request = ClaudePermissionRequest(requestId: "r-1", toolName: "Bash", input: [:], permissionSuggestions: [suggestion])
+        let option = try XCTUnwrap(request.question.options?.first { $0.contains("本会话内允许") })
+        var expected = suggestion
+        expected["destination"] = "session"
+        let updates = try XCTUnwrap(request.result(answer: request.answerKey + ": " + option)["updatedPermissions"] as? [[String: Any]])
+        XCTAssertEqual(updates.first as NSDictionary?, expected as NSDictionary)
+        XCTAssertTrue(request.question.options?.contains { $0.contains("始终允许") } == true)
+    }
+
+    func testRememberedChoiceCannotAuthorizeAnotherRequestWithTheSameLabel() throws {
+        let update: [String: Any] = ["type": "addRules", "destination": "localSettings", "behavior": "allow",
+            "rules": [["toolName": "Bash", "ruleContent": "git status *"]]]
+        let first = ClaudePermissionRequest(requestId: "r-1", toolName: "Bash", input: [:], permissionSuggestions: [update])
+        let next = ClaudePermissionRequest(requestId: "r-2", toolName: "Bash", input: [:], permissionSuggestions: [update])
+        let option = try XCTUnwrap(first.question.options?.first { $0.contains("始终允许") })
+        XCTAssertEqual(next.result(answer: first.answerKey + ": " + option)["behavior"] as? String, "deny")
+        XCTAssertNil(next.result(answer: option)["updatedPermissions"])
+        XCTAssertNotNil(first.result(answer: option, boundRequestId: "r-1")["updatedPermissions"])
+        XCTAssertNil(next.result(answer: option, boundRequestId: "r-1")["updatedPermissions"])
+        var queue = ClaudePermissionQueue()
+        queue.enqueue(next)
+        XCTAssertNil(queue.answerHead(first.answerKey + ": " + option))
+        XCTAssertEqual(queue.head?.requestId, next.requestId)
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session")
+        snapshot.showPermissionRequest(first)
+        snapshot.markPermissionAnswered(requestId: first.requestId, answer: first.answerKey + ": " + option)
+        XCTAssertEqual(snapshot.state.messages.last?.questions?.first?.answered, option)
+    }
+
+    func testSuppressedAndUnknownPersistenceNeverProducesARememberedGrant() throws {
+        let update: [String: Any] = ["type": "addRules", "destination": "localSettings", "behavior": "allow",
+            "rules": [["toolName": "Bash", "ruleContent": "git status *"]]]
+        let normal = ClaudePermissionRequest(requestId: "r-1", toolName: "Bash", input: [:], permissionSuggestions: [update])
+        let persistent = try XCTUnwrap(normal.question.options?.first { $0.contains("始终允许") })
+        let suppressed = try XCTUnwrap(ClaudePermissionRequest(event: ["type": "control_request", "request_id": "r-2",
+            "request": ["subtype": "can_use_tool", "tool_name": "Bash", "input": [:],
+                "permission_suggestions": [update], "suppress_always_allow_rule": true]]))
+        XCTAssertEqual(suppressed.question.options, ["批准", "拒绝"])
+        XCTAssertNil(suppressed.result(answer: persistent)["updatedPermissions"])
+        XCTAssertEqual(suppressed.result(answer: persistent)["behavior"] as? String, "deny")
+        let unknown = ClaudePermissionRequest(requestId: "r-3", toolName: "Bash", input: [:], permissionSuggestions: [
+            ["type": "unknown", "destination": "localSettings"], ["type": "addRules", "destination": "unknown"]])
+        XCTAssertEqual(unknown.question.options, ["批准", "拒绝"])
+    }
+
     func testAskUserQuestionAnswersAreAlwaysAllowed() {
         let request = ClaudePermissionRequest(requestId: "r-1", toolName: "AskUserQuestion", input: [
             "questions": [["question": "Which color?", "header": "Color"]],

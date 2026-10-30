@@ -6,8 +6,9 @@ import type { AgentSessionListItem } from "./agent-session-store.js";
 
 export interface AgentApprovalOption {
   id: string;
-  kind: "once" | "turn" | "session" | "rule" | "networkAllow" | "networkDeny" | "decline" | "cancel";
+  kind: "once" | "turn" | "session" | "always" | "choice" | "rule" | "networkAllow" | "networkDeny" | "decline" | "cancel";
   detail?: string;
+  label?: string;
 }
 
 export interface AgentApproval {
@@ -101,7 +102,9 @@ export class AgentApprovalStore {
     }
     if (approval.options !== undefined && (!Array.isArray(approval.options) || approval.options.length > 20
       || approval.options.some((option) => !option || typeof option.id !== "string" || !/^[A-Za-z0-9-]{1,80}$/.test(option.id)
-        || !["once", "turn", "session", "rule", "networkAllow", "networkDeny", "decline", "cancel"].includes(option.kind)
+        || !["once", "turn", "session", "always", "choice", "rule", "networkAllow", "networkDeny", "decline", "cancel"].includes(option.kind)
+        || (option.kind === "choice" && (typeof option.label !== "string" || !option.label.trim()))
+        || (option.label !== undefined && (typeof option.label !== "string" || option.label.length > 500))
         || (option.detail !== undefined && (typeof option.detail !== "string" || option.detail.length > 4_000)))
       || new Set(approval.options.map((option) => option.id)).size !== approval.options.length)) {
       throw invalidInput("Invalid Codex approval options.");

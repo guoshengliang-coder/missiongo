@@ -60,12 +60,17 @@ public struct ClaudePermissionRequest {
     public let toolName: String
     public let input: [String: Any]
     public let description: String?
+    public let permissionSuggestions: [[String: Any]]
+    public let suppressAlwaysAllowRule: Bool
 
-    public init(requestId: String, toolName: String, input: [String: Any], description: String? = nil) {
+    public init(requestId: String, toolName: String, input: [String: Any], description: String? = nil,
+                permissionSuggestions: [[String: Any]] = [], suppressAlwaysAllowRule: Bool = false) {
         self.requestId = requestId
         self.toolName = toolName
         self.input = input
         self.description = description
+        self.permissionSuggestions = permissionSuggestions
+        self.suppressAlwaysAllowRule = suppressAlwaysAllowRule
     }
 
     /// Reads a `control_request` event; nil for anything but `can_use_tool`.
@@ -80,7 +85,9 @@ public struct ClaudePermissionRequest {
             requestId: requestId,
             toolName: toolName,
             input: request["input"] as? [String: Any] ?? [:],
-            description: request["description"] as? String
+            description: request["description"] as? String,
+            permissionSuggestions: request["permission_suggestions"] as? [[String: Any]] ?? [],
+            suppressAlwaysAllowRule: request["suppress_always_allow_rule"] as? Bool ?? false
         )
     }
 
@@ -93,11 +100,50 @@ public struct ClaudePermissionRequest {
     /// What the person sees for an ordinary tool: which tool, what it is for,
     /// and the one argument that decides whether to allow it.
     public var question: AgentSessionQuestion {
-        AgentSessionQuestion(
+        let remembered = rememberedOptions
+        return AgentSessionQuestion(
             header: "授权请求",
             title: "Claude Code 请求使用 \(toolName)",
-            options: [Self.approveOption, Self.denyOption]
+            detail: remembered.isEmpty ? nil : remembered.map { "\($0.label)：\($0.detail)" }.joined(separator: "\n"),
+            options: [Self.approveOption] + remembered.map(\.label) + [Self.denyOption],
+            key: remembered.isEmpty ? nil : answerKey
         )
+    }
+
+    public var answerKey: String { "授权请求 \(requestId)" }
+
+    /// Suggestions are native permission updates, not text to interpret as a
+    /// rule. Offer each exact destination and show the full change before use.
+    private var rememberedOptions: [(label: String, update: [String: Any], detail: String)] {
+        guard !suppressAlwaysAllowRule, !asksThroughToolUse else { return [] }
+        let destinations = ["session": "本会话", "localSettings": "当前项目本机设置",
+                            "projectSettings": "当前项目共享设置", "userSettings": "用户全局设置"]
+        var offered: [(label: String, update: [String: Any], detail: String)] = []
+        var seen = Set<String>()
+        for (index, update) in permissionSuggestions.enumerated() {
+            guard let destination = update["destination"] as? String,
+                  destinations[destination] != nil,
+                  let type = update["type"] as? String,
+                  ["addRules", "replaceRules", "removeRules", "setMode", "addDirectories", "removeDirectories"].contains(type)
+            else { continue }
+            var variants = [update]
+            // The native protocol supports a session destination. Let a person
+            // narrow a proposed persistent allow rule without changing its scope.
+            if destination != "session", type == "addDirectories" || (type == "addRules" && update["behavior"] as? String == "allow") {
+                var session = update
+                session["destination"] = "session"
+                variants.insert(session, at: 0)
+            }
+            for variant in variants {
+                guard let target = variant["destination"] as? String, let destinationLabel = destinations[target],
+                      let data = try? JSONSerialization.data(withJSONObject: variant, options: [.sortedKeys]),
+                      let detail = String(data: data, encoding: .utf8), detail.count <= 4_000,
+                      seen.insert(detail).inserted else { continue }
+                let scope = target == "session" ? "本会话内允许" : "始终允许"
+                offered.append(("\(scope)（\(destinationLabel)，建议 \(index + 1)）", variant, detail))
+            }
+        }
+        return offered
     }
 
     public var promptText: String {
@@ -124,12 +170,28 @@ public struct ClaudePermissionRequest {
         text.count > summaryLimit ? String(text.prefix(summaryLimit)) + "…" : text
     }
 
+    /// Remembered grants from Web carry the displayed request key. External
+    /// bridge answers instead bind their explicit /answer request ID.
+    public func isStalePermissionAnswer(_ answer: String, boundRequestId: String? = nil) -> Bool {
+        guard !asksThroughToolUse, boundRequestId != requestId else { return false }
+        let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("授权请求 ") { return !text.hasPrefix(answerKey + ": ") }
+        return rememberedOptions.contains { $0.label == text }
+    }
+
     /// The `can_use_tool` response for a person's reply.
-    public func result(answer: String) -> [String: Any] {
+    public func result(answer: String, boundRequestId: String? = nil) -> [String: Any] {
         if toolName == "AskUserQuestion" {
             return ["behavior": "allow", "updatedInput": answeredQuestions(answer)]
         }
-        let normalized = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = answerKey + ": "
+        let keyed = trimmed.hasPrefix(prefix)
+        let normalized = keyed ? String(trimmed.dropFirst(prefix.count)) : trimmed
+        if keyed || boundRequestId == requestId,
+           let option = rememberedOptions.first(where: { $0.label == normalized }) {
+            return ["behavior": "allow", "updatedInput": input, "updatedPermissions": [option.update]]
+        }
         if Self.approvals.contains(normalized.lowercased()) {
             return ["behavior": "allow", "updatedInput": input]
         }
@@ -188,9 +250,10 @@ public struct ClaudePermissionQueue {
         return true
     }
 
-    public mutating func answerHead(_ answer: String) -> (requestId: String, result: [String: Any])? {
-        guard !pending.isEmpty else { return nil }
+    public mutating func answerHead(_ answer: String, boundRequestId: String? = nil) -> (requestId: String, result: [String: Any])? {
+        guard let head = pending.first, boundRequestId == nil || boundRequestId == head.requestId,
+              !head.isStalePermissionAnswer(answer, boundRequestId: boundRequestId) else { return nil }
         let request = pending.removeFirst()
-        return (request.requestId, request.result(answer: answer))
+        return (request.requestId, request.result(answer: answer, boundRequestId: boundRequestId))
     }
 }

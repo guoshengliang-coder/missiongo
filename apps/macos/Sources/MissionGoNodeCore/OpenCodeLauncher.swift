@@ -237,18 +237,20 @@ public struct OpenCodeChoice: Equatable, Sendable {
     public let reply: Reply
     /// The synthetic message the console draws this choice on.
     public let message: AgentSessionMessage
-    /// The action a permission request wants, nil for a form. "Always allow"
-    /// answers every other queued ask of the same action, so the console's
-    /// look-alike cards clear in one pick (AND-218).
+    /// The action and exact resource/save scope of a permission request.
     public let action: String?
+    public var permissionScope: String? = nil
 
     /// The request an answer text maps to, or nil when the text does not answer
     /// this choice — then it is an ordinary prompt for the agent.
     public func answer(from text: String) -> Answer? {
         switch reply {
         case .permission:
-            let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard let decision = Self.permissionDecisions[normalized] else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let prefix = (message.questions?.first?.key ?? "") + ": "
+            let keyed = message.questions?.first?.key != nil && trimmed.hasPrefix(prefix)
+            let normalized = (keyed ? String(trimmed.dropFirst(prefix.count)) : trimmed).lowercased()
+            guard let decision = Self.permissionDecisions[normalized], decision != "always" || keyed else { return nil }
             return .permission(decision: decision)
         case let .form(_, fields):
             guard let answer = Self.formAnswer(text: text, fields: fields) else { return nil }
@@ -270,7 +272,12 @@ public struct OpenCodeChoice: Equatable, Sendable {
             let picked: String?
             switch reply {
             case .permission:
-                picked = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Duplicate requests of the exact same scope share the chosen
+                // label, while the user transcript retains the original key.
+                if text.hasPrefix("授权请求 "), let separator = text.range(of: ": ") {
+                    picked = String(text[separator.upperBound...])
+                } else { picked = text }
             case let .form(id: _, fields: fields):
                 let label = question.key ?? question.title
                 picked = fields.first(where: { $0.key == label || $0.title == label })
@@ -450,15 +457,39 @@ public enum OpenCodeProtocol {
         let question = AgentSessionQuestion(
             header: "授权请求",
             title: "OpenCode 请求使用 \(action)",
-            options: OpenCodeChoice.permissionOptions
+            detail: permissionDetail(entry),
+            options: OpenCodeChoice.permissionOptions,
+            key: "授权请求 \(id)"
         )
         return OpenCodeChoice(
             reply: .permission(id: id),
             message: AgentSessionMessage(
                 sourceId: "permission-\(id)", role: "agent", text: text, questions: [question]
             ),
-            action: action
+            action: action,
+            permissionScope: permissionScope(entry)
         )
+    }
+
+    private static func permissionScope(_ entry: [String: Any]) -> String? {
+        guard let action = entry["action"] as? String,
+              let resources = entry["resources"] as? [String], !resources.isEmpty,
+              entry["save"] == nil || entry["save"] is [String] else { return nil }
+        var scope: [String: Any] = ["action": action, "resources": resources.sorted()]
+        if let save = entry["save"] as? [String] { scope["save"] = save.sorted() }
+        guard let data = try? JSONSerialization.data(withJSONObject: scope, options: [.sortedKeys]) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func permissionDetail(_ entry: [String: Any]) -> String? {
+        var details: [String] = []
+        if let resources = entry["resources"] as? [String], !resources.isEmpty {
+            details.append("此次请求：" + resources.joined(separator: "、"))
+        }
+        if let save = entry["save"] as? [String], !save.isEmpty {
+            details.append("始终允许将记住以下范围：" + save.joined(separator: "、"))
+        }
+        return details.isEmpty ? nil : details.joined(separator: "\n")
     }
 
     /// One form field, skipped when hidden or when its type carries no answer
@@ -1049,6 +1080,20 @@ public struct OpenCodeLauncher: AgentAdapter {
             )
         }
         pruneDeliveredPrompts()
+        let answerText = command.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyedPermission = answerText.hasPrefix("授权请求 ")
+        let currentPermission: OpenCodeChoice? = choices.first.flatMap { choice in
+            if case .permission = choice.reply { return choice }
+            return nil
+        }
+        if deliveredPrompts.current[command.id] == nil,
+           (keyedPermission || (currentPermission != nil && ["始终允许", "always"].contains(answerText.lowercased()))),
+           currentPermission?.answer(from: command.text) == nil {
+            report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
+                commandId: command.id, commandStatus: "failed", commandError: "授权请求已变化，请重新选择当前请求的授权范围。",
+                turnActive: turnActive, waitingForInput: waitingForInput)
+            return report.reportingSettings(model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError)
+        }
         // How many copies of this reply's text the session already held before
         // this delivery attempt: the proof a re-read offers after a failed POST
         // is one more than this (AND-226).
@@ -1147,16 +1192,19 @@ public struct OpenCodeLauncher: AgentAdapter {
         case let (.permission(requestID), .permission(decision)):
             try await control.replyPermission(id: session.sessionRef, requestID: requestID, decision: decision)
             var settled: [OpenCodeChoice] = [choice]
-            // "Always allow" speaks for the whole queue of the same action —
-            // the console can hold several look-alike cards for one directory
-            // (AND-218), and answering them one pick at a time reads as
-            // "clicking does nothing". A card the service refuses keeps its
-            // place and is answered by a later reply.
-            if decision == "always", let action = choice.action {
-                for other in choices.dropFirst() where other.action == action {
+            // Settle duplicate asks only when both the requested resources and
+            // proposed saved rules match. A tool name alone is not a scope.
+            if decision == "always", let scope = choice.permissionScope {
+                for other in choices.dropFirst() where other.permissionScope == scope {
                     guard case let .permission(requestID) = other.reply else { continue }
-                    try? await control.replyPermission(id: session.sessionRef, requestID: requestID, decision: decision)
-                    settled.append(other)
+                    do {
+                        try await control.replyPermission(id: session.sessionRef, requestID: requestID, decision: decision)
+                        settled.append(other)
+                    } catch {
+                        // The source may already have cleared it. Do not claim
+                        // delivery or approval when the reply failed.
+                        continue
+                    }
                 }
             }
             return settled

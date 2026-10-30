@@ -1291,7 +1291,8 @@ export function AgentSessionConsole({
                             <button type="button" className={["decline", "cancel", "networkDeny"].includes(option.kind) ? "text-button" : "primary-button"}
                               disabled={Boolean(approval.decision) || decideApproval.isPending}
                               onClick={() => chooseApproval({ sessionId: selected.agentSessionId!, approvalId: approval.id, decision: option.id })}>
-                              {t(({ once: "agentApprovalAccept", turn: "agentApprovalTurn", session: "agentApprovalSession",
+                              {option.kind === "choice" ? option.label : t(({ once: "agentApprovalAccept", turn: "agentApprovalTurn", session: "agentApprovalSession",
+                                always: "agentApprovalAlways",
                                 rule: "agentApprovalRule", networkAllow: "agentApprovalNetworkAllow", networkDeny: "agentApprovalNetworkDeny",
                                 decline: "agentApprovalDecline", cancel: "agentApprovalCancel" } as const)[option.kind])}
                             </button>
