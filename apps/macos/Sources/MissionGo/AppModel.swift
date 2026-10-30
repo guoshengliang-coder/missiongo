@@ -190,12 +190,13 @@ final class AppModel: ObservableObject {
     }
 
     #if DEBUG
-    /// Offline device-login fixture for layout checks; no network or Keychain I/O.
-    init(previewDeviceLogin: PendingDeviceLogin) {
+    /// Offline login fixture for layout checks; nil previews the signed-out
+    /// screen. No network or Keychain I/O.
+    init(previewDeviceLogin: PendingDeviceLogin?) {
         isPreview = true
         showsRevokedNotice = false
-        serverOverride = previewDeviceLogin.serverUrl
-        phase = .signingIn
+        serverOverride = previewDeviceLogin?.serverUrl
+        phase = previewDeviceLogin == nil ? .signedOut : .signingIn
         deviceLogin = previewDeviceLogin
         loginStatus = "等待浏览器授权…"
     }
