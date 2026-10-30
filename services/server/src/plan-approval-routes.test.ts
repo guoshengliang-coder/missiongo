@@ -2,7 +2,7 @@ import { scryptSync } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
-import { AgentSessionStore } from "./agent-session-store.js";
+import { AgentSessionStore, type AgentSessionMessageInput } from "./agent-session-store.js";
 import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 import { ExternalNativeSessionStore } from "./external-native-session-store.js";
 
@@ -10,7 +10,7 @@ const apps: ReturnType<typeof buildApp>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 const evidence = "以上方案等待你批准，批准后开始实施。";
 
-async function fixture(external = false) {
+async function fixture(external = false, initialMessages?: AgentSessionMessageInput[]) {
   const provider = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
     canApprove: true, reason: "方案明确且没有待答问题", evidence,
   }) } }] })));
@@ -34,7 +34,7 @@ async function fixture(external = false) {
   db.prepare(`INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,last_seen_at,created_at,updated_at)
     VALUES ('node','owner','fixture','Fixture','synthetic','[]',?,?,?)`).run(now, now, now);
   const dispatch = new AgentSessionStore(store.database);
-  const messages = [{ sourceId: "plan", role: "agent" as const, text: "方案：增加快捷按钮并测试。\n" + evidence, occurredAt: now }];
+  const messages = initialMessages ?? [{ sourceId: "plan", role: "agent" as const, text: "方案：增加快捷按钮并测试。\n" + evidence, occurredAt: now }];
   let id: string;
   if (external) {
     const progress = new ExternalAgentSessionStore(store);
@@ -89,7 +89,7 @@ it("rejects stale content and rechecks AI settings and the caller's current perm
   const current = await f.offer();
   await f.app.inject({ method: "PUT", url: "/api/v1/ai/title-settings", headers: f.headers, payload: { agentAttentionEnabled: false } });
   expect((await f.approve(current.revision)).statusCode).toBe(409);
-  expect((await f.get()).json()).not.toHaveProperty("planApproval");
+  expect((await f.get()).json()).toMatchObject({ planApprovalStatus: { code: "ai_disabled" } });
   expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toMatchObject({ n: 0 });
 
   await f.app.inject({ method: "PUT", url: "/api/v1/ai/title-settings", headers: f.headers, payload: { agentAttentionEnabled: true } });
@@ -97,10 +97,48 @@ it("rejects stale content and rechecks AI settings and the caller's current perm
   // Still inside the normal session's 30-minute stale threshold: the shortcut requires an online node.
   f.db.prepare("UPDATE nodes SET last_seen_at=? WHERE id='node'").run(new Date(Date.now() - 10 * 60_000).toISOString());
   expect((await f.approve(restored.revision)).statusCode).toBe(409);
+  expect((await f.get()).json()).toMatchObject({ planApprovalStatus: { code: "connection_unavailable" } });
   f.db.prepare("UPDATE nodes SET last_seen_at=? WHERE id='node'").run(new Date().toISOString());
   const online = await f.offer();
   const other = f.store.createProduct({ name: "Other", keyPrefix: "OTHER" });
   f.app.missionGoAccounts.replacePermissions("owner", [{ productId: other.id, canView: true, canOperate: true, canUseAi: true }]);
   expect((await f.approve(online.revision)).statusCode).toBe(403);
   expect((await f.get()).json()).not.toHaveProperty("planApproval");
+});
+
+it("offers approval after two text answers to historical cards, then blocks a new live question with a visible reason", async () => {
+  const messages: AgentSessionMessageInput[] = [
+    { sourceId: "q1", role: "agent", text: "范围选局部还是全部？", questions: [{ title: "范围", options: ["局部", "全部"] }] },
+    { sourceId: "a1", role: "user", text: "全部" },
+    { sourceId: "q2", role: "agent", text: "原生还是统一自定义？", questions: [{ title: "实现", options: ["原生", "统一自定义"] }] },
+    { sourceId: "a2", role: "user", text: "统一自定义" },
+    { sourceId: "plan", role: "agent", text: "方案：全产品统一自定义控件。两项选择已明确，无新增问题。\n" + evidence },
+  ];
+  const f = await fixture(false, messages);
+  const offer = await f.offer();
+  expect((await f.get()).json()).toMatchObject({ planApprovalStatus: { code: "ready" } });
+  f.dispatch.recordSnapshot({ nodeId: "node", sessionId: f.id, status: "idle", turnState: { waitingForInput: true },
+    messages: [...messages, { sourceId: "new-question", role: "agent", text: "还需确定发布范围", questions: [{ title: "发布范围", options: ["Web", "全部"] }] }] });
+  const detail = (await f.get()).json();
+  expect(detail.planApprovalStatus).toEqual({ code: "needs_answer" });
+  expect(detail).not.toHaveProperty("planApproval");
+  expect((await f.approve(offer.revision)).statusCode).toBe(409);
+  expect(f.provider).toHaveBeenCalledTimes(1);
+});
+
+it("reports recognition failure without including raw provider errors or repeatedly calling the provider", async () => {
+  const f = await fixture();
+  f.provider.mockRejectedValue(new Error("sensitive provider error"));
+  await f.get();
+  for (let i = 0; i < 20; i++) {
+    const response = await f.get();
+    if (response.json().planApprovalStatus.code === "recognition_failed") {
+      expect(response.body).not.toContain("sensitive provider");
+      expect((await f.get()).json().planApprovalStatus.code).toBe("recognition_failed");
+      expect(f.provider).toHaveBeenCalledTimes(1);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("Failure status not exposed");
 });

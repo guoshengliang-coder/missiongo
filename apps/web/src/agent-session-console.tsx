@@ -32,6 +32,7 @@ import {
   activityLabelKey,
   dispatchActivityLabelKey,
   approvalNeedsAction,
+  planApprovalStatusKey,
   agentChatMessages,
   agentSessionDetailRefetchInterval,
   agentSessionMatches,
@@ -429,7 +430,7 @@ export function AgentSessionConsole({
         setReplyFileError(null);
       }
       queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current
-        ? { ...current, command: created, planApproval: undefined }
+        ? { ...current, command: created, planApproval: undefined, planApprovalStatus: { code: "reply_pending" } }
         : current);
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
@@ -599,6 +600,8 @@ export function AgentSessionConsole({
   const planApproval = sessionQuery.data?.canReply && selected?.canReply && selected.status === "idle"
     && sessionQuery.data.status === "idle" && sessionQuery.data.turnState?.turnActive !== true
     && !pending && !approvalNeedsAction(approval) ? sessionQuery.data.planApproval : undefined;
+  const planApprovalStatus = pending || sendingSelected ? { code: "reply_pending" }
+    : sessionQuery.data?.planApprovalStatus;
   const approvePlan = () => {
     if (!planApproval || !selected?.agentSessionId || pending || sendingSelected) return;
     const key = `${selected.agentSessionId}:${planApproval.revision}`;
@@ -1156,9 +1159,15 @@ export function AgentSessionConsole({
                     <details>
                       <summary>{selected.attention.dismissed
                         ? t("agentAttentionDismissedTitle")
-                        : planApproval ? t("agentAttentionApproval") : attentionLabel(selected, t)}</summary>
+                        : planApproval ? t("agentAttentionApproval") : attentionLabel(selected, t)}
+                        {!planApproval && planApprovalStatus && <small className="agent-console-plan-approval-hint">
+                          {t(planApprovalStatus.code === "checking" ? "agentPlanChecking" : "agentPlanStatusHint")}
+                        </small>}
+                      </summary>
                       <p>{planApproval?.reason ?? selected.attention.reason}</p>
                       {planApproval && <p>“{planApproval.evidence}”</p>}
+                      {!planApproval && planApprovalStatus && <p>{t(planApprovalStatusKey(planApprovalStatus.code))}</p>}
+                      {!planApproval && planApprovalStatus?.detail && <p>{planApprovalStatus.detail}</p>}
                     </details>
                     {planApproval && !selected.attention.dismissed && (
                       <button type="button" className="primary-button" disabled={sendingSelected || dismissAttention.isPending}

@@ -63,7 +63,7 @@ it("hard gates prevent AI calls for questions, busy/unreplyable sessions, permis
     { ...input, canReply: false }, { ...input, status: "active" as const },
     { ...input, turnState: { turnActive: true } }, { ...input, archivedAt: input.updatedAt },
     { ...input, lastError: "connection failed" },
-    { ...input, messages: [{ ...input.messages[0]!, questions: [{ title: "选择范围", options: ["A", "B"] }] }] },
+    { ...input, turnState: { waitingForInput: true }, messages: [{ ...input.messages[0]!, questions: [{ title: "选择范围", options: ["A", "B"] }] }] },
     { ...input, messages: [{ ...input.messages[0]!, phase: "commentary" }] },
     { ...input, messages: [{ ...input.messages[0]!, role: "user" as const }] },
     { ...input, messages: [{ ...input.messages[0]!, text: "x".repeat(20_001) }] },
@@ -74,6 +74,55 @@ it("hard gates prevent AI calls for questions, busy/unreplyable sessions, permis
   variants.forEach((value) => expect(service.inspect(value, true)).toBeUndefined());
   expect(service.inspect(input, false)).toBeUndefined();
   expect(classify).not.toHaveBeenCalled();
+});
+
+it("uses native/text answers to historical questions in AI context, then withdraws an offer when a new question arrives", async () => {
+  const input = session();
+  const history = [
+    { id: "q1", sourceId: "q1", role: "agent" as const, text: "范围选局部还是全部？", questions: [{ title: "范围", options: ["局部", "全部"] }] },
+    { id: "a1", sourceId: "a1", role: "user" as const, text: "全部" },
+    { id: "q2", sourceId: "q2", role: "agent" as const, text: "选兼容原生还是统一自定义？", questions: [{ title: "实现方式", options: ["兼容原生", "统一自定义"] }] },
+    { id: "a2", sourceId: "a2", role: "user" as const, text: "统一自定义" },
+    { ...input.messages[0]!, text: "方案：全产品统一自定义单选。两项选择均已明确，无新增问题。\n" + evidence },
+  ];
+  const classify = vi.fn(async (_content: string, _latest: string) => decision);
+  const service = new PlanApprovalService(classify);
+  const ready = { ...input, messages: history };
+  expect(service.assess(ready).status.code).toBe("checking"); await flush();
+  const offer = service.assess(ready).offer!;
+  expect(offer).toBeDefined();
+  const context = JSON.parse(classify.mock.calls[0]![0]!);
+  expect(context.messages.map((m: { text: string }) => m.text)).toEqual(history.map((m) => m.text));
+  const newQuestion = { ...ready, turnState: { waitingForInput: true }, messages: [...history,
+    { id: "q3", sourceId: "q3", role: "agent" as const, text: "还需选择发布范围", questions: [{ title: "发布范围", options: ["Web", "全部"] }] }] };
+  expect(service.assess(newQuestion).status.code).toBe("needs_answer");
+  expect(() => service.approve(newQuestion, offer.revision, true, () => "must not send")).toThrow(/changed/);
+  expect(classify).toHaveBeenCalledTimes(1);
+});
+
+it("returns the AI's pending-answer reason for a new unstructured question instead of retaining a previous approval", async () => {
+  const input = session();
+  const classify = vi.fn().mockResolvedValueOnce(decision)
+    .mockResolvedValueOnce({ canApprove: false, reason: "还需要用户选择部署范围", evidence: "", blockReason: "needs_answer" });
+  const service = new PlanApprovalService(classify);
+  service.assess(input); await flush();
+  const offer = service.assess(input).offer!;
+  const changed = { ...input, messages: [...input.messages,
+    { id: "new", sourceId: "new", role: "agent" as const, text: "先不要批准，还需选择只发布 Web 还是全端。" }] };
+  expect(service.assess(changed).status.code).toBe("checking"); await flush();
+  expect(service.assess(changed)).toEqual({ status: { code: "needs_answer", detail: "还需要用户选择部署范围" } });
+  expect(() => service.approve(changed, offer.revision, true, () => "must not send")).toThrow(/changed/);
+});
+
+it("exposes unavailable reasons without leaking provider errors and preserves the retry cooldown", async () => {
+  const classify = vi.fn(async () => { throw new Error("private provider detail"); });
+  const service = new PlanApprovalService(classify);
+  const input = session();
+  expect(service.assess(input, "ai_disabled").status.code).toBe("ai_disabled");
+  expect(service.assess(input, "connection_unavailable").status.code).toBe("connection_unavailable");
+  expect(service.assess(input).status.code).toBe("checking"); await flush();
+  expect(service.assess(input)).toEqual({ status: { code: "recognition_failed" } });
+  expect(classify).toHaveBeenCalledTimes(1);
 });
 
 it("negative decisions remain hidden and provider failures fail closed with a retry cooldown", async () => {

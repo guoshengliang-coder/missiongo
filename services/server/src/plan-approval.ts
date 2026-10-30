@@ -3,11 +3,23 @@ import { createHash } from "node:crypto";
 import type { AgentApproval } from "./agent-approval-store.js";
 import type { AgentSessionSnapshot } from "./agent-session-store.js";
 import { conflict } from "./errors.js";
+import { planApprovalContext } from "./plan-approval-context.js";
 
 export interface PlanApprovalDecision {
   readonly canApprove: boolean;
   readonly reason: string;
   readonly evidence: string;
+  readonly blockReason?: "needs_answer" | "not_approval" | "uncertain";
+}
+
+export type PlanApprovalStatusCode = "ready" | "checking" | "ai_disabled" | "connection_unavailable"
+  | "reply_unavailable" | "running" | "permission_required" | "reply_pending" | "needs_answer"
+  | "not_approval" | "uncertain" | "context_too_large" | "recognition_failed" | "already_approved"
+  | "dismissed" | "awaiting_source";
+export type PlanApprovalBlockReason = Extract<PlanApprovalStatusCode, "ai_disabled" | "connection_unavailable" | "reply_pending" | "dismissed">;
+export interface PlanApprovalAssessment {
+  readonly status: { readonly code: PlanApprovalStatusCode; readonly detail?: string };
+  readonly offer?: PlanApprovalOffer;
 }
 
 export interface PlanApprovalOffer {
@@ -34,26 +46,28 @@ export function approvalProse(text: string): string {
   }).join("\n");
 }
 
-function candidate(session: Session): Candidate | undefined {
-  if (!session.canReply || session.managedExecution || session.archivedAt || session.lastError
-    || session.status !== "idle" || session.turnState.turnActive === true
-    || (session.nativeConnection && session.nativeConnection.state !== "connected")) return;
+function candidate(session: Session): Candidate | PlanApprovalStatusCode {
+  if (!session.canReply || session.managedExecution || session.archivedAt) return "reply_unavailable";
+  if (session.lastError || (session.nativeConnection && session.nativeConnection.state !== "connected")) return "connection_unavailable";
   // Source permission requests have their own decision protocol, never chat approval.
-  if (session.approval && !["approved", "resolved"].includes(session.approval.status)) return;
+  if (session.approval && !["approved", "resolved"].includes(session.approval.status)) return "permission_required";
   const command = session.command;
-  if (command && ["queued", "delivering", "delivery_unknown"].includes(command.status)) return;
+  if (command && ["queued", "delivering", "delivery_unknown"].includes(command.status)) return "reply_pending";
   const latest = session.messages.at(-1);
-  if (!latest || !["agent", "plan"].includes(latest.role) || latest.phase === "commentary") return;
-  if (session.messages.some((message) => message.questions?.some((q) => !q.answered && !q.withdrawn))) return;
+  // Historical cards may lack settlement metadata even after a native/text reply.
+  // Only a current card AND a source-reported wait can hard-block the classifier.
+  if (session.turnState.waitingForInput && latest?.questions?.some((q) => !q.answered && !q.withdrawn)) return "needs_answer";
+  if (session.status !== "idle" || session.turnState.turnActive === true) return "running";
+  if (!latest || !["agent", "plan"].includes(latest.role) || latest.phase === "commentary") return "not_approval";
   // A delivered reply may precede its source echo. Never offer to approve the old request again.
   if (command?.status === "delivered" && (!latest.occurredAt
-    || Date.parse(command.createdAt) >= Date.parse(latest.occurredAt))) return;
-  const messages = session.messages.slice(-12).map(({ sourceId, role, text, questions }) => ({ sourceId, role, text, questions }));
-  const content = JSON.stringify({ messages });
+    || Date.parse(command.createdAt) >= Date.parse(latest.occurredAt))) return "awaiting_source";
+  const content = planApprovalContext(session.messages);
   // Do not clip a plan or a question to fit the classifier's input budget.
-  if (content.length > 20_000 || !approvalProse(latest.text).trim()) return;
+  if (content.length > 20_000) return "context_too_large";
+  if (!approvalProse(latest.text).trim()) return "not_approval";
   const revision = createHash("sha256").update(JSON.stringify([
-    session.id, session.messages, session.status, session.turnState.turnActive ?? false,
+    session.id, content, latest, session.status, session.turnState.turnActive ?? false,
     session.turnState.waitingForInput ?? false, command, session.approval,
     session.nativeConnection?.nodeId,
   ])).digest("hex");
@@ -68,14 +82,18 @@ export class PlanApprovalService {
   constructor(private readonly classify: (content: string, latestText: string) => Promise<PlanApprovalDecision>) {}
 
   inspect(session: Session, enabled: boolean): PlanApprovalOffer | undefined {
-    const input = enabled ? candidate(session) : undefined;
+    return this.assess(session, enabled ? undefined : "ai_disabled").offer;
+  }
+
+  assess(session: Session, unavailableReason?: PlanApprovalBlockReason): PlanApprovalAssessment {
+    const input = unavailableReason ?? candidate(session);
     let entry = this.entries.get(session.id);
-    if (!input) {
+    if (typeof input === "string") {
       // Keep a consumed request through queueing and delivery, including source clock skew.
       if (!entry?.consumed) this.entries.delete(session.id);
-      return;
+      return { status: { code: input } };
     }
-    if (entry?.consumed && entry.requestRevision === input.requestRevision) return;
+    if (entry?.consumed && entry.requestRevision === input.requestRevision) return { status: { code: "already_approved" } };
     if (entry?.revision !== input.revision || (entry.retryAt !== undefined && Date.now() >= entry.retryAt)) {
       entry = { revision: input.revision, requestRevision: input.requestRevision };
       this.entries.delete(session.id);
@@ -89,16 +107,17 @@ export class PlanApprovalService {
         if (this.entries.get(session.id) === pending) pending.retryAt = Date.now() + 60_000;
       });
     }
-    return entry.decision?.canApprove && !entry.consumed
-      ? { revision: entry.revision, reason: entry.decision.reason, evidence: entry.decision.evidence }
-      : undefined;
+    if (entry.retryAt !== undefined) return { status: { code: "recognition_failed" } };
+    if (!entry.decision) return { status: { code: "checking" } };
+    if (!entry.decision.canApprove) return { status: { code: entry.decision.blockReason ?? "uncertain", detail: entry.decision.reason } };
+    return { status: { code: "ready" }, offer: { revision: entry.revision, reason: entry.decision.reason, evidence: entry.decision.evidence } };
   }
 
   /** Called synchronously with reloading and queueing inside the caller's DB transaction. */
   approve<T>(session: Session, revision: string, enabled: boolean, enqueue: () => T): T {
     const input = enabled ? candidate(session) : undefined;
     const entry = this.entries.get(session.id);
-    if (!input || input.revision !== revision || entry?.revision !== revision
+    if (!input || typeof input === "string" || input.revision !== revision || entry?.revision !== revision
       || !entry.decision?.canApprove || entry.consumed) {
       throw conflict("agent_plan_approval_changed", "The approval request changed or is unavailable. Refresh and review the conversation before approving.");
     }

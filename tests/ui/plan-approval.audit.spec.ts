@@ -87,3 +87,67 @@ test("a label without an AI offer never enables approval; stale rejection is sho
   await expect(button).toHaveCount(0);
   expect(posts).toBe(1);
 });
+
+test("text answers to two historical questions allow approval; a new pending question removes it and explains why", async ({ page }) => {
+  await page.setViewportSize({ width: 353, height: 757 });
+  let newQuestion = false;
+  const messages = [
+    { id: "q1", sourceId: "q1", role: "agent", text: "范围选局部还是全部？", questions: [{ title: "范围", options: ["局部", "全部"] }], occurredAt: stamp },
+    { id: "a1", sourceId: "a1", role: "user", text: "全部", occurredAt: stamp },
+    { id: "q2", sourceId: "q2", role: "agent", text: "原生还是统一自定义？", questions: [{ title: "实现", options: ["原生", "统一自定义"] }], occurredAt: stamp },
+    { id: "a2", sourceId: "a2", role: "user", text: "统一自定义", occurredAt: stamp },
+    { id: "plan", sourceId: "plan", role: "agent", text: "方案：全产品统一自定义控件。两项选择均已明确，无新增问题。以上计划等待批准。", occurredAt: stamp },
+  ];
+  await page.route("**/api/v1/agent-sessions**", async (route) => {
+    if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
+    const detail = { ...summary, messages: [...messages, ...(newQuestion ? [{ id: "q3", sourceId: "q3", role: "agent", text: "还需选择发布范围", occurredAt: stamp }] : [])],
+      planApprovalStatus: { code: newQuestion ? "needs_answer" : "ready" }, ...(newQuestion ? {} : { planApproval: offer }) };
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [summary] } : detail) });
+  });
+  await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
+  const banner = page.locator(".agent-console-attention-banner");
+  const button = banner.getByRole("button", { name: /^(批准|Approve)$/ });
+  await expect(button).toBeVisible();
+  newQuestion = true;
+  await expect(button).toHaveCount(0);
+  await banner.locator("summary").click();
+  await expect(banner).toContainText(/当前仍有待回答的问题|questions or choices to resolve/);
+});
+
+for (const theme of ["light", "dark"] as const) {
+  test(`unavailable approval has an inspectable reason on a narrow ${theme} screen`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 353, height: 757 });
+    await page.emulateMedia({ colorScheme: theme });
+    let code = "checking";
+    await page.route("**/api/v1/agent-sessions**", async (route) => {
+      if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
+      const detail = { ...summary, messages: [{ id: "plan", sourceId: "plan", role: "agent", text: "明确方案等待批准。", occurredAt: stamp }], planApprovalStatus: { code } };
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [summary] } : detail) });
+    });
+    for (const [next, expected] of [
+      ["checking", /正在识别方案|Checking whether/],
+      ["needs_answer", /当前仍有待回答的问题|questions or choices to resolve/],
+      ["uncertain", /尚不能确认一份明确|single, definite plan/],
+      ["context_too_large", /超过识别容量|exceed the recognition limit/],
+      ["recognition_failed", /方案识别暂时失败|Plan recognition failed/],
+      ["connection_unavailable", /会话连接当前不可用|connection is unavailable/],
+      ["ai_disabled", /会话 AI 识别未启用|recognition is not enabled/],
+    ] as const) {
+      code = next;
+      await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
+      const banner = page.locator(".agent-console-attention-banner");
+      await expect(banner).toBeVisible();
+      await expect(banner.getByRole("button", { name: /^(批准|Approve)$/ })).toHaveCount(0);
+      const summary = banner.locator("summary");
+      await summary.click();
+      await expect(banner.locator("p").last()).toContainText(expected);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      if (code === "recognition_failed") {
+        const path = testInfo.outputPath(`approval-reason-${theme}.png`);
+        await banner.scrollIntoViewIfNeeded();
+        await page.screenshot({ path, animations: "disabled" });
+        await testInfo.attach("approval-reason", { path, contentType: "image/png" });
+      }
+    }
+  });
+}
