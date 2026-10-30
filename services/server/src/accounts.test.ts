@@ -151,6 +151,36 @@ describe("Comment attachment permissions", () => {
   });
 });
 
+describe("Capture permission errors (AND-324)", () => {
+  it("explains refused capture and AI title for a visible read-only project, while hiding other projects", async () => {
+    const { app, adminCookie, memberCookie, member, shared, hidden } = await twoAccountWorkspace();
+    await app.inject({ method: "PUT", url: `/api/v1/accounts/${member.id}/products`, headers: { cookie: adminCookie },
+      payload: { permissions: [{ productId: shared.id, canView: true, canOperate: false, canUseAi: true }] } });
+    expect((await app.inject({ method: "GET", url: "/api/v1/products", headers: { cookie: memberCookie } })).json())
+      .toEqual([expect.objectContaining({ id: shared.id, access: { canOperate: false, canUseAi: true } })]);
+    for (const productId of [shared.id, hidden.id, "missing-project"]) {
+      for (const status of ["inbox", "ready"]) {
+        const response = await app.inject({ method: "POST", url: "/api/v1/items", headers: { cookie: memberCookie },
+          payload: { productId, status, title: "Capture", description: "Details", type: "bug", priority: "normal", environment: { platform: "web" } } });
+        expect(response.statusCode, response.body).toBe(productId === shared.id ? 403 : 404);
+        if (productId === shared.id) expect(response.json()).toMatchObject({ code: "product_operation_not_permitted" });
+      }
+      const title = await app.inject({ method: "POST", url: "/api/v1/ai/title", headers: { cookie: memberCookie }, payload: { productId, content: "Details" } });
+      expect(title.statusCode, title.body).toBe(productId === shared.id ? 403 : 404);
+      if (productId === shared.id) expect(title.json()).toMatchObject({ code: "product_operation_not_permitted" });
+    }
+    expect(app.missionGoStore.listWorkItems({ productId: shared.id })).toHaveLength(0);
+    // The same account can submit as soon as operation permission is granted.
+    await app.inject({ method: "PUT", url: `/api/v1/accounts/${member.id}/products`, headers: { cookie: adminCookie },
+      payload: { permissions: [{ productId: shared.id, canView: true, canOperate: true, canUseAi: false }] } });
+    await createItem(app, memberCookie, shared.id, "Allowed capture");
+    const title = await app.inject({ method: "POST", url: "/api/v1/ai/title", headers: { cookie: memberCookie }, payload: { productId: shared.id, content: "Details" } });
+    expect(title.statusCode, title.body).toBe(503); // Permission passed; no provider key configured.
+    const missing = await app.inject({ method: "POST", url: "/api/v1/ai/title", headers: { cookie: adminCookie }, payload: { productId: "missing-project", content: "Details" } });
+    expect(missing.statusCode).toBe(404);
+  });
+});
+
 describe("Seeding the environment administrator", () => {
   it("reuses ADMIN_ACCOUNT_ID, so the account_id already on nodes and events still resolves", async () => {
     const app = open(join(await temporaryDirectory(), "missiongo.sqlite"));
