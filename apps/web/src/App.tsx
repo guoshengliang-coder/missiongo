@@ -48,6 +48,7 @@ import {
   MoreHorizontal,
   MoreVertical,
   Paperclip,
+  Pencil,
   Plus,
   RefreshCw,
   Rocket,
@@ -1720,6 +1721,7 @@ export function App() {
                 <ItemRow
                   key={item.id}
                   item={item}
+                  canOperate={selectedProductCanCapture}
                   selected={item.key === selectedItemKey}
                   checked={selectedItemKeys.has(item.key)}
                   selectionVisible={item.status === "pending_verification"
@@ -1939,6 +1941,7 @@ function StatusNavItem({ children, label, count, active, onClick }: { children: 
 
 function ItemRow({
   item,
+  canOperate,
   sourceComponent,
   showAttachmentColumn,
   selected,
@@ -1955,6 +1958,7 @@ function ItemRow({
   onStartWork,
 }: {
   item: WorkItem;
+  canOperate: boolean;
   sourceComponent: Component | undefined;
   showAttachmentColumn: boolean;
   selected: boolean;
@@ -2012,7 +2016,10 @@ function ItemRow({
       aria-current={selected ? "true" : undefined}
       onClick={(event) => {
         const target = event.target;
-        if (target instanceof Element && target.closest("button, a, input, label, select, textarea, summary, details, video, [role='dialog']")) return;
+        // Form options can be portalled into a native dialog inside this row
+        // or outside its DOM. Neither should open the detail pane.
+        if (!(target instanceof Element) || !event.currentTarget.contains(target)) return;
+        if (target.closest("button, a, input, label, select, textarea, summary, details, video, dialog, [role='dialog']")) return;
         onOpen();
       }}
     >
@@ -2161,7 +2168,7 @@ function ItemRow({
         <span>{formatTime(item.updatedAt)}</span>
       </span>
       <span className="item-row-actions">
-        <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} onStartWork={onStartWork} />
+        {canOperate && <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} onStartWork={onStartWork} />}
       </span>
     </article>
   );
@@ -2455,6 +2462,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   const { statusLabel, t, transitionLabel } = useI18n();
   const actions = item.transferred ? [] : TRANSITIONS[item.status];
   const primaryAction = actions[0];
+  const PrimaryActionIcon = primaryAction ? STATUS_ICONS[primaryAction.to] : CircleDot;
   // Destructive last, whatever order the table lists them in.
   const secondaryActions = actions.slice(1).filter((action) => action.tone !== "danger");
   const destructiveActions = actions.slice(1).filter((action) => action.tone === "danger");
@@ -2501,80 +2509,59 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
 
   return (
     <>
-    <details className="detail-more-menu row-more-menu" ref={moreActionsRef}>
+    <details className="detail-more-menu row-more-menu" ref={moreActionsRef} onToggle={(event) => {
+      const menu = event.currentTarget;
+      if (!menu.open) {
+        menu.querySelector(".detail-move-menu")?.removeAttribute("open");
+        return;
+      }
+      const trigger = menu.querySelector("summary")!.getBoundingClientRect();
+      const below = window.innerHeight - trigger.bottom - 16;
+      const above = trigger.top - 16;
+      const openAbove = below < 320 && above > below;
+      menu.dataset.side = openAbove ? "above" : "below";
+      menu.style.setProperty("--row-menu-height", `${Math.max(100, openAbove ? above : below)}px`);
+    }}>
       <summary className="secondary-button" aria-label={t("moreActionsFor", { key: item.key })} title={t("moreActions")}>
         {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <MoreVertical size={16} />}
       </summary>
-      <div className="detail-more-menu-popover">
-        <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}>{t("transferItem")}</button>
-        {primaryAction && (
-          <button
+      <div className="detail-more-menu-popover detail-actions-popover">
+        <div className="detail-action-group">
+          <p className="detail-action-heading">{t("actionGroupCollaboration")}</p>
+          <button type="button" disabled={mutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}><ArrowRight size={17} aria-hidden="true" />{t("transferItem")}</button>
+        </div>
+        <div className="detail-action-group">
+          <p className="detail-action-heading">{t("actionGroupStatus")}</p>
+          {primaryAction && <button
             type="button"
             className={`menu-primary ${primaryAction.tone === "positive" ? "positive" : ""}`}
             disabled={mutation.isPending}
-            onClick={() => {
-              moreActionsRef.current?.removeAttribute("open");
-              startTransition(primaryAction);
-            }}
+            onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(primaryAction); }}
           >
-            {quickActionLabel(item.status, t)}
-          </button>
-        )}
-        {secondaryActions.map((action) => (
-          <button
+            <PrimaryActionIcon size={17} aria-hidden="true" />{quickActionLabel(item.status, t)}
+          </button>}
+          {secondaryActions.map((action) => <button
             key={`${action.to}-${action.reason}`}
             type="button"
             disabled={mutation.isPending}
-            onClick={() => {
-              moreActionsRef.current?.removeAttribute("open");
-              startTransition(action);
-            }}
+            onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}
           >
-            {transitionLabel(action.label)}
-          </button>
-        ))}
-        {manualTargets.length > 0 && (
-          <>
-            <p className="menu-section-label">{t("moveDirectlyTo")}</p>
-            {manualTargets.map((action) => (
-              <button
-                key={action.to}
-                type="button"
-                disabled={mutation.isPending}
-                onClick={() => {
-                  moreActionsRef.current?.removeAttribute("open");
-                  startTransition(action);
-                }}
-              >
-                {statusLabel(action.to)}
-              </button>
-            ))}
-          </>
-        )}
-        <button
-          type="button"
-          className="menu-plain"
-          onClick={() => {
-            moreActionsRef.current?.removeAttribute("open");
-            onEdit();
-          }}
-        >
-          {t("edit")}
-        </button>
-        {destructiveActions.map((action) => (
-          <button
-            key={`${action.to}-${action.reason}`}
-            type="button"
-            className="danger"
-            disabled={mutation.isPending}
-            onClick={() => {
-              moreActionsRef.current?.removeAttribute("open");
-              startTransition(action);
-            }}
-          >
-            {transitionLabel(action.label)}
-          </button>
-        ))}
+            {action.to === "on_hold" ? <CirclePause size={17} aria-hidden="true" /> : <Undo2 size={17} aria-hidden="true" />}{transitionLabel(action.label)}
+          </button>)}
+          {manualTargets.length > 0 && <details className="detail-move-menu">
+            <summary><ArrowRight size={17} aria-hidden="true" /><span>{t("moveTo")}</span><ChevronRight className="detail-move-chevron" size={16} aria-hidden="true" /></summary>
+            <div className="detail-move-popover">
+              {manualTargets.map((action) => <button key={action.to} type="button" disabled={mutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><CircleDot size={17} aria-hidden="true" />{statusLabel(action.to)}</button>)}
+            </div>
+          </details>}
+        </div>
+        <div className="detail-action-group">
+          <p className="detail-action-heading">{t("actionGroupTools")}</p>
+          <button type="button" disabled={mutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); onEdit(); }}><Pencil size={17} aria-hidden="true" />{t("edit")}</button>
+        </div>
+        {destructiveActions.map((action) => <div className="detail-action-group" key={`${action.to}-${action.reason}`}>
+          <button type="button" className="danger" disabled={mutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><X size={17} aria-hidden="true" />{transitionLabel(action.label)}</button>
+        </div>)}
       </div>
     </details>
     {/* Outside the menu on purpose: a closed <details> hides everything but its
