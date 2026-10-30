@@ -22,6 +22,10 @@ Builder 使用独立的标签与加重人员名，列表和详情一致；空间
 - `npx playwright test --project=audit tests/ui/item-mobile-clarity.audit.spec.ts`：14 项检查通过，覆盖 320、353、375、390、768、1440px 的明暗主题，及失败状态、无会话入口、未知启动时间；实际测量可见文字字号与对比度。
 - `npx playwright test --project=audit tests/ui/builder-delivery.audit.spec.ts`：4 项分配、转交、人工执行与多轮交接回归通过。
 
+## Linux CI
+
+最新代码的 Web/Server、Android、macOS 与界面任务全部通过。完整界面套件通过后，CI 重新生成 30 张 Linux 基线，其中本次列表和详情改动涉及 18 张，已核对并纳入提交；控制台基线未变化。
+
 ## CI 测量修正
 
 首次 Linux 界面套件有 231 项通过，迁移对话框的一项旧断言把 Chromium 的 `43.99993896484375px` 当作小于 44px。该断言现与共享界面审计一样按整 CSS 像素测量，不改变迁移行为或按钮尺寸。
