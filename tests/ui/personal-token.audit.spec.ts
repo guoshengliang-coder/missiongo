@@ -18,7 +18,7 @@ for (const width of [375, 1440]) {
         await openSettings();
         const section = page.getByRole("region", { name: "个人访问令牌", exact: true });
         await expect(section).toBeVisible();
-        await expect(section).toContainText("直接令牌授权");
+        await expect(section).toContainText("访问范围跟随你当前的产品权限");
         await section.getByRole("button", { name: "新建个人令牌", exact: true }).click();
         const dialog = page.getByRole("dialog", { name: "新建个人令牌", exact: true });
         await expect(dialog).toBeVisible();
@@ -36,7 +36,7 @@ for (const width of [375, 1440]) {
 
         const response = page.waitForResponse(response => response.url().endsWith("/api/v1/ai-personal-tokens") && response.request().method() === "POST");
         await dialog.getByRole("button", { name: "生成令牌", exact: true }).click();
-        await expect(dialog).toHaveCount(0);
+        await expect(page.getByRole("dialog")).toContainText("现在就复制保存");
         const created = await response;
         expect(created.status()).toBe(201);
         const minted = await created.json();

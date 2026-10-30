@@ -29,6 +29,8 @@ export class AiTitleService {
     this.encryptionKey = createHash("sha256").update("missiongo-deepseek-key-v1\0").update(secret).digest();
   }
 
+  model(): string { return MODEL; }
+
   configured(): boolean {
     return Boolean(this.encryptedKey());
   }

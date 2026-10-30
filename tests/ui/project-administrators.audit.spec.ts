@@ -15,7 +15,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await request.put(`/api/v1/accounts/${builder.id}/products`,{data:{permissions:[{productId:product.id,canView:true,canOperate:true,canUseAi:true}]}});
       const item=await (await request.post("/api/v1/items",{data:{productId:product.id,type:"task",priority:"normal",title:"Needs a delivery owner",description:"Project role test"}})).json();
       await page.goto(`/settings/admin/project-administrators/${product.id}?product=${product.id}`);
-      await expect(page.getByRole("heading",{level:1})).toHaveText("产品管理员");
+      await expect(page.getByRole("heading",{level:1})).toHaveText(`${product.name} · 产品管理员`);
       const choice=page.getByRole("checkbox",{name:new RegExp(manager.email)});
       await choice.check();
       await page.getByRole("button",{name:"保存产品管理员",exact:true}).click();

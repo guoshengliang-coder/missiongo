@@ -22,7 +22,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await page.screenshot({ path: test.info().outputPath("agent-overview.png") });
       await page.locator(".settings-hub-row").filter({ hasText: "派单默认值" }).click();
       await expect(page).toHaveURL(/\/settings\/agent\/dispatch/);
-      await expect(page.locator(".settings-page-title")).toContainText("仅影响当前账号");
+      await expect(page.locator(".settings-page-title")).not.toContainText("仅影响当前账号");
       // One Back, one level: the header names the section it returns to (AND-316).
       await up(page, "Agent 配置").click();
       await up(page, "设置目录").click();
@@ -30,8 +30,8 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await expect(page.getByRole("combobox", { name: "当前产品", exact: true })).toHaveCount(0);
       await page.locator(`.settings-product-card[data-product-id="${fixture.productId}"]`).click();
       await expect(page.locator(".settings-hub-row strong")).toHaveText(["基本资料", "模块管理", "产品管理员", "Builder 分配", "发布配置", "SDK 接入"]);
-      await expect(page.locator(".settings-page-title")).toContainText("作用于产品：");
-      await expect(page.getByRole("button", { name: "添加产品", exact: true })).toBeVisible();
+      await expect(page.locator(".settings-page-title")).toContainText("产品概览");
+      await expect(page.getByRole("button", { name: "添加产品", exact: true })).toHaveCount(0);
       await page.screenshot({ path: test.info().outputPath("product-overview.png") });
       await page.waitForLoadState("networkidle");
       const audit = await page.evaluate(AUDIT_SOURCE) as { horizontalOverflow: number; text: Array<{ fontSize: number; fontWeight: number; contrast: number }>; targets: Array<{ width: number; height: number }> };
@@ -40,9 +40,9 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       expect(audit.text.filter(x => x.contrast < (x.fontSize >= 24 || (x.fontWeight >= 700 && x.fontSize >= 18.66) ? 3 : 4.5))).toEqual([]);
       if (width === 375) expect(audit.targets.filter(x => x.width > 0 && x.height > 0 && (x.width < 43.99 || x.height < 43.99))).toEqual([]);
       await page.locator(".settings-hub-row").filter({ hasText: "SDK 接入" }).click();
-      await expect(page.getByText("SDK 令牌归属当前产品。需要区分模块或独立撤销时，可以创建多枚令牌。", { exact: true })).toBeVisible();
+      await expect(page.getByText("需要区分模块或独立撤销时，可创建多个令牌。", { exact: true })).toBeVisible();
       await page.reload();
-      await expect(page.getByRole("heading", { level: 1 })).toHaveText("SDK 接入");
+      await expect(page.getByRole("heading", { level: 1 })).toContainText("SDK 接入");
     });
   });
 }
@@ -156,11 +156,11 @@ test("dispatch defaults remain account-wide after a product switch", async ({ pa
     expect((await saved).status()).toBe(200);
     await page.getByRole("navigation", { name: "设置", exact: true }).getByRole("button", { name: "产品配置", exact: true }).click();
     await page.locator(`.settings-product-card[data-product-id="${fixture.productId}"]`).click();
-    await page.getByRole("combobox", { name: "当前产品", exact: true }).selectOption(product.id);
+    await page.goto(`/settings/products/${product.id}`);
     await page.getByRole("navigation", { name: "设置", exact: true }).getByRole("button", { name: "Agent 配置", exact: true }).click();
     await page.locator(".settings-hub-row").filter({ hasText: "派单默认值" }).click();
     await expect(page.getByRole("combobox", { name: "Agent", exact: true })).toHaveValue("codex");
-    await expect(page.locator(".settings-page-title")).toContainText("仅影响当前账号");
+    await expect(page.locator(".settings-page-title")).not.toContainText("仅影响当前账号");
     const current = await (await request.get("/api/v1/dispatch-defaults")).json();
     expect(current.agentKind).toBe("codex");
     expect(current.productId).toBeUndefined();
@@ -175,7 +175,7 @@ test("SDK token lists stay separate for each product", async ({ page, request })
   await page.goto(`/settings/products/${fixture.productId}/tokens`);
   await expect(page.locator(".sdk-token-row").filter({ hasText: "SDK product A" })).toHaveCount(1);
   await expect(page.locator(".sdk-token-row").filter({ hasText: "SDK product B" })).toHaveCount(0);
-  await page.getByRole("combobox", { name: "当前产品", exact: true }).selectOption(other.id);
+  await page.goto(`/settings/products/${other.id}/tokens`);
   await expect(page.locator(".sdk-token-row").filter({ hasText: "SDK product A" })).toHaveCount(0);
   await expect(page.locator(".sdk-token-row").filter({ hasText: "SDK product B" })).toHaveCount(1);
 });

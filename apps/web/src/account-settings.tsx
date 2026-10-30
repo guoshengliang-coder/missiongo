@@ -815,14 +815,14 @@ export function AccountManagement({ user, products, accountId, filterProductId, 
       && (!filter || account.role === "admin" || account.projectAdministratorProductIds?.includes(filter) || account.permissions.some(permission => permission.productId === filter && (permission.canView || permission.canOperate || permission.canUseAi))));
   return <div className="account-management">
     {!accountId && <>
-      <div className="account-management-header"><p className="account-note">{t("accountsHelp")}</p><button type="button" className="primary-button" disabled={editor !== null} onClick={() => setEditor(openAccountEditor(editor, "new-account"))}><Plus size={15} /> {t("addAccount")}</button></div>
-      <div className="settings-account-filters">
-        <label>{t("settingsSearchAccounts")}<input type="search" value={search} disabled={editor !== null} onChange={event => setSearch(event.target.value)} /></label>
-        <label>{t("settingsFilterProduct")}<select value={filter} disabled={editor !== null} onChange={event => onNavigate ? onNavigate(undefined, event.target.value || undefined) : setLocalFilter(event.target.value)}><option value="">{t("settingsAllProducts")}</option>{products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</select></label>
+      <div className="settings-list-toolbar">
+        <label className="settings-toolbar-search"><span className="sr-only">{t("settingsSearchAccounts")}</span><input type="search" placeholder={t("settingsSearchAccounts")} value={search} disabled={editor !== null} onChange={event => setSearch(event.target.value)} /></label>
+        <label><span className="sr-only">{t("settingsFilterProduct")}</span><select value={filter} disabled={editor !== null} onChange={event => onNavigate ? onNavigate(undefined, event.target.value || undefined) : setLocalFilter(event.target.value)}><option value="">{t("settingsAllProducts")}</option>{products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</select></label>
+        <button type="button" className="primary-button" disabled={editor !== null} onClick={() => setEditor(openAccountEditor(editor, "new-account"))}><Plus size={15} />{t("addAccount")}</button>
+        {(search || filter) && <button type="button" className="text-button" onClick={() => { setSearch(""); if (onNavigate) onNavigate(undefined); else setLocalFilter(""); }}>{t("clearListFilters")}</button>}
       </div>
     </>}
-    {editor === "new-account" && <Modal title={t("addAccount")} subtitle={t("settingsAccountsPermissions")} onClose={() => setEditor(null)}><NewAccountForm onCancel={() => setEditor(null)} onCreated={() => setEditor(null)} /></Modal>}
-    {filter && !accountId && <p className="account-note">{products.find(product => product.id === filter)?.name} 的账号权限</p>}
+    {editor === "new-account" && <Modal title={t("addAccount")} subtitle={t("settingsAccountsPermissions")} onClose={() => setEditor(null)}><p className="account-note">{t("accountsHelp")}</p><NewAccountForm onCancel={() => setEditor(null)} onCreated={() => setEditor(null)} /></Modal>}
     <div className="account-list account-access-list">
       {accounts.length === 0 && <p role="status" className="account-note">{t(accountId ? "settingsUnavailable" : "settingsNoMatchingAccounts")}</p>}
       {accounts.map(account => <AccountRow key={account.id} account={account} products={products} filterProductId={filter || undefined} isSelf={account.id === user.id} editor={editor} setEditor={setEditor} />)}
@@ -861,18 +861,20 @@ export function DeepSeekSettings() {
   return (
     <section className="account-ai-settings">
       <h3>{t("deepseekSettings")}</h3>
-      <p className="account-note">{t("deepseekSettingsHelp")}</p>
-      <p className="account-note">{query.data?.configured ? t("deepseekConfigured") : t("deepseekNotConfigured")}</p>
-      <button type="button" className="secondary-button" onClick={() => { setKey(""); mutation.reset(); setEditing(true); }}>{t("editConfiguration")}</button>
+      {query.isPending ? <p role="status">{t("settingsLoading")}</p> : query.isError ? <div role="alert"><InlineNote danger message={t("settingsLoadFailed")} /><button type="button" className="secondary-button" onClick={() => void query.refetch()}>{t("retry")}</button></div> : <>
+        <strong className="model-configuration-status">{query.data.configured ? t("deepseekConfigured") : t("deepseekNotConfigured")}</strong>
+        {query.data.configured && <p>{t("dispatchModel")}: {query.data.model}</p>}
+      </>}
+      <button type="button" className="secondary-button" disabled={!query.isSuccess} onClick={() => { setKey(""); mutation.reset(); setEditing(true); }}>{t("editConfiguration")}</button>
       {editing && <Modal title={t("deepseekSettings")} subtitle={t("settingsModelsTitle")} onClose={() => { setKey(""); setEditing(false); }} dirty={Boolean(key)} pending={mutation.isPending}>
-        <form className="dialog-form" onSubmit={event => { event.preventDefault(); if (key.trim() && !mutation.isPending) mutation.mutate(key); }}>
+        <p className="account-note">{t("deepseekSettingsHelp")}</p><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (key.trim() && !mutation.isPending) mutation.mutate(key); }}>
           <label>{t("settingsApiKey")}<input type="password" required value={key} onChange={event => setKey(event.target.value)} placeholder={t("deepseekKeyPlaceholder")} autoComplete="off" spellCheck={false} /></label>
           {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
           <div className="form-footer"><button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => { setKey(""); setEditing(false); }}>{t("cancel")}</button><button type="submit" className="primary-button" disabled={!key.trim() || mutation.isPending}>{t("save")}</button></div>
         </form>
-      </Modal>}
       {query.data?.configured && <button type="button" className="text-button" disabled={mutation.isPending}
         onClick={async () => { if (await confirm(t("confirmClearModelKey"), { confirmLabel: t("deepseekClearKey") })) mutation.mutate(null); }}>{t("deepseekClearKey")}</button>}
+      </Modal>}
       <label className="account-ai-toggle">
         <input
           type="checkbox"

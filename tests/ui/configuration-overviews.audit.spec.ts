@@ -62,7 +62,7 @@ test("administrator overview shows assignments and enters explicitly scoped deta
   await expect(card).toContainText(member.email);
   await expect(page.getByRole("checkbox")).toHaveCount(0);
   await card.click();
-  await expect(page.locator(".settings-page-title")).toContainText(`作用于产品：${product.name}`);
+  await expect(page.locator(".settings-page-title")).toContainText(product.name);
   await expect(page.locator(".settings-page-title")).not.toContainText("影响整个工作空间");
   await expect(page.getByRole("checkbox", { name: new RegExp(member.email) })).toBeChecked();
   await up(page, "产品管理员").click();
@@ -84,7 +84,7 @@ test("owners choose among owned products without fetching the system account ros
   await page.goto(`/settings/admin/accounts?product=${a.id}`);
   await expect(page.locator(".settings-product-card")).toHaveCount(2);
   await page.locator(`.settings-product-card[data-product-id="${b.id}"]`).click();
-  await expect(page.locator(".settings-page-title")).toContainText(`作用于产品：${b.name}`);
+  await expect(page.locator(".settings-page-title")).toContainText(b.name);
   await expect(page.getByRole("textbox", { name: "添加", exact: true })).toBeVisible();
   expect(rosterRequests).toEqual([]);
   await page.goto(`/settings/admin/accounts/${a.id}`);

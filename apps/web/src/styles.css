@@ -2882,3 +2882,14 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .comment-form.detail-composer { padding: 10px calc(18px + var(--safe-right)) max(10px, var(--safe-bottom)) calc(18px + var(--safe-left)); }
   .detail-composer textarea { font-size: 16px; }
 }
+
+/* Compact settings lists share a toolbar and keep values visible. */
+.settings-list-toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 12px; margin-bottom: 20px; }
+.settings-list-toolbar label { min-width: 0; }
+.settings-list-toolbar input, .settings-list-toolbar select { box-sizing: border-box; min-height: 44px; max-width: 100%; padding: 10px 12px; border: 1px solid var(--line-dark); border-radius: var(--radius-sm); background: var(--surface-field); color: var(--ink); font: inherit; }
+.settings-toolbar-search { flex: 0 1 240px; }
+.settings-toolbar-search input { width: 100%; }
+.settings-value-row { width: 100%; min-height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; font: inherit; cursor: pointer; }
+.settings-value-row span { display: flex; align-items: center; gap: 12px; color: var(--muted); flex-shrink: 0; }
+.model-configuration-status { display: block; margin: 16px 0; }
+@media (max-width: 640px) { .settings-toolbar-search { flex: 1 1 100%; } .settings-list-toolbar select { width: 100%; } .settings-list-toolbar label:not(.settings-toolbar-search) { flex: 1 1 140px; } }

@@ -3190,7 +3190,7 @@ function DetailPane({
         <TransferBuilderModal itemKey={item.key} delivery={deliveryQuery.data} onClose={() => setTransferBuilderOpen(false)} />
       )}
       {editing && !item.transferred && (
-        <Modal title={t("editItem", { key: item.key })} subtitle={t("editItemHelp")} onClose={() => setEditing(false)}>
+        <Modal title={t("editItem", { key: item.key })} subtitle="" onClose={() => setEditing(false)}>
           <EditItemForm
             item={item}
             onCancel={() => setEditing(false)}
@@ -4801,7 +4801,7 @@ function ProductSettings({
           {productMutation.isError && <InlineError message={errorMessage(productMutation.error, t("somethingWentWrong"))} />}
           {archiveMutation.isError && <InlineError message={errorMessage(archiveMutation.error, t("somethingWentWrong"))} />}
           <div className="settings-form-footer">
-          <span className="settings-save-note" role="status">{productMutation.isSuccess && name === product.name ? t("permissionsSaved") : t("settingsManualSave")}</span>
+          {productMutation.isSuccess && name === product.name && <span className="settings-save-note" role="status">{t("permissionsSaved")}</span>}
           <button type="button" className="secondary-button" disabled={productMutation.isPending || name === product.name} onClick={() => setName(product.name)}>{t("cancel")}</button>
           <button className="primary-button settings-save" disabled={!name.trim() || name.trim() === product.name || productMutation.isPending} onClick={() => productMutation.mutate()}>
             {productMutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {t("saveProduct")}
@@ -4906,9 +4906,9 @@ function ReleaseArtifactsSettings({ product }: { product: Product }) {
 
   return (
     <section className="product-settings-section release-artifacts-settings" role="tabpanel">
-      <header><div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("releaseArtifacts")}</h3></div></header>
+      <header><div><h3>{t("releaseArtifacts")}</h3></div></header>
       <p className="component-management-help">{t("releaseArtifactsHelp")}</p>
-      <p className="settings-save-note">{t("settingsImmediateChange")}</p>
+      <p className="settings-save-note" role="status">{mutation.isPending ? t("sdkSaving") : mutation.isSuccess ? t("permissionsSaved") : t("settingsImmediateChange")}</p>
       <div className="release-artifact-list">
         {artifacts.map((artifact) => (
           <div key={artifact} className="release-artifact-row">
@@ -4994,7 +4994,7 @@ function SdkTokenSettings({ product }: { product: Product }) {
   return (
     <section className="product-settings-section" role="tabpanel">
       <header>
-        <div><p className="eyebrow">{product.keyPrefix}</p><h3>{t("sdkTokens")}</h3></div>
+        <div><h3>{t("sdkTokens")}</h3></div>
         <div className="component-header-actions"><span>{tokens.filter((token) => !token.revokedAt).length}</span><button type="button" className="primary-button" onClick={() => { setCreatedToken(null); createMutation.reset(); setCreating(true); }} disabled={creating}>{t("newSdkToken")}</button></div>
       </header>
       <p className="account-note">{t("settingsSdkScopeHelp")}</p>

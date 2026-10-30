@@ -304,12 +304,12 @@ export const api = {
   confirmHandover(itemKey: string, handoverId: string, input: {stage:"integration";commit:string;note:string} | {stage:"release";note:string;releases:Array<{artifact:string;version:string;sourceCommit:string}>}) {
     return request<{handover:StatusCheckRecord}>(`/api/v1/items/${encodeURIComponent(itemKey)}/handovers/${encodeURIComponent(handoverId)}/confirm`, {method:"POST",body:JSON.stringify(input)});
   },
-  getAiTitleSettings: () => request<{ configured: boolean; agentAttentionEnabled: boolean }>("/api/v1/ai/title-settings"),
-  setAiTitleKey: (apiKey: string | null) => request<{ configured: boolean; agentAttentionEnabled: boolean }>("/api/v1/ai/title-settings", {
+  getAiTitleSettings: () => request<{ configured: boolean; agentAttentionEnabled: boolean; model: string }>("/api/v1/ai/title-settings"),
+  setAiTitleKey: (apiKey: string | null) => request<{ configured: boolean; agentAttentionEnabled: boolean; model: string }>("/api/v1/ai/title-settings", {
     method: "PUT", body: JSON.stringify({ apiKey }),
   }),
   setAgentAttentionEnabled: (agentAttentionEnabled: boolean) =>
-    request<{ configured: boolean; agentAttentionEnabled: boolean }>("/api/v1/ai/title-settings", {
+    request<{ configured: boolean; agentAttentionEnabled: boolean; model: string }>("/api/v1/ai/title-settings", {
       method: "PUT", body: JSON.stringify({ agentAttentionEnabled }),
     }),
   generateTitle: (productId: string, content: string) => request<{ title: string }>("/api/v1/ai/title", {
