@@ -317,13 +317,7 @@ export interface ClaimWorkItemInput {
   readonly idempotencyKey: string;
 }
 
-/**
- * A release artifact identifier (AND-276). Products declare their own set, so
- * this is deliberately not a closed union: a service, a static site and a
- * standalone component must each be registerable, matchable and verifiable
- * apart. MissionGo's own artifacts happen to be the four defaults below, but
- * that is product configuration, not a server-side fact.
- */
+/** An artifact identifier recorded by a task handover, independent of product setup. */
 export type ReleaseArtifact = string;
 
 /**
@@ -333,7 +327,7 @@ export type ReleaseArtifact = string;
  */
 export const DEFAULT_RELEASE_ARTIFACTS = ["web", "androidApp", "androidSdk", "macosApp"] as const;
 
-/** Upper bound on one product's declared artifacts, matching the MCP schema. */
+/** Upper bound on one task scope or release snapshot, matching the MCP schema. */
 export const MAX_RELEASE_ARTIFACTS = 20;
 
 /**
@@ -351,8 +345,8 @@ export interface SubmitDevelopmentCompleteInput {
   readonly itemKey: string;
   readonly pullRequestUrl?: string;
   readonly completion?: CompletionReference;
-  /** Empty only when the merged PR needs no release and noReleaseReason is given. */
-  readonly requiredArtifacts: readonly ReleaseArtifact[];
+  /** Omit when scope is unknown; [] explicitly means no release and needs a reason. */
+  readonly requiredArtifacts?: readonly ReleaseArtifact[];
   readonly noReleaseReason?: string;
   readonly summary?: string;
   readonly attribution?: EventAttribution;

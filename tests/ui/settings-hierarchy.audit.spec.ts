@@ -29,7 +29,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await nav.getByRole("button", { name: "产品配置", exact: true }).click();
       await expect(page.getByRole("combobox", { name: "当前产品", exact: true })).toHaveCount(0);
       await page.locator(`.settings-product-card[data-product-id="${fixture.productId}"]`).click();
-      await expect(page.locator(".settings-hub-row strong")).toHaveText(["基本资料", "模块管理", "产品管理员", "Builder 分配", "发布配置", "通知", "SDK 接入"]);
+      await expect(page.locator(".settings-hub-row strong")).toHaveText(["基本资料", "模块管理", "产品管理员", "Builder 分配", "发布产物", "通知", "SDK 接入"]);
       await expect(page.locator(".settings-page-title")).toContainText("产品概览");
       await expect(page.getByRole("button", { name: "添加产品", exact: true })).toHaveCount(0);
       await page.screenshot({ path: test.info().outputPath("product-overview.png") });

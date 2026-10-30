@@ -329,7 +329,7 @@ export function createMissionGoMcpServer(
         if (!handover) return [];
         let completion;
         try { completion = normalizeCompletion(handover.payload); } catch { return []; }
-        const requiredArtifacts = handover?.payload.requiredArtifacts;
+        const requiredArtifacts = store.getDevelopmentReleaseScope(item.key);
         return Array.isArray(requiredArtifacts) && requiredArtifacts.length > 0
           ? [{ itemKey: item.key, ...completionPayload(completion), requiredArtifacts }]
           : [];
@@ -687,21 +687,21 @@ export function createMissionGoMcpServer(
       description:
         "Move work to development complete after verifying GitHub PR merge (gh), GitLab MR merge (glab), or a local commit included in targetBranch (git merge-base --is-ancestor), with required checks passing. Manual completion is confirmed only by a signed-in person in the console. "
         + "Enumerate artifacts using the current product repository's actual diff and release rules, never another "
-        + "repository's path mapping, and pick identifiers from the product's `releaseArtifacts` in list_products. "
+        + "repository's path mapping. Identifiers are recorded automatically; no product setup is required. "
         + "Explicit no-release work may use requiredArtifacts: [] only with noReleaseReason explaining scope, evidence "
-        + "and verification. Unknown release requirements stay in progress. Write the completion comment first. "
+        + "and verification. Omit requiredArtifacts if scope is unknown; verified integration can still be development complete. Write the completion comment first. "
         + "No-release work waits for a person to arrange verification; this tool never proves publication or acceptance.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
         ...completionFields,
-        requiredArtifacts: z.array(z.string().regex(RELEASE_ARTIFACT_ID_PATTERN)).max(MAX_RELEASE_ARTIFACTS),
+        requiredArtifacts: z.array(z.string().regex(RELEASE_ARTIFACT_ID_PATTERN)).max(MAX_RELEASE_ARTIFACTS).optional(),
         noReleaseReason: z.string().trim().min(1).max(4_000).optional(),
         summary: z.string().min(1).max(4_000).optional(),
         idempotencyKey: z.string().min(1).max(200),
       }).superRefine((input, ctx) => {
-        if (input.requiredArtifacts.length === 0 && !input.noReleaseReason) {
+        if (input.requiredArtifacts?.length === 0 && !input.noReleaseReason) {
           ctx.addIssue({ code: "custom", path: ["noReleaseReason"], message: "An empty artifact list needs an explicit no-release reason." });
-        } else if (input.requiredArtifacts.length > 0 && input.noReleaseReason !== undefined) {
+        } else if (input.requiredArtifacts?.length !== 0 && input.noReleaseReason !== undefined) {
           ctx.addIssue({ code: "custom", path: ["noReleaseReason"], message: "A no-release reason cannot accompany required release artifacts." });
         }
       }),
@@ -713,7 +713,7 @@ export function createMissionGoMcpServer(
       const item = store.submitDevelopmentComplete({
         itemKey: requireItemAccess(ctx, store, itemKey),
         completion: normalizeCompletion({ completion, pullRequestUrl }),
-        requiredArtifacts,
+        ...(requiredArtifacts ? {requiredArtifacts} : {}),
         ...(noReleaseReason ? { noReleaseReason } : {}),
         ...(summary ? { summary } : {}),
         attribution: {
@@ -724,7 +724,9 @@ export function createMissionGoMcpServer(
       });
       return textResult(
         { item, statusChanged: true },
-        requiredArtifacts.length > 0
+        requiredArtifacts === undefined
+          ? `${item.key} is development complete; release scope is unknown and verification can be arranged by a person.`
+          : requiredArtifacts.length > 0
           ? `${item.key} is development complete and awaits a verified release.`
           : `${item.key} is development complete, requires no release, and awaits a person arranging verification.`,
       );
@@ -971,7 +973,7 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "register_item_handover", {
     title: "Associate completion and release scope with the current work round",
-    description: "After reading the user-directed item, register its completion reference (GitHub PR, GitLab MR, local commit with targetBranch, or manual confirmation). Integration occurring before this work round needs human review. requiredArtifacts is an explicitly confirmed subset of the product artifacts; omit for unknown scope, or send [] with noReleaseReason. A durable record lets the node detect a later merge even if the conversation stops. Changes are constrained to handover metadata, never item prose or acceptance.",
+    description: "After reading the user-directed item, register its completion reference (GitHub PR, GitLab MR, local commit with targetBranch, or manual confirmation). Integration occurring before this work round needs human review. requiredArtifacts records the actual task release scope without product preconfiguration; omit for unknown scope, or send [] with noReleaseReason. Verified integration is independent of release scope. A durable record lets the node detect a later merge even if the conversation stops. Changes are constrained to handover metadata, never item prose or acceptance.",
     inputSchema: handoverRegistrationSchema.safeExtend({itemKey:z.string().min(2).max(50)}),
     annotations: { readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false },
   }, async ({itemKey,...input},ctx) => {

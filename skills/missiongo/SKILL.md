@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.24.0
+version: 5.25.0
 ---
 
 # MissionGo 条目读取与评论
@@ -108,7 +108,7 @@ frontmatter 中的 `version` 对比。
 
 本次连接支持 `register_item_handover`、`report_handover_evidence` 时，优先使用下列持久化交接；旧连接继续使用原有开发完成与发布交接工具。
 
-- 完整读取用户指派的条目后，取得当前仓库的 PR、MR 或本地提交依据后调用 `register_item_handover`，保存返回的 handover.id。每个处理轮次单独关联。`completion` 为 GitHub 的 `{kind:"github",url}`、GitLab 的 `{kind:"gitlab",url}`、本地 Git 的 `{kind:"commit",commit,targetBranch}` 或人工确认的 `{kind:"manual",commit,description}`；commit 必须是完整 40 位 SHA，targetBranch 是本地目标分支。人工确认方式只登记，必须由登录用户在网页确认，AI 不得代确认或上报其合并证据。旧 `pullRequestUrl` 参数继续兼容托管平台链接。文件路径只辅助建议，`requiredArtifacts` 以当前产品声明和明确的业务范围为准，不为匹配强制重新推导。范围未知就省略该字段，明确无需发布才传 [] 和 noReleaseReason。
+- 完整读取用户指派的条目后，取得当前仓库的 PR、MR 或本地提交依据后调用 `register_item_handover`，保存返回的 handover.id。每个处理轮次单独关联。`completion` 为 GitHub 的 `{kind:"github",url}`、GitLab 的 `{kind:"gitlab",url}`、本地 Git 的 `{kind:"commit",commit,targetBranch}` 或人工确认的 `{kind:"manual",commit,description}`；commit 必须是完整 40 位 SHA，targetBranch 是本地目标分支。人工确认方式只登记，必须由登录用户在网页确认，AI 不得代确认或上报其合并证据。旧 `pullRequestUrl` 参数继续兼容托管平台链接。文件路径只辅助建议，`requiredArtifacts` 以当前仓库发布规则和明确的业务范围为准，无需产品设置预先声明，不为匹配强制重新推导。范围未知就省略该字段，不阻止核实集成和开发完成；明确无需发布才传 [] 和 noReleaseReason。
 - 合并或发布由本次执行端实际核实后，先完成原规则要求的完成/发布评论，再调用 `report_handover_evidence`。提供 itemKey 和 handoverId；merged 包含真实集成 commit 与 occurredAt；本地提交以实际核实其已在目标分支中的时间为准，不把提交创建时间当作集成时间。releases 数组代表本次核实的完整当前快照，提供时替换旧发布证据，不能只补一项而沿用已回滚的旧证据。每个 release 记录 artifact、version、sourceCommit、containsMergeCommit、verifiedAt、receiptDigest；必须核实公开产物和提交包含关系，不能从版本号、构建成功或发布计划推断。
 - 服务端先保存证据，再按处理轮次补齐开发完成、待验证。重复上报同一份证据，不生成新交接来掩盖不确定结果。使用 `get_item_status_checks` 核对实际结果；权限不足、失败或缺失时如实说明，不宣称已更新。
 - 本机节点每天补查一次待交接记录，手动检查走同一流程。服务器不持有用户 GitHub/GitLab 凭据；macOS 节点只使用已映射仓库和本机授权。节点离线会等待，不能保证即时完成。人工退回后旧轮次证据失效，最终验收仍由人决定。
@@ -337,11 +337,11 @@ frontmatter 中的 `version` 对比。
 2. 根据完整改动文件清单、实际 diff 和**当前产品仓库**的构建与发布规则，区分三种情况：
    - **需要发布**：列出完整且不重复的 `requiredArtifacts`，不传 `noReleaseReason`。
    - **明确无需发布**：传 `requiredArtifacts: []` 和非空 `noReleaseReason`，写清改动范围、无需发布的依据和验证方式。纯单测、文档或测试进程工具通常属于此类，但必须核对是否影响分发产物；不能只凭文件名或用户未要求部署就判为无需发布。
-   - **无法判断**：留在处理中，评论说明缺少的映射或证据。未知情况不能用空列表表示。
-   先调用 `list_products` 读取该产品的 `releaseArtifacts`。新项目从空清单开始，用户在产品设置中自行声明；清单为空不证明条目无需发布。`requiredArtifacts` 只能取其中已声明的标识；服务端会拒绝产品未声明的产物，`submit_for_verification` 的 `releases` 也必须覆盖本次登记的每一个。
+   - **无法判断发布范围**：省略 `requiredArtifacts`，评论说明范围未知。集成已核实且检查通过时仍可标记开发完成，之后补充范围或由登录用户安排人工验证；未知情况不能用空列表冒充无需发布。
+   `list_products` 的 `releaseArtifacts` 是历史记录和任务交接自动累积的只读参考，不是允许列表。新项目清单为空也无需用户补配置；实际任务范围可登记尚未记录的有效标识。`submit_for_verification` 的 `releases` 仍须覆盖本次登记的每一个，不能用部分发布证据推断完整范围。
    产物映射只适用于它所属的产品与仓库。`scripts/release-notices.mjs` 是 MissionGo 仓库的实现示例，只有确认当前仓库存在且路径规则适用时才能使用；不得借用其他仓库的脚本。脚本缺失或匹配结果为空都不证明无需发布，仍须检查实际改动。工具尚不支持该产品的产物类型时，也不得省略或冒用其他类型。
 3. 告诉用户要把哪一条标记开发完成、依据哪个 PR/MR 或本地提交，以及是否需要发布。确认本次连接的 `writeTools` 包含 `submit_development_complete` 后调用，带上述 `completion`、发布要求和稳定的 `idempotencyKey`。旧连接仅支持 `pullRequestUrl` 时，GitHub/GitLab 可沿用对应 HTTPS 链接；本地和人工方式须升级，不能伪造链接。
-4. 报告条目已进入开发完成。需要发布的条目仍须经过发布核验；明确无需发布的条目由用户基于集成提交和测试证据安排验证，不进入发布候选队列，也不伪造发布凭据调用 `submit_for_verification`。两类都不等于验收通过。
+4. 报告条目已进入开发完成。需要发布的条目仍须经过发布核验；明确无需发布的条目由用户基于集成提交和测试证据安排验证，不进入发布候选队列，也不伪造发布凭据调用 `submit_for_verification`。范围未知的条目也可由登录用户填写依据安排人工验证，不冒充已发布或无需发布。以上都不等于验收通过。
 
 当前 MCP 未提供工具、或旧版本拒绝明确无需发布的参数时，保持处理中并说明需升级服务端和 Skill；不得删掉原因、虚填产物或用其他接口绕过。正式版本号以发布源和服务端为准，不修改本地版本号来掩盖不一致。
 

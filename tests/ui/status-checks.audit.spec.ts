@@ -1,9 +1,16 @@
 import {readFileSync} from "node:fs";
 import {expect,test} from "@playwright/test";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string};
+async function recordArtifacts(request: import("@playwright/test").APIRequestContext, artifacts: string[]) {
+ const created = await request.post("/api/v1/items", {data:{productId:fixture.productId,title:"Artifact discovery",description:"Artifacts from a task handover",type:"task",priority:"normal",status:"ready",environment:{platform:"other"}}});
+ const item = await created.json() as {key:string};
+ await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
+ const registered = await request.put(`/api/v1/items/${item.key}/handover`,{data:{completion:{kind:"commit",commit:"a".repeat(40),targetBranch:"main"},requiredArtifacts:artifacts}});
+ expect(registered.ok()).toBe(true);
+}
 for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
  test(`status check association and offline queue ${width}px ${theme}`,async({page,request})=>{
-  await request.put(`/api/v1/products/${fixture.productId}/release-artifacts`,{data:{artifacts:["web","cli"]}});
+  await recordArtifacts(request,["web","cli"]);
   const created=await request.post("/api/v1/items",{data:{productId:fixture.productId,title:"Status check fixture",description:"Publication handover",type:"requirement",priority:"normal",status:"ready",environment:{platform:"web"}}});
   expect(created.status()).toBe(201);const item=await created.json() as {key:string};
   const moved=await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});expect(moved.status()).toBe(200);
@@ -48,7 +55,7 @@ test("product check entry shows daily schedule",async({page})=>{
 });
 
 test("local manual confirmation records integration and offline publication", async({page,request})=>{
- await request.put(`/api/v1/products/${fixture.productId}/release-artifacts`,{data:{artifacts:["cli"]}});
+ await recordArtifacts(request,["cli"]);
  const created=await request.post("/api/v1/items",{data:{productId:fixture.productId,title:"Offline CLI delivery",description:"Manual evidence",type:"task",priority:"normal",status:"ready",environment:{platform:"other"}}});
  const item=await created.json() as {key:string};
  await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
@@ -80,4 +87,34 @@ test("local manual confirmation records integration and offline publication", as
  await expect(dialog.locator("code").first()).toHaveText("a".repeat(40));
  expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
  await page.screenshot({path:test.info().outputPath("manual-local-phone.png")});
+});
+
+
+test("an empty product inventory does not block manual integration or arranging verification", async({page,request}) => {
+ const product = await (await request.post("/api/v1/products",{data:{name:"No artifact setup",keyPrefix:"NAST"}})).json();
+ expect(product.releaseArtifacts).toEqual([]);
+ const created = await request.post("/api/v1/items",{data:{productId:product.id,title:"Inspect integrated changes",description:"No preconfigured release artifacts",type:"task",priority:"normal",status:"ready",environment:{platform:"other"}}});
+ const item = await created.json() as {key:string};
+ await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
+ await page.goto(`/?product=${product.id}&item=${item.key}`);
+ await page.locator(".detail-toolbar .detail-more-menu > summary").click();
+ await page.locator(".detail-toolbar").getByRole("button",{name:"状态检查",exact:true}).click();
+ const dialog = page.getByRole("dialog");
+ await dialog.getByRole("button",{name:"关联完成依据 / 确认发布范围",exact:true}).click();
+ await dialog.getByRole("combobox",{name:"完成依据",exact:true}).selectOption("manual");
+ await dialog.getByLabel("完整提交编号",{exact:true}).fill("a".repeat(40));
+ await dialog.getByLabel("需要人工确认的交付说明",{exact:true}).fill("Review integrated changes directly");
+ await dialog.getByRole("button",{name:"确认并保存关联",exact:true}).click();
+ await dialog.getByRole("button",{name:"人工确认已集成",exact:true}).click();
+ await dialog.getByRole("textbox",{name:"确认依据与说明",exact:true}).fill("Reviewed the integrated commit");
+ await dialog.getByRole("button",{name:"人工确认已集成",exact:true}).click();
+ await expect(dialog.getByText("条目状态：开发完成",{exact:true})).toBeVisible();
+ await dialog.getByRole("button",{name:"安排人工验证",exact:true}).click();
+ await expect(dialog.getByLabel("发布版本",{exact:true})).toHaveCount(0);
+ await dialog.getByRole("textbox",{name:"确认依据与说明",exact:true}).fill("Arrange source review and functional validation");
+ await dialog.getByRole("button",{name:"安排人工验证",exact:true}).click();
+ await expect(dialog.getByText("条目状态：待验证",{exact:true})).toBeVisible();
+ await expect(dialog.getByText("交接已核对",{exact:true})).toBeVisible();
+ await expect(dialog.getByText("发布范围：待确认",{exact:true})).toBeVisible();
+ await expect(dialog.getByText("来源：登录用户人工确认。",{exact:true})).toBeVisible();
 });

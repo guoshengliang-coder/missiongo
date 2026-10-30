@@ -386,6 +386,17 @@ export class MissionGoStore {
     return this.getProduct(productId);
   }
 
+  /** Learn artifact identifiers from handovers without requiring manual setup. */
+  recordProductReleaseArtifacts(productId: string, artifacts: readonly string[]): void {
+    if (!artifacts.length) return;
+    normalizedReleaseArtifacts(artifacts);
+    const current = this.getProduct(productId).releaseArtifacts;
+    const combined = [...new Set([...current, ...artifacts])];
+    if (combined.length === current.length) return;
+    this.database.connection.prepare("UPDATE products SET release_artifacts = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(combined), new Date().toISOString(), productId);
+  }
+
   createComponent(input: { productId: string; name: string; kind: ComponentKind }): ComponentSnapshot {
     this.getProduct(input.productId);
     const name = requiredText(input.name, "Component name");
@@ -1498,14 +1509,14 @@ export class MissionGoStore {
     this.assertWorkItemWritable(input.itemKey);
     const completion = normalizeCompletion(input);
     if (completion.kind === "manual" && evidence?.actor !== "human") throw invalidInput("Human confirmation requires a signed-in person.");
-    const requiredArtifacts = [...input.requiredArtifacts];
-    if (requiredArtifacts.length > MAX_RELEASE_ARTIFACTS
+    const requiredArtifacts = input.requiredArtifacts ? [...input.requiredArtifacts] : undefined;
+    if (requiredArtifacts && (requiredArtifacts.length > MAX_RELEASE_ARTIFACTS
       || new Set(requiredArtifacts).size !== requiredArtifacts.length
-      || requiredArtifacts.some((artifact) => !isReleaseArtifactId(artifact))) {
+      || requiredArtifacts.some((artifact) => !isReleaseArtifactId(artifact)))) {
       throw invalidInput("Required release artifacts must be a unique list of known artifacts.");
     }
     const noReleaseReason = input.noReleaseReason?.trim();
-    if (requiredArtifacts.length === 0) {
+    if (requiredArtifacts?.length === 0) {
       if (!noReleaseReason || noReleaseReason.length > 4_000) {
         throw invalidInput("An empty artifact list needs a no-release reason of 1 to 4,000 characters.");
       }
@@ -1526,15 +1537,7 @@ export class MissionGoStore {
       if (item.status !== "in_progress") {
         throw conflict("item_not_ready_for_development_complete", "Only an in-progress work item can be marked development complete.");
       }
-      // A nonempty list must name artifacts this product actually declares; an
-      // unknown or misspelled identifier would otherwise sit in the release
-      // queue forever, matching no published artifact.
-      if (requiredArtifacts.length > 0) {
-        const declared = this.getProduct(item.product_id).releaseArtifacts;
-        if (requiredArtifacts.some((artifact) => !declared.includes(artifact))) {
-          throw invalidInput("Required release artifacts must come from the product's declared list.");
-        }
-      }
+      this.recordProductReleaseArtifacts(item.product_id, requiredArtifacts ?? []);
       const now = new Date().toISOString();
       this.applyTransition(
         item,
@@ -1544,7 +1547,7 @@ export class MissionGoStore {
         summary,
         now,
         input.attribution ?? {},
-        { ...completionPayload(completion), requiredArtifacts: [...requiredArtifacts].sort(),
+        { ...completionPayload(completion), ...(requiredArtifacts ? { requiredArtifacts: [...requiredArtifacts].sort() } : {}),
           ...(noReleaseReason ? { noReleaseReason } : {}),
           ...(evidence ? { occurredAt: evidence.occurredAt, handoverId: evidence.handoverId, evidenceSource: evidence.actor === "human" ? "human_confirmation" : "authorized_executor" } : {}) },
       );
@@ -1552,6 +1555,20 @@ export class MissionGoStore {
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
       return result;
     });
+  }
+
+  /** Read the task scope, including corrections made after development completion. */
+  getDevelopmentReleaseScope(itemKey: string): readonly string[] | null {
+    for (const event of [...this.getTimeline(itemKey)].reverse()) {
+      if (event.historySourceKey) continue;
+      if (event.eventType === "handover_scope_confirmed"
+        || event.eventType === "status_changed" && event.toStatus === "development_complete") {
+        const scope = event.payload.requiredArtifacts;
+        return Array.isArray(scope) && scope.every((artifact): artifact is string => typeof artifact === "string" && isReleaseArtifactId(artifact)) ? scope : null;
+      }
+      if (event.eventType === "status_changed" && event.toStatus === "in_progress") return null;
+    }
+    return null;
   }
 
   /** Accept a verified release only when every artifact recorded at merge is present. */
@@ -1574,7 +1591,7 @@ export class MissionGoStore {
       }
       const handover = [...this.getTimeline(item.item_key)].reverse()
         .find((event) => !event.historySourceKey && event.eventType === "status_changed" && event.toStatus === "development_complete");
-      const required = evidence?.requiredArtifacts ?? handover?.payload.requiredArtifacts;
+      const required = evidence?.requiredArtifacts ?? this.getDevelopmentReleaseScope(item.item_key);
       const releases = input.releases;
       if (!handover || !sameCompletion(normalizeCompletion(handover.payload), completion) || !Array.isArray(required) || required.length === 0
         || releases.length !== required.length

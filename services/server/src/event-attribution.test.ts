@@ -199,7 +199,7 @@ describe("work-item event attribution", () => {
       .toBe("pending_verification");
   });
 
-  it("rejects unknown, duplicate, unexplained empty, and contradictory release requirements", async () => {
+  it("rejects malformed, duplicate, unexplained empty, and contradictory release requirements", async () => {
     const { store, item } = await seed();
     store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
     store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
@@ -211,7 +211,7 @@ describe("work-item event attribution", () => {
       .toThrow();
     expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["web", "web"] })).toThrow();
     // Runtime input validation must also guard callers that do not use the MCP schema.
-    expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["unknown"] })).toThrow();
+    expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["1invalid"] })).toThrow();
     expect(store.getWorkItem(item.key).status).toBe("in_progress");
     expect(store.getTimeline(item.key).filter((event) => event.toStatus === "development_complete")).toHaveLength(0);
   });
@@ -227,9 +227,7 @@ describe("work-item event attribution", () => {
     store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
     store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
     const base = { itemKey: item.key, pullRequestUrl: "https://github.com/owner/repo/pull/42", idempotencyKey: "and-276" };
-    // Declared artifacts are accepted; a default the product dropped is not.
-    expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["androidApp"] })).toThrow(/declared list/);
-    expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["gatway"] })).toThrow(/declared list/);
+    // Task scope no longer requires a manually configured product allowlist.
     expect(store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["web", "gateway", "connector"] }).status)
       .toBe("development_complete");
 
@@ -331,4 +329,15 @@ describe("work-item event attribution", () => {
       database.close();
     }
   });
+});
+
+it("records development completion without release scope or product setup", async () => {
+ const {store,item,product} = await seed();
+ store.setProductReleaseArtifacts(product.id, []);
+ store.transitionWorkItem({itemKey:item.key,to:"ready",actor:"human",reason:"triaged"});
+ store.claimWorkItem({itemKey:item.key,agentId:"agent",idempotencyKey:"unknown-claim"});
+ expect(store.submitDevelopmentComplete({itemKey:item.key,pullRequestUrl:"https://github.com/owner/repo/pull/42",idempotencyKey:"unknown-complete"}).status).toBe("development_complete");
+ const event = store.getTimeline(item.key).find(e=>e.toStatus === "development_complete");
+ expect(event?.payload).not.toHaveProperty("requiredArtifacts");
+ expect(event?.payload).not.toHaveProperty("noReleaseReason");
 });

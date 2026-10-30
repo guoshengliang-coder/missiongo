@@ -36,12 +36,13 @@ final class StatusCheckTests: XCTestCase {
         XCTAssertEqual(result.merged?.commit, merge)
         XCTAssertFalse(calls.current.contains { $0.first == "gh" })
     }
-    func testUnknownScopeAndOpenPRCannotBecomeCompletedWork() async {
+    func testUnknownScopeDoesNotBlockIntegrationButOpenPRStillWaits() async {
         let run: CommandRunner = { file,_ in .init(code:0,stdout:file == "git" ? "https://github.com/example/project.git" : "{\"state\":\"OPEN\",\"mergedAt\":null,\"mergeCommit\":null}",stderr:"") }
         let open = await HandoverVerifier.verify(job(),run:run)
         XCTAssertEqual(open.failure,"waiting_merge"); XCTAssertNil(open.merged)
         let unknown = await HandoverVerifier.verify(job(required:nil,merged:true),run:run)
-        XCTAssertEqual(unknown.failure,"evidence_missing")
+        XCTAssertNil(unknown.failure)
+        XCTAssertEqual(unknown.merged?.commit, merge)
     }
     func testRequiresPublicProofEvenWhenTheReleaseCommitEqualsTheMerge() async {
         let fixture = Data("{\"schemaVersion\":1,\"releases\":[{\"artifact\":\"web\",\"version\":\"1.0\",\"sourceCommit\":\"\(merge)\",\"proof\":{\"kind\":\"health\",\"url\":\"https://release.example.test/health\"}}]}".utf8)
