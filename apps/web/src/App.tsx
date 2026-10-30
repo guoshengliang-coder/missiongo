@@ -1,3 +1,4 @@
+import { DraftChatFile } from "./agent-chat-draft-file";
 import { BuilderBadge } from "./builder-badge";
 import { BackButton } from "./back-button";
 import { useDialogDraft } from "./dialog-state";
@@ -3345,6 +3346,7 @@ function CommentComposer({ item, onPosted, onNotice }: {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<readonly File[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const uploaded = useRef(new Map<File, string>());
   const uploadIds = useRef(new Map<File, string>());
   const attempt = useRef({ fingerprint: "", key: "" });
@@ -3387,25 +3389,27 @@ function CommentComposer({ item, onPosted, onNotice }: {
     {isDraggingFiles && <FileDropOverlay remaining={remaining} />}
     <fieldset disabled={mutation.isPending}>
       <label className="sr-only" htmlFor="comment-draft">{t("addComment")}</label>
-      <textarea id="comment-draft" value={text} onChange={event => setText(event.target.value)} placeholder={t("commentPlaceholder")} rows={2} />
-      <button type="submit" className="primary-button" disabled={!(text.trim() || files.length) || mutation.isPending}>
-        {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}
-        {t(mutation.isPending ? "commentSending" : "commentSend")}
-      </button>
-      <div className="detail-composer-files">
-        <FilePicker files={files} onFiles={setFiles} remaining={remaining} disabled={mutation.isPending} />
+      {files.length > 0 && <div className="agent-chat-draft-files">
+        {files.map((file, index) => <DraftChatFile key={`${file.name}-${file.lastModified}-${index}`} file={file} disabled={mutation.isPending}
+          onRemove={() => setFiles(current => current.filter((_, fileIndex) => fileIndex !== index))} />)}
+      </div>}
+      <div className="detail-composer-row">
+        <AutoGrowTextarea id="comment-draft" value={text} onChange={event => setText(event.target.value)} placeholder={t("commentPlaceholder")} rows={1} maximumHeight={240} submitOnEnter />
+        <div className="agent-chat-send-actions">
+          <input ref={fileInputRef} type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.md,.txt,.csv,.json,.pdf,.html,.zip"
+            onChange={event => { addFiles(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ""; }} />
+          <button type="button" className="secondary-button agent-chat-icon-button" disabled={remaining < 1 || mutation.isPending}
+            title={t("addAttachments")} aria-label={t("addAttachments")} onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>
+          <button type="submit" className="primary-button agent-chat-icon-button" disabled={!(text.trim() || files.length) || mutation.isPending}
+            title={t(mutation.isPending ? "commentSending" : "commentSend")} aria-label={t(mutation.isPending ? "commentSending" : "commentSend")}>
+            {mutation.isPending ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
+          </button>
+        </div>
       </div>
-      {files.some(file => file.type.startsWith("image/")) && <div className="comment-image-previews">{files.filter(file => file.type.startsWith("image/")).map((file, index) => <CommentImagePreview key={`${file.name}-${index}`} file={file} />)}</div>}
     </fieldset>
     {error && <InlineError message={error} />}
     {mutation.isError && uploaded.current.size > 0 && <p className="detail-composer-hint">{t("commentUploadRetained")}</p>}
   </form>;
-}
-
-function CommentImagePreview({ file }: { file: File }) {
-  const [url, setUrl] = useState("");
-  useEffect(() => { const next = URL.createObjectURL(file); setUrl(next); return () => URL.revokeObjectURL(next); }, [file]);
-  return <img src={url || undefined} alt={file.name} />;
 }
 
 function CommentBody({
