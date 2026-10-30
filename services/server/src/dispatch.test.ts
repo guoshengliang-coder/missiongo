@@ -1375,7 +1375,7 @@ describe("Claiming a dispatch on the node", () => {
       url: "/api/v1/ai/title-settings",
       headers: { cookie },
       payload: { apiKey: "secret-deepseek-key" },
-    })).json()).toEqual({ configured: true, agentAttentionEnabled: true });
+    })).json()).toEqual({ configured: true, agentAttentionEnabled: true, model: "deepseek-flash" });
     await app.inject({
       method: "POST",
       url: "/api/v1/node/dispatches/claim-next",

@@ -5,7 +5,8 @@ import { useI18n } from "./i18n";
 import type { Product } from "./types";
 
 /** A product is chosen explicitly before any product-scoped editor is opened. */
-export function ProductSettingsList({ products, onOpen, description }: {
+export function ProductSettingsList({ products, onOpen, description, actions }: {
+  actions?: ReactNode;
   products: readonly Product[];
   onOpen: (product: Product) => void;
   description?: ((product: Product) => ReactNode) | undefined;
@@ -17,13 +18,14 @@ export function ProductSettingsList({ products, onOpen, description }: {
     (status === "all" || Boolean(product.archivedAt) === (status === "archived"))
     && `${product.name} ${product.keyPrefix}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   return <section className="settings-product-list" aria-label={t("settingsProducts")}>
-    <div className="settings-account-filters">
-      <label>{t("settingsSearchProducts")}<input type="search" value={search} onChange={event => setSearch(event.target.value)} /></label>
-      <label>{t("settingsProductStatus")}<select value={status} onChange={event => setStatus(event.target.value)}>
+    <div className="settings-list-toolbar">
+      <label className="settings-toolbar-search"><span className="sr-only">{t("settingsSearchProducts")}</span><input placeholder={t("settingsSearchProducts")} type="search" value={search} onChange={event => setSearch(event.target.value)} /></label>
+      <label><span className="sr-only">{t("settingsProductStatus")}</span><select value={status} onChange={event => setStatus(event.target.value)}>
         <option value="active">{t("settingsActiveProducts")}</option>
         <option value="archived">{t("settingsArchivedProducts")}</option>
         <option value="all">{t("settingsAllProducts")}</option>
       </select></label>
+      {actions}
     </div>
     <p className="account-note" role="status">{t("settingsProductCount", { count: visible.length })}</p>
     <div className="settings-product-grid">
@@ -34,6 +36,6 @@ export function ProductSettingsList({ products, onOpen, description }: {
         </span><ChevronRight size={18} />
       </button>)}
     </div>
-    {!visible.length && <p className="settings-empty">{t("settingsNoMatchingProducts")}</p>}
+    {!visible.length && <p className="settings-empty">{t("settingsNoMatchingProducts")}{(search || status !== "active") && <button type="button" className="text-button" onClick={() => { setSearch(""); setStatus("active"); }}>{t("clearListFilters")}</button>}</p>}
   </section>;
 }

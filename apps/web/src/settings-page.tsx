@@ -81,12 +81,7 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
     : !inProduct || ["products", "new-product"].includes(route.section) || Boolean(product);
   const go = (section: SettingsSection) => navigate({ section });
   useEffect(() => { content.current?.scrollTo({ top: 0 }); content.current?.focus({ preventScroll: true }); }, [route.section, route.productId, route.nodeId, route.componentId, route.accountId]);
-  const scope = route.section === "new-product" ? t("settingsNewProductScope")
-    : route.section === "access" || inProduct && route.section !== "products" || route.section === "project-admins" && route.productId ? t("settingsProductScope", { product: product?.name ?? "" })
-    : route.section === "project-admins" ? t("settingsProductAdministratorsHelp")
-    : route.section === "accounts" && !isAdmin ? t("settingsOwnerPermissionsHelp")
-    : route.section === "accounts" || route.section === "ai" ? t("settingsSystemScope")
-    : route.section === "products" ? t("settingsProductsHelp") : t("settingsPersonalScope");
+  const scope = route.section === "accounts" && isAdmin || route.section === "ai" ? t("settingsSystemScope") : "";
   const parent: SettingsRoute | undefined = route.nodeId ? { section: "devices" }
     : route.componentId ? { section: "components", productId: route.productId }
     : route.accountId ? { section: "accounts", filterProductId: route.filterProductId }
@@ -112,7 +107,7 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
   </button>;
   const productHub = <>
     {product ? <>
-      <div className="settings-product-summary"><strong>{product.name}</strong><span>{product.keyPrefix}</span><p>{t("settingsProductOverviewHelp")}</p></div>
+
       <div className="settings-hub-list">
         {entry("product", "settingsBasicHelp", { section: "product", productId: product.id })}
         {entry("components", "settingsComponentsHelp", { section: "components", productId: product.id })}
@@ -127,7 +122,7 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
   const productList = (values: readonly Product[], onOpen: (value: Product) => void, description?: (value: Product) => ReactNode) =>
     catalogQuery.isPending ? <p role="status">{t("settingsLoading")}</p>
       : catalogQuery.isError ? <div role="alert"><p>{t("settingsProductsLoadFailed")}</p><button type="button" className="secondary-button" onClick={() => void catalogQuery.refetch()}>{t("retry")}</button></div>
-      : <ProductSettingsList products={values} onOpen={onOpen} description={description} />;
+      : <ProductSettingsList products={values} onOpen={onOpen} description={description} actions={route.section === "products" ? <button type="button" className="primary-button" onClick={() => navigate({ section: "new-product" })}><Plus size={16} />{t("addProduct")}</button> : undefined} />;
   const administratorSummary = (value: Product) => {
     if (administrators.isPending) return t("settingsLoading");
     if (administrators.isError) return t("somethingWentWrong");
@@ -155,14 +150,8 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
             requestAnimationFrame(() => { if (content.current) revealSettingsField(field, content.current); });
           }}>
             <header className="settings-page-title">
-              <div><p>{scope}</p><h1>{title}</h1></div>
-              {(inProduct && route.section !== "new-product" || route.section === "access" || route.section === "project-admins" && isAdmin) && <div className="settings-product-actions">
-                {route.productId && catalog.length > 0 && <label>{t("settingsCurrentProduct")}<select value={product?.id ?? ""} onChange={event => navigate({ section: route.section, productId: event.target.value })}>
-                  {!product && <option value="">{t("settingsUnavailable")}</option>}
-                  {(route.section === "access" && !isAdmin ? owned : catalog).map(value => <option key={value.id} value={value.id}>{value.name}{value.archivedAt ? ` · ${t("archived")}` : ""}</option>)}
-                </select></label>}
-                {inProduct && <button type="button" className="secondary-button" onClick={() => navigate({ section: "new-product" })}><Plus size={16} />{t("addProduct")}</button>}
-              </div>}
+              <div>{scope && <p>{scope}</p>}<h1>{product && route.productId ? `${product.name} · ${title}` : title}</h1></div>
+
             </header>
             <div className="settings-page-body" key={`${route.section}:${product?.id ?? ""}:${route.nodeId ?? ""}:${route.componentId ?? ""}:${route.accountId ?? ""}`}>
               {catalogQuery.isPending && (route.productId && !product || route.section === "accounts" && !isAdmin) ? <p role="status">{t("settingsLoading")}</p>
@@ -172,12 +161,12 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
                 : route.section === "project-admins" ? route.productId && product ? <ProjectAdministratorsSettings productId={product.id} />
                   : <>{administrators.isError && <div role="alert"><p>{t("somethingWentWrong")}</p><button type="button" className="secondary-button" onClick={() => void administrators.refetch()}>{t("retry")}</button></div>}{productList(catalog, value => navigate({ section: "project-admins", productId: value.id }), administratorSummary)}</>
                 : route.section === "builders" && product ? <ProjectBuilderSettings productId={product.id} />
-                : route.section === "agent" ? <><p className="settings-hub-intro">{t("settingsAgentHelp")}</p><div className="settings-hub-list">
+                : route.section === "agent" ? <><div className="settings-hub-list">
                   {entry("connections", "settingsConnectionsHelp")}
                   {canUseAi && <>{entry("devices", "settingsDevicesHelp")}{entry("dispatch", "settingsDispatchHelp")}</>}
                 </div></>
                 : route.section === "products" ? catalogQuery.isSuccess && !catalog.length
-                  ? <div className="settings-empty"><h2>{t("settingsFirstProduct")}</h2><p>{t("settingsProductsHelp")}</p></div>
+                  ? <div className="settings-empty"><h2>{t("settingsFirstProduct")}</h2><button type="button" className="primary-button" onClick={() => navigate({ section: "new-product" })}>{t("addProduct")}</button></div>
                   : productList(catalog, value => navigate({ section: "overview", productId: value.id }))
                 : route.section === "overview" ? productHub
                 : route.section === "accounts" && !isAdmin ? productList(owned, value => navigate({ section: "access", productId: value.id }))

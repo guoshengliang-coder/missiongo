@@ -27,8 +27,8 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       else await expect(page.getByRole("heading", { name: "资料与安全", exact: true })).toBeVisible();
       const top = (await nav(page).boundingBox())!.y;
       await openProduct(page);
-      await expect(page.getByRole("heading", { name: "基本资料", level: 1, exact: true })).toBeVisible();
-      await expect(page.locator(".settings-page-title")).toContainText("作用于产品：");
+      await expect(page.getByRole("heading", { name: /基本资料$/, level: 1 })).toBeVisible();
+      await expect(page.locator(".settings-page-title")).toContainText("基本资料");
       await expect(page).toHaveURL(new RegExp(`/settings/products/${fixture.productId}/product`));
       if (width === 1440) expect((await nav(page).boundingBox())!.y).toBe(top);
       await page.waitForLoadState("networkidle");
@@ -39,7 +39,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       if (width === 375) expect(audit.targets.filter(x => x.width > 0 && x.height > 0 && (x.width < 43.99 || x.height < 43.99))).toEqual([]);
       await page.screenshot({ path: test.info().outputPath("settings-product.png") });
       await page.reload();
-      await expect(page.getByRole("heading", { name: "基本资料", level: 1, exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: /基本资料$/, level: 1 })).toBeVisible();
       if (width === 375) {
         // The header Back walks up one level at a time (AND-316).
         await up(page, "产品概览").click();
@@ -48,7 +48,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
         await expect(nav(page)).toBeVisible();
       }
       await nav(page).getByRole("button", { name: "显示", exact: true }).click();
-      await expect(page.getByText("修改后自动保存。保存失败时会恢复之前的设置。", { exact: true })).toBeVisible();
+      await expect(page.locator(".settings-value-row")).toHaveCount(2);
       await up(page, "设置目录").click();
       await up(page, "返回工作区").click();
       await expect(page).toHaveURL(new RegExp(`^https?://[^/]+/\\?product=${fixture.productId}$`));
@@ -62,16 +62,15 @@ test("protects unsaved input across categories, product changes and browser Back
   const product = await created.json();
   await page.goto(`/settings/profile?product=${fixture.productId}`);
   await openProduct(page);
-  await page.getByRole("combobox", { name: "当前产品", exact: true }).selectOption(product.id);
+  await openProduct(page, product.id);
   const input = page.getByRole("textbox", { name: "产品名称", exact: true });
   await input.fill("Unsaved settings name");
   await nav(page).getByRole("button", { name: "显示", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(input).toHaveValue("Unsaved settings name");
-  await page.getByRole("combobox", { name: "当前产品", exact: true }).selectOption(fixture.productId);
+  await up(page, "产品概览").click();
   await page.getByRole("dialog").getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(productPath(product.id)));
-  await expect(page.getByRole("combobox", { name: "当前产品", exact: true })).toHaveValue(product.id);
   await page.goBack();
   await page.getByRole("dialog").getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(productPath(product.id)));
@@ -155,7 +154,7 @@ test("members cannot access administrator settings and view-only products cannot
 
 test("creates a product in its own scope and opens the newly saved product without a draft warning", async ({ page }) => {
   await page.goto("/settings/products/new");
-  await expect(page.locator(".settings-page-title")).toContainText("创建独立产品，不修改当前产品");
+  await expect(page.locator(".settings-page-title")).toContainText("添加产品");
   await page.getByRole("textbox", { name: "产品名称", exact: true }).fill("Settings new product");
   await page.getByRole("textbox", { name: "条目前缀", exact: false }).fill("SNEW");
   await page.getByRole("button", { name: "添加产品", exact: true }).click();

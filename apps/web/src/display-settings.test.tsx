@@ -40,8 +40,9 @@ describe("display settings", () => {
 
     expect(html).toContain('aria-label="字体大小"');
     expect(html).toContain('aria-label="Agent 控制台聊天字号"');
-    expect(html.match(/role="radio"/g)).toHaveLength(6);
+    expect(html.match(/class="settings-value-row"/g)).toHaveLength(2);
+    expect(html).not.toContain('role="radio"');
     // The chat group's preview is drawn at the chat body's own size.
-    expect(html).toContain("font-scale-preview console-chat");
+    expect(html).toContain("中");
   });
 });

@@ -22,7 +22,7 @@ export function ProjectAdministratorsSettings({productId}: {productId:string}) {
   if(query.isPending || accounts.isPending) return <p role="status">正在加载产品管理员…</p>;
   if(query.isError || accounts.isError) return <p role="alert">{failure(query.error ?? accounts.error)}</p>;
   return <section aria-label="产品管理员配置" className="project-administrators-settings">
-    <p className="settings-hub-intro">由系统管理员授予。产品管理员可以查看本产品、配置模块默认 Builder，并为所有条目分配或转交 Builder。支持设置多名产品管理员。</p>
+    <p className="settings-hub-intro">产品管理员可管理模块的默认 Builder，并为条目分配或转交 Builder。</p>
     <p className="account-note">此角色不授予系统账号管理、执行安排或 AI 操作权限。取消角色后，账号原有的产品权限仍然保留。</p>
     <fieldset disabled={save.isPending} className="project-administrator-choices"><legend>选择本产品的管理员</legend>
       {accounts.data.accounts.map(account=><label key={account.id} className="project-administrator-choice">
@@ -39,7 +39,7 @@ export function ProjectAdministratorsSettings({productId}: {productId:string}) {
 export function ProjectBuilderSettings({productId}: {productId:string}) {
   const query = useQuery({queryKey:["components",productId],queryFn:()=>api.listComponents(productId)});
   return <section aria-label="模块 Builder 分配">
-    <p className="settings-hub-intro">为各来源模块配置默认 Builder，新条目将自动分配给对应 Builder。已有条目的 Builder 可在条目详情中转交。</p>
+    <p className="settings-hub-intro">新条目自动分配给来源模块的默认 Builder，不影响已有条目。</p>
     {query.isPending ? <p role="status">正在加载模块…</p> : query.isError ? <p role="alert">{failure(query.error)}</p> : query.data.length ?
       <div className="project-builder-modules">{query.data.map(component=><section key={component.id} className="project-builder-module"><h2>{component.name}</h2><ModuleBuilderSetting component={component} /></section>)}</div> : <p className="account-note">暂无来源模块，请先在模块管理中创建。</p>}
   </section>;

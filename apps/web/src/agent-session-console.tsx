@@ -797,10 +797,11 @@ export function AgentSessionConsole({
             {sessionsLoaded && <small>{count}</small>}
           </button>
         ))}
-        <p className="agent-console-scope-note">{t("agentConsoleScopeNote")}</p>
+
       </aside>
 
       <section className="agent-console-list" aria-label={t("agentConsoleSessions")}>
+        <p className="account-note">{t("agentConsoleScopeNote")}</p>
         {unavailableSessionId && <p className="inline-error" role="alert">{t("agentConsoleUnavailableLink")}</p>}
         <div className="agent-console-mobile-filters" aria-label={t("agentConsoleFilters")}>
           {filters.map(({ key, count, unread, label }) => (

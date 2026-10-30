@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, LoaderCircle } from "lucide-react";
+import { Check, ChevronRight, LoaderCircle } from "lucide-react";
 
+import { Modal } from "./modal";
 import { api, type AuthenticatedUser, type AuthSession } from "./api";
 import {
   applyConsoleFontScale,
@@ -19,17 +20,6 @@ const FONT_SCALE_LABELS: Record<FontScale, MessageKey> = {
   large: "fontSizeLarge",
 };
 
-/**
- * One size setting, wired to its own account field and its own root attribute.
- *
- * The console-wide size (AND-247) and the Agent console chat body's size
- * (AND-254) are separate values with the same three steps and the same
- * interaction, so both are drawn through this. The choice lands on screen and in
- * the local cache before the request goes out, so the size changes under the
- * pointer rather than after a round trip; a failed save puts the last
- * server-confirmed value back and says so. Storing it on the account is the
- * point: the same reader gets the same size on their next device.
- */
 function useFontScaleField({
   serverValue,
   readSession,
@@ -73,11 +63,10 @@ function useFontScaleField({
 
   return {
     selected,
-    choose: (scale: FontScale) => {
-      if (scale === selected) return;
-      applyLocally(scale);
-      mutation.mutate(scale);
+    choose: async (scale: FontScale) => {
+      if (scale !== selected) await mutation.mutateAsync(scale);
     },
+    reset: mutation.reset,
     pending: mutation.isPending,
     error: mutation.isError
       ? (mutation.error instanceof Error && mutation.error.message ? mutation.error.message : null)
@@ -88,54 +77,34 @@ function useFontScaleField({
 
 type FontScaleField = ReturnType<typeof useFontScaleField>;
 
-/** One heading, the three steps, and the preview that shows what they did. */
-function FontScaleGroup({
-  headingKey,
-  helpKey,
-  previewKey,
-  savedKey,
-  field,
-  previewClass,
-}: {
-  headingKey: MessageKey;
-  helpKey: MessageKey;
-  previewKey: MessageKey;
-  savedKey: MessageKey;
-  field: FontScaleField;
-  previewClass?: string;
+function FontScaleGroup({ headingKey, helpKey, previewKey, field }: {
+  headingKey: MessageKey; helpKey: MessageKey; previewKey: MessageKey; field: FontScaleField;
 }) {
   const { t } = useI18n();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<FontScale>(field.selected);
   const heading = t(headingKey);
-
-  return (
-    <div className="font-scale-group">
-      <h3>{heading}</h3>
+  return <>
+    <button type="button" className="settings-value-row" aria-label={heading} onClick={() => { field.reset(); setDraft(field.selected); setEditing(true); }}>
+      <strong>{heading}</strong><span>{t(FONT_SCALE_LABELS[field.selected])}<ChevronRight size={18} /></span>
+    </button>
+    {editing && <Modal title={heading} subtitle="" onClose={() => setEditing(false)} pending={field.pending}>
       <p className="account-note">{t(helpKey)}</p>
       <div className="font-scale-options" role="radiogroup" aria-label={heading}>
-        {FONT_SCALES.map((scale) => (
-          <button
-            key={scale}
-            type="button"
-            role="radio"
-            aria-checked={field.selected === scale}
-            className={field.selected === scale ? "font-scale-option selected" : "font-scale-option"}
-            disabled={field.pending}
-            onClick={() => field.choose(scale)}
-          >
-            {field.selected === scale && <Check size={14} />}
-            {t(FONT_SCALE_LABELS[scale])}
-          </button>
-        ))}
-        {field.pending && <LoaderCircle className="spin" size={15} />}
+        {FONT_SCALES.map(scale => <button key={scale} type="button" role="radio" aria-checked={draft === scale}
+          className={draft === scale ? "font-scale-option selected" : "font-scale-option"} disabled={field.pending} onClick={() => setDraft(scale)}>
+          {draft === scale && <Check size={14} />}{t(FONT_SCALE_LABELS[scale])}
+        </button>)}
       </div>
-      <p className={previewClass ? `font-scale-preview ${previewClass}` : "font-scale-preview"}>{t(previewKey)}</p>
+      <p className="font-scale-preview" style={{ fontSize: `${{small: 14, medium: 16, large: 18}[draft]}px` }}>{t(previewKey)}</p>
       <p className="account-note">{t("fontSizeHelp")}</p>
-      {field.error !== undefined && (
-        <p className="account-note danger">{field.error ?? t("somethingWentWrong")}</p>
-      )}
-      {field.saved && <p className="account-note">{t(savedKey)}</p>}
-    </div>
-  );
+      {field.error !== undefined && <p role="alert" className="account-note danger">{field.error ?? t("somethingWentWrong")}</p>}
+      <div className="form-footer">
+        <button type="button" className="secondary-button" disabled={field.pending} onClick={() => setEditing(false)}>{t("cancel")}</button>
+        <button type="button" className="primary-button" disabled={field.pending} onClick={async () => { try { await field.choose(draft); setEditing(false); } catch { /* Keep the draft available for retry. */ } }}>{field.pending ? <LoaderCircle className="spin" size={15} /> : t("confirm")}</button>
+      </div>
+    </Modal>}
+  </>;
 }
 
 /**
@@ -144,7 +113,6 @@ function FontScaleGroup({
  * reader can keep the console dense and the transcript large, or the reverse.
  */
 export function DisplaySettings({ user }: { user: AuthenticatedUser }) {
-  const { t } = useI18n();
   const globalField = useFontScaleField({
     serverValue: user.fontScale,
     readSession: (session) => session.user.fontScale,
@@ -164,21 +132,17 @@ export function DisplaySettings({ user }: { user: AuthenticatedUser }) {
 
   return (
     <section className="display-settings">
-      <p className="settings-save-note">{t("settingsAutoSave")}</p>
       <FontScaleGroup
         headingKey="fontSize"
         helpKey="displaySettingsHelp"
         previewKey="fontSizePreview"
-        savedKey="fontSizeSaved"
         field={globalField}
       />
       <FontScaleGroup
         headingKey="consoleFontSize"
         helpKey="consoleFontSizeHelp"
         previewKey="consoleFontSizePreview"
-        savedKey="consoleFontSizeSaved"
         field={consoleField}
-        previewClass="console-chat"
       />
     </section>
   );

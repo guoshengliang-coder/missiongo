@@ -16,7 +16,7 @@ struct ServerConnectionSection: View {
                 }
             }
             .disabled(!model.canChangeConnectionMode)
-            Text("仅影响本客户端连接服务器；切换后自动重试，无需重启。")
+            Text("切换后自动重新连接，无需重启。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if model.phase == .signingIn {

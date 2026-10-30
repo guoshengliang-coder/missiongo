@@ -1841,7 +1841,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/ai/title-settings", async (request) => {
     requireAdmin(request);
-    return { configured: aiTitle.configured(), agentAttentionEnabled: aiTitle.attentionEnabled() };
+    return { configured: aiTitle.configured(), agentAttentionEnabled: aiTitle.attentionEnabled(), model: aiTitle.model() };
   });
 
   app.put("/api/v1/ai/title-settings", async (request) => {
@@ -1860,7 +1860,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (typeof body.agentAttentionEnabled === "boolean") {
       aiTitle.setAttentionEnabled(body.agentAttentionEnabled);
     }
-    return { configured: aiTitle.configured(), agentAttentionEnabled: aiTitle.attentionEnabled() };
+    return { configured: aiTitle.configured(), agentAttentionEnabled: aiTitle.attentionEnabled(), model: aiTitle.model() };
   });
 
   const titleRequests = new Map<string, { count: number; until: number }>();
