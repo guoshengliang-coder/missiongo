@@ -55,7 +55,12 @@ for (const viewport of VIEWPORTS) {
             await expect.poll(() => page.locator(".attachment-image").evaluateAll(cards =>
               cards.filter(card => {
                 const box = card.getBoundingClientRect();
-                return box.width > 0 && box.height > 0 && box.top < innerHeight && box.bottom > 0;
+                // The detail scroller ends above its persistent composer.
+                // Images below that edge are clipped and are not loaded yet.
+                const area = card.closest(".detail-scroll")?.getBoundingClientRect();
+                const top = Math.max(0, area?.top ?? 0);
+                const bottom = Math.min(innerHeight, area?.bottom ?? innerHeight);
+                return box.width > 0 && box.height > 0 && box.top < bottom && box.bottom > top;
               }).every(card => {
                 const image = card.querySelector("img");
                 return image !== null && image.complete && image.naturalWidth > 0;
