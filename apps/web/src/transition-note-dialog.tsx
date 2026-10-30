@@ -1,5 +1,5 @@
 import { useDialogDraft } from "./dialog-state";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { CirclePause, CircleX, LoaderCircle, Undo2 } from "lucide-react";
 
 import { TRANSITION_NOTE_MAX_LENGTH } from "@missiongo/domain";
@@ -46,6 +46,7 @@ export function TransitionNoteDialog({
 }) {
   const { t, transitionLabel } = useI18n();
   const [note, setNote] = useState("");
+  const helpId = useId();
   useDialogDraft(Boolean(note), pending);
   const copy = transitionNoteCopy(action.to);
   const cancelling = action.to === "cancelled";
@@ -59,9 +60,12 @@ export function TransitionNoteDialog({
         if (note.trim()) onSubmit(note);
       }}
     >
-      <label>
-        {t("transitionNoteLabel")}
+      <div className="transition-note-field">
+        <label htmlFor={`${helpId}-input`}>{t(cancelling ? "cancelNoteLabel" : "transitionNoteLabel")}</label>
+        <p id={helpId} className="dispatch-note">{t(copy.help)}</p>
         <textarea
+          id={`${helpId}-input`}
+          aria-describedby={helpId}
           data-initial-focus
           rows={4}
           value={note}
@@ -70,17 +74,19 @@ export function TransitionNoteDialog({
           maxLength={TRANSITION_NOTE_MAX_LENGTH}
           required
         />
-      </label>
+      </div>
       {cancelling && (
-        <div className="transition-note-quick-reasons" aria-label={t("cancelQuickReasons")}>
-          {quickReasons.map((reason) => (
-            <button key={reason} type="button" className="secondary-button" disabled={pending} onClick={() => setNote(t(reason))}>
-              {t(reason)}
-            </button>
-          ))}
+        <div className="transition-note-suggestions">
+          <span>{t("cancelQuickReasons")}</span>
+          <div className="transition-note-quick-reasons" role="group" aria-label={t("cancelQuickReasons")}>
+            {quickReasons.map((reason) => (
+              <button key={reason} type="button" className="secondary-button" disabled={pending} onClick={() => setNote(t(reason))}>
+                {t(reason)}
+              </button>
+            ))}
+          </div>
         </div>
       )}
-      <p className="dispatch-note">{t(copy.help)}</p>
 
       {/* A dialog sits in the top layer and covers the page's toast, so the
           failure has to be repeated in here to be seen at all. */}
