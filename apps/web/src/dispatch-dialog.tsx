@@ -33,7 +33,7 @@ import {
 } from "./dispatch-eligibility";
 import { SessionLink } from "./session-link";
 import { useI18n } from "./i18n";
-import type { Dispatch, DispatchNode, Product, WorkItem } from "./types";
+import type { Dispatch, DispatchDefaults, DispatchNode, Product, WorkItem } from "./types";
 
 /**
  * Says why a machine cannot take this batch, in words that name the fix.
@@ -124,7 +124,7 @@ export function DispatchDialog({
     if (defaultsApplied || !defaultsQuery.isFetched) return;
     setDefaultsApplied(true);
     const defaults = defaultsQuery.data;
-    if (!defaults) return;
+    if (!defaults || touched) return;
     const kind = defaults.agentKind && SUPPORTED_AGENT_KINDS.includes(defaults.agentKind)
       ? defaults.agentKind
       : agentKind;
@@ -134,7 +134,7 @@ export function DispatchDialog({
     setModel(saved.model ?? "");
     setEffort(saved.effort ?? "");
     if (defaults.nodeId) setNodeId(defaults.nodeId);
-  }, [agentKind, defaultsApplied, defaultsQuery.data, defaultsQuery.isFetched]);
+  }, [agentKind, defaultsApplied, defaultsQuery.data, defaultsQuery.isFetched, touched]);
   const itemKeys = useMemo(() => items.map((item) => item.key), [items]);
   const productIds = useMemo(() => [...new Set(items.map((item) => item.productId))], [items]);
   const activeQuery = useQuery({
@@ -173,6 +173,21 @@ export function DispatchDialog({
     if ((next.effort ?? "") !== effort) setEffort(next.effort ?? "");
   }, [defaultsApplied, effort, model, models, nodesQuery.isFetched]);
 
+  const saveDefaults = useMutation({
+    mutationFn: (defaults: DispatchDefaults) => api.setDispatchDefaults(defaults),
+    onSuccess: (defaults) => queryClient.setQueryData(["dispatch-defaults"], defaults),
+  });
+  const currentDefaults: DispatchDefaults = {
+    nodeId,
+    agentKind,
+    agents: {
+      ...defaultsQuery.data?.agents,
+      [agentKind]: { mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) },
+    },
+  };
+  const savedCurrentDefaults = saveDefaults.isSuccess
+    && JSON.stringify(saveDefaults.variables) === JSON.stringify(currentDefaults);
+
   const mutation = useMutation({
     // `force` only ever follows the tick: without conflicts it is left off, so
     // a dispatch that raced another one is refused instead of silently doubled.
@@ -186,6 +201,7 @@ export function DispatchDialog({
       ...(redispatchConfirmed ? { force: true } : {}),
     }),
     onSuccess: (dispatch) => {
+      void queryClient.invalidateQueries({ queryKey: ["dispatch-defaults"] });
       setCreated(dispatch);
       onDispatched(dispatch);
     },
@@ -205,8 +221,8 @@ export function DispatchDialog({
   // would be submitted.
   const submissionKey = `${nodeId}|${agentKind}|${mode}|${model}|${effort}|${redispatchConfirmed}`;
   useEffect(() => {
-    if (!mutation.isError) return;
-    mutation.reset();
+    if (mutation.isError) mutation.reset();
+    if (saveDefaults.isError) saveDefaults.reset();
     // Keyed on the values, not the error: resetting clears the error, and
     // depending on it would run the effect again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -234,7 +250,7 @@ export function DispatchDialog({
     return `${node.name} · ${ineligibilityText(reason, { agentLabel: agentLabel(agentKind), productName }, t)}`;
   };
 
-  useDialogDraft(touched && !created, mutation.isPending);
+  useDialogDraft(touched && !created, mutation.isPending || saveDefaults.isPending);
 
   if (created) {
     const statusKey = dispatchStatusLabelKey(created.status);
@@ -414,9 +430,18 @@ export function DispatchDialog({
         <div className="inline-error"><CirclePause size={16} /><span>{dispatchErrorMessage(mutation.error, t, agentLabel(agentKind))}</span></div>
       )}
 
+      {saveDefaults.isError && (
+        <div className="inline-error" role="alert"><CirclePause size={16} /><span>{localizedErrorText(saveDefaults.error, t)}</span></div>
+      )}
       <div className="form-footer">
-        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onClose}>{t("cancel")}</button>
-        <button type="submit" className="primary-button" disabled={blocked || mutation.isPending}>
+        {savedCurrentDefaults && <span role="status">{t("dispatchDefaultsSaved")}</span>}
+        <button type="button" className="secondary-button"
+          disabled={!nodeId || !defaultsApplied || !defaultsQuery.data || saveDefaults.isPending || mutation.isPending}
+          onClick={() => saveDefaults.mutate(currentDefaults)}>
+          {saveDefaults.isPending && <LoaderCircle className="spin" size={16} />}{t("dispatchSetDefaults")}
+        </button>
+        <button type="button" className="secondary-button" disabled={mutation.isPending || saveDefaults.isPending} onClick={onClose}>{t("cancel")}</button>
+        <button type="submit" className="primary-button" disabled={blocked || !defaultsApplied || mutation.isPending || saveDefaults.isPending}>
           {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
           {t("dispatchSubmit")}
         </button>

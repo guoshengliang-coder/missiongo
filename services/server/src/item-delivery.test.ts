@@ -174,3 +174,57 @@ describe("Builder delivery responsibility",()=>{
 expect(f.store.getWorkItem(item.key).status).toBe("in_progress");
   });
 });
+
+describe("Builder at creation (AND-344)", () => {
+  it("lets a submitting member override a module default atomically without granting later transfer rights", async () => {
+    const f = await fixture();
+    await f.call("PUT", f.moduleUrl, { accountId: f.a.id });
+    const payload = { productId: f.product.id, sourceComponentId: f.component.id, type: "requirement", priority: "normal", title: "Choose a Builder", description: "First assignment" };
+    const inherited = await f.call("POST", "/api/v1/items", payload, f.aCookie);
+    expect(inherited.statusCode).toBe(201);
+    expect(inherited.json().builderAccountId).toBe(f.a.id);
+    for (const status of ["inbox", "ready"]) {
+      const created = await f.call("POST", "/api/v1/items", { ...payload, status, environment: { platform: "web" }, builderAccountId: f.b.id }, f.aCookie);
+      expect(created.statusCode).toBe(201);
+      const item = created.json();
+      expect(item).toMatchObject({ builderAccountId: f.b.id, status });
+      expect(f.store.getTimeline(item.key)).toEqual(expect.arrayContaining([expect.objectContaining({ eventType: "builder_changed", actorKind: "human", accountId: f.a.id,
+        payload: expect.objectContaining({ from: null, to: f.b.id, note: "创建时指定 Builder" }) })]));
+      expect((await f.call("POST", `/api/v1/items/${item.key}/builder`, { accountId: f.a.id, expectedBuilderAccountId: f.b.id, note: "Unauthorized transfer" }, f.aCookie)).statusCode).toBe(403);
+      await f.call("PATCH", `/api/v1/items/${item.key}`, { sourceComponentId: f.component.id });
+      expect(f.store.getWorkItem(item.key).builderAccountId).toBe(f.b.id);
+    }
+  });
+
+  it("rolls back the item and its number if the initial assignment audit cannot be written", async () => {
+    const f = await fixture();
+    const db = f.store.database.connection;
+    db.exec(`CREATE TRIGGER fail_initial_builder_audit BEFORE INSERT ON work_item_events
+      WHEN NEW.event_type = 'builder_changed' BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END`);
+    const payload = { productId: f.product.id, type: "task", priority: "normal", title: "Atomic assignment", description: "No partial item" };
+    expect((await f.call("POST", "/api/v1/items", { ...payload, builderAccountId: f.b.id }, f.aCookie)).statusCode).toBe(500);
+    expect(f.store.listWorkItems({ productId: f.product.id })).toHaveLength(0);
+    db.exec("DROP TRIGGER fail_initial_builder_audit");
+    const created = await f.call("POST", "/api/v1/items", { ...payload, builderAccountId: f.b.id }, f.aCookie);
+    expect(created.statusCode).toBe(201);
+    expect(created.json().key).toBe(`${f.product.keyPrefix}-1`);
+  });
+
+  it("rejects stale, disabled, missing and cross-product candidates without creating an item or consuming its number", async () => {
+    const f = await fixture();
+    const payload = { productId: f.product.id, type: "task", priority: "normal", title: "Assignment validation", description: "No partial item" };
+    const before = f.create();
+    f.accounts.replacePermissions(f.a.id, [{ productId: f.other.id, canView: true, canOperate: true, canUseAi: true }]);
+    f.accounts.updateAccount(f.b.id, { disabled: true });
+    for (const builderAccountId of [f.viewer.id, f.a.id, f.b.id, "missing-builder", 123, null]) {
+      const response = await f.call("POST", "/api/v1/items", { ...payload, builderAccountId });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(f.store.listWorkItems({ productId: f.product.id })).toHaveLength(1);
+    const after = await f.call("POST", "/api/v1/items", payload);
+    expect(after.statusCode).toBe(201);
+    expect(after.json().key).toBe(`${f.product.keyPrefix}-${Number(before.key.split("-").at(-1)) + 1}`);
+    expect(after.json().builderAccountId).toBeUndefined();
+    expect((await f.call("POST", "/api/v1/items", { ...payload, builderAccountId: "admin" }, f.viewerCookie)).statusCode).toBe(403);
+  });
+});

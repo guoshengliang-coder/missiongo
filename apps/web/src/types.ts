@@ -203,6 +203,7 @@ export interface WorkItemComment {
 export interface CreateWorkItemInput {
   readonly productId: string;
   readonly status?: "inbox" | "ready";
+  readonly builderAccountId?: string;
   readonly sourceComponentId?: string;
   readonly affectedComponentIds?: readonly string[];
   readonly type: WorkItemType;

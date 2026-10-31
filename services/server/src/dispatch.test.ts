@@ -4608,3 +4608,74 @@ describe("Codex failure diagnostics (HG-193)", () => {
     expect(legacy.failure).toBeUndefined();
   });
 });
+
+describe("First dispatch defaults (AND-343)", () => {
+  async function fixture() {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    const mission = await readyItem(app, cookie, "Defaults", "DF");
+    const second = await app.inject({ method: "POST", url: "/api/v1/items", headers: { cookie }, payload: {
+      productId: mission.productId, status: "ready", type: "task", priority: "normal",
+      title: "Second dispatch", description: "Another selection", environment: { platform: "web" },
+    } });
+    expect((await app.inject({ method: "POST", url: "/api/v1/node/heartbeat",
+      headers: { authorization: `Bearer ${node.token}` }, payload: {
+        agents: [{ kind: "codex", ready: true, models: [{ id: "fixture-model", label: "Fixture", efforts: ["high"] }],
+          skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" } }],
+        clientVersion: "1.2.3", repoCandidates: [],
+      } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "PUT", url: `/api/v1/nodes/${node.nodeId}/repos`, headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: join(tmpdir(), "missiongo-defaults-fixture") }] } })).statusCode).toBe(200);
+    const dispatch = (itemKey = mission.itemKey, mode = "plan") => app.inject({ method: "POST", url: "/api/v1/dispatches", headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "codex", mode, model: "fixture-model", effort: "high", itemKeys: [itemKey] } });
+    const defaults = async () => (await app.inject({ method: "GET", url: "/api/v1/dispatch-defaults", headers: { cookie } })).json();
+    return { app, cookie, node, mission, secondKey: second.json().key as string, dispatch, defaults };
+  }
+
+  it("initializes all choices on creation and retains them after a launch failure and later dispatch", async () => {
+    const f = await fixture();
+    const response = await f.dispatch();
+    expect(response.statusCode).toBe(201);
+    const expected = { nodeId: f.node.nodeId, agentKind: "codex", agents: { codex: { mode: "plan", model: "fixture-model", effort: "high" } } };
+    expect(await f.defaults()).toEqual(expected);
+    await f.app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${f.node.token}` } });
+    expect((await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${response.json().id}/result`,
+      headers: { authorization: `Bearer ${f.node.token}` }, payload: { status: "failed", error: "Synthetic launch failure" } })).statusCode).toBe(204);
+    expect((await f.dispatch(f.secondKey, "default")).statusCode).toBe(201);
+    expect(await f.defaults()).toEqual(expected);
+  });
+
+  it("rolls back dispatch creation if default initialization cannot be persisted", async () => {
+    const f = await fixture();
+    const db = f.app.missionGoStore.database.connection;
+    db.exec(`CREATE TRIGGER fail_default_initialization BEFORE INSERT ON account_dispatch_defaults
+      BEGIN SELECT RAISE(ABORT, 'synthetic initialization failure'); END`);
+    expect((await f.dispatch()).statusCode).toBe(500);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM dispatches").get()).toMatchObject({ count: 0 });
+    db.exec("DROP TRIGGER fail_default_initialization");
+    expect((await f.dispatch()).statusCode).toBe(201);
+  });
+
+  it("never replaces explicit saved defaults, including an empty configuration", async () => {
+    const f = await fixture();
+    const saved = { agents: {} };
+    expect((await f.app.inject({ method: "PUT", url: "/api/v1/dispatch-defaults", headers: { cookie: f.cookie }, payload: saved })).statusCode).toBe(200);
+    expect((await f.dispatch()).statusCode).toBe(201);
+    expect(await f.defaults()).toEqual(saved);
+  });
+
+  it("does not initialize on rejection and lets only one accepted concurrent creation initialize", async () => {
+    const f = await fixture();
+    expect((await f.dispatch("DF-99999")).statusCode).toBe(404);
+    expect(await f.defaults()).toEqual({ agents: { claude_code: { mode: "bypassPermissions" } } });
+    const responses = await Promise.all([f.dispatch(), f.dispatch(f.secondKey, "default")]);
+    expect(responses.map(response => response.statusCode)).toEqual([201, 201]);
+    const defaults = await f.defaults();
+    expect(defaults.agents.codex.mode).toBe(responses[0]!.json().mode);
+    const other = f.app.missionGoAccounts.createAccount({ email: "defaults-other@example.test", password: "synthetic defaults password", role: "member" });
+    const login = await f.app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: other.email, password: "synthetic defaults password" } });
+    const cookie = login.headers["set-cookie"]!.toString().split(";")[0]!;
+    expect((await f.app.inject({ method: "GET", url: "/api/v1/dispatch-defaults", headers: { cookie } })).json())
+      .toEqual({ agents: { claude_code: { mode: "bypassPermissions" } } });
+  });
+});

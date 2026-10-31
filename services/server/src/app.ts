@@ -3980,6 +3980,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     requireCapturePermission(request, stringField(body, "productId")!);
     const item = store.createWorkItem({
       productId: stringField(body, "productId")!,
+      ...(stringField(body, "builderAccountId", false) ? { builderAccountId: body.builderAccountId as string } : {}),
       ...(body.status !== undefined ? { status: enumField(body, "status", ["inbox", "ready"] as const)! } : {}),
       ...(stringField(body, "sourceComponentId", false) ? { sourceComponentId: body.sourceComponentId as string } : {}),
       ...(stringArrayField(body, "affectedComponentIds")

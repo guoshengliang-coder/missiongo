@@ -15,12 +15,14 @@ describe("capture draft", () => {
       type: "bug",
       priority: "urgent",
       sourceComponentId: "android-id",
+      builderAccountId: "builder-id",
       environment: { platform: "android", appVersion: "2.1.0" },
     }))).toMatchObject({
       title: "Crash after login",
       type: "bug",
       priority: "urgent",
       sourceComponentId: "android-id",
+      builderAccountId: "builder-id",
       reproductionSteps: "Open the app twice",
       occurrenceFrequency: "always",
       environment: { platform: "android", appVersion: "2.1.0" },
@@ -35,6 +37,8 @@ describe("capture draft", () => {
     expect(parseCaptureDraft("not json")).toEqual(EMPTY_CAPTURE_DRAFT);
     expect(EMPTY_CAPTURE_DRAFT.type).toBe("bug");
     expect(hasCaptureDraftContent(EMPTY_CAPTURE_DRAFT)).toBe(false);
+    expect(parseCaptureDraft("{}").builderAccountId).toBe("");
+    expect(hasCaptureDraftContent({ ...EMPTY_CAPTURE_DRAFT, builderAccountId: "builder-id" })).toBe(true);
     expect(hasCaptureDraftContent({ ...EMPTY_CAPTURE_DRAFT, description: "Remember this" })).toBe(true);
     expect(hasCaptureDraftContent({ ...EMPTY_CAPTURE_DRAFT, diagnosticLog: "Error: timeout" })).toBe(true);
     expect(hasCaptureDraftContent({ ...EMPTY_CAPTURE_DRAFT, expectedOutcome: "Keep the selected tab" })).toBe(true);
