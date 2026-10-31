@@ -28,7 +28,7 @@ for(const width of [353,1440]) for(const theme of ["light","dark"] as const) {
       await page.locator(".toast").getByRole("button",{name:"关闭提示"}).click();
       await root.scrollIntoViewIfNeeded();
       await page.screenshot({path:test.info().outputPath(`comment-polish-${width}-${theme}.png`)});
-      await page.request.post(`/api/v1/items/${item.key}/comments`,{data:{text:"请确认字段",mentionAccountIds:[bootstrap.user.id]}});
+      await page.request.post(`/api/v1/items/${item.key}/comments`,{data:{text:"@所有人 请确认字段",mentionAccountIds:[bootstrap.user.id]}});
       await page.reload();
       await expect(page.locator(".comment-mentioned")).toHaveText(`提醒：${bootstrap.user.displayName}`);
     });

@@ -14,8 +14,8 @@ describe("draft mentions",()=>{
   });
   it("shows each mention once while retaining recipients selected outside the written text",()=>{
     expect(additionalMentionNames("@梁国盛 测试",["梁国盛"])).toEqual([]);
-    expect(additionalMentionNames("@所有人 请确认",["梁国盛","张三"])).toEqual([]);
-    expect(additionalMentionNames("@Everyone please confirm",["Alex","Sam"])).toEqual([]);
+    expect(additionalMentionNames("@所有人 请确认",["梁国盛","张三"])).toEqual(["梁国盛","张三"]);
+    expect(additionalMentionNames("@Everyone please confirm",["Alex","Sam"])).toEqual(["Alex","Sam"]);
     expect(additionalMentionNames("请确认",["张三","张三"])).toEqual(["张三"]);
     expect(additionalMentionNames("@Anna please confirm",["Ann","Anna"])).toEqual(["Ann"]);
   });

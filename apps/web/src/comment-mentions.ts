@@ -33,7 +33,6 @@ export function additionalMentionNames(text:string,names:readonly string[]):stri
     }
     return false;
   };
-  if(hasToken("所有人") || hasToken("Everyone"))return [];
   return [...new Set(names)].filter(name=>!hasToken(name));
 }
 
