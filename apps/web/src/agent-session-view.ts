@@ -27,13 +27,11 @@ export function visibleQuestions(questions: readonly AgentSessionQuestion[]): Ag
 
 export function planApprovalStatusKey(code: string): MessageKey {
   const keys: Readonly<Record<string, MessageKey>> = {
-    checking: "agentPlanChecking", ai_disabled: "agentPlanAiDisabled", connection_unavailable: "agentPlanConnectionUnavailable",
-    reply_unavailable: "agentPlanReplyUnavailable", running: "agentPlanRunning", permission_required: "agentPlanPermissionRequired",
-    reply_pending: "agentPlanReplyPending", needs_answer: "agentPlanNeedsAnswer", not_approval: "agentPlanNotApproval",
-    uncertain: "agentPlanUncertain", context_too_large: "agentPlanContextTooLarge", recognition_failed: "agentPlanRecognitionFailed",
-    already_approved: "agentPlanAlreadyApproved", dismissed: "agentPlanDismissed", awaiting_source: "agentPlanAwaitingSource",
+    connection_unavailable: "agentPlanConnectionUnavailable", reply_unavailable: "agentPlanReplyUnavailable",
+    running: "agentPlanRunning", permission_required: "agentPlanPermissionRequired", reply_pending: "agentPlanReplyPending",
+    not_approval: "agentPlanNotApproval", dismissed: "agentPlanDismissed", awaiting_source: "agentPlanAwaitingSource",
   };
-  return keys[code] ?? "agentPlanUncertain";
+  return keys[code] ?? "agentPlanReplyUnavailable";
 }
 
 /** True when a message exists only for a card that went away: it carried

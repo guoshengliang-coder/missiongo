@@ -23,7 +23,6 @@ async function fixture(external = false, initialMessages?: AgentSessionMessageIn
   const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: "owner@example.test", password: "fixture-password" } });
   expect(login.statusCode, login.body).toBe(200);
   const headers = { cookie: login.headers["set-cookie"]!.split(";", 1)[0]! };
-  expect((await app.inject({ method: "PUT", url: "/api/v1/ai/title-settings", headers, payload: { apiKey: "synthetic-api-key" } })).statusCode).toBe(200);
   const store = app.missionGoStore;
   const product = store.createProduct({ name: "Example", keyPrefix: "EX" });
   const item = store.createWorkItem({ productId: product.id, title: "Shortcut", description: "", type: "requirement", priority: "normal", environment: { platform: "web" } });
@@ -37,12 +36,18 @@ async function fixture(external = false, initialMessages?: AgentSessionMessageIn
   const messages = initialMessages ?? [{ sourceId: "plan", role: "agent" as const, text: "方案：增加快捷按钮并测试。\n" + evidence, occurredAt: now }];
   let id: string;
   if (external) {
+    // A native mirror shares the same existing approval attention as its dispatch.
+    db.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+      VALUES ('dispatch','owner','node','codex','plan','launched','synthetic-repo',?)`).run(now);
+    db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('dispatch',?,0)").run(item.id);
+    const mirrored = dispatch.createForDispatch({ dispatchId: "dispatch", nodeId: "node", sessionRef: "thread" });
+    dispatch.recordSnapshot({ nodeId: "node", sessionId: mirrored, status: "idle", messages });
     const progress = new ExternalAgentSessionStore(store);
     id = progress.register({ accountId: "owner", clientId: "fixture" }, { agentKind: "codex", sessionRef: "thread", refKind: "native" }, item.key);
     db.prepare("UPDATE external_agent_sessions SET native_node_id='node',native_generation=1,native_synced_at=?,native_snapshot_json=? WHERE id=?")
       .run(now, JSON.stringify({ status: "idle", turnState: {} }), id);
     messages.forEach((message, position) => db.prepare("INSERT INTO external_native_messages(id,session_id,source_id,payload_json,position) VALUES (?,?,?,?,?)")
-      .run("native-plan", id, message.sourceId, JSON.stringify(message), position));
+      .run("native-" + position, id, message.sourceId, JSON.stringify(message), position));
   } else {
     db.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
       VALUES ('dispatch','owner','node','codex','plan','launched','synthetic-repo',?)`).run(now);
@@ -78,32 +83,24 @@ it.each([false, true])("queues exactly one fixed reply on the existing channel (
   if (external) expect(new ExternalNativeSessionStore(f.store).overlay("owner", f.id).command?.text).toBe("批准");
 });
 
-it("rejects stale content and rechecks AI settings and the caller's current permissions", async () => {
+it("rejects stale content and current permission/connection changes, but does not require AI settings", async () => {
   const f = await fixture();
   const { revision } = await f.offer();
-  f.dispatch.recordSnapshot({ nodeId: "node", sessionId: f.id, status: "idle", messages: [{ ...f.messages[0]!, text: "范围还需要选择 A 或 B" }] });
+  f.dispatch.recordSnapshot({ nodeId: "node", sessionId: f.id, status: "idle", messages: [{ ...f.messages[0]!, text: "新的方案，等待你批准后开始实施。" }] });
   expect((await f.approve(revision)).statusCode).toBe(409);
   expect((await f.app.inject({ method: "POST", url: `/api/v1/agent-sessions/${f.id}/plan-approval`, payload: { revision } })).statusCode).toBe(401);
-  // Reset and classify the current content before disabling AI.
-  f.dispatch.recordSnapshot({ nodeId: "node", sessionId: f.id, status: "idle", messages: f.messages });
-  const current = await f.offer();
   await f.app.inject({ method: "PUT", url: "/api/v1/ai/title-settings", headers: f.headers, payload: { agentAttentionEnabled: false } });
-  expect((await f.approve(current.revision)).statusCode).toBe(409);
-  expect((await f.get()).json()).toMatchObject({ planApprovalStatus: { code: "ai_disabled" } });
-  expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toMatchObject({ n: 0 });
-
-  await f.app.inject({ method: "PUT", url: "/api/v1/ai/title-settings", headers: f.headers, payload: { agentAttentionEnabled: true } });
-  const restored = await f.offer();
-  // Still inside the normal session's 30-minute stale threshold: the shortcut requires an online node.
+  const current = await f.offer();
+  expect(f.provider).not.toHaveBeenCalled();
   f.db.prepare("UPDATE nodes SET last_seen_at=? WHERE id='node'").run(new Date(Date.now() - 10 * 60_000).toISOString());
-  expect((await f.approve(restored.revision)).statusCode).toBe(409);
+  expect((await f.approve(current.revision)).statusCode).toBe(409);
   expect((await f.get()).json()).toMatchObject({ planApprovalStatus: { code: "connection_unavailable" } });
   f.db.prepare("UPDATE nodes SET last_seen_at=? WHERE id='node'").run(new Date().toISOString());
   const online = await f.offer();
   const other = f.store.createProduct({ name: "Other", keyPrefix: "OTHER" });
   f.app.missionGoAccounts.replacePermissions("owner", [{ productId: other.id, canView: true, canOperate: true, canUseAi: true }]);
   expect((await f.approve(online.revision)).statusCode).toBe(403);
-  expect((await f.get()).json()).not.toHaveProperty("planApproval");
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toMatchObject({ n: 0 });
 });
 
 it("offers approval after two text answers to historical cards, then blocks a new live question with a visible reason", async () => {
@@ -120,25 +117,18 @@ it("offers approval after two text answers to historical cards, then blocks a ne
   f.dispatch.recordSnapshot({ nodeId: "node", sessionId: f.id, status: "idle", turnState: { waitingForInput: true },
     messages: [...messages, { sourceId: "new-question", role: "agent", text: "还需确定发布范围", questions: [{ title: "发布范围", options: ["Web", "全部"] }] }] });
   const detail = (await f.get()).json();
-  expect(detail.planApprovalStatus).toEqual({ code: "needs_answer" });
+  expect(detail.planApprovalStatus).toEqual({ code: "not_approval" });
   expect(detail).not.toHaveProperty("planApproval");
   expect((await f.approve(offer.revision)).statusCode).toBe(409);
-  expect(f.provider).toHaveBeenCalledTimes(1);
+  expect(f.provider).not.toHaveBeenCalled();
 });
 
-it("reports recognition failure without including raw provider errors or repeatedly calling the provider", async () => {
-  const f = await fixture();
-  f.provider.mockRejectedValue(new Error("sensitive provider error"));
-  await f.get();
-  for (let i = 0; i < 20; i++) {
-    const response = await f.get();
-    if (response.json().planApprovalStatus.code === "recognition_failed") {
-      expect(response.body).not.toContain("sensitive provider");
-      expect((await f.get()).json().planApprovalStatus.code).toBe("recognition_failed");
-      expect(f.provider).toHaveBeenCalledTimes(1);
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error("Failure status not exposed");
+it("offers immediately for existing approval attention with long history, even when the AI provider fails", async () => {
+  const f = await fixture(false, [
+    { sourceId: "old", role: "agent", text: "旧报告".repeat(10_000), questions: [{ title: "旧问题", options: ["A", "B"] }] },
+    { sourceId: "plan", role: "plan", text: "无需再次分析的待批准方案。" },
+  ]);
+  f.provider.mockRejectedValue(new Error("provider unavailable"));
+  expect((await f.get()).json()).toMatchObject({ planApprovalStatus: { code: "ready" }, planApproval: { revision: expect.any(String) } });
+  expect(f.provider).not.toHaveBeenCalled();
 });
