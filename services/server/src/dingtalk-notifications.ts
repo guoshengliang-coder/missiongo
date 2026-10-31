@@ -284,7 +284,7 @@ export class DingTalkNotifications {
   private message(job: JobRow): Record<string,unknown> {
     if (job.kind==="test") return {msgtype:"text",text:{content:`这是一条账号绑定测试通知。收到后无需回复。\n测试编号：${job.id}`}};
     const card=this.verificationCard(job);
-    const lines=[`### ${card.headerTitle}`,card.heading,...(card.summary?[card.summary]:[]),"---","**验收方式**",card.verification.replace(/\n/g,"\n\n")];
+    const lines=[`### ${card.headerTitle}`,card.heading.replace(/<[^>]*>/g,""),...(card.summary?[card.summary]:[]),"---","**验收方式**",card.verification.replace(/\n/g,"\n\n")];
     return {msgtype:"action_card",action_card:{title:card.headerTitle,markdown:lines.join("\n\n"),single_title:"查看条目并验收",single_url:card.itemUrl}};
   }
   private async send(job: JobRow): Promise<void> {

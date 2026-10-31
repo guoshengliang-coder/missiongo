@@ -46,8 +46,10 @@ export function buildVerificationCard(input: {projectName:string;itemKey:string;
   const headerTitle=limitCardText(`已交付 ${cardText(input.itemKey)} ｜ 请验收`);
   const project=limitCardText(cardText(input.projectName),240);
   // Reserve markup bytes so the heading stays well-formed even at the API limit.
-  const title=limitCardText(cardText(input.itemTitle),1000-Buffer.byteLength(project+" | ****","utf8"));
-  const heading=`${project} | **${title}**`;
+  const headingOpen="<font sizeToken=common_h3_text_style__font_size>";
+  const headingClose="</font>";
+  const title=limitCardText(cardText(input.itemTitle),1000-Buffer.byteLength(headingOpen+project+" | ****"+headingClose,"utf8"));
+  const heading=`${headingOpen}${project} | **${title}**${headingClose}`;
   const summary=verificationSummary(input.description,input.itemTitle);
   const verification=verificationInstructions(input.payload);
   return {

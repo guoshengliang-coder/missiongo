@@ -8,7 +8,7 @@ describe("delivered card content",()=>{
   it("separates identity, original context and acceptance instructions without exposing release metadata",()=>{
     const card=buildVerificationCard({...input,payload:released(["web"])});
     expect(card.headerTitle).toBe("已交付 TEST-123 ｜ 请验收");
-    expect(card.heading).toBe("示例项目 | **筛选框内容显示不全**");
+    expect(card.heading).toBe("<font sizeToken=common_h3_text_style__font_size>示例项目 | **筛选框内容显示不全**</font>");
     expect(card.summary).toBe(input.description);
     expect(card.verification).toBe("Web：重新打开网站，使用后验收。");
     expect(card.itemUrl).toBe(input.itemUrl);
@@ -38,13 +38,13 @@ describe("delivered card content",()=>{
   });
   it("keeps normal long titles complete and bounds oversized UTF-8 variables without broken markup",()=>{
     const title="在多个筛选条件叠加后，切换列表并返回时仍应保留完整的选择内容与筛选状态";
-    expect(buildVerificationCard({...input,itemTitle:title}).heading).toBe(`示例项目 | **${title}**`);
+    expect(buildVerificationCard({...input,itemTitle:title}).heading).toBe(`<font sizeToken=common_h3_text_style__font_size>示例项目 | **${title}**</font>`);
     const card=buildVerificationCard({...input,projectName:"项".repeat(600),itemTitle:"题😀".repeat(600),description:"说明😀".repeat(600)});
     for(const [key,value] of Object.entries(card)) {
       expect(Buffer.byteLength(value),key).toBeLessThanOrEqual(1000);
       expect(value,key).not.toContain("�");
     }
-    expect(card.heading).toMatch(/…\*\*$/);
+    expect(card.heading).toMatch(/…\*\*<\/font>$/);
     expect(card.summary).toMatch(/…$/);
   });
   it("passes a configured theme without inventing status-to-color rules",()=>{

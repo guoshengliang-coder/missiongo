@@ -27,6 +27,8 @@ SDK、公共令牌和历史缺失账号的条目不推断具体提需者。账�
 
 有本轮发布凭据时，Web、Android、iOS、macOS、Windows 各占一行，分别提示重新打开网站或更新安装后使用并验收；只列实际交付的平台，其他产物引导进入条目。人工直接调状态或没有发布凭据时，提示查看条目的交付内容和验收环境，不推测版本或下载方式。卡片不展示版本哈希、处理记录或交付时间。点击进入条目后，由人工验收；消息送达不自动改变条目状态。
 
+可导入的模板文件为 `docs/dingtalk-delivered-card.template.json`（仅含示例数据），导入独立模板后发布。`heading` 必须声明为 Markdown 变量，使用官方 `common_h3_text_style__font_size` 字号；其他变量均为字符串。
+
 新版模板使用 `headerTitle`、`heading`、`summary`、`verification`、`theme`、`itemUrl` 六个变量：分别绑定头部标题、富文本项目和标题、两行摘要、逐平台验收说明、头部主题色和按钮链接。`DINGTALK_CARD_THEME` 默认 `blue`；本次不设置其他状态的颜色映射。服务端保留 `projectItem`、`itemTitle` 旧变量以支持分阶段升级或回滚。先在独立模板验证样式和链接，再发布模板、切换环境配置；不要直接覆盖仍在使用的旧模板。
 
 ## 发送结果
