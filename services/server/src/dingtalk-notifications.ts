@@ -174,6 +174,11 @@ export class DingTalkNotifications {
   list(itemId: string): DingTalkNotification[] {
     return (this.db.prepare("SELECT * FROM dingtalk_notifications WHERE item_id=? ORDER BY created_at DESC,rowid DESC LIMIT 100").all(itemId) as unknown as JobRow[]).map(row=>this.snapshot(row));
   }
+  listComment(itemId:string,commentId:string):DingTalkNotification[] {
+    if(!this.db.prepare("SELECT id FROM work_item_comments WHERE id=? AND item_id=?").get(commentId,itemId))throw notFound("Comment");
+    // A comment has at most 100 explicit accounts, two symbolic recipients and one reply author.
+    return (this.db.prepare("SELECT * FROM dingtalk_notifications WHERE item_id=? AND comment_id=? AND kind='comment' ORDER BY created_at DESC,rowid DESC LIMIT 200").all(itemId,commentId) as unknown as JobRow[]).map(row=>this.snapshot(row));
+  }
   tests(): Record<string,DingTalkNotification> {
     const rows=this.db.prepare(`SELECT n.* FROM dingtalk_notifications n JOIN dingtalk_bindings b ON b.account_id=n.account_id
       WHERE n.kind='test' AND n.binding_revision=b.revision AND n.config_revision=(SELECT revision FROM dingtalk_settings WHERE id=1)

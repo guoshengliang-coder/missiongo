@@ -90,6 +90,15 @@ describe("comment discussions and recipients",()=>{
     const item=f.store.createWorkItem({productId:f.product.id,type:"bug",priority:"normal",title:"Unattributed",description:""});
     expect(commentCandidates(f.store,item.key).filter(c=>c.isProposer)).toHaveLength(0);
   });
+  it("reads an older comment's complete notifications independently of the recent item overview",()=>{
+    const f=fixture(),old=f.post("Older reminder",f.writer.id,{mentionAccountIds:[f.writer.id]});
+    for(let i=0;i<101;i++)f.post(`New reminder ${i}`,f.writer.id,{mentionAccountIds:[f.writer.id]});
+    expect(f.service.list(f.item.id)).toHaveLength(100);
+    expect(f.service.list(f.item.id).some(notice=>notice.commentId===old.id)).toBe(false);
+    expect(f.service.listComment(f.item.id,old.id)).toEqual([expect.objectContaining({kind:"comment",commentId:old.id})]);
+    const other=f.store.createWorkItem({productId:f.product.id,type:"note",priority:"normal",title:"Other",description:""});
+    expect(()=>f.service.listComment(other.id,old.id)).toThrow(/Comment/);
+  });
 });
 
 describe("DingTalk comment card replies",()=>{
@@ -154,5 +163,12 @@ it("protects item-scoped candidate queries and validates HTTP comment parameters
   expect((await request(`/api/v1/items/${item.key}/comment-candidates`)).json().candidates).toEqual([expect.objectContaining({accountId:"admin"})]);
   const root=await request(`/api/v1/items/${item.key}/comments`,{text:"Question"});expect(root.statusCode).toBe(201);
   const reply=await request(`/api/v1/items/${item.key}/comments`,{text:"Answer",replyToCommentId:root.json().id,mentionTargets:["all"]});expect(reply.statusCode).toBe(201);expect(reply.json().replyToCommentId).toBe(root.json().id);
+  const self=await request(`/api/v1/items/${item.key}/comments`,{text:"Notify me",mentionAccountIds:["admin"]});
+  const scoped=`/api/v1/items/${item.key}/comments/${self.json().id}/dingtalk-notifications`;
+  expect((await app.inject({url:scoped})).statusCode).toBe(401);
+  expect((await request(scoped)).json()).toMatchObject({notifications:[{kind:"comment",commentId:self.json().id}],canRetry:true});
+  expect((await request(`/api/v1/items/${item.key}/comments/not-a-comment/dingtalk-notifications`)).statusCode).toBe(400);
+  const other=store.createWorkItem({productId:product.id,type:"note",priority:"normal",title:"Other",description:""});
+  expect((await request(`/api/v1/items/${other.key}/comments/${self.json().id}/dingtalk-notifications`)).statusCode).toBe(404);
   expect((await request(`/api/v1/items/${item.key}/comments`,{text:"Bad",mentionTargets:["global"]})).statusCode).toBe(400);
 });

@@ -10,7 +10,8 @@ import { itemFilterKey, type ItemFilters } from "@missiongo/domain";
 import { ListFilters } from "./list-filters";
 import { pickItemFilters } from "./item-filters";
 import { BuilderHandoverNotice, ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
-import { ItemDingTalkNotifications } from "./dingtalk-settings";
+import { CommentDingTalkNotifications, ItemDingTalkNotifications, useItemDingTalkNotifications } from "./dingtalk-settings";
+import { CommentMoreActions } from "./comment-actions";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { Modal } from "./modal";
 import { StatusCheckButton, StatusCheckPanel } from "./status-check-panel";
@@ -2632,9 +2633,13 @@ function DetailPane({
     refetchInterval: query => document.visibilityState === "visible" && query.state.fetchFailureCount < 3
       && (query.state.data?.deliveryProgress || query.state.data?.status === "in_progress") ? 15_000 : false });
   const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey), refetchInterval: 5_000 });
+  const notificationsQuery=useItemDingTalkNotifications(itemKey);
   const [replyTo,setReplyTo]=useState<WorkItemEvent|null>(null);
   const handledCommentLink=useRef("");
   useEffect(()=>{setReplyTo(null);},[itemKey]);
+  useEffect(()=>{
+    if(replyTo && timelineQuery.data?.events.find(event=>event.id===replyTo.id)?.payload.withdrawnAt)setReplyTo(null);
+  },[replyTo,timelineQuery.data]);
   useEffect(()=>{
     const commentId=new URL(window.location.href).searchParams.get("comment");
     if(!commentId || handledCommentLink.current===`${itemKey}:${commentId}`)return;
@@ -2724,6 +2729,8 @@ function DetailPane({
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["item", itemKey] }),
       queryClient.invalidateQueries({ queryKey: ["timeline", itemKey] }),
+      queryClient.invalidateQueries({ queryKey: ["dingtalk-notifications", itemKey] }),
+      queryClient.invalidateQueries({ queryKey: ["comment-dingtalk-notifications", itemKey] }),
       queryClient.invalidateQueries({ queryKey: ["items"] }),
     ]);
   };
@@ -2926,7 +2933,7 @@ function DetailPane({
             </div>
             <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} />} />
             <ItemRelations item={item} onOpenItem={onOpenItem} />
-            <ItemDingTalkNotifications key={`dingtalk:${item.key}`} itemKey={item.key} pending={item.status==="pending_verification"} />
+            <ItemDingTalkNotifications key={`dingtalk:${item.key}`} itemKey={item.key} pending={item.status==="pending_verification"} query={notificationsQuery} />
             {item.verificationReturn && <VerificationReturnCallout info={item.verificationReturn} />}
             {/* Read the item, then the evidence a person went and looked at --
                 screenshots, documents, logs. The captured environment is the
@@ -2994,21 +3001,19 @@ function DetailPane({
               <div className="timeline">
                 {groupDiscussionTimeline(timelineQuery.data?.events ?? []).map(({ id, event, count, filenames, replies }) => (
                   <div
-                    className={event.actorKind === "agent" ? "timeline-event timeline-event--agent" : "timeline-event"}
+                    className={`timeline-event${event.actorKind === "agent" ? " timeline-event--agent" : ""}${event.eventType === "comment_added" ? " timeline-event--comment" : ""}`}
                     key={id}
                   >
                     <span className="timeline-dot" />
                     <div>
                       {event.historySourceKey && <span className="timeline-tag">{t("transferHistory", { key: event.historySourceKey })}</span>}
-                      <strong>
+                      {event.eventType!=="comment_added" && <strong>
                         {event.eventType === "status_changed"
                           ? `${event.fromStatus ? statusLabel(event.fromStatus) : t("status")} → ${event.toStatus ? statusLabel(event.toStatus) : t("updated")}`
-                          : event.eventType === "comment_added"
-                            ? commentHeading(event, t("agentAnalysis"), eventLabel("comment_added"))
-                            : count > 1
+                          : count > 1
                               ? t("eventRepeated", { event: eventLabel(event.eventType), count })
                               : eventLabel(event.eventType)}
-                      </strong>
+                      </strong>}
                       {/* A direct jump skipped the steps in between; say so, or the
                           history reads as if the work went through them. */}
                       {event.payload?.reason === "manual_override" && <span className="timeline-tag">{t("movedDirectly")}</span>}
@@ -3047,15 +3052,15 @@ function DetailPane({
                           {typeof event.payload.title === "string" && <span>{event.payload.title}</span>}
                         </p>
                       )}
-                      <p>
+                      {event.eventType!=="comment_added" && <p>
                         {commentAuthor(
                           { ...event, agentName: eventAgentName(event.payload) },
                           actorLabel(event.actorKind),
                         )} · {formatTime(event.createdAt)}
-                      </p>
+                      </p>}
                       {filenames.length > 0 && <p className="timeline-files">{filenames.join("、")}</p>}
                       {event.eventType === "comment_added" && (
-                        <CommentGroup root={event} replies={replies} item={item} onReply={setReplyTo}
+                        <CommentGroup root={event} replies={replies} item={item} onReply={setReplyTo} onNotice={onNotice} notificationsQuery={notificationsQuery}
                           onWithdraw={async commentId=>{if(await confirm(t("withdrawCommentConfirm")))withdrawMutation.mutate(commentId);}} />
                       )}
                     </div>
@@ -3188,13 +3193,29 @@ function commentHeading(event: WorkItemEvent, analysisLabel: string, commentLabe
   return event.actorKind === "agent" && event.payload.bodyKind === "structured" ? analysisLabel : commentLabel;
 }
 
-function CommentGroup({root,replies,item,onReply,onWithdraw}:{root:WorkItemEvent;replies:readonly WorkItemEvent[];item:WorkItem;onReply:(event:WorkItemEvent)=>void;onWithdraw:(id:string)=>void}) {
+function CommentGroup({root,replies,item,onReply,onWithdraw,onNotice,notificationsQuery}:{
+  root:WorkItemEvent;replies:readonly WorkItemEvent[];item:WorkItem;onReply:(event:WorkItemEvent)=>void;onWithdraw:(id:string)=>void;
+  onNotice:(message:string)=>void;notificationsQuery:ReturnType<typeof useItemDingTalkNotifications>;
+}) {
   const {t,actorLabel,formatTime}=useI18n();
   const events=[root,...replies],names=new Map(events.map(event=>[event.id,commentAuthor({...event,agentName:eventAgentName(event.payload)},actorLabel(event.actorKind))]));
   return <div className="comment-discussion" aria-label={t("commentDiscussion")}>
-    {events.map((event,index)=><div id={`comment-${event.id}`} key={event.id} className={index?"comment-thread-reply":"comment-thread-root"}>
-      {index>0 && <p className="comment-reply-byline"><strong>{names.get(event.id)}</strong> · {formatTime(event.createdAt)}<span>{t("commentReplyTo",{name:names.get(String(event.payload.replyToCommentId)) ?? t("originalComment")})}</span></p>}
-      <CommentBody payload={event.payload} item={item} readOnly={Boolean(item.transferred)} onWithdraw={()=>onWithdraw(event.id)} onReply={()=>onReply(event)} />
+    {events.map((event,index)=><div id={`comment-${event.id}`} key={event.id} className={index?"comment-thread-reply":"comment-thread-root"} tabIndex={-1}>
+      <span className="comment-avatar" aria-hidden="true">{Array.from(names.get(event.id) ?? "")[0]}</span>
+      <div className="comment-message">
+        <header className="comment-byline"><strong>{names.get(event.id)}</strong><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>
+          {event.actorKind==="agent" && <span className="comment-actor-label">{commentHeading(event,t("agentAnalysis"),actorLabel("agent"))}</span>}
+          {!item.transferred && !event.payload.withdrawnAt && <CommentMoreActions itemKey={item.key} commentId={event.id} onWithdraw={()=>onWithdraw(event.id)} onNotice={onNotice} />}
+        </header>
+        {index>0 && <p className="comment-reply-byline">{t("commentReplyTo",{name:names.get(String(event.payload.replyToCommentId)) ?? t("originalComment")})}</p>}
+        <CommentBody payload={event.payload} item={item} />
+        <div className="comment-actions">
+          {!item.transferred && !event.payload.withdrawnAt && <button type="button" className="text-button comment-reply-button" onClick={()=>onReply(event)}>{t("replyComment")}</button>}
+          <CommentDingTalkNotifications itemKey={item.key} commentId={event.id} query={notificationsQuery}
+            hasAudience={Array.isArray(event.payload.mentions) && event.payload.mentions.length>0 || events.some(parent=>parent.id===event.payload.replyToCommentId && parent.accountId && parent.accountId!==event.accountId)}
+            readOnly={Boolean(item.transferred || event.payload.withdrawnAt)} />
+        </div>
+      </div>
     </div>)}
   </div>;
 }
@@ -3228,6 +3249,8 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
   useEffect(()=>{if(replyTo)document.getElementById("comment-draft")?.focus();},[replyTo]);
   const { actorLabel }=useI18n();
   const replyName=replyTo ? commentAuthor({...replyTo,agentName:eventAgentName(replyTo.payload)},actorLabel(replyTo.actorKind)) : "";
+  const replyExcerpt=replyTo ? deriveSummary(typeof replyTo.payload.summary==="string" && replyTo.payload.summary.trim()
+    ? replyTo.payload.summary : commentPlainText(replyTo.payload.bodyKind,(replyTo.payload.body ?? {}) as Readonly<Record<string,unknown>>),160) || t("commentAttachmentQuote") : "";
   const [files, setFiles] = useState<readonly File[]>([]);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -3273,7 +3296,14 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
     onSubmit={event => { event.preventDefault(); if (!mutation.isPending && (text.trim() || files.length)) mutation.mutate(); }}>
     {isDraggingFiles && <FileDropOverlay remaining={remaining} />}
     <fieldset disabled={mutation.isPending}>
-      {replyTo && <div className="comment-reply-context"><span>{t("commentReplyTo",{name:replyName})}</span><button type="button" className="text-button" onClick={onCancelReply}>{t("cancelReply")}</button></div>}
+      {replyTo && <div className="comment-reply-context">
+        <button type="button" className="comment-reply-source" onClick={()=>{
+          const target=document.getElementById(`comment-${replyTo.id}`);
+          target?.querySelector(".comment-collapsible")?.setAttribute("open","");
+          target?.scrollIntoView({block:"center"});target?.focus({preventScroll:true});
+        }} title={t("viewOriginalComment")}><strong>{t("commentReplyTo",{name:replyName})}</strong><span>{replyExcerpt}</span></button>
+        <button type="button" className="comment-cancel-reply" aria-label={t("cancelReply")} title={t("cancelReply")} onClick={onCancelReply}><X size={16} aria-hidden="true" /></button>
+      </div>}
       <label className="sr-only" htmlFor="comment-draft">{t("addComment")}</label>
       {files.length > 0 && <div className="agent-chat-draft-files">
         {files.map((file, index) => <DraftChatFile key={`${file.name}-${file.lastModified}-${index}`} file={file} disabled={mutation.isPending}
@@ -3317,15 +3347,9 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
 function CommentBody({
   payload,
   item,
-  onWithdraw,
-  onReply,
-  readOnly = false,
 }: {
   readonly payload: Readonly<Record<string, unknown>>;
   readonly item: WorkItem;
-  readonly readOnly?: boolean;
-  readonly onWithdraw: () => void;
-  readonly onReply: () => void;
 }) {
   const { t } = useI18n();
   const body = (payload.body ?? {}) as Readonly<Record<string, unknown>>;
@@ -3363,12 +3387,6 @@ function CommentBody({
     );
   }
 
-  const withdrawButton = !readOnly && (
-    /* Withdrawing is the person's alone: an agent that could take its own
-       words back could erase the record of having said them. */
-    <button type="button" className="comment-withdraw" onClick={onWithdraw}>{t("withdrawComment")}</button>
-  );
-
   return (
     <div className="comment-body">
       {collapsible ? (
@@ -3381,10 +3399,6 @@ function CommentBody({
         {rendered}
       </details>
       ) : rendered}
-      {!readOnly && <div className="comment-actions">
-        <button type="button" className="text-button comment-reply-button" onClick={onReply}>{t("replyComment")}</button>
-        {withdrawButton}
-      </div>}
     </div>
   );
 }
