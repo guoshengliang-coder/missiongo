@@ -1,3 +1,4 @@
+import { ReleaseObservations } from "./release-observations.js";
 import { BuilderHandovers } from "./builder-handovers.js";
 import { assertDispatchExecution, assertExternalExecution, dispatchExecutionRevoked } from "./builder-authority.js";
 import { parseItemFilters } from "./item-filters.js";
@@ -2998,11 +2999,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return node;
   };
 
+  app.post("/api/v1/node/release-observations",async request => {
+    const node = requireNode(request);
+    const body = objectBody(request.body);
+    const productId = stringField(body,"productId")!;
+    if (!canCheck(node.accountId,productId)) throw notFound("Product");
+    return new ReleaseObservations(store).upload(productId,stringField(body,"repoPath")!,body.observation,node);
+  });
   app.post("/api/v1/node/status-checks/claim",async request => {
     const node = requireNode(request);
     return {job:statusChecks.claim(node.nodeId,node.accountId,productId => {
       if (!canCheck(node.accountId,productId)) throw notFound("Product");
-    })};
+    },objectBody(request.body ?? {}).supportsSharedReleases === true)};
   });
   app.post("/api/v1/node/status-checks/:handoverId/report",async request => {
     const node = requireNode(request); const {handoverId} = request.params as {handoverId:string};

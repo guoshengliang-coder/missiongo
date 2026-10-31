@@ -16,6 +16,8 @@ public struct HandoverEvidence: Codable, Equatable, Sendable {
     }
     public var merged: Merge?
     public var releases: [Release]?
+    public var sharedReleaseId: String?
+    public var detail: String?
     public var failure: String?
 }
 
@@ -36,13 +38,14 @@ public struct StatusCheckJob: Codable, Equatable, Sendable {
     public let evidence: HandoverEvidence
     public let leaseToken: String
     public var completion: CompletionReference? = nil
+    public var sharedRelease: ReleaseObservation? = nil
 }
 
 /// This file is publication evidence produced by a publisher, not a file-to-artifact map.
 /// Keep it in the git common directory so worktrees and the mapped checkout share it.
-public struct LocalReleaseEvidence: Codable, Sendable {
-    public struct Release: Codable, Sendable {
-        public struct Proof: Codable, Sendable {
+public struct LocalReleaseEvidence: Codable, Sendable, Equatable {
+    public struct Release: Codable, Sendable, Equatable {
+        public struct Proof: Codable, Sendable, Equatable {
             public let kind: String
             public let url: String
             public let sha256: String?
@@ -53,6 +56,7 @@ public struct LocalReleaseEvidence: Codable, Sendable {
         public let proof: Proof
     }
     public let schemaVersion: Int
+    public var environment: String? = nil
     public let releases: [Release]
 }
 
@@ -96,15 +100,16 @@ public enum HandoverVerifier {
     }
     private static let mergedCache = Locked<[String:HandoverEvidence.Merge]>([:])
     public static func verify(
-        _ job: StatusCheckJob, run: CommandRunner,
+        _ job: StatusCheckJob, run: @escaping CommandRunner,
         read: @Sendable (String) -> Data? = { path in
             guard let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber,
                   size.intValue <= 1024 * 1024 else { return nil }
             return try? Data(contentsOf: URL(fileURLWithPath: path))
         },
-        prove: @Sendable (LocalReleaseEvidence.Release) async -> Bool = { await publicProof($0) }
+        prove: @escaping @Sendable (LocalReleaseEvidence.Release) async -> Bool = { await publicProof($0) }
     ) async -> HandoverEvidence {
         var result = HandoverEvidence()
+        result.sharedReleaseId = job.sharedRelease?.id
         guard Paths.isAbsolute(job.repoPath), !job.repoPath.contains("\0"), UUID(uuidString: job.id) != nil,
               UUID(uuidString: job.leaseToken) != nil else { result.failure = "failed"; return result }
         let reference = job.completion ?? CompletionReference(kind: job.pullRequestUrl.contains("/-/merge_requests/") ? "gitlab" : "github", url: job.pullRequestUrl)
@@ -163,24 +168,61 @@ public enum HandoverVerifier {
         result.merged = merged
         guard let required = job.requiredArtifacts else { return result }
         if required.isEmpty { return result }
-        let common = await run("git", ["-C", job.repoPath, "rev-parse", "--git-common-dir"])
-        let directory = common.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard common.code == 0, !directory.isEmpty else { result.failure = "evidence_missing"; return result }
-        let path = Paths.join(Paths.resolve(directory, cwd: job.repoPath), "missiongo-release-evidence.json")
-        guard let bytes = read(path), let receipt = try? JSONDecoder().decode(LocalReleaseEvidence.self, from: bytes),
-              receipt.schemaVersion == 1, receipt.releases.count <= 20 else { result.failure = "waiting_release"; return result }
+        let receipt: LocalReleaseEvidence
+        let bytes: Data
+        if let shared = job.sharedRelease {
+            let remote = await run("git", ["-C", job.repoPath, "config", "--get", "remote.origin.url"])
+            guard remote.code == 0, let mapped = remoteIdentity(remote.stdout),
+                  shared.repository == "https://\(mapped.host)/\(mapped.path)", shared.environment == "production" else {
+                result.failure = "evidence_missing"; result.detail = "repository_mismatch"; return result
+            }
+            receipt = LocalReleaseEvidence(schemaVersion: 1, releases: shared.releases)
+            bytes = (try? JSONEncoder().encode(shared)) ?? Data()
+        } else {
+            let common = await run("git", ["-C", job.repoPath, "rev-parse", "--git-common-dir"])
+            let directory = common.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard common.code == 0, !directory.isEmpty else { result.failure = "evidence_missing"; return result }
+            let path = Paths.join(Paths.resolve(directory, cwd: job.repoPath), "missiongo-release-evidence.json")
+            guard let local = read(path), let decoded = try? JSONDecoder().decode(LocalReleaseEvidence.self, from: local),
+                  decoded.schemaVersion == 1, decoded.environment == nil || decoded.environment == "production", decoded.releases.count <= 20 else {
+                result.failure = "waiting_release"; result.detail = "receipt_missing"; return result
+            }
+            bytes = local; receipt = decoded
+        }
         let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
         var releases: [HandoverEvidence.Release] = []
-        for artifact in required {
-            guard let release = receipt.releases.first(where: { $0.artifact == artifact }),
-                  commitPattern.matches(release.sourceCommit), !release.version.isEmpty, release.version.count <= 100 else { continue }
-            // An immutable commit pair is checked once and shared across this node's jobs.
-            let containment = await containsMerge(repoPath: job.repoPath, host: identity?.host, repo: identity?.path, kind: reference.kind, merge: merged.commit, source: release.sourceCommit, run: run)
-            if containment == .unavailable { result.failure = "permission_failed"; continue }
-            guard containment == .contains, await prove(release) else { continue }
-            releases.append(.init(artifact: artifact, version: release.version, sourceCommit: release.sourceCommit,
-                containsMergeCommit: merged.commit, verifiedAt: currentTimestamp(), receiptDigest: digest))
+        let repositoryIdentity = identity
+        // Four bounded checks at a time keep a large artifact scope within the lease without
+        // serial downloads blocking other node loops. Every mutable URL is verified afresh.
+        for offset in stride(from: 0, to: required.count, by: 4) {
+            let batch = Array(required[offset..<min(offset+4,required.count)])
+            let observations = await withTaskGroup(of: HandoverEvidence.self, returning: [HandoverEvidence].self) { group in
+                for artifact in batch {
+                    group.addTask {
+                        guard let release = receipt.releases.first(where: { $0.artifact == artifact }),
+                              commitPattern.matches(release.sourceCommit), !release.version.isEmpty, release.version.count <= 100 else {
+                            return HandoverEvidence(detail: "receipt_missing")
+                        }
+                        let containment = await containsMerge(repoPath: job.repoPath, host: repositoryIdentity?.host, repo: repositoryIdentity?.path,
+                            kind: reference.kind, merge: merged.commit, source: release.sourceCommit, run: run)
+                        if containment == .unavailable { return HandoverEvidence(failure: "permission_failed") }
+                        guard containment == .contains else { return HandoverEvidence(detail: "commit_not_in_release") }
+                        guard await prove(release) else { return HandoverEvidence(detail: "proof_failed") }
+                        return HandoverEvidence(releases: [.init(artifact: artifact, version: release.version, sourceCommit: release.sourceCommit,
+                            containsMergeCommit: merged.commit, verifiedAt: currentTimestamp(), receiptDigest: digest)])
+                    }
+                }
+                var values: [HandoverEvidence] = []
+                for await value in group { values.append(value) }
+                return values
+            }
+            for observation in observations {
+                releases.append(contentsOf: observation.releases ?? [])
+                if let failure = observation.failure { result.failure = failure }
+                if let detail = observation.detail { result.detail = detail }
+            }
         }
+        releases.sort { $0.artifact < $1.artifact }
         result.releases = releases
         if releases.count != required.count && result.failure == nil { result.failure = "waiting_release" }
         return result
@@ -194,8 +236,22 @@ public enum HandoverVerifier {
         if ancestryCache.current.contains(key) { return .contains }
         let local = await run("git", ["-C", repoPath, "merge-base", "--is-ancestor", merge, source])
         if local.code == 0 { ancestryCache.withLock { $0.insert(key) }; return .contains }
-        if local.code == 1 { return .absent }
-        guard kind == "github", let host, let repo else { return .unavailable }
+        if local.code == 1 {
+            let shallow = await run("git", ["-C", repoPath, "rev-parse", "--is-shallow-repository"])
+            if shallow.code == 0 && shallow.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "false" { return .absent }
+            // A shallow history (or an unavailable repository) is not proof of non-containment.
+        }
+        guard let host, let repo else { return .unavailable }
+        if kind == "gitlab" {
+            // GitLab repository merge_base returns the exact common ancestor, without fetching refs.
+            let project = repo.replacingOccurrences(of: "/", with: "%2F")
+            let response = await run("glab", ["api", "--hostname", host,
+                "projects/\(project)/repository/merge_base?refs[]=\(merge)&refs[]=\(source)"])
+            guard response.code == 0, let object = try? JSONSerialization.jsonObject(with: Data(response.stdout.utf8)) as? [String:Any],
+                  let base = object["id"] as? String, commitPattern.matches(base) else { return .unavailable }
+            return base == merge ? .contains : .absent
+        }
+        guard kind == "github" else { return .unavailable }
         let response = await run("gh", ["api", "--hostname", host, "repos/\(repo)/compare/\(merge)...\(source)", "--jq", ".status"])
         guard response.code == 0 else { return .unavailable }
         guard ["ahead", "identical"].contains(response.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else { return .absent }
@@ -203,15 +259,18 @@ public enum HandoverVerifier {
         return .contains
     }
 
-    private static let proofCache = Locked<[String: Date]>([:])
+    private static func proofConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60
+        return configuration
+    }
     public static func publicProof(_ release: LocalReleaseEvidence.Release) async -> Bool {
         guard let url = URL(string: release.proof.url), url.scheme == "https", url.host != nil,
               url.user == nil, url.password == nil, url.fragment == nil else { return false }
-        let key = "\(url.absoluteString):\(release.sourceCommit):\(release.proof.sha256 ?? "")"
-        if let checked = proofCache.current[key], Date().timeIntervalSince(checked) < 300 { return true }
-        let session = URLSession(configuration: .ephemeral, delegate: HandoverNoRedirects(), delegateQueue: nil)
+        let session = URLSession(configuration: proofConfiguration(), delegate: HandoverNoRedirects(), delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
-        var request = URLRequest(url: url); request.timeoutInterval = 120
+        var request = URLRequest(url: url); request.timeoutInterval = 30
         do {
             if release.proof.kind == "health" {
                 let (data, response) = try await session.data(for: request)
@@ -229,7 +288,6 @@ public enum HandoverVerifier {
                 while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
                 guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == expected else { return false }
             } else { return false }
-            proofCache.withLock { if $0.count > 1000 { $0.removeAll() }; $0[key] = Date() }
             return true
         } catch { return false }
     }
@@ -264,6 +322,12 @@ public actor StatusCheckWorker {
             } catch APIError.http(_, let status, _) where status == 404 || status == 409 {
                 // The service invalidated this lease/round. A fresh claim supplies a new lease.
                 try FileManager.default.removeItem(at: file)
+            } catch APIError.http(_, let status, _) where status == 400 {
+                // Preserve invalid payloads for inspection, without poisoning unrelated checks.
+                try? FileManager.default.moveItem(at: file, to: file.appendingPathExtension("invalid"))
+            } catch {
+                // One unavailable report must not block other pending reports or a new claim.
+                continue
             }
         }
         guard let job = try await api.claimStatusCheck() else { return }

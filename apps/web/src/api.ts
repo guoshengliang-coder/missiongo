@@ -258,7 +258,7 @@ export interface Bootstrap {
 export interface StatusCheckRecord {
   id: string; itemKey: string; productId: string; itemStatus: WorkItemStatus; pullRequestUrl: string; completion: CompletionReference;
   requiredArtifacts: string[] | null; noReleaseReason: string | null; status: string; reason: string;
-  checkedAt: string | null; requestedAt: string | null; evidenceUpdatedAt: string; evidenceSource: string; evidenceReporter?: {accountId?:string;note?:string;recordedAt?:string};
+  lastResultAt?: string | null; checkedAt: string | null; requestedAt: string | null; evidenceUpdatedAt: string; evidenceSource: string; evidenceReporter?: {accountId?:string;note?:string;recordedAt?:string};
   evidence: { merged?: {commit: string; occurredAt: string}; releases?: Array<{artifact:string;version:string;sourceCommit:string;verifiedAt:string}> };
 }
 export interface StatusCheckPage { items: StatusCheckRecord[]; nextOffset?: number; queued?: number; missingAssociation?: boolean;

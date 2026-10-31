@@ -209,6 +209,7 @@ export function createMissionGoMcpServer(
           writeTools,
           canComment: writeTools.includes("append_comment"),
           canCreateItems: writeTools.includes("create_item"),
+          supportsSharedReleaseObservations: true,
         },
         skill: skillVersionInfo(options.publicOrigin),
       });

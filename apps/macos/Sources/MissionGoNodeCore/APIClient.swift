@@ -1413,9 +1413,18 @@ public struct APIClient: Sendable {
     public func statusCheckJournalScope() throws -> String? {
         SHA256.hash(data: Data(try nodeToken().utf8)).map { String(format: "%02x", $0) }.joined()
     }
+    public func uploadReleaseObservation(productId: String, repoPath: String, observation: ReleaseObservation) async throws {
+        struct Body: Encodable { let productId: String; let repoPath: String; let observation: ReleaseObservation }
+        let response = try await send("POST", "/api/v1/node/release-observations",
+            body: Body(productId: productId, repoPath: repoPath, observation: observation), bearer: try nodeToken())
+        try requireSuccess(response, operation: "上报发布凭据")
+        struct Receipt: Decodable { let id: String; let accepted: Bool }
+        let receipt: Receipt = try decode(response, operation: "上报发布凭据")
+        guard receipt.accepted, receipt.id == observation.id else { throw APIError.invalidResponse("发布凭据回执不匹配。") }
+    }
     public func claimStatusCheck() async throws -> StatusCheckJob? {
         struct Reply: Decodable { let job: StatusCheckJob? }
-        let response = try await send("POST", "/api/v1/node/status-checks/claim", body: [String:String](), bearer: try nodeToken())
+        let response = try await send("POST", "/api/v1/node/status-checks/claim", body: ["supportsSharedReleases":true], bearer: try nodeToken())
         try requireSuccess(response, operation: "领取状态检查")
         let reply: Reply = try decode(response, operation: "领取状态检查")
         return reply.job
