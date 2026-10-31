@@ -632,7 +632,6 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-attention-banner.dismissed { color: var(--muted); background: var(--surface-sunken); border-color: var(--line); }
 .agent-console-attention-banner details { min-width: 0; flex: 1; }
 .agent-console-attention-banner summary { cursor: pointer; font-size: var(--text-sm); font-weight: 750; }
-.agent-console-plan-approval-hint { margin-left: 8px; color: var(--muted); font-size: var(--text-xs); font-weight: 500; }
 .agent-console-attention-banner p { margin: 6px 0 0; font-size: var(--text-sm); line-height: 1.5; }
 .agent-console-attention-banner button { flex: 0 0 auto; min-height: 32px; display: inline-flex; align-items: center; gap: 6px; }
 .agent-console-connection-banner.offline { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-line); }
@@ -1249,8 +1248,9 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .transition-note-suggestions > span { color: var(--muted); font-size: var(--text-xs); }
 .transition-note-quick-reasons { display: flex; flex-wrap: wrap; gap: 8px; }
 .transition-note-quick-reasons button { min-height: 44px; }
-.comment-body { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-top: 8px; }
-.comment-body > :first-child { flex: 1; min-width: 0; }
+.comment-body { display: flex; flex-direction: column; align-items: stretch; gap: 10px; margin-top: 8px; min-width: 0; }
+.comment-content { min-width: 0; overflow-wrap: anywhere; }
+.comment-body > .comment-withdraw { align-self: flex-end; }
 .comment-withdraw { flex: none; padding: 2px 6px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: var(--text-xs); cursor: pointer; }
 @media (hover: hover) { .comment-withdraw:hover { color: var(--danger); text-decoration: underline; } }
 @media (max-width: 640px) { .comment-form { grid-template-columns: 1fr; } }
@@ -2998,3 +2998,15 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .builder-handover-notice { margin: 16px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); }
 .builder-handover-notice p { margin: 8px 0; overflow-wrap: anywhere; }
 .builder-handover-notice button { min-height: 44px; }
+
+/* Comments keep compact evidence below the prose at every pane width. */
+.comment-attachments { padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
+.comment-attachments .attachment-grid { align-items: start; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); }
+.comment-attachments .attachment-preview:has(.attachment-media-open) { height: 112px; min-height: 0; overflow: hidden; }
+.comment-attachments .attachment-media-open img { height: 112px; object-fit: contain; }
+.comment-attachments .attachment-actions button { width: 36px; height: 36px; }
+.agent-console-approve-action { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
+.agent-console-approve-action small { max-width: 240px; font-size: var(--text-xs); line-height: 1.5; }
+@media (pointer: coarse) {
+  .comment-attachments .attachment-actions button { width: 44px; height: 44px; }
+}

@@ -598,13 +598,14 @@ export function AgentSessionConsole({
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
   const approval = sessionQuery.data ? sessionQuery.data.approval : selected?.approval;
-  const planApproval = sessionQuery.data?.canReply && selected?.canReply && selected.status === "idle"
-    && sessionQuery.data.status === "idle" && sessionQuery.data.turnState?.turnActive !== true
-    && !pending && !approvalNeedsAction(approval) ? sessionQuery.data.planApproval : undefined;
+  const showPlanApproval = selected?.needsAttention && !selected.attention.dismissed && selected.attention.kind === "approval";
+  const planApproval = sessionQuery.data?.planApproval;
   const planApprovalStatus = pending || sendingSelected ? { code: "reply_pending" }
     : sessionQuery.data?.planApprovalStatus;
+  const canApprovePlan = Boolean(planApproval && planApprovalStatus?.code === "ready"
+    && sessionQuery.data?.canReply && selected?.canReply && !pending && !sendingSelected);
   const approvePlan = () => {
-    if (!planApproval || !selected?.agentSessionId || pending || sendingSelected) return;
+    if (!canApprovePlan || !planApproval || !selected?.agentSessionId) return;
     const key = `${selected.agentSessionId}:${planApproval.revision}`;
     if (planApprovalLocks.current.has(key)) return;
     planApprovalLocks.current.add(key);
@@ -1154,26 +1155,22 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
-                {(selected.needsAttention || selected.attention.dismissed || planApproval) && (selected.attention.reason || planApproval) && (
+                {(selected.needsAttention || selected.attention.dismissed) && selected.attention.reason && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}`} role="status">
                     <BellRing size={16} />
                     <details>
                       <summary>{selected.attention.dismissed
                         ? t("agentAttentionDismissedTitle")
-                        : planApproval ? t("agentAttentionApproval") : attentionLabel(selected, t)}
-                        {!planApproval && planApprovalStatus && <small className="agent-console-plan-approval-hint">
-                          {t(planApprovalStatus.code === "checking" ? "agentPlanChecking" : "agentPlanStatusHint")}
-                        </small>}
+                        : attentionLabel(selected, t)}
                       </summary>
-                      <p>{planApproval?.reason ?? selected.attention.reason}</p>
-                      {planApproval && <p>“{planApproval.evidence}”</p>}
-                      {!planApproval && planApprovalStatus && <p>{t(planApprovalStatusKey(planApprovalStatus.code))}</p>}
-                      {!planApproval && planApprovalStatus?.detail && <p>{planApprovalStatus.detail}</p>}
+                      <p>{selected.attention.reason}</p>
                     </details>
-                    {planApproval && !selected.attention.dismissed && (
-                      <button type="button" className="primary-button" disabled={sendingSelected || dismissAttention.isPending}
+                    {showPlanApproval && <div className="agent-console-approve-action">
+                      <button type="button" className="primary-button"
+                        disabled={!canApprovePlan || dismissAttention.isPending}
                         onClick={approvePlan}>{t("agentPlanApprove")}</button>
-                    )}
+                      {!canApprovePlan && <small role="status">{t(planApprovalStatusKey(planApprovalStatus?.code ?? "reply_unavailable"))}</small>}
+                    </div>}
                     {selected.needsAttention
                       && selected.status !== "stalled"
                       && selected.agentSessionId

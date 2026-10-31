@@ -3260,7 +3260,7 @@ function CommentBody({
       ? <MarkdownText className="comment-text">{body.text}</MarkdownText>
       : null;
   if (!textContent && !attachmentIds.length) return null;
-  const rendered = <>{textContent}{attachmentIds.length > 0 && <AttachmentSection itemKey={item.key} attachments={attachments} />}</>;
+  const rendered = <div className="comment-content">{textContent}{attachmentIds.length > 0 && <AttachmentSection itemKey={item.key} attachments={attachments} compact />}</div>;
 
   // Agents write a lot, and at length. A long comment folds behind one line so
   // a timeline of them can be skimmed; a short one is already its own summary,
@@ -4258,6 +4258,7 @@ function EnvironmentCell({ field }: { field: EnvironmentField }) {
 }
 
 function AttachmentSection({
+  compact = false,
   itemKey,
   attachments,
   title,
@@ -4267,6 +4268,7 @@ function AttachmentSection({
   attachments: readonly WorkItemAttachment[];
   title?: string;
   emptyMessage?: string;
+  compact?: boolean;
 }) {
   const { t } = useI18n();
   const mediaAttachments = attachments.filter(
@@ -4278,7 +4280,7 @@ function AttachmentSection({
     if (index >= 0) setActiveIndex(index);
   };
   return (
-    <section className="attachment-block">
+    <section className={`attachment-block${compact ? " comment-attachments" : ""}`}>
       <header>
         {/* No helper line: this is the detail view, where the files are already
             here. What can be attached is the form's to explain (AND-65). */}
@@ -4286,7 +4288,7 @@ function AttachmentSection({
       </header>
       {attachments.length === 0 ? <p className="section-empty">{emptyMessage ?? t("noAttachments")}</p> : (
         <div className="attachment-grid">
-          {attachments.map((attachment) => <AttachmentCard key={attachment.id} itemKey={itemKey} attachment={attachment} onOpenMedia={openMedia} />)}
+          {attachments.map((attachment) => <AttachmentCard key={attachment.id} itemKey={itemKey} attachment={attachment} onOpenMedia={openMedia} compact={compact} />)}
         </div>
       )}
       {activeIndex !== null && <ItemMediaGallery itemKey={itemKey} attachments={mediaAttachments} activeIndex={activeIndex} onIndexChange={setActiveIndex} onClose={() => setActiveIndex(null)} />}
@@ -4295,6 +4297,7 @@ function AttachmentSection({
 }
 
 function AttachmentCard({
+  compact = false,
   itemKey,
   attachment,
   onDelete,
@@ -4306,6 +4309,7 @@ function AttachmentCard({
 }: {
   itemKey: string;
   attachment: WorkItemAttachment;
+  compact?: boolean;
   onDelete?: ((attachmentId: string) => void) | undefined;
   onReplaced?: (() => void | Promise<void>) | undefined;
   onOpenMedia?: ((attachmentId: string) => void) | undefined;
@@ -4455,7 +4459,7 @@ function AttachmentCard({
   const Icon = attachment.kind === "image" ? ImageIcon : attachment.kind === "video" ? Video : attachment.kind === "archive" ? Archive : FileText;
   return (
     <article ref={cardRef} className={`attachment-card attachment-${attachment.kind}`}>
-      <div className="attachment-preview">
+      {(!compact || isImage || shouldLoad) && <div className="attachment-preview">
         {referenceLabel && <small className="media-number-badge">{referenceLabel}</small>}
         {!shouldLoad && attachment.kind !== "image" && attachment.kind !== "archive" && (
           <button type="button" className="attachment-load-button" onClick={() => setPreviewRequested(true)}>
@@ -4481,11 +4485,14 @@ function AttachmentCard({
           </div>
         )}
         {readsAsText && logText && <pre>{logText}</pre>}
-      </div>
+      </div>}
       <footer>
         <Icon size={15} />
         <span><strong>{referenceLabel ? `${referenceLabel} · ` : ""}{attachment.filename}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span>
         <span className="attachment-actions">
+          {compact && !isImage && (readsAsText || attachment.kind === "video") && !shouldLoad && (
+            <button type="button" onClick={() => setPreviewRequested(true)} aria-label={t("previewAttachment", { filename: attachment.filename })} title={t("preview")}><Maximize2 size={15} /></button>
+          )}
           <button type="button" onClick={() => void download()} aria-label={`${t("download")} ${attachment.filename}`} title={t("download")}><Download size={15} /></button>
           {(onReplaced || onStageReplacement) && attachment.kind === "image" && isAnnotatableImage(drawable) && (
             <button
