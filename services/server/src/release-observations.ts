@@ -68,7 +68,7 @@ export class ReleaseObservations {
       if (!superseded && input.environment === "production") {
         // Durable queue only. Repository/round/permission checks and all remote IO happen later.
         this.db.prepare(`UPDATE status_handovers SET requested_at=?,retry_count=0
-          WHERE item_id IN (SELECT id FROM work_items WHERE product_id=? AND status IN ('in_progress','development_complete'))`)
+          WHERE item_id IN (SELECT id FROM work_items WHERE product_id=? AND status IN ('inbox','ready','in_progress','development_complete'))`)
           .run(new Date().toISOString(),productId);
       }
       return {id:input.id,accepted:true,duplicate:false,superseded};

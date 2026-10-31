@@ -1,6 +1,7 @@
 import { ReleaseObservations } from "./release-observations.js";
 import { assertBuilderExecution, latestBuilderHandover } from "./builder-authority.js";
 import { completionFields, normalizeCompletion, sameCompletion } from "./completion.js";
+import { deliveryRound } from "./delivery-round.js";
 import type { CompletionReference } from "@missiongo/contracts";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -65,9 +66,7 @@ export class StatusChecks {
     if (!row) throw notFound("Handover"); return row;
   }
   private round(itemId: string): string | null {
-    const row = this.db.prepare(`SELECT id FROM work_item_events WHERE item_id=? AND history_source_key IS NULL
-      AND (event_type='status_changed' AND to_status='in_progress' OR event_type='execution_taken_over' OR event_type='builder_changed' AND json_extract(payload_json,'$.handoverId') IS NOT NULL) ORDER BY timeline_seq DESC LIMIT 1`).get(itemId) as { id: string } | undefined;
-    return row?.id ?? null;
+    return deliveryRound(this.store.database,itemId);
   }
   private completion(row: Row): CompletionReference {
     return normalizeCompletion(row.completion_json ? { completion: JSON.parse(row.completion_json) as CompletionReference } : { pullRequestUrl: row.pull_request_url });
@@ -77,7 +76,7 @@ export class StatusChecks {
     const builder = latestBuilderHandover(this.store.database,row.item_id);
     return Boolean((!builder || builder.status === "completed" && (builder.to_account_id === null || builder.to_account_id === row.account_id))
       && item && !this.store.getProduct(item.product_id).archivedAt && this.round(row.item_id) === row.round_key
-      && ["in_progress", "development_complete"].includes(item.status) && !this.db.prepare("SELECT 1 FROM item_transfers WHERE source_item_id=?").get(row.item_id));
+      && ["inbox", "ready", "in_progress", "development_complete"].includes(item.status) && !this.db.prepare("SELECT 1 FROM item_transfers WHERE source_item_id=?").get(row.item_id));
   }
   private state(row: Row, status: string, reason = messages[status] ?? status, now = new Date().toISOString()) {
     this.db.prepare("UPDATE status_handovers SET check_status=?,reason=?,checked_at=?,checked_revision=revision WHERE id=?").run(status, reason, now, row.id);
@@ -89,7 +88,7 @@ export class StatusChecks {
     this.store.assertWorkItemWritable(itemKey);
     const item = this.store.getWorkItem(itemKey);
     assertBuilderExecution(this.store.database,item.id,accountId);
-    if (!["in_progress", "development_complete"].includes(item.status)) throw conflict("handover_not_active", "Register a handover for active work only.");
+    if (!["inbox", "ready", "in_progress", "development_complete"].includes(item.status)) throw conflict("handover_not_active", "Register a handover for active work only.");
     if (item.status === "development_complete") {
       const current = [...this.store.getTimeline(itemKey)].reverse().find(e => !e.historySourceKey && e.eventType === "status_changed" && e.toStatus === "development_complete");
       if (current && !sameCompletion(normalizeCompletion(current.payload), completion)) throw conflict("handover_pr_conflict","Reopen the item before replacing a completed integration reference.");
@@ -172,7 +171,7 @@ export class StatusChecks {
       || !this.db.prepare("SELECT 1 FROM node_product_repos r JOIN work_items w ON w.product_id=r.product_id WHERE w.id=? AND r.node_id=? AND r.repo_path=?").get(row.item_id,source.nodeId,row.lease_repo_path))) {
       throw conflict("status_check_lease_expired","The lease or repository mapping changed; perform a fresh check.");
     }
-    if (!this.valid(row)) { this.state(row,"stale"); return this.snapshot(id); }
+    if (!this.valid(row)) { this.reconcile(id); return this.snapshot(id); }
     for (const date of [evidence.merged?.occurredAt, ...(evidence.releases ?? []).map(r => r.verifiedAt)]) {
       if (date && Date.parse(date) > Date.parse(now) + 60_000) throw invalidInput("Evidence cannot be dated in the future.");
     }
@@ -249,11 +248,15 @@ export class StatusChecks {
     const reporter = JSON.parse(row.evidence_source_json) as {accountId?:string;kind?:string};
     const actor = reporter.kind === "human_confirmation" ? "human" as const : "system" as const;
     let item = this.store.getWorkItem(this.snapshot(id).itemKey);
-    if (item.status === "in_progress") {
+    if (["inbox", "ready", "in_progress"].includes(item.status)) {
+      // A new manual move needs its own correction receipt; replaying the first
+      // receipt would return a stale snapshot without updating the card again.
+      const revision = this.db.prepare(`SELECT id FROM work_item_events WHERE item_id=? AND to_status IS NOT NULL
+        ORDER BY timeline_seq DESC LIMIT 1`).get(item.id) as {id:string};
       item = this.store.submitDevelopmentComplete({ itemKey: item.key, completion: this.completion(row), ...(required ? { requiredArtifacts: required } : {}),
         ...(row.no_release_reason ? { noReleaseReason: row.no_release_reason } : {}),
         summary: actor === "human" ? "用户已确认集成。" : "已由授权执行端核实集成，自动补齐开发交接。", attribution: { accountId: reporter.accountId ?? row.account_id },
-        idempotencyKey: `status-check:${row.id}:development` }, { actor, occurredAt: evidence.merged.occurredAt, handoverId: row.id });
+        idempotencyKey: `status-check:${row.id}:development:${revision.id}` }, { actor, occurredAt: evidence.merged.occurredAt, handoverId: row.id });
     }
     if (!required) {
       this.state(row,"needs_scope");
@@ -262,19 +265,23 @@ export class StatusChecks {
     }
     if (!required.length) { this.state(row,"checked","已确认集成，明确无需发布；请人工安排验证。"); return; }
     const shared = this.shared(row);
-    if (reporter.kind !== "human_confirmation" && shared && (evidence.sharedReleaseId !== shared.id
+    if (reporter.kind !== "human_confirmation" && (shared && evidence.sharedReleaseId !== shared.id
       || evidence.releases?.some(r => Date.parse(r.verifiedAt) < Date.now()-5*60_000))) {
-      this.state(row,"waiting_node","已收到共享发布记录，等待节点核实当前版本。"); return;
+      this.state(row,"waiting_node","等待节点重新核实当前发布版本。");
+      this.db.prepare("UPDATE status_handovers SET requested_at=? WHERE id=?").run(new Date().toISOString(),row.id);
+      return;
     }
     const releases = required.map(a => evidence.releases?.find(r => r.artifact === a && r.containsMergeCommit === evidence.merged!.commit));
     if (releases.some(r => !r)) { this.state(row,this.completion(row).kind === "manual" ? "waiting_confirmation" : "waiting_release"); return; }
     const verified = releases.filter((r): r is NonNullable<typeof r> => Boolean(r));
     const occurredAt = verified.map(r => r.verifiedAt).sort().at(-1)!;
+    const revision = this.db.prepare(`SELECT id FROM work_item_events WHERE item_id=? AND to_status='development_complete'
+      ORDER BY timeline_seq DESC LIMIT 1`).get(item.id) as {id:string};
     this.store.submitForVerification({ itemKey: item.key, completion: this.completion(row),
       releases: verified.map(({artifact,version,sourceCommit}) => ({artifact,version,sourceCommit})),
       deployedCommit: evidence.merged.commit,
       receiptDigest: createHash("sha256").update(JSON.stringify(verified)).digest("hex"),
-      idempotencyKey: `status-check:${row.id}:verification`, attribution: { accountId: reporter.accountId ?? row.account_id } },
+      idempotencyKey: `status-check:${row.id}:verification:${revision.id}`, attribution: { accountId: reporter.accountId ?? row.account_id } },
       { actor, occurredAt, handoverId: row.id, requiredArtifacts: required });
     this.state(row,"checked");
   }
@@ -314,7 +321,7 @@ export class StatusChecks {
   request(productId: string, accountId: string, itemKey?: string) {
     this.importLegacy(productId, accountId);
     const rows = this.db.prepare(`SELECT h.* FROM status_handovers h JOIN work_items w ON w.id=h.item_id
-      WHERE w.product_id=? AND w.status IN ('in_progress','development_complete') ${itemKey ? "AND w.item_key=?" : ""}`).all(productId,...(itemKey ? [itemKey] : [])) as unknown as Row[];
+      WHERE w.product_id=? AND w.status IN ('inbox','ready','in_progress','development_complete') ${itemKey ? "AND w.item_key=?" : ""}`).all(productId,...(itemKey ? [itemKey] : [])) as unknown as Row[];
     const now = new Date().toISOString();
     let queued = 0;
     for (const row of rows) {
@@ -337,7 +344,7 @@ export class StatusChecks {
       AND e.account_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM status_handovers h WHERE h.item_id=w.id AND h.round_key=(SELECT id FROM work_item_events r WHERE r.item_id=w.id AND r.history_source_key IS NULL AND r.to_status='in_progress' ORDER BY r.timeline_seq DESC LIMIT 1))`).all() as Array<{product_id:string;account_id:string}>;
     for (const group of legacy) if (allowed(group.account_id,group.product_id)) this.importLegacy(group.product_id,group.account_id);
     const groups = this.db.prepare(`SELECT DISTINCT h.account_id,w.product_id FROM status_handovers h JOIN work_items w ON w.id=h.item_id
-      WHERE w.status IN ('in_progress','development_complete')`).all() as Array<{account_id: string;product_id: string}>;
+      WHERE w.status IN ('inbox','ready','in_progress','development_complete')`).all() as Array<{account_id: string;product_id: string}>;
     for (const group of groups) {
       if (!allowed(group.account_id,group.product_id) || this.store.getProduct(group.product_id).archivedAt) continue;
       if (this.db.prepare("SELECT 1 FROM status_check_days WHERE account_id=? AND product_id=? AND day=?").get(group.account_id,group.product_id,day)) continue;

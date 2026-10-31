@@ -93,13 +93,13 @@ describe("wording for an unclaimed dispatch", () => {
       node: "Mac mini",
       status: translate("zh-CN", "activeDispatchLaunched"),
       time: "10 分钟前",
-    })).toBe("AND-37 已派给 Mac mini（已启动，10 分钟前），还没有被领取");
-    expect(translate("zh-CN", "dispatchConflictConfirm")).toBe("上一次的会话已经不在了，仍要重新派单");
+    })).toBe("AND-37 已派给 Mac mini（已启动，10 分钟前）");
+    expect(translate("zh-CN", "dispatchConflictConfirm")).toBe("取消原排队派单，并重新派单");
   });
 
   it("explains the server's refusal instead of showing its English title", () => {
     const key = dispatchProblemKey("item_already_dispatched");
     expect(key).not.toBeNull();
-    expect(translate("zh-CN", key!)).toContain("勾选");
+    expect(translate("zh-CN", key!)).toContain("重派限制");
   });
 });

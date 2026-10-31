@@ -42,6 +42,18 @@ async function seed() {
  return {app,cookie,memberCookie,shared,hidden,item,call};
 }
 describe("status-check and insight API permissions",()=>{
+ it("scopes the read-only redispatch check to bounded, operable items",async()=>{
+  const {app,cookie,memberCookie,item,hidden}=await seed();
+  const path="/api/v1/dispatches/check";
+  expect((await app.inject({method:"POST",url:path,payload:{itemKeys:[item.key]}})).statusCode).toBe(401);
+  const allowed=await app.inject({method:"POST",url:path,headers:{cookie},payload:{itemKeys:[item.key]}});
+  expect(allowed.statusCode).toBe(200);expect(allowed.json()).toMatchObject({allowed:true,requiresConfirmation:false,conflicts:[]});
+  expect((await app.inject({method:"POST",url:path,headers:{cookie:memberCookie},payload:{itemKeys:[item.key]}})).statusCode).toBe(404);
+  const secret=app.missionGoStore.createWorkItem({productId:hidden.id,title:"Private eligibility",description:"Private",type:"task",priority:"normal",status:"ready",environment:{platform:"web"}});
+  const denied=await app.inject({method:"POST",url:path,headers:{cookie:memberCookie},payload:{itemKeys:[secret.key]}});
+  expect(denied.statusCode).toBe(404);expect(denied.body).not.toContain(secret.title);
+  expect((await app.inject({method:"POST",url:path,headers:{cookie},payload:{itemKeys:Array(21).fill(item.key)}})).statusCode).toBe(400);
+ });
  it("allows read-only project statistics and refuses an explicitly unauthorized project",async()=>{
   const {call,shared,hidden}=await seed();
   const result=await call("get_project_insights",{period:"today"});

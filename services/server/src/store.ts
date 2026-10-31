@@ -1,5 +1,6 @@
 import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover } from "./builder-authority.js";
 import { completionPayload, normalizeCompletion, sameCompletion } from "./completion.js";
+import { deliveryRound, queueDeliveryChecks } from "./delivery-round.js";
 import { enqueueVerificationNotification } from "./dingtalk-notifications.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
@@ -1083,6 +1084,9 @@ export class MissionGoStore {
       : input.description !== undefined && current.report_json
         ? { ...parseReport(current.report_json)!, overview: input.description.trim() }
         : undefined;
+    const deliveryScopeChanged = (input.title !== undefined && input.title.trim() !== current.title)
+      || (input.description !== undefined && input.description.trim() !== current.description)
+      || (report !== undefined && JSON.stringify(report) !== current.report_json);
 
     const fields: string[] = [];
     const values: SQLInputValue[] = [];
@@ -1133,7 +1137,9 @@ export class MissionGoStore {
         this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, current.id);
       }
       if (input.sourceComponentId && input.sourceComponentId !== current.source_component_id) this.assignDefaultBuilder(current.id, current.product_id, input.sourceComponentId);
-      this.insertEvent(current.id, "item_updated", "human", null, null, {}, now, input.attribution);
+      this.insertEvent(current.id, "item_updated", "human", null, null,
+        { deliveryScopeChanged }, now, input.attribution);
+      if (deliveryScopeChanged) queueDeliveryChecks(this.database,current.id,now);
     });
 
     return this.getWorkItem(itemKey);
@@ -1336,6 +1342,9 @@ export class MissionGoStore {
       const current = this.getWorkItemRow(input.itemKey);
       if (!current) throw notFound("Work item");
       if (!isOneOf(input.to, WORK_ITEM_STATUSES)) throw invalidInput("Unsupported work-item status.");
+      if (input.to === "development_complete" && input.actor === "system" && current.status !== "in_progress") {
+        throw conflict("delivery_evidence_required", "A status correction requires verified handover evidence.");
+      }
       // The cap lives here rather than in applyTransition because what arrives as
       // a `note` is not always a typed reason: handing merged work over passes the
       // agent's summary, which is allowed four thousand characters. Capping the
@@ -1575,22 +1584,37 @@ export class MissionGoStore {
 
       const item = this.getWorkItemRow(input.itemKey);
       if (!item) throw notFound("Work item");
-      if (item.status !== "in_progress") {
+      const correcting = item.status === "ready" || item.status === "inbox";
+      let mergeCommit: string | undefined;
+      if (item.status !== "in_progress" && !(correcting && evidence)) {
         throw conflict("item_not_ready_for_development_complete", "Only an in-progress work item can be marked development complete.");
+      }
+      if (evidence) {
+        const handover = this.database.connection.prepare(`SELECT item_id,round_key,completion_json,pull_request_url,evidence_json
+          FROM status_handovers WHERE id=?`).get(evidence.handoverId) as
+          {item_id:string;round_key:string;completion_json:string|null;pull_request_url:string;evidence_json:string} | undefined;
+        const merged = handover && (JSON.parse(handover.evidence_json) as {merged?:{commit:string;occurredAt:string}}).merged;
+        if (!handover || handover.item_id !== item.id || handover.round_key !== deliveryRound(this.database,item.id)
+          || !sameCompletion(completion,normalizeCompletion(handover.completion_json ? {completion:JSON.parse(handover.completion_json)} : {pullRequestUrl:handover.pull_request_url}))
+          || !merged || merged.occurredAt !== evidence.occurredAt) {
+          throw conflict("delivery_evidence_required", "The handover must verify this item's current processing round.");
+        }
+        mergeCommit = merged.commit;
       }
       this.recordProductReleaseArtifacts(item.product_id, requiredArtifacts ?? []);
       const now = new Date().toISOString();
       this.applyTransition(
         item,
         "development_complete",
-        evidence?.actor ?? "agent",
+        correcting ? "system" : evidence?.actor ?? "agent",
         "resolution_submitted",
         summary,
         now,
         input.attribution ?? {},
         { ...completionPayload(completion), ...(requiredArtifacts ? { requiredArtifacts: [...requiredArtifacts].sort() } : {}),
           ...(noReleaseReason ? { noReleaseReason } : {}),
-          ...(evidence ? { occurredAt: evidence.occurredAt, handoverId: evidence.handoverId, evidenceSource: evidence.actor === "human" ? "human_confirmation" : "authorized_executor" } : {}) },
+          ...(evidence ? { occurredAt: evidence.occurredAt, handoverId: evidence.handoverId, evidenceSource: evidence.actor === "human" ? "human_confirmation" : "authorized_executor" } : {}),
+          ...(correcting ? { reconciledFrom: item.status } : {}), ...(mergeCommit ? {mergeCommit} : {}) },
       );
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
@@ -1953,6 +1977,7 @@ export class MissionGoStore {
       now,
       attribution,
     );
+    if (actor === "human" && (to === "ready" || to === "inbox")) queueDeliveryChecks(this.database,current.id,now);
     if (to === "pending_verification") {
       const creator = this.creatorOf(current.id).createdBy;
       enqueueVerificationNotification(this.database,eventId,current.id,current.product_id,
@@ -2432,6 +2457,7 @@ export class MissionGoStore {
       type: row.type,
       priority: row.priority,
       status: row.status,
+      ...this.deliveryProgressOf(row),
       ...(verificationReturn ? { verificationReturn } : {}),
       title: row.title,
       description: row.description,
@@ -2445,6 +2471,21 @@ export class MissionGoStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
+  }
+
+  private deliveryProgressOf(row: WorkItemRow): Pick<WorkItemSnapshot,"deliveryProgress"|"hasProcessingRound"> {
+    if (!["inbox","ready","in_progress","development_complete"].includes(row.status)) return {};
+    const currentRound = deliveryRound(this.database,row.id);
+    const handover = this.database.connection.prepare(`SELECT round_key,check_status,evidence_json,required_json
+      FROM status_handovers WHERE item_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1`).get(row.id) as
+      {round_key:string;check_status:string;evidence_json:string;required_json:string|null}|undefined;
+    if (!handover) return (row.status === "ready" || row.status === "inbox") && currentRound ? {hasProcessingRound:true} : {};
+    if (handover.round_key !== currentRound) return {deliveryProgress:"review_required",hasProcessingRound:Boolean(currentRound)};
+    const hasProcessingRound = true;
+    if (["permission_failed","failed","evidence_missing"].includes(handover.check_status)) return {deliveryProgress:"blocked",hasProcessingRound};
+    if (!(JSON.parse(handover.evidence_json) as {merged?:unknown}).merged) return {deliveryProgress:"waiting_merge",hasProcessingRound};
+    if (!handover.required_json) return {deliveryProgress:"needs_scope",hasProcessingRound};
+    return {deliveryProgress:(JSON.parse(handover.required_json) as string[]).length ? "waiting_release" : "no_release",hasProcessingRound};
   }
 
   private verificationReturnOf(row: WorkItemRow): WorkItemSnapshot["verificationReturn"] {

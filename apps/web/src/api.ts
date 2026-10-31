@@ -9,6 +9,7 @@ import type { FontScale } from "./font-scale";
 import type { DingTalkSettings, DingTalkSettingsInput, DingTalkBinding, DingTalkBindingInput, DingTalkImportRow, DingTalkImportPreview, DingTalkNotification, DingTalkProjectSettings } from "@missiongo/domain";
 import type {
   ActiveDispatch,
+  RedispatchEligibility,
   ItemDispatchHandler,
   ItemDispatchSummary,
   AgentSession,
@@ -596,6 +597,8 @@ export const api = {
     }),
   createDispatch: (input: CreateDispatchInput) =>
     request<Dispatch>("/api/v1/dispatches", { method: "POST", body: JSON.stringify(input) }),
+  checkRedispatch: (itemKeys: readonly string[]) =>
+    request<RedispatchEligibility>("/api/v1/dispatches/check", {method:"POST",body:JSON.stringify({itemKeys})}),
   // Ready items already sent to a machine and not yet claimed, so the list can
   // say so before somebody sends one again.
   listActiveDispatches: () => request<{ active: ActiveDispatch[]; latest: ItemDispatchSummary[]; current?: ItemDispatchSummary[]; handlers: ItemDispatchHandler[] }>("/api/v1/dispatches/active"),

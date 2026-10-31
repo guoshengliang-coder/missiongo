@@ -33,7 +33,8 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
   const products = useQuery({queryKey:["products"],queryFn:()=>api.listProducts()});
   const product = products.data?.find(p=>p.id === productId);
   const item = useQuery({queryKey:["item",itemKey],queryFn:()=>api.getItem(itemKey!),enabled:Boolean(itemKey)});
-  const canRegister = Boolean(item.data && ["in_progress","development_complete"].includes(item.data.status));
+  const canRegister = Boolean(item.data && (["in_progress","development_complete"].includes(item.data.status)
+    || item.data.hasProcessingRound && ["ready","inbox"].includes(item.data.status)));
   const mayOperate = canOperate && product?.access?.canOperate !== false && products.isSuccess;
   const query = useQuery({queryKey:["status-checks",productId,itemKey,offset],queryFn:()=>api.statusChecks(productId,itemKey,offset),
     refetchInterval: q => q.state.data?.items.some(r=>r.requestedAt || ["waiting_node","checking"].includes(r.status)) ? 5000 : false});
@@ -82,8 +83,8 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
       {record.evidenceReporter?.note && <p>{record.evidenceReporter.note}</p>}
       {zh && record.reason && <p className="dispatch-note">{record.reason}</p>}
       <p className="dispatch-note">{record.evidenceSource === "human_confirmation" ? (zh ? "来源：登录用户人工确认。" : "Source: signed-in user's confirmation.") : (zh ? "来源：授权执行端上报；服务端未独立访问代码托管平台。" : "Source: authorized executor report; the server does not independently check the repository host.")}</p>
-      {mayOperate && ["in_progress","development_complete"].includes(record.itemStatus) && record.status !== "stale" &&
-        <button type="button" className="secondary-button" onClick={()=>setConfirmation(record)}>{record.itemStatus === "in_progress" ? (zh ? "人工确认已集成" : "Confirm integration") : !record.requiredArtifacts?.length ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication")}</button>}
+      {mayOperate && ["inbox","ready","in_progress","development_complete"].includes(record.itemStatus) && record.status !== "stale" &&
+        <button type="button" className="secondary-button" onClick={()=>setConfirmation(record)}>{record.itemStatus !== "development_complete" ? (zh ? "人工确认已集成" : "Confirm integration") : !record.requiredArtifacts?.length ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication")}</button>}
       <p className="dispatch-note">{zh ? "上次检查结果时间：" : "Last result at: "}{(record.lastResultAt ?? record.evidenceReporter?.recordedAt) ? new Date((record.lastResultAt ?? record.evidenceReporter?.recordedAt)!).toLocaleString(locale) : (zh ? "尚未检查" : "Never")}</p>
     </article>)}</div>
     <div className="status-check-actions"><button type="button" className="secondary-button" disabled={offset === 0} onClick={()=>setOffset(Math.max(0,offset-100))}>{zh ? "上一页" : "Previous"}</button>
@@ -123,7 +124,7 @@ function ScopeEditor({itemKey,record,artifacts,onSaved,onCancel}:{itemKey:string
 
 function HumanConfirmation({record,onSaved,onCancel}:{record:StatusCheckRecord;onSaved:()=>Promise<void>;onCancel:()=>void}) {
   const {locale,t} = useI18n(); const zh = locale === "zh-CN";
-  const stage = record.itemStatus === "in_progress" ? "integration" : "release";
+  const stage = record.itemStatus !== "development_complete" ? "integration" : "release";
   const [commit,setCommit] = useState("commit" in record.completion ? record.completion.commit : record.evidence.merged?.commit ?? "");
   const [note,setNote] = useState("");
   const [details,setDetails] = useState<Record<string,{version:string;sourceCommit:string}>>({});

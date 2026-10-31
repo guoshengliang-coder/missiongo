@@ -2360,6 +2360,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return dispatchStore.dispatchHealth(accountId, days, nodeProductScope(accountId));
   });
 
+  app.post("/api/v1/dispatches/check", async request => {
+    const accountId = requireAccountId(request);
+    const keys = stringArrayField(objectBody(request.body),"itemKeys");
+    if (!keys || !keys.length || keys.length > 20) throw invalidInput("Select between 1 and 20 work items.");
+    for (const key of keys) requireItemPermission(request,key,"operate");
+    return dispatchStore.checkRedispatch(accountId,keys);
+  });
+
   app.post("/api/v1/dispatches", async (request, reply) => {
     const body = objectBody(request.body);
     const accountId = requireAccountId(request);

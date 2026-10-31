@@ -37,7 +37,7 @@ for (const width of [375, 1440]) {
         await expect(badge).toHaveAttribute("title", new RegExp(error));
       } else {
         await expect(row.locator(".item-dispatch-badge")).toHaveCount(0);
-        await expect(row.locator(".item-handler-badge")).toHaveText("Codex · Test Mac");
+        await expect(row.locator(".item-handler-badge")).toHaveText("历史 · Codex · Test Mac");
         await expect(row.locator(".item-handler-badge")).not.toHaveAttribute("title", /失败/);
       }
       await row.locator(".item-row-main").click();

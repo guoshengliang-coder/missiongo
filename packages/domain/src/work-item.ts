@@ -102,6 +102,9 @@ export type WorkItemCreator =
   };
 
 export interface WorkItemSnapshot {
+  readonly hasProcessingRound?: boolean;
+  /** Delivery evidence for this processing round; independent of session activity. */
+  readonly deliveryProgress?: "waiting_merge" | "waiting_release" | "needs_scope" | "no_release" | "review_required" | "blocked";
   /** A migrated original is permanently read-only. */
   readonly transferred?: boolean;
   readonly transferredFrom?: { readonly key: string; readonly productId: string };
