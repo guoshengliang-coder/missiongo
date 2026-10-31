@@ -1118,7 +1118,6 @@ export function AgentSessionConsole({
                       <button type="button" className="primary-button"
                         disabled={!canApprovePlan || dismissAttention.isPending}
                         onClick={approvePlan}>{t("agentPlanApprove")}</button>
-                      {!canApprovePlan && <small role="status">{t(planApprovalStatusKey(planApprovalStatus?.code ?? "reply_unavailable"))}</small>}
                     </div>}
                     {selected.needsAttention
                       && selected.status !== "stalled"
@@ -1136,6 +1135,11 @@ export function AgentSessionConsole({
                         {dismissAttention.isPending && <LoaderCircle className="spin" size={14} />}
                         {t("agentAttentionDismiss")}
                       </button>
+                    )}
+                    {showPlanApproval && !canApprovePlan && (
+                      <small className="agent-console-approve-reason" role="status">
+                        {t(planApprovalStatusKey(planApprovalStatus?.code ?? "reply_unavailable"))}
+                      </small>
                     )}
                   </div>
                 )}
