@@ -721,7 +721,8 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 }
 @container (max-width: 640px) {
   .agent-session-quick-settings-row { flex-wrap: nowrap; }
-  .agent-session-quick-settings-row > .agent-settings-mode, .agent-session-quick-settings-row > .agent-settings-effort { display: none; }
+  /* Keep the compact controls hidden above the shared Select trigger's display rule. */
+  :root .agent-session-quick-settings-row > button.single-select:is(.agent-settings-mode, .agent-settings-effort) { display: none; }
   .agent-session-quick-settings-row > .agent-settings-model { min-width: 0; max-width: min(150px, 100%); }
   .agent-settings-more { display: block; }
   .agent-settings-more > button { width: 44px; min-height: 44px; }
