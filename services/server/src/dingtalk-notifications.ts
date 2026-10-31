@@ -4,6 +4,7 @@ import type { MissionGoStore } from "./store.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import type { AccountSnapshot, AccountStore } from "./accounts-store.js";
 import { conflict, invalidInput, notFound, MissionGoError } from "./errors.js";
+import { buildVerificationCard } from "./dingtalk-verification-card.js";
 
 interface ConfigRow { corp_id: string; client_id: string; agent_id: string; delivery_mode: DingTalkDeliveryMode; robot_code: string; encrypted_secret: string; revision: number }
 interface JobRow {
@@ -34,11 +35,6 @@ function identifier(value: unknown, label: string): string {
   if (/[\s,;]/u.test(result)) throw invalidInput(`${label} 只能填写一个标识，不能包含空白、逗号或分号。`);
   return result;
 }
-// Treat item content as text, never as card formatting or an injected link.
-function cardText(value: string): string {
-  return value.replace(/[\r\n\t]+/g," ").replace(/[\\`*_{}[\]<>#!|]/g," ").trim();
-}
-
 /** Called inside the status transaction, never from HTTP hooks or a history scan. */
 export function enqueueVerificationNotification(database: MissionGoDatabase, eventId: string, itemId: string, productId: string, accountId: string | undefined, at: string): void {
   const enabled = database.connection.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(productId) as {enabled:number} | undefined;
@@ -57,7 +53,7 @@ export class DingTalkNotifications {
   private running: Promise<void> | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
   private closed = false;
-  constructor(private readonly store: MissionGoStore, private readonly accounts: AccountStore, secret: string | undefined, private readonly origin: string | undefined, private readonly fetchImpl: typeof fetch = fetch, private readonly cardTemplateId?: string) {
+  constructor(private readonly store: MissionGoStore, private readonly accounts: AccountStore, secret: string | undefined, private readonly origin: string | undefined, private readonly fetchImpl: typeof fetch = fetch, private readonly cardTemplateId?: string, private readonly cardTheme = "blue") {
     this.db = store.database.connection;
     this.key = secret ? createHash("sha256").update("missiongo-dingtalk-v1\0").update(secret).digest() : undefined;
   }
@@ -270,12 +266,8 @@ export class DingTalkNotifications {
     const card=message.action_card as {title:string;markdown:string;single_title:string;single_url:string};
     return {msgKey:"sampleActionCard",msgParam:JSON.stringify({title:card.title,text:card.markdown+"\n\n此账号仅发送系统通知，请到 MissionGo 处理，无需回复。",singleTitle:card.single_title,singleURL:card.single_url})};
   }
-  private async sendInteractiveCard(job: JobRow, token: string, robotCode: string, recipient: string, message: Record<string, unknown>): Promise<string> {
-    const card=message.action_card as {markdown:string;single_url:string};
-    const parts=card.markdown.split("\n\n");
-    // DingTalk limits each template value to 1 KB; truncate on UTF-8 boundaries.
-    const limit=(value:string)=>{let out="";for(const char of value){if(Buffer.byteLength(out+char,"utf8")>1000)break;out+=char;}return out;};
-    const params={projectItem:limit(parts[1] ?? ""),itemTitle:limit((parts[2] ?? "").replace(/^\*\*|\*\*$/g,"")),verification:limit(parts.slice(3).join("\n\n").replace(/\*\*/g,"")),itemUrl:card.single_url};
+  private async sendInteractiveCard(job: JobRow, token: string, robotCode: string, recipient: string): Promise<string> {
+    const params=this.verificationCard(job);
     if(Buffer.byteLength(params.itemUrl,"utf8")>1000) throw new Error("card URL too long");
     const body=await this.json("https://api.dingtalk.com/v1.0/card/instances/createAndDeliver",{method:"POST",headers:{"content-type":"application/json","x-acs-dingtalk-access-token":token},body:JSON.stringify({cardTemplateId:this.cardTemplateId,outTrackId:job.id,cardData:{cardParamMap:params},openSpaceId:`dtv1.card//IM_ROBOT.${recipient}`,imRobotOpenSpaceModel:{supportForward:false},imRobotOpenDeliverModel:{spaceType:"IM_ROBOT",robotCode}})});
     const result=body.result as {outTrackId?:unknown;deliverResults?:Array<{spaceType?:unknown;spaceId?:unknown;success?:unknown;carrierId?:unknown}>}|undefined;
@@ -283,27 +275,17 @@ export class DingTalkNotifications {
     if(body.success!==true || result?.outTrackId!==job.id || !delivery || delivery.success!==true || typeof delivery.carrierId!=="string" || !delivery.carrierId.trim()) throw new Error("card delivery result unclear");
     return delivery.carrierId;
   }
+  private verificationCard(job: JobRow) {
+    const item=this.db.prepare("SELECT item_key,title,description,product_id FROM work_items WHERE id=?").get(job.item_id!) as {item_key:string;title:string;description:string;product_id:string};
+    const event=this.db.prepare("SELECT payload_json FROM work_item_events WHERE id=?").get(job.event_id!) as {payload_json:string};
+    const url=new URL(this.origin!);url.searchParams.set("product",item.product_id);url.searchParams.set("item",item.item_key);
+    return buildVerificationCard({projectName:this.store.getProduct(item.product_id).name,itemKey:item.item_key,itemTitle:item.title,description:item.description,itemUrl:url.href,payload:JSON.parse(event.payload_json) as Record<string,unknown>},this.cardTheme);
+  }
   private message(job: JobRow): Record<string,unknown> {
     if (job.kind==="test") return {msgtype:"text",text:{content:`这是一条账号绑定测试通知。收到后无需回复。\n测试编号：${job.id}`}};
-    const item=this.db.prepare("SELECT item_key,title,product_id FROM work_items WHERE id=?").get(job.item_id!) as {item_key:string;title:string;product_id:string};
-    const event=this.db.prepare("SELECT payload_json FROM work_item_events WHERE id=?").get(job.event_id!) as {payload_json:string};
-    const payload=JSON.parse(event.payload_json) as Record<string,unknown>;
-    const published=payload.reason==="release_verified" && typeof payload.receiptDigest==="string" && Array.isArray(payload.releases) && payload.releases.length>0;
-    const title="待验证 · 需要你验收";
-    const lines=[`### ${title}`,`${cardText(this.store.getProduct(item.product_id).name)} ｜ ${cardText(item.item_key)}`,`**${cardText(item.title)}**`];
-    const releases=published ? (payload.releases as Array<{artifact?:unknown;version?:unknown}>).filter(release=>typeof release.artifact==="string" && typeof release.version==="string") : [];
-    if (releases.length) {
-      const names:Record<string,string>={web:"Web",androidApp:"Android App",macosApp:"macOS App",windowsApp:"Windows App"};
-      lines.push(`**验收版本**\n\n${releases.map(release=>`${cardText(names[release.artifact as string] ?? release.artifact as string)}：${cardText(release.version as string)}`).join("\n\n")}`);
-      const artifacts=new Set(releases.map(release=>release.artifact));
-      const hints:string[]=[];
-      if (artifacts.has("web")) hints.push("Web：请重新打开网站后使用并验收。");
-      if (["androidApp","macosApp","windowsApp"].some(artifact=>artifacts.has(artifact))) hints.push("App：请下载并安装上述版本后使用并验收。");
-      if ([...artifacts].some(artifact=>!["web","androidApp","macosApp","windowsApp"].includes(String(artifact)))) hints.push("其他产物：请查看条目中的验收环境和处理记录。");
-      lines.push(`**验收提示**\n\n${hints.join("\n\n")}`);
-    } else lines.push("**验收提示**\n\n请查看条目中的验收环境和处理记录后进行验收。");
-    const url=new URL(this.origin!);url.searchParams.set("product",item.product_id);url.searchParams.set("item",item.item_key);
-    return {msgtype:"action_card",action_card:{title,markdown:lines.join("\n\n"),single_title:"查看条目并验收",single_url:url.href}};
+    const card=this.verificationCard(job);
+    const lines=[`### ${card.headerTitle}`,card.heading.replace(/<[^>]*>/g,""),...(card.summary?[card.summary]:[]),"---","**验收方式**",card.verification.replace(/\n/g,"\n\n")];
+    return {msgtype:"action_card",action_card:{title:card.headerTitle,markdown:lines.join("\n\n"),single_title:"查看条目并验收",single_url:card.itemUrl}};
   }
   private async send(job: JobRow): Promise<void> {
     const claimed=this.db.prepare(`UPDATE dingtalk_notifications SET status='sending',attempts=attempts+1,lease_until=?,updated_at=?
@@ -324,7 +306,7 @@ export class DingTalkNotifications {
       let taskId: string;
       if(config.delivery_mode==="robot") {
         if (job.kind==="verification" && this.cardTemplateId) {
-          taskId=await this.sendInteractiveCard(job,token,config.robot_code,binding.userId,message);
+          taskId=await this.sendInteractiveCard(job,token,config.robot_code,binding.userId);
         } else {
         const body=await this.robotApi("batchSend",token,{robotCode:config.robot_code,userIds:[binding.userId],...this.robotMessage(job,message)});
         const invalid=body.invalidStaffIdList,limited=body.flowControlledStaffIdList;

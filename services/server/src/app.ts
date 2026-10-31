@@ -113,6 +113,7 @@ export interface BuildAppOptions {
   readonly adminAccount?: AdminAccountConfig;
   readonly publicOrigin?: string;
   readonly dingtalkCardTemplateId?: string;
+  readonly dingtalkCardTheme?: string;
   readonly attachmentsPath?: string;
   /** Fastify trust-proxy setting: false, true, or trusted addresses/CIDRs/named ranges. */
   readonly trustProxy?: boolean | string;
@@ -583,7 +584,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.adminAccount?.sessionSecret ?? options.adminToken ?? "local-development-only",
     options.aiProviderFetch,
   );
-  const dingtalk = new DingTalkNotifications(store,accountStore,options.adminAccount?.sessionSecret ?? options.adminToken,options.publicOrigin,options.dingtalkFetch,options.dingtalkCardTemplateId);
+  const dingtalk = new DingTalkNotifications(store,accountStore,options.adminAccount?.sessionSecret ?? options.adminToken,options.publicOrigin,options.dingtalkFetch,options.dingtalkCardTemplateId,options.dingtalkCardTheme);
   app.addHook("onReady",async()=>{if(options.dingtalkWorker!==false)dingtalk.start();});
   // AND-149/150: the summary behind GET /api/v1/widget/summary, shared with the
   // push service so a device is told to refresh exactly what the route serves.
