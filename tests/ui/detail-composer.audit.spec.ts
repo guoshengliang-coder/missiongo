@@ -149,6 +149,8 @@ test("isolates an in-flight send when switching items and keeps controls disable
   await expect.poll(async () => (await (await request.get(`/api/v1/items/${first.key}`)).json()).attachments.length).toBe(1);
   await expect(composer.locator("textarea")).toHaveValue("Second item's independent draft");
   expect((await (await request.get(`/api/v1/items/${second.key}`)).json()).attachments).toHaveLength(0);
+  await page.reload();await expect(composer.locator("textarea")).toHaveValue("Second item's independent draft");
+  await openItem(page,first.key);await expect(composer.locator("textarea")).toHaveValue("");
 });
 
 test("fits a keyboard-shrunken visual viewport and rejects unsupported files", async ({ page, request }) => {
