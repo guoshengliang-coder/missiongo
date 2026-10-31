@@ -3384,7 +3384,7 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply,onLo
         </div>
       </div>
     </fieldset>
-    {error && <div role="alert"><InlineError message={error} /></div>}
+    {error && <InlineError message={error} role="alert" />}
     {storageFailed && <p className="detail-composer-hint" role="alert">{t("commentDraftSaveFailed")}</p>}
     {replyUnavailable && <p className="detail-composer-hint" role="status">{t("commentDraftReplyUnavailable")} <button type="button" className="text-button" onClick={onCancelReply}>{t("commentDraftAsNew")}</button></p>}
     {missingDraftFiles && <p className="detail-composer-hint" role="status">{t("commentDraftFilesMissing")} <button type="button" className="text-button" onClick={()=>onDraftChange(current=>({...current,attachmentNames:[]}))}>{t("commentDraftFilesDismiss")}</button></p>}
@@ -5362,8 +5362,8 @@ function MediaLightbox({
   );
 }
 
-function InlineError({ message }: { message: string }) {
-  return <div className="inline-error"><CirclePause size={16} /><span>{message}</span></div>;
+function InlineError({ message, role }: { message: string; role?: "alert" }) {
+  return <div className="inline-error" role={role}><CirclePause size={16} /><span>{message}</span></div>;
 }
 
 function ListSkeleton() {
