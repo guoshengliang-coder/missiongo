@@ -77,7 +77,7 @@ import { localizedErrorText } from "./error-text";
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { SessionLink } from "./session-link";
-import type { AgentSession, AgentSessionAttachment, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary, Dispatch, WorkItemAttachment } from "./types";
+import type { AgentSession, AgentSessionAttachment, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary, WorkItemAttachment } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { mergeChatFiles } from "./agent-chat-files";
 import { FileDropOverlay } from "./file-drop-overlay";
@@ -184,15 +184,6 @@ function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI1
   return t("agentAttentionUncertain");
 }
 
-function dispatchVersion(dispatch: Dispatch): string {
-  const snapshot = dispatch.diagnosticSnapshot;
-  return [
-    snapshot?.nodeClientVersion && `client ${snapshot.nodeClientVersion}`,
-    snapshot?.agentVersion && `agent ${snapshot.agentVersion}`,
-    snapshot?.skill?.localVersion && `skill ${snapshot.skill.localVersion}`,
-  ].filter(Boolean).join(" / ") || "unknown";
-}
-
 function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof useI18n>["t"], agentName: string): string {
   if (command.kind === "interrupt") {
     if (command.status === "queued") return t("agentSessionStopQueued");
@@ -267,10 +258,6 @@ export function AgentSessionConsole({
   const [openedSessionId, setOpenedSessionId] = useState<string | null>(selectedSessionId);
   const [selectedForArchive, setSelectedForArchive] = useState<Set<string>>(new Set());
   const [bulkArchiveMessage, setBulkArchiveMessage] = useState<string | null>(null);
-  const [healthNode, setHealthNode] = useState("all");
-  const [healthAgent, setHealthAgent] = useState("all");
-  const [healthVersion, setHealthVersion] = useState("all");
-  const [healthCode, setHealthCode] = useState("all");
   // The item a dispatch chip opened a preview of (AND-159). A preview, not a
   // page: reading what the session is working on must not walk away from it.
   const [previewItemKey, setPreviewItemKey] = useState<string | null>(null);
@@ -400,18 +387,6 @@ export function AgentSessionConsole({
       ? agentSessionDetailRefetchInterval(documentVisible, query.state.fetchFailureCount)
       : false,
   });
-  const healthQuery = useQuery({
-    queryKey: ["dispatch-health", 7],
-    queryFn: () => api.getDispatchHealth(7),
-    enabled: filter === "failed" && documentVisible,
-    refetchInterval: documentVisible ? 60_000 : false,
-  });
-  const healthFailures = useMemo(() => (healthQuery.data?.recentFailures ?? []).filter((dispatch) => (
-    (healthNode === "all" || dispatch.nodeName === healthNode)
-    && (healthAgent === "all" || dispatch.agentKind === healthAgent)
-    && (healthVersion === "all" || dispatchVersion(dispatch) === healthVersion)
-    && (healthCode === "all" || (dispatch.failureCode ?? "unknown") === healthCode)
-  )), [healthAgent, healthCode, healthNode, healthQuery.data?.recentFailures, healthVersion]);
   const planApprovalLocks = useRef(new Set<string>());
   const send = useMutation({
     mutationFn: async ({ sessionId, text, files, planApprovalRevision }: { sessionId: string; text: string; files: readonly File[]; occurredAt: string; planApprovalRevision?: string }) => {
@@ -760,6 +735,67 @@ export function AgentSessionConsole({
       && agentSessionMatches(session, filter, next, search))) onSelectSession(null, false);
   };
 
+  const showRecovery = Boolean(selected && !selected.archivedAt && isAbnormalAgentSession({ status: sessionStatus, ...(command ? { command } : {}) }));
+  const failureCode = (sessionQuery.data ? sessionQuery.data.failure : selected?.failure)?.code;
+  const needsNewSession = failureCode === "codex_context_window_exceeded" || failureCode === "codex_session_budget_exceeded";
+  const canContinue = Boolean(selected?.canReply && sessionQuery.data?.canReply !== false && !pending && !sendingSelected && !needsNewSession);
+  const recoveryHint = pending ? "agentRecoveryPending"
+    : selected?.nodeRevoked ? "agentNodeRevokedReadOnly"
+      : selected?.nodeConnectionState === "offline" ? "agentRecoveryOffline"
+        : selected?.canRetry ? "agentRecoveryRetry"
+          : needsNewSession ? "agentRecoveryNewSession"
+            : canContinue ? "agentRecoveryReply" : "agentRecoveryAtSource";
+  const sessionActions = selected && (
+    <div className="agent-console-actions">
+      {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact={!showRecovery} mobile={touchDevice} />}
+      {selected.source !== "external" && selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
+        <span className="agent-session-muted" title={t("agentConsoleClaudeLocal")}>{t("agentConsoleClaudeLocalBadge")}</span>
+      )}
+      {selected.canRetry && (
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={retryDispatch.isPending || stopDispatch.isPending || pending}
+          onClick={async () => {
+            const confirmation = selected.dispatchStatus === "delivered"
+              ? t("agentConsoleRetryTimedOutConfirm") : t("agentConsoleRetryConfirm");
+            if (await confirm(confirmation)) retryDispatch.mutate();
+          }}
+        ><RotateCcw size={15} />{t("agentConsoleRetry")}</button>
+      )}
+      {selected.canStop && (
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={retryDispatch.isPending || stopDispatch.isPending}
+          onClick={async () => {
+            if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate();
+          }}
+        ><Square size={16} />{t("agentConsoleStop")}</button>
+      )}
+      {selected.canArchive && selected.archivedSource !== "source" && (
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={archiveSession.isPending || pending}
+          onClick={async () => {
+            const archived = Boolean(selected.archivedAt);
+            const confirmation = selected.agentKind === "claude_code"
+              && (selected.status === "active" || selected.status === "stalled")
+              ? t("agentSessionArchiveClaudeConfirm")
+              : t("agentSessionArchiveConfirm");
+            if (archived || await confirm(confirmation)) archiveSession.mutate(!archived);
+          }}
+        >
+          {archiveSession.isPending
+            ? <LoaderCircle className="spin" size={16} />
+            : selected.archivedAt ? <RotateCcw size={16} /> : <Archive size={16} />}
+          {selected.archivedAt ? t("restore") : t("archive")}
+        </button>
+      )}
+    </div>
+  );
+
   const filters: Array<{ key: AgentSessionFilter; icon: typeof BellRing; count: number; unread?: number; label: string }> = [
     { key: "unread", icon: MessageSquare, count: counts.unread, label: t("agentConsoleUnread") },
     { key: "attention", icon: BellRing, count: counts.attention, label: t("agentConsoleNeedsAttention") },
@@ -866,48 +902,6 @@ export function AgentSessionConsole({
           </div>
         )}
         {bulkArchiveMessage && <p className="agent-console-bulk-result" role="status">{bulkArchiveMessage}</p>}
-        {/* A health request that fails used to make the panel vanish without a
-            word (AND-224); say what happened and offer the retry. */}
-        {filter === "failed" && healthQuery.isError && (
-          <p className="inline-error" role="alert">
-            {localizedErrorText(healthQuery.error, t)}{" "}
-            <button type="button" className="attachment-load-button" onClick={() => void healthQuery.refetch()}>
-              {t("retry")}
-            </button>
-          </p>
-        )}
-        {filter === "failed" && healthQuery.data && (
-          <section className="dispatch-health" aria-label={t("dispatchHealthTitle")}>
-            <header>
-              <strong>{t("dispatchHealthTitle")}</strong>
-              <span>{t("dispatchHealthSummary", {
-                failed: healthQuery.data.failed,
-                total: healthQuery.data.total,
-                rate: Math.round(healthQuery.data.failureRate * 100),
-              })}</span>
-            </header>
-            <div className="dispatch-health-filters">
-              {([
-                ["node", healthNode, setHealthNode, healthQuery.data.groups.nodes],
-                ["agent", healthAgent, setHealthAgent, healthQuery.data.groups.agents],
-                ["version", healthVersion, setHealthVersion, healthQuery.data.groups.versions],
-                ["code", healthCode, setHealthCode, healthQuery.data.groups.codes],
-              ] as const).map(([kind, value, update, options]) => (
-                <Select key={kind} aria-label={t(`dispatchHealth${kind[0]!.toUpperCase()}${kind.slice(1)}` as "dispatchHealthNode")} value={value} onChange={(event) => update(event.target.value)}>
-                  <option value="all">{t(`dispatchHealthAll${kind[0]!.toUpperCase()}${kind.slice(1)}s` as "dispatchHealthAllNodes")}</option>
-                  {options.map((option) => <option key={option.key} value={option.key}>{option.key} ({option.failed}/{option.total})</option>)}
-                </Select>
-              ))}
-            </div>
-            {healthFailures.slice(0, 5).map((dispatch) => (
-              <article key={dispatch.id} className="dispatch-health-failure">
-                <strong>{dispatch.itemKeys.join("、") || dispatch.id}</strong>
-                <span>{dispatch.nodeName} · {dispatch.agentKind} · {dispatch.failureCode ?? "unknown"}/{dispatch.failureStage ?? "unknown"}</span>
-                <small>{dispatch.error ?? t("dispatchHealthNoDetail")}</small>
-              </article>
-            ))}
-          </section>
-        )}
         <div className="agent-console-session-list">
           {!sessionsLoaded && !hasSessionsError && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
           {hasSessionsError && <p className="inline-error">{localizedErrorText(sessionsError, t)}</p>}
@@ -1016,54 +1010,7 @@ export function AgentSessionConsole({
                 </div>
               </div>
               <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t(selected.agentKind === "codex" ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
-              <div className="agent-console-actions">
-                {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact mobile={touchDevice} />}
-                {selected.source !== "external" && selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
-                  <span className="agent-session-muted" title={t("agentConsoleClaudeLocal")}>{t("agentConsoleClaudeLocalBadge")}</span>
-                )}
-                {selected.canRetry && (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={retryDispatch.isPending || stopDispatch.isPending}
-                    onClick={async () => {
-                      const confirmation = selected.dispatchStatus === "delivered"
-                        ? t("agentConsoleRetryTimedOutConfirm") : t("agentConsoleRetryConfirm");
-                      if (await confirm(confirmation)) retryDispatch.mutate();
-                    }}
-                  ><RotateCcw size={15} />{t("agentConsoleRetry")}</button>
-                )}
-                {selected.canStop && (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={retryDispatch.isPending || stopDispatch.isPending}
-                    onClick={async () => {
-                      if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate();
-                    }}
-                  ><Square size={16} />{t("agentConsoleStop")}</button>
-                )}
-                {selected.canArchive && selected.archivedSource !== "source" && (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={archiveSession.isPending || pending}
-                    onClick={async () => {
-                      const archived = Boolean(selected.archivedAt);
-                      const confirmation = selected.agentKind === "claude_code"
-                        && (selected.status === "active" || selected.status === "stalled")
-                        ? t("agentSessionArchiveClaudeConfirm")
-                        : t("agentSessionArchiveConfirm");
-                      if (archived || await confirm(confirmation)) archiveSession.mutate(!archived);
-                    }}
-                  >
-                    {archiveSession.isPending
-                      ? <LoaderCircle className="spin" size={16} />
-                      : selected.archivedAt ? <RotateCcw size={16} /> : <Archive size={16} />}
-                    {selected.archivedAt ? t("restore") : t("archive")}
-                  </button>
-                )}
-              </div>
+              {!showRecovery && sessionActions}
             </header>
             <div className="agent-console-message-stage">
               <div
@@ -1281,6 +1228,26 @@ export function AgentSessionConsole({
                   && (sessionQuery.data ? sessionQuery.data.lastError : selected.lastError) ? (
                   <p className="inline-error">{sessionQuery.data ? sessionQuery.data.lastError : selected.lastError}</p>
                 ) : null}
+                {showRecovery && (
+                  <section className="agent-console-recovery" aria-label={t("agentRecoveryTitle")}>
+                    <strong>{t("agentRecoveryTitle")}</strong>
+                    <p>{t(recoveryHint)}</p>
+                    {!selected.canReply && <p>{t(replyBlockedLabelKey(selected.replyBlockedReason))}</p>}
+                    {sessionActions}
+                    <div className="agent-console-recovery-links">
+                      {canContinue && <button type="button" className="secondary-button" onClick={() => {
+                        const input = document.getElementById(`agent-reply-${selected.id}`);
+                        input?.scrollIntoView({ block: "nearest" });
+                        input?.focus();
+                      }}>{t("agentRecoveryContinue")}</button>}
+                      {selected.items.map((item) => <a className="secondary-button" key={item.key}
+                        href={`/?product=${encodeURIComponent(item.productId)}&item=${encodeURIComponent(item.key)}`}>
+                        {t("agentRecoveryItem", { key: item.key })}
+                      </a>)}
+                    </div>
+                    {selected.canArchive && <small>{t("agentRecoveryArchiveHint")}</small>}
+                  </section>
+                )}
                 {approval && (approvalNeedsAction(approval) || (approval.kind === "manual" && approval.status === "pending")) && (
                   <section className="agent-console-approval" role="alert" aria-label={t("agentApprovalTitle") }>
                     <strong>{approval.kind === "auto" ? t("agentApprovalAutoTitle") : t("agentApprovalTitle")}</strong>
@@ -1372,9 +1339,10 @@ export function AgentSessionConsole({
                 <form onSubmit={submit} onPaste={replyPaste} {...dropHandlers}>
                   {isDraggingFiles && <FileDropOverlay remaining={Math.max(0, 10 - replyFiles.length)} limitReachedText={t("agentChatTooManyFiles")} />}
                   <AutoGrowTextarea
+                    submitOnEnter
+                    id={`agent-reply-${selected.id}`}
                     rows={1}
                     maximumHeight={240}
-                    submitOnEnter
                     value={reply}
                     onChange={(event) => {
                       setReply(event.target.value);

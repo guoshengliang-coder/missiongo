@@ -647,3 +647,46 @@ describe("finished hand-off archive migration (AND-129)", () => {
     reopened.close();
   });
 });
+
+describe("external conversation archive migration (AND-337)", () => {
+  it("backfills finished records once without changing progress or unread clocks", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-external-archive-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    const db = seeded.connection;
+    const at = "2026-10-30T00:00:00.000Z";
+    db.exec(`ALTER TABLE external_agent_sessions DROP COLUMN archive_reason;
+      ALTER TABLE external_agent_sessions DROP COLUMN auto_archive_suppressed;
+      DELETE FROM schema_migrations WHERE version=202610310352;`);
+    db.prepare("INSERT INTO products(id,key_prefix,name,created_at,updated_at) VALUES ('product','EX','Example',?,?)").run(at, at);
+    let sequence = 0;
+    for (const [id, statuses] of [["finished", ["done", "cancelled"]], ["open", ["done", "in_progress"]],
+      ["cancelled", ["cancelled"]], ["pending", ["done"]], ["manual", ["done"]], ["empty", []]] as const) {
+      db.prepare(`INSERT INTO external_agent_sessions(id,account_id,client_id,agent_kind,session_ref,ref_kind,
+        progress_status,created_at,updated_at,activity_at,unread_at,archived_at)
+        VALUES (?,'owner','client','codex',?,'tracking','completed',?,?,?,?,?)`)
+        .run(id, id, at, at, at, at, id === "manual" ? at : null);
+      for (const status of statuses) {
+        sequence++;
+        db.prepare(`INSERT INTO work_items(id,product_id,item_key,sequence,type,priority,status,title,description,created_at,updated_at)
+          VALUES (?,'product',?,?,'task','normal',?,'Task','Work',?,?)`).run(`i${sequence}`, `EX-${sequence}`, sequence, status, at, at);
+        db.prepare("INSERT INTO external_agent_session_items(session_id,item_id) VALUES (?,?)").run(id, `i${sequence}`);
+      }
+    }
+    db.prepare("INSERT INTO external_native_commands(id,session_id,text,status,created_at) VALUES ('reply','pending','Continue','delivery_unknown',?)").run(at);
+    seeded.close();
+    const migrated = new MissionGoDatabase(path);
+    expect(migrated.connection.prepare("SELECT id FROM external_agent_sessions WHERE archive_reason='auto'").all()).toEqual([{ id: "finished" }]);
+    expect(migrated.connection.prepare("SELECT progress_status,activity_at,unread_at,updated_at FROM external_agent_sessions WHERE id='finished'").get())
+      .toEqual({ progress_status: "completed", activity_at: at, unread_at: at, updated_at: at });
+    expect(migrated.connection.prepare("SELECT archived_at,archive_reason FROM external_agent_sessions WHERE id='manual'").get())
+      .toEqual({ archived_at: at, archive_reason: null });
+    expect(migrated.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    migrated.connection.exec("UPDATE external_agent_sessions SET archived_at=NULL,archive_reason=NULL WHERE id='finished'");
+    migrated.close();
+    const reopened = new MissionGoDatabase(path);
+    expect(reopened.connection.prepare("SELECT archived_at FROM external_agent_sessions WHERE id='finished'").get()).toEqual({ archived_at: null });
+    reopened.close();
+  });
+});

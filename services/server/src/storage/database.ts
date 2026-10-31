@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { AUTO_ARCHIVE_BACKFILL_SQL } from "../auto-archive.js";
+import { AUTO_ARCHIVE_BACKFILL_SQL, backfillFinishedConversations } from "../auto-archive.js";
 import { INITIAL_SCHEMA, MANAGED_RUN_SCHEMA } from "./schema.js";
 import { MANAGED_EXECUTION_SCHEMA } from "./managed-execution-schema.js";
 import { DECISION_SCHEMA } from "./decision-schema.js";
@@ -2005,6 +2005,18 @@ export class MissionGoDatabase {
         `);
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
           .run(202610301329, new Date().toISOString());
+      });
+    }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610310352").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610310352").get()) return;
+        this.connection.exec(`
+          ALTER TABLE external_agent_sessions ADD COLUMN archive_reason TEXT;
+          ALTER TABLE external_agent_sessions ADD COLUMN auto_archive_suppressed INTEGER NOT NULL DEFAULT 0;
+        `);
+        backfillFinishedConversations(this);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610310352, new Date().toISOString());
       });
     }
     this.connection.exec("PRAGMA optimize;");

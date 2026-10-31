@@ -27,6 +27,23 @@ function fixture(kind: "codex" | "opencode" | "claude_code" = "codex", refKind: 
 }
 afterEach(() => { vi.useRealTimers(); stores.splice(0).forEach((store) => store.close()); });
 
+it.each(["delivered", "failed"] as const)("archives a finished external record when its last reply is %s, without archiving the source", (status) => {
+  const f = fixture();
+  f.native.connect("owner", f.id, "node"); f.report();
+  const command = f.native.enqueue("owner", f.id, "Continue");
+  f.report({ commandId: command.id, commandStatus: "delivering" });
+  for (const [to, reason] of [["development_complete", "resolution_submitted"], ["pending_verification", "release_verified"], ["done", "verification_passed"]] as const) {
+    f.store.transitionWorkItem({ itemKey: f.item.key, to, reason, actor: "human" });
+  }
+  expect(f.progress.getForAccount("owner", f.id).archivedAt).toBeUndefined();
+  f.report({ commandId: command.id, commandStatus: status });
+  expect(f.progress.getForAccount("owner", f.id).archivedSource).toBe("missiongo");
+  expect(f.progress.getForAccount("owner", f.id).progressStatus).toBe("working");
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, true)).toEqual([]);
+  const row = f.store.database.connection.prepare("SELECT native_snapshot_json FROM external_agent_sessions WHERE id=?").get(f.id) as { native_snapshot_json: string };
+  expect(JSON.parse(row.native_snapshot_json).sourceArchived).toBeUndefined();
+});
+
 it.each(["codex", "opencode", "claude_code"] as const)("keeps the existing %s channel and resumes duplicate probing only after disconnect", (kind) => {
   const f = fixture(kind);
   f.native.connect("owner", f.id, "node"); f.report();

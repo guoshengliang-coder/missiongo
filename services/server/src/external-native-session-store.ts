@@ -6,6 +6,7 @@ import { nodeConnectionState } from "@missiongo/domain";
 import type { AgentSessionCommand, AgentSessionMessageInput, AgentSessionStatus, AgentSessionTurnState } from "./agent-session-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
+import { autoArchiveFinishedConversations } from "./auto-archive.js";
 
 export interface ExternalNativeConnection {
   readonly state: "pending" | "connected" | "unavailable" | "disconnected";
@@ -139,18 +140,26 @@ export class ExternalNativeSessionStore {
     });
   }
   cancel(accountId: string, id: string, commandId: string): AgentSessionCommand {
-    this.row(accountId, id);
-    const changed = this.db.prepare("UPDATE external_native_commands SET status='cancelled',cancelled_at=? WHERE session_id=? AND id=? AND status='queued'").run(new Date().toISOString(), id, commandId);
-    if (!changed.changes) throw conflict("agent_reply_not_cancellable", "Only a queued reply can be cancelled.");
-    return this.command(id)!;
+    return this.store.database.transaction(() => {
+      this.row(accountId, id);
+      const changed = this.db.prepare("UPDATE external_native_commands SET status='cancelled',cancelled_at=? WHERE session_id=? AND id=? AND status='queued'").run(new Date().toISOString(), id, commandId);
+      if (!changed.changes) throw conflict("agent_reply_not_cancellable", "Only a queued reply can be cancelled.");
+      const command = this.command(id)!;
+      autoArchiveFinishedConversations(this.store.database, accountId, undefined, [id]);
+      return command;
+    });
   }
   resolve(accountId: string, id: string, commandId: string, outcome: "received" | "not_received"): AgentSessionCommand {
-    this.row(accountId, id); this.expireCommands(id);
-    const changed = this.db.prepare("UPDATE external_native_commands SET status=?,delivered_at=?,error=? WHERE session_id=? AND id=? AND status='delivery_unknown'")
-      .run(outcome === "received" ? "delivered" : "failed", outcome === "received" ? new Date().toISOString() : null,
-        outcome === "not_received" ? "User confirmed the reply was not received; it was not resent." : null, id, commandId);
-    if (!changed.changes) throw conflict("agent_reply_not_uncertain", "This reply no longer needs delivery confirmation.");
-    return this.command(id)!;
+    return this.store.database.transaction(() => {
+      this.row(accountId, id); this.expireCommands(id);
+      const changed = this.db.prepare("UPDATE external_native_commands SET status=?,delivered_at=?,error=? WHERE session_id=? AND id=? AND status='delivery_unknown'")
+        .run(outcome === "received" ? "delivered" : "failed", outcome === "received" ? new Date().toISOString() : null,
+          outcome === "not_received" ? "User confirmed the reply was not received; it was not resent." : null, id, commandId);
+      if (!changed.changes) throw conflict("agent_reply_not_uncertain", "This reply no longer needs delivery confirmation.");
+      const command = this.command(id)!;
+      autoArchiveFinishedConversations(this.store.database, accountId, undefined, [id]);
+      return command;
+    });
   }
   listForNode(accountId: string, nodeId: string, workerId: string, authorizeProduct: (id: string, execute: boolean) => void, allowAutomatic = false) {
     const node = this.db.prepare("SELECT agents_json FROM nodes WHERE id=? AND account_id=? AND revoked_at IS NULL").get(nodeId, accountId) as { agents_json: string } | undefined;
@@ -262,6 +271,9 @@ export class ExternalNativeSessionStore {
           if (command.worker_id !== input.workerId) throw conflict("agent_reply_worker_changed", "The reply belongs to a previous worker; confirm delivery manually.");
           this.db.prepare("UPDATE external_native_commands SET status=?,error=?,delivered_at=? WHERE id=?").run(input.commandStatus, input.commandError ?? null, input.commandStatus === "delivered" ? now : null, command.id);
         } else if (command.status !== input.commandStatus) throw conflict("agent_reply_changed", "The reply can no longer change state.");
+      }
+      if (input.commandStatus === "delivered" || input.commandStatus === "failed") {
+        autoArchiveFinishedConversations(this.store.database, input.accountId, undefined, [input.sessionId]);
       }
     });
   }
