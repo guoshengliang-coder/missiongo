@@ -1,3 +1,4 @@
+import { WebVersion } from "./web-version";
 import { Select } from "./select";
 import { DraftChatFile } from "./agent-chat-draft-file";
 import { BuilderBadge } from "./builder-badge";
@@ -1579,6 +1580,7 @@ export function App() {
             }}
           ><Settings size={15} /> {t("settingsEntry")}</button>
         </div>
+        <WebVersion />
       </aside>
       {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => closeSidebar()} aria-label={t("closeNavigation")} />}
 
@@ -1611,7 +1613,6 @@ export function App() {
           </nav>
           <section className="workspace-head">
             <div>
-              <p className="eyebrow">{t("productWorkspace", { prefix: selectedProduct?.keyPrefix ?? "" })}</p>
               <h1>{statusFilter === "all" ? t("allWork") : statusLabel(statusFilter)}</h1>
             </div>
             <div className="workspace-head-side">

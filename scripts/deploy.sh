@@ -209,14 +209,10 @@ remote() { ssh "$host" "$@"; }
 # Capture the live state before changing the symlink or the public APK. A later
 # checkout cannot reconstruct it reliably from released.json, which may already
 # describe artifacts staged locally for this deployment.
-before_snapshot=""
-if [ -n "$notice_origin" ]; then
-  before_snapshot="$(node scripts/release-receipt.mjs snapshot \
-    --host "$host" --current-link "$current_link" --downloads-dir "$downloads_dir")" || {
-    echo "Cannot capture the previous release; stopping before deployment because release handoff cannot be verified." >&2
-    exit 1
-  }
-fi
+before_snapshot="$(node scripts/release-receipt.mjs snapshot \
+  --host "$host" --current-link "$current_link" --downloads-dir "$downloads_dir")"
+node scripts/web-version.mjs check --previous-json "$before_snapshot"
+web_version="$(node -p 'JSON.parse(require("fs").readFileSync("product.json", "utf8")).web.version')"
 
 # Settle the APK before anything is pushed. It is all local, and a stale build
 # is better caught now than after a release directory exists on the server.
@@ -429,6 +425,7 @@ fi
 echo "==> Recording provenance in ${target}/RELEASE"
 remote "sudo tee '${target}/RELEASE' >/dev/null" <<PROVENANCE
 commit=${commit}
+web_version=${web_version}
 branch=${branch}
 tree=${tree_state}
 ci=${ci_state}

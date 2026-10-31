@@ -19,9 +19,10 @@
 
 ## 自动化验证
 
-- `VITEST_MAX_WORKERS=2 npm run check`：静态检查、身份与跨端契约、迁移编号、样式、测试、类型检查及生产构建通过。服务端 736 项通过、2 项原有测试跳过；Web 483 项、契约 9 项、领域 43 项、脚本 55 项通过。
+- `VITEST_MAX_WORKERS=2 npm run check`：静态检查、身份与跨端契约、迁移编号、样式、测试、类型检查及生产构建通过。2 项原有服务端测试跳过，其余测试通过。
 - `npx playwright test --project=audit tests/ui/agent-recovery.audit.spec.ts tests/ui/agent-session-failure.audit.spec.ts tests/ui/external-agent-session.audit.spec.ts`：20 项通过。
 - `npx playwright test --project=audit tests/ui/agent-recovery.audit.spec.ts`：6 项定向回归，覆盖恢复操作、真实接口确认流程、未决回复、只读权限与 Markdown。四种主题/视口测量可见字号至少 11px、普通文字对比度至少 4.5:1、恢复区按钮与链接至少 44×44，无页面横向溢出。
+- 与最新主线集成后，`agent-recovery.audit.spec.ts` 和 `web-polish.audit.spec.ts` 共 14 项通过；截图使用集成后的界面。
 - 归档回归覆盖历史迁移、全部取消与空关联、多条目、派单及外部镜像的未决回复、回复投递成功/失败、人工恢复，以及原始进展与时钟保留。
 - 样式调整另核对 `npm run check:styles` 和 `npm run build:web`，均通过。
 

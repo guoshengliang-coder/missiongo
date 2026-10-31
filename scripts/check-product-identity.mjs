@@ -99,6 +99,8 @@ check(
   `scripts/publish-android-internal.sh must read the version name from ${versionFile}, not a literal`,
 );
 
+check(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(product.web?.version ?? ""), "product.json must declare web.version as major.minor.patch");
+
 // --- Icon ----------------------------------------------------------------
 const webIconColours = coloursOf(read(product.icon));
 

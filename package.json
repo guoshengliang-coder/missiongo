@@ -36,7 +36,8 @@
     "test:scripts": "node --test scripts/*.test.mjs",
     "test:ui": "playwright test --project=audit",
     "test:ui:visual": "playwright test --project=visual",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc -b --pretty false",
+    "version:web": "node scripts/web-version.mjs bump"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

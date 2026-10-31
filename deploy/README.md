@@ -403,3 +403,13 @@ When deploying with `scripts/deploy.sh`, publish the APK before the deploy: the
 script ships whatever the checkout holds and publishes it to the host download
 directory, so a stale APK ships as the public download just as readily as a
 fresh one.
+
+### Web 语义版本
+
+Web 版本唯一声明为 `product.json` 的 `web.version`，初始版本为 `1.0.0`。
+发布 Web 改动前运行 `npm run version:web -- patch`（兼容功能用 `minor`，不兼容变化用 `major`），
+将版本变更与代码一并提交。部署脚本会将当前代码与上次部署来源比较；Web 代码变化但版本未递增、
+版本倒退或旧来源无法核对时会拒绝部署。首次从仅有提交号的历史版本迁移时允许建立首个语义版本。
+
+版本在构建时编入页面，缓存旧页面继续显示旧版本；公开的 `/web-version.json` 同时给出版本及来源提交。
+发布回执会核对该文件与 `/health` 的来源提交一致后，才记录可用于条目交接的发布证据。
