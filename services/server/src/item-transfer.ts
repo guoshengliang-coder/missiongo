@@ -87,7 +87,7 @@ export function transferWorkItem(store: MissionGoStore, storage: AttachmentStora
       }
       db.prepare(`INSERT INTO work_item_attachment_counters (item_id, kind, next_number)
         SELECT ?, kind, next_number FROM work_item_attachment_counters WHERE item_id = ?`).run(target.id, source.id);
-      const comments = db.prepare("SELECT id FROM work_item_comments WHERE item_id = ?").all(source.id) as { id: string }[];
+      const comments = db.prepare("SELECT id FROM work_item_comments WHERE item_id = ? ORDER BY timeline_seq").all(source.id) as { id: string }[];
       for (const comment of comments) {
         const id = randomUUID();
         idMap.set(comment.id, id);
@@ -99,6 +99,12 @@ export function transferWorkItem(store: MissionGoStore, storage: AttachmentStora
           SELECT ?, ?, actor_kind, account_id, client_id, NULL, body_kind, ?, agent_name, summary,
            timeline_seq, created_at, withdrawn_at, withdrawn_by, COALESCE(history_source_key, ?)
           FROM work_item_comments WHERE id = ?`).run(id, target.id, JSON.stringify(originalBody), key, comment.id);
+      }
+      for (const comment of comments) {
+        const relation = db.prepare("SELECT reply_to_comment_id, thread_root_comment_id, mentions_json FROM work_item_comments WHERE id=?").get(comment.id) as {reply_to_comment_id:string|null;thread_root_comment_id:string|null;mentions_json:string};
+        db.prepare("UPDATE work_item_comments SET reply_to_comment_id=?,thread_root_comment_id=?,mentions_json=? WHERE id=?")
+          .run(relation.reply_to_comment_id ? idMap.get(relation.reply_to_comment_id) ?? null : null,
+            relation.thread_root_comment_id ? idMap.get(relation.thread_root_comment_id) ?? null : null,relation.mentions_json,idMap.get(comment.id)!);
       }
       const events = db.prepare(`SELECT id, payload_json FROM work_item_events WHERE item_id = ?
         AND event_type NOT IN ('dispatched', 'derived_item_created') ORDER BY timeline_seq`).all(source.id) as { id: string; payload_json: string }[];

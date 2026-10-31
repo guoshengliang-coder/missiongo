@@ -45,3 +45,5 @@ SDK、公共令牌和历史缺失账号的条目不推断具体提需者。账�
 实现参考：[发送工作通知](https://developer.alibaba.com/docs/api.htm?apiId=37692)、[查询发送结果](https://developer.alibaba.com/doc2/apiDetail.htm?apiId=37024)。
 
 机器人接口参考：[发送机器人单聊通知](https://open.dingtalk.com/document/development/chatbots-send-one-on-one-chat-messages-in-batches.md)、[查询单聊发送与已读状态](https://open.dingtalk.com/document/development/chatbot-batch-query-the-read-status-of-messages.md)、[消息模板](https://open.dingtalk.com/document/development/robot-message-type.md)。机器人通知不会在失败时自动改发工作通知，避免发送通道与管理员选择不一致或重复触达。
+
+评论 @ 与针对性回复使用独立的通知任务，不受待验证开关控制。卡片输入、Stream 回调及部署配置见 [评论提醒与钉钉快捷回复](dingtalk-comment-replies.md)。

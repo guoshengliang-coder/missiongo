@@ -213,6 +213,26 @@ describe("Commenting over MCP", () => {
     expect(comments).toHaveLength(1);
   });
 
+  it("lists scoped recipients and supports explicit mentions and precise replies over MCP", async () => {
+    const { app, call, writeToken, readToken, productId } = await commentingApp();
+    const recipient=app.missionGoAccounts.createAccount({email:"recipient@example.test",password:"synthetic-mcp-recipient",role:"member"});
+    app.missionGoAccounts.replacePermissions(recipient.id,[{productId,canView:true,canOperate:true,canUseAi:false}]);
+    const candidates=await call(readToken,1,"tools/call",{name:"get_comment_candidates",arguments:{itemKey:"HG-1"}});
+    expect(candidates.result?.structuredContent).toMatchObject({candidates:expect.arrayContaining([expect.objectContaining({accountId:recipient.id})])});
+    const parent=app.missionGoStore.createComment({itemKey:"HG-1",actorKind:"human",bodyKind:"free",body:{text:"Please explain"},attribution:{accountId:recipient.id}});
+    const args={itemKey:"HG-1",text:"Explanation",replyToCommentId:parent.id,mentionAccountIds:[recipient.id],idempotencyKey:"mcp-mentioned-reply"};
+    const result=await call(writeToken,2,"tools/call",{name:"append_comment",arguments:args});
+    expect(result.result?.structuredContent).toMatchObject({comment:{replyToCommentId:parent.id,threadRootCommentId:parent.id,actorKind:"agent",mentions:[{accountId:recipient.id,name:"recipient"}]}});
+    await call(writeToken,3,"tools/call",{name:"append_comment",arguments:args});
+    expect(app.missionGoStore.listComments("HG-1")).toHaveLength(2);
+    expect(app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM dingtalk_notifications WHERE kind='comment'").get()).toMatchObject({n:1});
+    const outsider=app.missionGoAccounts.createAccount({email:"outsider@example.test",password:"synthetic-mcp-outsider",role:"member"});
+    const rejected=await call(writeToken,4,"tools/call",{name:"append_comment",arguments:{...args,mentionAccountIds:[outsider.id],idempotencyKey:"bad-mcp-mention"}});
+    expect(JSON.stringify(rejected)).toContain("查看权限");
+    const readOnly=await call(readToken,5,"tools/call",{name:"append_comment",arguments:{...args,idempotencyKey:"readonly-mcp-mention"}});
+    expect(JSON.stringify(readOnly)).toContain("does not include write access");
+  });
+
   it("refuses a write from a token that was only granted reading", async () => {
     const { app, call, readToken } = await commentingApp();
     const result = await call(readToken, 1, "tools/call", {
@@ -1528,6 +1548,7 @@ describe("MissionGo REST API", () => {
       "get_item_context",
       "get_item_timeline",
       "get_attachment",
+      "get_comment_candidates",
     ]);
     expect(names.some((name) => name.toLowerCase().includes("sql"))).toBe(false);
 

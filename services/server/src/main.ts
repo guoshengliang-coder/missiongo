@@ -79,6 +79,7 @@ const app = buildApp({
   logger: true,
   trustProxy,
   ...(publicOrigin ? { publicOrigin } : {}),
+  ...(process.env.DINGTALK_COMMENT_CARD_TEMPLATE_ID?.trim() ? {dingtalkCommentCardTemplateId:process.env.DINGTALK_COMMENT_CARD_TEMPLATE_ID.trim()} : {}),
   ...(process.env.DINGTALK_CARD_THEME?.trim() ? {dingtalkCardTheme:process.env.DINGTALK_CARD_THEME.trim()} : {}),
   ...(process.env.DINGTALK_CARD_TEMPLATE_ID?.trim() ? {dingtalkCardTemplateId:process.env.DINGTALK_CARD_TEMPLATE_ID.trim()} : {}),
   ...(adminToken ? { adminToken } : {}),

@@ -1,3 +1,4 @@
+import type { CommentAudienceInput, CommentCandidate } from "@missiongo/domain";
 import type { ItemFilters } from "@missiongo/domain";
 import { appendItemFilters } from "./item-filters";
 import type { AgentArtifactBundle, AgentArtifactState } from "@missiongo/domain";
@@ -561,7 +562,8 @@ export const api = {
     }),
   getTimeline: (itemKey: string) =>
     request<{ events: WorkItemEvent[] }>(`/api/v1/items/${encodeURIComponent(itemKey)}/timeline`),
-  createComment: (itemKey: string, input: { text: string; attachmentIds?: readonly string[]; idempotencyKey?: string }) =>
+  commentCandidates: (itemKey: string) => request<{candidates:CommentCandidate[]}>(`/api/v1/items/${encodeURIComponent(itemKey)}/comment-candidates`),
+  createComment: (itemKey: string, input: CommentAudienceInput & { text: string; attachmentIds?: readonly string[]; idempotencyKey?: string }) =>
     request<WorkItemComment>(`/api/v1/items/${encodeURIComponent(itemKey)}/comments`, {
       method: "POST",
       body: JSON.stringify(input),

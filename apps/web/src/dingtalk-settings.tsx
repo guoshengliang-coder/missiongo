@@ -270,9 +270,9 @@ export function ItemDingTalkNotifications({itemKey,pending}:{itemKey:string;pend
   const retry=useMutation({mutationFn:(id:string)=>api.retryDingtalkNotification(itemKey,id),onSuccess:data=>{setConfirm(null);client.setQueryData(["dingtalk-notifications",itemKey],data);}});
   if(query.isError)return <p role="alert">钉钉通知记录加载失败，请刷新重试。</p>;
   if(!query.data?.notifications.length)return null;
-  return <details className="dingtalk-item-notices"><summary>钉钉通知 · {statusLabels[query.data.notifications[0]!.status]}</summary><ol className="dingtalk-import-preview">{query.data.notifications.map((notice,index)=><li key={notice.id}>
-    <NotificationState notice={notice} /><small>{new Date(notice.createdAt).toLocaleString()} · 已尝试 {notice.attempts} 次</small>
-    {index===0 && pending && query.data.canRetry && ["failed","skipped","uncertain"].includes(notice.status) && <button type="button" className="secondary-button" disabled={retry.isPending} onClick={()=>notice.status==="uncertain"?setConfirm(notice.id):retry.mutate(notice.id)}>补发通知</button>}
+  return <details className="dingtalk-item-notices"><summary>钉钉通知 · {statusLabels[query.data.notifications[0]!.status]}</summary><ol className="dingtalk-import-preview">{query.data.notifications.map((notice)=><li key={notice.id}>
+    <NotificationState notice={notice} /><small>{notice.kind==="comment" ? "评论提醒" : "待验证提醒"}{notice.accountName ? ` · ${notice.accountName}` : ""}</small><small>{new Date(notice.createdAt).toLocaleString()} · 已尝试 {notice.attempts} 次</small>
+    {(notice.canRetry ?? (notice.kind!=="comment" && pending)) && query.data.canRetry && ["failed","skipped","uncertain"].includes(notice.status) && <button type="button" className="secondary-button" disabled={retry.isPending} onClick={()=>notice.status==="uncertain"?setConfirm(notice.id):retry.mutate(notice.id)}>补发通知</button>}
   </li>)}</ol>{retry.isError && <p role="alert">{failure(retry.error)}</p>}
     {confirm && <Modal title="确认补发通知" subtitle="此前发送结果不明" onClose={()=>setConfirm(null)} pending={retry.isPending}><p>此前消息可能已送达。请先核实接收情况，补发可能产生重复通知。</p><div className="form-footer"><button type="button" className="secondary-button" onClick={()=>setConfirm(null)} disabled={retry.isPending}>取消</button><button type="button" className="primary-button" onClick={()=>retry.mutate(confirm)} disabled={retry.isPending}>已核实，补发通知</button></div></Modal>}
   </details>;

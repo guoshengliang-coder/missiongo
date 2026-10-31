@@ -1,3 +1,4 @@
+import type { CommentAudienceInput, CommentDiscussion } from "@missiongo/domain";
 import type { ItemFilters } from "@missiongo/domain";
 import type { CompletionReference } from "@missiongo/contracts";
 import type {
@@ -278,7 +279,7 @@ export interface FreeCommentBody {
 
 export type CommentBody = StructuredCommentBody | FreeCommentBody;
 
-export interface WorkItemCommentSnapshot extends EventAttribution {
+export interface WorkItemCommentSnapshot extends EventAttribution, CommentDiscussion {
   readonly historySourceKey?: string;
   readonly id: string;
   readonly itemKey: string;
@@ -298,7 +299,7 @@ export interface WorkItemCommentSnapshot extends EventAttribution {
   readonly withdrawnBy?: string;
 }
 
-export interface CreateCommentInput {
+export interface CreateCommentInput extends CommentAudienceInput {
   readonly itemKey: string;
   readonly actorKind: ActorKind;
   readonly bodyKind: CommentBodyKind;
