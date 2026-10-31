@@ -10,12 +10,14 @@ COPY services/server/package.json services/server/package.json
 
 RUN npm ci
 
-COPY tsconfig.json tsconfig.base.json ./
+COPY tsconfig.json tsconfig.base.json product.json ./
 COPY apps/web apps/web
 COPY packages/contracts packages/contracts
 COPY packages/domain packages/domain
 COPY services/server services/server
 
+ARG MISSIONGO_RELEASE
+ENV MISSIONGO_RELEASE=${MISSIONGO_RELEASE}
 ARG MISSIONGO_PUBLIC_ORIGIN
 ENV MISSIONGO_PUBLIC_ORIGIN=${MISSIONGO_PUBLIC_ORIGIN}
 

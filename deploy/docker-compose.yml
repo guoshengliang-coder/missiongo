@@ -6,6 +6,8 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       target: server
+      args:
+        MISSIONGO_RELEASE: ${MISSIONGO_RELEASE:-unknown}
     restart: unless-stopped
     environment:
       NODE_ENV: production
@@ -60,6 +62,7 @@ services:
       dockerfile: deploy/Dockerfile
       target: web
       args:
+        MISSIONGO_RELEASE: ${MISSIONGO_RELEASE:-unknown}
         MISSIONGO_PUBLIC_ORIGIN: ${MISSIONGO_PUBLIC_ORIGIN:?MISSIONGO_PUBLIC_ORIGIN is required}
     restart: unless-stopped
     depends_on:

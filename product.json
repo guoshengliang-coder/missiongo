@@ -20,5 +20,8 @@
       "bundleIdentifier": "io.missiongo.macos",
       "label": "MissionGo"
     }
+  },
+  "web": {
+    "version": "1.0.0"
   }
 }

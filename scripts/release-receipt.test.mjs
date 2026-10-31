@@ -96,3 +96,28 @@ test("reads versions and source commits from the live release and the published 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a server-only deployment with the same Web semantic version still records the new source", () => {
+  const before = { web: { version: "1.0.0", commit: oldCommit } };
+  const after = { web: { version: "1.0.0", commit: newCommit, clean: true, ciPassed: true } };
+  const receipt = buildReceipt(before, after, { checks: { web: true } });
+  assert.equal(receipt.changes.length, 1);
+  assert.equal(receipt.changes[0].version, "1.0.0");
+  assert.equal(receipt.changes[0].toCommit, newCommit);
+});
+
+test("semantic Web receipts require the public frontend manifest and server to agree", async () => {
+  const { verifyPublic } = await import("./release-receipt.mjs");
+  const originalFetch = globalThis.fetch;
+  const after = { web: { version: "1.0.0", commit: newCommit } };
+  let frontend = { version: "1.0.0", sourceCommit: oldCommit };
+  globalThis.fetch = async (url) => new Response(JSON.stringify(String(url).endsWith("/health")
+    ? { status: "ok", release: newCommit } : frontend));
+  try {
+    assert.equal((await verifyPublic("https://example.test", after)).checks.web, false);
+    frontend = { version: "1.0.0", sourceCommit: newCommit };
+    assert.equal((await verifyPublic("https://example.test", after)).checks.web, true);
+    frontend = { version: "1.0.1", sourceCommit: newCommit };
+    assert.equal((await verifyPublic("https://example.test", after)).checks.web, false);
+  } finally { globalThis.fetch = originalFetch; }
+});

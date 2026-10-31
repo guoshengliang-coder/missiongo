@@ -1,6 +1,6 @@
 import { Select } from "./select";
 import { useEffect, useRef, useState } from "react";
-import { Filter, X } from "lucide-react";
+import { ArrowLeft, ChevronRight, Filter, X } from "lucide-react";
 import type {
   ItemFilters,
   WorkItemPriority,
@@ -11,6 +11,8 @@ import { api } from "./api";
 import { useI18n } from "./i18n";
 import { Modal } from "./modal";
 import { ITEM_PRIORITIES, ITEM_TYPES } from "./types";
+
+type Dimension = "builder" | "proposerKeys" | "types" | "priorities" | "sourceComponentIds" | "created" | "updated";
 
 interface FilterState extends ItemFilters {
   builder: string;
@@ -40,6 +42,13 @@ export function ListFilters({
   const zh = locale === "zh-CN";
   const word = (cn: string, en: string) => (zh ? cn : en);
   const [draft, setDraft] = useState<FilterState | null>(null);
+  const [dateError, setDateError] = useState<string | null>(null);
+  const [dimension, setDimension] = useState<Dimension | null>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
+  const editing = draft !== null;
+  useEffect(() => {
+    if (editing) pageRef.current?.querySelector<HTMLElement>("[data-page-focus]")?.focus();
+  }, [dimension, editing]);
   const [peopleSearch, setPeopleSearch] = useState("");
   const [moduleSearch, setModuleSearch] = useState("");
   const [chipLimit, setChipLimit] = useState(2);
@@ -61,7 +70,9 @@ export function ListFilters({
     queryFn: () => api.listComponents(productId, { includeArchived: true }),
     enabled: Boolean(productId),
   });
-  const open = () => {
+  const open = (next: Dimension | null = null) => {
+    setDimension(next);
+    setDateError(null);
     setPeopleSearch("");
     setModuleSearch("");
     setDraft({ ...value });
@@ -198,11 +209,34 @@ export function ListFilters({
       ))}
     </div>
   );
+  const dimensions: Array<{ key: Dimension; label: string; summary: string }> = [
+    { key: "builder", label: "Builder", summary: draft?.builder
+      ? draft.builder === "mine" ? word("我", "Me") : draft.builder === "unassigned"
+        ? word("待分配", "Unassigned") : builders.find(b => b.id === draft.builder)?.name ?? word("原 Builder（不可用）", "Previous Builder (unavailable)") : "" },
+    { key: "proposerKeys", label: word("提需者", "Proposer"), summary: (draft?.proposerKeys ?? []).map(proposerName).join("、") },
+    { key: "types", label: word("类型", "Type"), summary: (draft?.types ?? []).map(typeLabel).join("、") },
+    { key: "priorities", label: word("优先级", "Priority"), summary: (draft?.priorities ?? []).map(priorityLabel).join("、") },
+    { key: "sourceComponentIds", label: word("模块", "Module"), summary: (draft?.sourceComponentIds ?? []).map(id => modules.data?.find(m => m.id === id)?.name ?? word("已选模块", "Selected module")).join("、") },
+    ...(["created", "updated"] as const).map(key => ({ key, label: key === "created" ? word("创建时间", "Created") : word("更新时间", "Updated"),
+      summary: draft?.[`${key}From`] || draft?.[`${key}To`] ? `${draft?.[`${key}From`] || "…"} ~ ${draft?.[`${key}To`] || "…"}` : "" })),
+  ];
+  const currentDimension = dimensions.find(entry => entry.key === dimension);
+  const clearDimension = () => {
+    if (!draft || !dimension) return;
+    const next = { ...draft };
+    setDateError(null);
+    if (dimension === "builder") next.builder = "";
+    else if (dimension === "created" || dimension === "updated") {
+      delete next[`${dimension}From`];
+      delete next[`${dimension}To`];
+    } else delete next[dimension];
+    setDraft(next);
+  };
   const hiddenTypes = value.types?.length ? (
     <button
       className="filter-chip list-filter-hidden-type"
       type="button"
-      onClick={open}
+      onClick={() => open("types")}
     >
       <span>
         {word("类型", "Type")}：{value.types.map(typeLabel).join("、")}
@@ -225,6 +259,20 @@ export function ListFilters({
             {builderOptions(true)}
           </Select>
         </label>
+        <button
+          className="list-filter-proposer secondary-button"
+          type="button"
+          onClick={() => open("proposerKeys")}
+          aria-label={word("提需者筛选", "Proposer filter")}
+        >
+          <span>{word("提需者", "Proposer")}</span>
+          <strong>{value.proposerKeys?.length === 1
+            ? proposerName(value.proposerKeys[0]!)
+            : value.proposerKeys?.length
+              ? word(`已选 ${value.proposerKeys.length} 项`, `${value.proposerKeys.length} selected`)
+              : word("全部", "All")}</strong>
+          <ChevronRight size={14} aria-hidden="true" />
+        </button>
         <label className="list-filter-type">
           <span>{word("类型", "Type")}</span>
           <Select anchorToLabel
@@ -237,7 +285,7 @@ export function ListFilters({
                   : ""
             }
             onChange={(e) => {
-              if (e.target.value === "multiple") open();
+              if (e.target.value === "multiple") open("types");
               else
                 onChange({
                   ...value,
@@ -264,7 +312,7 @@ export function ListFilters({
         <button
           className="secondary-button list-filter-more"
           type="button"
-          onClick={open}
+          onClick={() => open()}
         >
           <Filter size={14} />
           <span>
@@ -275,7 +323,7 @@ export function ListFilters({
         <button
           className="secondary-button list-filter-all"
           type="button"
-          onClick={open}
+          onClick={() => open()}
         >
           <Filter size={14} />
           {word("筛选", "Filters")}
@@ -311,7 +359,7 @@ export function ListFilters({
             </button>
           ))}
           {groups.length > chipLimit && (
-            <button className="text-button" type="button" onClick={open}>
+            <button className="text-button" type="button" onClick={() => open()}>
               {word(
                 `另有 ${groups.length - chipLimit} 项`,
                 `${groups.length - chipLimit} more`,
@@ -337,7 +385,7 @@ export function ListFilters({
       )}
       {draft && (
         <Modal
-          title={word("筛选条目", "Filter items")}
+          title={currentDimension?.label ?? word("筛选条目", "Filter items")}
           subtitle={word(
             "当前产品 · 当前状态",
             "Current product · current status",
@@ -348,11 +396,30 @@ export function ListFilters({
             className="list-filter-form"
             onSubmit={(e) => {
               e.preventDefault();
+              const invalidRange = (["created", "updated"] as const).find(prefix => {
+                const from = draft[`${prefix}From`], to = draft[`${prefix}To`];
+                return from && to && from > to;
+              });
+              if (invalidRange) {
+                setDateError(word("开始日期不能晚于结束日期。", "The start date must not be after the end date."));
+                setDimension(invalidRange);
+                return;
+              }
               onChange(draft);
               setDraft(null);
             }}
           >
-            <label className="list-filter-field">
+            <div ref={pageRef} className="list-filter-page">
+            {dimension ? <div className="list-filter-page-actions">
+              <button type="button" className="text-button" data-page-focus onClick={() => setDimension(null)}><ArrowLeft size={16} />{word("返回筛选总览", "Back to filters")}</button>
+              <button type="button" className="text-button" onClick={clearDimension}>{word("清除此项", "Clear this filter")}</button>
+            </div> : <div className="list-filter-overview" aria-label={word("筛选维度", "Filter dimensions")}>
+              {dimensions.map((entry, index) => <button type="button" key={entry.key} data-page-focus={index === 0 ? "" : undefined} onClick={() => setDimension(entry.key)}>
+                <span><strong>{entry.label}</strong><small className={entry.summary ? "selected" : ""}>{entry.summary || word("不限", "Any")}</small></span>
+                <ChevronRight size={16} aria-hidden="true" />
+              </button>)}
+            </div>}
+            {dimension === "builder" && <label className="list-filter-field">
               Builder
               <Select
                 data-initial-focus
@@ -364,15 +431,15 @@ export function ListFilters({
               >
                 {builderOptions()}
               </Select>
-            </label>
-            <fieldset>
+            </label>}
+            {dimension === "types" && <fieldset>
               <legend>{word("类型", "Type")}</legend>
               {checks(
                 "types",
                 ITEM_TYPES.map((id) => ({ id, name: typeLabel(id) })),
               )}
-            </fieldset>
-            <fieldset>
+            </fieldset>}
+            {dimension === "priorities" && <fieldset>
               <legend>{word("优先级", "Priority")}</legend>
               {checks(
                 "priorities",
@@ -381,8 +448,8 @@ export function ListFilters({
                   name: priorityLabel(id as WorkItemPriority),
                 })),
               )}
-            </fieldset>
-            <fieldset>
+            </fieldset>}
+            {dimension === "proposerKeys" && <fieldset>
               <legend>{word("提需者", "Proposer")}</legend>
               <input
                 type="search"
@@ -438,8 +505,8 @@ export function ListFilters({
                   </button>
                 </p>
               )}
-            </fieldset>
-            <fieldset>
+            </fieldset>}
+            {dimension === "sourceComponentIds" && <fieldset>
               <legend>{word("模块（来源模块）", "Module (source)")}</legend>
               <input
                 type="search"
@@ -473,14 +540,15 @@ export function ListFilters({
                   </button>
                 </p>
               )}
-            </fieldset>
-            {(["created", "updated"] as const).map((prefix) => (
+            </fieldset>}
+            {(["created", "updated"] as const).filter(prefix => dimension === prefix).map((prefix) => (
               <fieldset key={prefix}>
                 <legend>
                   {prefix === "created"
                     ? word("创建时间", "Created")
                     : word("更新时间", "Updated")}
                 </legend>
+                {dateError && <p role="alert" className="inline-error">{dateError}</p>}
                 <div className="list-filter-dates">
                   {(["From", "To"] as const).map((edge) => {
                     const key = `${prefix}${edge}` as
@@ -500,9 +568,10 @@ export function ListFilters({
                           {...(edge === "To"
                             ? { min: draft[`${prefix}From`] ?? "" }
                             : { max: draft[`${prefix}To`] ?? "" })}
-                          onChange={(e) =>
-                            setDraft({ ...draft, [key]: e.target.value })
-                          }
+                          onChange={(e) => {
+                            setDateError(null);
+                            setDraft({ ...draft, [key]: e.target.value });
+                          }}
                         />
                       </label>
                     );
@@ -510,11 +579,12 @@ export function ListFilters({
                 </div>
               </fieldset>
             ))}
+            </div>
             <footer className="list-filter-footer">
               <button
                 className="text-button"
                 type="button"
-                onClick={() => setDraft({ builder: "" })}
+                onClick={() => { setDateError(null); setDraft({ builder: "" }); }}
               >
                 {word("重置条件", "Reset conditions")}
               </button>

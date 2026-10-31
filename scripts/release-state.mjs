@@ -115,8 +115,7 @@ const deployedIndex = args.indexOf("--deployed");
 const deployedUrl = deployedIndex === -1 ? null : args[deployedIndex + 1];
 
 async function webState(origin) {
-  // The web app carries no version number: it is published as a commit, and the
-  // running deployment is the only place that records which one.
+  // Fetch both server provenance and the actual frontend build manifest.
   let release;
   try {
     const response = await fetch(`${origin.replace(/\/$/, "")}/health`);
@@ -134,15 +133,25 @@ async function webState(origin) {
   } catch {
     return { artifact: "web", publishedFrom: release, verdict: "unknown", note: "that commit is not in this repository" };
   }
-  // No version line: the web app's identity is its commit, which the two lines
-  // below already carry. Printing HEAD as a "version" would read as a release
-  // number it does not have.
+  const current = JSON.parse(readFileSync(join(root, "product.json"), "utf8")).web.version;
+  let publishedVersion;
+  try {
+    const response = await fetch(`${origin.replace(/\/$/, "")}/web-version.json`);
+    if (!response.ok) throw new Error("Web manifest unavailable");
+    const web = await response.json();
+    if (web.sourceCommit !== release) throw new Error("Web/server source commits differ");
+    publishedVersion = web.version;
+  } catch {
+    return { artifact: "web", currentVersion: current, publishedFrom: release, verdict: "unknown", note: "the public frontend version could not be verified (possibly a legacy release)" };
+  }
   return {
     artifact: "web",
+    currentVersion: current,
+    publishedVersion,
     publishedFrom: release,
     commitsSince: behind.length,
     changed: behind.length > 0,
-    bumped: false,
+    bumped: current !== publishedVersion,
     verdict: behind.length > 0 ? "ready to publish" : "up to date",
   };
 }

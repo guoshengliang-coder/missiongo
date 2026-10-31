@@ -58,12 +58,13 @@ export function readSnapshot({ host, currentLink, downloadsDir }) {
   if (!host || !currentLink?.startsWith("/") || !downloadsDir?.startsWith("/")) {
     throw new Error("snapshot needs --host, --current-link and --downloads-dir");
   }
-  const directory = maybeRemote(host, `readlink -f ${quote(currentLink)} 2>/dev/null`);
+  const directory = remote(host, `if [ -e ${quote(currentLink)} ]; then readlink -f ${quote(currentLink)}; fi`);
   if (!directory.startsWith("/")) return { web: null, androidApp: null, androidSdk: null, macosApp: null };
 
   const release = properties(remoteFile(host, `${directory}/RELEASE`));
+  if (!SHA.test(release.commit ?? "")) throw new Error("Previous deployment has no usable source commit; version comparison requires verified provenance.");
   const web = SHA.test(release.commit ?? "")
-    ? { version: release.commit, commit: release.commit, clean: release.tree === "clean", ciPassed: release.ci === "passed" }
+    ? { version: release.web_version || release.commit, commit: release.commit, clean: release.tree === "clean", ciPassed: release.ci === "passed" }
     : null;
 
   const apkPath = maybeRemote(host, `readlink -f ${quote(`${downloadsDir}/missiongo-android-latest.apk`)} 2>/dev/null`);
@@ -137,7 +138,12 @@ export async function verifyPublic(origin, after) {
   await check("web", async () => {
     if (!after.web) return false;
     const health = JSON.parse(await readPublic(origin, "/health"));
-    return health.status === "ok" && health.release === after.web.commit;
+    if (health.status !== "ok" || health.release !== after.web.commit) return false;
+    // Legacy receipts identified Web only by SHA. New builds also verify the
+    // public frontend artifact, independently of the server health response.
+    if (after.web.version === after.web.commit) return true;
+    const web = JSON.parse(await readPublic(origin, "/web-version.json"));
+    return web.version === after.web.version && web.sourceCommit === after.web.commit;
   });
   await check("androidApp", async () => {
     if (!after.androidApp) return false;
@@ -164,7 +170,7 @@ export function buildReceipt(before, after, publicEvidence) {
   const changes = artifacts.flatMap((artifact) => {
     const old = before[artifact];
     const current = after[artifact];
-    if (!current || !old || current.version === old.version && current.sha256 === old.sha256 && current.build === old.build) return [];
+    if (!current || !old || current.version === old.version && current.sha256 === old.sha256 && current.build === old.build && current.commit === old.commit) return [];
     const fromCommit = artifact === "web" ? old.commit : old.sourceCommit;
     const toCommit = artifact === "web" ? current.commit : current.sourceCommit;
     const verified = publicEvidence.checks.web === true
