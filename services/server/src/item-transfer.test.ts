@@ -53,6 +53,19 @@ describe("project transfer", () => {
     expect((await readFile(storage.resolveStoredFile(first.storageFilename))).toString()).toBe("first");
   });
 
+  it("remaps precise reply parents and roots when copying discussions without sending history again",async()=>{
+    const {store,item,transfer}=await seed();
+    const root=store.createComment({itemKey:item.key,actorKind:"human",bodyKind:"free",body:{text:"Question"}});
+    const reply=store.createComment({itemKey:item.key,actorKind:"human",bodyKind:"free",body:{text:"Answer"},replyToCommentId:root.id});
+    store.createComment({itemKey:item.key,actorKind:"human",bodyKind:"free",body:{text:"Follow up"},replyToCommentId:reply.id});
+    store.withdrawComment({itemKey:item.key,commentId:root.id});
+    const moved=transfer(),copied=store.listComments(moved.key,{includeWithdrawn:true});
+    expect(copied[0]?.id).not.toBe(root.id);
+    expect(copied[1]).toMatchObject({replyToCommentId:copied[0]!.id,threadRootCommentId:copied[0]!.id});
+    expect(copied[2]).toMatchObject({replyToCommentId:copied[1]!.id,threadRootCommentId:copied[0]!.id});
+    expect(store.database.connection.prepare("SELECT COUNT(*) AS n FROM dingtalk_notifications WHERE item_id=?").get(moved.id)).toMatchObject({n:0});
+  });
+
   it("copies evidence independently, preserves bylines, timestamps, withdrawal and history order, and freezes the original", async () => {
     const { store, storage, item, component, transfer } = await seed();
     const attachment = await storage.save(store, item.key, "evidence.log", "text/plain", Buffer.from("original evidence"));

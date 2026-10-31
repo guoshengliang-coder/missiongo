@@ -83,3 +83,16 @@ export function statusChangeNote(payload: Readonly<Record<string, unknown>>): st
   const note = typeof payload.note === "string" ? payload.note.trim() : "";
   return note || null;
 }
+
+/** Replies retain their immediate parent, but render once under the root in creation order. */
+export function groupDiscussionTimeline(events: readonly WorkItemEvent[]): readonly (TimelineEntry & {replies:readonly WorkItemEvent[]})[] {
+  const comments=new Map(events.filter(event=>event.eventType==="comment_added").map(event=>[event.id,event]));
+  const groups=new Map<string,WorkItemEvent[]>();
+  const childIds=new Set<string>();
+  for(const event of comments.values()) {
+    const root=event.payload.threadRootCommentId;
+    if(typeof root!=="string" || root===event.id || !comments.has(root))continue;
+    const replies=groups.get(root) ?? [];replies.push(event);groups.set(root,replies);childIds.add(event.id);
+  }
+  return groupTimeline(events.filter(event=>!childIds.has(event.id))).map(entry=>({...entry,replies:groups.get(entry.id) ?? []}));
+}

@@ -17,7 +17,7 @@ describe("MCP tool catalog", () => {
   });
 
   it("publishes the release candidate read tool, commenting, the three status changes, and derived items", () => {
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(23);
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(24);
     expect(MCP_TOOL_DEFINITIONS.filter((tool) => tool.access === "write").map((tool) => tool.name))
       .toEqual(["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"]);
     expect(findMcpTool("get_item_context")?.access).toBe("read");

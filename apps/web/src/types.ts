@@ -1,3 +1,4 @@
+import type { CommentDiscussion } from "@missiongo/domain";
 import type { AgentKind, DispatchStatus, CodexSessionFailure } from "@missiongo/domain";
 
 export const ITEM_TYPES = ["bug", "requirement", "idea", "task", "note"] as const;
@@ -187,7 +188,7 @@ export interface WorkItemEvent {
 
 export type CommentBodyKind = "structured" | "free";
 
-export interface WorkItemComment {
+export interface WorkItemComment extends CommentDiscussion {
   readonly historySourceKey?: string;
   readonly id: string;
   readonly itemKey: string;

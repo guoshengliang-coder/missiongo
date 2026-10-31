@@ -35,7 +35,10 @@ export interface DingTalkImportPreview {
 export type DingTalkNotificationStatus = "queued" | "sending" | "accepted" | "sent" | "failed" | "skipped" | "uncertain";
 export interface DingTalkNotification {
   id: string;
-  kind: "verification" | "test";
+  kind: "verification" | "test" | "comment";
+  commentId?: string;
+  accountName?: string;
+  canRetry?: boolean;
   status: DingTalkNotificationStatus;
   reason: string;
   attempts: number;

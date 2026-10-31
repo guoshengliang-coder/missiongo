@@ -1,3 +1,4 @@
+import { resolveCommentAudience, enqueueCommentNotifications } from "./comment-discussions.js";
 import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover } from "./builder-authority.js";
 import { completionPayload, normalizeCompletion, sameCompletion } from "./completion.js";
 import { deliveryRound, queueDeliveryChecks } from "./delivery-round.js";
@@ -133,6 +134,9 @@ interface EventRow {
 }
 
 interface CommentRow {
+  reply_to_comment_id: string | null;
+  thread_root_comment_id: string | null;
+  mentions_json: string;
   history_source_key: string | null;
   id: string;
   actor_kind: ActorKind;
@@ -1425,6 +1429,9 @@ export class MissionGoStore {
       eventType: "comment_added",
       actorKind: comment.actorKind,
       payload: {
+        ...(comment.replyToCommentId ? { replyToCommentId: comment.replyToCommentId } : {}),
+        ...(comment.threadRootCommentId ? { threadRootCommentId: comment.threadRootCommentId } : {}),
+        ...(comment.mentions?.length ? { mentions: comment.mentions } : {}),
         bodyKind: comment.bodyKind,
         body: comment.body,
         ...(comment.agentName ? { agentName: comment.agentName } : {}),
@@ -1454,6 +1461,7 @@ export class MissionGoStore {
 
       const item = this.getWorkItemRow(input.itemKey);
       if (!item) throw notFound("Work item");
+      const audience = resolveCommentAudience(this, item.item_key, input);
       if (input.bodyKind === "free") {
         for (const attachmentId of (body as FreeCommentBody).attachmentIds ?? []) {
           this.getAttachmentRecord(item.item_key, attachmentId);
@@ -1469,8 +1477,8 @@ export class MissionGoStore {
         .prepare(
           `INSERT INTO work_item_comments
              (id, item_id, actor_kind, account_id, client_id, execution_id, body_kind, body_json,
-              agent_name, summary, timeline_seq, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              agent_name, summary, timeline_seq, created_at, reply_to_comment_id, thread_root_comment_id, mentions_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -1485,9 +1493,14 @@ export class MissionGoStore {
           summary ?? null,
           this.nextTimelineSequence(item.id),
           now,
+          audience.parent?.id ?? null,
+          audience.threadRootCommentId ?? null,
+          JSON.stringify(audience.mentions),
         );
       this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
       const result: WorkItemCommentSnapshot = {
+        ...(audience.parent ? { replyToCommentId: audience.parent.id, threadRootCommentId: audience.threadRootCommentId! } : {}),
+        ...(audience.mentions.length ? { mentions: audience.mentions } : {}),
         id,
         itemKey: item.item_key,
         actorKind: input.actorKind,
@@ -1500,6 +1513,7 @@ export class MissionGoStore {
         ...(attribution.executionId ? { executionId: attribution.executionId } : {}),
         createdAt: now,
       };
+      enqueueCommentNotifications(this, result, audience.parent);
       if (idempotencyKey) this.saveIdempotentResult(idempotencyKey, operation, result, now);
       return result;
     });
@@ -1740,7 +1754,8 @@ export class MissionGoStore {
     const rows = this.database.connection
       .prepare(
         `SELECT id, actor_kind, account_id, client_id, execution_id, body_kind, body_json,
-                agent_name, summary, timeline_seq, created_at, withdrawn_at, withdrawn_by, history_source_key
+                agent_name, summary, timeline_seq, created_at, withdrawn_at, withdrawn_by, history_source_key,
+                reply_to_comment_id, thread_root_comment_id, mentions_json
          FROM work_item_comments
          WHERE item_id = ?${includeWithdrawn ? "" : " AND withdrawn_at IS NULL"}
          ORDER BY timeline_seq`,
@@ -1750,7 +1765,11 @@ export class MissionGoStore {
   }
 
   private mapComment(row: CommentRow, itemKey: string): WorkItemCommentSnapshot {
+    const mentions = JSON.parse(row.mentions_json) as import("@missiongo/domain").CommentMention[];
     return {
+      ...(row.reply_to_comment_id ? { replyToCommentId: row.reply_to_comment_id } : {}),
+      ...(row.thread_root_comment_id ? { threadRootCommentId: row.thread_root_comment_id } : {}),
+      ...(mentions.length ? { mentions } : {}),
       ...(row.history_source_key ? { historySourceKey: row.history_source_key } : {}),
       id: row.id,
       itemKey,

@@ -14,3 +14,5 @@ export * from "./agent-artifacts.js";
 
 export * from "./item-filters.js";
 export * from "./dingtalk.js";
+
+export * from "./comment-discussion.js";

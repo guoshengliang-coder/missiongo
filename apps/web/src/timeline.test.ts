@@ -151,3 +151,19 @@ describe("statusChangeNote", () => {
     expect(statusChangeNote({ note: ["why"] })).toBeNull();
   });
 });
+
+describe("flat comment discussions",()=>{
+  it("groups each reply exactly once under the root while keeping chronological order and immediate parents",async()=>{
+    const {groupDiscussionTimeline}=await import("./timeline");
+    const root=event("root","comment_added","2026-10-31T00:00:00Z",{withdrawnAt:"later"});
+    const first=event("one","comment_added","2026-10-31T00:00:01Z",{replyToCommentId:"root",threadRootCommentId:"root"});
+    const second=event("two","comment_added","2026-10-31T00:00:02Z",{replyToCommentId:"one",threadRootCommentId:"root"});
+    const entries=groupDiscussionTimeline([root,first,event("status","status_changed","2026-10-31T00:00:01Z"),second]);
+    expect(entries.map(entry=>entry.id)).toEqual(["status","root"]);expect(entries[1]?.replies.map(reply=>reply.id)).toEqual(["one","two"]);
+    expect(entries[1]?.replies[1]?.payload.replyToCommentId).toBe("one");
+  });
+  it("keeps an orphan reply visible when its original comment is unavailable",async()=>{
+    const {groupDiscussionTimeline}=await import("./timeline");
+    expect(groupDiscussionTimeline([event("reply","comment_added","2026-10-31T00:00:00Z",{threadRootCommentId:"unavailable"})]).map(e=>e.id)).toEqual(["reply"]);
+  });
+});

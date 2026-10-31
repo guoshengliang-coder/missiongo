@@ -1,3 +1,6 @@
+import { DingTalkCardStream } from "./dingtalk-card-stream.js";
+import { cardText, limitCardText } from "./dingtalk-verification-card.js";
+import { z } from "zod";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DingTalkDeliveryMode, DingTalkSettings, DingTalkSettingsInput, DingTalkBinding, DingTalkBindingInput, DingTalkImportRow, DingTalkImportPreview, DingTalkNotification, DingTalkProjectSettings } from "@missiongo/domain";
 import type { MissionGoStore } from "./store.js";
@@ -9,7 +12,7 @@ import { buildVerificationCard } from "./dingtalk-verification-card.js";
 interface ConfigRow { corp_id: string; client_id: string; agent_id: string; delivery_mode: DingTalkDeliveryMode; robot_code: string; encrypted_secret: string; revision: number }
 interface JobRow {
   id: string; event_id: string | null; item_id: string | null; account_id: string | null;
-  kind: "verification" | "test"; status: DingTalkNotification["status"]; reason: string;
+  kind: "verification" | "test" | "comment"; comment_id: string | null; status: DingTalkNotification["status"]; reason: string;
   attempts: number; task_id: string | null; recipient: string | null; config_revision: number | null;
   binding_revision: string | null;
   created_at: string; updated_at: string;
@@ -53,7 +56,8 @@ export class DingTalkNotifications {
   private running: Promise<void> | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
   private closed = false;
-  constructor(private readonly store: MissionGoStore, private readonly accounts: AccountStore, secret: string | undefined, private readonly origin: string | undefined, private readonly fetchImpl: typeof fetch = fetch, private readonly cardTemplateId?: string, private readonly cardTheme = "blue") {
+  private stream: { revision: number; client: DingTalkCardStream } | undefined;
+  constructor(private readonly store: MissionGoStore, private readonly accounts: AccountStore, secret: string | undefined, private readonly origin: string | undefined, private readonly fetchImpl: typeof fetch = fetch, private readonly cardTemplateId?: string, private readonly cardTheme = "blue", private readonly commentCardTemplateId?: string) {
     this.db = store.database.connection;
     this.key = secret ? createHash("sha256").update("missiongo-dingtalk-v1\0").update(secret).digest() : undefined;
   }
@@ -161,7 +165,12 @@ export class DingTalkNotifications {
       this.audit(account.id,"project_switch",productId,{enabled});return this.project(productId,account);
     });
   }
-  private snapshot(row: JobRow): DingTalkNotification { return {id:row.id,kind:row.kind,status:row.status,reason:row.reason,attempts:row.attempts,createdAt:row.created_at,updatedAt:row.updated_at}; }
+  private snapshot(row: JobRow): DingTalkNotification {
+    const name = row.account_id ? this.accounts.displayNames([row.account_id]).get(row.account_id) : undefined;
+    return {id:row.id,kind:row.kind,status:row.status,reason:row.reason,attempts:row.attempts,createdAt:row.created_at,updatedAt:row.updated_at,
+      ...(row.comment_id ? {commentId:row.comment_id} : {}),...(name ? {accountName:name} : {}),
+      canRetry:["failed","skipped","uncertain"].includes(row.status) && this.current(row)};
+  }
   list(itemId: string): DingTalkNotification[] {
     return (this.db.prepare("SELECT * FROM dingtalk_notifications WHERE item_id=? ORDER BY created_at DESC,rowid DESC LIMIT 100").all(itemId) as unknown as JobRow[]).map(row=>this.snapshot(row));
   }
@@ -184,29 +193,36 @@ export class DingTalkNotifications {
   retry(itemKey: string, id: string, actor: string): void {
     const item=this.store.getWorkItem(itemKey),job=this.job(id);
     if (!job || job.item_id!==item.id) throw notFound("Notification");
-    if (!["failed","skipped","uncertain"].includes(job.status) || !this.current(job)) throw conflict("dingtalk_retry_unavailable","只能补发当前待验证轮次中失败、跳过或结果不明的通知。");
+    if (!["failed","skipped","uncertain"].includes(job.status) || !this.current(job)) throw conflict("dingtalk_retry_unavailable","只能补发仍有效且失败、跳过或结果不明的通知。");
     this.db.prepare("UPDATE dingtalk_notifications SET status='queued',reason='',task_id=NULL,next_at=?,updated_at=? WHERE id=?").run(now(),now(),id);
     this.audit(actor,"retry",id);
   }
   private job(id: string) { return this.db.prepare("SELECT * FROM dingtalk_notifications WHERE id=?").get(id) as unknown as JobRow | undefined; }
   private current(job: JobRow): boolean {
     if (job.kind==="test") return true;
+    if (job.kind==="comment") {
+      const row=this.db.prepare(`SELECT w.item_key FROM work_item_comments c JOIN work_items w ON w.id=c.item_id
+        WHERE c.id=? AND c.item_id=? AND c.withdrawn_at IS NULL`).get(job.comment_id,job.item_id) as {item_key:string}|undefined;
+      return Boolean(row && !this.store.getWorkItem(row.item_key).transferred);
+    }
     const latest=this.db.prepare(`SELECT e.id,w.status FROM work_item_events e JOIN work_items w ON w.id=e.item_id
       WHERE e.item_id=? AND e.event_type='status_changed' AND e.to_status='pending_verification' AND e.history_source_key IS NULL ORDER BY e.timeline_seq DESC LIMIT 1`).get(job.item_id!) as {id:string;status:string}|undefined;
     return latest?.id===job.event_id && latest.status==="pending_verification";
   }
   private eligibility(job: JobRow): string | undefined {
-    if (!job.account_id) return "未记录具体提需者账号";
-    const account=this.accounts.findActive(job.account_id);if (!account) return "提需者账号不存在或已停用";
+    const recipientLabel=job.kind==="comment" ? "接收人" : "提需者";
+    if (!job.account_id) return `未记录具体${recipientLabel}账号`;
+    const account=this.accounts.findActive(job.account_id);if (!account) return `${recipientLabel}账号不存在或已停用`;
     if (job.item_id) {
       const item=this.db.prepare("SELECT product_id FROM work_items WHERE id=?").get(job.item_id) as {product_id:string}|undefined;
-      if (!item || !this.accounts.allows(account,item.product_id,"view")) return "提需者没有项目查看权限";
-      if (!(this.db.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(item.product_id) as {enabled:number}|undefined)?.enabled) return "项目未开启通知";
-      if (!this.current(job)) return "条目已离开本轮待验证";
+      if (!item || !this.accounts.allows(account,item.product_id,"view")) return `${recipientLabel}没有项目查看权限`;
+      if (job.kind!=="comment" && !(this.db.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(item.product_id) as {enabled:number}|undefined)?.enabled) return "项目未开启通知";
+      if (!this.current(job)) return job.kind==="comment" ? "评论已撤回或不可回复" : "条目已离开本轮待验证";
     }
     if (!this.settings().configured) return "钉钉应用未配置";
-    if (!this.origin && job.kind==="verification") return "服务器未配置公开访问地址";
-    if (!this.bindings().some(b=>b.accountId===job.account_id)) return "提需者未绑定钉钉";
+    if (!this.origin && job.kind!=="test") return "服务器未配置公开访问地址";
+    if (!this.bindings().some(b=>b.accountId===job.account_id)) return `${recipientLabel}未绑定钉钉`;
+    if (job.kind==="comment" && this.settings().deliveryMode!=="robot") return "评论提醒需要机器人单聊，请管理员配置机器人";
     if(job.kind==="test" && (job.binding_revision!==this.bindings().find(b=>b.accountId===job.account_id)?.revision || job.config_revision!==this.settings().revision)) return "绑定或应用配置已变化，请重新测试";
     return undefined;
   }
@@ -263,6 +279,10 @@ export class DingTalkNotifications {
   }
   private robotMessage(job: JobRow, message: Record<string, unknown>) {
     if(job.kind==="test") return {msgKey:"sampleText",msgParam:JSON.stringify({content:`这是一条机器人单聊测试通知。此账号仅发送系统通知，请到 MissionGo 处理，无需回复。\n测试编号：${job.id}`})};
+    if (job.kind==="comment") {
+      const card=message.action_card as {title:string;markdown:string;single_url:string};
+      return {msgKey:"sampleActionCard",msgParam:JSON.stringify({title:card.title,text:card.markdown,singleTitle:"回条目回复",singleURL:card.single_url})};
+    }
     const card=message.action_card as {title:string;markdown:string;single_title:string;single_url:string};
     return {msgKey:"sampleActionCard",msgParam:JSON.stringify({title:card.title,text:card.markdown+"\n\n此账号仅发送系统通知，请到 MissionGo 处理，无需回复。",singleTitle:card.single_title,singleURL:card.single_url})};
   }
@@ -281,7 +301,65 @@ export class DingTalkNotifications {
     const url=new URL(this.origin!);url.searchParams.set("product",item.product_id);url.searchParams.set("item",item.item_key);
     return buildVerificationCard({projectName:this.store.getProduct(item.product_id).name,itemKey:item.item_key,itemTitle:item.title,description:item.description,itemUrl:url.href,payload:JSON.parse(event.payload_json) as Record<string,unknown>},this.cardTheme);
   }
+  private commentCard(job: JobRow): Record<string,string> {
+    const row=this.db.prepare(`SELECT c.body_kind,c.body_json,c.agent_name,c.account_id,c.actor_kind,c.reply_to_comment_id,w.item_key,w.title,w.product_id
+      FROM work_item_comments c JOIN work_items w ON w.id=c.item_id WHERE c.id=?`).get(job.comment_id!) as {
+        body_kind:string;body_json:string;agent_name:string|null;account_id:string|null;actor_kind:string;reply_to_comment_id:string|null;item_key:string;title:string;product_id:string};
+    const body=JSON.parse(row.body_json) as Record<string,unknown>;
+    const content=row.body_kind==="free" ? String(body.text ?? "") : [body.understanding,body.finding,body.proposal,...(Array.isArray(body.evidence)?body.evidence:[]),...(Array.isArray(body.openQuestions)?body.openQuestions:[])].filter(Boolean).join("\n\n");
+    const accountName=row.account_id ? this.accounts.displayNames([row.account_id]).get(row.account_id) : undefined;
+    const author=row.actor_kind==="agent" ? `${row.agent_name ?? "Agent"}${accountName ? `（${accountName}授权）` : ""}` : accountName ?? "用户";
+    const url=new URL(this.origin!);url.searchParams.set("product",row.product_id);url.searchParams.set("item",row.item_key);url.searchParams.set("comment",job.comment_id!);
+    const parent=row.reply_to_comment_id ? this.store.listComments(row.item_key).find(c=>c.id===row.reply_to_comment_id) : undefined;
+    const parentBody=parent?.body as unknown as Record<string,unknown> | undefined;
+    const parentText=parentBody ? String(parentBody.text ?? parentBody.finding ?? "") : "";
+    return {headerTitle:limitCardText(`${row.item_key} ｜ 评论提醒`),itemTitle:limitCardText(cardText(row.title)),author:limitCardText(cardText(author)),
+      commentText:limitCardText(content || "（评论含附件，请回条目查看）",950),parentText:limitCardText(cardText(parentText),700),
+      contentHint:Buffer.byteLength(content,"utf8")>950 ? "评论较长，已截断；请打开条目查看全文。" : "",
+      itemUrl:url.href,replyStatus:"",replySaved:"false"};
+  }
+
+  /** Only called for authenticated card frames on this application's Stream connection. */
+  receiveCommentCard(raw: unknown): Record<string,unknown> {
+    const envelope=z.object({outTrackId:z.string().uuid(),corpId:z.string().min(1),userId:z.string().min(1),userIdType:z.literal(1),
+      content:z.string().max(80_000).optional(),value:z.string().max(80_000).optional()}).safeParse(raw);
+    if (!envelope.success) throw invalidInput("卡片回复格式无效。");
+    const input=envelope.data,job=this.job(input.outTrackId),config=this.config();
+    if (!config || input.corpId!==config.corp_id || !job || job.kind!=="comment" || !job.account_id || !job.comment_id
+      || !["sent","accepted","sending","uncertain"].includes(job.status) || job.config_revision!==config.revision) throw invalidInput("此卡片已失效，请回条目回复。");
+    const binding=this.bindings().find(b=>b.accountId===job.account_id),account=this.accounts.findActive(job.account_id);
+    if (!binding || binding.userId!==input.userId || job.recipient!==input.userId || binding.revision!==job.binding_revision || !account) throw invalidInput("回复者账号绑定已变化，请回条目回复。");
+    const itemRow=this.db.prepare("SELECT item_key FROM work_items WHERE id=?").get(job.item_id!) as {item_key:string}|undefined;
+    if (!itemRow) throw invalidInput("条目不存在。");
+    const item=this.store.getWorkItem(itemRow.item_key);
+    if (item.transferred || !this.accounts.allows(account,item.productId,"view") || !this.accounts.allows(account,item.productId,"operate")) throw invalidInput("没有本项目评论权限，请回条目查看。");
+    let value:unknown;
+    try { value=JSON.parse(input.content ?? input.value ?? "{}"); } catch { throw invalidInput("卡片回复内容无效。"); }
+    const action=z.object({cardPrivateData:z.object({actionIds:z.array(z.string()).max(10),params:z.object({action:z.literal("reply"),replyText:z.string().trim().min(1).max(20_000)})})}).safeParse(value);
+    if (!action.success) throw invalidInput("请输入回复内容后发送。");
+    const reply=action.data.cardPrivateData.params.replyText;
+    // One successful submission per recipient card. A retransmitted callback returns the same result.
+    const comment=this.store.createComment({itemKey:item.key,actorKind:"human",bodyKind:"free",body:{text:reply},replyToCommentId:job.comment_id,
+      attribution:{accountId:account.id},idempotencyKey:`dingtalk-card-reply:${job.id}`});
+    const savedText=(comment.body as {text:string}).text;
+    return {cardUpdateOptions:{updateCardDataByKey:true},cardData:{cardParamMap:{replyStatus:savedText===reply ? "回复成功，已同步到条目。" : "此卡片已提交过回复，请回条目继续回复。",replySaved:"true"}}};
+  }
+
+  private ensureCardStream(): void {
+    const config=this.config();
+    const eligible=Boolean(config && this.key && config.delivery_mode==="robot" && this.commentCardTemplateId);
+    if (this.stream && (!eligible || this.stream.revision!==config?.revision)) {this.stream.client.close();this.stream=undefined;}
+    if (!this.stream && eligible && config) {
+      const client=new DingTalkCardStream(config.client_id,this.decrypt(config),raw=>this.receiveCommentCard(raw));
+      this.stream={revision:config.revision,client};client.start();
+    }
+  }
+
   private message(job: JobRow): Record<string,unknown> {
+    if (job.kind==="comment") {
+      const card=this.commentCard(job);
+      return {msgtype:"action_card",action_card:{title:card.headerTitle,markdown:[card.itemTitle,`评论者：${card.author}`,card.parentText ? `回复内容：${card.parentText}` : "",cardText(card.commentText!),card.contentHint].filter(Boolean).join("\n\n"),single_url:card.itemUrl,single_title:"回条目回复"}};
+    }
     if (job.kind==="test") return {msgtype:"text",text:{content:`这是一条账号绑定测试通知。收到后无需回复。\n测试编号：${job.id}`}};
     const card=this.verificationCard(job);
     const lines=[`### ${card.headerTitle}`,card.heading.replace(/<[^>]*>/g,""),...(card.summary?[card.summary]:[]),"---","**验收方式**",card.verification.replace(/\n/g,"\n\n")];
@@ -305,7 +383,17 @@ export class DingTalkNotifications {
     try {
       let taskId: string;
       if(config.delivery_mode==="robot") {
-        if (job.kind==="verification" && this.cardTemplateId) {
+        if (job.kind==="comment" && this.commentCardTemplateId) {
+          const params=this.commentCard(job);
+          if(Buffer.byteLength(params.itemUrl!,"utf8")>1000) throw new Error("card URL too long");
+          const result=await this.json("https://api.dingtalk.com/v1.0/card/instances/createAndDeliver",{method:"POST",headers:{"content-type":"application/json","x-acs-dingtalk-access-token":token},body:JSON.stringify({
+            cardTemplateId:this.commentCardTemplateId,outTrackId:job.id,userIdType:1,callbackType:"STREAM",cardData:{cardParamMap:params},openSpaceId:`dtv1.card//IM_ROBOT.${binding.userId}`,
+            imRobotOpenSpaceModel:{supportForward:false},imRobotOpenDeliverModel:{spaceType:"IM_ROBOT",robotCode:config.robot_code}})});
+          const body=result.result as {outTrackId?:unknown;deliverResults?:Array<{spaceType?:unknown;spaceId?:unknown;success?:unknown;carrierId?:unknown}>}|undefined;
+          const delivery=body?.deliverResults?.find(value=>value.spaceType==="IM_ROBOT" && value.spaceId===binding.userId);
+          if(result.success!==true || body?.outTrackId!==job.id || delivery?.success!==true || typeof delivery.carrierId!=="string" || !delivery.carrierId.trim()) throw new Error("card delivery unclear");
+          this.update(job.id,"sent","钉钉确认卡片投放成功；不代表已读或已回复。");return;
+        } else if (job.kind==="verification" && this.cardTemplateId) {
           taskId=await this.sendInteractiveCard(job,token,config.robot_code,binding.userId);
         } else {
         const body=await this.robotApi("batchSend",token,{robotCode:config.robot_code,userIds:[binding.userId],...this.robotMessage(job,message)});
@@ -367,6 +455,9 @@ export class DingTalkNotifications {
     const jobs=this.db.prepare("SELECT * FROM dingtalk_notifications WHERE status IN('queued','accepted') AND next_at<=? AND (lease_until IS NULL OR lease_until<?) ORDER BY next_at LIMIT 20").all(now(),now()) as unknown as JobRow[];
     for(const job of jobs){if(this.closed)break;try{if(job.status==="accepted")await this.poll(job);else await this.send(job);}catch{this.update(job.id,"failed","通知处理失败，请检查配置后重试。");}}
   }
-  start(): void { this.timer=setInterval(()=>{void this.drain().catch(()=>{});},2000);this.timer.unref();void this.drain().catch(()=>{}); }
-  async close(): Promise<void> {this.closed=true;if(this.timer)clearInterval(this.timer);await this.running;}
+  start(): void {
+    const tick=()=>{try{this.ensureCardStream();}catch{/* Configuration errors are shown by notification eligibility. */}void this.drain().catch(()=>{});};
+    this.timer=setInterval(tick,2000);this.timer.unref();tick();
+  }
+  async close(): Promise<void> {this.closed=true;this.stream?.client.close();this.stream=undefined;if(this.timer)clearInterval(this.timer);await this.running;}
 }

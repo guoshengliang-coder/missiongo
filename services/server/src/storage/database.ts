@@ -2036,6 +2036,37 @@ export class MissionGoDatabase {
           .run(202610310500, new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610310925").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610310925").get()) return;
+        this.connection.exec(`
+          ALTER TABLE work_item_comments ADD COLUMN reply_to_comment_id TEXT REFERENCES work_item_comments(id);
+          ALTER TABLE work_item_comments ADD COLUMN thread_root_comment_id TEXT REFERENCES work_item_comments(id);
+          ALTER TABLE work_item_comments ADD COLUMN mentions_json TEXT NOT NULL DEFAULT '[]';
+          CREATE INDEX comments_thread ON work_item_comments(thread_root_comment_id,timeline_seq);
+          CREATE TABLE dingtalk_notifications_next (
+            id TEXT PRIMARY KEY, event_id TEXT UNIQUE REFERENCES work_item_events(id) ON DELETE CASCADE,
+            item_id TEXT REFERENCES work_items(id) ON DELETE CASCADE, account_id TEXT,
+            comment_id TEXT REFERENCES work_item_comments(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK(kind IN('verification','test','comment')),
+            status TEXT NOT NULL CHECK(status IN('queued','sending','accepted','sent','failed','skipped','uncertain')),
+            reason TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0,
+            task_id TEXT, recipient TEXT, config_revision INTEGER, binding_revision TEXT,
+            next_at TEXT NOT NULL, lease_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(comment_id,account_id)
+          ) STRICT;
+          INSERT INTO dingtalk_notifications_next
+            (id,event_id,item_id,account_id,kind,status,reason,attempts,task_id,recipient,config_revision,binding_revision,next_at,lease_until,created_at,updated_at)
+            SELECT id,event_id,item_id,account_id,kind,status,reason,attempts,task_id,recipient,config_revision,binding_revision,next_at,lease_until,created_at,updated_at FROM dingtalk_notifications;
+          DROP TABLE dingtalk_notifications;
+          ALTER TABLE dingtalk_notifications_next RENAME TO dingtalk_notifications;
+          CREATE INDEX dingtalk_notifications_pending ON dingtalk_notifications(status,next_at);
+          CREATE INDEX dingtalk_notifications_item ON dingtalk_notifications(item_id,created_at);
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610310925, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

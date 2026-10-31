@@ -1,3 +1,4 @@
+import { commentAudienceSchema, commentCandidates } from "./comment-discussions.js";
 import { ReleaseObservations } from "./release-observations.js";
 import { BuilderHandovers } from "./builder-handovers.js";
 import { assertDispatchExecution, assertExternalExecution, dispatchExecutionRevoked } from "./builder-authority.js";
@@ -114,6 +115,7 @@ export interface BuildAppOptions {
   readonly adminAccount?: AdminAccountConfig;
   readonly publicOrigin?: string;
   readonly dingtalkCardTemplateId?: string;
+  readonly dingtalkCommentCardTemplateId?: string;
   readonly dingtalkCardTheme?: string;
   readonly attachmentsPath?: string;
   /** Fastify trust-proxy setting: false, true, or trusted addresses/CIDRs/named ranges. */
@@ -585,7 +587,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.adminAccount?.sessionSecret ?? options.adminToken ?? "local-development-only",
     options.aiProviderFetch,
   );
-  const dingtalk = new DingTalkNotifications(store,accountStore,options.adminAccount?.sessionSecret ?? options.adminToken,options.publicOrigin,options.dingtalkFetch,options.dingtalkCardTemplateId,options.dingtalkCardTheme);
+  const dingtalk = new DingTalkNotifications(store,accountStore,options.adminAccount?.sessionSecret ?? options.adminToken,options.publicOrigin,options.dingtalkFetch,options.dingtalkCardTemplateId,options.dingtalkCardTheme,options.dingtalkCommentCardTemplateId);
   app.addHook("onReady",async()=>{if(options.dingtalkWorker!==false)dingtalk.start();});
   // AND-149/150: the summary behind GET /api/v1/widget/summary, shared with the
   // push service so a device is told to refresh exactly what the route serves.
@@ -4195,11 +4197,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { comments: withAuthorNames(store.listComments(key, { includeWithdrawn: true })) };
   });
 
+  app.get("/api/v1/items/:itemKey/comment-candidates", async request => {
+    const { itemKey } = request.params as { itemKey: string };
+    return { candidates: commentCandidates(store, requireItemPermission(request, itemKey)) };
+  });
+
   app.post("/api/v1/items/:itemKey/comments", async (request, reply) => {
     const { itemKey } = request.params as { itemKey: string };
     const body = objectBody(request.body);
     const bodyKind = body.bodyKind === undefined ? "free" : enumField(body, "bodyKind", COMMENT_BODY_KINDS)!;
+    const audience = commentAudienceSchema.safeParse(body);
+    if (!audience.success) throw invalidInput("评论回复或 @ 接收人格式无效。");
     const comment = store.createComment({
+      ...audience.data,
       itemKey: requireItemPermission(request, itemKey, "operate"),
       actorKind: "human",
       bodyKind,
