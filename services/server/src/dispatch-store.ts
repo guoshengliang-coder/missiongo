@@ -773,6 +773,21 @@ export class DispatchStore {
         "INSERT INTO dispatch_items (dispatch_id, item_id, position) VALUES (?, ?, ?)",
       );
       items.forEach((item, index) => insertItem.run(dispatchId, item.id, index));
+      // Initialize once, atomically with the accepted dispatch. A saved policy
+      // (including an explicitly empty one) must never be replaced by dispatching.
+      const defaults: DispatchDefaults = {
+        nodeId: node.id,
+        agentKind: input.agentKind,
+        agents: { [input.agentKind]: {
+          mode: input.mode,
+          ...(input.model ? { model: input.model } : {}),
+          ...(input.effort ? { effort: input.effort } : {}),
+        } },
+      };
+      this.database.connection.prepare(
+        `INSERT INTO account_dispatch_defaults (account_id, settings_json, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(account_id) DO NOTHING`,
+      ).run(input.accountId, JSON.stringify(defaults), now);
       const created = this.getDispatch(input.accountId, dispatchId);
       // The machine is usually already waiting on a poll, so it picks this up in
       // well under a second rather than on its next scheduled ask.

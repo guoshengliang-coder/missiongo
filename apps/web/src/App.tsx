@@ -3483,6 +3483,7 @@ function EditItemForm({ item, onSaved, onCancel }: { item: WorkItem; onCancel: (
     type: item.type,
     priority: item.priority,
     sourceComponentId: item.sourceComponentId ?? "",
+    builderAccountId: "",
     environment: environmentDraft(item.environment),
   }));
   const [files, setFiles] = useState<readonly File[]>([]);
@@ -3911,6 +3912,8 @@ function WorkItemFields({
 function CaptureForm({ product, onCreated }: { product: Product; onCreated: (item: WorkItem, failedUploads: number) => void }) {
   const { t } = useI18n();
   const canOperate = product.access?.canOperate === true;
+  const buildersQuery = useQuery({ queryKey: ["builders", product.id], queryFn: () => api.listBuilders(product.id), enabled: canOperate });
+  const builders = buildersQuery.data?.builders ?? [];
   const storageKey = captureDraftStorageKey(product.id);
   const [draft, setDraft] = useState<CaptureDraft>(() => parseCaptureDraft(localStorage.getItem(storageKey)));
   const [files, setFiles] = useState<readonly File[]>([]);
@@ -3973,6 +3976,7 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
         report: workItemReportPayload(draft),
         type: draft.type,
         priority: draft.priority,
+        ...(draft.builderAccountId ? { builderAccountId: draft.builderAccountId } : {}),
         ...(draft.sourceComponentId
           ? { sourceComponentId: draft.sourceComponentId, affectedComponentIds: [draft.sourceComponentId] }
           : {}),
@@ -4026,6 +4030,16 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
         onFiles={setFiles}
         fileError={fileError}
       />
+      <label>{t("captureBuilder")}
+        <Select value={draft.builderAccountId} disabled={!canOperate || buildersQuery.isPending || mutation.isPending}
+          onChange={(event) => setDraft((current) => ({ ...current, builderAccountId: event.target.value }))}>
+          <option value="">{t("captureBuilderDefault")}</option>
+          {builders.map((builder) => <option key={builder.id} value={builder.id}>{builder.name}</option>)}
+          {draft.builderAccountId && !builders.some((builder) => builder.id === draft.builderAccountId)
+            && <option value={draft.builderAccountId} disabled>{t("captureBuilderUnavailable")}</option>}
+        </Select>
+      </label>
+      {buildersQuery.isError && <p role="alert">{t("captureBuildersLoadFailed")} <button type="button" className="secondary-button" onClick={() => void buildersQuery.refetch()}>{t("retry")}</button></p>}
       {!canOperate && <p role="status">{t("captureReadOnly")}</p>}
       {mutation.isError && <InlineError message={localizedErrorText(mutation.error, t)} />}
       {filePersistenceWarning && <InlineError message={filePersistenceWarning} />}

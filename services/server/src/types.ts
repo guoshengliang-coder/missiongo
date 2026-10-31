@@ -69,6 +69,7 @@ export interface CreateWorkItemInput {
   readonly productId: string;
   readonly attribution?: EventAttribution;
   readonly status?: "inbox" | "ready";
+  readonly builderAccountId?: string;
   readonly sourceComponentId?: string;
   readonly affectedComponentIds?: readonly string[];
   readonly areaId?: string;

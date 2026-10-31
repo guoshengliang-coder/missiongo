@@ -30,6 +30,7 @@ export interface CaptureDraft {
   readonly type: WorkItemType;
   readonly priority: WorkItemPriority;
   readonly sourceComponentId: string;
+  readonly builderAccountId: string;
   readonly environment: EnvironmentDraft;
 }
 
@@ -53,6 +54,7 @@ export const EMPTY_CAPTURE_DRAFT: CaptureDraft = {
   type: "bug",
   priority: "normal",
   sourceComponentId: "",
+  builderAccountId: "",
   environment: EMPTY_ENVIRONMENT,
 };
 
@@ -70,6 +72,7 @@ export function hasCaptureDraftContent(draft: CaptureDraft): boolean {
     draft.occurrenceFrequency !== "unknown" ||
     draft.diagnosticLog.trim() ||
     draft.sourceComponentId ||
+    draft.builderAccountId ||
     draft.type !== "bug" ||
     draft.priority !== "normal" ||
     Object.values(draft.environment).some((value) => value.trim()),
@@ -116,6 +119,7 @@ export function parseCaptureDraft(raw: string | null): CaptureDraft {
         ? value.priority as WorkItemPriority
         : "normal",
       sourceComponentId: typeof value.sourceComponentId === "string" ? value.sourceComponentId : "",
+      builderAccountId: typeof value.builderAccountId === "string" ? value.builderAccountId : "",
       environment: {
         platform,
         appVersion: typeof environment.appVersion === "string" ? environment.appVersion : "",

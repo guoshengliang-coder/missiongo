@@ -795,9 +795,30 @@ export class MissionGoStore {
 
     const now = new Date().toISOString();
     const id = randomUUID();
-    const itemKey = this.database.transaction(() => this.insertWorkItem(input, title, description, id, now, {
-      type: input.type,
-    }, { actor: "human", ...(input.attribution ? { attribution: input.attribution } : {}) }));
+    const itemKey = this.database.transaction(() => {
+      // This is a first assignment by someone allowed to create the item, not
+      // a handover. Validate in the creation transaction so a stale candidate
+      // cannot leave behind a partially created item or consume its number.
+      const accounts = new AccountStore(this.database);
+      const builder = input.builderAccountId === undefined ? undefined : accounts.listAccounts().find(account =>
+        account.id === input.builderAccountId && !account.disabledAt
+        && accounts.allows(account, input.productId, "operate") && accounts.allows(account, input.productId, "ai"));
+      if (input.builderAccountId !== undefined && !builder) {
+        throw invalidInput("Choose an active Builder with AI and operation permission on this product.");
+      }
+      const key = this.insertWorkItem(input, title, description, id, now, {
+        type: input.type,
+      }, { actor: "human", ...(input.attribution ? { attribution: input.attribution } : {}) });
+      if (builder) {
+        this.database.connection.prepare("UPDATE work_items SET builder_account_id = ?, builder_assignment = 'manual' WHERE id = ?")
+          .run(builder.id, id);
+        this.insertEvent(id, "builder_changed", "human", null, null, {
+          from: null, to: builder.id, fromName: "待分配",
+          toName: accounts.displayNames([builder.id]).get(builder.id), note: "创建时指定 Builder",
+        }, now, input.attribution);
+      }
+      return key;
+    });
 
     return this.getWorkItem(itemKey);
   }
