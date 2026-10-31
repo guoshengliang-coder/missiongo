@@ -48,7 +48,15 @@ export function AgentSessionQuestions({
         const label = question.key ?? question.header ?? question.title;
         const settled = question.answered !== undefined;
         const disabled = !canReply || settled;
-        const chosen = questionAnswerValue(reply, question);
+        const chosen = questionAnswerValue(reply, question, count);
+        const options = question.kind === "boolean"
+          ? [t("agentSessionAnswerYes"), t("agentSessionAnswerNo")]
+          : question.options;
+        const chosenValues = question.multiSelect ? questionAnswerValues(reply, question, count) : [chosen];
+        const isSelected = (option: string) => settled
+          ? answeredOptionSelected(question, option)
+          : chosenValues.includes(option);
+        const draftSelected = !settled && options?.some(isSelected);
         const typed = question.kind === "text" || question.kind === "number";
         const custom = question.custom === true && question.options !== undefined && question.options.length > 0;
         return (
@@ -56,19 +64,19 @@ export function AgentSessionQuestions({
             {question.header && <small>{question.header}</small>}
             <strong>{question.title}</strong>
             {question.answered !== undefined && <small className="agent-session-question-answered">{t("agentSessionQuestionAnswered")}</small>}
+            {draftSelected && <small className="agent-session-question-draft" role="status">{t("agentSessionQuestionDraftSelected")}</small>}
             {question.detail && <p className="agent-session-question-detail">{question.detail}</p>}
             {question.kind === "boolean" ? (
               <div className="agent-session-options">
-                {[t("agentSessionAnswerYes"), t("agentSessionAnswerNo")].map((option) => {
-                  const selected = settled
-                    ? answeredOptionSelected(question, option)
-                    : chosen === option;
+                {options?.map((option) => {
+                  const selected = isSelected(option);
                   return (
                     <button
                       key={option}
                       type="button"
                       disabled={disabled}
                       className={selected ? "selected" : ""}
+                      aria-pressed={selected}
                       onClick={() => write(question, option)}
                     >{option}</button>
                   );
@@ -79,17 +87,14 @@ export function AgentSessionQuestions({
                 {question.options && (
                   <div className="agent-session-options">
                     {question.options.map((option) => {
-                      const selected = settled
-                        ? answeredOptionSelected(question, option)
-                        : question.multiSelect
-                          ? questionAnswerValues(reply, question).includes(option)
-                          : chosen === option;
+                      const selected = isSelected(option);
                       return (
                         <button
                           key={option}
                           type="button"
                           disabled={disabled}
                           className={selected ? "selected" : ""}
+                          aria-pressed={selected}
                           onClick={() => {
                             onChange(question.multiSelect
                               ? toggleQuestionOption(reply, question, option, count)

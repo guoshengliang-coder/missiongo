@@ -29,6 +29,9 @@ function message(index: number): AgentSessionMessage {
 async function stubSession(page: Page) {
   const messages: AgentSessionMessage[] = [
     ...Array.from({ length: 8 }, (_, index) => message(index)),
+    { id: "raw-question", role: "agent", occurredAt: stamp, text: "Choose or edit your answer.", questions: [
+      { title: "本次范围", options: ["人工评论、MCP 都支持（推荐）", "仅人工评论"] },
+    ] },
     { id: "questions", role: "agent", occurredAt: stamp, text: "Please choose each answer.", questions: [
       { key: "single", title: "单选", options: ["方案 A", "方案 B"] },
       { key: "multi", title: "多选", options: ["项目 A", "项目 B"], multiSelect: true },
@@ -57,7 +60,7 @@ async function stubSession(page: Page) {
       nodeName: "Fixture", status: "launched", createdAt: stamp, itemKeys: [fixture.detailKey],
     }] }),
   }));
-  return { messages, sent };
+  return { messages, sent, deliverReply: () => { if (command) command.status = "delivered"; } };
 }
 
 const scrollTop = (area: Locator) => area.evaluate((element) => element.scrollTop);
@@ -111,6 +114,30 @@ for (const viewport of [
         const choose = (name: string, answer: string, selected = true) =>
           chooseWithoutScrolling(option(name), area, reply, answer, viewport.touch, selected);
 
+        // AND-347: the real failing format is a single question without a key.
+        const rawQuestion = area.locator(".agent-session-question").filter({ hasText: "本次范围" });
+        const draftStatus = rawQuestion.getByRole("status");
+        await choose("人工评论、MCP 都支持（推荐）", "人工评论、MCP 都支持（推荐）");
+        await expect(option("人工评论、MCP 都支持（推荐）")).toHaveAttribute("aria-pressed", "true");
+        await expect(draftStatus).toHaveText("已选择，未发送");
+        await reply.fill("仅人工评论");
+        await expect(option("人工评论、MCP 都支持（推荐）")).not.toHaveClass("selected");
+        await expect(option("仅人工评论")).toHaveClass("selected");
+        await reply.fill("仅人工评论，另外补充我的要求");
+        await expect(rawQuestion.locator("button.selected")).toHaveCount(0);
+        await expect(draftStatus).toHaveCount(0);
+        await reply.fill("");
+        await expect(rawQuestion.locator("button.selected")).toHaveCount(0);
+        await choose("人工评论、MCP 都支持（推荐）", "人工评论、MCP 都支持（推荐）");
+        await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; }" });
+        for (const theme of ["light", "dark"] as const) {
+          await page.emulateMedia({ colorScheme: theme });
+          const path = testInfo.outputPath(`${surface}-${viewport.name}-${theme}-unsent.png`);
+          await page.screenshot({ path, animations: "disabled" });
+          await testInfo.attach(`${surface}-${theme}-unsent`, { path, contentType: "image/png" });
+        }
+        await reply.fill("");
+
         await choose("方案 A", "single: 方案 A");
         await choose("方案 B", "single: 方案 B");
         await expect(option("方案 A")).not.toHaveClass("selected");
@@ -152,6 +179,21 @@ for (const viewport of [
         await expect.poll(() => state.sent).toEqual([answer]);
         await expect(reply).toHaveValue("");
         if (surface === "console") await expect.poll(() => bottomGap(area)).toBeLessThanOrEqual(1);
+
+        // Confirmed history comes from the session, independently of new drafts.
+        state.deliverReply();
+        const answeredIndex = state.messages.findIndex((message) => message.id === "questions");
+        const answered = state.messages[answeredIndex]!;
+        state.messages[answeredIndex] = { ...answered,
+          questions: answered.questions!.map((question, index) => ({
+            ...question, answered: ["方案 B", "项目 B", "否"][index],
+          })),
+        };
+        await expect(option("方案 B")).toBeDisabled();
+        await expect(option("方案 B")).toHaveClass("selected");
+        await reply.fill("接下来我想补充说明");
+        await expect(option("方案 B")).toHaveClass("selected");
+        await expect(area.locator(".agent-session-question.answered .agent-session-question-draft")).toHaveCount(0);
 
       });
     }

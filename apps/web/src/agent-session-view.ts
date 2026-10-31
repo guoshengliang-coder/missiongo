@@ -535,7 +535,10 @@ export function questionAnswerText(
 export function questionAnswerValue(
   current: string,
   question: Pick<AgentSessionQuestion, "header" | "title" | "key">,
+  questionCount = 1,
 ): string {
+  // Mirror questionAnswerText: one key-less question writes the answer alone.
+  if (questionCount <= 1 && !question.key) return current;
   const prefix = `${questionAnswerLabel(question)}: `;
   const line = current.split("\n").find((entry) => entry.startsWith(prefix));
   return line ? line.slice(prefix.length) : "";
@@ -546,8 +549,9 @@ export function questionAnswerValue(
 export function questionAnswerValues(
   current: string,
   question: Pick<AgentSessionQuestion, "header" | "title" | "key">,
+  questionCount = 1,
 ): string[] {
-  return questionAnswerValue(current, question)
+  return questionAnswerValue(current, question, questionCount)
     .split(QUESTION_VALUE_SEPARATOR)
     .map((value) => value.trim())
     .filter(Boolean);
@@ -560,11 +564,12 @@ export function toggleQuestionOption(
   option: string,
   questionCount: number,
 ): string {
-  const selected = questionAnswerValues(current, question);
+  const selected = questionAnswerValues(current, question, questionCount);
   const next = selected.includes(option)
     ? selected.filter((value) => value !== option)
     : [...selected, option];
   if (next.length === 0) {
+    if (questionCount <= 1 && !question.key) return "";
     const prefix = `${questionAnswerLabel(question)}: `;
     return current.split("\n").filter((line) => line && !line.startsWith(prefix)).join("\n");
   }
