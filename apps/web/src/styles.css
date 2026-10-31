@@ -2891,6 +2891,9 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .detail-composer > fieldset { display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; }
 .detail-composer-row { display: flex; align-items: flex-end; gap: 7px; min-width: 0; }
 .detail-composer textarea { flex: 1 1 0; min-width: 0; min-height: 44px; max-height: min(240px, 20dvh); resize: none; background: var(--surface-field); border-color: var(--line-dark); }
+/* One line tall by default (AND-348), so a placeholder that wrapped would be
+   cut mid-second-line on a narrow phone; keep it to the line it can show. */
+.detail-composer textarea::placeholder { white-space: nowrap; }
 .detail-composer .agent-chat-draft-files { max-height: 96px; overflow-y: auto; }
 .detail-composer .inline-error { flex: none; overflow-wrap: anywhere; }
 .detail-composer-hint { margin: 0; font-size: var(--text-xs); color: var(--muted); }

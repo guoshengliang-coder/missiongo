@@ -33,6 +33,14 @@ for (const viewport of [
       const composer = page.locator(".detail-composer");
       const send = composer.getByRole("button", { name: "发送", exact: true });
       await expect(send).toBeDisabled();
+      // AND-348: an empty composer is one line tall, level with the buttons
+      // beside it, and only grows once there is something to show.
+      const emptyField = (await composer.locator("textarea").boundingBox())!;
+      expect(Math.abs(emptyField.height - (await send.boundingBox())!.height)).toBeLessThanOrEqual(1);
+      await composer.locator("textarea").fill("第一行\n第二行");
+      expect((await composer.locator("textarea").boundingBox())!.height).toBeGreaterThan(emptyField.height);
+      await composer.locator("textarea").fill("");
+      expect(Math.abs((await composer.locator("textarea").boundingBox())!.height - emptyField.height)).toBeLessThanOrEqual(1);
       const initial = (await composer.boundingBox())!;
       expect(initial.x).toBeGreaterThanOrEqual(0);
       expect(initial.y + initial.height).toBeLessThanOrEqual(viewport.height + 1);

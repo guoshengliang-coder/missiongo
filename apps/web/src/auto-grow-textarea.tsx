@@ -4,6 +4,15 @@ import { composerEnterAction, isCoarsePointer } from "./composer-enter";
 
 export function resizeTextarea(textarea: HTMLTextAreaElement, maximumHeight = 480): void {
   textarea.style.height = "auto";
+  // An empty field keeps the height its rows and CSS ask for. Measuring
+  // scrollHeight here would count the placeholder as content: a long one wraps
+  // in a narrow composer and opens the field two lines tall while the buttons
+  // beside it stay one line (AND-348).
+  if (!textarea.value) {
+    textarea.style.height = "";
+    textarea.style.overflowY = "hidden";
+    return;
+  }
   const nextHeight = Math.min(textarea.scrollHeight, maximumHeight);
   textarea.style.height = `${nextHeight}px`;
   textarea.style.overflowY = textarea.scrollHeight > maximumHeight ? "auto" : "hidden";
