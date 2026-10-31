@@ -55,25 +55,28 @@ for (const width of [375, 1440])
         const more = bar.getByRole("button", { name: /更多筛选|^筛选/ });
         await more.click();
         const dialog = page.getByRole("dialog");
-        await dialog.getByRole("checkbox", { name: "高", exact: true }).check();
+        const checkbox = async (name: string) => {
+          const back = dialog.getByRole("button", { name: "返回筛选总览", exact: true });
+          if (await back.isVisible()) await back.click();
+          const dimension = name === "高" || name === "低" ? "优先级" : name === "我提出的" ? "提需者" : name === "Frontend" ? "模块" : "类型";
+          await dialog.getByRole("button", { name: new RegExp(`^${dimension}`) }).click();
+          return dialog.getByRole("checkbox", { name, exact: true });
+        };
+        await (await checkbox("高")).check();
         await dialog.getByRole("button", { name: "取消", exact: true }).click();
         await expect(page.locator(".item-row")).toHaveCount(3);
         await more.click();
         await expect(
-          dialog.getByRole("checkbox", { name: "高", exact: true }),
+          (await checkbox("高")),
         ).not.toBeChecked();
-        await dialog.getByRole("checkbox", { name: "高", exact: true }).check();
-        await dialog
-          .getByRole("checkbox", { name: "我提出的", exact: true })
+        await (await checkbox("高")).check();
+        await (await checkbox("我提出的"))
           .check();
-        await dialog
-          .getByRole("checkbox", { name: "Frontend", exact: true })
+        await (await checkbox("Frontend"))
           .check();
-        await dialog
-          .getByRole("checkbox", { name: "Bug", exact: true })
+        await (await checkbox("Bug"))
           .check();
-        await dialog
-          .getByRole("checkbox", { name: "任务", exact: true })
+        await (await checkbox("任务"))
           .check();
         await page.screenshot({
           path: test.info().outputPath("filter-dialog.png"),
@@ -132,7 +135,7 @@ for (const width of [375, 1440])
         await expect(page.locator(".item-row")).toHaveCount(2);
         await more.click();
         await expect(
-          dialog.getByRole("checkbox", { name: "高", exact: true }),
+          (await checkbox("高")),
         ).toBeChecked();
         await dialog
           .getByRole("button", { name: "重置条件", exact: true })
@@ -169,7 +172,7 @@ for (const width of [375, 1440])
         await expect(page.locator(".item-row")).toHaveCount(3);
         await expect(page).not.toHaveURL(/priorities=/);
         await more.click();
-        await dialog.getByRole("checkbox", { name: "低", exact: true }).check();
+        await (await checkbox("低")).check();
         await dialog
           .getByRole("button", { name: "应用筛选", exact: true })
           .click();

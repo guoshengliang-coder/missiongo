@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -285,11 +286,30 @@ export default defineConfig(({ mode }) => {
   const environment = loadEnv(mode, repositoryRoot, "");
   const serverTarget = environment.MISSIONGO_DEV_SERVER_URL || "http://127.0.0.1:8787";
   const publicOrigin = readPublicOrigin(environment.MISSIONGO_PUBLIC_ORIGIN);
+  const webVersion = JSON.parse(readFileSync(resolve(repositoryRoot, "product.json"), "utf8")).web.version;
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(webVersion)) throw new Error("Invalid product.json web.version");
+  const sourceCommit = environment.MISSIONGO_RELEASE || (() => {
+    try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" }).trim(); }
+    catch { return "development"; }
+  })();
+  const versionJson = JSON.stringify({ version: webVersion, sourceCommit });
 
   return {
     envDir: repositoryRoot,
     plugins: [
       react(),
+      {
+        name: "missiongo-web-version",
+        generateBundle() { this.emitFile({ type: "asset", fileName: "web-version.json", source: versionJson }); },
+        configureServer(server) {
+          server.middlewares.use((request, response, next) => {
+            if (request.url?.split("?", 1)[0] !== "/web-version.json") return next();
+            response.setHeader("Content-Type", "application/json");
+            response.setHeader("Cache-Control", "no-store");
+            response.end(versionJson);
+          });
+        },
+      },
       appearanceBootScript(),
       consoleChunkPreload(),
       androidDownloadHeaders(),
@@ -340,6 +360,7 @@ export default defineConfig(({ mode }) => {
       // shape of what a query returns, and hydrating the old shape into new
       // components is how a cache like that breaks a screen rather than
       // speeding it up. See query-persistence.ts.
+      MISSIONGO_WEB_VERSION: JSON.stringify(webVersion),
       MISSIONGO_BUILD_STAMP: JSON.stringify(`${Date.now().toString(36)}`),
     },
     build: {

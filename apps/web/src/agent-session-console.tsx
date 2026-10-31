@@ -1,3 +1,4 @@
+import { WebVersion } from "./web-version";
 import { Select } from "./select";
 import { BackButton } from "./back-button";
 import { useConfirm } from "./confirm-dialog";
@@ -792,6 +793,7 @@ export function AgentSessionConsole({
           </button>
         ))}
         <p className="agent-console-scope-note">{t("agentConsoleScopeNote")}</p>
+        <WebVersion />
       </aside>
 
       <section className="agent-console-list" aria-label={t("agentConsoleSessions")}>

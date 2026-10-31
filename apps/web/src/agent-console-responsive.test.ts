@@ -57,7 +57,7 @@ describe("agent console responsive layout", () => {
   it("keeps touch-sized actions and combines them on narrow phones", () => {
     const phone = mediaBlock(520);
 
-    expect(styles).toMatch(/\.agent-console-topbar-bulk \{[^}]*width: 38px;/);
+    expect(styles).toMatch(/\.agent-console-topbar-bulk \{[^}]*width: 44px;/);
     expect(styles).toMatch(/\.agent-console-bulk-actions \{[^}]*border-radius: var\(--radius-lg\);/);
     expect(styles).toMatch(/\.agent-console-session-select input \{[^}]*border-radius: 6px;/);
     expect(phone).toContain(".agent-console-topbar-refresh { width: 44px;");
