@@ -231,6 +231,11 @@ describe("Commenting over MCP", () => {
     expect(JSON.stringify(rejected)).toContain("查看权限");
     const readOnly=await call(readToken,5,"tools/call",{name:"append_comment",arguments:{...args,idempotencyKey:"readonly-mcp-mention"}});
     expect(JSON.stringify(readOnly)).toContain("does not include write access");
+    const own=app.missionGoStore.listComments("HG-1")[1]!;
+    const self=await call(writeToken,6,"tools/call",{name:"append_comment",arguments:{itemKey:"HG-1",text:"Remind myself",replyToCommentId:own.id,mentionAccountIds:[own.accountId,own.accountId],idempotencyKey:"mcp-self-mention"}});
+    expect(self.result?.structuredContent).toMatchObject({comment:{accountId:own.accountId,mentions:[expect.objectContaining({accountId:own.accountId})]}});
+    const saved=app.missionGoStore.listComments("HG-1")[2]!;
+    expect(app.missionGoStore.database.connection.prepare("SELECT account_id FROM dingtalk_notifications WHERE kind='comment' AND comment_id=?").all(saved.id)).toEqual([{account_id:own.accountId}]);
   });
 
   it("refuses a write from a token that was only granted reading", async () => {

@@ -40,12 +40,21 @@ function fixture() {
 }
 
 describe("comment discussions and recipients",()=>{
-  it("limits candidates, resolves all to Builder and proposer, deduplicates and excludes the author",()=>{
+  it("limits candidates, resolves all to Builder and proposer, and preserves explicit self mentions",()=>{
     const f=fixture();expect(commentCandidates(f.store,f.item.key).map(p=>p.accountId)).not.toContain(f.outsider.id);
     const comment=f.post("@everyone",f.writer.id,{mentionTargets:["all"],mentionAccountIds:[f.member.id,f.member.id,f.writer.id],idempotencyKey:"same-comment"});
     expect(new Set(comment.mentions?.map(p=>p.accountId))).toEqual(new Set([f.member.id,f.builder.id,f.writer.id]));
-    expect(new Set(f.jobs().map(job=>job.account_id))).toEqual(new Set([f.member.id,f.builder.id]));
-    expect(f.post("retry",f.writer.id,{mentionTargets:["all"],idempotencyKey:"same-comment"}).id).toBe(comment.id);expect(f.jobs()).toHaveLength(2);
+    expect(new Set(f.jobs().map(job=>job.account_id))).toEqual(new Set([f.member.id,f.builder.id,f.writer.id]));
+    expect(f.post("retry",f.writer.id,{mentionTargets:["all"],idempotencyKey:"same-comment"}).id).toBe(comment.id);expect(f.jobs()).toHaveLength(3);
+  });
+  it("excludes automatic self replies but allows explicit self recipients exactly once",()=>{
+    const f=fixture(),root=f.post("Own question",f.member.id);
+    f.post("Own reply",f.member.id,{replyToCommentId:root.id});
+    expect(f.jobs()).toHaveLength(0);
+    const explicit=f.post("Remind me",f.member.id,{replyToCommentId:root.id,mentionAccountIds:[f.member.id,f.member.id]});
+    expect(f.jobs()).toEqual([expect.objectContaining({comment_id:explicit.id,account_id:f.member.id})]);
+    const all=f.post("Everyone including me",f.builder.id,{mentionTargets:["all"]});
+    expect(f.jobs().filter(job=>job.comment_id===all.id).map(job=>job.account_id).sort()).toEqual([f.member.id,f.builder.id].sort());
   });
   it("keeps precise parents in one root and notifies only parent authors plus explicit mentions",()=>{
     const f=fixture(),root=f.post("Question",f.member.id);
@@ -84,6 +93,18 @@ describe("comment discussions and recipients",()=>{
 });
 
 describe("DingTalk comment card replies",()=>{
+  it("delivers an explicit self mention and prevents an automatic self-reply notification loop",async()=>{
+    const f=fixture();f.configure();
+    const root=f.post("Please remind me",f.member.id,{mentionAccountIds:[f.member.id]});
+    await f.service.drain();
+    expect(f.jobs()).toEqual([expect.objectContaining({comment_id:root.id,account_id:f.member.id,status:"sent"})]);
+    expect(f.requests).toHaveLength(1);
+    expect(f.requests[0]).toMatchObject({openSpaceId:"dtv1.card//IM_ROBOT.employee-proposer"});
+    f.service.receiveCommentCard(f.callback(f.jobs()[0]!.id,"Reply to myself"));
+    expect(f.store.listComments(f.item.key)).toHaveLength(2);
+    expect(f.jobs()).toHaveLength(1);
+    await f.service.drain();expect(f.requests).toHaveLength(1);
+  });
   it("delivers without the verification switch and saves authenticated replies exactly once",async()=>{
     const f=fixture();f.configure();const root=f.post("Please explain",f.writer.id,{mentionTargets:["proposer"]});
     await f.service.drain();expect(f.jobs()[0]?.status).toBe("sent");

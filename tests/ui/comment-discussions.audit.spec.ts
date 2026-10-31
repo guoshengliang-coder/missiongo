@@ -4,7 +4,7 @@ const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta
 for(const width of [353,1440]) for(const theme of ["light","dark"] as const) {
   test.describe(`${width}px ${theme} comment discussions`,()=>{
     test.use({viewport:{width,height:850},hasTouch:width<1000,colorScheme:theme});
-    test("keeps mentions singular, actions in one row and explains why a self-mention sends no notification",async({page})=>{
+    test("keeps mentions singular and actions in one row while allowing explicit self notifications",async({page})=>{
       const bootstrap=await(await page.request.get("/api/v1/bootstrap")).json();
       const item=await(await page.request.post("/api/v1/items",{data:{productId:fixture.productId,type:"note",priority:"normal",title:"评论排版与提醒",description:"",environment:{platform:"web"}}})).json();
       await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}`);
@@ -13,10 +13,10 @@ for(const width of [353,1440]) for(const theme of ["light","dark"] as const) {
       expect((await composer.boundingBox())!.height).toBeLessThan(90);
       await input.fill(`@${bootstrap.user.displayName}`);
       await page.getByRole("option").filter({hasText:bootstrap.user.displayName}).click();
-      await expect(composer.getByText("接收人只有你自己，不发送钉钉提醒。")).toBeVisible();
+      await expect(composer.locator("[role=status]")).toHaveCount(0);
       await input.press("End");await input.pressSequentially("测试");
       await composer.getByRole("button",{name:"发送",exact:true}).click();
-      await expect(page.getByText("评论已发表；不会向自己发送提醒。",{exact:true})).toBeVisible();
+      await expect(page.getByText("评论已发表。",{exact:true})).toBeVisible();
       const root=page.locator(".comment-thread-root");
       await expect(root.locator(".comment-text")).toHaveText(`@${bootstrap.user.displayName} 测试`);
       await expect(root.locator(".comment-mentioned")).toHaveCount(0);
@@ -24,7 +24,7 @@ for(const width of [353,1440]) for(const theme of ["light","dark"] as const) {
       const withdraw=await root.getByRole("button",{name:"撤回",exact:true}).boundingBox();
       expect(Math.abs(reply!.y-withdraw!.y)).toBeLessThan(1);
       const notices=await(await page.request.get(`/api/v1/items/${item.key}/dingtalk-notifications`)).json();
-      expect(notices.notifications).toEqual([]);
+      expect(notices.notifications).toEqual([expect.objectContaining({kind:"comment"})]);
       await page.locator(".toast").getByRole("button",{name:"关闭提示"}).click();
       await root.scrollIntoViewIfNeeded();
       await page.screenshot({path:test.info().outputPath(`comment-polish-${width}-${theme}.png`)});

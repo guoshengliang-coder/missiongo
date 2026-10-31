@@ -49,8 +49,9 @@ export function resolveCommentAudience(store: MissionGoStore, itemKey: string, r
 export function enqueueCommentNotifications(store: MissionGoStore, comment: WorkItemCommentSnapshot, parent?: WorkItemCommentSnapshot): void {
   const item = store.getWorkItem(comment.itemKey);
   const audience = new Set((comment.mentions ?? []).map(mention => mention.accountId));
-  if (parent?.accountId) audience.add(parent.accountId);
-  if (comment.accountId) audience.delete(comment.accountId);
+  // Explicit mentions preserve the sender's intent, including mentioning themselves.
+  // Only the automatically added reply recipient excludes the current author.
+  if (parent?.accountId && parent.accountId !== comment.accountId) audience.add(parent.accountId);
   const insert = store.database.connection.prepare(`INSERT INTO dingtalk_notifications
     (id,item_id,comment_id,account_id,kind,status,next_at,created_at,updated_at)
     VALUES (?,?,?,?,'comment','queued',?,?,?)`);

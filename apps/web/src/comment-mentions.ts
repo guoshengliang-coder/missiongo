@@ -1,4 +1,4 @@
-import type { CommentAudienceInput, CommentMention } from "@missiongo/domain";
+import type { CommentAudienceInput } from "@missiongo/domain";
 export interface DraftMention { readonly start:number; readonly end:number; readonly label:string; readonly accountId?:string; readonly target?:"all" }
 export function mentionQuery(text:string,cursor:number): {start:number;end:number;query:string}|null {
   const match=/(?:^|\s)@([^\s@]*)$/u.exec(text.slice(0,cursor));
@@ -34,11 +34,4 @@ export function additionalMentionNames(text:string,names:readonly string[]):stri
     return false;
   };
   return [...new Set(names)].filter(name=>!hasToken(name));
-}
-
-export function isSelfOnlyAudience(mentions:readonly Pick<CommentMention,"accountId">[],accountId?:string,replyAccountId?:string):boolean {
-  if(!accountId)return false;
-  const ids=new Set(mentions.map(mention=>mention.accountId));
-  if(replyAccountId)ids.add(replyAccountId);
-  return ids.size>0 && [...ids].every(id=>id===accountId);
 }

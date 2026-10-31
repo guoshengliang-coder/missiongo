@@ -1,5 +1,5 @@
 import { describe,expect,it } from "vitest";
-import { additionalMentionNames,editMentions,isSelfOnlyAudience,mentionQuery,mentionAudience } from "./comment-mentions";
+import { additionalMentionNames,editMentions,mentionQuery,mentionAudience } from "./comment-mentions";
 describe("draft mentions",()=>{
   it("finds the token at the cursor without treating email addresses as mentions",()=>{
     expect(mentionQuery("ask @张三 later",6)).toEqual({start:4,end:6,query:"张"});
@@ -18,13 +18,5 @@ describe("draft mentions",()=>{
     expect(additionalMentionNames("@Everyone please confirm",["Alex","Sam"])).toEqual(["Alex","Sam"]);
     expect(additionalMentionNames("请确认",["张三","张三"])).toEqual(["张三"]);
     expect(additionalMentionNames("@Anna please confirm",["Ann","Anna"])).toEqual(["Ann"]);
-  });
-  it("explains self-exclusion only when every resolved recipient is the author",()=>{
-    expect(isSelfOnlyAudience([{accountId:"me"}],"me")).toBe(true);
-    expect(isSelfOnlyAudience([],"me","me")).toBe(true);
-    expect(isSelfOnlyAudience([{accountId:"me"}],"me","other")).toBe(false);
-    expect(isSelfOnlyAudience([{accountId:"other"}],"me")).toBe(false);
-    expect(isSelfOnlyAudience([],"me")).toBe(false);
-    expect(isSelfOnlyAudience([{accountId:"me"}],undefined)).toBe(false);
   });
 });

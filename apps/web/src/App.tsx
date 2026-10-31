@@ -1,4 +1,4 @@
-import { additionalMentionNames, editMentions, isSelfOnlyAudience, mentionQuery, mentionAudience, type DraftMention } from "./comment-mentions";
+import { additionalMentionNames, editMentions, mentionQuery, mentionAudience, type DraftMention } from "./comment-mentions";
 import { WebVersion } from "./web-version";
 import { Select } from "./select";
 import { DraftChatFile } from "./agent-chat-draft-file";
@@ -67,7 +67,7 @@ import {
   X,
 } from "lucide-react";
 
-import { api, ApiError, type AuthenticatedUser, type Bootstrap, type BulkTransitionResult } from "./api";
+import { api, ApiError, type AuthenticatedUser, type BulkTransitionResult } from "./api";
 import { BootSkeleton } from "./BootSkeleton";
 import { clearPersistedQueryCache } from "./query-persistence";
 // Type-only: erased at compile time, so it does not pull the chunk into the boot.
@@ -3204,8 +3204,6 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
   item: WorkItem; onPosted: () => Promise<void>; onNotice: (message: string) => void;
 }) {
   const { t } = useI18n();
-  const queryClient=useQueryClient();
-  const currentAccountId=queryClient.getQueryData<Bootstrap>(["bootstrap"])?.user.id;
   const [text, setText] = useState("");
   const [mentions,setMentions]=useState<readonly DraftMention[]>([]);
   const [cursor,setCursor]=useState(0);
@@ -3230,9 +3228,6 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
   useEffect(()=>{if(replyTo)document.getElementById("comment-draft")?.focus();},[replyTo]);
   const { actorLabel }=useI18n();
   const replyName=replyTo ? commentAuthor({...replyTo,agentName:eventAgentName(replyTo.payload)},actorLabel(replyTo.actorKind)) : "";
-  const selectedRecipients=mentions.flatMap(mention=>mention.accountId ? [{accountId:mention.accountId}]
-    : (candidates.data?.candidates ?? []).filter(person=>person.isBuilder || person.isProposer));
-  const selfOnly=isSelfOnlyAudience(selectedRecipients,currentAccountId,replyTo?.accountId);
   const [files, setFiles] = useState<readonly File[]>([]);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -3261,10 +3256,9 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
       if (attempt.current.fingerprint !== fingerprint) attempt.current = { fingerprint, key: crypto.randomUUID() };
       return api.createComment(item.key, { text: text.trim(), attachmentIds, ...audience, idempotencyKey: attempt.current.key });
     },
-    onSuccess: async (comment) => {
-      const onlySelf=isSelfOnlyAudience(comment.mentions ?? [],comment.accountId,replyTo?.accountId);
+    onSuccess: async () => {
       setText(""); setMentions([]);setCursor(0);onCancelReply(); setFiles([]); setError(null); uploaded.current.clear(); uploadIds.current.clear(); attempt.current = { fingerprint: "", key: "" };
-      await onPosted(); onNotice(t(onlySelf ? "commentPostedSelfOnly" : "commentPosted"));
+      await onPosted(); onNotice(t("commentPosted"));
     },
     onError: async (failure) => { setError(errorMessage(failure, t("somethingWentWrong"))); await onPosted(); },
   });
@@ -3314,7 +3308,6 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
           </button>
         </div>
       </div>
-      {selfOnly && <p className="detail-composer-hint comment-audience-hint" role="status">{t("commentSelfOnlyHint")}</p>}
     </fieldset>
     {error && <InlineError message={error} />}
     {mutation.isError && uploaded.current.size > 0 && <p className="detail-composer-hint">{t("commentUploadRetained")}</p>}
