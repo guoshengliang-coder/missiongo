@@ -71,6 +71,30 @@ describe("agent session questions", () => {
     expect(html).toContain("已回答");
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*class="selected"[^>]*>继续<\/button>/);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>停止<\/button>/);
+    expect(html).not.toContain("agent-session-question-draft");
+  });
+
+  it("shows a key-less selection as an unsent draft, following edits and clearing (AND-347)", () => {
+    const question = { title: "选择范围", options: ["人工评论、MCP", "仅人工评论"] };
+    for (const reply of ["人工评论、MCP", "仅人工评论", "自定义回复", ""]) {
+      const html = render(<AgentSessionQuestions questions={[question]} reply={reply} canReply onChange={() => undefined} />);
+      const selected = question.options.includes(reply);
+      expect(html.includes("已选择，未发送")).toBe(selected);
+      expect(html.includes('aria-pressed="true"')).toBe(selected);
+      expect(html).not.toContain("已回答");
+      if (selected) expect(html).toContain(`aria-pressed="true">${reply}</button>`);
+    }
+  });
+
+  it("matches each unkeyed question by its labelled line in a group (AND-347)", () => {
+    const questions = [
+      { header: "范围", title: "选择范围", options: ["全部", "部分"] },
+      { header: "确认", title: "是否继续", kind: "boolean" as const },
+    ];
+    const html = render(<AgentSessionQuestions questions={questions} reply={"范围: 部分\n确认: 是"} canReply onChange={() => undefined} />);
+    expect(html).toContain('aria-pressed="true">部分</button>');
+    expect(html).toContain('aria-pressed="true">是</button>');
+    expect(html).toContain('aria-pressed="false">全部</button>');
   });
 
   it("drops a withdrawn card instead of drawing a dead ask (AND-239)", () => {

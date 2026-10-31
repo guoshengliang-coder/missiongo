@@ -453,6 +453,29 @@ describe("agent session message view", () => {
     expect(questionAnswerText("", field, "小", 1)).toBe("scope: 小");
   });
 
+  it("reads exactly the same single or labelled answer format that it writes (AND-347)", () => {
+    const question = { header: "范围", title: "本次做什么？" };
+    const option = "纳入本次：人工评论、MCP 都支持";
+    for (const count of [1, 2]) {
+      const draft = questionAnswerText("", question, option, count);
+      expect(questionAnswerValue(draft, question, count)).toBe(option);
+      expect(questionAnswerValue("自行决定", question, count)).toBe(count === 1 ? "自行决定" : "");
+      expect(questionAnswerValue("", question, count)).toBe("");
+    }
+    expect(questionAnswerValue(option, { ...question, key: "scope" }, 1)).toBe("");
+    expect(questionAnswerValue(option, question, 2)).toBe("");
+  });
+
+  it("toggles a single key-less multi-select and clears its last option (AND-347)", () => {
+    const question = { title: "选择范围" };
+    const first = toggleQuestionOption("", question, "甲", 1);
+    const second = toggleQuestionOption(first, question, "乙", 1);
+    expect(second).toBe("甲、乙");
+    expect(questionAnswerValues(second, question, 1)).toEqual(["甲", "乙"]);
+    expect(toggleQuestionOption(second, question, "甲", 1)).toBe("乙");
+    expect(toggleQuestionOption("乙", question, "乙", 1)).toBe("");
+  });
+
   it("toggles a multi-select field without dropping its other values", () => {
     const field = { title: "标签", key: "tags", multiSelect: true };
     const first = toggleQuestionOption("", field, "甲", 2);
