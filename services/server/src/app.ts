@@ -632,7 +632,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     log: app.log,
   });
   const attentionClassifications = new Map<string, Promise<void>>();
-  const planApprovals = new PlanApprovalService((content, latestText) => aiTitle.classifyPlanApproval(content, latestText));
+  const planApprovals = new PlanApprovalService();
   const scheduleAttentionClassification = (sessionId: string): void => {
     if (!aiTitle.attentionEnabled() || attentionClassifications.has(sessionId)) return;
     const candidate = agentSessionStore.pendingAttention(sessionId);
@@ -2570,18 +2570,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   const planApprovalContext = (request: FastifyRequest, sessionId: string, operate = false) => {
     const members = consoleSessions.members(requireAccountId(request), sessionId);
-    let unavailableReason: PlanApprovalBlockReason | undefined = !aiTitle.attentionEnabled() ? "ai_disabled"
-      : members.some((row) => row.command && ["queued", "delivering", "delivery_unknown"].includes(row.command.status)) ? "reply_pending"
-      : members.some((row) => row.attention.dismissed) ? "dismissed" : undefined;
+    let unavailableReason: PlanApprovalBlockReason | undefined = members.some((row) => row.command && ["queued", "delivering", "delivery_unknown"].includes(row.command.status)) ? "reply_pending" : undefined;
+    const attention = agentApprovalStore.withAttention(consoleSessions.getSummary(requireAccountId(request), sessionId)).attention;
     if (externalSessionStore.has(sessionId)) {
-      const session = loadExternalSession(request, sessionId, operate, operate);
+      const session = { ...loadExternalSession(request, sessionId, operate, operate), attention };
       if (!unavailableReason && session.nativeConnection?.state !== "connected") unavailableReason = "connection_unavailable";
       return { session, unavailableReason };
     }
     const loaded = loadAuthorizedAgentSession(request, sessionId, operate);
     const node = dispatchStore.getNode(loaded.account.id, loaded.dispatch.nodeId);
     if (!unavailableReason && (node.revokedAt || nodeConnectionState(node.lastSeenAt) !== "online")) unavailableReason = "connection_unavailable";
-    return { session: agentSessionResponse(loaded), unavailableReason };
+    return { session: { ...agentSessionResponse(loaded), attention }, unavailableReason };
   };
 
   app.get("/api/v1/agent-sessions/:sessionId", async (request) => {

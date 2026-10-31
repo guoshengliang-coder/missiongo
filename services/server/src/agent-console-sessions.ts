@@ -57,6 +57,10 @@ export class AgentConsoleSessions {
     return group;
   }
 
+  getSummary(accountId: string, id: string): AgentSessionListItem {
+    return this.summary(this.members(accountId, id));
+  }
+
   list(accountId: string): AgentSessionListItem[] {
     return this.groups(accountId).map((group) => this.summary(group))
       .sort((a, b) => b.activityAt.localeCompare(a.activityAt) || b.id.localeCompare(a.id)).slice(0, 100);
