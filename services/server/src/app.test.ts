@@ -602,6 +602,10 @@ describe("Commenting over MCP", () => {
     expect(app.missionGoStore.listWorkItems({ productId })).toHaveLength(2);
 
     const item = app.missionGoStore.getWorkItem("HG-2");
+    const creationTimeline = app.missionGoStore.getTimeline(item.key);
+    const creationId = creationTimeline.find(event => event.eventType === "item_created")!.id;
+    expect(creationTimeline.filter(event => event.eventType === "attachment_added")
+      .map(event => event.payload.creationEventId)).toEqual(uploads.map(() => creationId));
     for (const [index, fixture] of uploads.entries()) {
       const attachment = item.attachments[index]!;
       const fromWeb = await app.inject({ method: "GET", url: `/api/v1/items/HG-2/attachments/${attachment.id}/content`,
@@ -3590,6 +3594,8 @@ describe("MissionGo REST API", () => {
     const logFile = app.missionGoStore.listAttachments(finalizedKey)
       .find((attachment) => attachment.kind === "log");
     expect(logFile?.filename).toBe(`${finalizedKey}-diagnostics.log`);
+    expect(app.missionGoStore.getTimeline(finalizedKey).find(event => event.payload.attachmentId === logFile!.id)?.payload)
+      .toMatchObject({ creationEventId: created_event!.id });
     // The count still names the entries, so the summary reads the same as before.
     expect(defaultDraftItem.json<{ diagnosticSummary: { logCount: number } }>().diagnosticSummary.logCount).toBe(1);
 
@@ -3623,6 +3629,8 @@ describe("MissionGo REST API", () => {
     expect(sdkAttachment.statusCode).toBe(201);
     const uploadedAttachment = sdkAttachment.json<{ id: string; filename: string; kind: string }>();
     expect(uploadedAttachment).toMatchObject({ filename: "search-retry.log", kind: "log" });
+    expect(app.missionGoStore.getTimeline(finalizedKey).find(event => event.payload.attachmentId === uploadedAttachment.id)?.payload)
+      .toMatchObject({ creationEventId: created_event!.id });
     const repeatedAttachment = await app.inject({
       method: "POST",
       url: `/api/v1/sdk/drafts/${created.id}/attachments`,

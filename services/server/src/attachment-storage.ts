@@ -121,11 +121,12 @@ export class AttachmentStorage {
     feedbackUpload?: { readonly draftId: string; readonly clientAttachmentId: string },
     attribution?: EventAttribution,
     requestKey?: string,
+    creation?: { readonly creationUploadId?: string; readonly createdWithItem?: boolean },
   ): Promise<AttachmentRecord> {
     store.assertWorkItemWritable(itemKey);
     const { filename, extension, rule, contentType } = validateUpload(encodedFilename, suppliedContentType, bytes);
 
-    const uploadRetry = requestKey ? { key: requestKey, fingerprint: JSON.stringify([filename, contentType, createHash("sha256").update(bytes).digest("hex")]) } : undefined;
+    const uploadRetry = requestKey ? { key: requestKey, fingerprint: JSON.stringify([filename, contentType, createHash("sha256").update(bytes).digest("hex"), ...(creation ? [creation] : [])]) } : undefined;
     if (uploadRetry) {
       const repeated = store.getAttachmentUpload(itemKey, uploadRetry.key, uploadRetry.fingerprint);
       if (repeated) return repeated;
@@ -151,6 +152,7 @@ export class AttachmentStorage {
     await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
     try {
       const attachment = store.createAttachmentMetadata({
+        ...creation,
         itemKey,
         kind: rule.kind,
         filename,

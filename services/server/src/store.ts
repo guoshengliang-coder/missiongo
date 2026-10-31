@@ -813,6 +813,7 @@ export class MissionGoStore {
       }
       const key = this.insertWorkItem(input, title, description, id, now, {
         type: input.type,
+        ...(input.creationUploadId ? { creationUploadId: input.creationUploadId } : {}),
       }, { actor: "human", ...(input.attribution ? { attribution: input.attribution } : {}) });
       if (builder) {
         this.database.connection.prepare("UPDATE work_items SET builder_account_id = ?, builder_assignment = 'manual' WHERE id = ?")
@@ -1165,6 +1166,18 @@ export class MissionGoStore {
     }
     const item = this.getWorkItemRow(input.itemKey);
     if (!item) throw notFound("Work item");
+    const creation = (input.creationUploadId !== undefined || input.createdWithItem || input.feedbackDraftId)
+      ? this.getTimeline(input.itemKey).find(event => event.eventType === "item_created" && !event.historySourceKey)
+      : undefined;
+    if (input.creationUploadId !== undefined && (!creation
+      || creation.payload.creationUploadId !== input.creationUploadId
+      || creation.actorKind !== (input.actorKind ?? "human")
+      || creation.accountId !== input.attribution?.accountId
+      || creation.clientId !== input.attribution?.clientId)) {
+      throw invalidInput("Creation upload does not belong to this item and creator.");
+    }
+    const creationEventId = creation && (input.creationUploadId !== undefined || input.createdWithItem
+      || (input.feedbackDraftId && creation.payload.feedbackDraftId === input.feedbackDraftId)) ? creation.id : undefined;
     if (!isOneOf(input.kind, ATTACHMENT_KINDS)) throw invalidInput("Unsupported attachment kind.");
     if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 1) throw invalidInput("Attachment size is invalid.");
     const feedbackIdempotencyFields = [input.feedbackDraftId, input.clientAttachmentId, input.contentSha256];
@@ -1220,6 +1233,7 @@ export class MissionGoStore {
       }
       this.database.connection.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(now, item.id);
       this.insertEvent(item.id, "attachment_added", input.actorKind ?? "human", null, null, {
+        ...(creationEventId ? { creationEventId } : {}),
         attachmentId: id,
         kind: input.kind,
         displayNumber,
@@ -1856,6 +1870,9 @@ export class MissionGoStore {
 
   private validateNewWorkItem(input: CreateWorkItemInput): { readonly title: string; readonly description: string } {
     const title = requiredText(input.title, "Title");
+    if (input.creationUploadId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.creationUploadId)) {
+      throw invalidInput("creationUploadId must be a UUID.");
+    }
     const description = input.description.trim();
     if (description.length > 20_000) throw invalidInput("Description must be 20,000 characters or fewer.");
     if (input.status !== undefined && !isOneOf(input.status, ["inbox", "ready"] as const)) {

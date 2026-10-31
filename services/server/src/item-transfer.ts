@@ -108,9 +108,10 @@ export function transferWorkItem(store: MissionGoStore, storage: AttachmentStora
       }
       const events = db.prepare(`SELECT id, payload_json FROM work_item_events WHERE item_id = ?
         AND event_type NOT IN ('dispatched', 'derived_item_created') ORDER BY timeline_seq`).all(source.id) as { id: string; payload_json: string }[];
+      for (const event of events) idMap.set(event.id, randomUUID());
       for (const event of events) {
         const payload = JSON.parse(event.payload_json) as Record<string, unknown>;
-        for (const field of ["attachmentId", "commentId"]) {
+        for (const field of ["attachmentId", "commentId", "creationEventId"]) {
           if (typeof payload[field] === "string" && idMap.has(payload[field])) payload[field] = idMap.get(payload[field]);
         }
         db.prepare(`INSERT INTO work_item_events
@@ -118,7 +119,7 @@ export function transferWorkItem(store: MissionGoStore, storage: AttachmentStora
            account_id, client_id, execution_id, timeline_seq, created_at, history_source_key)
           SELECT ?, ?, event_type, actor_kind, from_status, to_status, ?, account_id, client_id, NULL,
            timeline_seq, created_at, COALESCE(history_source_key, ?) FROM work_item_events WHERE id = ?`)
-          .run(randomUUID(), target.id, JSON.stringify(payload), key, event.id);
+          .run(idMap.get(event.id)!, target.id, JSON.stringify(payload), key, event.id);
       }
       const now = new Date().toISOString();
       const componentIds = new Set([source.sourceComponentId, ...source.affectedComponentIds].filter((id): id is string => Boolean(id)));

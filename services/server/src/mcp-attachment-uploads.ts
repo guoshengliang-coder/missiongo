@@ -287,9 +287,9 @@ export class McpAttachmentUploads {
     return undefined;
   }
 
-  private attach(row: UploadRow, itemKey: string, attribution: EventAttribution): AttachmentRecord {
+  private attach(row: UploadRow, itemKey: string, attribution: EventAttribution, createdWithItem = false): AttachmentRecord {
     const attachment = this.store.createAttachmentMetadata({
-      itemKey, kind: row.kind, filename: row.filename, storageFilename: row.storage_filename,
+      createdWithItem, itemKey, kind: row.kind, filename: row.filename, storageFilename: row.storage_filename,
       contentType: row.content_type, sizeBytes: row.size_bytes, attribution, actorKind: "agent",
     });
     this.store.database.connection.prepare(
@@ -307,7 +307,7 @@ export class McpAttachmentUploads {
       const rows = this.checkedUploads(uploadIds, owner, productId);
       const item = this.store.createDerivedWorkItem(input);
       const attribution: EventAttribution = input.attribution ?? {};
-      const attachments = rows.map((row) => this.attach(row, item.key, attribution));
+      const attachments = rows.map((row) => this.attach(row, item.key, attribution, true));
       this.store.database.connection.prepare(`INSERT INTO mcp_attachment_commits
         (idempotency_key, operation, request_hash, item_key, attachment_ids_json) VALUES (?, ?, ?, ?, ?)`).run(
         input.idempotencyKey, "create_item", requestHash, item.key, JSON.stringify(attachments.map((a) => a.id)),

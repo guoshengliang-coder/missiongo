@@ -401,11 +401,11 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-async function uploadAttachmentsSequentially(itemKey: string, files: readonly File[]): Promise<number> {
+async function uploadAttachmentsSequentially(itemKey: string, files: readonly File[], creationUploadId?: string): Promise<number> {
   let failed = 0;
   for (const file of files) {
     try {
-      await api.uploadAttachment(itemKey, file);
+      await api.uploadAttachment(itemKey, file, undefined, creationUploadId);
     } catch {
       failed += 1;
     }
@@ -4045,7 +4045,9 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
         throw new Error(t("diagnosticTooLarge"));
       }
       const environment = environmentPayload(draft.environment, undefined, true);
+      const creationUploadId = crypto.randomUUID();
       const item = await api.createItem({
+        creationUploadId,
         productId: product.id,
         status,
         title: draft.title,
@@ -4059,7 +4061,7 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
           : {}),
         ...(environment ? { environment } : {}),
       });
-      const failedUploads = await uploadAttachmentsSequentially(item.key, filesWithDiagnosticLog(files, draft.diagnosticLog));
+      const failedUploads = await uploadAttachmentsSequentially(item.key, filesWithDiagnosticLog(files, draft.diagnosticLog), creationUploadId);
       // Only once the item exists and the uploads are done -- the copies on the
       // phone are the only remaining ones until then.
       if (clearGalleryCopies && failedUploads === 0) mediaDeletion?.deletePickedMedia();
