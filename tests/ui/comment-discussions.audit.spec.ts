@@ -90,6 +90,8 @@ for(const width of [353,1440]) for(const theme of ["light","dark"] as const) {
       await expect(composer.locator(".comment-reply-source span")).toHaveText("@所有人 请解释字段");await input.fill("第一条回复");await send.click();
       const first=page.locator(".comment-thread-reply").filter({hasText:"第一条回复"});await first.getByRole("button",{name:"回复",exact:true}).click();
       await expect(composer.locator(".comment-reply-source span")).toHaveText("第一条回复");
+      await page.locator(".toast").getByRole("button",{name:"关闭提示"}).click();
+      await page.screenshot({path:test.info().outputPath(`reply-context-${width}-${theme}.png`)});
       await composer.getByRole("button",{name:/回复/}).first().click();await expect(first).toBeFocused();
       await input.fill("回复上一条");await send.click();await expect(page.locator(".comment-discussion")).toHaveCount(1);await expect(page.locator(".comment-thread-reply")).toHaveCount(2);
       await page.reload();await expect(page.locator(".comment-thread-reply")).toHaveCount(2);
