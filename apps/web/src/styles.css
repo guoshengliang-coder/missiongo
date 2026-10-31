@@ -2895,6 +2895,9 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .detail-composer .agent-chat-send-actions { gap: 2px; }
 .detail-composer .agent-chat-icon-button { border-radius: var(--radius-sm); box-shadow: none; }
 .detail-composer .secondary-button.agent-chat-icon-button { background: transparent; border: 0; color: var(--muted); }
+/* One line tall by default (AND-348), so a placeholder that wrapped would be
+   cut mid-second-line on a narrow phone; keep it to the line it can show. */
+.detail-composer textarea::placeholder { white-space: nowrap; }
 .detail-composer .agent-chat-draft-files { max-height: 96px; overflow-y: auto; }
 .detail-composer .inline-error { flex: none; overflow-wrap: anywhere; }
 .detail-composer-hint { margin: 0; font-size: var(--text-xs); color: var(--muted); }
