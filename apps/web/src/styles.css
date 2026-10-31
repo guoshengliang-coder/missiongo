@@ -1212,10 +1212,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 /* A long comment folds behind one line. The summary is the agent's own if it
    sent one, and the first sentence of the body if it did not -- which is every
    comment written before summaries existed. */
-.comment-collapsible { margin-top: 8px; }
-/* The withdraw button sits under the body here rather than beside it: in a
-   fold it would otherwise land next to the summary and read as its action. */
-.comment-collapsible > .comment-withdraw { margin-top: 8px; }
+.comment-collapsible { margin-top: 0; }
 .comment-collapsible > summary { display: flex; align-items: baseline; gap: 8px; margin-top: 7px; padding: 7px 9px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); cursor: pointer; list-style: none; }
 .comment-collapsible > summary::-webkit-details-marker { display: none; }
 @media (hover: hover) { .comment-collapsible > summary:hover { border-color: var(--line-dark); } }
@@ -1242,9 +1239,11 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .transition-note-suggestions > span { color: var(--muted); font-size: var(--text-xs); }
 .transition-note-quick-reasons { display: flex; flex-wrap: wrap; gap: 8px; }
 .transition-note-quick-reasons button { min-height: 44px; }
-.comment-body { display: flex; flex-direction: column; align-items: stretch; gap: 10px; margin-top: 8px; min-width: 0; }
+.comment-body { display: flex; flex-direction: column; align-items: stretch; gap: 4px; margin-top: 8px; min-width: 0; }
 .comment-content { min-width: 0; overflow-wrap: anywhere; }
-.comment-body > .comment-withdraw { align-self: flex-end; }
+.comment-actions { display: flex; align-items: center; gap: 4px; margin-inline-start: -6px; }
+.comment-actions :is(.comment-reply-button, .comment-withdraw) { min-height: 36px; padding: 6px; font-size: var(--text-xs); font-weight: 500; }
+@media (pointer: coarse) { .comment-actions :is(.comment-reply-button, .comment-withdraw) { min-height: 44px; padding-inline: 10px; } }
 .comment-withdraw { flex: none; padding: 2px 6px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: var(--text-xs); cursor: pointer; }
 @media (hover: hover) { .comment-withdraw:hover { color: var(--danger); text-decoration: underline; } }
 @media (max-width: 640px) { .comment-form { grid-template-columns: 1fr; } }
@@ -2889,8 +2888,13 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .detail-pane { --detail-visible-height: 100%; max-height: var(--detail-visible-height); }
 .comment-form.detail-composer { flex: none; min-width: 0; max-height: 45%; overflow-y: auto; margin: 0; padding: 12px max(18px, calc((100% - 860px) / 2)) max(12px, var(--safe-bottom)); border-top: 1px solid var(--line); background: var(--surface-strong); }
 .detail-composer > fieldset { display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; }
-.detail-composer-row { display: flex; align-items: flex-end; gap: 7px; min-width: 0; }
-.detail-composer textarea { flex: 1 1 0; min-width: 0; min-height: 44px; max-height: min(240px, 20dvh); resize: none; background: var(--surface-field); border-color: var(--line-dark); }
+.detail-composer-row { display: flex; align-items: flex-end; gap: 4px; min-width: 0; padding: 5px; border: 1px solid var(--line-dark); border-radius: var(--radius-md); background: var(--surface-field); }
+.detail-composer-row:focus-within { border-color: var(--mint-dark); box-shadow: 0 0 0 1px var(--mint-dark); }
+.detail-composer textarea { display: block; flex: 1 1 0; min-width: 0; min-height: 44px; max-height: min(240px, 20dvh); padding: 10px 8px; resize: none; border: 0; border-radius: 0; background: transparent; }
+.detail-composer textarea:focus-visible { outline: none; }
+.detail-composer .agent-chat-send-actions { gap: 2px; }
+.detail-composer .agent-chat-icon-button { border-radius: var(--radius-sm); box-shadow: none; }
+.detail-composer .secondary-button.agent-chat-icon-button { background: transparent; border: 0; color: var(--muted); }
 .detail-composer .agent-chat-draft-files { max-height: 96px; overflow-y: auto; }
 .detail-composer .inline-error { flex: none; overflow-wrap: anywhere; }
 .detail-composer-hint { margin: 0; font-size: var(--text-xs); color: var(--muted); }
@@ -3047,12 +3051,12 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .comment-mention-menu small { color: var(--muted); }
 .comment-mention-menu > p { padding: 8px; color: var(--muted); }
 .comment-reply-context { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 8px; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
-.comment-reply-context button, .comment-reply-button { min-height: 44px; }
+.comment-reply-context button { min-height: 44px; padding: 4px 6px; font-size: var(--text-xs); }
 .comment-discussion { min-width: 0; }
 .comment-thread-root, .comment-thread-reply { scroll-margin-block: 24px; }
 .comment-thread-reply { margin-block-start: 12px; padding-block-start: 12px; padding-inline-start: 12px; border-block-start: 1px solid var(--line-soft); border-inline-start: 2px solid var(--line); }
 .comment-reply-byline { font-size: var(--text-sm); color: var(--muted); overflow-wrap: anywhere; }
-.comment-reply-byline span { display: block; margin-block-start: 4px; }
-.comment-mentioned { color: var(--accent-text); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.comment-reply-byline span { margin-inline-start: 8px; }
+.timeline-event .comment-mentioned { margin-top: 6px; color: var(--muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
 
 .comment-reply-byline > strong { display: inline; }

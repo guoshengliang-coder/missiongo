@@ -1,4 +1,4 @@
-import { editMentions, mentionQuery, mentionAudience, type DraftMention } from "./comment-mentions";
+import { additionalMentionNames, editMentions, isSelfOnlyAudience, mentionQuery, mentionAudience, type DraftMention } from "./comment-mentions";
 import { WebVersion } from "./web-version";
 import { Select } from "./select";
 import { DraftChatFile } from "./agent-chat-draft-file";
@@ -67,7 +67,7 @@ import {
   X,
 } from "lucide-react";
 
-import { api, ApiError, type AuthenticatedUser, type BulkTransitionResult } from "./api";
+import { api, ApiError, type AuthenticatedUser, type Bootstrap, type BulkTransitionResult } from "./api";
 import { BootSkeleton } from "./BootSkeleton";
 import { clearPersistedQueryCache } from "./query-persistence";
 // Type-only: erased at compile time, so it does not pull the chunk into the boot.
@@ -3194,8 +3194,7 @@ function CommentGroup({root,replies,item,onReply,onWithdraw}:{root:WorkItemEvent
   return <div className="comment-discussion" aria-label={t("commentDiscussion")}>
     {events.map((event,index)=><div id={`comment-${event.id}`} key={event.id} className={index?"comment-thread-reply":"comment-thread-root"}>
       {index>0 && <p className="comment-reply-byline"><strong>{names.get(event.id)}</strong> · {formatTime(event.createdAt)}<span>{t("commentReplyTo",{name:names.get(String(event.payload.replyToCommentId)) ?? t("originalComment")})}</span></p>}
-      <CommentBody payload={event.payload} item={item} readOnly={Boolean(item.transferred)} onWithdraw={()=>onWithdraw(event.id)} />
-      {!item.transferred && !event.payload.withdrawnAt && <button type="button" className="text-button comment-reply-button" onClick={()=>onReply(event)}>{t("replyComment")}</button>}
+      <CommentBody payload={event.payload} item={item} readOnly={Boolean(item.transferred)} onWithdraw={()=>onWithdraw(event.id)} onReply={()=>onReply(event)} />
     </div>)}
   </div>;
 }
@@ -3205,6 +3204,8 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
   item: WorkItem; onPosted: () => Promise<void>; onNotice: (message: string) => void;
 }) {
   const { t } = useI18n();
+  const queryClient=useQueryClient();
+  const currentAccountId=queryClient.getQueryData<Bootstrap>(["bootstrap"])?.user.id;
   const [text, setText] = useState("");
   const [mentions,setMentions]=useState<readonly DraftMention[]>([]);
   const [cursor,setCursor]=useState(0);
@@ -3229,6 +3230,9 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
   useEffect(()=>{if(replyTo)document.getElementById("comment-draft")?.focus();},[replyTo]);
   const { actorLabel }=useI18n();
   const replyName=replyTo ? commentAuthor({...replyTo,agentName:eventAgentName(replyTo.payload)},actorLabel(replyTo.actorKind)) : "";
+  const selectedRecipients=mentions.flatMap(mention=>mention.accountId ? [{accountId:mention.accountId}]
+    : (candidates.data?.candidates ?? []).filter(person=>person.isBuilder || person.isProposer));
+  const selfOnly=isSelfOnlyAudience(selectedRecipients,currentAccountId,replyTo?.accountId);
   const [files, setFiles] = useState<readonly File[]>([]);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -3257,9 +3261,10 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
       if (attempt.current.fingerprint !== fingerprint) attempt.current = { fingerprint, key: crypto.randomUUID() };
       return api.createComment(item.key, { text: text.trim(), attachmentIds, ...audience, idempotencyKey: attempt.current.key });
     },
-    onSuccess: async () => {
+    onSuccess: async (comment) => {
+      const onlySelf=isSelfOnlyAudience(comment.mentions ?? [],comment.accountId,replyTo?.accountId);
       setText(""); setMentions([]);setCursor(0);onCancelReply(); setFiles([]); setError(null); uploaded.current.clear(); uploadIds.current.clear(); attempt.current = { fingerprint: "", key: "" };
-      await onPosted(); onNotice(t("commentPosted"));
+      await onPosted(); onNotice(t(onlySelf ? "commentPostedSelfOnly" : "commentPosted"));
     },
     onError: async (failure) => { setError(errorMessage(failure, t("somethingWentWrong"))); await onPosted(); },
   });
@@ -3309,6 +3314,7 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
           </button>
         </div>
       </div>
+      {selfOnly && <p className="detail-composer-hint comment-audience-hint" role="status">{t("commentSelfOnlyHint")}</p>}
     </fieldset>
     {error && <InlineError message={error} />}
     {mutation.isError && uploaded.current.size > 0 && <p className="detail-composer-hint">{t("commentUploadRetained")}</p>}
@@ -3319,12 +3325,14 @@ function CommentBody({
   payload,
   item,
   onWithdraw,
+  onReply,
   readOnly = false,
 }: {
   readonly payload: Readonly<Record<string, unknown>>;
   readonly item: WorkItem;
   readonly readOnly?: boolean;
   readonly onWithdraw: () => void;
+  readonly onReply: () => void;
 }) {
   const { t } = useI18n();
   const body = (payload.body ?? {}) as Readonly<Record<string, unknown>>;
@@ -3338,7 +3346,8 @@ function CommentBody({
       : null;
   if (!textContent && !attachmentIds.length) return null;
   const mentions=Array.isArray(payload.mentions) ? payload.mentions.flatMap(value=>value && typeof value==="object" && "name" in value && typeof value.name==="string" ? [value.name] : []) : [];
-  const rendered = <div className="comment-content">{mentions.length>0 && <p className="comment-mentioned">{mentions.map(name=>`@${name}`).join(" · ")}</p>}{textContent}{attachmentIds.length > 0 && <AttachmentSection itemKey={item.key} attachments={attachments} compact />}</div>;
+  const extraMentions=additionalMentionNames(commentPlainText(payload.bodyKind,body),mentions);
+  const rendered = <div className="comment-content">{textContent}{extraMentions.length>0 && <p className="comment-mentioned">{t("commentRecipients",{names:extraMentions.join("、")})}</p>}{attachmentIds.length > 0 && <AttachmentSection itemKey={item.key} attachments={attachments} compact />}</div>;
 
   // Agents write a lot, and at length. A long comment folds behind one line so
   // a timeline of them can be skimmed; a short one is already its own summary,
@@ -3367,8 +3376,9 @@ function CommentBody({
     <button type="button" className="comment-withdraw" onClick={onWithdraw}>{t("withdrawComment")}</button>
   );
 
-  if (collapsible) {
-    return (
+  return (
+    <div className="comment-body">
+      {collapsible ? (
       <details className="comment-collapsible">
         <summary>
           <span className="comment-summary-text">{summary}</span>
@@ -3376,15 +3386,12 @@ function CommentBody({
           <small className="when-open">{t("commentCollapse")}</small>
         </summary>
         {rendered}
-        {withdrawButton}
       </details>
-    );
-  }
-
-  return (
-    <div className="comment-body">
-      {rendered}
-      {withdrawButton}
+      ) : rendered}
+      {!readOnly && <div className="comment-actions">
+        <button type="button" className="text-button comment-reply-button" onClick={onReply}>{t("replyComment")}</button>
+        {withdrawButton}
+      </div>}
     </div>
   );
 }
