@@ -14,10 +14,9 @@ import {
   ACTIVE_DISPATCHES_QUERY_KEY,
   ACTIVE_DISPATCHES_REFETCH_MS,
   activeDispatchStatusKey,
-  dispatchesByItem,
   conflictSignature,
-  dispatchConflicts,
   includesQueued,
+  redispatchReasonKey,
 } from "./dispatch-conflicts";
 import {
   NODE_INELIGIBILITY_KEYS,
@@ -32,6 +31,7 @@ import {
   type NodeIneligibility,
 } from "./dispatch-eligibility";
 import { SessionLink } from "./session-link";
+import { agentConsoleUrl } from "./navigation";
 import { useI18n } from "./i18n";
 import type { Dispatch, DispatchDefaults, DispatchNode, Product, WorkItem } from "./types";
 
@@ -137,19 +137,17 @@ export function DispatchDialog({
   }, [agentKind, defaultsApplied, defaultsQuery.data, defaultsQuery.isFetched, touched]);
   const itemKeys = useMemo(() => items.map((item) => item.key), [items]);
   const productIds = useMemo(() => [...new Set(items.map((item) => item.productId))], [items]);
-  const activeQuery = useQuery({
-    queryKey: ACTIVE_DISPATCHES_QUERY_KEY,
-    queryFn: api.listActiveDispatches,
+  const eligibility = useQuery({
+    queryKey: [...ACTIVE_DISPATCHES_QUERY_KEY,"eligibility",...itemKeys],
+    queryFn: () => api.checkRedispatch(itemKeys),
+    enabled: itemKeys.length > 0 && !created,
     refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
   });
-  // Not waited for: while it loads, or if it fails, the server still refuses a
-  // second dispatch, and that refusal brings the notice below with it.
-  const conflicts = useMemo(
-    () => dispatchConflicts(itemKeys, dispatchesByItem(activeQuery.data?.active ?? [])),
-    [activeQuery.data, itemKeys],
-  );
+  // Eligibility is required before submission; the write repeats the same guard
+  // so a dispatch delivered after this check cannot be replaced accidentally.
+  const conflicts = eligibility.data?.conflicts ?? [];
   const conflictsKey = conflictSignature(conflicts);
-  const redispatchConfirmed = conflicts.length > 0 && acknowledgedConflicts === conflictsKey;
+  const redispatchConfirmed = eligibility.data?.requiresConfirmation === true && acknowledgedConflicts === conflictsKey;
   const ineligibility = useMemo(
     () => new Map(nodes.map((node) => [node.id, nodeIneligibility(node, { productIds, agentKind })])),
     [agentKind, nodes, productIds],
@@ -280,7 +278,8 @@ export function DispatchDialog({
   const selectedReason = nodeId ? ineligibility.get(nodeId) ?? null : null;
   const modes = DISPATCH_MODES_BY_AGENT[agentKind];
   const modeHelp = dispatchModeHelpKey(agentKind, mode);
-  const blocked = !nodeId || Boolean(selectedReason) || itemKeys.length === 0 || (conflicts.length > 0 && !redispatchConfirmed);
+  const blocked = !nodeId || Boolean(selectedReason) || itemKeys.length === 0 || !eligibility.isSuccess
+    || !eligibility.data.allowed || (eligibility.data.requiresConfirmation && !redispatchConfirmed);
 
   return (
     <form
@@ -306,30 +305,32 @@ export function DispatchDialog({
             {conflicts.map((entry) => {
               const statusKey = activeDispatchStatusKey(entry.status);
               return (
-                <li key={entry.itemKey}>
+                <li key={`${entry.itemKey}:${entry.dispatchId}`}>
                   {t("dispatchConflictLine", {
                     key: entry.itemKey,
                     node: entry.nodeName,
                     status: statusKey ? t(statusKey) : entry.status,
                     time: formatTime(entry.createdAt),
                   })}
+                  {entry.agentSessionId && <> <a href={agentConsoleUrl(entry.agentSessionId)}>{t("openDispatchInConsole")}</a></>}
                 </li>
               );
             })}
           </ul>
-          <p>{t("dispatchConflictExplain")}</p>
-          {includesQueued(conflicts) && <p>{t("dispatchConflictQueuedCancelled")}</p>}
-          <label className="dispatch-conflict-confirm">
+          <p>{t(eligibility.data?.reason ? redispatchReasonKey(eligibility.data.reason) : "dispatchConflictExplain")}</p>
+          {eligibility.data?.requiresConfirmation && includesQueued(conflicts) && <p>{t("dispatchConflictQueuedCancelled")}</p>}
+          {eligibility.data?.requiresConfirmation && <label className="dispatch-conflict-confirm">
             <input
               type="checkbox"
               checked={redispatchConfirmed}
               onChange={(event) => setAcknowledgedConflicts(event.target.checked ? conflictsKey : null)}
             />
             <span>{t("dispatchConflictConfirm")}</span>
-          </label>
+          </label>}
         </div>
       )}
 
+      {eligibility.isError && <div className="inline-error" role="alert">{localizedErrorText(eligibility.error,t)} <button type="button" onClick={()=>void eligibility.refetch()}>{t("retry")}</button></div>}
       <label>{t("dispatchNode")}
         <Select value={nodeId} onChange={(event) => setNodeId(event.target.value)} disabled={nodes.length === 0}>
           {nodes.map((node) => (

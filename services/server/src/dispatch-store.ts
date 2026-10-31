@@ -131,6 +131,9 @@ export interface CurrentItemDispatch {
   readonly status: string;
   readonly createdAt: string;
   readonly agentSessionId?: string;
+  readonly sessionStatus?: string;
+  readonly waitingForInput?: boolean;
+  readonly claimed?: boolean;
   readonly issue?: { readonly kind: "dispatch" | "execution"; readonly reason?: string };
 }
 
@@ -708,19 +711,16 @@ export class DispatchStore {
       // only after a person approves the plan — minutes or hours after the
       // dispatch. Without this, the same item could be sent again in that window,
       // two sessions would plan it, and the one that lost the claim race had been
-      // told to carry on anyway. Refuse unless the person says the earlier
-      // session is gone.
+      // told to carry on anyway. Only a complete, owned queued batch can be
+      // explicitly cancelled and replaced.
       const active = this.dispatchesFor(items.map((item) => item.id));
-      const unsafe = active.some(entry => entry.accountId !== input.accountId || entry.status !== "queued"
-        || (this.database.connection.prepare("SELECT COUNT(*) AS count FROM dispatch_items WHERE dispatch_id=?").get(entry.dispatchId) as {count:number}).count
-          !== keys.filter(key => active.some(other => other.dispatchId === entry.dispatchId && other.itemKey === key)).length);
-      if (active.length > 0 && (!input.force || unsafe)) {
+      if (active.length > 0 && (!input.force || this.redispatchBlockReason(input.accountId,keys,active))) {
         const described = active
           .map((entry) => `${entry.itemKey} → ${entry.nodeName}（${entry.status}）`)
           .join("、");
         throw conflict(
           "item_already_dispatched",
-          `Already dispatched and not yet claimed: ${described}. Dispatch again only if that session is gone.`,
+          `Existing execution must be resolved before dispatching: ${described}. Only an owned, fully selected queued dispatch can be replaced.`,
         );
       }
 
@@ -852,17 +852,10 @@ export class DispatchStore {
   }
 
   /**
-   * For the console: ready items of this account that were dispatched and not
-   * yet claimed, so the list can say so before anyone dispatches them again.
+   * For the console: ready items with an unresolved dispatch. A manual move
+   * back to ready does not cancel the original execution.
    */
-  listActiveDispatches(accountId: string): Array<{
-    dispatchId: string;
-    itemKey: string;
-    nodeName: string;
-    agentKind: string;
-    status: string;
-    createdAt: string;
-  }> {
+  listActiveDispatches(accountId: string): CurrentItemDispatch[] {
     const rows = this.database.connection
       .prepare(
         `SELECT DISTINCT w.id FROM dispatch_items di
@@ -876,7 +869,42 @@ export class DispatchStore {
     for (const entry of this.dispatchesFor(rows.map((row) => row.id))) {
       if (!byItem.has(entry.itemKey)) byItem.set(entry.itemKey, entry);
     }
-    return [...byItem.values()];
+    return [...byItem.values()].map(entry => {
+      const session = this.database.connection.prepare("SELECT id,status,turn_state_json FROM agent_sessions WHERE dispatch_id=?")
+        .get(entry.dispatchId) as {id:string;status:string;turn_state_json:string}|undefined;
+      const claimed = Boolean(this.database.connection.prepare(`SELECT 1 FROM work_item_events e JOIN work_items w ON w.id=e.item_id
+        WHERE w.item_key=? AND e.to_status='in_progress' AND e.created_at>=?
+        AND (json_extract(e.payload_json,'$.dispatchId')=? OR json_extract(e.payload_json,'$.dispatchId') IS NULL) LIMIT 1`)
+        .get(entry.itemKey,entry.createdAt,entry.dispatchId));
+      return { ...entry, itemStatus: "ready" as const,claimed,
+        ...(session ? { sessionStatus:session.status, waitingForInput:JSON.parse(session.turn_state_json).waitingForInput === true,
+          ...(entry.accountId === accountId ? {agentSessionId:session.id} : {}) } : {}) };
+    });
+  }
+
+  /** One bounded, read-only eligibility check, shared with the actual write guard. */
+  checkRedispatch(accountId: string, itemKeys: readonly string[]) {
+    const keys = [...new Set(itemKeys.map(key => key.trim().toUpperCase()))];
+    if (!keys.length || keys.length > 20) throw invalidInput("Select between 1 and 20 work items.");
+    const itemIds = keys.map(key => {
+      const row = this.database.connection.prepare("SELECT id FROM work_items WHERE item_key=?").get(key) as {id:string}|undefined;
+      if (!row) throw notFound("Work item"); return row.id;
+    });
+    const active = this.dispatchesFor(itemIds);
+    const reason = this.redispatchBlockReason(accountId,keys,active);
+    const conflicts = active.map(({accountId:owner,...entry}) => {
+      const session = owner === accountId ? this.database.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?").get(entry.dispatchId) as {id:string}|undefined : undefined;
+      return {...entry,...(session ? {agentSessionId:session.id} : {})};
+    });
+    return {allowed:reason === null,requiresConfirmation:active.length > 0 && reason === null,reason,conflicts};
+  }
+
+  private redispatchBlockReason(accountId: string, keys: readonly string[], active: ReturnType<DispatchStore["dispatchesFor"]>) {
+    if (active.some(entry => entry.accountId !== accountId)) return "other_account" as const;
+    if (active.some(entry => entry.status !== "queued")) return "started" as const;
+    if (active.some(entry => (this.database.connection.prepare("SELECT COUNT(*) AS count FROM dispatch_items WHERE dispatch_id=?")
+      .get(entry.dispatchId) as {count:number}).count !== keys.filter(key => active.some(other => other.dispatchId === entry.dispatchId && other.itemKey === key)).length)) return "partial_batch" as const;
+    return null;
   }
 
   /**
@@ -942,7 +970,7 @@ export class DispatchStore {
     const rows = this.database.connection.prepare(`
       SELECT w.item_key, w.status AS item_status, d.id AS dispatch_id, COALESCE(n.nickname,n.name) AS node_name,
              d.agent_kind, d.status, d.created_at, d.delivered_at, d.error,
-             d.diagnostic_snapshot_json, s.id AS session_id, s.status AS session_status, s.last_error
+             d.diagnostic_snapshot_json, s.id AS session_id, s.status AS session_status, s.last_error, s.turn_state_json
       FROM work_items w
       JOIN dispatch_items di ON di.item_id=w.id
       JOIN dispatches d ON d.id=di.dispatch_id
@@ -988,7 +1016,7 @@ export class DispatchStore {
       item_key: string; item_status: "ready" | "in_progress"; dispatch_id: string; node_name: string; agent_kind: string;
       status: string; created_at: string; delivered_at: string | null; error: string | null;
       diagnostic_snapshot_json: string | null; session_id: string | null;
-      session_status: string | null; last_error: string | null;
+      session_status: string | null; last_error: string | null; turn_state_json: string | null;
     }>;
     return rows.map(row => {
       const timedOut = !row.session_id && row.status === "delivered" && deliveredDispatchTimedOut(row.delivered_at);
@@ -1004,6 +1032,8 @@ export class DispatchStore {
         itemStatus: row.item_status, dispatchId: row.dispatch_id, itemKey: row.item_key, nodeName: row.node_name,
         agentKind: row.agent_kind, status: row.status, createdAt: row.created_at,
         ...(row.session_id ? { agentSessionId: row.session_id } : {}),
+        ...(row.session_status ? { sessionStatus:row.session_status,
+          waitingForInput:row.turn_state_json ? JSON.parse(row.turn_state_json).waitingForInput === true : false } : {}),
         ...(dispatchFailed || executionFailed ? { issue: {
           kind: dispatchFailed ? "dispatch" as const : "execution" as const,
           ...(reason ? { reason } : {}),

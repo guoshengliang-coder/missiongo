@@ -4,13 +4,17 @@ import { describe, expect, it } from "vitest";
 
 import { DispatchDialog } from "./dispatch-dialog";
 import { I18nProvider } from "./i18n";
-import type { DispatchNode, Product, WorkItem } from "./types";
+import type { DispatchNode, Product, WorkItem, RedispatchEligibility } from "./types";
 Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
   value: {
     getItem: () => null,
     setItem: () => undefined,
   },
+});
+Object.defineProperty(globalThis, "window", {
+  configurable: true,
+  value: { location: { href: "https://example.test/" } },
 });
 
 const product: Product = {
@@ -31,10 +35,11 @@ const item = {
   status: "ready",
 } as WorkItem;
 
-function renderWithNodes(nodes: DispatchNode[]): string {
+function renderWithNodes(nodes: DispatchNode[], eligibility?:RedispatchEligibility): string {
   const queryClient = new QueryClient();
   queryClient.setQueryData(["nodes"], { nodes });
   queryClient.setQueryData(["dispatch-defaults"], { agents: {} });
+  if (eligibility) queryClient.setQueryData(["dispatches","active","eligibility",item.key],eligibility);
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
       <I18nProvider>
@@ -50,6 +55,18 @@ function renderWithNodes(nodes: DispatchNode[]): string {
 }
 
 describe("DispatchDialog machine list (AND-224)", () => {
+  const node:DispatchNode={id:"node-1",name:"M4",deviceName:"M4",agents:[],repos:[],repoCandidates:[],online:true,createdAt:"2026-10-31T01:00:00Z"};
+  const conflict={dispatchId:"existing",itemKey:item.key,nodeName:"M4",agentKind:"codex" as const,status:"launched" as const,createdAt:node.createdAt};
+  it("does not offer a misleading force checkbox for a launched conversation",()=>{
+    const html=renderWithNodes([node],{allowed:false,reason:"started",requiresConfirmation:false,conflicts:[{...conflict,agentSessionId:"owned-session"}]});
+    expect(html).toContain("旧派单已送达节点");
+    expect(html).not.toContain("取消原排队派单，并重新派单");
+    expect(html).toContain("owned-session");
+  });
+  it("offers the cancellation checkbox for a replaceable queued batch only",()=>{
+    const html=renderWithNodes([node],{allowed:true,reason:null,requiresConfirmation:true,conflicts:[{...conflict,status:"queued"}]});
+    expect(html).toContain("取消原排队派单，并重新派单");
+  });
   it("still says no devices when the list loaded empty", () => {
     const html = renderWithNodes([]);
     expect(html).toContain("还没有接入任何设备");

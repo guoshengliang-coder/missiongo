@@ -13,7 +13,7 @@ const EXECUTION_ASSIGNMENT_ENABLED = false;
 
 const executionLabels: Record<string,string> = {
   assigned:"待执行", working:"执行中", completed:"本轮完成", blocked:"受阻", cancelled:"已取消", handed_over:"已交接",
-  active:"会话运行中", idle:"会话空闲", suspended:"会话已暂停", stalled:"会话停滞", unavailable:"会话不可用", failed:"执行失败", waiting_for_input:"等待输入",
+  active:"会话运行中", idle:"本轮结束", suspended:"会话已暂停", stalled:"会话停滞", unavailable:"会话不可用", failed:"执行失败", waiting_for_input:"等待输入",
 };
 export function executionStatusLabel(status: string) { return executionLabels[status] ?? status; }
 function failure(error: unknown) { return error instanceof Error ? error.message : "操作失败，请刷新后重试。"; }

@@ -196,7 +196,7 @@ import { ProductBadge } from "./product-badge";
 import { SessionLink } from "./session-link";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
-import { currentDispatchForStatus, dispatchIssueLabelKey } from "./dispatch-attention";
+import { currentDispatchForStatus, dispatchIssueLabelKey, itemProgressKeys } from "./dispatch-attention";
 import { agentUnreadCounts, agentSessionsRefetchInterval } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
@@ -1166,6 +1166,8 @@ export function App() {
     initialPageParam: null as number | null,
     getNextPageParam: (page) => page.nextBeforeSequence ?? null,
     enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId),
+    refetchInterval: query => document.visibilityState === "visible" && query.state.fetchFailureCount < 3
+      && query.state.data?.pages.some(page => page.items.some(item => Boolean(item.deliveryProgress) || item.status === "in_progress")) ? 15_000 : false,
   });
   const items = itemsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   // While a newly picked status loads, keep the counts the other tabs already
@@ -1202,7 +1204,7 @@ export function App() {
     refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
   });
   const latestDispatches = useMemo(
-    () => dispatchesByItem(activeDispatchesQuery.data?.latest ?? activeDispatchesQuery.data?.active ?? []),
+    () => dispatchesByItem([...(activeDispatchesQuery.data?.latest ?? []),...(activeDispatchesQuery.data?.active ?? [])]),
     [activeDispatchesQuery.data],
   );
   const inProgressHandlers = useMemo(
@@ -1210,7 +1212,7 @@ export function App() {
     [activeDispatchesQuery.data],
   );
   const currentDispatches = useMemo(
-    () => dispatchesByItem(activeDispatchesQuery.data?.current ?? []),
+    () => dispatchesByItem([...(activeDispatchesQuery.data?.current ?? []),...(activeDispatchesQuery.data?.active ?? [])]),
     [activeDispatchesQuery.data],
   );
   const agentConsoleListFetching = useIsFetching({ queryKey: ["agent-sessions"] });
@@ -2003,6 +2005,7 @@ function ItemRow({
   const dispatchAgentKey = latestDispatch ? agentLabelKey(latestDispatch.agentKind) : null;
   const pendingDispatchStatusKey = latestDispatch ? activeDispatchStatusKey(latestDispatch.status) : null;
   const dispatchFailed = Boolean(issue);
+  const progress = itemProgressKeys(item,currentAttempt).map(key => t(key)).join(" · ");
   return (
     <article
       className={`item-row ${selected ? "selected" : ""} ${selectionVisible ? "has-select" : ""}`}
@@ -2070,6 +2073,7 @@ function ItemRow({
                     agent: handlerAgentKey ? t(handlerAgentKey) : handlerBadge.agentKind,
                     node: handlerBadge.nodeName,
                   })}
+                  {` · ${t("itemClaimed")}`}
                 </small>
               ) : latestDispatch ? (
                 <small
@@ -2090,12 +2094,13 @@ function ItemRow({
                 >
                   {issue
                     ? t(dispatchIssueLabelKey(issue))
-                    : t("itemDispatchBadge", {
+                    : t(currentAttempt ? "itemDispatchBadge" : "itemDispatchHistoricalBadge", {
                         agent: dispatchAgentKey ? t(dispatchAgentKey) : latestDispatch.agentKind,
                         node: latestDispatch.nodeName,
                       })}
                 </small>
               ) : null}
+              {progress && <small className="item-phase">{progress}</small>}
               {item.derivedFrom && <small className="item-derived-badge" title={item.derivedFrom.title}>{t("derivedFromBadge", { key: item.derivedFrom.key })}</small>}
               {item.verificationReturn && <VerificationReturnBadge />}
               <span className="item-evidence-summary">
@@ -2622,7 +2627,9 @@ function DetailPane({
   const confirm = useConfirm();
   const queryClient = useQueryClient();
   const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
-  const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey) });
+  const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey),
+    refetchInterval: query => document.visibilityState === "visible" && query.state.fetchFailureCount < 3
+      && (query.state.data?.deliveryProgress || query.state.data?.status === "in_progress") ? 15_000 : false });
   const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey) });
   // History and current-stage attention arrive together, so an error always
   // belongs to the dispatch whose target and console link the header shows.
@@ -2632,6 +2639,8 @@ function DetailPane({
     enabled: Boolean(itemKey),
     refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
   });
+  const activeDispatches = useQuery({queryKey:ACTIVE_DISPATCHES_QUERY_KEY,queryFn:api.listActiveDispatches,
+    enabled:Boolean(itemKey),refetchInterval:ACTIVE_DISPATCHES_REFETCH_MS});
   // Same cache entry the delivery panel reads, so the Builder can sit in the
   // title line without a second request.
   const deliveryQuery = useItemDelivery(itemKey);
@@ -2768,25 +2777,28 @@ function DetailPane({
   const documentAttachments = item.attachments.filter((attachment) => attachment.kind === "document");
   const archiveAttachments = item.attachments.filter((attachment) => attachment.kind === "archive");
   const mediaAttachments = item.attachments.filter(isMediaAttachment);
-  const currentAttempt = currentDispatchForStatus(item.status, dispatchesQuery.data?.current);
-  const latestDispatch = dispatchesQuery.data?.dispatches.find(dispatch => dispatch.id === currentAttempt?.dispatchId)
-    ?? dispatchesQuery.data?.dispatches[0];
+  const globalCurrent = dispatchesByItem([...(activeDispatches.data?.current ?? []),...(activeDispatches.data?.active ?? [])]).get(item.key);
+  const currentAttempt = currentDispatchForStatus(item.status,globalCurrent ?? dispatchesQuery.data?.current);
+  const latestDispatch = currentAttempt ?? dispatchesQuery.data?.dispatches[0];
   const dispatchAgentKey = latestDispatch ? agentLabelKey(latestDispatch.agentKind) : null;
   const issue = currentAttempt?.issue;
   const dispatchFailed = Boolean(issue);
   const dispatchFailureReason = issue?.reason ?? "";
   // Only a dispatch that reached a session can be opened in the console; one
   // that failed before starting left nothing to jump to (AND-217).
-  const jumpSessionId = latestDispatch?.agentSessionId;
+  const jumpSessionId = latestDispatch?.agentSessionId ?? (currentAttempt
+    ? dispatchesQuery.data?.dispatches.find(dispatch => dispatch.id === currentAttempt.dispatchId)?.agentSessionId
+    : undefined);
   const dispatchStatusKey = latestDispatch ? dispatchStatusLabelKey(latestDispatch.status) : null;
   // An inferred execution uses the session creation time. Recorded work rounds
   // have their own start time, which must not be presented as a session launch.
   const summarizedSession = deliveryQuery.data?.executions.find(execution =>
     Boolean(jumpSessionId) && execution.kind === "agent" && execution.recorded !== true && execution.sessionId === jumpSessionId);
+  const progress = itemProgressKeys(item,currentAttempt).map(key => t(key)).join(" · ");
   const dispatchStateLabel = issue ? t(dispatchIssueLabelKey(issue))
-    : !currentAttempt ? null
+    : progress || (!currentAttempt ? t("dispatchHistoryAttribution")
     : summarizedSession ? executionStatusLabel(summarizedSession.status)
-    : dispatchStatusKey ? t(dispatchStatusKey) : null;
+    : dispatchStatusKey ? t(dispatchStatusKey) : null);
   return (
     <section className="detail-pane" ref={detailPaneRef}>
       <div className="detail-toolbar">
@@ -2848,6 +2860,7 @@ function DetailPane({
           {item.transferredTo && <button type="button" className="text-button" onClick={() => onOpenItem(item.transferredTo!.key)}>{t("transferDestination", { key: item.transferredTo.key })}</button>}
           {item.transferredFrom && <button type="button" className="text-button" onClick={() => onOpenItem(item.transferredFrom!.key)}>{t("transferSource", { key: item.transferredFrom.key })}</button>}
         </div>}
+        {!latestDispatch && progress && <p className="dispatch-note" role="status">{progress}</p>}
         <>
             {/* Between the toolbar and the title: who the work was last handed
                 to, which the toolbar's chip used to squeeze in and only for an
@@ -2858,7 +2871,7 @@ function DetailPane({
                 <Bot size={16} aria-hidden="true" />
                 <span className="detail-dispatch-target">
                   <strong>
-                    {t("itemDispatchBadge", {
+                    {t(currentAttempt ? "itemDispatchBadge" : "itemDispatchHistoricalBadge", {
                       agent: dispatchAgentKey ? t(dispatchAgentKey) : latestDispatch.agentKind,
                       node: latestDispatch.nodeName,
                     })}
@@ -2986,6 +2999,8 @@ function DetailPane({
                       {/* A direct jump skipped the steps in between; say so, or the
                           history reads as if the work went through them. */}
                       {event.payload?.reason === "manual_override" && <span className="timeline-tag">{t("movedDirectly")}</span>}
+                      {typeof event.payload.reconciledFrom === "string" && <p>{t("itemReconciled")}</p>}
+                      {typeof event.payload.mergeCommit === "string" && <p><code>{event.payload.mergeCommit}</code></p>}
                       {/* The AI hands work over naming the pull request that carried
                           it, which is the thing to open when deciding to verify. */}
                       {typeof event.payload?.pullRequestUrl === "string" && (
@@ -3045,7 +3060,7 @@ function DetailPane({
       </div>
       {!item.transferred && <CommentComposer key={item.key} item={item} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
-      {statusChecksOpen && <StatusCheckPanel key={item.key} productId={item.productId} itemKey={item.key} canOperate={!item.transferred} onClose={() => setStatusChecksOpen(false)} />}
+      {statusChecksOpen && <StatusCheckPanel key={`status-checks:${item.key}`} productId={item.productId} itemKey={item.key} canOperate={!item.transferred} onClose={() => setStatusChecksOpen(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
         <TransferBuilderModal itemKey={item.key} delivery={deliveryQuery.data} onClose={() => setTransferBuilderOpen(false)} />
       )}

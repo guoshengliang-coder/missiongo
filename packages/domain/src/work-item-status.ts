@@ -50,11 +50,13 @@ const TRANSITIONS: Readonly<
   Partial<Record<WorkItemStatus, Readonly<Partial<Record<WorkItemStatus, TransitionRule>>>>>
 > = {
   inbox: {
+    development_complete: rule(["system"], ["resolution_submitted"]),
     ready: rule(["human"], ["triaged"]),
     on_hold: rule(["human"], ["request_human_input"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
   ready: {
+    development_complete: rule(["system"], ["resolution_submitted"]),
     // One of the two edges an agent may walk: it picks work up here. `resume` is
     // deliberately absent -- it belongs to on_hold, and leaving it in this list
     // handed an agent a second path it was never meant to have, because a rule

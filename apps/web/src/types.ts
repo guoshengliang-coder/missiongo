@@ -107,6 +107,8 @@ export interface Component {
 }
 
 export interface WorkItem {
+  readonly hasProcessingRound?: boolean;
+  readonly deliveryProgress?: import("@missiongo/domain").WorkItemSnapshot["deliveryProgress"];
   /** A migrated original is permanently read-only. */
   readonly transferred?: boolean;
   readonly transferredFrom?: { readonly key: string; readonly productId: string };
@@ -650,6 +652,9 @@ export interface CreateDispatchInput {
  * separate, conflict-checking subset.
  */
 export interface ItemDispatchSummary {
+  readonly claimed?: boolean;
+  readonly sessionStatus?: AgentSessionStatus;
+  readonly waitingForInput?: boolean;
   readonly dispatchId: string;
   readonly itemKey: string;
   readonly nodeName: string;
@@ -673,4 +678,11 @@ export interface ItemDispatchHandler {
 /** The subset that can still start or already represents an unclaimed session. */
 export interface ActiveDispatch extends Omit<ItemDispatchSummary, "status"> {
   readonly status: Extract<DispatchStatus, "queued" | "delivered" | "launched">;
+}
+
+export interface RedispatchEligibility {
+  readonly allowed: boolean;
+  readonly requiresConfirmation: boolean;
+  readonly reason: "other_account" | "started" | "partial_batch" | null;
+  readonly conflicts: readonly ActiveDispatch[];
 }

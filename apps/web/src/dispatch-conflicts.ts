@@ -1,13 +1,12 @@
 import type { MessageKey } from "./i18n";
-import type { ActiveDispatch, ItemDispatchSummary } from "./types";
+import type { ActiveDispatch, ItemDispatchSummary, RedispatchEligibility } from "./types";
 
 /**
  * An item stays ready until a session claims it, and in plan mode that is only
  * after a person approves the plan -- possibly hours after the dispatch. In that
  * window the item still looks dispatchable, and sending it again starts a second
- * session on the same work. The checkbox is left alone on purpose: the earlier
- * session may be gone (the Mac was shut, the session closed), and re-dispatching
- * is then exactly the right thing. So the list marks the row and the dialog asks.
+ * session on the same work. The list marks the row; the dialog checks server
+ * eligibility and only offers replacement for a complete, owned queued batch.
  */
 
 /**
@@ -47,12 +46,16 @@ export function dispatchConflicts(
 }
 
 /**
- * What the person ticked "re-dispatch anyway" about. When a refetch turns up a
+ * What the person agreed to replace. When a refetch turns up a
  * different set -- another item, or a newer dispatch of the same one -- the tick
  * was about something else and has to be given again.
  */
 export function conflictSignature(conflicts: readonly ActiveDispatch[]): string {
-  return conflicts.map((entry) => `${entry.itemKey}:${entry.dispatchId}`).join(" ");
+  return conflicts.map((entry) => `${entry.itemKey}:${entry.dispatchId}:${entry.status}`).join(" ");
+}
+
+export function redispatchReasonKey(reason: NonNullable<RedispatchEligibility["reason"]>) {
+  return ({started:"redispatchStarted",other_account:"redispatchOtherAccount",partial_batch:"redispatchPartialBatch"} as const)[reason];
 }
 
 /**
