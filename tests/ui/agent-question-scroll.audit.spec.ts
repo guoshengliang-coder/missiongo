@@ -26,7 +26,7 @@ function message(index: number): AgentSessionMessage {
     text: `Conversation history ${index}\n\n${"A line of conversation context. ".repeat(12)}` };
 }
 
-async function stubSession(page: Page) {
+async function stubSession(page: Page, replyControl?: { wait: Promise<void>; fail?: boolean }) {
   const messages: AgentSessionMessage[] = [
     ...Array.from({ length: 8 }, (_, index) => message(index)),
     { id: "raw-question", role: "agent", occurredAt: stamp, text: "Choose or edit your answer.", questions: [
@@ -46,6 +46,9 @@ async function stubSession(page: Page) {
     if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/commands")) {
       const text = JSON.parse(request.postData() ?? "{}").text as string;
       sent.push(text);
+      await replyControl?.wait;
+      if (replyControl?.fail) return route.fulfill({ status: 503, contentType: "application/json",
+        body: JSON.stringify({ code: "request_failed", title: "Reply unavailable" }) });
       command = { id: "reply-command", kind: "message", text, status: "queued", createdAt: stamp };
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(command) });
     }
@@ -60,7 +63,12 @@ async function stubSession(page: Page) {
       nodeName: "Fixture", status: "launched", createdAt: stamp, itemKeys: [fixture.detailKey],
     }] }),
   }));
-  return { messages, sent, deliverReply: () => { if (command) command.status = "delivered"; } };
+  return { messages, sent,
+    setReplyStatus: (status: "queued" | "delivering" | "delivery_unknown" | "delivered") => {
+      if (command) command.status = status;
+    },
+    deliverReply: () => { if (command) command.status = "delivered"; },
+  };
 }
 
 const scrollTop = (area: Locator) => area.evaluate((element) => element.scrollTop);
@@ -97,6 +105,82 @@ for (const viewport of [
       hasTouch: viewport.touch, isMobile: viewport.touch });
 
     for (const surface of ["console", "panel"] as const) {
+      for (const fail of [false, true]) {
+        test(`${surface} locks question edits until a reply ${fail ? "fails" : "is delivered"} (AND-350)`, async ({ page }) => {
+          await page.addInitScript(() => localStorage.setItem("missiongo.locale", "zh-CN"));
+          let releaseReply!: () => void;
+          const wait = new Promise<void>((resolve) => { releaseReply = resolve; });
+          const state = await stubSession(page, { wait, fail });
+          if (surface === "console") {
+            await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
+          } else {
+            await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
+            await page.locator(".execution-history > summary").click();
+            await page.locator(".agent-session-toggle").click();
+          }
+          const area = page.locator(surface === "console" ? ".agent-console-messages" : ".agent-session-messages");
+          const form = page.locator(surface === "console" ? ".agent-console-reply" : ".agent-session-reply");
+          const reply = form.locator("textarea");
+          const option = area.getByRole("button", { name: "方案 B", exact: true });
+          const otherOption = area.getByRole("button", { name: "方案 A", exact: true });
+          await expect(reply).toBeVisible();
+          await option.click();
+          const answer = await reply.inputValue();
+          await form.locator("button[type=submit]").click();
+          await expect.poll(() => state.sent).toEqual([answer]);
+
+          // Hold the POST: the question must obey the same lock as the editor.
+          // Dispatching an extra click also verifies it cannot change the draft.
+          await expect(reply).toBeDisabled();
+          await expect(otherOption).toBeDisabled();
+          await otherOption.dispatchEvent("click");
+          await expect(reply).toHaveValue(answer);
+          releaseReply();
+
+          if (fail) {
+            await expect(reply).toBeEnabled();
+            await expect(reply).toHaveValue(answer);
+            await expect(otherOption).toBeEnabled();
+            await otherOption.click();
+            await expect(reply).toHaveValue("single: 方案 A");
+            return;
+          }
+
+          // A successful POST clears the draft, but the mirrored questions may
+          // not be marked answered until a later poll. Taps in that interval
+          // used to refill the disabled editor and survive the eventual answer.
+          await expect(reply).toHaveValue("");
+          for (const status of ["queued", "delivering", "delivery_unknown"] as const) {
+            state.setReplyStatus(status);
+            await expect(form.locator("button[type=submit]")).toBeDisabled();
+            await expect(otherOption).toBeDisabled();
+            await otherOption.dispatchEvent("click");
+            await expect(reply).toHaveValue("");
+            // Observe the actual status poll before moving to the next stage.
+            await expect.poll(async () => {
+              const response = await page.waitForResponse((response) => response.request().method() === "GET"
+                && new URL(response.url()).pathname === `/api/v1/agent-sessions/${id}`);
+              return (await response.json()).command?.status;
+            }).toBe(status);
+          }
+          const index = state.messages.findIndex((message) => message.id === "questions");
+          const questionMessage = state.messages[index]!;
+          state.messages[index] = { ...questionMessage,
+            questions: questionMessage.questions!.map((question) => ({ ...question, answered: question.key === "single" ? "方案 B" : "" })),
+          };
+          state.messages.push({ id: "answer-received", role: "agent", text: "已收到回答", occurredAt: stamp });
+          state.deliverReply();
+          await expect(area.getByText("已收到回答", { exact: true })).toBeVisible();
+          await expect(reply).toBeEnabled();
+          await expect(reply).toHaveValue("");
+          await expect(option).toBeDisabled();
+          await expect(option).toHaveClass("selected");
+          await reply.fill("接下来我想补充说明");
+          await expect(reply).toHaveValue("接下来我想补充说明");
+          expect(state.sent).toEqual([answer]);
+        });
+      }
+
       test(`${surface} options update answers without moving the conversation`, async ({ page }, testInfo) => {
         await page.addInitScript(() => localStorage.setItem("missiongo.locale", "zh-CN"));
         const state = await stubSession(page);
