@@ -6,7 +6,7 @@ export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
   agentRecoveryTitle: "What you can do next",
-  agentRecoveryPending: "A reply is queued, being delivered, or awaiting delivery confirmation. Resolve its delivery state below before continuing.",
+  agentRecoveryPending: "A reply is queued, being delivered, or awaiting delivery confirmation. Resolve its delivery state below before retrying or replying; archiving stays available.",
   agentRecoveryOffline: "Bring the session's node online, then check the original Agent client before continuing.",
   agentRecoveryRetry: "Check the node and its Agent configuration, then send the dispatch again. The server will recheck item states and permissions.",
   agentRecoveryNewSession: "This conversation needs a new session. Open the original client with a short task summary; review the linked items before arranging another dispatch.",
@@ -1018,6 +1018,7 @@ const EN_MESSAGES = {
   agentSessionArchivedReadOnly: "This conversation is archived in MissionGo. Restore it before replying or stopping the task.",
   agentSessionSourceArchivedReadOnly: "This conversation is archived in Codex. Restore it there before replying or stopping the task.",
   agentSessionArchiveConfirm: "Archive this conversation? MissionGo will also archive its Codex thread when supported.",
+  agentSessionArchivePendingConfirm: "A reply is still queued, being delivered, or awaiting delivery confirmation. Archive this conversation anyway? The original agent conversation is not changed and the record stays recoverable from Archived.",
   agentSessionArchiveClaudeConfirm: "Archive this running Claude Code conversation? Its local host and full process group will stop. Restoring it later keeps the same conversation reference.",
   agentSessionArchivedTitle: "Archived in MissionGo",
   agentSessionArchivedDetail: "The original agent conversation is untouched. Restore this entry to resume syncing and control.",
@@ -1254,7 +1255,7 @@ export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
   agentRecoveryTitle: "接下来可以做什么",
-  agentRecoveryPending: "有消息正在排队、投递或等待确认。请先处理下方投递状态，再继续操作，避免重复执行。",
+  agentRecoveryPending: "有消息正在排队、投递或等待确认。请先处理下方投递状态，避免重复执行；不再需要关注时仍可归档。",
   agentRecoveryOffline: "请让会话所在节点恢复在线，再到原 Agent 客户端核对会话后继续。",
   agentRecoveryRetry: "请先检查节点与 Agent 配置，再重新派单；服务端会重新检查条目状态与权限。",
   agentRecoveryNewSession: "这条会话需要新建会话继续。请在原客户端携带简短任务摘要接手；需要重新派单时，先打开关联条目核对状态。",
@@ -2266,6 +2267,7 @@ const ZH_MESSAGES: Record<MessageKey, string> = {
   agentSessionArchivedReadOnly: "这个会话已在 MissionGo 中归档；恢复后才能继续回复或终止任务。",
   agentSessionSourceArchivedReadOnly: "这个会话已在 Codex 中归档；请先在 Codex 中恢复，再继续回复或终止任务。",
   agentSessionArchiveConfirm: "确认归档这个会话吗？支持时 MissionGo 也会同步归档 Codex 原始线程。",
+  agentSessionArchivePendingConfirm: "这条会话仍有消息在排队、投递或等待送达确认。仍要归档吗？原始 Agent 会话不受影响，记录可在「已归档」中恢复。",
   agentSessionArchiveClaudeConfirm: "确认归档这个正在运行的 Claude Code 会话吗？本地宿主及整个进程组会停止；之后恢复仍沿用原会话标识。",
   agentSessionArchivedTitle: "已在 MissionGo 中归档",
   agentSessionArchivedDetail: "原始 Agent 会话不受影响；恢复后会继续同步并可再次控制。",

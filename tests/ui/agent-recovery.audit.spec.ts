@@ -111,19 +111,29 @@ test("failed dispatch reuses retry and archive confirmations", async ({ page }) 
   await expect.poll(() => writes).toEqual(["retry", "archive"]);
 });
 
-test("pending replies and read-only failures show the reason and withhold unavailable actions", async ({ page }) => {
+test("pending replies keep archiving available; read-only failures show the reason", async ({ page }) => {
   let pending = true;
+  const writes: string[] = [];
   await page.route("**/api/v1/agent-sessions**", async (route) => {
     const command = pending ? { id: "pending", kind: "message", text: "Continue", status: "delivery_unknown", createdAt: stamp } : undefined;
-    const body = new URL(route.request().url()).pathname === "/api/v1/agent-sessions"
-      ? { sessions: [{ ...summary, canReply: false, canArchive: false, replyBlockedReason: "operate_permission" }] }
+    const path = new URL(route.request().url()).pathname;
+    if (route.request().method() !== "GET") writes.push(`${route.request().method()} ${path}`);
+    const body = path === "/api/v1/agent-sessions"
+      ? { sessions: [{ ...summary, canReply: false, canArchive: pending, replyBlockedReason: "operate_permission" }] }
       : { ...detail, canReply: false, command };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
   await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
   const recovery = page.getByRole("region", { name: "接下来可以做什么" });
   await expect(recovery).toContainText("先处理下方投递状态");
-  await expect(recovery.getByRole("button")).toHaveCount(0);
+  await expect(recovery).toContainText("仍可归档");
+  const archive = recovery.getByRole("button", { name: "归档", exact: true });
+  await expect(archive).toBeEnabled();
+  await archive.click();
+  const dialog = page.getByRole("dialog", { name: "确认操作" });
+  await expect(dialog).toContainText("有消息在排队、投递或等待送达确认");
+  await dialog.getByRole("button", { name: "确认", exact: true }).click();
+  await expect.poll(() => writes).toEqual([`PATCH /api/v1/agent-sessions/${id}`]);
   pending = false;
   await page.reload();
   await expect(recovery).toContainText("原 Agent 客户端");

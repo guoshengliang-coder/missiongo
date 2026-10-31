@@ -204,6 +204,8 @@ export interface WorkItemComment extends CommentDiscussion {
 }
 
 export interface CreateWorkItemInput {
+  /** Correlates only the files submitted with this creation operation. */
+  readonly creationUploadId?: string;
   readonly productId: string;
   readonly status?: "inbox" | "ready";
   readonly builderAccountId?: string;

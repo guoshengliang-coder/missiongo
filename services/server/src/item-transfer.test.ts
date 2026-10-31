@@ -35,6 +35,27 @@ async function seed() {
 }
 
 describe("project transfer", () => {
+  it("remaps creation upload ownership through repeated transfers while preserving source evidence", async () => {
+    const { store, storage, item, transfer } = await seed();
+    await storage.save(store, item.key, "created.txt", "text/plain", Buffer.from("creation"),
+      undefined, undefined, undefined, { createdWithItem: true });
+    const original = store.getTimeline(item.key);
+    const originalCreation = original.find(event => event.eventType === "item_created")!;
+    expect(original.find(event => event.eventType === "attachment_added")?.payload.creationEventId).toBe(originalCreation.id);
+    const moved = transfer();
+    const third = store.createProduct({ name: "Third", keyPrefix: "THIRD" });
+    const movedAgain = transferWorkItem(store, storage, { itemKey: moved.key, targetProductId: third.id, accountId: "mover", idempotencyKey: "third-transfer" });
+    for (const key of [moved.key, movedAgain.key]) {
+      const events = store.getTimeline(key);
+      const created = events.find(event => event.eventType === "item_created")!;
+      const uploaded = events.find(event => event.eventType === "attachment_added")!;
+      expect(created.id).not.toBe(originalCreation.id);
+      expect(uploaded.payload.creationEventId).toBe(created.id);
+      expect(uploaded.historySourceKey).toBe(created.historySourceKey);
+    }
+    expect(store.getTimeline(item.key).find(event => event.eventType === "attachment_added")?.payload.creationEventId).toBe(originalCreation.id);
+  });
+
   it("remaps attachment references on active and withdrawn comments without changing source evidence", async () => {
     const { store, storage, item, transfer } = await seed();
     const first = await storage.save(store, item.key, "first.txt", "text/plain", Buffer.from("first"));

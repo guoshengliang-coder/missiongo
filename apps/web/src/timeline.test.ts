@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { dispatchedEvent, groupTimeline, statusChangeNote,recentDiscussions } from "./timeline";
+import { dispatchedEvent, groupDiscussionTimeline, groupTimeline, statusChangeNote, recentDiscussions } from "./timeline";
 import type { WorkItemEvent } from "./types";
 
 const event = (
@@ -172,5 +172,76 @@ describe("flat comment discussions",()=>{
   it("keeps an orphan reply visible when its original comment is unavailable",async()=>{
     const {groupDiscussionTimeline}=await import("./timeline");
     expect(groupDiscussionTimeline([event("reply","comment_added","2026-10-31T00:00:00Z",{threadRootCommentId:"unavailable"})]).map(e=>e.id)).toEqual(["reply"]);
+  });
+});
+
+
+describe("attachment operation grouping", () => {
+  const upload = (id: string, payload: Record<string, unknown> = {}) =>
+    event(`upload-${id}`, "attachment_added", "2026-10-31T00:00:01Z", { attachmentId: id, filename: `${id}.txt`, ...payload });
+  const comment = (id: string, ids: string[], extra: Record<string, unknown> = {}) =>
+    event(id, "comment_added", "2026-10-31T00:00:02Z", { bodyKind: "free", body: { text: "Files", attachmentIds: ids }, ...extra });
+
+  it("shows creation and mixed file uploads once without rewriting the raw events", () => {
+    const created = event("created", "item_created", "2026-10-31T00:00:00Z");
+    const files = ["image", "video", "log", "document", "archive"].map(kind => upload(kind, { kind, creationEventId: created.id }));
+    const events = [created, ...files];
+    const entries = groupDiscussionTimeline(events);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ id: "created", count: 1, filenames: files.map(file => file.payload.filename) });
+    expect(events).toHaveLength(6);
+    expect(events[0]?.payload).toEqual({});
+  });
+
+  it("uses exact attachment IDs for historical comments even across intervening events", () => {
+    const entries = groupTimeline([upload("a"), event("status", "status_changed", "2026-10-31T00:00:01Z"), upload("b"), comment("comment", ["a", "b"])]);
+    expect(entries.map(entry => entry.id)).toEqual(["comment", "status"]);
+    expect(entries[0]?.filenames).toEqual([]); // The comment body renders its files.
+  });
+
+  it("absorbs reply uploads before folding the reply under its root", () => {
+    const root = comment("root", []);
+    const reply = comment("reply", ["a"], { threadRootCommentId: root.id, replyToCommentId: root.id });
+    const entries = groupDiscussionTimeline([root, upload("a"), reply]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.replies.map(reply => reply.id)).toEqual(["reply"]);
+  });
+
+  it("keeps an upload visible until its comment succeeds, then groups it exactly once", () => {
+    const file = upload("a");
+    expect(groupTimeline([file]).map(entry => entry.id)).toEqual([file.id]);
+    expect(groupTimeline([file, comment("posted-after-retry", ["a"])]).map(entry => entry.id)).toEqual(["posted-after-retry"]);
+  });
+
+  it("keeps a withdrawn comment's uploads inside its withdrawn record without leaking filenames", () => {
+    const entries = groupTimeline([upload("a"), comment("withdrawn", ["a"], { withdrawnAt: "2026-10-31T00:01:00Z" })]);
+    expect(entries.map(entry => entry.id)).toEqual(["withdrawn"]);
+    expect(entries[0]?.filenames).toEqual([]);
+  });
+
+  it("retains old creation uploads and invalid creation links instead of guessing by time", () => {
+    const created = event("created", "item_created", "2026-10-31T00:00:00Z");
+    const entries = groupTimeline([created, upload("old"), upload("unknown", { creationEventId: "not-in-this-history" })]);
+    expect(entries.map(entry => entry.event.eventType)).toEqual(["attachment_added", "item_created"]);
+    expect(entries[0]?.count).toBe(2);
+  });
+
+  it("does not absorb later replacement or deletion events for the same attachment", () => {
+    const entries = groupTimeline([upload("a"), comment("comment", ["a"]),
+      event("replace", "attachment_replaced", "2026-10-31T00:00:03Z", { attachmentId: "a" }),
+      event("remove", "attachment_removed", "2026-10-31T00:00:04Z", { attachmentId: "a" })]);
+    expect(entries.map(entry => entry.id)).toEqual(["remove", "replace", "comment"]);
+  });
+
+  it("never associates files across transferred histories or items", () => {
+    const file = upload("a", { creationEventId: "created" });
+    const created = event("created", "item_created", "2026-10-31T00:00:00Z");
+    const foreign = { ...comment("foreign", ["a"]), historySourceKey: "OLD-1" };
+    expect(groupTimeline([foreign, { ...created, historySourceKey: "OLD-1" }, file])).toHaveLength(3);
+    expect(groupTimeline([{ ...created, itemKey: "OTHER-1" }, { ...comment("foreign", ["a"]), itemKey: "OTHER-1" }, file])).toHaveLength(3);
+  });
+
+  it("does not merge standalone attachment actions by different people", () => {
+    expect(groupTimeline([{ ...upload("a"), accountId: "one" }, { ...upload("b"), accountId: "two" }])).toHaveLength(2);
   });
 });

@@ -67,6 +67,8 @@ export interface ComponentSnapshot {
 }
 
 export interface CreateWorkItemInput {
+  /** Correlates only the files submitted with this creation operation. */
+  readonly creationUploadId?: string;
   readonly productId: string;
   readonly attribution?: EventAttribution;
   readonly status?: "inbox" | "ready";
@@ -153,6 +155,9 @@ export interface UpdateWorkItemInput {
 }
 
 export interface CreateAttachmentMetadataInput {
+  readonly creationUploadId?: string;
+  /** Internal atomic creation / SDK finalize paths; never accepted from REST. */
+  readonly createdWithItem?: boolean;
   readonly itemKey: string;
   readonly attribution?: EventAttribution;
   readonly actorKind?: ActorKind;

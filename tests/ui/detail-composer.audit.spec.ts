@@ -123,10 +123,12 @@ test("retains failed text while reusing a successfully uploaded attachment", asy
   await expect(composer.locator(".inline-error")).toBeVisible();
   await expect(composer.locator("textarea")).toHaveValue("Keep this reply for retry");
   await expect(composer.locator(".agent-chat-draft-files")).toContainText("already-sent.txt");
+  await expect(page.locator(".timeline-event").filter({ hasText: "已添加附件" })).toHaveCount(1);
   fail = false;
   await composer.getByRole("button", { name: "发送", exact: true }).click();
   await expect(composer.locator("textarea")).toHaveValue("");
   expect(uploads).toBe(1);
+  await expect(page.locator(".timeline-event").filter({ hasText: "已添加附件" })).toHaveCount(0);
 });
 
 test("isolates an in-flight send when switching items and keeps controls disabled", async ({ page, request }) => {

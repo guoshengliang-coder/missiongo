@@ -777,13 +777,15 @@ export function AgentSessionConsole({
         <button
           type="button"
           className="secondary-button"
-          disabled={archiveSession.isPending || pending}
+          disabled={archiveSession.isPending}
           onClick={async () => {
             const archived = Boolean(selected.archivedAt);
             const confirmation = selected.agentKind === "claude_code"
               && (selected.status === "active" || selected.status === "stalled")
               ? t("agentSessionArchiveClaudeConfirm")
-              : t("agentSessionArchiveConfirm");
+              : pending && !archived
+                ? t("agentSessionArchivePendingConfirm")
+                : t("agentSessionArchiveConfirm");
             if (archived || await confirm(confirmation)) archiveSession.mutate(!archived);
           }}
         >

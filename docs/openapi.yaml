@@ -2395,8 +2395,12 @@ paths:
                       $ref: "#/components/schemas/WorkItemAttachment"
     post:
       operationId: uploadItemAttachment
-      description: Uploads one allowlisted image, video, or log file as a binary body.
+      description: Uploads one allowlisted image, video, log, document, or ZIP file as a binary body. Raw upload events are retained; the UI groups explicitly associated creation and comment uploads under their operation.
       parameters:
+        - in: header
+          name: X-MissionGo-Creation-Upload-Id
+          description: Optional UUID matching the original creator and this item's creationUploadId. Omit for standalone or comment uploads. The server records creationEventId on the upload event only after checking ownership.
+          schema: { type: string, format: uuid }
         - in: header
           name: X-MissionGo-Filename
           required: true
@@ -3835,6 +3839,10 @@ components:
       required: [productId, type, priority, title, description, environment]
       properties:
         productId: { type: string }
+        creationUploadId:
+          type: string
+          format: uuid
+          description: Optional identifier for files submitted with this creation. Send the same identifier in X-MissionGo-Creation-Upload-Id on those uploads. Only the original creator may use it.
         status:
           enum: [inbox, ready]
           default: inbox
