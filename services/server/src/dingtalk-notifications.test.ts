@@ -107,7 +107,7 @@ describe("DingTalk robot single-chat notices",()=>{
     f.setSend(async()=>Response.json({success:true,result:{outTrackId:job.id,deliverResults:[{spaceType:"IM_ROBOT",spaceId:"employee-one",success:true,carrierId:"card-query"}]}}));
     await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
     const sent=f.requests.find(r=>r.url.endsWith("/card/instances/createAndDeliver"))!;
-    expect(sent.body).toMatchObject({cardTemplateId:"synthetic-template.schema",outTrackId:job.id,openSpaceId:"dtv1.card//IM_ROBOT.employee-one",imRobotOpenDeliverModel:{robotCode:"synthetic-robot"},cardData:{cardParamMap:{projectItem:`Notice project ｜ ${item.key}`,itemTitle:"A verification item",verification:expect.stringContaining("请查看条目中的验收环境"),itemUrl:expect.stringContaining(`item=${item.key}`)}}});
+    expect(sent.body).toMatchObject({cardTemplateId:"synthetic-template.schema",outTrackId:job.id,openSpaceId:"dtv1.card//IM_ROBOT.employee-one",imRobotOpenDeliverModel:{robotCode:"synthetic-robot"},cardData:{cardParamMap:{headerTitle:`已交付 ${item.key} ｜ 请验收`,heading:"Notice project | **A verification item**",summary:"Details",theme:"blue",projectItem:`Notice project ｜ ${item.key}`,itemTitle:"A verification item",verification:expect.stringContaining("请进入条目查看交付内容和验收环境"),itemUrl:expect.stringContaining(`item=${item.key}`)}}});
     f.setResult({sendStatus:"SUCCESS",messageReadInfoList:[{userId:"employee-one",readStatus:"UNREAD"}]});f.due();await f.service.drain();
     expect(f.service.list(item.id)[0]?.status).toBe("sent");expect(new URL(f.requests.at(-1)!.url).searchParams.get("processQueryKey")).toBe("card-query");
   });
@@ -136,9 +136,9 @@ describe("DingTalk robot single-chat notices",()=>{
     expect(sent.method).toBe("POST");expect(sent.headers["x-acs-dingtalk-access-token"]).toBe("synthetic-token");
     expect(sent.url).toBe("https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend");
     expect(sent.body).toMatchObject({robotCode:"synthetic-robot",userIds:["employee-one"],msgKey:"sampleActionCard"});
-    const card=JSON.parse(sent.body.msgParam as string);expect(card.singleURL).toContain(`item=${item.key}`);expect(card.text).toContain("无需回复");expect(card.title).toBe("待验证 · 需要你验收");
-    expect(card.text).toContain(`### 待验证 · 需要你验收\n\nNotice project ｜ ${item.key}\n\n**A verification item**`);
-    expect(card.text).toContain("请查看条目中的验收环境");expect(card.text).not.toContain("交付时间");expect(card.text).not.toContain("通知编号");expect(card.singleTitle).toBe("查看条目并验收");
+    const card=JSON.parse(sent.body.msgParam as string);expect(card.singleURL).toContain(`item=${item.key}`);expect(card.text).toContain("无需回复");expect(card.title).toBe(`已交付 ${item.key} ｜ 请验收`);
+    expect(card.text).toContain(`### 已交付 ${item.key} ｜ 请验收\n\nNotice project | **A verification item**`);
+    expect(card.text).toContain("请进入条目查看交付内容和验收环境");expect(card.text).not.toContain("交付时间");expect(card.text).not.toContain("通知编号");expect(card.singleTitle).toBe("查看条目并验收");
     f.setResult({sendStatus:"PROCESSING",messageReadInfoList:[{userId:"employee-one",readStatus:"UNREAD"}]});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
     f.setResult({sendStatus:"SUCCESS",messageReadInfoList:[{userId:"other-user",readStatus:"UNREAD"}]});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
     f.setResult({sendStatus:"SUCCESS",messageReadInfoList:[{userId:"employee-one",readStatus:"UNREAD"}]});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("sent");
@@ -214,8 +214,8 @@ describe("durable verification notification delivery",()=>{
     await Promise.all([f.service.drain(),f.service.drain()]);
     expect(f.requests.filter(r=>r.url.includes("asyncsend_v2"))).toHaveLength(1);
     const message=f.requests.at(-1)!.body.msg as {action_card:{title:string;single_url:string;markdown:string}};
-    expect(message.action_card.title).toBe("待验证 · 需要你验收");expect(message.action_card.single_url).toContain(`item=${item.key}`);
-    expect(message.action_card.markdown).toContain(`Notice project ｜ ${item.key}\n\n**A verification item**`);expect(message.action_card.markdown).toContain("**验收提示**");
+    expect(message.action_card.title).toBe(`已交付 ${item.key} ｜ 请验收`);expect(message.action_card.single_url).toContain(`item=${item.key}`);
+    expect(message.action_card.markdown).toContain("Notice project | **A verification item**");expect(message.action_card.markdown).toContain("**验收方式**");
     expect(f.service.list(item.id)[0]?.status).toBe("accepted");
     f.setResult({errcode:0,send_result:{}});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
     f.setResult({errcode:0,send_result:{unread_user_id_list:["employee-one"]}});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("sent");
@@ -229,8 +229,8 @@ describe("durable verification notification delivery",()=>{
     f.store.submitDevelopmentComplete({itemKey:item.key,completion,requiredArtifacts:["web","androidApp","macosApp","windowsApp","gateway"],summary:"Fixed the reported behavior",idempotencyKey:"synthetic-completion"});
     f.store.submitForVerification({itemKey:item.key,completion,deployedCommit:"b".repeat(40),receiptDigest:"c".repeat(64),releases:["web","androidApp","macosApp","windowsApp","gateway"].map(artifact=>({artifact,version:"synthetic-v1",sourceCommit:"b".repeat(40)})),idempotencyKey:"synthetic-verification"});
     await f.service.drain();const msg=JSON.stringify(f.requests.at(-1)?.body.msg);
-    expect(msg).toContain("**验收版本**");expect(msg).toContain("Web：synthetic-v1");expect(msg).toContain("Android App：synthetic-v1");expect(msg).toContain("macOS App：synthetic-v1");expect(msg).toContain("Windows App：synthetic-v1");
-    expect(msg).toContain("重新打开网站");expect(msg).toContain("下载并安装上述版本");expect(msg).toContain("其他产物");expect(msg).not.toContain("Fixed the reported behavior");
+    expect(msg).not.toContain("验收版本");expect(msg).not.toContain("synthetic-v1");expect(msg).toContain("Web：");expect(msg).toContain("Android：");expect(msg).toContain("macOS：");expect(msg).toContain("Windows：");
+    expect(msg).toContain("重新打开网站");expect(msg).toContain("下载并安装最新版本");expect(msg).toContain("其他产物");expect(msg).not.toContain("Fixed the reported behavior");
   });
   it("does not let item content inject card formatting",async()=>{
     const f=await fixture();f.config();f.bind();f.enable();
