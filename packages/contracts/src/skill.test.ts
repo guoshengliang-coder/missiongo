@@ -24,7 +24,7 @@ const skill = readFileSync(skillPath, "utf8");
  *
  * To update: bump MISSIONGO_SKILL_VERSION, run this test, and paste the actual digest.
  */
-const SKILL_CONTENT_DIGEST = "abc5d761103be9373bd158a251018afb57f3cce6bc24fc193cb0a66afd72928f";
+const SKILL_CONTENT_DIGEST = "108be1c2465b5e62e9ace7b5055e3f5a827c0a70b167e7f4b332bfd4ba0c9099";
 
 function skillBodyWithoutVersion(): string {
   return skill

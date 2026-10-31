@@ -10,10 +10,10 @@ import { useI18n } from "./i18n";
 import { Modal } from "./modal";
 
 const copy: Record<string,[string,string]> = {
-  checked:["交接已核对","Handover checked"], waiting_node:["等待本机节点检查","Waiting for a local node"],
+  checked:["交接已核对","Handover checked"], waiting_node:["等待关联节点检查","Waiting for a mapped node"],
   waiting_confirmation:["等待人工确认","Waiting for human confirmation"],
   checking:["正在检查","Checking"], waiting_merge:["等待核实集成","Waiting for merge evidence"],
-  waiting_release:["等待必需产物发布","Waiting for required releases"], needs_scope:["待安排验证","Verification needs arranging"],
+  waiting_release:["待核实发布凭据","Waiting for verified release evidence"], needs_scope:["待安排验证","Verification needs arranging"],
   evidence_missing:["缺少可信证据","Evidence missing"], permission_failed:["本机仓库权限不足","Repository permission required on the node"],
   failed:["检查失败，可重试","Check failed; retry available"], stale:["处理轮次已变化，旧记录失效","Old record invalidated by a new work round"],
 };
@@ -36,7 +36,7 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
   const canRegister = Boolean(item.data && ["in_progress","development_complete"].includes(item.data.status));
   const mayOperate = canOperate && product?.access?.canOperate !== false && products.isSuccess;
   const query = useQuery({queryKey:["status-checks",productId,itemKey,offset],queryFn:()=>api.statusChecks(productId,itemKey,offset),
-    refetchInterval: q => q.state.data?.items.some(r=>["waiting_node","checking"].includes(r.status)) ? 5000 : false});
+    refetchInterval: q => q.state.data?.items.some(r=>r.requestedAt || ["waiting_node","checking"].includes(r.status)) ? 5000 : false});
   const refresh = async () => { await Promise.all([client.invalidateQueries({queryKey:["products"]}),client.invalidateQueries({queryKey:["status-checks"]}),client.invalidateQueries({queryKey:["items"]}),client.invalidateQueries({queryKey:["item"]}),client.invalidateQueries({queryKey:["timeline"]})]); };
   const mutation = useMutation({mutationFn:()=>api.requestStatusCheck(productId,itemKey),onSuccess:async()=>{setRequested(true);await refresh();}});
   const records = query.data?.items ?? [];
@@ -52,7 +52,7 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
     {editing && itemKey ? <ScopeEditor key={itemKey} itemKey={itemKey} record={scopeRecord} artifacts={product?.releaseArtifacts ?? []} onCancel={()=>setEditing(false)} onSaved={async()=>{setEditing(false);await refresh();}}/>
       : confirmation ? <HumanConfirmation key={`${confirmation.id}:${confirmation.itemStatus}`} record={confirmation} onCancel={()=>setConfirmation(null)} onSaved={async()=>{setConfirmation(null);await refresh();}}/> : <>
     <p className="dispatch-note">{zh ? "已有证据由服务端核对；需要仓库权限时，由已关联的 macOS 节点检查。节点离线时任务会保留。" : "The server reconciles recorded evidence. Repository checks run on a mapped macOS node; offline work remains queued."}</p>
-    {query.data?.schedule && <p className="dispatch-note">{query.data.schedule.time === false ? (zh ? "自动检查已关闭" : "Automatic checks disabled") : `${zh ? "每天" : "Daily at"} ${query.data.schedule.time} · ${query.data.schedule.timezone}`}</p>}
+    {query.data?.schedule && <p className="dispatch-note">{query.data.schedule.time === false ? (zh ? "每日补查已关闭" : "Daily checks disabled") : `${zh ? "每天" : "Daily at"} ${query.data.schedule.time} · ${query.data.schedule.timezone}`}</p>}
     <div className="status-check-actions"><button type="button" className="primary-button" disabled={!mayOperate || mutation.isPending} onClick={()=>mutation.mutate()}>
       {mutation.isPending ? <LoaderCircle className="spin" size={16}/> : <ClipboardCheck size={16}/>}{zh ? "立即检查并校正" : "Check and reconcile now"}</button>
       <button type="button" className="secondary-button" disabled={query.isFetching} onClick={()=>void refresh()}>{zh ? "刷新结果" : "Refresh results"}</button>
@@ -60,13 +60,14 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
     </div>
     {(mutation.isError || query.isError) && <p className="inline-error" role="alert">{localizedErrorText(mutation.error ?? query.error,t)}</p>}
     {requested && <p role="status" className="dispatch-note">{mutation.data?.missingAssociation ? (zh ? "缺少完成依据，暂时无法检查。请先关联 PR、MR 或提交。" : "Associate a PR, MR or commit before requesting a check.")
-      : mutation.data?.queued ? (zh ? "已排队，等待关联节点；这不代表已经核实。" : "Queued for a mapped node; this is not a verification result.")
+      : records.some(r=>r.requestedAt || r.status === "checking") ? (zh ? "已排队，等待关联节点；这不代表已经核实。" : "Queued for a mapped node; this is not a verification result.")
       : (zh ? "已有证据已核对；请查看下方结果。" : "Recorded evidence reconciled; see results below.")}</p>}
 
     {query.isLoading && <p><LoaderCircle className="spin" size={16}/>{zh ? "正在读取…" : "Loading…"}</p>}
     {query.isSuccess && !records.length && <p className="dispatch-note">{zh ? "暂无交接记录。请先关联完成依据和发布范围。" : "No handover recorded. Associate completion evidence and release scope first."}</p>}
     <div className="status-check-list">{records.map(record=><article className="status-check-card" key={record.id}>
       <header><strong>{record.itemKey}</strong><span role="status">{statusCheckLabel(record.status,zh)}</span></header>
+      {record.requestedAt && <p className="dispatch-note">{record.status === "checking" ? (zh ? "本次检查：节点正在核查。" : "Current check: a node is verifying.") : (zh ? "本次检查：已排队或等待自动重试；下方为上次记录。" : "Current check: queued or awaiting retry; previous observations appear below.")}</p>}
       <p>{zh ? "条目状态：" : "Item status: "}{statusLabel(record.itemStatus)}</p>
       <p>{"url" in record.completion ? <a href={record.completion.url} target="_blank" rel="noreferrer">{record.completion.kind === "gitlab" ? "GitLab MR" : "GitHub PR"} · {record.completion.url}</a>
         : <>{record.completion.kind === "commit" ? (zh ? "本地提交" : "Local commit") : (zh ? "人工确认" : "Human confirmation")} · <code>{record.completion.commit}</code>{record.completion.kind === "commit" && ` → ${record.completion.targetBranch}`}</>}</p>
@@ -75,7 +76,7 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
       {record.evidence.merged && <p>{zh ? "已核实集成：" : "Verified integration: "}<code>{record.evidence.merged.commit}</code> · {record.evidence.merged.occurredAt}</p>}
       {record.requiredArtifacts?.map(artifact=>{
         const release = record.evidence.releases?.find(r=>r.artifact === artifact);
-        return <p key={artifact}><strong>{artifact}</strong> · {release ? `${release.version} · ${release.sourceCommit}` : (zh ? "尚无发布证据" : "No release evidence")}</p>;
+        return <p key={artifact}><strong>{artifact}</strong> · {release ? `${release.version} · ${release.sourceCommit}` : (zh ? "尚未取得有效发布凭据" : "No verified release evidence yet")}</p>;
       })}
       {record.evidenceReporter?.accountId && record.evidenceSource === "human_confirmation" && <p>{zh ? "确认人：" : "Confirmed by: "}{record.evidenceReporter.accountId} · {record.evidenceReporter.recordedAt}</p>}
       {record.evidenceReporter?.note && <p>{record.evidenceReporter.note}</p>}
@@ -83,7 +84,7 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
       <p className="dispatch-note">{record.evidenceSource === "human_confirmation" ? (zh ? "来源：登录用户人工确认。" : "Source: signed-in user's confirmation.") : (zh ? "来源：授权执行端上报；服务端未独立访问代码托管平台。" : "Source: authorized executor report; the server does not independently check the repository host.")}</p>
       {mayOperate && ["in_progress","development_complete"].includes(record.itemStatus) && record.status !== "stale" &&
         <button type="button" className="secondary-button" onClick={()=>setConfirmation(record)}>{record.itemStatus === "in_progress" ? (zh ? "人工确认已集成" : "Confirm integration") : !record.requiredArtifacts?.length ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication")}</button>}
-      <p className="dispatch-note">{zh ? "最近检查：" : "Last check: "}{record.checkedAt ? new Date(record.checkedAt).toLocaleString(locale) : (zh ? "尚未检查" : "Never")}</p>
+      <p className="dispatch-note">{zh ? "上次检查结果时间：" : "Last result at: "}{(record.lastResultAt ?? record.evidenceReporter?.recordedAt) ? new Date((record.lastResultAt ?? record.evidenceReporter?.recordedAt)!).toLocaleString(locale) : (zh ? "尚未检查" : "Never")}</p>
     </article>)}</div>
     <div className="status-check-actions"><button type="button" className="secondary-button" disabled={offset === 0} onClick={()=>setOffset(Math.max(0,offset-100))}>{zh ? "上一页" : "Previous"}</button>
       <button type="button" className="secondary-button" disabled={query.data?.nextOffset === undefined} onClick={()=>setOffset(query.data!.nextOffset!)}>{zh ? "下一页" : "Next"}</button></div>

@@ -1,1 +1,1 @@
-export { publicReleaseEvidence, saveReleaseEvidence } from "../apps/web/public/downloads/missiongo-handover.mjs";
+export { publicReleaseEvidence, saveReleaseEvidence, repositoryIdentity } from "../apps/web/public/downloads/missiongo-handover.mjs";

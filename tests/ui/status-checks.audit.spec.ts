@@ -38,8 +38,9 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
   await dialog.getByRole("button",{name:"确认并保存关联",exact:true}).click();
   await expect(dialog.getByText("等待核实集成",{exact:true})).toBeVisible();
   await dialog.getByRole("button",{name:"立即检查并校正",exact:true}).click();
-  await expect(dialog.getByText("等待本机节点检查",{exact:true})).toBeVisible();
+  await expect(dialog.getByText("等待关联节点检查",{exact:true})).toBeVisible();
   await expect(dialog.getByText("已排队，等待关联节点；这不代表已经核实。",{exact:true})).toBeVisible();
+  await expect(dialog.getByText("上次检查结果时间：尚未检查",{exact:true})).toBeVisible();
   expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
   await page.screenshot({path:test.info().outputPath(`status-${width}-${theme}.png`)});
   await page.keyboard.press("Escape");await expect(dialog).toHaveCount(0);

@@ -4,6 +4,7 @@ import Foundation
 /// The protocol calls the loop makes, so a test can stand in for the server.
 public protocol NodeAPI: Sendable {
     func statusCheckJournalScope() throws -> String?
+    func uploadReleaseObservation(productId: String, repoPath: String, observation: ReleaseObservation) async throws
     func claimStatusCheck() async throws -> StatusCheckJob?
     func reportStatusCheck(id: String, leaseToken: String, evidence: HandoverEvidence) async throws
     func managedJobs() async throws -> [ManagedExecutionJob]
@@ -26,6 +27,7 @@ public extension NodeAPI {
     func artifactJobs() async throws -> [AgentArtifactJob] { [] }
     func reportArtifact(id: String, result: AgentArtifactResult) async throws {}
     func statusCheckJournalScope() throws -> String? { nil }
+    func uploadReleaseObservation(productId: String, repoPath: String, observation: ReleaseObservation) async throws { throw LaunchError("Release upload unsupported") }
     func claimStatusCheck() async throws -> StatusCheckJob? { nil }
     func reportStatusCheck(id: String, leaseToken: String, evidence: HandoverEvidence) async throws {}
     func managedJobs() async throws -> [ManagedExecutionJob] { [] }
@@ -311,7 +313,8 @@ public final class NodeLoop: @unchecked Sendable {
             async let managed: Void = managedLoop(stop: stop)
             async let artifacts: Void = artifactLoop(stop: stop)
             async let statusChecks: Void = statusCheckLoop(stop: stop)
-            _ = await (heartbeat, claim, sessions, managed, artifacts, statusChecks)
+            async let releases: Void = releaseObservationLoop(stop: stop)
+            _ = await (heartbeat, claim, sessions, managed, artifacts, statusChecks, releases)
         } onCancel: {
             stop.stop()
         }
@@ -344,6 +347,20 @@ public final class NodeLoop: @unchecked Sendable {
                 }
             } catch { log("读取会话产物未完成：\(error.localizedDescription)") }
             await stop.sleep(timing.sessionInterval, unlessWokenSince: generation)
+        }
+    }
+
+    private func releaseObservationLoop(stop: StopSignal) async {
+        guard let scope = try? api.statusCheckJournalScope() else { return }
+        let worker = ReleaseObservationWorker(root: attachmentCacheRoot.deletingLastPathComponent()
+            .appendingPathComponent("ReleaseDeliveryOutbox").appendingPathComponent(scope))
+        while !stop.isStopped {
+            let generation = stop.generation
+            if currentState.supportsStatusChecks {
+                do { try await worker.tick(api: api, mappedRepos: currentState.repos) }
+                catch { log("发布凭据上传队列暂不可用，稍后重试。") }
+            }
+            await stop.sleep(timing.heartbeatInterval, unlessWokenSince: generation)
         }
     }
 

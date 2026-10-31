@@ -2019,6 +2019,23 @@ export class MissionGoDatabase {
           .run(202610310352, new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202610310500").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE release_observations (
+            id TEXT PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id), repository TEXT NOT NULL,
+            environment TEXT NOT NULL, observed_at TEXT NOT NULL, payload_json TEXT NOT NULL,
+            digest TEXT NOT NULL, account_id TEXT NOT NULL, node_id TEXT NOT NULL, received_at TEXT NOT NULL
+          );
+          CREATE INDEX release_observations_latest ON release_observations(product_id,repository,environment,observed_at DESC);
+          ALTER TABLE status_handovers ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE status_handovers ADD COLUMN last_report_at TEXT;
+          UPDATE status_handovers SET last_report_at=json_extract(evidence_source_json,'$.recordedAt');
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202610310500, new Date().toISOString());
+      });
+    }
     this.connection.exec("PRAGMA optimize;");
   }
 }

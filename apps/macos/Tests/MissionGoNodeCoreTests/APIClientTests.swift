@@ -167,6 +167,26 @@ final class APIClientTests: XCTestCase {
         return APIClient(serverUrl: server, token: token, session: StubURLProtocol.session())
     }
 
+    func testPublicationUploadRequiresMatchingReceiptAndUsesExistingNodeCredential() async throws {
+        let observation = ReleaseObservation(schemaVersion:2,id:UUID().uuidString,repository:"https://git.example.test/team/project",
+            environment:"production",observedAt:"2026-10-31T05:00:00.000Z",releases:[])
+        for response in ["{}", "{\"accepted\":true,\"id\":\"wrong\"}", "{\"accepted\":false,\"id\":\"\(observation.id)\"}"] {
+            StubURLProtocol.install {_,_ in .response(status:200,body:response)}
+            do {try await client().uploadReleaseObservation(productId:"p1",repoPath:"/example/repo",observation:observation); XCTFail("Invalid receipt accepted")} catch {}
+        }
+        StubURLProtocol.install {_,_ in .response(status:200,body:"{\"accepted\":true,\"id\":\"\(observation.id)\"}")}
+        try await client().uploadReleaseObservation(productId:"p1",repoPath:"/example/repo",observation:observation)
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertEqual(sent.request.url?.path,"/api/v1/node/release-observations")
+        XCTAssertEqual(sent.request.value(forHTTPHeaderField:"Authorization"),"Bearer mgn_x")
+        XCTAssertEqual(sent.request.timeoutInterval,APIClient.requestTimeout)
+        XCTAssertEqual(jsonObject(sent.body)["productId"] as? String,"p1")
+        StubURLProtocol.install {_,_ in .response(status:200,body:"{\"job\":null}")}
+        let job = try await client().claimStatusCheck()
+        XCTAssertNil(job)
+        XCTAssertEqual(jsonObject(try XCTUnwrap(StubURLProtocol.recorded.first).body)["supportsSharedReleases"] as? Bool,true)
+    }
+
     func testUnreadCountUsesNodeCredentialAndReadsExactCount() async throws {
         StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"attention":7,"unread":123}"#) }
         let count = try await client().unreadCount()
