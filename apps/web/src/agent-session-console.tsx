@@ -1097,7 +1097,7 @@ export function AgentSessionConsole({
                         <AgentSessionQuestions
                           questions={message.questions}
                           reply={reply}
-                          canReply={selected.canReply}
+                          canReply={selected.canReply && !pending && !sendingSelected}
                           onChange={setReply}
                         />
                       )}

@@ -115,7 +115,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                       <AgentSessionQuestions
                         questions={message.questions}
                         reply={reply}
-                        canReply={canReply}
+                        canReply={canReply && !pending && !send.isPending}
                         onChange={setReply}
                       />
                     )}
