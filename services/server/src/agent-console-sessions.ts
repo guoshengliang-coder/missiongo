@@ -3,6 +3,7 @@ import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 import { ExternalNativeSessionStore } from "./external-native-session-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
+import { conversationIdentityGroups } from "./conversation-identity.js";
 
 interface IdentityRow { id: string; agent: string; ref: string | null; node: string | null }
 
@@ -21,25 +22,13 @@ export class AgentConsoleSessions {
     const rows = [...this.dispatch.listForAccount(accountId, identities.length + 1),
       ...this.external.listForAccount(accountId, identities.length + 1)];
     const byId = new Map(rows.map((row) => [row.id, row]));
-    const nodes = new Map<string, Set<string>>();
-    for (const identity of identities) {
-      if (!identity.ref || byId.get(identity.id)?.managedExecution) continue;
-      const key = JSON.stringify([identity.agent, identity.ref]);
-      if (identity.node) nodes.set(key, new Set([...(nodes.get(key) ?? []), identity.node]));
-    }
-    const groups = new Map<string, AgentSessionListItem[]>();
-    for (const identity of identities) {
+    const groups = conversationIdentityGroups(identities.map((identity) => ({
+      ...identity, isolated: Boolean(byId.get(identity.id)?.managedExecution),
+    })));
+    return groups.map((identities) => identities.flatMap((identity) => {
       const row = byId.get(identity.id);
-      if (!row) continue;
-      const nativeKey = JSON.stringify([identity.agent, identity.ref]);
-      const knownNodes = nodes.get(nativeKey) ?? new Set<string>();
-      // An unbound ID cannot pick between different nodes carrying that ID.
-      const node = identity.node ?? (knownNodes.size === 1 ? [...knownNodes][0] : null);
-      const key = !identity.ref || row.managedExecution || (!identity.node && knownNodes.size > 1)
-        ? identity.id : JSON.stringify([nativeKey, node]);
-      groups.set(key, [...(groups.get(key) ?? []), row]);
-    }
-    return [...groups.values()].map((group) => group.sort((a, b) => {
+      return row ? [row] : [];
+    }).sort((a, b) => {
       const rank = (row: AgentSessionListItem) => {
         if (row.source !== "external") return !row.archivedAt
           && !["failed", "unavailable", "suspended"].includes(row.status) ? 0 : 2;

@@ -5,6 +5,16 @@ import type { WorkItemPriority, WorkItemStatus, WorkItemType } from "./types";
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
+  agentRecoveryTitle: "What you can do next",
+  agentRecoveryPending: "A reply is queued, being delivered, or awaiting delivery confirmation. Resolve its delivery state below before continuing.",
+  agentRecoveryOffline: "Bring the session's node online, then check the original Agent client before continuing.",
+  agentRecoveryRetry: "Check the node and its Agent configuration, then send the dispatch again. The server will recheck item states and permissions.",
+  agentRecoveryNewSession: "This conversation needs a new session. Open the original client with a short task summary; review the linked items before arranging another dispatch.",
+  agentRecoveryReply: "Read the error details first. You can enter and manually send a new message to this conversation; failed messages are not replayed.",
+  agentRecoveryAtSource: "Check this conversation in its original Agent client. Direct redispatch is unavailable for its current state or permissions; open a linked item to review its status and arrange the next step.",
+  agentRecoveryContinue: "Write a reply",
+  agentRecoveryItem: "Open item {key}",
+  agentRecoveryArchiveHint: "Archive this record if it no longer needs attention. Archiving does not complete or cancel its work items.",
   confirmClearModelKey: "Clear the configured model key? Features that depend on it will become unavailable.",
   keepViewing: "Keep viewing",
   closeTokenWarning: "The token is shown only once. Make sure you have copied it before closing.",
@@ -1182,6 +1192,16 @@ const EN_MESSAGES = {
 export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
+  agentRecoveryTitle: "接下来可以做什么",
+  agentRecoveryPending: "有消息正在排队、投递或等待确认。请先处理下方投递状态，再继续操作，避免重复执行。",
+  agentRecoveryOffline: "请让会话所在节点恢复在线，再到原 Agent 客户端核对会话后继续。",
+  agentRecoveryRetry: "请先检查节点与 Agent 配置，再重新派单；服务端会重新检查条目状态与权限。",
+  agentRecoveryNewSession: "这条会话需要新建会话继续。请在原客户端携带简短任务摘要接手；需要重新派单时，先打开关联条目核对状态。",
+  agentRecoveryReply: "请先查看错误详情；可以输入新消息并手动发送到本会话，失败消息不会自动重发。",
+  agentRecoveryAtSource: "请在原 Agent 客户端检查这条会话。当前状态或权限不允许直接重新派单；可打开关联条目核对状态，再安排下一步。",
+  agentRecoveryContinue: "继续回复",
+  agentRecoveryItem: "打开条目 {key}",
+  agentRecoveryArchiveHint: "不再需要关注时可以归档此记录。归档不会完成或取消关联条目。",
   confirmClearModelKey: "清除已配置的模型密钥？依赖此密钥的功能将不可用。",
   keepViewing: "返回查看",
   closeTokenWarning: "令牌明文只展示这一次。请确认已经复制保存后再关闭。",

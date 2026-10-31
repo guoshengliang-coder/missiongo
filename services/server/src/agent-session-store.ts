@@ -6,7 +6,7 @@ import { sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcc
 import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
 import type { AgentSessionAttachment, AgentSessionAttachments } from "./agent-session-attachments.js";
 import { parseAgentModels, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
-import { autoArchiveFinishedDispatches } from "./auto-archive.js";
+import { autoArchiveFinishedDispatches, autoArchiveFinishedConversations } from "./auto-archive.js";
 import { deliveredDispatchTimedOut } from "./dispatch-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
@@ -1273,6 +1273,7 @@ export class AgentSessionStore {
            WHERE session_id = ?`,
         )
         .run("回复已取消，请重新确认是否仍需处理。", now, sessionId);
+      autoArchiveFinishedConversations(this.database, accountId, now, [sessionId]);
     });
     return this.mapCommand({ ...command, status: "cancelled", cancelled_at: now });
   }

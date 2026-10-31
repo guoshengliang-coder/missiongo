@@ -548,13 +548,6 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-bulk-cancel { padding-inline: 9px; }
 .agent-console-bulk-submit { padding-inline: 12px; }
 .agent-console-bulk-result { margin: 0 12px 10px; padding: 8px 10px; color: var(--accent-text); background: var(--accent-bg); border-radius: var(--radius-md); font-size: var(--text-xs); line-height: 1.45; }
-.dispatch-health { max-height: 42vh; margin: 0 12px 10px; padding: 10px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
-.dispatch-health header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--ink); font-size: var(--text-sm); }
-.dispatch-health header span { color: var(--muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
-.dispatch-health-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
-.dispatch-health-filters :is(select, .single-select) { min-width: 0; height: 32px; padding: 0 7px; color: var(--ink); background: var(--surface-field); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: var(--text-xs); }
-.dispatch-health-failure { display: grid; gap: 2px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); font-size: var(--text-xs); }
-.dispatch-health-failure span, .dispatch-health-failure small { color: var(--muted); overflow-wrap: anywhere; }
 .agent-console-session-list { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid var(--line-soft); }
 .agent-console-session-list > .inline-error { margin: 12px; }
 .agent-console-session-row { position: relative; display: flex; border-bottom: 1px solid var(--line-soft); transition: background 140ms ease, box-shadow 140ms ease; }
@@ -1273,10 +1266,12 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .markdown-text h3, .markdown-text h4, .markdown-text h5, .markdown-text h6 { font-size: 1.05em; }
 .markdown-text ul, .markdown-text ol { margin: 10px 0; padding-left: 22px; }
 .markdown-text li + li { margin-top: 4px; }
+.markdown-text .task-list-item { list-style: none; }
+.markdown-text .task-list-item > input[type="checkbox"] { width: 14px; min-width: 14px; height: 14px; min-height: 14px; margin: 0 6px 0 0; padding: 0; vertical-align: middle; accent-color: var(--mint-dark); }
 .markdown-text blockquote { margin: 10px 0; padding: 2px 12px; border-left: 3px solid var(--mint-dark); color: var(--muted); }
 .markdown-text blockquote > :first-child { margin-top: 0; }
 .markdown-text blockquote > :last-child { margin-bottom: 0; }
-.markdown-text code { padding: 1px 4px; border-radius: var(--radius-xs); background: var(--surface-inset); font-family: "SFMono-Regular", Consolas, monospace; font-size: .9em; }
+.markdown-text code { padding: 1px 4px; border-radius: var(--radius-xs); background: var(--surface-inset); font-family: "SFMono-Regular", Consolas, monospace; font-size: max(var(--text-xs), .9em); }
 .markdown-text pre { margin: 10px 0; padding: 11px; overflow: auto; border-radius: var(--radius-sm); background: var(--code-bg-soft); color: var(--code-fg); }
 .markdown-text pre code { padding: 0; background: transparent; color: inherit; }
 .markdown-text a { color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; }
@@ -2977,8 +2972,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 :root .list-filter-controls button.single-select.single-select { min-height: 36px; border: 0; padding: 6px 10px; font-size: var(--text-sm); background: transparent; }
 .list-filter-builder:focus-within, .list-filter-type:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 :root .list-filter-controls button.single-select:focus-visible { outline: none; }
-:root .agent-session-quick-settings-row button.single-select.single-select,
-:root .dispatch-health-filters button.single-select.single-select { min-height: 36px; padding: 6px 10px; font-size: var(--text-sm); }
+:root .agent-session-quick-settings-row button.single-select.single-select { min-height: 36px; padding: 6px 10px; font-size: var(--text-sm); }
 @media (hover: hover) {
   :root button.single-select:not(:disabled):hover { background: var(--surface-field); }
   .single-select-option:not([aria-disabled=true]):hover { background: var(--surface-sunken); }
@@ -2986,8 +2980,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 @media (pointer: coarse) {
   :root button.single-select.single-select,
   :root .list-filter-controls button.single-select.single-select,
-  :root .agent-session-quick-settings-row button.single-select.single-select,
-  :root .dispatch-health-filters button.single-select.single-select { min-width: 44px; min-height: 44px; font-size: 16px; }
+  :root .agent-session-quick-settings-row button.single-select.single-select { min-width: 44px; min-height: 44px; font-size: 16px; }
   .single-select-option { min-height: 44px; }
 }
 @media (forced-colors: active) {
@@ -3010,3 +3003,11 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 @media (pointer: coarse) {
   .comment-attachments .attachment-actions button { width: 44px; height: 44px; }
 }
+
+/* Recovery actions keep their text visible on phones as well as desktops. */
+.agent-console-recovery { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); font-size: var(--text-sm); }
+.agent-console-recovery p { margin: 0; color: var(--ink-2); line-height: 1.6; }
+.agent-console-recovery small { color: var(--muted); font-size: var(--text-xs); }
+.agent-console-recovery .agent-console-actions { grid-area: auto; grid-column: auto; justify-content: flex-start; }
+.agent-console-recovery .agent-console-actions, .agent-console-recovery-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+.agent-console-recovery :is(button, a), .agent-console-recovery .dispatch-session-link a { display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: auto; min-height: 44px; padding: 8px 12px; font-size: var(--text-sm); text-decoration: none; white-space: normal; }

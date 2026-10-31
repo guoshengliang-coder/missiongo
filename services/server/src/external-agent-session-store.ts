@@ -199,8 +199,8 @@ export class ExternalAgentSessionStore {
 
   setArchived(accountId: string, sessionId: string, archived: boolean): void {
     this.row(accountId, sessionId);
-    this.db.prepare("UPDATE external_agent_sessions SET archived_at = ? WHERE id = ?")
-      .run(archived ? new Date().toISOString() : null, sessionId);
+    this.db.prepare("UPDATE external_agent_sessions SET archived_at = ?, auto_archive_suppressed = CASE WHEN ? = 0 AND archive_reason = 'auto' THEN 1 ELSE auto_archive_suppressed END, archive_reason = NULL WHERE id = ?")
+      .run(archived ? new Date().toISOString() : null, archived ? 1 : 0, sessionId);
   }
 
   markRead(accountId: string, sessionId: string, through: string): void {
