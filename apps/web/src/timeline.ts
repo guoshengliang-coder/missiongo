@@ -130,3 +130,13 @@ export function groupDiscussionTimeline(events: readonly WorkItemEvent[]): reado
   }
   return groupTimeline(events).filter(entry=>!childIds.has(entry.id)).map(entry=>({...entry,replies:groups.get(entry.id) ?? []}));
 }
+
+/** Activity order applies only to discussions; the complete audit trail keeps its original order. */
+export function recentDiscussions(events:readonly WorkItemEvent[]) {
+  return groupDiscussionTimeline(events).filter(entry=>entry.event.eventType==="comment_added")
+    .sort((a,b)=>discussionActivity(b).localeCompare(discussionActivity(a)));
+}
+
+export function discussionActivity(entry:TimelineEntry & {replies:readonly WorkItemEvent[]}):string {
+  return entry.replies.reduce((latest,reply)=>reply.createdAt>latest?reply.createdAt:latest,entry.event.createdAt);
+}

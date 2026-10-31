@@ -20,3 +20,18 @@ export function mentionAudience(mentions:readonly DraftMention[]):CommentAudienc
   return {mentionAccountIds:[...new Set(mentions.flatMap(mention=>mention.accountId?[mention.accountId]:[]))],
     mentionTargets:mentions.some(mention=>mention.target==="all")?["all"]:[]};
 }
+
+/** Keep recipients selected by an Agent visible without repeating names already in the comment. */
+export function additionalMentionNames(text:string,names:readonly string[]):string[] {
+  const hasToken=(label:string)=>{
+    const token=`@${label}`;
+    let at=text.indexOf(token);
+    while(at>=0){
+      const next=text.slice(at+token.length,at+token.length+1);
+      if(!next || /[\s\p{P}\p{S}]/u.test(next))return true;
+      at=text.indexOf(token,at+token.length);
+    }
+    return false;
+  };
+  return [...new Set(names)].filter(name=>!hasToken(name));
+}

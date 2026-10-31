@@ -55,6 +55,11 @@ export function registerDingTalkRoutes(app: FastifyInstance,{store,accounts,serv
   app.get("/api/v1/items/:itemKey/dingtalk-notifications",async request=>{
     const {item,canRetry}=visible(request);return {notifications:service.list(item.id),canRetry};
   });
+  app.get("/api/v1/items/:itemKey/comments/:commentId/dingtalk-notifications",async request=>{
+    const {item,canRetry}=visible(request),{commentId}=request.params as {commentId:string};
+    if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(commentId))throw invalidInput("评论编号格式无效。");
+    return {notifications:service.listComment(item.id,commentId),canRetry};
+  });
   app.post("/api/v1/items/:itemKey/dingtalk-notifications/:id/retry",async request=>{
     const {account,item,canRetry}=visible(request);if(!canRetry)throw notFound("Notification");
     const {id}=request.params as {id:string};service.retry(item.key,id,account.id);return {notifications:service.list(item.id),canRetry};

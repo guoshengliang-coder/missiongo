@@ -287,6 +287,7 @@ export const api = {
   dingtalkProject: (productId:string) => request<DingTalkProjectSettings>(`/api/v1/products/${encodeURIComponent(productId)}/dingtalk`),
   saveDingtalkProject: (productId:string,enabled:boolean,expectedEnabled:boolean) => request<DingTalkProjectSettings>(`/api/v1/products/${encodeURIComponent(productId)}/dingtalk`,{method:"PUT",body:JSON.stringify({enabled,expectedEnabled})}),
   dingtalkNotifications: (itemKey:string) => request<{notifications:DingTalkNotification[];canRetry:boolean}>(`/api/v1/items/${encodeURIComponent(itemKey)}/dingtalk-notifications`),
+  commentDingtalkNotifications: (itemKey:string,commentId:string) => request<{notifications:DingTalkNotification[];canRetry:boolean}>(`/api/v1/items/${encodeURIComponent(itemKey)}/comments/${encodeURIComponent(commentId)}/dingtalk-notifications`),
   retryDingtalkNotification: (itemKey:string,id:string) => request<{notifications:DingTalkNotification[];canRetry:boolean}>(`/api/v1/items/${encodeURIComponent(itemKey)}/dingtalk-notifications/${encodeURIComponent(id)}/retry`,{method:"POST"}),
   requestAgentArtifact: (sessionId: string, messageId: string, href: string) =>
     request<AgentArtifactState>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts`, { method: "POST", body: JSON.stringify({ messageId, href }) }),

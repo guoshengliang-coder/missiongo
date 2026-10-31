@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { dispatchedEvent, groupDiscussionTimeline, groupTimeline, statusChangeNote } from "./timeline";
+import { dispatchedEvent, groupDiscussionTimeline, groupTimeline, statusChangeNote, recentDiscussions } from "./timeline";
 import type { WorkItemEvent } from "./types";
 
 const event = (
@@ -153,6 +153,13 @@ describe("statusChangeNote", () => {
 });
 
 describe("flat comment discussions",()=>{
+  it("raises an older discussion after a new reply without reordering the complete history",()=>{
+    const events=[event("old","comment_added","2026-10-31T00:00:00Z"),event("new","comment_added","2026-10-31T00:00:01Z"),
+      event("reply","comment_added","2026-10-31T00:00:02Z",{threadRootCommentId:"old",replyToCommentId:"old"}),event("status","status_changed","2026-10-31T00:00:03Z")];
+    expect(recentDiscussions(events).map(entry=>entry.id)).toEqual(["old","new"]);
+    expect(recentDiscussions(events)[0]?.replies.map(reply=>reply.id)).toEqual(["reply"]);
+    expect(groupTimeline(events).map(entry=>entry.id)).toEqual(["status","reply","new","old"]);
+  });
   it("groups each reply exactly once under the root while keeping chronological order and immediate parents",async()=>{
     const {groupDiscussionTimeline}=await import("./timeline");
     const root=event("root","comment_added","2026-10-31T00:00:00Z",{withdrawnAt:"later"});

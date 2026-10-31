@@ -6,6 +6,8 @@ import { useSettingsDraft } from "./settings-drafts";
 import { parseDingTalkCsv } from "./dingtalk-csv";
 import { Modal } from "./modal";
 import { Select } from "./select";
+import { useI18n } from "./i18n";
+import { notificationGroupStatus } from "./notification-summary";
 
 const failure = (error: unknown) => error instanceof Error ? error.message : "操作失败，请重试。";
 const statusLabels: Record<DingTalkNotificationStatus, string> = { queued: "等待发送", sending: "正在发送", accepted: "已受理，待确认结果", sent: "发送成功", failed: "发送失败", skipped: "未发送", uncertain: "发送结果不明" };
@@ -13,7 +15,8 @@ const inProgress = (notice: DingTalkNotification | undefined) => Boolean(notice 
 const deliveryLabel = (mode: DingTalkDeliveryMode) => mode === "robot" ? "机器人单聊通知" : "个人工作通知";
 
 function NotificationState({ notice }: { notice: DingTalkNotification }) {
-  return <span className="dingtalk-notice-state"><strong>{statusLabels[notice.status]}</strong>{notice.reason && <small>{notice.reason}</small>}</span>;
+  const {t}=useI18n();
+  return <span className="dingtalk-notice-state"><strong>{notice.kind==="comment" && notice.status==="sent" ? t("commentNoticeSent") : statusLabels[notice.status]}</strong>{notice.reason && <small>{notice.reason}</small>}</span>;
 }
 
 // Route cancellation through Modal so unsaved drafts get the same protection
@@ -264,15 +267,49 @@ export function DingTalkProjectSettings({productId}:{productId:string}) {
     {save.isError && <p role="alert">{failure(save.error)}</p>}{save.isSuccess && enabled===query.data.enabled && <p role="status">通知设置已保存。</p>}
   </section>;
 }
-export function ItemDingTalkNotifications({itemKey,pending}:{itemKey:string;pending:boolean}) {
-  const client=useQueryClient();const query=useQuery({queryKey:["dingtalk-notifications",itemKey],queryFn:()=>api.dingtalkNotifications(itemKey),refetchInterval:5000});
-  const [confirm,setConfirm]=useState<string|null>(null);
-  const retry=useMutation({mutationFn:(id:string)=>api.retryDingtalkNotification(itemKey,id),onSuccess:data=>{setConfirm(null);client.setQueryData(["dingtalk-notifications",itemKey],data);}});
+export function useItemDingTalkNotifications(itemKey:string|null) {
+  return useQuery({queryKey:["dingtalk-notifications",itemKey],queryFn:()=>api.dingtalkNotifications(itemKey!),enabled:Boolean(itemKey),refetchInterval:5000});
+}
+type ItemNotificationQuery=ReturnType<typeof useItemDingTalkNotifications>;
+
+export function ItemDingTalkNotifications({itemKey,pending,query}:{itemKey:string;pending:boolean;query:ItemNotificationQuery}) {
   if(query.isError)return <p role="alert">钉钉通知记录加载失败，请刷新重试。</p>;
-  if(!query.data?.notifications.length)return null;
-  return <details className="dingtalk-item-notices"><summary>钉钉通知 · {statusLabels[query.data.notifications[0]!.status]}</summary><ol className="dingtalk-import-preview">{query.data.notifications.map((notice)=><li key={notice.id}>
+  const notices=query.data?.notifications.filter(notice=>notice.kind!=="comment") ?? [];
+  const status=notificationGroupStatus(notices);
+  if(!status)return null;
+  return <ItemNotificationDetails itemKey={itemKey} pending={pending} notices={notices} canRetry={query.data?.canRetry ?? false}
+    summary={`钉钉通知 · ${statusLabels[status]}`} />;
+}
+
+export function CommentDingTalkNotifications({itemKey,commentId,query,hasAudience,readOnly}:{itemKey:string;commentId:string;query:ItemNotificationQuery;hasAudience:boolean;readOnly:boolean}) {
+  const {t}=useI18n();
+  const [open,setOpen]=useState(false);
+  const specific=useQuery({queryKey:["comment-dingtalk-notifications",itemKey,commentId],queryFn:()=>api.commentDingtalkNotifications(itemKey,commentId),enabled:open,refetchInterval:open?5000:false});
+  const notices=specific.data?.notifications ?? query.data?.notifications.filter(notice=>notice.kind==="comment" && notice.commentId===commentId) ?? [];
+  const status=notificationGroupStatus(notices);
+  if(!hasAudience && !notices.length)return null;
+  // The item overview is capped at 100 recent records. Never summarize a partial recipient set as complete.
+  const complete=Boolean(specific.data || query.data && query.data.notifications.length<100);
+  return <ItemNotificationDetails itemKey={itemKey} pending={false} notices={notices} canRetry={!readOnly && (specific.data?.canRetry ?? query.data?.canRetry ?? false)} comment
+    onOpenChange={setOpen} loading={open && specific.isPending} loadError={specific.isError} reload={()=>void specific.refetch()}
+    summary={status && complete?t("commentNoticeSummary",{count:notices.length,status:status==="sent"?t("commentNoticeSent"):statusLabels[status]}):t("commentNoticeView")} />;
+}
+
+function ItemNotificationDetails({itemKey,pending,notices,canRetry,summary,comment=false,onOpenChange,loading=false,loadError=false,reload}:{
+  itemKey:string;pending:boolean;notices:readonly DingTalkNotification[];canRetry:boolean;summary:string;comment?:boolean;
+  onOpenChange?:(open:boolean)=>void;loading?:boolean;loadError?:boolean;reload?:()=>void;
+}) {
+  const {t}=useI18n();const client=useQueryClient();
+  const [confirm,setConfirm]=useState<string|null>(null);
+  const retry=useMutation({mutationFn:(id:string)=>api.retryDingtalkNotification(itemKey,id),onSuccess:async data=>{setConfirm(null);client.setQueryData(["dingtalk-notifications",itemKey],data);await client.invalidateQueries({queryKey:["comment-dingtalk-notifications",itemKey]});}});
+  return <details className={comment?"comment-notification-details":"dingtalk-item-notices"} onToggle={event=>onOpenChange?.(event.currentTarget.open)}><summary>{summary}</summary>
+    {comment && <p className="comment-notification-help">{t("commentNoticeNotRead")}</p>}
+    {loading && <p role="status">{t("commentNoticeLoading")}</p>}
+    {loadError && <p role="alert">{t("commentNoticeLoadFailed")} <button type="button" className="text-button" onClick={reload}>{t("retry")}</button></p>}
+    {comment && !loading && !loadError && !notices.length && <p>{t("commentNoticeEmpty")}</p>}
+    <ol className="dingtalk-import-preview">{notices.map((notice)=><li key={notice.id}>
     <NotificationState notice={notice} /><small>{notice.kind==="comment" ? "评论提醒" : "待验证提醒"}{notice.accountName ? ` · ${notice.accountName}` : ""}</small><small>{new Date(notice.createdAt).toLocaleString()} · 已尝试 {notice.attempts} 次</small>
-    {(notice.canRetry ?? (notice.kind!=="comment" && pending)) && query.data.canRetry && ["failed","skipped","uncertain"].includes(notice.status) && <button type="button" className="secondary-button" disabled={retry.isPending} onClick={()=>notice.status==="uncertain"?setConfirm(notice.id):retry.mutate(notice.id)}>补发通知</button>}
+    {(notice.canRetry ?? (notice.kind!=="comment" && pending)) && canRetry && ["failed","skipped","uncertain"].includes(notice.status) && <button type="button" className="secondary-button" disabled={retry.isPending} onClick={()=>notice.status==="uncertain"?setConfirm(notice.id):retry.mutate(notice.id)}>补发通知</button>}
   </li>)}</ol>{retry.isError && <p role="alert">{failure(retry.error)}</p>}
     {confirm && <Modal title="确认补发通知" subtitle="此前发送结果不明" onClose={()=>setConfirm(null)} pending={retry.isPending}><p>此前消息可能已送达。请先核实接收情况，补发可能产生重复通知。</p><div className="form-footer"><button type="button" className="secondary-button" onClick={()=>setConfirm(null)} disabled={retry.isPending}>取消</button><button type="button" className="primary-button" onClick={()=>retry.mutate(confirm)} disabled={retry.isPending}>已核实，补发通知</button></div></Modal>}
   </details>;

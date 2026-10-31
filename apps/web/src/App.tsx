@@ -1,4 +1,4 @@
-import { editMentions, mentionQuery, mentionAudience, type DraftMention } from "./comment-mentions";
+import { additionalMentionNames, editMentions, mentionQuery, mentionAudience } from "./comment-mentions";
 import { WebVersion } from "./web-version";
 import { Select } from "./select";
 import { DraftChatFile } from "./agent-chat-draft-file";
@@ -10,7 +10,10 @@ import { itemFilterKey, type ItemFilters } from "@missiongo/domain";
 import { ListFilters } from "./list-filters";
 import { pickItemFilters } from "./item-filters";
 import { BuilderHandoverNotice, ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
-import { ItemDingTalkNotifications } from "./dingtalk-settings";
+import { CommentDingTalkNotifications, ItemDingTalkNotifications, useItemDingTalkNotifications } from "./dingtalk-settings";
+import { CommentMoreActions } from "./comment-actions";
+import {EMPTY_COMMENT_DRAFT,useCommentDraft,type CommentDraft} from "./comment-draft";
+import {useBeforeUnloadGuard} from "./unsaved-changes";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { Modal } from "./modal";
 import { StatusCheckButton, StatusCheckPanel } from "./status-check-panel";
@@ -142,7 +145,7 @@ import { settingsRoute as readSettingsRoute, type ProductSettingsSection } from 
 import { applyConsoleFontScale, applyFontScale, readStoredConsoleFontScale, readStoredFontScale, storeConsoleFontScale, storeFontScale } from "./font-scale";
 import { mayAdministerProduct } from "./product-permissions";
 import { parseFeedbackLog, transitionRequiresNote, TRANSITION_NOTE_MAX_LENGTH } from "@missiongo/domain";
-import { statusChangeNote, dispatchedEvent, groupDiscussionTimeline } from "./timeline";
+import { statusChangeNote, dispatchedEvent, groupDiscussionTimeline, recentDiscussions } from "./timeline";
 import { TransitionNoteDialog, transitionNoteCopy } from "./transition-note-dialog";
 import { VerificationReturnBadge, VerificationReturnCallout, VerificationReturnSummary } from "./verification-return";
 import { StartWorkDialog } from "./start-work-dialog";
@@ -1759,7 +1762,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} onTakeOver={(item) => setDispatchBatch([item])} onOpenConsoleSession={openAgentSession} />
+            <DetailPane accountId={bootstrapQuery.data?.user.id ?? ""} itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} onTakeOver={(item) => setDispatchBatch([item])} onOpenConsoleSession={openAgentSession} />
           </div>
         )}
       </main>
@@ -2605,6 +2608,7 @@ function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>[
 }
 
 function DetailPane({
+  accountId,
   itemKey,
   openInEdit,
   onClose,
@@ -2615,6 +2619,7 @@ function DetailPane({
   onTakeOver,
   onOpenConsoleSession,
 }: {
+  accountId:string;
   itemKey: string | null;
   openInEdit: boolean;
   onClose: () => void;
@@ -2632,18 +2637,42 @@ function DetailPane({
     refetchInterval: query => document.visibilityState === "visible" && query.state.fetchFailureCount < 3
       && (query.state.data?.deliveryProgress || query.state.data?.status === "in_progress") ? 15_000 : false });
   const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey), refetchInterval: 5_000 });
-  const [replyTo,setReplyTo]=useState<WorkItemEvent|null>(null);
+  const notificationsQuery=useItemDingTalkNotifications(itemKey);
+  const {draft:commentDraft,update:updateCommentDraft,storageFailed}=useCommentDraft(accountId,itemKey);
+  const replyTo=timelineQuery.data?.events.find(event=>event.eventType==="comment_added" && event.id===commentDraft.replyToCommentId && !event.payload.withdrawnAt) ?? null;
+  const setReplyTo=(event:WorkItemEvent|null)=>{
+    updateCommentDraft(current=>({...current,replyToCommentId:event?.id ?? null}));
+    const url=new URL(window.location.href);
+    if(url.searchParams.get("item")===itemKey && url.searchParams.has("comment")){
+      url.searchParams.delete("comment");history.replaceState(history.state,"",url);
+    }
+  };
+  const [timelineView,setTimelineView]=useState<"all"|"discussion">("all");
+  const [focusedCommentId,setFocusedCommentId]=useState<string|null>(null);
+  const replyUnavailable=Boolean(commentDraft.replyToCommentId && timelineQuery.isSuccess && !replyTo);
+  const locateComment=(id:string)=>{setTimelineView("discussion");setFocusedCommentId(id);};
   const handledCommentLink=useRef("");
-  useEffect(()=>{setReplyTo(null);},[itemKey]);
+  useEffect(()=>{setFocusedCommentId(null);},[itemKey]);
   useEffect(()=>{
+    if(!focusedCommentId)return;
+    const frame=requestAnimationFrame(()=>{
+      const target=document.getElementById(`comment-${focusedCommentId}`);
+      target?.querySelector(".comment-collapsible")?.setAttribute("open","");
+      target?.scrollIntoView({block:"center"});target?.focus({preventScroll:true});
+    });
+    const timer=window.setTimeout(()=>setFocusedCommentId(null),2500);
+    return ()=>{cancelAnimationFrame(frame);clearTimeout(timer);};
+  },[focusedCommentId,timelineView]);
+  useEffect(()=>{
+    if(!accountId)return;
     const commentId=new URL(window.location.href).searchParams.get("comment");
     if(!commentId || handledCommentLink.current===`${itemKey}:${commentId}`)return;
     const event=timelineQuery.data?.events.find(event=>event.id===commentId && event.eventType==="comment_added");
     if(!event)return;
     handledCommentLink.current=`${itemKey}:${commentId}`;
-    if(!event.payload.withdrawnAt)setReplyTo(event);
-    document.getElementById(`comment-${commentId}`)?.scrollIntoView({block:"center"});
-  },[itemKey,timelineQuery.data]);
+    if(!event.payload.withdrawnAt)updateCommentDraft(current=>({...current,replyToCommentId:event.id}));
+    setTimelineView("discussion");setFocusedCommentId(commentId);
+  },[accountId,itemKey,timelineQuery.data,updateCommentDraft]);
   // History and current-stage attention arrive together, so an error always
   // belongs to the dispatch whose target and console link the header shows.
   const dispatchesQuery = useQuery({
@@ -2724,6 +2753,8 @@ function DetailPane({
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["item", itemKey] }),
       queryClient.invalidateQueries({ queryKey: ["timeline", itemKey] }),
+      queryClient.invalidateQueries({ queryKey: ["dingtalk-notifications", itemKey] }),
+      queryClient.invalidateQueries({ queryKey: ["comment-dingtalk-notifications", itemKey] }),
       queryClient.invalidateQueries({ queryKey: ["items"] }),
     ]);
   };
@@ -2926,7 +2957,7 @@ function DetailPane({
             </div>
             <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} />} />
             <ItemRelations item={item} onOpenItem={onOpenItem} />
-            <ItemDingTalkNotifications key={`dingtalk:${item.key}`} itemKey={item.key} pending={item.status==="pending_verification"} />
+            <ItemDingTalkNotifications key={`dingtalk:${item.key}`} itemKey={item.key} pending={item.status==="pending_verification"} query={notificationsQuery} />
             {item.verificationReturn && <VerificationReturnCallout info={item.verificationReturn} />}
             {/* Read the item, then the evidence a person went and looked at --
                 screenshots, documents, logs. The captured environment is the
@@ -2988,27 +3019,30 @@ function DetailPane({
             <section className="timeline-block">
               <header className="timeline-head">
                 <h3>{t("timeline")}</h3>
-                <small>{t("newestFirst")}</small>
+                <small>{t(timelineView==="discussion"?"discussionRecentFirst":"newestFirst")}</small>
               </header>
+              <div className="comment-view-switch" role="group" aria-label={t("commentRecordView")}>
+                <button type="button" aria-pressed={timelineView==="discussion"} onClick={()=>setTimelineView("discussion")}>{t("commentDiscussionView")}</button>
+                <button type="button" aria-pressed={timelineView==="all"} onClick={()=>setTimelineView("all")}>{t("commentAllActivity")}</button>
+              </div>
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
+              {timelineView==="discussion" && timelineQuery.isSuccess && !recentDiscussions(timelineQuery.data.events).length && <p className="comment-empty">{t("commentDiscussionEmpty")}</p>}
               <div className="timeline">
-                {groupDiscussionTimeline(timelineQuery.data?.events ?? []).map(({ id, event, count, filenames, replies }) => (
+                {(timelineView==="discussion"?recentDiscussions(timelineQuery.data?.events ?? []):groupDiscussionTimeline(timelineQuery.data?.events ?? [])).map(({ id, event, count, filenames, replies }) => (
                   <div
-                    className={event.actorKind === "agent" ? "timeline-event timeline-event--agent" : "timeline-event"}
+                    className={`timeline-event${event.actorKind === "agent" ? " timeline-event--agent" : ""}${event.eventType === "comment_added" ? " timeline-event--comment" : ""}`}
                     key={id}
                   >
                     <span className="timeline-dot" />
                     <div>
                       {event.historySourceKey && <span className="timeline-tag">{t("transferHistory", { key: event.historySourceKey })}</span>}
-                      <strong>
+                      {event.eventType!=="comment_added" && <strong>
                         {event.eventType === "status_changed"
                           ? `${event.fromStatus ? statusLabel(event.fromStatus) : t("status")} → ${event.toStatus ? statusLabel(event.toStatus) : t("updated")}`
-                          : event.eventType === "comment_added"
-                            ? commentHeading(event, t("agentAnalysis"), eventLabel("comment_added"))
-                            : count > 1
+                          : count > 1
                               ? t("eventRepeated", { event: eventLabel(event.eventType), count })
                               : eventLabel(event.eventType)}
-                      </strong>
+                      </strong>}
                       {/* A direct jump skipped the steps in between; say so, or the
                           history reads as if the work went through them. */}
                       {event.payload?.reason === "manual_override" && <span className="timeline-tag">{t("movedDirectly")}</span>}
@@ -3047,15 +3081,16 @@ function DetailPane({
                           {typeof event.payload.title === "string" && <span>{event.payload.title}</span>}
                         </p>
                       )}
-                      <p>
+                      {event.eventType!=="comment_added" && <p>
                         {commentAuthor(
                           { ...event, agentName: eventAgentName(event.payload) },
                           actorLabel(event.actorKind),
                         )} · {formatTime(event.createdAt)}
-                      </p>
+                      </p>}
                       {filenames.length > 0 && <p className="timeline-files">{filenames.join("、")}</p>}
                       {event.eventType === "comment_added" && (
-                        <CommentGroup root={event} replies={replies} item={item} onReply={setReplyTo}
+                        <CommentGroup root={event} replies={replies} item={item} onReply={setReplyTo} onNotice={onNotice} notificationsQuery={notificationsQuery}
+                          focusedCommentId={focusedCommentId} onClearFocus={()=>setFocusedCommentId(null)}
                           onWithdraw={async commentId=>{if(await confirm(t("withdrawCommentConfirm")))withdrawMutation.mutate(commentId);}} />
                       )}
                     </div>
@@ -3065,7 +3100,8 @@ function DetailPane({
             </section>
         </>
       </div>
-      {!item.transferred && <CommentComposer key={item.key} item={item} replyTo={replyTo} onCancelReply={()=>setReplyTo(null)} onPosted={refreshItem} onNotice={onNotice} />}
+      {!item.transferred && accountId && <CommentComposer key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
+        replyTo={replyTo} onLocateReply={()=>replyTo && locateComment(replyTo.id)} onCancelReply={()=>setReplyTo(null)} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
       {statusChecksOpen && <StatusCheckPanel key={`status-checks:${item.key}`} productId={item.productId} itemKey={item.key} canOperate={!item.transferred} onClose={() => setStatusChecksOpen(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
@@ -3188,25 +3224,52 @@ function commentHeading(event: WorkItemEvent, analysisLabel: string, commentLabe
   return event.actorKind === "agent" && event.payload.bodyKind === "structured" ? analysisLabel : commentLabel;
 }
 
-function CommentGroup({root,replies,item,onReply,onWithdraw}:{root:WorkItemEvent;replies:readonly WorkItemEvent[];item:WorkItem;onReply:(event:WorkItemEvent)=>void;onWithdraw:(id:string)=>void}) {
+function CommentGroup({root,replies,item,onReply,onWithdraw,onNotice,notificationsQuery,focusedCommentId,onClearFocus}:{
+  root:WorkItemEvent;replies:readonly WorkItemEvent[];item:WorkItem;onReply:(event:WorkItemEvent)=>void;onWithdraw:(id:string)=>void;
+  onNotice:(message:string)=>void;notificationsQuery:ReturnType<typeof useItemDingTalkNotifications>;
+  focusedCommentId:string|null;onClearFocus:()=>void;
+}) {
   const {t,actorLabel,formatTime}=useI18n();
+  const [expanded,setExpanded]=useState(false);
+  const focusedReply=replies.some(reply=>reply.id===focusedCommentId);
+  useEffect(()=>{if(focusedReply)setExpanded(true);},[focusedReply]);
+  const showAll=expanded || focusedReply || replies.length<=3;
   const events=[root,...replies],names=new Map(events.map(event=>[event.id,commentAuthor({...event,agentName:eventAgentName(event.payload)},actorLabel(event.actorKind))]));
+  const renderComment=(event:WorkItemEvent,isReply:boolean)=><div id={`comment-${event.id}`} key={event.id} className={`${isReply?"comment-thread-reply":"comment-thread-root"}${focusedCommentId===event.id?" comment-focus-target":""}`} tabIndex={-1}>
+      <span className="comment-avatar" aria-hidden="true">{Array.from(names.get(event.id) ?? "")[0]}</span>
+      <div className="comment-message">
+        <header className="comment-byline"><strong>{names.get(event.id)}</strong><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>
+          {event.actorKind==="agent" && <span className="comment-actor-label">{commentHeading(event,t("agentAnalysis"),actorLabel("agent"))}</span>}
+          {!item.transferred && !event.payload.withdrawnAt && <CommentMoreActions itemKey={item.key} commentId={event.id} onWithdraw={()=>onWithdraw(event.id)} onNotice={onNotice} />}
+        </header>
+        {isReply && <p className="comment-reply-byline">{t("commentReplyTo",{name:names.get(String(event.payload.replyToCommentId)) ?? t("originalComment")})}</p>}
+        <CommentBody payload={event.payload} item={item} />
+        <div className="comment-actions">
+          {!item.transferred && !event.payload.withdrawnAt && <button type="button" className="text-button comment-reply-button" onClick={()=>onReply(event)}>{t("replyComment")}</button>}
+          <CommentDingTalkNotifications itemKey={item.key} commentId={event.id} query={notificationsQuery}
+            hasAudience={Array.isArray(event.payload.mentions) && event.payload.mentions.length>0 || events.some(parent=>parent.id===event.payload.replyToCommentId && parent.accountId && parent.accountId!==event.accountId)}
+            readOnly={Boolean(item.transferred || event.payload.withdrawnAt)} />
+        </div>
+      </div>
+    </div>;
   return <div className="comment-discussion" aria-label={t("commentDiscussion")}>
-    {events.map((event,index)=><div id={`comment-${event.id}`} key={event.id} className={index?"comment-thread-reply":"comment-thread-root"}>
-      {index>0 && <p className="comment-reply-byline"><strong>{names.get(event.id)}</strong> · {formatTime(event.createdAt)}<span>{t("commentReplyTo",{name:names.get(String(event.payload.replyToCommentId)) ?? t("originalComment")})}</span></p>}
-      <CommentBody payload={event.payload} item={item} readOnly={Boolean(item.transferred)} onWithdraw={()=>onWithdraw(event.id)} />
-      {!item.transferred && !event.payload.withdrawnAt && <button type="button" className="text-button comment-reply-button" onClick={()=>onReply(event)}>{t("replyComment")}</button>}
-    </div>)}
+    {renderComment(root,false)}
+    <div id={`comment-replies-${root.id}`}>{(showAll?replies:replies.slice(-2)).map(reply=>renderComment(reply,true))}</div>
+    {replies.length>0 && <div className="comment-discussion-footer">
+      {replies.length>3 && <button type="button" className="text-button" aria-expanded={showAll} aria-controls={`comment-replies-${root.id}`}
+        onClick={()=>{onClearFocus();setExpanded(!showAll);}}>{t(showAll?"commentRepliesCollapse":"commentRepliesExpand",{count:replies.length})}</button>}
+      <small>{t(showAll?"commentReplyActivity":"commentLatestReplyActivity",{count:replies.length,time:formatTime(replies.at(-1)!.createdAt)})}</small>
+    </div>}
   </div>;
 }
 
-function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
-  replyTo: WorkItemEvent|null; onCancelReply:()=>void;
+function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply,onLocateReply,draft,onDraftChange,storageFailed,replyUnavailable }: {
+  replyTo: WorkItemEvent|null; onCancelReply:()=>void;onLocateReply:()=>void;
+  draft:CommentDraft;onDraftChange:(change:CommentDraft|((previous:CommentDraft)=>CommentDraft))=>void;storageFailed:boolean;replyUnavailable:boolean;
   item: WorkItem; onPosted: () => Promise<void>; onNotice: (message: string) => void;
 }) {
   const { t } = useI18n();
-  const [text, setText] = useState("");
-  const [mentions,setMentions]=useState<readonly DraftMention[]>([]);
+  const {text,mentions}=draft;
   const [cursor,setCursor]=useState(0);
   const [mentionClosed,setMentionClosed]=useState(false);
   const [activeMention,setActiveMention]=useState(0);
@@ -3216,31 +3279,36 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
     ...(candidates.data?.candidates ?? []).map(person=>({key:person.accountId,label:person.name,
       detail:[person.isProposer?t("commentProposer"):"",person.isBuilder?"Builder":""].filter(Boolean).join(" · "),accountId:person.accountId}))]
     .filter(person=>!query?.query || `${person.label} ${person.detail}`.toLocaleLowerCase().includes(query.query.toLocaleLowerCase()));
-  const updateText=(value:string,position:number)=>{setMentions(current=>editMentions(text,value,current));setText(value);setCursor(position);setMentionClosed(false);setActiveMention(0);};
+  const updateText=(value:string,position:number)=>{onDraftChange(current=>({...current,text:value,mentions:editMentions(text,value,current.mentions)}));setCursor(position);setMentionClosed(false);setActiveMention(0);};
   const chooseMention=(choice:typeof choices[number])=>{
     if(!query)return;
     const token=`@${choice.label}`,value=text.slice(0,query.start)+token+" "+text.slice(query.end);
     const changed=editMentions(text,value,mentions);
-    setMentions([...changed,{start:query.start,end:query.start+token.length,label:choice.label,
-      ...("accountId" in choice ? {accountId:choice.accountId} : {target:"all" as const})}]);
-    setText(value);setCursor(query.start+token.length+1);setMentionClosed(true);
+    onDraftChange(current=>({...current,text:value,mentions:[...changed,{start:query.start,end:query.start+token.length,label:choice.label,
+      ...("accountId" in choice ? {accountId:choice.accountId} : {target:"all" as const})}]}));
+    setCursor(query.start+token.length+1);setMentionClosed(true);
     requestAnimationFrame(()=>{const field=document.getElementById("comment-draft") as HTMLTextAreaElement|null;field?.focus();field?.setSelectionRange(query.start+token.length+1,query.start+token.length+1);});
   };
   useEffect(()=>{if(replyTo)document.getElementById("comment-draft")?.focus();},[replyTo]);
   const { actorLabel }=useI18n();
   const replyName=replyTo ? commentAuthor({...replyTo,agentName:eventAgentName(replyTo.payload)},actorLabel(replyTo.actorKind)) : "";
+  const replyExcerpt=replyTo ? deriveSummary(typeof replyTo.payload.summary==="string" && replyTo.payload.summary.trim()
+    ? replyTo.payload.summary : commentPlainText(replyTo.payload.bodyKind,(replyTo.payload.body ?? {}) as Readonly<Record<string,unknown>>),160) || t("commentAttachmentQuote") : "";
   const [files, setFiles] = useState<readonly File[]>([]);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploaded = useRef(new Map<File, string>());
   const uploadIds = useRef(new Map<File, string>());
-  const attempt = useRef({ fingerprint: "", key: "" });
+  const attempt = useRef(draft.attempt ?? { fingerprint: "", key: "" });
   const existingIds = new Set(item.attachments.map(attachment => attachment.id));
   const selectedAlreadyCounted = files.filter(file => existingIds.has(uploaded.current.get(file) ?? "")).length;
   const capacity = Math.max(0, 10 - item.attachments.length + selectedAlreadyCounted);
   const remaining = Math.max(0, capacity - files.length);
+  const missingDraftFiles=draft.attachmentNames.length>0 && files.length===0;
   const mutation = useMutation({
     mutationFn: async () => {
+      if(draft.replyToCommentId && !replyTo)throw new Error(t("commentDraftReplyUnavailable"));
+      if(missingDraftFiles)throw new Error(t("commentDraftFilesMissing"));
       const attachmentIds: string[] = [];
       for (const file of files) {
         let id = uploaded.current.get(file);
@@ -3255,10 +3323,11 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
       const audience={...mentionAudience(mentions),...(replyTo?{replyToCommentId:replyTo.id}:{})};
       const fingerprint = JSON.stringify({ text: text.trim(), attachmentIds, ...audience });
       if (attempt.current.fingerprint !== fingerprint) attempt.current = { fingerprint, key: crypto.randomUUID() };
+      onDraftChange(current=>({...current,attempt:attempt.current}));
       return api.createComment(item.key, { text: text.trim(), attachmentIds, ...audience, idempotencyKey: attempt.current.key });
     },
     onSuccess: async () => {
-      setText(""); setMentions([]);setCursor(0);onCancelReply(); setFiles([]); setError(null); uploaded.current.clear(); uploadIds.current.clear(); attempt.current = { fingerprint: "", key: "" };
+      onDraftChange(EMPTY_COMMENT_DRAFT);setCursor(0);onCancelReply(); setFiles([]); setError(null); uploaded.current.clear(); uploadIds.current.clear(); attempt.current = { fingerprint: "", key: "" };
       await onPosted(); onNotice(t("commentPosted"));
     },
     onError: async (failure) => { setError(errorMessage(failure, t("somethingWentWrong"))); await onPosted(); },
@@ -3267,18 +3336,23 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
     if (mutation.isPending) return;
     const result = validateIncomingFiles(files, incoming, t, capacity);
     setFiles(result.files); setError(result.error ?? null);
+    if(result.files.length)onDraftChange(current=>({...current,attachmentNames:result.files.map(file=>file.name)}));
   };
+  useBeforeUnloadGuard(mutation.isPending || files.length>0 || storageFailed && Boolean(text));
   const { isDraggingFiles, dropHandlers } = useFileDropZone(addFiles, { canAccept: remaining > 0 && !mutation.isPending });
   return <form className="comment-form detail-composer" aria-label={t("addComment")} {...dropHandlers}
     onPaste={event => { const incoming = Array.from(event.clipboardData.files); if (incoming.length) { event.preventDefault(); addFiles(incoming); } }}
-    onSubmit={event => { event.preventDefault(); if (!mutation.isPending && (text.trim() || files.length)) mutation.mutate(); }}>
+    onSubmit={event => { event.preventDefault(); if (!mutation.isPending && !missingDraftFiles && (!draft.replyToCommentId || replyTo) && (text.trim() || files.length)) mutation.mutate(); }}>
     {isDraggingFiles && <FileDropOverlay remaining={remaining} />}
     <fieldset disabled={mutation.isPending}>
-      {replyTo && <div className="comment-reply-context"><span>{t("commentReplyTo",{name:replyName})}</span><button type="button" className="text-button" onClick={onCancelReply}>{t("cancelReply")}</button></div>}
+      {replyTo && <div className="comment-reply-context">
+        <button type="button" className="comment-reply-source" onClick={onLocateReply} title={t("viewOriginalComment")}><strong>{t("commentReplyTo",{name:replyName})}</strong><span>{replyExcerpt}</span></button>
+        <button type="button" className="comment-cancel-reply" aria-label={t("cancelReply")} title={t("cancelReply")} onClick={onCancelReply}><X size={16} aria-hidden="true" /></button>
+      </div>}
       <label className="sr-only" htmlFor="comment-draft">{t("addComment")}</label>
       {files.length > 0 && <div className="agent-chat-draft-files">
         {files.map((file, index) => <DraftChatFile key={`${file.name}-${file.lastModified}-${index}`} file={file} disabled={mutation.isPending}
-          onRemove={() => setFiles(current => current.filter((_, fileIndex) => fileIndex !== index))} />)}
+          onRemove={() => {const next=files.filter((_,fileIndex)=>fileIndex!==index);setFiles(next);onDraftChange(current=>({...current,attachmentNames:next.map(file=>file.name)}));}} />)}
       </div>}
           {query && <div className="comment-mention-menu" role="listbox" id="comment-mention-list" aria-label={t("mentionPeople")}>
             {candidates.isPending?<p role="status">{t("mentionLoading")}</p>:candidates.isError?<p role="alert">{t("mentionLoadFailed")}</p>:choices.length?choices.map((choice,index)=><button type="button" role="option" id={`mention-option-${index}`} aria-selected={index===activeMention} key={choice.key}
@@ -3303,14 +3377,17 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
             onChange={event => { addFiles(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ""; }} />
           <button type="button" className="secondary-button agent-chat-icon-button" disabled={remaining < 1 || mutation.isPending}
             title={t("addAttachments")} aria-label={t("addAttachments")} onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>
-          <button type="submit" className="primary-button agent-chat-icon-button" disabled={!(text.trim() || files.length) || mutation.isPending}
+          <button type="submit" className="primary-button agent-chat-icon-button" disabled={!(text.trim() || files.length) || mutation.isPending || missingDraftFiles || Boolean(draft.replyToCommentId && !replyTo)}
             title={t(mutation.isPending ? "commentSending" : "commentSend")} aria-label={t(mutation.isPending ? "commentSending" : "commentSend")}>
             {mutation.isPending ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
           </button>
         </div>
       </div>
     </fieldset>
-    {error && <InlineError message={error} />}
+    {error && <InlineError message={error} role="alert" />}
+    {storageFailed && <p className="detail-composer-hint" role="alert">{t("commentDraftSaveFailed")}</p>}
+    {replyUnavailable && <p className="detail-composer-hint" role="status">{t("commentDraftReplyUnavailable")} <button type="button" className="text-button" onClick={onCancelReply}>{t("commentDraftAsNew")}</button></p>}
+    {missingDraftFiles && <p className="detail-composer-hint" role="status">{t("commentDraftFilesMissing")} <button type="button" className="text-button" onClick={()=>onDraftChange(current=>({...current,attachmentNames:[]}))}>{t("commentDraftFilesDismiss")}</button></p>}
     {mutation.isError && uploaded.current.size > 0 && <p className="detail-composer-hint">{t("commentUploadRetained")}</p>}
   </form>;
 }
@@ -3318,13 +3395,9 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply }: {
 function CommentBody({
   payload,
   item,
-  onWithdraw,
-  readOnly = false,
 }: {
   readonly payload: Readonly<Record<string, unknown>>;
   readonly item: WorkItem;
-  readonly readOnly?: boolean;
-  readonly onWithdraw: () => void;
 }) {
   const { t } = useI18n();
   const body = (payload.body ?? {}) as Readonly<Record<string, unknown>>;
@@ -3338,7 +3411,8 @@ function CommentBody({
       : null;
   if (!textContent && !attachmentIds.length) return null;
   const mentions=Array.isArray(payload.mentions) ? payload.mentions.flatMap(value=>value && typeof value==="object" && "name" in value && typeof value.name==="string" ? [value.name] : []) : [];
-  const rendered = <div className="comment-content">{mentions.length>0 && <p className="comment-mentioned">{mentions.map(name=>`@${name}`).join(" · ")}</p>}{textContent}{attachmentIds.length > 0 && <AttachmentSection itemKey={item.key} attachments={attachments} compact />}</div>;
+  const extraMentions=additionalMentionNames(commentPlainText(payload.bodyKind,body),mentions);
+  const rendered = <div className="comment-content">{textContent}{extraMentions.length>0 && <p className="comment-mentioned">{t("commentRecipients",{names:extraMentions.join("、")})}</p>}{attachmentIds.length > 0 && <AttachmentSection itemKey={item.key} attachments={attachments} compact />}</div>;
 
   // Agents write a lot, and at length. A long comment folds behind one line so
   // a timeline of them can be skimmed; a short one is already its own summary,
@@ -3361,14 +3435,9 @@ function CommentBody({
     );
   }
 
-  const withdrawButton = !readOnly && (
-    /* Withdrawing is the person's alone: an agent that could take its own
-       words back could erase the record of having said them. */
-    <button type="button" className="comment-withdraw" onClick={onWithdraw}>{t("withdrawComment")}</button>
-  );
-
-  if (collapsible) {
-    return (
+  return (
+    <div className="comment-body">
+      {collapsible ? (
       <details className="comment-collapsible">
         <summary>
           <span className="comment-summary-text">{summary}</span>
@@ -3376,15 +3445,8 @@ function CommentBody({
           <small className="when-open">{t("commentCollapse")}</small>
         </summary>
         {rendered}
-        {withdrawButton}
       </details>
-    );
-  }
-
-  return (
-    <div className="comment-body">
-      {rendered}
-      {withdrawButton}
+      ) : rendered}
     </div>
   );
 }
@@ -5300,8 +5362,8 @@ function MediaLightbox({
   );
 }
 
-function InlineError({ message }: { message: string }) {
-  return <div className="inline-error"><CirclePause size={16} /><span>{message}</span></div>;
+function InlineError({ message, role }: { message: string; role?: "alert" }) {
+  return <div className="inline-error" role={role}><CirclePause size={16} /><span>{message}</span></div>;
 }
 
 function ListSkeleton() {

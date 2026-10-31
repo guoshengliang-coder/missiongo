@@ -1,5 +1,5 @@
 import { describe,expect,it } from "vitest";
-import { editMentions,mentionQuery,mentionAudience } from "./comment-mentions";
+import { additionalMentionNames,editMentions,mentionQuery,mentionAudience } from "./comment-mentions";
 describe("draft mentions",()=>{
   it("finds the token at the cursor without treating email addresses as mentions",()=>{
     expect(mentionQuery("ask @张三 later",6)).toEqual({start:4,end:6,query:"张"});
@@ -11,5 +11,12 @@ describe("draft mentions",()=>{
     expect(editMentions(text,"@改名 and @同名",tokens).map(t=>t.accountId)).toEqual(["two"]);
     expect(editMentions(text,"and @同名",tokens).map(t=>t.accountId)).toEqual(["two"]);
     expect(mentionAudience([...tokens,tokens[0]!,{start:0,end:4,label:"所有人",target:"all"}])).toEqual({mentionAccountIds:["one","two"],mentionTargets:["all"]});
+  });
+  it("shows each mention once while retaining recipients selected outside the written text",()=>{
+    expect(additionalMentionNames("@梁国盛 测试",["梁国盛"])).toEqual([]);
+    expect(additionalMentionNames("@所有人 请确认",["梁国盛","张三"])).toEqual(["梁国盛","张三"]);
+    expect(additionalMentionNames("@Everyone please confirm",["Alex","Sam"])).toEqual(["Alex","Sam"]);
+    expect(additionalMentionNames("请确认",["张三","张三"])).toEqual(["张三"]);
+    expect(additionalMentionNames("@Anna please confirm",["Ann","Anna"])).toEqual(["Ann"]);
   });
 });

@@ -1,9 +1,84 @@
 import { readFileSync } from "node:fs";
 import { expect,test } from "@playwright/test";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string};
-for(const width of [353,1440]) {
-  test.describe(`${width}px comment discussions`,()=>{
-    test.use({viewport:{width,height:850},hasTouch:width<1000});
+test("loads older comment recipients and confirms uncertain retries without claiming every recipient succeeded",async({page})=>{
+  const user=(await(await page.request.get("/api/v1/bootstrap")).json()).user;
+  const item=await(await page.request.post("/api/v1/items",{data:{productId:fixture.productId,type:"note",priority:"normal",title:"历史评论提醒结果",description:"",environment:{platform:"web"}}})).json();
+  await page.request.post(`/api/v1/items/${item.key}/comments`,{data:{text:"请核对旧评论",mentionAccountIds:[user.id]}});
+  const comment=(await(await page.request.get(`/api/v1/items/${item.key}/comments`)).json()).comments[0];
+  const base={kind:"comment",attempts:1,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),canRetry:true};
+  let queued=false,retries=0;
+  const records=()=>[
+    {...base,id:"synthetic-sent",commentId:comment.id,status:"sent",accountName:"已接收人员"},
+    {...base,id:"synthetic-uncertain",commentId:comment.id,status:queued?"queued":"uncertain",accountName:"待核实人员",reason:queued?null:"连接中断，结果未知"},
+  ];
+  await page.route(`**/api/v1/items/${item.key}/dingtalk-notifications`,route=>route.fulfill({json:{canRetry:true,notifications:Array.from({length:100},(_,i)=>({...base,id:`recent-${i}`,commentId:"another-comment",status:"sent"}))}}));
+  await page.route(`**/api/v1/items/${item.key}/comments/${comment.id}/dingtalk-notifications`,route=>route.fulfill({json:{canRetry:true,notifications:records()}}));
+  await page.route(`**/api/v1/items/${item.key}/dingtalk-notifications/synthetic-uncertain/retry`,route=>{
+    expect(route.request().method()).toBe("POST");retries++;queued=true;return route.fulfill({json:{canRetry:true,notifications:records()}});
+  });
+  await page.goto(`/?product=${fixture.productId}&item=${item.key}`);
+  const result=page.locator(`#comment-${comment.id} .comment-notification-details`);
+  await expect(result.locator("summary")).toHaveText("查看提醒结果");await result.locator("summary").click();
+  await expect(result.locator("summary")).toHaveText("提醒 2 人 · 发送结果不明");
+  await expect(result.locator("li")).toHaveCount(2);await expect(result).toContainText("钉钉接收通知不代表对方已读。");
+  await result.getByRole("button",{name:"补发通知",exact:true}).click();
+  const dialog=page.getByRole("dialog");await expect(dialog).toContainText("补发可能产生重复通知");
+  await dialog.getByRole("button",{name:"取消",exact:true}).click();expect(retries).toBe(0);
+  await result.getByRole("button",{name:"补发通知",exact:true}).click();await dialog.getByRole("button",{name:"已核实，补发通知",exact:true}).click();
+  await expect(dialog).toHaveCount(0);await expect(result.locator("summary")).toHaveText("提醒 2 人 · 等待发送");expect(retries).toBe(1);
+  const root=page.locator(`#comment-${comment.id}`),composer=page.locator(".comment-form");
+  await root.getByRole("button",{name:"回复",exact:true}).click();await composer.getByRole("textbox").fill("保留我的草稿");
+  await root.locator(".comment-more-actions > summary").click();await root.getByRole("button",{name:"撤回",exact:true}).click();
+  await page.getByRole("dialog").getByRole("button",{name:"确认",exact:true}).click();
+  await expect(root.getByText("已撤回",{exact:true})).toBeVisible();await expect(composer.locator(".comment-reply-context")).toHaveCount(0);
+  await expect(composer.getByRole("textbox")).toHaveValue("保留我的草稿");
+});
+for(const width of [353,1440]) for(const theme of ["light","dark"] as const) {
+  test.describe(`${width}px ${theme} comment discussions`,()=>{
+    test.use({viewport:{width,height:850},hasTouch:width<1000,colorScheme:theme});
+    test("keeps readable mentions, secondary actions in a menu and self notification results beside the comment",async({page,context})=>{
+      const bootstrap=await(await page.request.get("/api/v1/bootstrap")).json();
+      const item=await(await page.request.post("/api/v1/items",{data:{productId:fixture.productId,type:"note",priority:"normal",title:"评论排版与提醒",description:"",environment:{platform:"web"}}})).json();
+      await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}`);
+      const composer=page.locator(".comment-form"),input=composer.getByRole("textbox");
+      await expect(input).toHaveAttribute("placeholder","写评论…");
+      expect((await composer.boundingBox())!.height).toBeLessThan(90);
+      await input.fill(`@${bootstrap.user.displayName}`);
+      await page.getByRole("option").filter({hasText:bootstrap.user.displayName}).click();
+      await expect(composer.locator("[role=status]")).toHaveCount(0);
+      await input.press("End");await input.pressSequentially("**测试**");
+      await composer.getByRole("button",{name:"发送",exact:true}).click();
+      await expect(page.getByText("评论已发表。",{exact:true})).toBeVisible();
+      const root=page.locator(".comment-thread-root");
+      await expect(root.locator(".comment-text")).toHaveText(`@${bootstrap.user.displayName} 测试`);
+      await expect(root.locator(".comment-mentioned")).toHaveCount(0);
+      const prose=await root.locator(".comment-text p").evaluate(el=>({font:Number.parseFloat(getComputedStyle(el).fontSize),color:getComputedStyle(el).color,boldDisplay:getComputedStyle(el.querySelector("strong")!).display}));
+      expect(prose.font).toBeGreaterThanOrEqual(width<640?15:14);
+      expect(prose.color).toBe(await root.locator(".comment-byline > strong").evaluate(el=>getComputedStyle(el).color));
+      expect(prose.boldDisplay).toBe("inline");
+      await expect(root.getByRole("button",{name:"撤回",exact:true})).toBeHidden();
+      const more=root.locator(".comment-more-actions > summary");await more.click();
+      await expect(root.getByRole("button",{name:"撤回",exact:true})).toBeVisible();
+      await page.keyboard.press("Escape");await expect(root.locator(".comment-more-actions")).not.toHaveAttribute("open","");
+      await context.grantPermissions(["clipboard-read","clipboard-write"]);await more.click();
+      await root.getByRole("button",{name:"复制评论链接",exact:true}).click();
+      const copied=new URL(await page.evaluate(()=>navigator.clipboard.readText()));
+      expect(copied.searchParams.get("comment")).toBe((await root.getAttribute("id"))!.slice("comment-".length));
+      expect(copied.searchParams.get("item")).toBe(item.key);
+      const notices=await(await page.request.get(`/api/v1/items/${item.key}/dingtalk-notifications`)).json();
+      expect(notices.notifications).toEqual([expect.objectContaining({kind:"comment"})]);
+      const notice=root.locator(".comment-notification-details");await expect(notice.locator("summary")).toContainText("提醒 1 人");
+      await notice.locator("summary").click();await expect(notice).toContainText("钉钉接收通知不代表对方已读。");
+      await expect(notice.locator("li")).toHaveCount(1);await notice.locator("summary").click();
+      await expect(page.locator(".dingtalk-item-notices")).toHaveCount(0);
+      await page.locator(".toast").getByRole("button",{name:"关闭提示"}).click();
+      await root.scrollIntoViewIfNeeded();
+      await page.screenshot({path:test.info().outputPath(`comment-polish-${width}-${theme}.png`)});
+      await page.request.post(`/api/v1/items/${item.key}/comments`,{data:{text:"@所有人 请确认字段",mentionAccountIds:[bootstrap.user.id]}});
+      await page.reload();
+      await expect(page.locator(".comment-mentioned")).toHaveText(`提醒：${bootstrap.user.displayName}`);
+    });
     test("selects mentions, removes deleted recipients, replies to specific comments and preserves a flat group after reload",async({page})=>{
       const item=await (await page.request.post("/api/v1/items",{data:{productId:fixture.productId,type:"note",priority:"normal",title:"Discuss a field",description:"",environment:{platform:"web"}}})).json();
       await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}`);
@@ -12,8 +87,12 @@ for(const width of [353,1440]) {
       await input.press("End");await input.pressSequentially("请解释字段");await send.click();await expect(input).toHaveValue("");
       const comments=await(await page.request.get(`/api/v1/items/${item.key}/comments`)).json();expect(comments.comments[0].mentions?.length).toBeGreaterThan(0);
       const root=page.locator(`#comment-${comments.comments[0].id}`);await root.getByRole("button",{name:"回复",exact:true}).click();
-      await expect(composer.locator(".comment-reply-context")).toBeVisible();await input.fill("第一条回复");await send.click();
+      await expect(composer.locator(".comment-reply-source span")).toHaveText("@所有人 请解释字段");await input.fill("第一条回复");await send.click();
       const first=page.locator(".comment-thread-reply").filter({hasText:"第一条回复"});await first.getByRole("button",{name:"回复",exact:true}).click();
+      await expect(composer.locator(".comment-reply-source span")).toHaveText("第一条回复");
+      await page.locator(".toast").getByRole("button",{name:"关闭提示"}).click();
+      await page.screenshot({path:test.info().outputPath(`reply-context-${width}-${theme}.png`)});
+      await composer.getByRole("button",{name:/回复/}).first().click();await expect(first).toBeFocused();
       await input.fill("回复上一条");await send.click();await expect(page.locator(".comment-discussion")).toHaveCount(1);await expect(page.locator(".comment-thread-reply")).toHaveCount(2);
       await page.reload();await expect(page.locator(".comment-thread-reply")).toHaveCount(2);
       await input.fill("@所有");await page.getByRole("option",{name:/所有人/}).click();await input.fill("独立评论，没有提及");await send.click();
@@ -21,7 +100,7 @@ for(const width of [353,1440]) {
       await expect(page.locator(".comment-discussion")).toHaveCount(2);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
       await page.locator(".toast").getByRole("button",{name:"关闭提示"}).click();
       await page.locator(".comment-discussion").filter({hasText:"请解释字段"}).scrollIntoViewIfNeeded();
-      await page.screenshot({path:test.info().outputPath(`discussion-${width}.png`)});
+      await page.screenshot({path:test.info().outputPath(`discussion-${width}-${theme}.png`)});
       await page.goto(`/?product=${fixture.productId}&item=${item.key}&comment=${final.comments[1].id}`);
       await expect(composer.locator(".comment-reply-context")).toBeVisible();
       await input.fill("来自评论链接的回复");await send.click();
