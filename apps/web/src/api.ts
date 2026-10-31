@@ -470,7 +470,7 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
-  uploadAttachment: async (itemKey: string, file: File, uploadId?: string) => {
+  uploadAttachment: async (itemKey: string, file: File, uploadId?: string, creationUploadId?: string) => {
     const response = await attachmentRequest(`/api/v1/items/${encodeURIComponent(itemKey)}/attachments`, {
       method: "POST",
       headers: {
@@ -478,6 +478,7 @@ export const api = {
         "x-missiongo-content-type": file.type || "application/octet-stream",
         "x-missiongo-filename": encodeURIComponent(file.name),
         ...(uploadId ? { "x-missiongo-upload-id": uploadId } : {}),
+        ...(creationUploadId ? { "x-missiongo-creation-upload-id": creationUploadId } : {}),
       },
       body: file,
     });

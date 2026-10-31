@@ -14,19 +14,52 @@ function eventFilename(event: WorkItemEvent): string | undefined {
   return typeof filename === "string" ? filename : undefined;
 }
 
+/** Imported histories can reuse IDs; ownership never crosses an item or source. */
+function eventKey(event: WorkItemEvent, id: string): string {
+  return JSON.stringify([event.itemKey, event.historySourceKey ?? null, id]);
+}
+
 /**
- * Newest first, with a run of attachment events by the same actor folded into
- * one entry. Uploading four files used to write four identical "attachment
- * added" lines carrying no filename, which buried the status changes that
- * actually move an item along.
+ * Keep the immutable events, but present uploads under their explicit operation.
+ * Comments already carry attachment IDs, including old comments. Creation needs
+ * a server-validated link; proximity in time is never evidence of ownership.
  */
 export function groupTimeline(events: readonly WorkItemEvent[]): readonly TimelineEntry[] {
+  const creations = new Map(events.filter(event => event.eventType === "item_created")
+    .map(event => [eventKey(event, event.id), event]));
+  const commentFiles = new Set<string>();
+  for (const event of events) {
+    if (event.eventType !== "comment_added" || event.payload.bodyKind !== "free") continue;
+    const body = event.payload.body;
+    if (!body || typeof body !== "object" || !("attachmentIds" in body) || !Array.isArray(body.attachmentIds)) continue;
+    for (const id of body.attachmentIds) if (typeof id === "string") commentFiles.add(eventKey(event, id));
+  }
+  const absorbed = new Set<string>();
+  const creationFiles = new Map<string, string[]>();
+  for (const event of events) {
+    if (event.eventType !== "attachment_added") continue;
+    const creationId = event.payload.creationEventId;
+    const creationKey = typeof creationId === "string" ? eventKey(event, creationId) : undefined;
+    if (creationKey && creations.has(creationKey)) {
+      absorbed.add(eventKey(event, event.id));
+      const filename = eventFilename(event);
+      if (filename) creationFiles.set(creationKey, [...(creationFiles.get(creationKey) ?? []), filename]);
+    } else if (typeof event.payload.attachmentId === "string" && commentFiles.has(eventKey(event, event.payload.attachmentId))) {
+      absorbed.add(eventKey(event, event.id));
+    }
+  }
+
   const entries: TimelineEntry[] = [];
   for (const event of [...events].reverse()) {
+    if (absorbed.has(eventKey(event, event.id))) continue;
     const previous = entries.at(-1);
     const mergeable = MERGEABLE_EVENTS.has(event.eventType)
       && previous?.event.eventType === event.eventType
+      && previous.event.itemKey === event.itemKey
       && previous.event.actorKind === event.actorKind
+      && previous.event.accountId === event.accountId
+      && previous.event.clientId === event.clientId
+      && previous.event.executionId === event.executionId
       && previous.event.historySourceKey === event.historySourceKey;
     if (mergeable && previous) {
       const filename = eventFilename(event);
@@ -38,7 +71,8 @@ export function groupTimeline(events: readonly WorkItemEvent[]): readonly Timeli
       continue;
     }
     const filename = eventFilename(event);
-    entries.push({ id: event.id, event, count: 1, filenames: filename ? [filename] : [] });
+    entries.push({ id: event.id, event, count: 1,
+      filenames: creationFiles.get(eventKey(event, event.id)) ?? (filename ? [filename] : []) });
   }
   return entries;
 }
@@ -94,5 +128,5 @@ export function groupDiscussionTimeline(events: readonly WorkItemEvent[]): reado
     if(typeof root!=="string" || root===event.id || !comments.has(root))continue;
     const replies=groups.get(root) ?? [];replies.push(event);groups.set(root,replies);childIds.add(event.id);
   }
-  return groupTimeline(events.filter(event=>!childIds.has(event.id))).map(entry=>({...entry,replies:groups.get(entry.id) ?? []}));
+  return groupTimeline(events).filter(entry=>!childIds.has(entry.id)).map(entry=>({...entry,replies:groups.get(entry.id) ?? []}));
 }

@@ -3747,6 +3747,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           encodeURIComponent(logFilename),
           "text/plain",
           Buffer.from(formatFeedbackLog(draft.logs), "utf8"),
+          undefined, undefined, undefined, { createdWithItem: true },
         );
       } catch (error) {
         request.log.error({ err: error, itemKey: finalized.itemKey }, "diagnostics log attachment failed");
@@ -3990,6 +3991,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     requireCapturePermission(request, stringField(body, "productId")!);
     const item = store.createWorkItem({
       productId: stringField(body, "productId")!,
+      ...(body.creationUploadId !== undefined ? { creationUploadId: stringField(body, "creationUploadId")! } : {}),
       ...(stringField(body, "builderAccountId", false) ? { builderAccountId: body.builderAccountId as string } : {}),
       ...(body.status !== undefined ? { status: enumField(body, "status", ["inbox", "ready"] as const)! } : {}),
       ...(stringField(body, "sourceComponentId", false) ? { sourceComponentId: body.sourceComponentId as string } : {}),
@@ -4249,6 +4251,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       sessionUser(request) ? { accountId: sessionUser(request)!.id } : undefined,
       request.headers["x-missiongo-upload-id"] === undefined ? undefined
         : `human-upload:${sessionUser(request)?.id ?? "local"}:${headerText(request.headers["x-missiongo-upload-id"], "X-MissionGo-Upload-Id")}`,
+      request.headers["x-missiongo-creation-upload-id"] === undefined ? undefined : {
+        creationUploadId: headerText(request.headers["x-missiongo-creation-upload-id"], "X-MissionGo-Creation-Upload-Id"),
+      },
     );
     return reply.status(201).send(publicAttachment(attachment));
   });
