@@ -3000,8 +3000,11 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .comment-attachments .attachment-preview:has(.attachment-media-open) { height: 112px; min-height: 0; overflow: hidden; }
 .comment-attachments .attachment-media-open img { height: 112px; object-fit: contain; }
 .comment-attachments .attachment-actions button { width: 36px; height: 36px; }
-.agent-console-approve-action { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
-.agent-console-approve-action small { max-width: 240px; font-size: var(--text-xs); line-height: 1.5; }
+.agent-console-approve-action { display: inline-flex; flex: 0 0 auto; align-items: center; }
+/* The reason for a disabled approval reads as a full-width line under the
+   banner's actions. Inside the action column it sized the column to its
+   max-width and stretched the button, squeezing the label beside it (AND-349). */
+.agent-console-approve-reason { flex: 1 0 100%; padding-left: 25px; font-size: var(--text-xs); line-height: 1.5; }
 @media (pointer: coarse) {
   .comment-attachments .attachment-actions button { width: 44px; height: 44px; }
 }
