@@ -20,47 +20,49 @@ const detail = {
   planApprovalStatus: { code: "reply_pending" },
 };
 
-// AND-349: the disabled approval reason was laid out inside the action column,
-// so its max-width stretched the button and squeezed the label beside it.
-for (const width of [353, 375, 1440]) {
-  test(`approval banner keeps one-line label and one-row actions at ${width}px`, async ({ page }, testInfo) => {
+// Polling through blocked/ready states must not change the collapsed banner height.
+for (const width of [353, 812, 1440]) for(const theme of ["light","dark"] as const) {
+  test.describe(`${width}px ${theme} approval`,()=>{
+  test.use({hasTouch:width<1440});
+  test(`approval banner stays stable through loading and state updates at ${width}px ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
-    await page.route("**/api/v1/agent-sessions**", (route) => {
+    await page.emulateMedia({colorScheme:theme});
+    let code="reply_pending";
+    let release!:()=>void;
+    const held=new Promise<void>(resolve=>{release=resolve;});
+    let hold=true;
+    await page.route("**/api/v1/agent-sessions**", async route => {
       if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
       const path = new URL(route.request().url()).pathname;
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(path === "/api/v1/agent-sessions" ? { sessions: [summary] } : detail),
-      });
+      if(path !== "/api/v1/agent-sessions" && hold) await held;
+      const current={...detail,planApprovalStatus:{code},...(code==="ready"?{planApproval:{revision:"ready-plan",reason:"方案待批准"}}:{})};
+      return route.fulfill({status:200,json:path === "/api/v1/agent-sessions"?{sessions:[summary]}:current});
     });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
-    const banner = page.locator(".agent-console-attention-banner");
-    await expect(banner).toBeVisible();
-    const label = banner.locator("summary");
-    const approve = banner.getByRole("button", { name: /^(批准|Approve)$/ });
-    const dismiss = banner.getByRole("button", { name: /^(无需处理|Dismiss)$/ });
-    await expect(approve).toBeDisabled();
-    await expect(dismiss).toBeVisible();
-    await banner.scrollIntoViewIfNeeded();
-    const path = testInfo.outputPath(`banner-${width}.png`);
-    await page.screenshot({ path, animations: "disabled" });
-    await testInfo.attach(`banner-${width}`, { path, contentType: "image/png" });
-
-    const labelBox = (await label.boundingBox())!;
-    const approveBox = (await approve.boundingBox())!;
-    const dismissBox = (await dismiss.boundingBox())!;
-    const reasonBox = (await banner.locator(".agent-console-approve-reason").boundingBox())!;
-    const bannerBox = (await banner.boundingBox())!;
-    // The label stays on one line instead of one character per line.
-    expect(labelBox.height).toBeLessThan(32);
-    // Approve and dismiss share a row, and the button is text-sized, not
-    // stretched by the reason beside it.
-    expect(Math.abs((approveBox.y + approveBox.height / 2) - (dismissBox.y + dismissBox.height / 2))).toBeLessThan(8);
-    expect(approveBox.width).toBeLessThan(120);
-    // The reason owns a full line below the actions and no longer sizes them.
-    expect(reasonBox.y).toBeGreaterThanOrEqual(approveBox.y + approveBox.height - 1);
-    expect(reasonBox.width).toBeGreaterThan(bannerBox.width * 0.6);
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const banner=page.locator(".agent-console-attention-banner"),label=banner.locator("summary");
+    const approve=banner.getByRole("button",{name:"批准",exact:true}),dismiss=banner.getByRole("button",{name:"无需处理",exact:true});
+    const reason=banner.locator(".agent-console-approve-reason");
+    await expect(approve).toBeDisabled();await expect(dismiss).toBeVisible();await expect(reason).toBeHidden();
+    const height=(await banner.boundingBox())!.height;
+    await label.click();await expect(reason).toHaveText("正在确认是否可以批准…");await expect(reason).toBeVisible();
+    hold=false;release();
+    await expect(reason).toContainText("你的回复还在发送");
+    await label.click();await expect(reason).toBeHidden();
+    for(const [state,text] of [["running","会话仍在执行"],["reply_unavailable","当前无法向这个会话发送消息"],["connection_unavailable","会话连接当前不可用"],["permission_required","当前有工具权限请求"],["awaiting_source","回复已送达"],["ready",""]] as const){
+      code=state;
+      if(state==="ready"){await expect(approve).toBeEnabled();await expect(reason).toHaveCount(0);}
+      else {await expect(reason).toContainText(text);await expect(approve).toBeDisabled();await expect(reason).toBeHidden();}
+      expect((await banner.boundingBox())!.height).toBeCloseTo(height,0);
+    }
+    const labelBox=(await label.boundingBox())!,approveBox=(await approve.boundingBox())!,dismissBox=(await dismiss.boundingBox())!;
+    expect(labelBox.height).toBeLessThanOrEqual(width<1440?44:36);
+    expect(Math.abs(approveBox.y-dismissBox.y)).toBeLessThan(2);expect(approveBox.width).toBeLessThan(120);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    const path=testInfo.outputPath(`banner-${width}-${theme}.png`);await page.screenshot({path,animations:"disabled"});await testInfo.attach("stable-banner",{path,contentType:"image/png"});
+    code="reply_pending";await expect(approve).toBeDisabled();await label.click();await expect(reason).toBeVisible();
+    expect((await reason.boundingBox())!.width).toBeGreaterThan((await banner.boundingBox())!.width*0.6);
+    expect((await reason.boundingBox())!.height).toBeLessThan(120);
+    await page.screenshot({path:testInfo.outputPath(`banner-expanded-${width}-${theme}.png`)});
+  });
   });
 }

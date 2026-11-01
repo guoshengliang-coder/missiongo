@@ -36,6 +36,12 @@ for (const viewport of [
       // AND-348: an empty composer is one line tall, level with the buttons
       // beside it, and only grows once there is something to show.
       const emptyField = (await composer.locator("textarea").boundingBox())!;
+      const addBox=(await composer.getByRole("button",{name:"添加附件",exact:true}).boundingBox())!;
+      const sendBox=(await send.boundingBox())!;
+      expect(addBox.x+addBox.width).toBeLessThanOrEqual(emptyField.x);
+      expect(emptyField.x+emptyField.width).toBeLessThanOrEqual(sendBox.x);
+      expect(Math.abs(addBox.y-sendBox.y)).toBeLessThanOrEqual(1);
+
       expect(Math.abs(emptyField.height - (await send.boundingBox())!.height)).toBeLessThanOrEqual(1);
       await composer.locator("textarea").fill("第一行\n第二行");
       expect((await composer.locator("textarea").boundingBox())!.height).toBeGreaterThan(emptyField.height);

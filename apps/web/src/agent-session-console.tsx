@@ -1107,14 +1107,20 @@ export function AgentSessionConsole({
                   );
                 })}
                 {(selected.needsAttention || selected.attention.dismissed) && selected.attention.reason && (
-                  <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}`} role="status">
+                  <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
                     <details>
                       <summary>{selected.attention.dismissed
                         ? t("agentAttentionDismissedTitle")
                         : attentionLabel(selected, t)}
                       </summary>
-                      <p>{selected.attention.reason}</p>
+                      <div className="agent-console-attention-detail">
+                        <p>{selected.attention.reason}</p>
+                        {showPlanApproval && !canApprovePlan && <p className="agent-console-approve-reason" role="status">
+                          {sessionQuery.isPending ? t("agentPlanChecking") : sessionQuery.isError ? t("agentPlanCheckFailed")
+                            : t(planApprovalStatusKey(planApprovalStatus?.code ?? "reply_unavailable"))}
+                        </p>}
+                      </div>
                     </details>
                     {showPlanApproval && <div className="agent-console-approve-action">
                       <button type="button" className="primary-button"
@@ -1137,11 +1143,6 @@ export function AgentSessionConsole({
                         {dismissAttention.isPending && <LoaderCircle className="spin" size={14} />}
                         {t("agentAttentionDismiss")}
                       </button>
-                    )}
-                    {showPlanApproval && !canApprovePlan && (
-                      <small className="agent-console-approve-reason" role="status">
-                        {t(planApprovalStatusKey(planApprovalStatus?.code ?? "reply_unavailable"))}
-                      </small>
                     )}
                   </div>
                 )}

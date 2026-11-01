@@ -1203,10 +1203,11 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 @media (hover: hover) { .attachment-card footer button:last-child:hover { color: var(--red); background: var(--danger-bg-strong); } }
 .timeline-block { border-bottom: 0; }
 .timeline { margin-top: 14px; }
-.timeline-event { position: relative; display: grid; grid-template-columns: 14px 1fr; gap: 8px; padding-bottom: 17px; }
-.timeline-event::before { content: ""; position: absolute; left: 3px; top: 8px; bottom: 0; width: 1px; background: var(--line); }
+.timeline-event { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; padding-bottom: 17px; }
+.timeline-event::before { content: ""; position: absolute; left: 14px; top: 0; bottom: 0; width: 1px; background: var(--line); }
+.timeline-event:first-child::before { top: 8px; }
 .timeline-event:last-child::before { display: none; }
-.timeline-dot { position: relative; z-index: 1; width: 7px; height: 7px; margin-top: 4px; background: var(--mint-dark); border: 2px solid var(--surface); border-radius: 50%; box-sizing: content-box; }
+.timeline-dot { position: relative; z-index: 1; width: 7px; height: 7px; margin-top: 4px; margin-left: 8.5px; background: var(--mint-dark); border: 2px solid var(--surface); border-radius: 50%; box-sizing: content-box; }
 .timeline-event strong { display: block; font-size: var(--text-xs); }
 .timeline-event p { margin: 3px 0 0; color: var(--muted); font-size: var(--text-xs); }
 /* A long comment folds behind one line. The summary is the agent's own if it
@@ -3001,20 +3002,27 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .builder-handover-notice p { margin: 8px 0; overflow-wrap: anywhere; }
 .builder-handover-notice button { min-height: 44px; }
 
-/* Comments keep compact evidence below the prose at every pane width. */
-.comment-attachments { padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
-.comment-attachments .attachment-grid { align-items: start; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); }
-.comment-attachments .attachment-preview:has(.attachment-media-open) { height: 112px; min-height: 0; overflow: hidden; }
-.comment-attachments .attachment-media-open img { height: 112px; object-fit: contain; }
-.comment-attachments .attachment-actions button { width: 36px; height: 36px; }
+/* Compact comment evidence stays on one row, including mixed file types. */
+.comment-attachments { min-width: 0; margin-top: 8px; }
+.comment-attachment-strip { display: flex; gap: 8px; min-width: 0; }
+.comment-attachment-tile { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; flex: 0 0 76px; min-width: 0; min-height: 88px; padding: 4px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--ink); background: var(--surface-strong); cursor: pointer; }
+.comment-attachment-thumb { display: grid; place-items: center; width: 100%; height: 56px; overflow: hidden; border-radius: var(--radius-xs); color: var(--muted); background: var(--tile-bg); }
+.comment-attachment-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.comment-attachment-tile > span { max-width: 100%; font-size: var(--text-xs); }
+.comment-attachment-filename { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.comment-attachments-more > span { white-space: nowrap; }
 .agent-console-approve-action { display: inline-flex; flex: 0 0 auto; align-items: center; }
-/* The reason for a disabled approval reads as a full-width line under the
-   banner's actions. Inside the action column it sized the column to its
-   max-width and stretched the button, squeezing the label beside it (AND-349). */
-.agent-console-approve-reason { flex: 1 0 100%; padding-left: 25px; font-size: var(--text-xs); line-height: 1.5; }
-@media (pointer: coarse) {
-  .comment-attachments .attachment-actions button { width: 44px; height: 44px; }
-}
+/* Opening details is deliberate; status polling never adds another banner row. */
+.agent-console-attention-banner--approval { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; flex-wrap: nowrap; }
+.agent-console-attention-banner--approval > svg { grid-column: 1; grid-row: 1; align-self: start; margin-top: 8px; }
+.agent-console-attention-banner--approval > details { grid-column: 2 / -1; grid-row: 1; align-self: start; }
+.agent-console-attention-banner--approval summary { width: max-content; max-width: 100%; min-height: 32px; line-height: 32px; white-space: nowrap; }
+.agent-console-attention-detail { min-width: 0; }
+.agent-console-attention-banner--approval .agent-console-attention-detail { overflow-wrap: anywhere; }
+.agent-console-attention-banner--approval details:not([open]) > .agent-console-attention-detail { display: none; }
+.agent-console-attention-banner--approval > .agent-console-approve-action { grid-column: 3; grid-row: 1; align-self: start; }
+.agent-console-attention-banner--approval > button { grid-column: 4; grid-row: 1; align-self: start; }
+.agent-console-approve-reason { color: var(--warn-text); }
 
 /* Recovery actions keep their text visible on phones as well as desktops. */
 .agent-console-recovery { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); font-size: var(--text-sm); }
@@ -3071,18 +3079,21 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .comment-focus-target { outline: 2px solid var(--mint-dark); outline-offset: 4px; }
 .comment-thread-root, .comment-thread-reply { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; scroll-margin-block: 24px; border-radius: var(--radius-sm); }
 .comment-thread-root:focus, .comment-thread-reply:focus { outline: 2px solid var(--mint-dark); outline-offset: 4px; }
-.comment-thread-reply { margin-block-start: 14px; margin-inline-start: 14px; padding-inline-start: 12px; border-inline-start: 2px solid var(--line); }
-.comment-avatar { display: grid; place-items: center; width: 28px; height: 28px; margin-top: 4px; border-radius: 50%; background: var(--surface-sunken); color: var(--ink-2); font-size: var(--text-xs); }
+.comment-thread-reply { position: relative; margin-block-start: 14px; margin-inline-start: 38px; }
+.comment-thread-reply::before { content: ""; position: absolute; left: 14px; top: -14px; bottom: 0; width: 1px; background: var(--line); }
+.comment-thread-reply:last-child::before { bottom: auto; height: 32px; }
+.comment-avatar { position: relative; z-index: 1; display: grid; place-items: center; width: 28px; height: 28px; margin-top: 4px; border-radius: 50%; background: var(--surface-sunken); color: var(--ink-2); font-size: var(--text-xs); }
 .comment-message { min-width: 0; }
-.comment-byline { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-height: 36px; }
-.timeline-event .comment-byline > strong { display: inline; font-size: calc(13px * var(--text-scale)); font-weight: 650; overflow-wrap: anywhere; }
-.comment-byline time, .comment-actor-label { color: var(--muted); font-size: var(--text-xs); }
+.comment-byline { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px 8px; min-height: 36px; }
+.timeline-event .comment-byline > strong { display: block; flex: 0 1 auto; min-width: 0; font-size: calc(13px * var(--text-scale)); font-weight: 650; overflow-wrap: anywhere; }
+.comment-byline time, .comment-actor-label { flex: none; white-space: nowrap; color: var(--muted); font-size: var(--text-xs); }
 .comment-byline time { white-space: nowrap; }
 .comment-actor-label { padding: 1px 4px; border-radius: var(--radius-xs); background: var(--surface-sunken); }
 .timeline-event .comment-reply-byline { margin-top: 0; font-size: var(--text-xs); color: var(--muted); overflow-wrap: anywhere; }
 .timeline-event .comment-mentioned { margin-top: 6px; color: var(--muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
 .timeline-event--comment { grid-template-columns: minmax(0, 1fr); }
-.timeline-event--comment::before, .timeline-event--comment > .timeline-dot { display: none; }
+.timeline-event--comment:first-child::before { top: 18px; }
+.timeline-event--comment > .timeline-dot { display: none; }
 .timeline-event--comment .comment-body { margin-top: 4px; }
 /* Timeline metadata must never shrink Markdown paragraphs or turn inline bold into blocks. */
 .timeline-event--comment :is(.comment-text, .analysis-details .markdown-text) { font-size: calc(14px * var(--text-scale)); color: var(--ink); line-height: 1.6; }
@@ -3104,3 +3115,15 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .comment-notification-details .dingtalk-notice-state strong { font-weight: 600; }
 @media (pointer: coarse) { .comment-more-actions > summary, .comment-notification-details > summary { min-height: 44px; } .comment-more-actions > summary { width: 44px; } }
 @media (max-width: 640px) { .timeline-event--comment :is(.comment-text, .analysis-details .markdown-text) { font-size: calc(15px * var(--text-scale)); } }
+
+.comment-author-name { display: block; width: 100%; min-height: 36px; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; background: none; border: 0; font: inherit; text-align: start; cursor: pointer; }
+.comment-author-full { overflow-wrap: anywhere; }
+@media (pointer: coarse) { .comment-author-name { min-height: 44px; } .comment-avatar { margin-top: 8px; } }
+
+@media (pointer: coarse) {
+  .agent-console-attention-banner--approval summary { min-height: 44px; line-height: 44px; }
+  .agent-console-attention-banner--approval > svg { margin-top: 14px; }
+}
+
+.comment-reply-author { display: block; max-width: 100%; min-height: 28px; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; background: none; border: 0; font: inherit; text-align: start; cursor: pointer; }
+@media (pointer: coarse) { .comment-reply-author { min-height: 44px; } }
