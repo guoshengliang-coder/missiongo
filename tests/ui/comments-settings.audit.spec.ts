@@ -25,12 +25,12 @@ for (const width of [353, 768, 1440]) for (const theme of ["light", "dark"] as c
       await send.click();
       await expect(composer.locator(".agent-chat-draft-files")).toHaveCount(0);
       const comment = page.locator(".comment-body").filter({ hasText: "comment.txt" });
-      await expect(comment.locator(".attachment-card")).toHaveCount(2);
-      await comment.locator(".attachment-card").first().scrollIntoViewIfNeeded();
-      await expect(comment.locator(".attachment-image img")).toBeVisible();
+      await expect(comment.locator(".comment-attachment-tile")).toHaveCount(2);
+      await comment.locator(".comment-attachment-tile").first().scrollIntoViewIfNeeded();
+      await expect(comment.locator(".comment-attachment-thumb img")).toBeVisible();
       await page.screenshot({ path: test.info().outputPath("comment-attachments.png") });
       await page.reload();
-      await expect(comment.locator(".attachment-card")).toHaveCount(2);
+      await expect(comment.locator(".comment-attachment-tile")).toHaveCount(2);
       await expect(page.locator(".detail-back-button")).toHaveAccessibleName("返回列表");
       await page.goto("/settings");
       const heading = await page.locator(".settings-page-header > strong").boundingBox();

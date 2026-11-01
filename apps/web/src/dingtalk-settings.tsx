@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DingTalkDeliveryMode, DingTalkSettings, DingTalkBinding, DingTalkBindingInput, DingTalkNotification, DingTalkNotificationStatus, DingTalkImportRow, DingTalkImportPreview } from "@missiongo/domain";
 import { api } from "./api";
@@ -8,6 +8,7 @@ import { Modal } from "./modal";
 import { Select } from "./select";
 import { useI18n } from "./i18n";
 import { notificationGroupStatus } from "./notification-summary";
+import { RecordDisclosure } from "./record-disclosure";
 
 const failure = (error: unknown) => error instanceof Error ? error.message : "操作失败，请重试。";
 const statusLabels: Record<DingTalkNotificationStatus, string> = { queued: "等待发送", sending: "正在发送", accepted: "已受理，待确认结果", sent: "发送成功", failed: "发送失败", skipped: "未发送", uncertain: "发送结果不明" };
@@ -270,15 +271,11 @@ export function DingTalkProjectSettings({productId}:{productId:string}) {
 export function useItemDingTalkNotifications(itemKey:string|null) {
   return useQuery({queryKey:["dingtalk-notifications",itemKey],queryFn:()=>api.dingtalkNotifications(itemKey!),enabled:Boolean(itemKey),refetchInterval:5000});
 }
-type ItemNotificationQuery=ReturnType<typeof useItemDingTalkNotifications>;
+export type ItemNotificationQuery=ReturnType<typeof useItemDingTalkNotifications>;
 
-export function ItemDingTalkNotifications({itemKey,pending,query}:{itemKey:string;pending:boolean;query:ItemNotificationQuery}) {
-  if(query.isError)return <p role="alert">钉钉通知记录加载失败，请刷新重试。</p>;
-  const notices=query.data?.notifications.filter(notice=>notice.kind!=="comment") ?? [];
-  const status=notificationGroupStatus(notices);
-  if(!status)return null;
-  return <ItemNotificationDetails itemKey={itemKey} pending={pending} notices={notices} canRetry={query.data?.canRetry ?? false}
-    summary={`钉钉通知 · ${statusLabels[status]}`} />;
+export function ItemDingTalkNotificationRecord({itemKey,pending,notice,canRetry}:{itemKey:string;pending:boolean;notice:DingTalkNotification;canRetry:boolean}) {
+  return <ItemNotificationDetails itemKey={itemKey} pending={pending} notices={[notice]} canRetry={canRetry} record
+    summary={<><strong>钉钉通知 · {statusLabels[notice.status]}</strong><small>{notice.accountName ?? "待验证提醒"} · {new Date(notice.createdAt).toLocaleString("zh-CN")}</small></>} />;
 }
 
 export function CommentDingTalkNotifications({itemKey,commentId,query,hasAudience,readOnly}:{itemKey:string;commentId:string;query:ItemNotificationQuery;hasAudience:boolean;readOnly:boolean}) {
@@ -295,14 +292,14 @@ export function CommentDingTalkNotifications({itemKey,commentId,query,hasAudienc
     summary={status && complete?t("commentNoticeSummary",{count:notices.length,status:status==="sent"?t("commentNoticeSent"):statusLabels[status]}):t("commentNoticeView")} />;
 }
 
-function ItemNotificationDetails({itemKey,pending,notices,canRetry,summary,comment=false,onOpenChange,loading=false,loadError=false,reload}:{
-  itemKey:string;pending:boolean;notices:readonly DingTalkNotification[];canRetry:boolean;summary:string;comment?:boolean;
+function ItemNotificationDetails({itemKey,pending,notices,canRetry,summary,comment=false,record=false,onOpenChange,loading=false,loadError=false,reload}:{
+  itemKey:string;pending:boolean;notices:readonly DingTalkNotification[];canRetry:boolean;summary:ReactNode;comment?:boolean;record?:boolean;
   onOpenChange?:(open:boolean)=>void;loading?:boolean;loadError?:boolean;reload?:()=>void;
 }) {
   const {t}=useI18n();const client=useQueryClient();
   const [confirm,setConfirm]=useState<string|null>(null);
   const retry=useMutation({mutationFn:(id:string)=>api.retryDingtalkNotification(itemKey,id),onSuccess:async data=>{setConfirm(null);client.setQueryData(["dingtalk-notifications",itemKey],data);await client.invalidateQueries({queryKey:["comment-dingtalk-notifications",itemKey]});}});
-  return <details className={comment?"comment-notification-details":"dingtalk-item-notices"} onToggle={event=>onOpenChange?.(event.currentTarget.open)}><summary>{summary}</summary>
+  const content = <>
     {comment && <p className="comment-notification-help">{t("commentNoticeNotRead")}</p>}
     {loading && <p role="status">{t("commentNoticeLoading")}</p>}
     {loadError && <p role="alert">{t("commentNoticeLoadFailed")} <button type="button" className="text-button" onClick={reload}>{t("retry")}</button></p>}
@@ -312,5 +309,8 @@ function ItemNotificationDetails({itemKey,pending,notices,canRetry,summary,comme
     {(notice.canRetry ?? (notice.kind!=="comment" && pending)) && canRetry && ["failed","skipped","uncertain"].includes(notice.status) && <button type="button" className="secondary-button" disabled={retry.isPending} onClick={()=>notice.status==="uncertain"?setConfirm(notice.id):retry.mutate(notice.id)}>补发通知</button>}
   </li>)}</ol>{retry.isError && <p role="alert">{failure(retry.error)}</p>}
     {confirm && <Modal title="确认补发通知" subtitle="此前发送结果不明" onClose={()=>setConfirm(null)} pending={retry.isPending}><p>此前消息可能已送达。请先核实接收情况，补发可能产生重复通知。</p><div className="form-footer"><button type="button" className="secondary-button" onClick={()=>setConfirm(null)} disabled={retry.isPending}>取消</button><button type="button" className="primary-button" onClick={()=>retry.mutate(confirm)} disabled={retry.isPending}>已核实，补发通知</button></div></Modal>}
-  </details>;
+  </>;
+  return record
+    ? <RecordDisclosure className="execution-record notification-record" summary={summary}><div className="execution-record-body">{content}</div></RecordDisclosure>
+    : <details className="comment-notification-details" onToggle={event=>onOpenChange?.(event.currentTarget.open)}><summary>{summary}</summary>{content}</details>;
 }

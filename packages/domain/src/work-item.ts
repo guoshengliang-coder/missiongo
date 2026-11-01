@@ -55,6 +55,8 @@ export interface WorkItemAttachment {
   readonly itemKey: string;
   readonly kind: AttachmentKind;
   readonly displayNumber: number;
+  /** Present for comment/reply files, including withdrawn comments. Derived from stored links. */
+  readonly commentId?: string;
   readonly filename: string;
   readonly contentType: string;
   readonly sizeBytes: number;

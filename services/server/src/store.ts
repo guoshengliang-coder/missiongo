@@ -154,6 +154,7 @@ interface CommentRow {
 }
 
 interface AttachmentRow {
+  comment_id?: string | null;
   id: string;
   item_key: string;
   kind: AttachmentKind;
@@ -2115,7 +2116,9 @@ export class MissionGoStore {
     const rows = this.database.connection
       .prepare(
         `SELECT a.id, w.item_key, a.kind, a.display_number, a.original_filename, a.storage_filename,
-                a.content_type, a.size_bytes, a.created_at
+                a.content_type, a.size_bytes, a.created_at,
+                (SELECT c.id FROM work_item_comments c, json_each(c.body_json, '$.attachmentIds') linked
+                 WHERE c.item_id = a.item_id AND c.body_kind = 'free' AND linked.value = a.id LIMIT 1) AS comment_id
          FROM work_item_attachments a
          JOIN work_items w ON w.id = a.item_id
          WHERE a.item_id = ?
@@ -2364,6 +2367,7 @@ export class MissionGoStore {
       itemKey: row.item_key,
       kind: row.kind,
       displayNumber: row.display_number,
+      ...(row.comment_id ? { commentId: row.comment_id } : {}),
       filename: row.original_filename,
       storageFilename: row.storage_filename,
       contentType: row.content_type,
@@ -2498,7 +2502,7 @@ export class MissionGoStore {
       title: row.title,
       description: row.description,
       ...(report ? { report } : {}),
-      diagnosticSummary: this.getDiagnosticSummary(row.id, attachments),
+      diagnosticSummary: this.getDiagnosticSummary(row.id, attachments.filter(attachment => !attachment.commentId)),
       ...(environment ? { environment } : {}),
       attachments: attachments.map(({ storageFilename: _, ...attachment }) => attachment),
       ...(this.isTransferred(row.id) ? { transferred: true } : {}),

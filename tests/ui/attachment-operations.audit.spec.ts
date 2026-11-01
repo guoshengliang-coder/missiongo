@@ -33,16 +33,16 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
     await composer.getByRole("button", { name: "发送", exact: true }).click();
     await expect(composer.locator("textarea")).toHaveValue("");
     const root = page.locator(".comment-discussion").filter({ hasText: "A comment with files" });
-    await expect(root.locator(".attachment-card")).toHaveCount(2);
+    await expect(root.locator(".comment-attachment-tile")).toHaveCount(2);
     await expect(added).toHaveCount(0);
     await root.getByRole("button", { name: "回复", exact: true }).click();
     await composer.locator("textarea").fill("A reply with a file");
     await composer.locator('input[type="file"]').first().setInputFiles(file("reply.txt"));
     await composer.getByRole("button", { name: "发送", exact: true }).click();
-    await expect(root.locator(".comment-thread-reply .attachment-card")).toHaveCount(1);
+    await expect(root.locator(".comment-thread-reply .comment-attachment-tile")).toHaveCount(1);
     await expect(added).toHaveCount(0);
     await page.reload();
-    await expect(root.locator(".attachment-card")).toHaveCount(3);
+    await expect(root.locator(".comment-attachment-tile")).toHaveCount(3);
     await expect(added).toHaveCount(0);
 
     // An upload outside creation/comment remains an independent operation.

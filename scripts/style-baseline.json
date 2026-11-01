@@ -518,24 +518,6 @@
       "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
     },
     {
-      "signature": "literal-colour | apps/web/src/styles.css | .selected-media-lightbox > section { border } 1px solid rgba(255,255,255,.16)",
-      "count": 1,
-      "reason": "Existing style debt, scoped to this rule and occurrence count",
-      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
-    },
-    {
-      "signature": "literal-colour | apps/web/src/styles.css | .selected-media-lightbox > section { box-shadow } 0 24px 80px rgba(0,0,0,.42)",
-      "count": 1,
-      "reason": "Existing style debt, scoped to this rule and occurrence count",
-      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
-    },
-    {
-      "signature": "literal-colour | apps/web/src/styles.css | .selected-media-lightbox::backdrop { background } rgba(11, 16, 27, .82)",
-      "count": 1,
-      "reason": "Existing style debt, scoped to this rule and occurrence count",
-      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
-    },
-    {
       "signature": "literal-colour | apps/web/src/styles.css | .selected-preview-media em { background } rgba(15, 22, 35, .78)",
       "count": 1,
       "reason": "Existing style debt, scoped to this rule and occurrence count",
