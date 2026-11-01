@@ -28,6 +28,7 @@ for (const width of [353, 812, 1440]) for(const theme of ["light","dark"] as con
     await page.setViewportSize({ width, height: 900 });
     await page.emulateMedia({colorScheme:theme});
     let code="reply_pending";
+    let stalled=false;
     let release!:()=>void;
     const held=new Promise<void>(resolve=>{release=resolve;});
     let hold=true;
@@ -35,8 +36,9 @@ for (const width of [353, 812, 1440]) for(const theme of ["light","dark"] as con
       if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
       const path = new URL(route.request().url()).pathname;
       if(path !== "/api/v1/agent-sessions" && hold) await held;
-      const current={...detail,planApprovalStatus:{code},...(code==="ready"?{planApproval:{revision:"ready-plan",reason:"方案待批准"}}:{})};
-      return route.fulfill({status:200,json:path === "/api/v1/agent-sessions"?{sessions:[summary]}:current});
+      const row=stalled?{...summary,status:"stalled",attention:{...summary.attention,revision:undefined}}:summary;
+      const current={...detail,...row,planApprovalStatus:{code},...(code==="ready"?{planApproval:{revision:"ready-plan",reason:"方案待批准"}}:{})};
+      return route.fulfill({status:200,json:path === "/api/v1/agent-sessions"?{sessions:[row]}:current});
     });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     const banner=page.locator(".agent-console-attention-banner"),label=banner.locator("summary");
@@ -57,12 +59,19 @@ for (const width of [353, 812, 1440]) for(const theme of ["light","dark"] as con
     const labelBox=(await label.boundingBox())!,approveBox=(await approve.boundingBox())!,dismissBox=(await dismiss.boundingBox())!;
     expect(labelBox.height).toBeLessThanOrEqual(width<1440?44:36);
     expect(Math.abs(approveBox.y-dismissBox.y)).toBeLessThan(2);expect(approveBox.width).toBeLessThan(120);
+    expect(Math.abs(labelBox.y+labelBox.height/2-approveBox.y-approveBox.height/2)).toBeLessThan(2);
+    if(width<1440){expect(approveBox.height).toBeGreaterThanOrEqual(44);expect(dismissBox.height).toBeGreaterThanOrEqual(44);}
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     const path=testInfo.outputPath(`banner-${width}-${theme}.png`);await page.screenshot({path,animations:"disabled"});await testInfo.attach("stable-banner",{path,contentType:"image/png"});
     code="reply_pending";await expect(approve).toBeDisabled();await label.click();await expect(reason).toBeVisible();
     expect((await reason.boundingBox())!.width).toBeGreaterThan((await banner.boundingBox())!.width*0.6);
     expect((await reason.boundingBox())!.height).toBeLessThan(120);
     await page.screenshot({path:testInfo.outputPath(`banner-expanded-${width}-${theme}.png`)});
+    if(width===353 && theme==="light"){
+      await label.click();stalled=true;
+      await expect(dismiss).toBeDisabled({timeout:10000});await expect(approve).toBeDisabled();
+      expect((await banner.boundingBox())!.height).toBeCloseTo(height,0);
+    }
   });
   });
 }

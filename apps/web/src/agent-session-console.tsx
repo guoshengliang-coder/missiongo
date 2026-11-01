@@ -1127,14 +1127,14 @@ export function AgentSessionConsole({
                         disabled={!canApprovePlan || dismissAttention.isPending}
                         onClick={approvePlan}>{t("agentPlanApprove")}</button>
                     </div>}
-                    {selected.needsAttention
+                    {(showPlanApproval || selected.needsAttention
                       && selected.status !== "stalled"
                       && selected.agentSessionId
-                      && selected.attention.revision && (
+                      && selected.attention.revision) && (
                       <button
                         type="button"
                         className="secondary-button"
-                        disabled={dismissAttention.isPending}
+                        disabled={dismissAttention.isPending || !selected.agentSessionId || !selected.attention.revision || selected.status === "stalled"}
                         onClick={() => dismissAttention.mutate({
                           sessionId: selected.agentSessionId!,
                           revision: selected.attention.revision!,

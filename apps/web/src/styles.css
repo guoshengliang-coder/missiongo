@@ -3123,6 +3123,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 @media (pointer: coarse) {
   .agent-console-attention-banner--approval summary { min-height: 44px; line-height: 44px; }
   .agent-console-attention-banner--approval > svg { margin-top: 14px; }
+  .agent-console-attention-banner--approval button { min-height: 44px; }
 }
 
 .comment-reply-author { display: block; max-width: 100%; min-height: 28px; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; background: none; border: 0; font: inherit; text-align: start; cursor: pointer; }
