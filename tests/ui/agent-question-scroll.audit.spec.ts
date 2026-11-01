@@ -80,6 +80,9 @@ async function chooseWithoutScrolling(
 ) {
   // Make the target visible before measuring: Playwright's own click scrolling
   // is not the application behaviour this regression protects.
+  // The record header adds height above the conversation. Keep the message
+  // viewport inside the detail pane before measuring its own scroll position.
+  await area.scrollIntoViewIfNeeded();
   await button.scrollIntoViewIfNeeded();
   await button.page().waitForTimeout(100);
   const before = await scrollTop(area);
@@ -116,6 +119,7 @@ for (const viewport of [
           } else {
             await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
             await page.locator(".execution-history > summary").click();
+            await page.locator(".execution-record > summary").click();
             await page.locator(".agent-session-toggle").click();
           }
           const area = page.locator(surface === "console" ? ".agent-console-messages" : ".agent-session-messages");
@@ -189,6 +193,7 @@ for (const viewport of [
         } else {
           await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
           await page.locator(".execution-history > summary").click();
+          await page.locator(".execution-record > summary").click();
           await page.locator(".agent-session-toggle").click();
         }
         const area = page.locator(surface === "console" ? ".agent-console-messages" : ".agent-session-messages");

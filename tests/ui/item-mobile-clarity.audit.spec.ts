@@ -72,12 +72,13 @@ for (const width of [320, 353, 375, 390, 768, 1440]) for (const theme of ["light
         const large = text.fontSize >= 24 || text.fontSize >= 18.66 && text.fontWeight >= 700;
         expect(text.contrast, text.sample).toBeGreaterThanOrEqual(large ? 3 : 4.5);
       }
-      await history.locator("summary").click();
+      await history.locator(":scope > summary").click();
       const rows = history.locator(".execution-row");
       await expect(rows).toHaveCount(4);
+      for (const record of await rows.locator(".execution-record > summary").all()) await record.click();
       await expect(history.locator(".execution-list")).toHaveCSS("list-style-type", "decimal");
       const headingSize = await rows.nth(0).locator(".execution-heading strong").evaluate(el => parseFloat(getComputedStyle(el).fontSize));
-      const summarySize = await history.locator("summary").evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+      const summarySize = await history.locator(":scope > summary").evaluate(el => parseFloat(getComputedStyle(el).fontSize));
       expect(headingSize).toBeLessThan(summarySize);
       await expect(rows.nth(0)).toHaveCSS("border-top-style", "none");
       await expect(rows.nth(0)).toContainText("当前会话详情");
@@ -115,8 +116,9 @@ for (const hasSession of [false, true]) {
     await expect(summary.getByRole("button")).toHaveCount(hasSession ? 1 : 0);
     await expect(page.locator(".detail-title-block .item-builder")).toContainText("待分配");
     const history = page.locator(".execution-history");
-    await history.locator("summary").click();
+    await history.locator(":scope > summary").click();
     await expect(history.locator(".execution-row")).toHaveCount(1);
+    await history.locator(".execution-record > summary").click();
     await expect(history).toContainText("会话启动失败");
     expect(await summary.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
     await page.locator(".detail-pane").screenshot({ path: testInfo.outputPath("failure.png") });
@@ -132,7 +134,7 @@ test("queued dispatch remains visible when execution loading fails", async ({ pa
   await page.goto(`/?product=${product.id}&item=${item.key}`);
   const panel = page.locator(".delivery-panel");
   await expect(panel.getByRole("alert")).toContainText("执行记录加载失败", { timeout: 15000 });
-  await panel.locator("summary").click();
+  await panel.locator(".execution-history > summary").click();
   await expect(panel.locator(".execution-row")).toHaveCount(1);
   await expect(panel).toContainText("M5");
 });
