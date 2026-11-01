@@ -26,6 +26,16 @@ The current `0.2.5` release includes:
 
 The interactive editor and queued headless submissions can recover after process recreation. Queue status notifications and optional screen capture remain later milestones.
 
+## Editor Back contract (unreleased)
+
+The editor reports overlay depth through `MissionGoAndroid.setBackDepth` and
+pending saves through `setEditorBusy`. Native Back first dismisses the top Web
+layer, waits while a save is pending, and asks before discarding an unfinished
+editor at its root. Success and error screens retain their existing close behavior.
+The SDK and Web changes must both be released; an installed older SDK has no new
+bridge methods. See [the remediation record](../../docs/ui-ue-remediation-2026-11.md)
+for verification and release boundaries.
+
 ## Build
 
 ```bash

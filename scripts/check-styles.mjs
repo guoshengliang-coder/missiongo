@@ -23,17 +23,20 @@
 // rather than leaving a licence behind for the next person. Regenerate with
 // `node scripts/check-styles.mjs --update` after a deliberate cleanup.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** The stylesheets the console ships. Both are authored by hand. */
-const SHEETS = ["apps/web/src/styles.css", "apps/web/src/sdk-feedback.css"];
-
-/** Files that may also define a custom property, via an inline style. */
-const INLINE_STYLE_SOURCES = ["apps/web/src/App.tsx"];
+/** Discover new source files automatically; adding a CSS file must not opt out. */
+export function sourceFiles(directory, extension) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const path = join(directory, entry.name);
+    return entry.isDirectory() ? sourceFiles(path, extension) : path.endsWith(extension) ? [path] : [];
+  }).sort();
+}
 
 export const FONT_SIZE_SCALE = [11, 12, 13, 14, 15, 18, 23, 27];
 /** Touch-device inputs sit at 16px so iOS Safari does not zoom the page on focus. */
@@ -48,8 +51,8 @@ const COLOUR = /#[0-9a-f]{3,8}\b|\brgba?\s*\(|\bhsla?\s*\(|(?<![\w-])(white|blac
 
 /**
  * Parse enough CSS to know, for each declaration, which selector and which
- * at-rules it sits under. A real parser would be a dependency; this file only
- * ever reads two hand-written stylesheets.
+ * at-rules it sits under. This bounded parser covers the hand-written source
+ * stylesheets; it is not a full CSS grammar or a substitute for browser checks.
  */
 export function parseCss(text) {
   const declarations = [];
@@ -178,7 +181,7 @@ export function findViolations(sheets, definedVariables) {
         if (!/^@media\b/.test(at)) continue;
         for (const width of at.matchAll(/(?:max|min)-width\s*:\s*(\d+)px/g)) {
           if (!BREAKPOINTS.includes(Number(width[1]))) {
-            violations.push({ rule: "breakpoint-off-system", file, line: rule.line, detail: `${at} (${rule.selector})`, signature: signature(file, "breakpoint-off-system", `${at} ${width[1]}px`) });
+            violations.push({ rule: "breakpoint-off-system", file, line: rule.line, detail: `${at} (${rule.selector})`, signature: signature(file, "breakpoint-off-system", `${at} ${width[1]}px ${rule.selector}`), legacySignature: signature(file, "breakpoint-off-system", `${at} ${width[1]}px`) });
           }
         }
       }
@@ -187,56 +190,85 @@ export function findViolations(sheets, definedVariables) {
   return violations;
 }
 
+function entries(baseline) {
+  return Array.isArray(baseline) ? baseline.map(signature => ({ signature, count: Infinity })) : baseline.exceptions;
+}
+
 export function compareToBaseline(violations, baseline) {
-  const seen = new Set(violations.map((v) => v.signature));
-  const allowed = new Set(baseline);
-  return {
-    added: violations.filter((v) => !allowed.has(v.signature)),
-    stale: baseline.filter((entry) => !seen.has(entry)),
-  };
+  const allowed = new Map(entries(baseline).map(entry => [entry.signature, entry.count]));
+  const seen = new Map();
+  const added = violations.filter(v => {
+    const count = (seen.get(v.signature) ?? 0) + 1;
+    seen.set(v.signature, count);
+    return count > (allowed.get(v.signature) ?? 0);
+  });
+  const stale = entries(baseline).filter(e => !seen.has(e.signature) || Number.isFinite(e.count) && seen.get(e.signature) < e.count).map(e => e.signature);
+  return { added, stale };
+}
+
+export function baselineFrom(violations) {
+  const counts = new Map();
+  for (const v of violations) counts.set(v.signature, (counts.get(v.signature) ?? 0) + 1);
+  return { version: 2, exceptions: [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([signature, count]) => ({
+    signature, count, reason: "Existing style debt, scoped to this rule and occurrence count", tracking: "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环",
+  })) };
+}
+
+export function baselineGrowth(current, previous) {
+  const allowed = new Map(entries(previous).map(entry => [entry.signature, entry.count]));
+  return entries(current).filter(entry => entry.count > (allowed.get(entry.signature) ?? 0));
+}
+
+function gitRead(ref, file) {
+  return execFileSync("git", ["show", `${ref}:${file}`], { cwd: root, encoding: "utf8" });
+}
+
+/** Convert a legacy baseline using the BASE COMMIT'S source, never the PR's
+ * source: a new selector cannot inherit an old breakpoint-wide exemption. */
+function baselineAt(ref) {
+  const previous = JSON.parse(gitRead(ref, "scripts/style-baseline.json"));
+  if (!Array.isArray(previous)) return previous;
+  const sheets = ["apps/web/src/styles.css", "apps/web/src/sdk-feedback.css"].map(file => ({ file, text: gitRead(ref, file) }));
+  const defined = new Set(sheets.flatMap(sheet => [...sheet.text.matchAll(/(--[\w-]+)\s*:/g)].map(m => m[1])));
+  const allowed = new Set(previous);
+  return baselineFrom(findViolations(sheets, defined).filter(v => allowed.has(v.legacySignature ?? v.signature)));
 }
 
 function main() {
   const baselinePath = join(root, "scripts/style-baseline.json");
-  const sheets = SHEETS.map((file) => ({ file, text: readFileSync(join(root, file), "utf8") }));
-
+  const sheets = sourceFiles(join(root, "apps/web/src"), ".css").map(path => ({ file: relative(root, path), text: readFileSync(path, "utf8") }));
   const definedVariables = new Set();
   for (const { text } of sheets) for (const m of text.matchAll(/(--[\w-]+)\s*:/g)) definedVariables.add(m[1]);
-  for (const file of INLINE_STYLE_SOURCES) {
-    const text = readFileSync(join(root, file), "utf8");
-    for (const m of text.matchAll(/["'](--[\w-]+)["']\s*:/g)) definedVariables.add(m[1]);
+  for (const file of sourceFiles(join(root, "apps/web/src"), ".tsx")) {
+    for (const m of readFileSync(file, "utf8").matchAll(/["'](--[\w-]+)["']\s*:/g)) definedVariables.add(m[1]);
   }
-
   const violations = findViolations(sheets, definedVariables);
-
+  const baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
+  if (baseline.version !== 2 || !Array.isArray(baseline.exceptions) || baseline.exceptions.some(e => !e.reason || !e.tracking || !Number.isInteger(e.count) || e.count < 1)) {
+    throw new Error("Style exceptions need version 2, a bounded occurrence count, reason and tracking reference.");
+  }
+  const { added, stale } = compareToBaseline(violations, baseline);
+  if (added.length) {
+    console.error("New style-system violations:");
+    for (const v of added) console.error(`  ${v.file}:${v.line} ${v.rule}: ${v.detail}`);
+    process.exitCode = 1;
+  }
+  const baseAt = process.argv.indexOf("--base");
+  if (baseAt >= 0) {
+    const ref = process.argv[baseAt + 1];
+    if (!ref || !/^[0-9a-f]{40}$/.test(ref)) throw new Error("--base requires a verified full commit SHA");
+    const growth = baselineGrowth(baseline, baselineAt(ref));
+    if (growth.length) { console.error("Style exceptions expanded relative to base:", growth); process.exitCode = 1; }
+  }
   if (process.argv.includes("--update")) {
-    const entries = [...new Set(violations.map((v) => v.signature))].sort();
-    writeFileSync(baselinePath, `${JSON.stringify(entries, null, 2)}\n`);
-    console.log(`Style baseline rewritten: ${entries.length} known violations.`);
+    if (process.exitCode) throw new Error("Refusing to add exceptions. --update only removes fixed entries or reduces counts.");
+    const actual = new Map(baselineFrom(violations).exceptions.map(e => [e.signature, e.count]));
+    writeFileSync(baselinePath, JSON.stringify({ ...baseline, exceptions: baseline.exceptions.filter(e => actual.has(e.signature)).map(e => ({ ...e, count: actual.get(e.signature) })) }, null, 2) + "\n");
+    console.log("Pruned fixed style exceptions.");
     return;
   }
-
-  const baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
-  const { added, stale } = compareToBaseline(violations, baseline);
-
-  if (added.length > 0) {
-    console.error("New style-system violations:\n");
-    for (const violation of added) {
-      console.error(`  - ${violation.rule}: ${relative(".", violation.file)}:${violation.line} ${violation.detail}`);
-    }
-    console.error("\nSee docs/design-system.md. Use a token, or fix the rule -- the baseline is for what was already there, not for new work.");
-  }
-  if (stale.length > 0) {
-    console.error(`${added.length > 0 ? "\n" : ""}Fixed, but still listed in scripts/style-baseline.json:\n`);
-    for (const entry of stale) console.error(`  - ${entry}`);
-    console.error("\nDelete those lines. The baseline only shrinks.");
-  }
-  if (added.length > 0 || stale.length > 0) process.exit(1);
-
-  const byRule = new Map();
-  for (const violation of violations) byRule.set(violation.rule, (byRule.get(violation.rule) ?? 0) + 1);
-  const summary = [...byRule].sort().map(([rule, count]) => `${rule} ${count}`).join(", ");
-  console.log(`Styles: no new violations (${violations.length} known${summary ? ` -- ${summary}` : ""}).`);
+  if (stale.length) { console.error("Fixed exceptions must be removed (--update):", stale); process.exitCode = 1; }
+  if (!process.exitCode) console.log(`Styles: ${sheets.length} stylesheets checked, ${violations.length} bounded existing violations; no new exceptions.`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main();

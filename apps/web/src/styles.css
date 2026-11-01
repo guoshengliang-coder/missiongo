@@ -100,9 +100,9 @@
      (headings, code, tables) sizes in em against this token, so the whole body
      follows. */
   --console-text-scale: 1;
-  --console-text-sm: calc(12px * var(--console-text-scale));
-  --text-xs: calc(11px * var(--text-scale));
-  --text-sm: calc(12px * var(--text-scale));
+  --console-text-sm: max(11px, calc(12px * var(--console-text-scale)));
+  --text-xs: max(11px, calc(11px * var(--text-scale)));
+  --text-sm: max(11px, calc(12px * var(--text-scale)));
   --text-md: calc(13px * var(--text-scale));
   --text-base: calc(14px * var(--text-scale));
   --text-lg: calc(15px * var(--text-scale));
@@ -3104,3 +3104,12 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .comment-notification-details .dingtalk-notice-state strong { font-weight: 600; }
 @media (pointer: coarse) { .comment-more-actions > summary, .comment-notification-details > summary { min-height: 44px; } .comment-more-actions > summary { width: 44px; } }
 @media (max-width: 640px) { .timeline-event--comment :is(.comment-text, .analysis-details .markdown-text) { font-size: calc(15px * var(--text-scale)); } }
+
+/* Shared native top-layer surfaces retain each viewer's existing layout. */
+:where(dialog.item-preview-backdrop, dialog.item-preview-media-viewer, dialog.artifact-backdrop) { margin: 0; width: 100%; max-width: none; height: 100vh; height: 100dvh; max-height: none; border: 0; color: var(--ink); overscroll-behavior: contain; }
+:where(dialog.item-preview-backdrop, dialog.item-preview-media-viewer, dialog.artifact-backdrop)::backdrop { background: transparent; }
+
+.adaptive-toolbar-secondary { display: flex; flex: 0 0 auto; align-items: center; gap: inherit; }
+.adaptive-toolbar-secondary[aria-hidden="true"] { position: fixed; visibility: hidden; pointer-events: none; }
+.detail-toolbar[data-overflow="true"] .detail-toolbar-actions { flex: 1; min-width: 0; justify-content: flex-end; }
+.detail-toolbar[data-overflow="true"] .toolbar-primary-action { min-width: 0; white-space: normal; overflow-wrap: anywhere; }

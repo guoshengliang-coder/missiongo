@@ -1,3 +1,4 @@
+import { useModalSurface } from "./overlay";
 import { useEffect, useId, useRef, useState } from "react";
 import { Download, Smartphone, X } from "lucide-react";
 
@@ -41,17 +42,14 @@ export function AndroidUpdateNotice() {
     };
   }, []);
 
-  useEffect(() => {
-    if (update) dialogRef.current?.showModal();
-  }, [update]);
-
-  if (!update || !installed) return null;
-
   const close = () => {
     setUpdate(null);
     setHandedOff(false);
     setError(null);
   };
+
+  useModalSurface(dialogRef, close, Boolean(update && installed));
+  if (!update || !installed) return null;
 
   const built = publishedAt(update.buildTimestamp);
 
@@ -71,10 +69,6 @@ export function AndroidUpdateNotice() {
       ref={dialogRef}
       className="modal-layer"
       aria-labelledby={titleId}
-      onCancel={(event) => {
-        event.preventDefault();
-        close();
-      }}
       onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}
     >
       <section className="modal">

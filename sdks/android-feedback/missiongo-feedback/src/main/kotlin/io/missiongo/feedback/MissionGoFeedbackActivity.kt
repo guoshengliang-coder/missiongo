@@ -44,6 +44,8 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
     private var lastFailure: MissionGoException? = null
     private var loadingOverlay: View? = null
     private var discardDialog: AlertDialog? = null
+    private var editorBackDepth = 0
+    private var editorBusy = false
     private val filePicker = WebViewFilePicker(this, "从图库选择图片或视频", "选择日志或其他文件")
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,7 +60,12 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (webView == null || completed) cancelAndFinish() else confirmDiscard()
+                when (feedbackBackAction(webView != null, completed, editorBackDepth, editorBusy)) {
+                    FeedbackBackAction.PopLayer -> webView?.evaluateJavascript("history.back()", null)
+                    FeedbackBackAction.Wait -> Toast.makeText(this@MissionGoFeedbackActivity, "正在保存，请稍候", Toast.LENGTH_SHORT).show()
+                    FeedbackBackAction.Close -> cancelAndFinish()
+                    FeedbackBackAction.ConfirmDiscard -> confirmDiscard()
+                }
             }
         })
         launchId = intent.getStringExtra("launchId")
@@ -347,8 +354,8 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
      * The form holds what was typed in the page alone until submit, so backing out of it
      * throws the report away -- often after the person spent a minute describing something
      * they only hit once. Whether anything was actually typed is known only inside the
-     * WebView, and asking it needs a bridge method and therefore a new SDK release in every
-     * host, so until then this asks whenever the form is on screen. The loading, error and
+     * WebView. The bridge reports layers and pending submission, not dirty fields,
+     * so the editor root conservatively asks whenever an unfinished form is on screen. The loading, error and
      * success screens hold nothing to lose and still close on the first press.
      */
     private fun confirmDiscard() {
@@ -370,6 +377,8 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
     }
 
     private fun destroyWebView() {
+        editorBackDepth = 0
+        editorBusy = false
         loadingOverlay = null
         webView?.apply {
             stopLoading()
@@ -383,10 +392,20 @@ public class MissionGoFeedbackActivity : ComponentActivity() {
 
     /**
      * Exposed to the form as `MissionGoAndroid`. addJavascriptInterface hands
-     * this to every document the WebView loads, so both calls check that the
+     * this to every document the WebView loads, so state-changing calls check that the
      * page asking is the endpoint the SDK was configured with.
      */
     private inner class MediaBridge {
+        @JavascriptInterface
+        fun setBackDepth(depth: Int) {
+            runOnUiThread { if (isConfiguredPage()) editorBackDepth = depth.coerceAtLeast(0) }
+        }
+
+        @JavascriptInterface
+        fun setEditorBusy(busy: Boolean) {
+            runOnUiThread { if (isConfiguredPage()) editorBusy = busy }
+        }
+
         @JavascriptInterface
         fun supportsMediaDeletion(): Boolean = filePicker.supportsMediaDeletion()
 

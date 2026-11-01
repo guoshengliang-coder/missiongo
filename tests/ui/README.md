@@ -1,6 +1,6 @@
 # 界面检查（D1-1、D1-3）
 
-这里的测试用真实浏览器打开控制台，在 4 种视口 × 2 种主题下检查界面。对应
+这里的通用测试用 Chromium 打开控制台，在 5 种视口 × 2 种主题下检查界面；其他页面和交互另有专项测试。对应
 [UI/UE 复盘与改进方案](../../docs/ui-ue-review-2026-09.md) 的 D1-1 与 D1-3，规范见
 [设计规范](../../docs/design-system.md)。
 
@@ -42,8 +42,11 @@ node scripts/seed-ui-fixture.mjs --base http://127.0.0.1:8799 --cookie "<会话 
 
 ## 已知的豁免
 
-- `audit.spec.ts` 里的 `SMALL_TARGET_ALLOWANCE`：单页最多 8 个小于 44×44 的点击区域，
-  是当前实测值（刷新按钮 36 宽、产品切换器与行菜单 38 高、勾选框 16、列表行 40 高）。
-  这些属于 A2，会在 D2-4 把 44px 规则从宽度断点改挂到 `(pointer: coarse)` 时一起修掉。
-  这个数字只减不增。
+- `audit.spec.ts` 里的 `SMALL_TARGET_ALLOWANCE` 已为 **0**，触控目标不允许小于 44×44；原先的 8 个豁免已清理。
 - `font-size: 0` 不算违规：图标按钮用它隐藏文字标签，同时保留无障碍名称。
+
+## 覆盖边界
+
+通用矩阵见 `fixture.mjs`：375×812、812×375、768×1024、1180×820、1440×900，覆盖列表、详情与 Agent 控制台。设置、筛选、审批等另有专项，但不是所有状态都进入通用截图矩阵。
+
+UI 测试通过不代表 Safari、Android WebView 或 macOS 原生界面已验收。本轮新增的 `overlay-contract.audit.spec.ts` 覆盖分层返回、草稿、焦点恢复、iframe 和 SDK 桥接；`toolbar-font-contract.audit.spec.ts` 与 `visible-control.ts` 检查控件及裁切祖先、三档字号、320px 和断点两侧。这些专项不能证明所有入口或平台都没有缺陷；原始案例见 [2026-10 审计](../../docs/ui-ue-audit-2026-10.md)。新增入口需按[设计规范 §8–§9](../../docs/design-system.md)补同类交互验证。

@@ -1,3 +1,4 @@
+import { useOverlay } from "./overlay";
 import { Children, Fragment, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type SelectHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
@@ -39,6 +40,7 @@ export function Select({ children, value, defaultValue, onChange, className = ""
   const search = useRef({ text: "", at: 0 });
   const [localValue, setLocalValue] = useState(String(defaultValue ?? ""));
   const [open, setOpen] = useState(false);
+  useOverlay(open, () => { setOpen(false); triggerRef.current?.focus({ preventScroll: true }); });
   const [active, setActive] = useState(-1);
   const [label, setLabel] = useState<string | undefined>(props["aria-label"]);
   const [error, setError] = useState("");
@@ -123,14 +125,8 @@ export function Select({ children, value, defaultValue, onChange, className = ""
     const outside = (event: PointerEvent) => {
       if (!triggerRef.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) setOpen(false);
     };
-    // Capture Escape before the containing dialog's cancel/default action.
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault(); event.stopPropagation(); setOpen(false); triggerRef.current?.focus();
-    };
     document.addEventListener("pointerdown", outside, true);
-    document.addEventListener("keydown", escape, true);
-    return () => { document.removeEventListener("pointerdown", outside, true); document.removeEventListener("keydown", escape, true); };
+    return () => { document.removeEventListener("pointerdown", outside, true); };
   }, [open]);
 
   const choose = (index: number) => {

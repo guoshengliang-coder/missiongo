@@ -1,4 +1,5 @@
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import { useMemo } from "react";
+import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import { localArtifactPath } from "@missiongo/domain";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -10,11 +11,9 @@ import { remarkCjkEmphasis } from "./remark-cjk-emphasis";
  * become executable or layout-controlling HTML.
  */
 export function MarkdownText({ children, className, onLocalArtifactOpen, resolveResourceUrl }: { children: string; className?: string; onLocalArtifactOpen?: (href: string) => void; resolveResourceUrl?: (href: string) => string | undefined }) {
-  return (
-    <div className={className ? `markdown-text ${className}` : "markdown-text"}>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkCjkEmphasis]} skipHtml
-        urlTransform={(url) => resolveResourceUrl?.(url) ?? (localArtifactPath(url) ? url : defaultUrlTransform(url))}
-        components={{
+  // Stable renderer identities keep links mounted while a preview opens/closes,
+  // preserving the trigger that the shared modal returns focus to.
+  const components = useMemo<Components>(() => ({
           a: ({ href, children }) => href && localArtifactPath(href)
             ? onLocalArtifactOpen
               ? <button type="button" className="artifact-link" onClick={() => onLocalArtifactOpen(href)}>{children}</button>
@@ -25,7 +24,12 @@ export function MarkdownText({ children, className, onLocalArtifactOpen, resolve
               ? <button type="button" className="artifact-link" onClick={() => onLocalArtifactOpen(src)}>{alt || src.split("/").at(-1)}</button>
               : <span>{alt}</span>
             : <img src={src} alt={alt} loading="lazy" />,
-        }}
+        }), [onLocalArtifactOpen]);
+  return (
+    <div className={className ? `markdown-text ${className}` : "markdown-text"}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkCjkEmphasis]} skipHtml
+        urlTransform={(url) => resolveResourceUrl?.(url) ?? (localArtifactPath(url) ? url : defaultUrlTransform(url))}
+        components={components}
       >{children}</ReactMarkdown>
     </div>
   );

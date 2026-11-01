@@ -8,6 +8,7 @@ interface AndroidBridge {
   readonly supportsMediaDeletion?: () => boolean;
   readonly deletePickedMedia?: () => void;
   readonly setBackDepth?: (depth: number) => void;
+  readonly setEditorBusy?: (busy: boolean) => void;
   /** JSON `{versionName, versionCode}` of the installed shell (AND-258). */
   readonly appVersion?: () => string;
   /** Downloads the APK at [downloadPath] and opens the system installer (AND-258). */
@@ -16,6 +17,11 @@ interface AndroidBridge {
 
 function bridge(): AndroidBridge | undefined {
   return (window as { MissionGoAndroid?: AndroidBridge }).MissionGoAndroid;
+}
+
+/** SDK host only: an in-flight submit cannot be cancelled by closing Activity. */
+export function reportAndroidEditorBusy(busy: boolean): void {
+  bridge()?.setEditorBusy?.(busy);
 }
 
 /** Present only in the Android shell, which can open the native feedback flow. */

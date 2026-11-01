@@ -81,9 +81,13 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
           await expect(cancel).toBeInViewport();
         }
         if (status === "ready") await page.screenshot({ path: test.info().outputPath("list-menu.png") });
+        // NAV-01: Escape dismisses only the nested destination menu first.
+        await page.keyboard.press("Escape");
+        await expect(move).not.toHaveAttribute("open", "");
+        await expect(menu).toHaveAttribute("open", "");
+        await expect(move.locator("summary")).toBeFocused();
         await page.keyboard.press("Escape");
         await expect(menu).not.toHaveAttribute("open", "");
-        await expect(move).not.toHaveAttribute("open", "");
         await menu.locator(":scope > summary").click();
         await expect(move.locator("button").first()).toBeHidden();
         await page.locator(".workspace-head h1").click();

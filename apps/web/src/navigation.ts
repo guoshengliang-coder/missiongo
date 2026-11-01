@@ -10,15 +10,8 @@ export const STATISTICS_HISTORY_MARKER = "missiongo:statistics";
 
 export const ITEM_HISTORY_MARKER = "missiongo:item-detail";
 
-/**
- * Marks the history entry an overlay adds while it is open.
- *
- * The capture sheet used to be React state alone, so it left no history entry
- * at all. Inside the Android shell that is the difference between closing the
- * sheet and closing the app: the shell's back callback asks the WebView whether
- * it canGoBack(), and with nothing pushed the answer is no. The same press on
- * mobile web left the site. See AND-28.
- */
+/** Legacy capture marker. overlay.tsx retires saved entries from older builds;
+ * new capture sheets use the shared dialog stack. Do not push this marker. */
 export const OVERLAY_HISTORY_MARKER = "missiongo:overlay";
 
 /**
@@ -36,14 +29,8 @@ export const AGENT_CONSOLE_HISTORY_MARKER = "missiongo:agent-console";
  */
 export const AGENT_CONVERSATION_HISTORY_MARKER = "missiongo:agent-conversation";
 
-/**
- * The quick-settings panel under the reply box, opened by the "more" button.
- *
- * It is a popup over the conversation, so back has to close it before it closes
- * the conversation underneath. Without an entry of its own, the phone's back
- * gesture walked out of both at once (AND-199). Separate from the capture
- * sheet's marker because popstate has to know which overlay this entry closed.
- */
+/** Legacy quick-settings marker, retained for saved-history compatibility.
+ * New quick settings use useOverlay, as do their child Select menus. */
 export const QUICK_SETTINGS_HISTORY_MARKER = "missiongo:quick-settings";
 
 /** Records the layout that produced the current console entry across a WebView recreation. */
