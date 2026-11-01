@@ -8,8 +8,8 @@
   ],
   "artifacts": {
     "androidApp": {
-      "version": "0.1.17",
-      "commit": "40ec088bb94c311903c1bd786a22a8a9260a8fd6",
+      "version": "0.1.18",
+      "commit": "9c26f3e277d310c71c788db8520ddeb824d105d8",
       "versionFile": "sdks/android-feedback/gradle.properties",
       "versionProperty": "missiongoAndroidVersionName",
       "paths": [
@@ -18,8 +18,8 @@
       ]
     },
     "androidSdk": {
-      "version": "0.2.7",
-      "commit": "11b658b4f106498fbbec1979f76539b75880fcb2",
+      "version": "0.2.8",
+      "commit": "a939f47bc61c283d01ffae77f555bf325e9e4a41",
       "versionFile": "sdks/android-feedback/gradle.properties",
       "versionProperty": "missiongoVersion",
       "paths": [
