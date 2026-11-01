@@ -81,7 +81,12 @@ test("pinch, zoomed pan and unzoomed swipe have distinct effects", async ({ brow
     const dialog = page.locator(".selected-media-lightbox");
     await expect(dialog.locator("img")).toBeVisible();
     const cdp = await context.newCDPSession(page);
-    const touch = (type: string, points: { x: number; y: number; id: number }[]) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+    const touch = async (type: string, points: { x: number; y: number; id: number }[]) => {
+      await cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+      // Let Chromium deliver the frame's coalesced touch events before lifting
+      // the fingers. A zero-duration move/end can otherwise omit touchmove.
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    };
     await touch("touchStart", [{ x: 140, y: 400, id: 1 }, { x: 240, y: 400, id: 2 }]);
     await touch("touchMove", [{ x: 70, y: 400, id: 1 }, { x: 310, y: 400, id: 2 }]);
     await touch("touchEnd", []);
@@ -90,6 +95,7 @@ test("pinch, zoomed pan and unzoomed swipe have distinct effects", async ({ brow
     await touch("touchMove", [{ x: 80, y: 400, id: 1 }]); await touch("touchEnd", []);
     await expect(dialog.locator("header strong")).toHaveText("图片 1 · 1/2");
     await dialog.getByRole("button", { name: "适应屏幕", exact: true }).tap();
+    await expect(dialog.locator(".zoomable-image")).toHaveAttribute("data-zoomed", "false");
     await touch("touchStart", [{ x: 280, y: 400, id: 1 }]);
     await touch("touchMove", [{ x: 80, y: 400, id: 1 }]); await touch("touchEnd", []);
     await expect(dialog.locator("header strong")).toHaveText("图片 2 · 2/2");
