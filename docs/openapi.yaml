@@ -2219,7 +2219,10 @@ paths:
       - $ref: "#/components/parameters/WorkItemKey"
     post:
       operationId: transitionItem
-      description: Applies a human transition through the authoritative domain state machine.
+      description: >-
+        Applies a human transition through the authoritative domain state machine. Optional files
+        uploaded to this item by the same author are linked atomically to the status event, not a
+        separate comment. Uploads survive failed writes for retry. Existing request shapes remain valid.
       requestBody:
         required: true
         content:
@@ -4015,6 +4018,12 @@ components:
             and attachment lists, including withdrawn comments. These files are rendered with their
             comment, excluded from item evidence and edit galleries, and retain their original
             displayNumber and access rules. Absent for standalone or creation attachments.
+        transitionEventId:
+          type: string
+          description: >-
+            Status event owning this file, derived from persisted attachmentIds in item snapshots and
+            attachment lists. Rendered with the status reason, excluded from original evidence and
+            diagnostics. Raw audit events and attachment access rules are retained.
         filename: { type: string }
         contentType: { type: string }
         sizeBytes: { type: integer, minimum: 1 }
@@ -4029,6 +4038,26 @@ components:
         to: { $ref: "#/components/schemas/WorkItemStatus" }
         reason:
           enum: [triaged, claim, request_human_input, resume, resolution_submitted, release_verified, verification_passed, verification_failed, lease_expired, released, cancelled, reopened, restored, manual_override]
+        attachmentIds:
+          type: array
+          maxItems: 10
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+          description: >-
+            Same-item standalone uploads by the same author; requires a nonblank note. Files already
+            owned by creation, a comment or a status operation cannot be reassigned. Per-item upload
+            limits and product operate permission still apply. Recorded in status_changed.payload.attachmentIds.
+        expectedStatus:
+          $ref: "#/components/schemas/WorkItemStatus"
+          description: Optional concurrency precondition; mismatch returns 409 without a state change.
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: >-
+            Retry key scoped to this exact item, author, target, reason, note, attachment IDs and
+            precondition. A changed request with the same key returns 409. An exact retry does not
+            duplicate events, even if the first response was lost; it returns the current item snapshot.
         note:
           type: string
           maxLength: 2000

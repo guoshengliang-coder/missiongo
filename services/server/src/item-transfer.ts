@@ -114,6 +114,7 @@ export function transferWorkItem(store: MissionGoStore, storage: AttachmentStora
         for (const field of ["attachmentId", "commentId", "creationEventId"]) {
           if (typeof payload[field] === "string" && idMap.has(payload[field])) payload[field] = idMap.get(payload[field]);
         }
+        if (Array.isArray(payload.attachmentIds)) payload.attachmentIds = payload.attachmentIds.map(id => typeof id === "string" ? idMap.get(id) ?? id : id);
         db.prepare(`INSERT INTO work_item_events
           (id, item_id, event_type, actor_kind, from_status, to_status, payload_json,
            account_id, client_id, execution_id, timeline_seq, created_at, history_source_key)

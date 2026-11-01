@@ -74,6 +74,18 @@ describe("project transfer", () => {
     expect((await readFile(storage.resolveStoredFile(first.storageFilename))).toString()).toBe("first");
   });
 
+  it("remaps status reason evidence and its operation ownership when transferring", async () => {
+    const { store, storage, item, transfer } = await seed();
+    const file = await storage.save(store, item.key, "reason.txt", "text/plain", Buffer.from("Reason evidence"));
+    store.transitionWorkItem({ itemKey: item.key, to: "cancelled", actor: "human", reason: "cancelled", note: "Duplicate", attachmentIds: [file.id] });
+    const moved = transfer();
+    const copied = store.listAttachments(moved.key)[0]!;
+    const event = store.getTimeline(moved.key).find(event => event.eventType === "status_changed" && event.payload.attachmentIds)!;
+    expect(copied.id).not.toBe(file.id);
+    expect(event.payload.attachmentIds).toEqual([copied.id]);
+    expect(copied.transitionEventId).toBe(event.id);
+  });
+
   it("remaps precise reply parents and roots when copying discussions without sending history again",async()=>{
     const {store,item,transfer}=await seed();
     const root=store.createComment({itemKey:item.key,actorKind:"human",bodyKind:"free",body:{text:"Question"}});

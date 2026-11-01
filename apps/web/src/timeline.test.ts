@@ -199,6 +199,15 @@ describe("attachment operation grouping", () => {
     expect(entries[0]?.filenames).toEqual([]); // The comment body renders its files.
   });
 
+  it("groups status attachments under the precise state operation while retaining failed uploads and audit changes", () => {
+    const status = event("returned", "status_changed", "2026-10-31T00:00:02Z", { note: "Needs work", attachmentIds: ["a"] });
+    const file = upload("a");
+    expect(groupTimeline([file]).map(entry => entry.id)).toEqual([file.id]);
+    expect(groupTimeline([file, status]).map(entry => entry.id)).toEqual(["returned"]);
+    expect(groupTimeline([file, { ...status, historySourceKey: "OTHER-1" }])).toHaveLength(2);
+    expect(groupTimeline([file, status, event("removed", "attachment_removed", "2026-10-31T00:00:03Z", { attachmentId: "a" })]).map(entry => entry.id)).toEqual(["removed", "returned"]);
+  });
+
   it("absorbs reply uploads before folding the reply under its root", () => {
     const root = comment("root", []);
     const reply = comment("reply", ["a"], { threadRootCommentId: root.id, replyToCommentId: root.id });

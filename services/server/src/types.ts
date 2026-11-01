@@ -188,6 +188,9 @@ export interface AttachmentRecord extends WorkItemAttachment {
 }
 
 export interface TransitionWorkItemInput {
+  readonly attachmentIds?: readonly string[];
+  readonly idempotencyKey?: string;
+  readonly expectedStatus?: WorkItemStatus;
   readonly itemKey: string;
   readonly to: WorkItemStatus;
   readonly actor: ActorKind;

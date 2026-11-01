@@ -553,12 +553,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ itemKeys, to: "ready", reason: "released", note }),
     }),
-  transitionItem: (itemKey: string, action: TransitionAction, note?: string) =>
+  transitionItem: (itemKey: string, action: TransitionAction, note?: string, options?: { attachmentIds: readonly string[]; idempotencyKey: string; expectedStatus: WorkItemStatus }) =>
     request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transitions`, {
       method: "POST",
       body: JSON.stringify({
         to: action.to,
         reason: action.reason,
+        ...options,
         ...(note?.trim() ? { note: note.trim() } : {}),
       }),
     }),
