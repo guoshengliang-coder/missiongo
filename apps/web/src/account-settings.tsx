@@ -1,3 +1,4 @@
+import { OverlayMenu } from "./overlay";
 import { Select } from "./select";
 import { useConfirm } from "./confirm-dialog";
 import { useEffect, useRef, useState } from "react";
@@ -681,7 +682,7 @@ function AccountRow({
             <Pencil size={15} /> {filterProductId ? "修改权限" : t("editAccount")}
           </button>
           {!filterProductId && <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setPermissionsOnly(true); setEditor(openAccountEditor(editor, editIntent)); }}>修改权限</button>}
-          <details className="account-more"><summary className="secondary-button">更多</summary><div className="account-more-actions">
+          <OverlayMenu className="account-more"><summary className="secondary-button">更多</summary><div className="account-more-actions">
             {filterProductId && <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setPermissionsOnly(false); setEditor(openAccountEditor(editor, editIntent)); }}>{t("editAccount")}</button>}
             <small>以下账号操作影响整个工作空间</small>
             {!isSelf && <>
@@ -693,7 +694,7 @@ function AccountRow({
               }}><Trash2 size={15} /> {t("deleteAccount")}</button>
             </>}
             {isSelf && <small>当前登录账号不能在此停用或删除。</small>}
-          </div></details>
+          </div></OverlayMenu>
         </div>
       </header>
       {error && <InlineNote danger message={messageFor(error, t, t("somethingWentWrong"))} />}

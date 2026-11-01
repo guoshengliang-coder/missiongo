@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { compareToBaseline, findViolations, parseCss } from "./check-styles.mjs";
+import { baselineFrom, baselineGrowth, compareToBaseline, findViolations, parseCss, sourceFiles } from "./check-styles.mjs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const check = (css, defined = ["--ink", "--warn-bg", "--radius-md", "--text-sm"]) =>
   findViolations([{ file: "test.css", text: css }], new Set(defined));
@@ -83,4 +86,26 @@ test("fails on a new violation and on a baseline entry that no longer matches", 
   assert.deepEqual(compareToBaseline(violations, []).added.map((v) => v.rule), ["radius-off-scale"]);
   assert.deepEqual(compareToBaseline(violations, violations.map((v) => v.signature)).added, []);
   assert.deepEqual(compareToBaseline([], ["radius-off-scale | old.css | .gone { border-radius } 9px"]).stale.length, 1);
+});
+
+test("automatically discovers nested new CSS files", () => {
+  const root = mkdtempSync(join(tmpdir(), "styles-discovery-"));
+  try {
+    mkdirSync(join(root, "feature"));
+    writeFileSync(join(root, "main.css"), ":root { --ink: black; }");
+    writeFileSync(join(root, "feature/new.css"), ".new { font-size: 9px; }");
+    writeFileSync(join(root, "feature/note.txt"), "not css");
+    assert.deepEqual(sourceFiles(root, ".css"), [join(root, "feature/new.css"), join(root, "main.css")]);
+  } finally { rmSync(root, { recursive: true }); }
+});
+
+test("an existing breakpoint cannot exempt a new selector or extra occurrence", () => {
+  const original = check("@media (max-width: 640px) { .old { gap: 4px; } }");
+  const baseline = baselineFrom(original);
+  const expanded = check("@media (max-width: 640px) { .old { gap: 4px; } .new { gap: 4px; } }");
+  assert.equal(compareToBaseline(expanded, baseline).added.length, 1);
+  assert.equal(compareToBaseline([...original, ...original], baseline).added.length, 1);
+  assert.equal(baselineGrowth(baselineFrom(expanded), baseline).length, 1);
+  assert.equal(baselineGrowth(baselineFrom([...original, ...original]), baseline).length, 1);
+  assert.equal(baselineGrowth(baselineFrom([]), baseline).length, 0);
 });

@@ -1,3 +1,4 @@
+import { reportAndroidEditorBusy } from "./android-bridge";
 import { Select } from "./select";
 import { type ChangeEvent, type FormEvent, useEffect, useState } from "react";
 import { Bug, Check, ChevronRight, FileText, Highlighter, Image as ImageIcon, Lightbulb, ListTodo, LoaderCircle, Paperclip, StickyNote } from "lucide-react";
@@ -112,6 +113,7 @@ export function SdkFeedbackPage() {
   const [aiTitleError, setAiTitleError] = useState("");
   const [generatingTitle, setGeneratingTitle] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  useEffect(() => { reportAndroidEditorBusy(submitting); return () => reportAndroidEditorBusy(false); }, [submitting]);
   const [itemKey, setItemKey] = useState(completedItemKey);
   const [destination, setDestination] = useState<SubmissionTarget>(completedDestination);
   const [files, setFiles] = useState<readonly StoredSdkAttachment[]>([]);

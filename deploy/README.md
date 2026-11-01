@@ -303,6 +303,14 @@ script fail and name it, so a release cannot silently drop an update -- fill the
 note in afterwards with a `pullRequest` field naming the PR it belongs to. A
 version-only release commit needs no declaration.
 
+Android declarations may omit `key` when a change has no MissionGo work item:
+`{ "items": [{ "title": "统一返回和浮层关闭顺序" }] }`. The update dialog shows
+its owning PR number instead. Omit the field rather than inventing an item key;
+when supplied, the key must still use the normal item-key format. All changes
+still require an explicit declaration and a nonempty title. This is supported
+by the web-hosted Android updater; existing native macOS updaters still require
+`key`, so macOS declarations retain their current format.
+
 ### Restricting the origin to a CDN
 
 A CDN protects nothing if the origin also answers on its own address. Anyone who

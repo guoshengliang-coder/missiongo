@@ -1,3 +1,4 @@
+import { OverlayMenu } from "./overlay";
 import { useEffect, useRef } from "react";
 import { MoreHorizontal } from "lucide-react";
 import { useI18n } from "./i18n";
@@ -18,7 +19,7 @@ export function CommentMoreActions({itemKey,commentId,onWithdraw,onNotice}:{
     document.addEventListener("keydown",escape,true);
     return ()=>{document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape,true);};
   },[]);
-  return <details className="comment-more-actions" ref={menu} onToggle={event=>{
+  return <OverlayMenu className="comment-more-actions" ref={menu} onToggle={event=>{
     const target=event.currentTarget;if(!target.open)return;
     const box=target.getBoundingClientRect(),area=target.closest(".detail-scroll")?.getBoundingClientRect();
     const above=box.top-Math.max(0,area?.top ?? 0),below=Math.min(innerHeight,area?.bottom ?? innerHeight)-box.bottom;
@@ -39,5 +40,5 @@ export function CommentMoreActions({itemKey,commentId,onWithdraw,onNotice}:{
       }}>{t("copyCommentLink")}</button>
       <button type="button" className="comment-withdraw" onClick={()=>{menu.current?.removeAttribute("open");onWithdraw();}}>{t("withdrawComment")}</button>
     </div>
-  </details>;
+  </OverlayMenu>;
 }

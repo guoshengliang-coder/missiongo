@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useLayoutEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { DialogDraftContext, useDialogDraft } from "./dialog-state";
 import { Modal } from "./modal";
+import { afterOverlaysClose } from "./overlay";
 import { useI18n } from "./i18n";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 
@@ -37,10 +38,10 @@ export function SettingsDraftProvider({ guard, children }: { guard: RefObject<Se
   }, [dirty, pending]);
   useLayoutEffect(() => { guard.current = confirm; return () => { guard.current = () => true; }; }, [guard, confirm]);
   return <Drafts.Provider value={update}>{children}
-    {confirming && <Modal historyManaged title={t("discardDialogTitle")} subtitle="" onClose={() => setConfirming(false)}>
+    {confirming && <Modal title={t("discardDialogTitle")} subtitle="" onClose={() => setConfirming(false)}>
       <p>{t("discardDialogHelp")}</p>
-      <div className="form-footer"><button type="button" data-initial-focus className="secondary-button" onClick={() => setConfirming(false)}>{t("continueEditing")}</button><button type="button" className="danger-button" onClick={() => { setConfirming(false); proceedRef.current?.(); }}>{t("discardChanges")}</button></div>
+      <div className="form-footer"><button type="button" data-initial-focus className="secondary-button" onClick={() => setConfirming(false)}>{t("continueEditing")}</button><button type="button" className="danger-button" onClick={() => { setConfirming(false); const proceed = proceedRef.current; if (proceed) afterOverlaysClose(proceed); }}>{t("discardChanges")}</button></div>
     </Modal>}
-    {waiting && <Modal historyManaged title={t("settingsWaitForSave")} subtitle="" onClose={() => setWaiting(false)}><div className="form-footer"><button type="button" className="primary-button" onClick={() => setWaiting(false)}>{t("close")}</button></div></Modal>}
+    {waiting && <Modal title={t("settingsWaitForSave")} subtitle="" onClose={() => setWaiting(false)}><div className="form-footer"><button type="button" className="primary-button" onClick={() => setWaiting(false)}>{t("close")}</button></div></Modal>}
   </Drafts.Provider>;
 }

@@ -1,3 +1,4 @@
+import { OverlayDialog } from "./overlay";
 import { WebVersion } from "./web-version";
 import { Select } from "./select";
 import { BackButton } from "./back-button";
@@ -1419,16 +1420,6 @@ function ItemPreviewModal({ itemKey, onClose }: {
     queryKey: ["item", itemKey],
     queryFn: () => api.getItem(itemKey),
   });
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        if (selectedMedia) setSelectedMedia(null);
-        else onClose();
-      }
-    };
-    document.addEventListener("keydown", closeOnEscape);
-    return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [onClose, selectedMedia]);
   const item = itemQuery.data;
   const overview = item?.report?.overview ?? item?.description;
   const media = item?.attachments.filter((attachment) => attachment.kind === "image" || attachment.kind === "video") ?? [];
@@ -1442,12 +1433,10 @@ function ItemPreviewModal({ itemKey, onClose }: {
   });
   const contentUrl = usePreviewObjectUrl(contentQuery.data);
   return (
-    <div
+    <OverlayDialog
       className="item-preview-backdrop"
-      role="dialog"
-      aria-modal="true"
       aria-label={t("itemPreviewTitle", { key: itemKey })}
-      onClick={onClose}
+      onClose={onClose}
     >
       <div className="item-preview-card" onClick={(event) => event.stopPropagation()}>
         <header>
@@ -1468,7 +1457,7 @@ function ItemPreviewModal({ itemKey, onClose }: {
           </div>}
         </div>
       </div>
-      {selectedMedia && <div className="item-preview-media-viewer" role="dialog" aria-modal="true" aria-label={selectedMedia.filename} onClick={(event) => { event.stopPropagation(); setSelectedMedia(null); }}>
+      {selectedMedia && <OverlayDialog className="item-preview-media-viewer" aria-label={selectedMedia.filename} onClose={() => setSelectedMedia(null)}>
         <div className="item-preview-media-viewer-content" onClick={(event) => event.stopPropagation()}>
           <header><strong>{selectedMedia.filename}</strong><button type="button" className="icon-button" aria-label={t("close")} onClick={() => setSelectedMedia(null)}><X size={18} /></button></header>
           {contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
@@ -1476,8 +1465,8 @@ function ItemPreviewModal({ itemKey, onClose }: {
           {selectedMedia.kind === "image" && contentUrl && <img src={contentUrl} alt={selectedMedia.filename} />}
           {selectedMedia.kind === "video" && contentUrl && <ItemPreviewVideo src={contentUrl} filename={selectedMedia.filename} />}
         </div>
-      </div>}
-    </div>
+      </OverlayDialog>}
+    </OverlayDialog>
   );
 }
 

@@ -1,0 +1,210 @@
+[
+  {
+    "scale": "medium",
+    "overflow": 0,
+    "toolbar": [
+      {
+        "text": "返回列表",
+        "left": 12,
+        "right": 56,
+        "top": 73,
+        "bottom": 117,
+        "width": 44,
+        "fullyInViewport": true
+      },
+      {
+        "text": "标记开发完成",
+        "left": 73,
+        "right": 165,
+        "top": 73,
+        "bottom": 117,
+        "width": 92,
+        "fullyInViewport": true
+      },
+      {
+        "text": "刷新",
+        "left": 169,
+        "right": 213,
+        "top": 73,
+        "bottom": 117,
+        "width": 44,
+        "fullyInViewport": true
+      },
+      {
+        "text": "编辑",
+        "left": 217,
+        "right": 271,
+        "top": 73,
+        "bottom": 117,
+        "width": 54,
+        "fullyInViewport": true
+      },
+      {
+        "text": "更多操作",
+        "left": 275,
+        "right": 319,
+        "top": 73,
+        "bottom": 117,
+        "width": 44,
+        "fullyInViewport": true
+      }
+    ],
+    "smallText": [],
+    "note": "Only the five visible toolbar controls are included; descendants of closed menus are excluded."
+  },
+  {
+    "scale": "large",
+    "overflow": 0,
+    "toolbar": [
+      {
+        "text": "返回列表",
+        "left": 12,
+        "right": 56,
+        "top": 73,
+        "bottom": 117,
+        "width": 44,
+        "fullyInViewport": true
+      },
+      {
+        "text": "标记开发完成",
+        "left": 73,
+        "right": 175.8125,
+        "top": 73,
+        "bottom": 117,
+        "width": 102.8125,
+        "fullyInViewport": true
+      },
+      {
+        "text": "刷新",
+        "left": 179.8125,
+        "right": 223.8125,
+        "top": 73,
+        "bottom": 117,
+        "width": 44,
+        "fullyInViewport": true
+      },
+      {
+        "text": "编辑",
+        "left": 227.8125,
+        "right": 286.015625,
+        "top": 73,
+        "bottom": 117,
+        "width": 58.203125,
+        "fullyInViewport": true
+      },
+      {
+        "text": "更多操作",
+        "left": 290.015625,
+        "right": 334.015625,
+        "top": 73,
+        "bottom": 117,
+        "width": 44,
+        "fullyInViewport": false
+      }
+    ],
+    "smallText": [],
+    "note": "Only the five visible toolbar controls are included; descendants of closed menus are excluded."
+  },
+  {
+    "scale": "small",
+    "overflow": 0,
+    "toolbar": [
+      {
+        "text": "返回列表",
+        "left": 12,
+        "right": 56,
+        "top": 73,
+        "bottom": 117,
+        "width": 44,
+        "fullyInViewport": true
+      },
+      {
+        "text": "标记开发完成",
+        "left": 73,
+        "right": 157.8125,
+        "top": 73,
+        "bottom": 117,
+        "width": 84.8125,
+        "fullyInViewport": true
+      },
+      {
+        "text": "刷新",
+        "left": 161.8125,
+        "right": 205.8125,
+        "top": 73,
+        "bottom": 117,
+        "width": 44,
+        "fullyInViewport": true
+      },
+      {
+        "text": "编辑",
+        "left": 209.8125,
+        "right": 261.015625,
+        "top": 73,
+        "bottom": 117,
+        "width": 51.203125,
+        "fullyInViewport": true
+      },
+      {
+        "text": "更多操作",
+        "left": 265.015625,
+        "right": 309.015625,
+        "top": 73,
+        "bottom": 117,
+        "width": 44,
+        "fullyInViewport": true
+      }
+    ],
+    "smallText": [
+      {
+        "text": "0",
+        "size": "9.9px"
+      },
+      {
+        "text": "工作区",
+        "size": "10.8px"
+      },
+      {
+        "text": "1",
+        "size": "9.9px"
+      },
+      {
+        "text": "0",
+        "size": "9.9px"
+      },
+      {
+        "text": "1",
+        "size": "9.9px"
+      },
+      {
+        "text": "0",
+        "size": "9.9px"
+      },
+      {
+        "text": "1",
+        "size": "9.9px"
+      },
+      {
+        "text": "1",
+        "size": "9.9px"
+      },
+      {
+        "text": "1",
+        "size": "9.9px"
+      },
+      {
+        "text": "1",
+        "size": "9.9px"
+      },
+      {
+        "text": "5",
+        "size": "9.9px"
+      },
+      {
+        "text": "Web v1.0.2",
+        "size": "9.9px"
+      }
+    ],
+    "note": "Only the five visible toolbar controls are included; descendants of closed menus are excluded."
+  }
+]

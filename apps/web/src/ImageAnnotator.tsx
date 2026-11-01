@@ -1,3 +1,4 @@
+import { useModalSurface } from "./overlay";
 import { useConfirm } from "./confirm-dialog";
 import { Circle, Hand, Loader2, Maximize, Minus, Pencil, Plus, RotateCcw, Square, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
@@ -127,10 +128,7 @@ export function ImageAnnotator({
   const [saving, setSaving] = useState(false);
   const [ready, setReady] = useState(false);
 
-  useEffect(() => {
-    dialogRef.current?.showModal();
-    return () => dialogRef.current?.close();
-  }, []);
+  useModalSurface(dialogRef, () => { void cancel(); return false; });
 
   useEffect(() => {
     // The cleanup revokes the URL, which makes a still-loading image fire its
@@ -358,7 +356,6 @@ export function ImageAnnotator({
       ref={dialogRef}
       className="annotator"
       aria-label={t("annotateTitle")}
-      onCancel={(event) => { event.preventDefault(); void cancel(); }}
     >
       <header className="annotator-bar">
         <strong>{t("annotateTitle")}</strong>

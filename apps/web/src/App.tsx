@@ -1,3 +1,4 @@
+import { useToolbarOverflow } from "./adaptive-toolbar";
 import { ZoomableImage } from "./zoomable-image";
 import { additionalMentionNames, editMentions, mentionQuery, mentionAudience } from "./comment-mentions";
 import { WebVersion } from "./web-version";
@@ -16,6 +17,7 @@ import { CommentMoreActions } from "./comment-actions";
 import {EMPTY_COMMENT_DRAFT,useCommentDraft,type CommentDraft} from "./comment-draft";
 import {useBeforeUnloadGuard} from "./unsaved-changes";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
+import { useModalSurface, OverlayMenu } from "./overlay";
 import { Modal } from "./modal";
 import { StatusCheckButton, StatusCheckPanel } from "./status-check-panel";
 import { localizedErrorText } from "./error-text";
@@ -767,9 +769,6 @@ export function App() {
    */
   const openCapture = () => {
     if (!selectedProductCanCapture) { setNotice(t("captureReadOnly")); return; }
-    const state = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
-    history.pushState({ ...state, [OVERLAY_HISTORY_MARKER]: true }, "");
-    syncBackDepth();
     setCaptureOpen(true);
   };
 
@@ -813,20 +812,15 @@ export function App() {
   // Closing from the UI unwinds the entry the open added, so a later back press
   // is not spent on a sheet that is already gone.
   const closeCapture = () => {
-    if (history.state?.[OVERLAY_HISTORY_MARKER]) {
-      history.back();
-      return;
-    }
     setCaptureOpen(false);
   };
 
   useEffect(() => {
     const handlePopState = () => {
       if (!settings.syncFromPop()) return;
-      // The overlay entry carries no URL of its own, so the marker on the state
-      // is what says whether the sheet is still the top of the stack.
+      // Shared overlays consume their own popstate before this route listener.
+      // Reaching here means the workspace route or drawer needs updating.
       syncBackDepth();
-      if (!history.state?.[OVERLAY_HISTORY_MARKER]) setCaptureOpen(false);
       if (!history.state?.[SIDEBAR_HISTORY_MARKER]) setSidebarOpen(false);
       setStatisticsOpen(statisticsIsOpen());
       setAgentConsoleOpen(agentConsoleIsOpen());
@@ -1489,7 +1483,7 @@ export function App() {
               <RefreshCw className={agentConsoleRefreshing ? "spin" : ""} size={18} />
             </button>
             {agentConsoleBulkAvailable && !agentConversationOpen && (
-              <details className="agent-console-topbar-more" ref={agentConsoleMoreRef}>
+              <OverlayMenu className="agent-console-topbar-more" ref={agentConsoleMoreRef}>
                 <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreVertical size={18} /></summary>
                 <div className="agent-console-topbar-more-menu">
                   <button type="button" onClick={() => {
@@ -1501,7 +1495,7 @@ export function App() {
                     void refreshAgentConsole();
                   }}><RefreshCw size={16} />{t("refresh")}</button>
                 </div>
-              </details>
+              </OverlayMenu>
             )}
           </div>
         )}
@@ -1788,7 +1782,7 @@ export function App() {
       {!agentConsoleOpen && !selectedItemKey && <button className="mobile-fab mobile-only" disabled={!selectedProductCanCapture} title={!selectedProductCanCapture ? t("captureReadOnly") : undefined} onClick={openCapture} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
 
       {captureOpen && selectedProduct && (
-        <Modal historyManaged title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={closeCapture}>
+        <Modal title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={closeCapture}>
           <CaptureForm
             product={selectedProduct}
             onCreated={(item, failedUploads) => {
@@ -2523,7 +2517,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
 
   return (
     <>
-    <details className="detail-more-menu row-more-menu" ref={moreActionsRef} onToggle={(event) => {
+    <OverlayMenu className="detail-more-menu row-more-menu" ref={moreActionsRef} onToggle={(event) => {
       const menu = event.currentTarget;
       if (!menu.open) {
         menu.querySelector(".detail-move-menu")?.removeAttribute("open");
@@ -2562,12 +2556,12 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
           >
             {action.to === "on_hold" ? <CirclePause size={17} aria-hidden="true" /> : <Undo2 size={17} aria-hidden="true" />}{transitionLabel(action.label)}
           </button>)}
-          {manualTargets.length > 0 && <details className="detail-move-menu">
+          {manualTargets.length > 0 && <OverlayMenu className="detail-move-menu">
             <summary><ArrowRight size={17} aria-hidden="true" /><span>{t("moveTo")}</span><ChevronRight className="detail-move-chevron" size={16} aria-hidden="true" /></summary>
             <div className="detail-move-popover">
               {manualTargets.map((action) => <button key={action.to} type="button" disabled={mutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><CircleDot size={17} aria-hidden="true" />{statusLabel(action.to)}</button>)}
             </div>
-          </details>}
+          </OverlayMenu>}
         </div>
         <div className="detail-action-group">
           <p className="detail-action-heading">{t("actionGroupTools")}</p>
@@ -2577,7 +2571,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
           <button type="button" className="danger" disabled={mutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><X size={17} aria-hidden="true" />{transitionLabel(action.label)}</button>
         </div>)}
       </div>
-    </details>
+    </OverlayMenu>
     {/* Outside the menu on purpose: a closed <details> hides everything but its
         <summary>, and a <dialog> under a hidden ancestor never paints. */}
     {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
@@ -2737,6 +2731,7 @@ function DetailPane({
   }, [itemKey, item?.key]);
   const [transferBuilderOpen, setTransferBuilderOpen] = useState(false);
   const [statusChecksOpen, setStatusChecksOpen] = useState(false);
+  const { toolbarRef, overflow: toolbarOverflow } = useToolbarOverflow();
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
 
   useEffect(() => {
@@ -2861,12 +2856,12 @@ function DetailPane({
     : dispatchStatusKey ? t(dispatchStatusKey) : null);
   return (
     <section className="detail-pane" ref={detailPaneRef}>
-      <div className="detail-toolbar">
+      <div className="detail-toolbar" ref={toolbarRef} data-overflow={toolbarOverflow}>
         <BackButton className="detail-back-button" onClick={onClose} label={t("backToList")} />
         <code>{item.key}</code>
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <span className="toolbar-spacer" />
-        <div className="detail-toolbar-actions">
+        <div className="detail-toolbar-actions" data-toolbar-actions>
           {primaryAction && (
             <button
               className={`primary-button toolbar-primary-action ${primaryAction.tone === "positive" ? "positive" : ""}`}
@@ -2878,9 +2873,11 @@ function DetailPane({
               {quickActionLabel(item.status, t)}
             </button>
           )}
-          <RefreshButton refreshing={itemQuery.isFetching || timelineQuery.isFetching} onRefresh={refreshItem} />
-          <button className="secondary-button" disabled={item.transferred} onClick={() => setEditing(true)}>{t("edit")}</button>
-          <details className="detail-more-menu" ref={moreActionsRef} onToggle={(event) => { if (!event.currentTarget.open) event.currentTarget.querySelector(".detail-move-menu")?.removeAttribute("open"); }}>
+          <div className="adaptive-toolbar-secondary" data-toolbar-secondary aria-hidden={toolbarOverflow} inert={toolbarOverflow}>
+            <RefreshButton refreshing={itemQuery.isFetching || timelineQuery.isFetching} onRefresh={refreshItem} />
+            <button className="secondary-button" disabled={item.transferred} onClick={() => setEditing(true)}>{t("edit")}</button>
+          </div>
+          <OverlayMenu className="detail-more-menu" ref={moreActionsRef} onToggle={(event) => { if (!event.currentTarget.open) event.currentTarget.querySelector(".detail-move-menu")?.removeAttribute("open"); }}>
             <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={19} /></summary>
             <div className="detail-more-menu-popover detail-actions-popover">
               {(deliveryQuery.data?.canManageBuilder || !item.transferred) && <div className="detail-action-group">
@@ -2895,22 +2892,26 @@ function DetailPane({
                     {action.to === "on_hold" ? <CirclePause size={17} aria-hidden="true" /> : <Undo2 size={17} aria-hidden="true" />}{transitionLabel(action.label)}
                   </button>
                 ))}
-                {manualTargets.length > 0 && <details className="detail-move-menu">
+                {manualTargets.length > 0 && <OverlayMenu className="detail-move-menu">
                   <summary><ArrowRight size={17} aria-hidden="true" /><span>{t("moveTo")}</span><ChevronRight className="detail-move-chevron" size={16} aria-hidden="true" /></summary>
                   <div className="detail-move-popover">
                     {manualTargets.map((action) => <button key={action.to} type="button" disabled={transitionMutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><CircleDot size={17} aria-hidden="true" />{statusLabel(action.to)}</button>)}
                   </div>
-                </details>}
+                </OverlayMenu>}
               </div>}
               <div className="detail-action-group">
                 <p className="detail-action-heading">{t("actionGroupTools")}</p>
+                {toolbarOverflow && <>
+                  <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); refreshItem(); }}><RefreshCw size={17} aria-hidden="true" />{t("refresh")}</button>
+                  <button type="button" disabled={item.transferred} onClick={() => { moreActionsRef.current?.removeAttribute("open"); setEditing(true); }}><Pencil size={17} aria-hidden="true" />{t("edit")}</button>
+                </>}
                 <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setStatusChecksOpen(true); }}><ClipboardCheck size={17} aria-hidden="true" />{t("statusChecks")}</button>
               </div>
               {secondaryActions.filter((action) => action.tone === "danger").map((action) => (
                 <div className="detail-action-group" key={`${action.to}-${action.reason}`}><button type="button" className="danger" disabled={transitionMutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><X size={17} aria-hidden="true" />{transitionLabel(action.label)}</button></div>
               ))}
             </div>
-          </details>
+          </OverlayMenu>
         </div>
       </div>
       <div className="detail-scroll">
@@ -5370,20 +5371,12 @@ function MediaLightbox({
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    dialog?.showModal();
-    return () => dialog?.close();
-  }, []);
+  useModalSurface(dialogRef, onClose);
   return (
     <dialog
       ref={dialogRef}
       className="selected-media-lightbox"
       aria-label={title}
-      onCancel={(event) => {
-        event.preventDefault();
-        onClose();
-      }}
       onMouseDown={(event) => {
         event.stopPropagation();
         if (event.target === event.currentTarget) onClose();

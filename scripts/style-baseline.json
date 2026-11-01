@@ -1,59 +1,575 @@
-[
-  "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px",
-  "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 1080px) 1080px",
-  "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 640px) 640px",
-  "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px",
-  "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 767px) 767px",
-  "font-size-off-scale | apps/web/src/sdk-feedback.css | .sdk-feedback-complete code { font-size } 21px",
-  "font-size-off-scale | apps/web/src/styles.css | .annotator-bar strong { font-size } 17px",
-  "font-size-off-scale | apps/web/src/styles.css | .brand-name { font-size } 19px",
-  "font-size-off-scale | apps/web/src/styles.css | .connection-card h1, .onboarding-card h1 { font-size } 31px",
-  "font-size-off-scale | apps/web/src/styles.css | .connection-card h1, .onboarding-card h1 { font-size } 45px",
-  "font-size-off-scale | apps/web/src/styles.css | .detail-placeholder h2, .empty-list h2 { font-size } 17px",
-  "font-size-off-scale | apps/web/src/styles.css | .detail-title-block h2 { font-size } 22px",
-  "font-size-off-scale | apps/web/src/styles.css | .detail-title-block h2 { font-size } 30px",
-  "font-size-off-scale | apps/web/src/styles.css | .dispatch-block h3 { font-size } 17px",
-  "font-size-off-scale | apps/web/src/styles.css | .load-failure-card h2 { font-size } 17px",
-  "font-size-off-scale | apps/web/src/styles.css | .modal h2 { font-size } 25px",
-  "font-size-off-scale | apps/web/src/styles.css | .product-create-panel h3 { font-size } 20px",
-  "font-size-off-scale | apps/web/src/styles.css | .product-settings-section h3 { font-size } 17px",
-  "font-size-off-scale | apps/web/src/styles.css | .workspace-head h1 { font-size } 29px",
-  "font-size-off-scale | apps/web/src/styles.css | .workspace-head h1 { font-size } 38px",
-  "font-size-off-scale | apps/web/src/styles.css | .workspace-stats strong { font-size } 17px",
-  "hover-not-guarded | apps/web/src/styles.css | .pane-splitter:hover::before, .pane-splitter:focus-visible::before, .pane-splitter.dragging::before",
-  "literal-colour | apps/web/src/styles.css | .agent-console-bulk-actions { box-shadow } 0 5px 16px rgba(24,31,45,.06)",
-  "literal-colour | apps/web/src/styles.css | .agent-console-filter.active { box-shadow } 0 1px 3px rgba(24,31,45,.08)",
-  "literal-colour | apps/web/src/styles.css | .agent-console-message { box-shadow } 0 2px 8px rgba(23,32,51,.03)",
-  "literal-colour | apps/web/src/styles.css | .annotator::backdrop { background } rgba(17, 23, 35, 0.46)",
-  "literal-colour | apps/web/src/styles.css | .attachment-media-open > span { background } rgba(15, 22, 35, .78)",
-  "literal-colour | apps/web/src/styles.css | .attachment-media-open > span { color } white",
-  "literal-colour | apps/web/src/styles.css | .attachment-video-preview > button { background } rgba(15, 22, 35, .82)",
-  "literal-colour | apps/web/src/styles.css | .attachment-video-preview > button { color } white",
-  "literal-colour | apps/web/src/styles.css | .connection-page, .onboarding-page { background-image } linear-gradient(rgba(23,32,51,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(23,32,51,0.035) 1px, transparent 1px)",
-  "literal-colour | apps/web/src/styles.css | .detail-more-menu-popover { box-shadow } 0 14px 38px rgba(23, 32, 51, .18)",
-  "literal-colour | apps/web/src/styles.css | .list-surface { box-shadow } 0 10px 35px rgba(23,32,51,0.06)",
-  "literal-colour | apps/web/src/styles.css | .load-failure { background } rgba(17, 23, 35, 0.46)",
-  "literal-colour | apps/web/src/styles.css | .media-number-badge { background } rgba(11, 16, 27, .82)",
-  "literal-colour | apps/web/src/styles.css | .media-number-badge { box-shadow } 0 2px 7px rgba(0, 0, 0, .16)",
-  "literal-colour | apps/web/src/styles.css | .media-number-badge { color } white",
-  "literal-colour | apps/web/src/styles.css | .media-overflow { background } rgba(11, 16, 27, .78)",
-  "literal-colour | apps/web/src/styles.css | .media-overflow { color } white",
-  "literal-colour | apps/web/src/styles.css | .media-viewer-loading { color } white",
-  "literal-colour | apps/web/src/styles.css | .mobile-fab { box-shadow } 0 10px 25px rgba(23,32,51,0.28)",
-  "literal-colour | apps/web/src/styles.css | .mobile-status-nav { box-shadow } 0 5px 14px rgba(23, 32, 51, .05)",
-  "literal-colour | apps/web/src/styles.css | .modal-layer::backdrop { background } rgba(17, 23, 35, 0.46)",
-  "literal-colour | apps/web/src/styles.css | .nav-item.active { box-shadow } 0 1px 3px rgba(24,31,45,0.08)",
-  "literal-colour | apps/web/src/styles.css | .primary-button { box-shadow } 0 5px 14px rgba(23, 32, 51, 0.16)",
-  "literal-colour | apps/web/src/styles.css | .priority-urgent { box-shadow } 0 0 0 3px rgba(219,91,96,0.12)",
-  "literal-colour | apps/web/src/styles.css | .product-badge.generated { color } #fff",
-  "literal-colour | apps/web/src/styles.css | .product-settings-tabs button.active { box-shadow } 0 1px 4px rgba(27, 37, 33, .09)",
-  "literal-colour | apps/web/src/styles.css | .selected-preview-media em { background } rgba(15, 22, 35, .78)",
-  "literal-colour | apps/web/src/styles.css | .selected-preview-media em { color } white",
-  "literal-colour | apps/web/src/styles.css | .sidebar { box-shadow } 20px 0 55px rgba(18,24,37,0.15)",
-  "literal-colour | apps/web/src/styles.css | .sidebar-scrim { background } rgba(17,23,35,0.35)",
-  "literal-colour | apps/web/src/styles.css | .structured-log-list article { border-bottom } 1px solid rgba(255,255,255,.09)",
-  "literal-colour | apps/web/src/styles.css | .structured-log-list dl div { background } rgba(255,255,255,.06)",
-  "literal-colour | apps/web/src/styles.css | .toolbar-primary-action { box-shadow } 0 5px 14px rgba(23, 32, 51, .18)",
-  "literal-colour | apps/web/src/styles.css | .type-filters button.active { box-shadow } 0 1px 2px rgba(20,25,35,0.04)",
-  "radius-off-scale | apps/web/src/styles.css | .product-badge { border-radius } 7px"
-]
+{
+  "version": 2,
+  "exceptions": [
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-ai-title-field",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-feedback-actions",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-feedback-actions .secondary-button",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-feedback-actions button",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-feedback-context div",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-feedback-dialog",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-feedback-form .capture-attachment-heading, .sdk-feedback-form .diagnostic-input-heading",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-feedback-form .capture-type-grid",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-feedback-form .classification-row",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-feedback-header h1",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-feedback-page",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/sdk-feedback.css | @media (max-width: 640px) 640px .sdk-feedback-picker",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 1080px) 1080px .agent-console-page",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 1080px) 1080px .boot-search",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 1080px) 1080px .brand-tagline, .topbar-divider",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 1080px) 1080px .list-columns, .item-row",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 1080px) 1080px .list-surface.without-media .list-columns, .list-surface.without-media .item-row",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 1080px) 1080px .workspace",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 640px) 640px .comment-form",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 640px) 640px .item-preview-backdrop",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 640px) 640px .item-preview-body",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 640px) 640px .item-preview-card",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 640px) 640px .item-preview-card header",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 640px) 640px .settings-list-toolbar :is(select, .single-select)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 640px) 640px .settings-list-toolbar label:not(.settings-toolbar-search)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 640px) 640px .settings-toolbar-search",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 640px) 640px .timeline-event--comment :is(.comment-text, .analysis-details .markdown-text)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-actions",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-actions .dispatch-session-link a",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-actions .dispatch-session-link-icon",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-actions button",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-actions button svg",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-avatar",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-conversation-head",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-conversation-head .status-pill",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-conversation-head h2",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-dispatch-head",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-heading",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-message",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 760px) 760px .agent-console-messages",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 767px) 767px .bulk-bar .primary-button",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 767px) 767px .node-card-body > header",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "breakpoint-off-system | apps/web/src/styles.css | @media (max-width: 767px) 767px .node-card-body > header, .node-repo-row",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/sdk-feedback.css | .sdk-feedback-complete code { font-size } 21px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .annotator-bar strong { font-size } 17px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .brand-name { font-size } 19px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .connection-card h1, .onboarding-card h1 { font-size } 31px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .connection-card h1, .onboarding-card h1 { font-size } 45px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .detail-placeholder h2, .empty-list h2 { font-size } 17px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .detail-title-block h2 { font-size } 22px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .detail-title-block h2 { font-size } 30px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .dispatch-block h3 { font-size } 17px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .load-failure-card h2 { font-size } 17px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .modal h2 { font-size } 25px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .product-create-panel h3 { font-size } 20px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .product-settings-section h3 { font-size } 17px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .workspace-head h1 { font-size } 29px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .workspace-head h1 { font-size } 38px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "font-size-off-scale | apps/web/src/styles.css | .workspace-stats strong { font-size } 17px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "hover-not-guarded | apps/web/src/styles.css | .pane-splitter:hover::before, .pane-splitter:focus-visible::before, .pane-splitter.dragging::before",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .agent-console-bulk-actions { box-shadow } 0 5px 16px rgba(24,31,45,.06)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .agent-console-filter.active { box-shadow } 0 1px 3px rgba(24,31,45,.08)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .agent-console-message { box-shadow } 0 2px 8px rgba(23,32,51,.03)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .annotator::backdrop { background } rgba(17, 23, 35, 0.46)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .attachment-media-open > span { background } rgba(15, 22, 35, .78)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .attachment-media-open > span { color } white",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .attachment-video-preview > button { background } rgba(15, 22, 35, .82)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .attachment-video-preview > button { color } white",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .connection-page, .onboarding-page { background-image } linear-gradient(rgba(23,32,51,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(23,32,51,0.035) 1px, transparent 1px)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .detail-more-menu-popover { box-shadow } 0 14px 38px rgba(23, 32, 51, .18)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .list-surface { box-shadow } 0 10px 35px rgba(23,32,51,0.06)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .load-failure { background } rgba(17, 23, 35, 0.46)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .media-number-badge { background } rgba(11, 16, 27, .82)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .media-number-badge { box-shadow } 0 2px 7px rgba(0, 0, 0, .16)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .media-number-badge { color } white",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .media-overflow { background } rgba(11, 16, 27, .78)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .media-overflow { color } white",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .media-viewer-loading { color } white",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .mobile-fab { box-shadow } 0 10px 25px rgba(23,32,51,0.28)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .mobile-status-nav { box-shadow } 0 5px 14px rgba(23, 32, 51, .05)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .modal-layer::backdrop { background } rgba(17, 23, 35, 0.46)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .nav-item.active { box-shadow } 0 1px 3px rgba(24,31,45,0.08)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .primary-button { box-shadow } 0 5px 14px rgba(23, 32, 51, 0.16)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .priority-urgent { box-shadow } 0 0 0 3px rgba(219,91,96,0.12)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .product-badge.generated { color } #fff",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .product-settings-tabs button.active { box-shadow } 0 1px 4px rgba(27, 37, 33, .09)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .selected-preview-media em { background } rgba(15, 22, 35, .78)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .selected-preview-media em { color } white",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .sidebar { box-shadow } 20px 0 55px rgba(18,24,37,0.15)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .sidebar-scrim { background } rgba(17,23,35,0.35)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .structured-log-list article { border-bottom } 1px solid rgba(255,255,255,.09)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .structured-log-list dl div { background } rgba(255,255,255,.06)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .toolbar-primary-action { box-shadow } 0 5px 14px rgba(23, 32, 51, .18)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "literal-colour | apps/web/src/styles.css | .type-filters button.active { box-shadow } 0 1px 2px rgba(20,25,35,0.04)",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    },
+    {
+      "signature": "radius-off-scale | apps/web/src/styles.css | .product-badge { border-radius } 7px",
+      "count": 1,
+      "reason": "Existing style debt, scoped to this rule and occurrence count",
+      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
+    }
+  ]
+}
