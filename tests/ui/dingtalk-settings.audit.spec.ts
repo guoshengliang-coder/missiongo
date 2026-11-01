@@ -30,6 +30,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 375, height: 812 
       await dialog.getByLabel("Client ID（AppKey）", { exact: true }).fill("synthetic-app");
       await dialog.getByLabel("Agent ID", { exact: true }).fill("123");
       await dialog.getByLabel("Client Secret（AppSecret）", { exact: true }).fill("synthetic-client-secret");
+      await dialog.getByLabel("组织 ID（CorpId）", { exact: true }).fill("00000000-0000-4000-8000-000000000001");
+      await dialog.getByRole("button", { name: "保存钉钉配置", exact: true }).click();
+      await expect(dialog.getByRole("alert")).toContainText("应用页面的 UUID");
+      await dialog.getByLabel("组织 ID（CorpId）", { exact: true }).fill("synthetic-corp");
       await audit(page, viewport.width === 375);
       await page.screenshot({ path: info.outputPath("dingtalk-application-dialog.png") });
       await dialog.getByRole("button", { name: "保存钉钉配置", exact: true }).click();
@@ -50,6 +54,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 375, height: 812 
       });
       await page.getByRole("button", { name: "检查应用凭据", exact: true }).click();
       await expect(dialog).toBeVisible();
+      await expect(dialog).toContainText("不验证组织 CorpId");
       expect(credentialChecks).toBe(0);
       await dialog.getByRole("button", { name: "检查应用凭据", exact: true }).click();
       await expect(dialog.getByRole("status")).toContainText("应用凭据可用");

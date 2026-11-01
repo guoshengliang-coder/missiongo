@@ -73,6 +73,7 @@ export class DingTalkNotifications {
   saveSettings(input: DingTalkSettingsInput, actor: string): DingTalkSettings {
     if (!this.key) throw invalidInput("请先为服务器配置持久化会话密钥，再保存钉钉凭据。");
     const corpId=identifier(input.corpId,"组织 ID"),clientId=identifier(input.clientId,"Client ID");
+    if (z.string().uuid().safeParse(corpId).success) throw invalidInput("组织 ID（CorpId）不能填写应用页面的 UUID。请到钉钉开发者后台的组织基本信息复制企业 CorpId。");
     return this.store.database.transaction(() => {
       const previous=this.config();
       if (input.expectedRevision !== (previous?.revision ?? 0)) throw conflict("dingtalk_settings_changed","配置已被修改，请刷新后重试。");

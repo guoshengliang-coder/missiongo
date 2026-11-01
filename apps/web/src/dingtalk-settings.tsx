@@ -65,7 +65,7 @@ function IntegrationEditor({ settings, onClose, onSaved }: { settings: DingTalkS
   return <Modal title={original.configured ? "修改钉钉配置" : "配置钉钉应用"} subtitle="组织与应用" onClose={onClose} dirty={dirty} pending={save.isPending}>
     <form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!save.isPending) save.mutate(); }}>
       <label>通知方式<Select aria-label="通知方式" value={deliveryMode} onChange={event => setDeliveryMode(event.target.value as DingTalkDeliveryMode)}><option value="robot">机器人单聊通知</option><option value="work_notice">个人工作通知</option></Select></label>
-      <label>组织 ID（CorpId）<input required maxLength={100} value={corpId} onChange={event => setCorpId(event.target.value)} /></label>
+      <label>组织 ID（CorpId）<input required maxLength={100} value={corpId} onChange={event => setCorpId(event.target.value)} placeholder="企业 CorpId，勿填写应用页面的 UUID" /></label>
       <label>Client ID（AppKey）<input required maxLength={100} value={clientId} onChange={event => setClientId(event.target.value)} autoComplete="off" /></label>
       {deliveryMode === "robot" ? <label>机器人编码（robotCode）<input required maxLength={100} value={robotCode} onChange={event => setRobotCode(event.target.value)} placeholder="填写钉钉后台显示的 robotCode" autoComplete="off" /></label> : <label>Agent ID<input required inputMode="numeric" pattern="[0-9]+" maxLength={100} value={agentId} onChange={event => setAgentId(event.target.value)} /></label>}
       <label>Client Secret（AppSecret）<input type="password" autoComplete="new-password" maxLength={512} value={secret} placeholder={original.configured ? "已配置；留空保留原密钥" : "请输入应用密钥"} required={!original.configured} onChange={event => setSecret(event.target.value)} /></label>
@@ -82,7 +82,7 @@ function CredentialCheckDialog({ settings, onClose }: { settings: DingTalkSettin
   return <Modal title="检查应用凭据" subtitle="组织与应用" onClose={onClose} pending={check.isPending}>
     <div className="dialog-form">
       <ApplicationInfo settings={settings} />
-      <p className="account-note">此检查只验证应用访问凭据。请通过人员测试通知，进一步确认{settings.deliveryMode === "robot" ? "机器人编码、发送权限" : "Agent ID"}、用户 ID 与应用可使用范围。</p>
+      <p className="account-note">此检查只验证应用访问凭据，不验证组织 CorpId。请从钉钉开发者后台的组织基本信息核对 CorpId，勿填写应用页面的 UUID；人员测试通知成功也不代表卡片回复校验通过。请通过人员测试通知，进一步确认{settings.deliveryMode === "robot" ? "机器人编码、发送权限" : "Agent ID"}、用户 ID 与应用可使用范围。</p>
       {check.isError && <p role="alert">{failure(check.error)}</p>}
       {check.isSuccess && <p role="status">应用凭据可用。请继续发送人员测试通知，确认实际送达。</p>}
       <div className="form-footer"><CancelDialogButton label="关闭" /><button type="button" className="primary-button" disabled={check.isPending} onClick={() => check.mutate()}>{check.isPending ? "正在检查…" : "检查应用凭据"}</button></div>
