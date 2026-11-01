@@ -13,41 +13,10 @@ on:
         type: boolean
         default: false
 
-      media_diagnostics:
-        description: Temporary AND-352 focused Linux diagnostics
-        type: boolean
-        default: false
-
 permissions:
   contents: read
 
 jobs:
-  media-diagnostics:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.media_diagnostics }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22.13.0
-          cache: npm
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: npm run build:types
-      - name: Repeat native touch regression
-        run: npx playwright test tests/ui/and-352-media.audit.spec.ts --project=audit --grep 'pinch, zoomed pan' --repeat-each 10
-      - name: Generate Linux visual baselines
-        run: npm run test:ui:visual -- --update-snapshots
-      - uses: actions/upload-artifact@v5
-        if: ${{ always() }}
-        with:
-          name: and-352-linux-media
-          path: |
-            tests/ui/visual.spec.ts-snapshots/
-            playwright-report/
-            test-results/
-          retention-days: 7
-
   web-and-server:
     runs-on: ubuntu-latest
     steps:
