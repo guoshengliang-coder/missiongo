@@ -51,6 +51,8 @@ export interface WorkItemAttachment {
   readonly itemKey: string;
   readonly kind: "image" | "video" | "log" | "document" | "archive";
   readonly displayNumber: number;
+  /** Files linked to a comment/reply never enter the item evidence gallery. */
+  readonly commentId?: string;
   readonly filename: string;
   readonly contentType: string;
   readonly sizeBytes: number;
