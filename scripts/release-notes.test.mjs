@@ -185,3 +185,49 @@ test("an Android version bump alone needs no declaration", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test("Android notes without work items retain distinct titles and PR attribution", () => {
+  const { root, git, from } = repository();
+  try {
+    const items = [{ title: "统一返回顺序" }, { title: "修复工具栏溢出" }];
+    mergePullRequest(root, git, 343, "UI audit", {
+      "release-notes/android/audit.json": JSON.stringify({ items: [...items, items[0]] }),
+      "apps/android/Client.kt": "// change\n",
+    });
+    assert.deepEqual(generateReleaseNotes({ root, from, to: "HEAD", client: android }), [
+      { pullRequestNumber: 343, title: "UI audit", items },
+    ]);
+    assert.deepEqual(undeclaredClientPullRequests({ root, from, to: "HEAD", client: android }), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const item of [{ key: "", title: "更新" }, { key: "bad", title: "更新" }, { title: " " }, null]) {
+  test(`Android declarations reject malformed notes: ${JSON.stringify(item)}`, () => {
+    const { root, git, from } = repository();
+    try {
+      mergePullRequest(root, git, 343, "UI audit", {
+        "release-notes/android/audit.json": JSON.stringify({ items: [item] }),
+        "apps/android/Client.kt": "// change\n",
+      });
+      assert.throws(() => generateReleaseNotes({ root, from, to: "HEAD", client: android }), /invalid item/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("macOS retains compatibility with installed native update readers", () => {
+  const { root, git, from } = repository();
+  try {
+    mergePullRequest(root, git, 344, "macOS change", {
+      "release-notes/macos/change.json": JSON.stringify({ items: [{ title: "更新" }] }),
+      "apps/macos/Client.swift": "// change\n",
+    });
+    assert.throws(() => generateReleaseNotes({ root, from, to: "HEAD", client: macos }), /invalid item/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

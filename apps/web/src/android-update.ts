@@ -20,7 +20,7 @@ import { ANDROID_APK_DOWNLOAD_PATH } from "./downloads";
 export const ANDROID_UPDATE_MANIFEST_PATH = "/downloads/missiongo-android-latest.json";
 
 export type AndroidReleaseItem = {
-  key: string;
+  key?: string;
   title: string;
 };
 
@@ -68,9 +68,9 @@ function parseReleaseNotes(value: unknown): AndroidReleaseNote[] | undefined {
     for (const item of items) {
       if (!isRecord(item)) return undefined;
       const { key, title: itemTitle } = item;
-      if (typeof key !== "string" || !ITEM_KEY_PATTERN.test(key)) return undefined;
+      if (key !== undefined && (typeof key !== "string" || !ITEM_KEY_PATTERN.test(key))) return undefined;
       if (typeof itemTitle !== "string" || !itemTitle.trim()) return undefined;
-      parsedItems.push({ key, title: itemTitle.trim() });
+      parsedItems.push({ ...(key === undefined ? {} : { key }), title: itemTitle.trim() });
     }
     notes.push({ pullRequestNumber, title: title.trim(), items: parsedItems });
   }

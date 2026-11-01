@@ -32,6 +32,7 @@ export const CLIENTS = {
   androidApp: {
     label: "Android client",
     notesDir: "release-notes/android",
+    allowUnlinkedNotes: true,
     clientRoots: ["apps/android/", "sdks/android-feedback/missiongo-feedback/"],
     versionOnlyPaths: ["sdks/android-feedback/gradle.properties"],
   },
@@ -105,7 +106,7 @@ function mergedPullRequests({ root, from, to }) {
 /// belongs to the PR that added it, which is the normal case. With it, the items
 /// can be attributed to an already-merged PR whose own diff may not have carried
 /// them -- how a missing note is filled in after the fact.
-function parseDeclaration(content, path) {
+function parseDeclaration(content, path, client) {
   let parsed;
   try {
     parsed = JSON.parse(content);
@@ -115,10 +116,12 @@ function parseDeclaration(content, path) {
   if (!Array.isArray(parsed.items)) throw new Error(`${path} must contain an items array`);
   const items = [];
   for (const item of parsed.items) {
-    if (!/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(item.key ?? "") || !String(item.title ?? "").trim()) {
+    const validKey = typeof item?.key === "string" && /^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(item.key);
+    if (!item || (!validKey && !(client.allowUnlinkedNotes && item.key === undefined))
+        || typeof item.title !== "string" || !item.title.trim()) {
       throw new Error(`${path} contains an invalid item`);
     }
-    items.push({ key: item.key, title: item.title.trim() });
+    items.push({ ...(item.key === undefined ? {} : { key: item.key }), title: item.title.trim() });
   }
   return { pullRequest: Number.isInteger(parsed.pullRequest) ? parsed.pullRequest : null, items };
 }
@@ -142,12 +145,12 @@ function declarationsInRange({ root, from, to, merged, client }) {
     } catch {
       continue; // deleted within the range
     }
-    const declaration = parseDeclaration(content, path);
+    const declaration = parseDeclaration(content, path, client);
     const owner = declaration.pullRequest ?? merged.find((entry) => entry.files.includes(path))?.pullRequestNumber;
     if (owner === undefined || !merged.some((entry) => entry.pullRequestNumber === owner)) continue;
     const items = byPullRequest.get(owner) ?? [];
     for (const item of declaration.items) {
-      if (!items.some((existing) => existing.key === item.key)) items.push(item);
+      if (!items.some((existing) => item.key ? existing.key === item.key : existing.key === undefined && existing.title === item.title)) items.push(item);
     }
     byPullRequest.set(owner, items);
   }

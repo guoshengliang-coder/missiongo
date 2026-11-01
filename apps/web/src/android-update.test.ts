@@ -36,6 +36,16 @@ describe("android update manifest", () => {
     expect(parseAndroidUpdateManifest(manifest)).toEqual(manifest);
   });
 
+  it("accepts PR-attributed notes without work item keys", () => {
+    const releaseNotes = [{ pullRequestNumber: 343, title: "UI audit", items: [
+      { title: "统一返回顺序" }, { title: "修复工具栏" },
+    ] }];
+    expect(parseAndroidUpdateManifest({ ...manifest, releaseNotes })?.releaseNotes).toEqual(releaseNotes);
+    for (const key of ["", null, 343, "bad"]) {
+      expect(parseAndroidUpdateManifest({ ...manifest, releaseNotes: [{ ...releaseNotes[0], items: [{ key, title: "更新" }] }] })).toBeUndefined();
+    }
+  });
+
   it("keeps the manifest path in sync with what the shell and nginx serve", () => {
     expect(ANDROID_UPDATE_MANIFEST_PATH).toBe("/downloads/missiongo-android-latest.json");
   });

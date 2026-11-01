@@ -89,8 +89,8 @@ export function AndroidUpdateNotice() {
           ? (
             <ul className="android-update-notes">
               {update.releaseNotes.flatMap((note) => note.items.map((item) => (
-                <li key={`${note.pullRequestNumber}-${item.key}`}>
-                  <span className="android-update-key">{item.key}</span>
+                <li key={`${note.pullRequestNumber}-${item.key ?? item.title}`}>
+                  <span className="android-update-key">{item.key ?? `PR #${note.pullRequestNumber}`}</span>
                   <span>{item.title}</span>
                 </li>
               )))}
