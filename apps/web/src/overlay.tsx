@@ -140,9 +140,11 @@ export function useModalSurface(ref: RefObject<HTMLDialogElement | null>, onClos
   const close = useRef(onClose);
   close.current = onClose;
   const generation = useRef(0);
-  const original = useRef<HTMLElement | null>(null);
+  // Capture on mount, before a child's React autoFocus runs during commit.
+  const original = useRef<HTMLElement | null>(open && typeof document !== "undefined" ? document.activeElement as HTMLElement | null : null);
   useEffect(() => {
-    if (!open || !ref.current) return;
+    if (!open) { original.current = null; return; }
+    if (!ref.current) return;
     const current = ++generation.current;
     const dialog = ref.current;
     if (!original.current || !original.current.isConnected) original.current = document.activeElement as HTMLElement | null;
@@ -157,10 +159,17 @@ export function useModalSurface(ref: RefObject<HTMLDialogElement | null>, onClos
         if (generation.current !== current) return;
         const target = original.current;
         const top = document.activeElement?.closest<HTMLDialogElement>("dialog[open]") ?? Array.from(document.querySelectorAll<HTMLDialogElement>("dialog[open]")).at(-1);
-        if (target?.isConnected && (!top || top.contains(target))) target.focus({ preventScroll: true });
-        else {
-          const fallback = top ?? document.querySelector<HTMLElement>(".settings-page-main, .detail-pane, main");
-          if (fallback) { if (!fallback.hasAttribute("tabindex")) fallback.tabIndex = -1; fallback.focus({ preventScroll: true }); }
+        const restore = (node: HTMLElement | null | undefined, surface = false) => {
+          if (!node?.isConnected || node === document.body || node.closest("[inert], [hidden]") || !node.getClientRects().length || getComputedStyle(node).visibility !== "visible" || (top && !top.contains(node))) return false;
+          if (surface && !node.hasAttribute("tabindex")) node.tabIndex = -1;
+          node.focus({ preventScroll: true });
+          return document.activeElement === node;
+        };
+        if (!restore(target)) {
+          // A responsive toolbar may hide the opener while the dialog is open.
+          // Prefer the current content region over its outer workspace.
+          const fallbacks = top ? [top] : [".settings-page-main", ".detail-pane", "main"].map(selector => document.querySelector<HTMLElement>(selector));
+          fallbacks.some(node => restore(node, true));
         }
         original.current = null;
       });
@@ -180,7 +189,7 @@ export function OverlayDialog({ onClose, children, ...props }: Omit<ComponentPro
 /** Native details menus keep their existing markup and positioning, but get
  * the same one-layer Back/Escape contract as Select. Disclosure sections are
  * not menus and should keep using ordinary details. */
-export function OverlayMenu({ ref: externalRef, ...props }: ComponentProps<"details">) {
+export function OverlayMenu({ ref: externalRef, onClick, ...props }: ComponentProps<"details">) {
   const ref = useRef<HTMLDetailsElement>(null);
   const id = useId();
   useEffect(() => {
@@ -199,7 +208,14 @@ export function OverlayMenu({ ref: externalRef, ...props }: ComponentProps<"deta
     sync();
     return () => { observer.disconnect(); unregister?.(); };
   }, [id]);
-  return <details {...props} ref={node => {
+  return <details {...props} onClick={event => {
+    onClick?.(event);
+    // Actions may close their menu before mounting a dialog. Hand focus to
+    // the persistent trigger before the dialog captures its return target.
+    if (!event.currentTarget.open && event.currentTarget.contains(event.target as Node)) {
+      event.currentTarget.querySelector("summary")?.focus({ preventScroll: true });
+    }
+  }} ref={node => {
     ref.current = node;
     if (typeof externalRef === "function") externalRef(node);
     else if (externalRef) externalRef.current = node;

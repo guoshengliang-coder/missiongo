@@ -23,6 +23,43 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => { (window as any).MissionGoAndroid = { setBackDepth: (n: number) => { (window as any).reportedDepth = n; } }; });
 });
 
+test("collapsed toolbar editor returns focus to the visible menu trigger", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 812 });
+  await page.goto(detailUrl());
+  await page.evaluate(() => { document.documentElement.dataset.fontScale = "large"; });
+  const toolbar = page.locator(".detail-toolbar");
+  await expect(toolbar).toHaveAttribute("data-overflow", "true");
+  const trigger = toolbar.locator(".detail-more-menu > summary");
+  const base = await depth(page), url = page.url();
+  for (const close of ["back", "escape", "cancel"]) {
+    await trigger.click();
+    await toolbar.getByRole("button", { name: "编辑", exact: true }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await expect.poll(() => depth(page)).toBe(base + 1);
+    if (close === "back") await back(page);
+    else if (close === "escape") await page.keyboard.press("Escape");
+    else await page.getByRole("dialog").getByRole("button", { name: "取消", exact: true }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    await expect.poll(() => depth(page)).toBe(base);
+    await expect(page).toHaveURL(url);
+  }
+});
+
+for (const closingWidth of [1440, 320]) test(`editor restores visible focus when closed at ${closingWidth}px`, async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 812 });
+  await page.goto(detailUrl());
+  await page.locator(".detail-toolbar").getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.setViewportSize({ width: closingWidth, height: 812 });
+  await expect(page.locator(".detail-toolbar")).toHaveAttribute("data-overflow", String(closingWidth === 320));
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const target = closingWidth === 320 ? page.locator(".detail-pane") : page.locator(".detail-toolbar").getByRole("button", { name: "编辑", exact: true });
+  await expect(target).toBeFocused();
+  await expect(target).toBeVisible();
+});
+
 async function conversation(page: Page, html = false) {
   const stamp = "2026-10-31T12:00:00Z";
   const summary = { id: "overlay-session", agentSessionId: "overlay-session", source: "external", agentKind: "codex", status: "idle",
