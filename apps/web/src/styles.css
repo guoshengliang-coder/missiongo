@@ -3085,7 +3085,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .comment-avatar { position: relative; z-index: 1; display: grid; place-items: center; width: 28px; height: 28px; margin-top: 4px; border-radius: 50%; background: var(--surface-sunken); color: var(--ink-2); font-size: var(--text-xs); }
 .comment-message { min-width: 0; }
 .comment-byline { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px 8px; min-height: 36px; }
-.timeline-event .comment-byline > strong { display: block; flex: 0 1 auto; min-width: 0; font-size: calc(13px * var(--text-scale)); font-weight: 650; overflow-wrap: anywhere; }
+.timeline-event .comment-byline > strong { display: block; flex: 0 1 auto; min-width: 44px; font-size: calc(13px * var(--text-scale)); font-weight: 650; overflow-wrap: anywhere; }
 .comment-byline time, .comment-actor-label { flex: none; white-space: nowrap; color: var(--muted); font-size: var(--text-xs); }
 .comment-byline time { white-space: nowrap; }
 .comment-actor-label { padding: 1px 4px; border-radius: var(--radius-xs); background: var(--surface-sunken); }
@@ -3116,7 +3116,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 @media (pointer: coarse) { .comment-more-actions > summary, .comment-notification-details > summary { min-height: 44px; } .comment-more-actions > summary { width: 44px; } }
 @media (max-width: 640px) { .timeline-event--comment :is(.comment-text, .analysis-details .markdown-text) { font-size: calc(15px * var(--text-scale)); } }
 
-.comment-author-name { display: block; width: 100%; min-height: 36px; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; background: none; border: 0; font: inherit; text-align: start; cursor: pointer; }
+.comment-author-name { display: block; width: 100%; min-width: 44px; min-height: 36px; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; background: none; border: 0; font: inherit; text-align: start; cursor: pointer; }
 .comment-author-full { overflow-wrap: anywhere; }
 @media (pointer: coarse) { .comment-author-name { min-height: 44px; } .comment-avatar { margin-top: 8px; } }
 
