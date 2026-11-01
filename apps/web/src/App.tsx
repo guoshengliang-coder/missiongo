@@ -2408,7 +2408,7 @@ function ActiveMediaPreview({ itemKey, attachment }: { itemKey: string; attachme
       {contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
       {contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
       {attachment.kind === "image" && objectUrl && <ZoomableImage src={objectUrl} alt={attachment.filename} />}
-      {attachment.kind === "video" && objectUrl && <PlayableVideo src={objectUrl} autoPlay />}
+      {attachment.kind === "video" && objectUrl && <PlayableVideo src={objectUrl} autoPlay onDownload={() => void download()} />}
     </>
   );
 }
