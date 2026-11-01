@@ -3175,3 +3175,8 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .image-zoom-controls button { touch-action: manipulation; display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 44px; min-height: 44px; padding: 0 6px; border: 0; border-radius: var(--radius-sm); color: inherit; background: transparent; cursor: pointer; font-size: var(--text-xs); }
 .image-zoom-controls button:disabled { opacity: .5; cursor: default; }
 .media-tile.attachment-video .attachment-load-button { width: 100%; height: 100%; background: transparent; border: 0; }
+
+/* Reasons and their files share the existing dialog and draft protection. */
+.transition-files { display: grid; gap: 12px; min-width: 0; }
+.transition-files > button { justify-self: start; }
+.transition-results { overflow-wrap: anywhere; }

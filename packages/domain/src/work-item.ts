@@ -57,6 +57,8 @@ export interface WorkItemAttachment {
   readonly displayNumber: number;
   /** Present for comment/reply files, including withdrawn comments. Derived from stored links. */
   readonly commentId?: string;
+  /** Files supplied with a status reason belong to that timeline operation. */
+  readonly transitionEventId?: string;
   readonly filename: string;
   readonly contentType: string;
   readonly sizeBytes: number;

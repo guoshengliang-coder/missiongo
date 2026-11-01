@@ -4061,6 +4061,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       to: enumField(body, "to", WORK_ITEM_STATUSES)!,
       actor: "human",
       reason: enumField(body, "reason", TRANSITION_REASONS)!,
+      ...(body.attachmentIds !== undefined ? { attachmentIds: stringArrayField(body, "attachmentIds")! } : {}),
+      ...(body.expectedStatus !== undefined ? { expectedStatus: enumField(body, "expectedStatus", WORK_ITEM_STATUSES)! } : {}),
+      ...(body.idempotencyKey !== undefined ? { idempotencyKey: stringField(body, "idempotencyKey")! } : {}),
       ...(stringField(body, "note", false) !== undefined ? { note: body.note as string } : {}),
       // Who moved it. With one account "a human did" was enough; with several it
       // is the difference between a timeline and a rumour.

@@ -53,6 +53,8 @@ export interface WorkItemAttachment {
   readonly displayNumber: number;
   /** Files linked to a comment/reply never enter the item evidence gallery. */
   readonly commentId?: string;
+  /** Files supplied with a status reason belong to that timeline operation. */
+  readonly transitionEventId?: string;
   readonly filename: string;
   readonly contentType: string;
   readonly sizeBytes: number;

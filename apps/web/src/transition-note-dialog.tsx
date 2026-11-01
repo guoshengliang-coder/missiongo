@@ -1,3 +1,6 @@
+import { TransitionFiles, useTransitionFiles } from "./transition-files";
+import type { TransitionAttachmentAttempt } from "./transition-attachments";
+import type { WorkItem } from "./types";
 import { useDialogDraft } from "./dialog-state";
 import { useId, useState } from "react";
 import { CirclePause, CircleX, LoaderCircle, Undo2 } from "lucide-react";
@@ -25,29 +28,32 @@ export function transitionNoteCopy(to: WorkItemStatus): {
 /**
  * Why an item is being sent back to Ready, or cancelled.
  *
- * The form only collects text; the caller owns the mutation, because the list
+ * The form stages a reason and files; the caller owns the mutation, because the list
  * and the detail pane invalidate different queries afterwards and moving that
  * in here would make a third copy of it. The server refuses a blank note too --
  * this dialog exists so the person is asked before the request is spent, not so
  * the rule lives in the browser.
  */
 export function TransitionNoteDialog({
+  item,
   action,
   pending,
   error,
   onSubmit,
   onCancel,
 }: {
+  readonly item: WorkItem;
   readonly action: TransitionAction;
   readonly pending: boolean;
   readonly error: string | null;
-  readonly onSubmit: (note: string) => void;
+  readonly onSubmit: (note: string, files: readonly File[], attempt: TransitionAttachmentAttempt) => void;
   readonly onCancel: () => void;
 }) {
   const { t, transitionLabel } = useI18n();
   const [note, setNote] = useState("");
   const helpId = useId();
-  useDialogDraft(Boolean(note), pending);
+  const draft = useTransitionFiles([item], pending);
+  useDialogDraft(Boolean(note) || draft.files.length > 0, pending);
   const copy = transitionNoteCopy(action.to);
   const cancelling = action.to === "cancelled";
   const quickReasons = ["cancelReasonSentByMistake", "cancelReasonDuplicate", "cancelReasonNoLongerNeeded"] as const;
@@ -55,9 +61,11 @@ export function TransitionNoteDialog({
   return (
     <form
       className="transition-note-form"
+      {...draft.dropHandlers}
+      onPaste={draft.onPaste}
       onSubmit={(event) => {
         event.preventDefault();
-        if (note.trim()) onSubmit(note);
+        if (!pending && note.trim()) onSubmit(note, draft.files, draft.attempt);
       }}
     >
       <div className="transition-note-field">
@@ -73,6 +81,7 @@ export function TransitionNoteDialog({
           placeholder={t(copy.placeholder)}
           maxLength={TRANSITION_NOTE_MAX_LENGTH}
           required
+          disabled={pending}
         />
       </div>
       {cancelling && (
@@ -87,6 +96,8 @@ export function TransitionNoteDialog({
           </div>
         </div>
       )}
+
+      <TransitionFiles draft={draft} disabled={pending} />
 
       {/* A dialog sits in the top layer and covers the page's toast, so the
           failure has to be repeated in here to be seen at all. */}

@@ -155,6 +155,7 @@ interface CommentRow {
 
 interface AttachmentRow {
   comment_id?: string | null;
+  transition_event_id?: string | null;
   id: string;
   item_key: string;
   kind: AttachmentKind;
@@ -1357,7 +1358,17 @@ export class MissionGoStore {
   transitionWorkItem(input: TransitionWorkItemInput): WorkItemSnapshot {
     this.assertWorkItemWritable(input.itemKey);
     const now = new Date().toISOString();
+    const ids = input.attachmentIds ?? [];
+    if (!Array.isArray(ids) || ids.length > 10 || ids.some(id => typeof id !== "string" || !id.trim()) || new Set(ids).size !== ids.length) {
+      throw invalidInput("A transition can have at most 10 unique attachment IDs.");
+    }
+    if (ids.length && (input.actor !== "human" || !input.note?.trim())) throw invalidInput("Transition attachments require a human reason.");
+    const key = input.idempotencyKey ? this.validateIdempotencyKey(input.idempotencyKey) : undefined;
+    const fingerprint = createHash("sha256").update(JSON.stringify([input.itemKey.toUpperCase(), input.to, input.reason,
+      input.actor, input.note?.trim() ?? "", ids, input.expectedStatus, input.attribution ?? {}])).digest("hex");
+    const operation = `transition_item:${fingerprint}`;
     this.database.transaction(() => {
+      if (key && this.getIdempotentResult<boolean>(key, operation)) return;
       const current = this.getWorkItemRow(input.itemKey);
       if (!current) throw notFound("Work item");
       if (!isOneOf(input.to, WORK_ITEM_STATUSES)) throw invalidInput("Unsupported work-item status.");
@@ -1371,7 +1382,24 @@ export class MissionGoStore {
       if ((input.note?.trim().length ?? 0) > TRANSITION_NOTE_MAX_LENGTH) {
         throw invalidInput(`A transition note must be ${TRANSITION_NOTE_MAX_LENGTH} characters or fewer.`);
       }
-      this.applyTransition(current, input.to, input.actor, input.reason, input.note, now, input.attribution ?? {});
+      if (input.expectedStatus !== undefined && current.status !== input.expectedStatus) {
+        throw conflict("transition_status_changed", "The item status has changed. Reload before trying again.");
+      }
+      const uploads = ids.length ? this.getTimeline(current.item_key) : [];
+      const attachments = ids.length ? this.listAttachmentsByItemId(current.id) : [];
+      for (const id of ids) {
+        this.getAttachmentRecord(current.item_key, id);
+        const upload = uploads.find(event => event.eventType === "attachment_added" && event.payload.attachmentId === id);
+        if (!upload || upload.payload.creationEventId || upload.actorKind !== input.actor
+          || upload.accountId !== input.attribution?.accountId || upload.clientId !== input.attribution?.clientId) {
+          throw invalidInput("Transition attachment does not belong to this upload and author.");
+        }
+        const attachment = attachments.find(file => file.id === id)!;
+        if (attachment.commentId || attachment.transitionEventId) throw invalidInput("Attachment already belongs to another operation.");
+      }
+      this.applyTransition(current, input.to, input.actor, input.reason, input.note, now, input.attribution ?? {},
+        ids.length ? { attachmentIds: ids } : {});
+      if (key) this.saveIdempotentResult(key, operation, true, now);
     });
     return this.getWorkItem(input.itemKey);
   }
@@ -1483,6 +1511,9 @@ export class MissionGoStore {
           const linked = this.database.connection.prepare(`SELECT 1 FROM work_item_comments c, json_each(c.body_json, '$.attachmentIds') a
             WHERE c.item_id = ? AND a.value = ? LIMIT 1`).get(item.id, attachmentId);
           if (linked) throw invalidInput("Attachment already belongs to a comment.");
+          if (this.listAttachmentsByItemId(item.id).find(file => file.id === attachmentId)?.transitionEventId) {
+            throw invalidInput("Attachment already belongs to a transition.");
+          }
         }
       }
       const now = new Date().toISOString();
@@ -2118,7 +2149,9 @@ export class MissionGoStore {
         `SELECT a.id, w.item_key, a.kind, a.display_number, a.original_filename, a.storage_filename,
                 a.content_type, a.size_bytes, a.created_at,
                 (SELECT c.id FROM work_item_comments c, json_each(c.body_json, '$.attachmentIds') linked
-                 WHERE c.item_id = a.item_id AND c.body_kind = 'free' AND linked.value = a.id LIMIT 1) AS comment_id
+                 WHERE c.item_id = a.item_id AND c.body_kind = 'free' AND linked.value = a.id LIMIT 1) AS comment_id,
+                (SELECT e.id FROM work_item_events e, json_each(e.payload_json, '$.attachmentIds') linked
+                 WHERE e.item_id = a.item_id AND e.event_type = 'status_changed' AND linked.value = a.id LIMIT 1) AS transition_event_id
          FROM work_item_attachments a
          JOIN work_items w ON w.id = a.item_id
          WHERE a.item_id = ?
@@ -2368,6 +2401,7 @@ export class MissionGoStore {
       kind: row.kind,
       displayNumber: row.display_number,
       ...(row.comment_id ? { commentId: row.comment_id } : {}),
+      ...(row.transition_event_id ? { transitionEventId: row.transition_event_id } : {}),
       filename: row.original_filename,
       storageFilename: row.storage_filename,
       contentType: row.content_type,
@@ -2502,7 +2536,7 @@ export class MissionGoStore {
       title: row.title,
       description: row.description,
       ...(report ? { report } : {}),
-      diagnosticSummary: this.getDiagnosticSummary(row.id, attachments.filter(attachment => !attachment.commentId)),
+      diagnosticSummary: this.getDiagnosticSummary(row.id, attachments.filter(attachment => !attachment.commentId && !attachment.transitionEventId)),
       ...(environment ? { environment } : {}),
       attachments: attachments.map(({ storageFilename: _, ...attachment }) => attachment),
       ...(this.isTransferred(row.id) ? { transferred: true } : {}),

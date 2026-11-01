@@ -1,3 +1,6 @@
+import { TransitionFiles, useTransitionFiles } from "./transition-files";
+import { transitionErrorText, type TransitionAttachmentAttempt } from "./transition-attachments";
+import { validateIncomingFiles } from "./incoming-files";
 import { useToolbarOverflow } from "./adaptive-toolbar";
 import { ZoomableImage } from "./zoomable-image";
 import { additionalMentionNames, editMentions, mentionQuery, mentionAudience } from "./comment-mentions";
@@ -371,36 +374,6 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-}
-
-function validateIncomingFiles(
-  current: readonly File[],
-  incoming: readonly File[],
-  t: ReturnType<typeof useI18n>["t"],
-  totalLimit = 10,
-): { files: readonly File[]; error?: string } {
-  const remaining = totalLimit - current.length;
-  if (incoming.length > remaining) return { files: current, error: t("tooManyFiles", { count: remaining }) };
-  const known = new Set(current.map((file) => `${file.name}:${file.size}:${file.lastModified}`));
-  const accepted: File[] = [];
-  let error: string | undefined;
-  for (const file of incoming) {
-    const validation = validateAttachment(file);
-    if (!validation.valid && validation.reason === "unsupported") {
-      error ??= t("unsupportedFile", { filename: file.name });
-      continue;
-    }
-    if (!validation.valid && validation.reason === "too-large") {
-      error ??= t("fileTooLarge", { filename: file.name, size: validation.limitMiB });
-      continue;
-    }
-    const identity = `${file.name}:${file.size}:${file.lastModified}`;
-    if (!known.has(identity)) {
-      known.add(identity);
-      accepted.push(file);
-    }
-  }
-  return { files: [...current, ...accepted], ...(error ? { error } : {}) };
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -1222,7 +1195,7 @@ export function App() {
     queryClient.invalidateQueries({ queryKey: ["agent-session"] }),
   ]);
   const visibleItems = items;
-  const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(attachment => !attachment.commentId && isMediaAttachment(attachment)));
+  const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(attachment => !attachment.commentId && !attachment.transitionEventId && isMediaAttachment(attachment)));
   const selectedItems = visibleItems.filter((item) => selectedItemKeys.has(item.key));
   // A selection is one status: the one both batch actions are keyed on (AND-66).
   const selectionStatus = selectedItems[0]?.status;
@@ -1982,7 +1955,7 @@ function ItemRow({
   // An attached log file and a structured log entry are not the same unit, and showing their sum
   // made a whole attached history look like one more line.
   const logFileCount = Math.max(
-    item.attachments.filter((attachment) => !attachment.commentId && attachment.kind === "log").length,
+    item.attachments.filter((attachment) => !attachment.commentId && !attachment.transitionEventId && attachment.kind === "log").length,
     item.diagnosticSummary?.logFileCount ?? 0,
   );
   const logCount = item.diagnosticSummary?.logCount ?? 0;
@@ -2262,7 +2235,7 @@ function ItemMediaStrip({
 }) {
   const { t } = useI18n();
   const mediaAttachments = attachments.filter(
-    (attachment): attachment is WorkItemAttachment & { readonly kind: "image" | "video" } => !attachment.commentId && isMediaAttachment(attachment),
+    (attachment): attachment is WorkItemAttachment & { readonly kind: "image" | "video" } => !attachment.commentId && !attachment.transitionEventId && isMediaAttachment(attachment),
   );
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   // Three thumbnails, then a count on the last rather than shrinking every
@@ -2475,8 +2448,8 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   const [transferring, setTransferring] = useState(false);
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
   const mutation = useMutation({
-    mutationFn: ({ action, note }: { action: TransitionAction; note?: string }) =>
-      api.transitionItem(item.key, action, note),
+    mutationFn: ({ action, note, files, attempt }: { action: TransitionAction; note?: string; files?: readonly File[]; attempt?: TransitionAttachmentAttempt }) =>
+      attempt ? attempt.submit(item.key, item.status, action, note!, files ?? []) : api.transitionItem(item.key, action, note),
     onSuccess: async (updated) => {
       setNoteAction(null);
       await applyConfirmedItemTransition(queryClient, updated);
@@ -2582,10 +2555,11 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
         onClose={() => { setNoteAction(null); mutation.reset(); }}
       >
         <TransitionNoteDialog
+          item={item}
           action={noteAction}
           pending={mutation.isPending}
-          error={mutation.isError ? errorMessage(mutation.error, t("somethingWentWrong")) : null}
-          onSubmit={(note) => mutation.mutate({ action: noteAction, note })}
+          error={mutation.isError ? transitionErrorText(mutation.error, t) : null}
+          onSubmit={(note, files, attempt) => mutation.mutate({ action: noteAction, note, files, attempt })}
           onCancel={() => { setNoteAction(null); mutation.reset(); }}
         />
       </Modal>
@@ -2772,8 +2746,8 @@ function DetailPane({
 
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
   const transitionMutation = useMutation({
-    mutationFn: ({ action, note }: { action: TransitionAction; note?: string }) =>
-      api.transitionItem(itemKey!, action, note),
+    mutationFn: ({ action, note, files, attempt }: { action: TransitionAction; note?: string; files?: readonly File[]; attempt?: TransitionAttachmentAttempt }) =>
+      attempt ? attempt.submit(itemKey!, item!.status, action, note!, files ?? []) : api.transitionItem(itemKey!, action, note),
     onSuccess: async (updated) => {
       setNoteAction(null);
       await applyConfirmedItemTransition(queryClient, updated);
@@ -2827,7 +2801,7 @@ function DetailPane({
   const detailCreator = creatorLabel(item.createdBy, { human: actorLabel("human"), sdk: t("creatorSdk"), agent: actorLabel("agent") });
   const createdEvent = timelineQuery.data?.events.find((event) => event.eventType === "item_created");
   const sdkDiagnostics = diagnosticsFromEvent(createdEvent);
-  const itemAttachments = item.attachments.filter(attachment => !attachment.commentId);
+  const itemAttachments = item.attachments.filter(attachment => !attachment.commentId && !attachment.transitionEventId);
   const logAttachments = itemAttachments.filter((attachment) => attachment.kind === "log");
   const documentAttachments = itemAttachments.filter((attachment) => attachment.kind === "document");
   const archiveAttachments = itemAttachments.filter((attachment) => attachment.kind === "archive");
@@ -3081,7 +3055,7 @@ function DetailPane({
                       {/* Why it moved. Going back to Ready has to say so, which is
                           the case this is here for; a handover carries the agent's
                           summary in the same field and is worth reading too. */}
-                      {event.eventType === "status_changed" && <StatusNoteLine payload={event.payload} />}
+                      {event.eventType === "status_changed" && <StatusNoteLine payload={event.payload} item={item} />}
                       {["item_transferred_in", "item_transferred_out"].includes(event.eventType) && Array.isArray(event.payload.clearedComponents) && event.payload.clearedComponents.length > 0 && (
                         <p>{t("transferClearedComponents", { names: event.payload.clearedComponents.flatMap((c: unknown) => c && typeof c === "object" && "name" in c && typeof c.name === "string" ? [c.name] : []).join("、") })}</p>
                       )}
@@ -3147,10 +3121,11 @@ function DetailPane({
           onClose={() => { setNoteAction(null); transitionMutation.reset(); }}
         >
           <TransitionNoteDialog
+            item={item}
             action={noteAction}
             pending={transitionMutation.isPending}
-            error={transitionMutation.isError ? errorMessage(transitionMutation.error, t("somethingWentWrong")) : null}
-            onSubmit={(note) => transitionMutation.mutate({ action: noteAction, note })}
+            error={transitionMutation.isError ? transitionErrorText(transitionMutation.error, t) : null}
+            onSubmit={(note, files, attempt) => transitionMutation.mutate({ action: noteAction, note, files, attempt })}
             onCancel={() => { setNoteAction(null); transitionMutation.reset(); }}
           />
         </Modal>
@@ -3184,10 +3159,11 @@ function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: strin
   );
 }
 
-function StatusNoteLine({ payload }: { payload: Readonly<Record<string, unknown>> }) {
+function StatusNoteLine({ payload, item }: { payload: Readonly<Record<string, unknown>>; item: WorkItem }) {
   const note = statusChangeNote(payload);
-  if (!note) return null;
-  return <p className="timeline-note">{note}</p>;
+  const ids = Array.isArray(payload.attachmentIds) ? payload.attachmentIds : [];
+  const attachments = item.attachments.filter(file => ids.includes(file.id));
+  return <>{note && <p className="timeline-note">{note}</p>}{attachments.length > 0 && <AttachmentSection itemKey={item.key} attachments={attachments} compact />}</>;
 }
 
 /** The `dispatched` timeline line, when the payload can say where it went. */
@@ -3791,10 +3767,10 @@ function WorkItemFields({
   const diagnosticSlots = draft.diagnosticLog.trim() ? 1 : 0;
   const remainingAttachments = Math.max(0, attachmentLimit - files.length - diagnosticSlots);
   const attachmentOverflow = files.length + diagnosticSlots > attachmentLimit;
-  const existingLogAttachments = existingAttachments.filter((attachment) => !attachment.commentId && attachment.kind === "log");
-  const existingDocumentAttachments = existingAttachments.filter((attachment) => !attachment.commentId && attachment.kind === "document");
-  const existingArchiveAttachments = existingAttachments.filter((attachment) => !attachment.commentId && attachment.kind === "archive");
-  const existingMediaAttachments = existingAttachments.filter(attachment => !attachment.commentId && isMediaAttachment(attachment));
+  const existingLogAttachments = existingAttachments.filter((attachment) => !attachment.commentId && !attachment.transitionEventId && attachment.kind === "log");
+  const existingDocumentAttachments = existingAttachments.filter((attachment) => !attachment.commentId && !attachment.transitionEventId && attachment.kind === "document");
+  const existingArchiveAttachments = existingAttachments.filter((attachment) => !attachment.commentId && !attachment.transitionEventId && attachment.kind === "archive");
+  const existingMediaAttachments = existingAttachments.filter(attachment => !attachment.commentId && !attachment.transitionEventId && isMediaAttachment(attachment));
   const selectedLogFiles = files.filter(isDiagnosticFile);
   const selectedDocumentFiles = files.filter(isDocumentFile);
   const selectedArchiveFiles = files.filter(isArchiveFile);
@@ -5258,55 +5234,56 @@ function BulkReleaseDialog({ items, onClose, onDone }: {
   readonly onDone: (results: readonly BulkTransitionResult[]) => void;
 }) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const [note, setNote] = useState("");
-  const mutation = useMutation({
-    mutationFn: () => api.releaseItems(items.map((item) => item.key), note.trim()),
-    onSuccess: (response) => onDone(response.results),
-  });
-  useDialogDraft(Boolean(note), mutation.isPending);
+  const [results, setResults] = useState<readonly BulkTransitionResult[]>([]);
+  const [pending, setPending] = useState(false);
+  const locked = pending || results.some(result => result.ok);
+  const draft = useTransitionFiles(items, locked);
+  const submit = async () => {
+    if (pending || !note.trim()) return;
+    setPending(true);
+    const next: BulkTransitionResult[] = [];
+    try {
+      for (const item of items) {
+        try {
+          if (draft.attempt.confirmed.has(item.key)) { next.push({ itemKey: item.key, ok: true }); continue; }
+          const updated = await draft.attempt.submit(item.key, item.status, { to: "ready", reason: "released", label: "Release" }, note, draft.files);
+          next.push({ itemKey: item.key, ok: true });
+          await applyConfirmedItemTransition(queryClient, updated);
+        } catch (error) {
+          next.push({ itemKey: item.key, ok: false, code: "transition_failed", message: transitionErrorText(error, t) });
+        }
+      }
+      setResults(next);
+      if (next.every(result => result.ok)) onDone(next);
+    } finally { setPending(false); }
+  };
+  useDialogDraft(Boolean(note) || draft.files.length > 0, pending);
 
-  return (
-    <form
-      className="bulk-verify"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (note.trim()) mutation.mutate();
-      }}
-    >
-      <p className="dispatch-note">{t("releaseSelectedHelp")}</p>
-      <ul className="bulk-verify-list">
-        {items.map((item) => <li key={item.key}><code>{item.key}</code> {item.title}</li>)}
-      </ul>
-      <label>
-        {t("releaseNoteLabel")}
-        <textarea
-          data-initial-focus
-          rows={3}
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
-          placeholder={t("releaseNotePlaceholder")}
-          maxLength={TRANSITION_NOTE_MAX_LENGTH}
-          required
-        />
-      </label>
-      {mutation.isError && (
-        <div className="inline-error"><CirclePause size={16} /><span>{errorMessage(mutation.error, t("somethingWentWrong"))}</span></div>
-      )}
-      <div className="form-footer">
-        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onClose}>{t("cancel")}</button>
-        <button
-          type="submit"
-          className="primary-button"
-          disabled={!note.trim() || mutation.isPending || items.length === 0}
-        >
-          {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Undo2 size={16} />}
-          {t("releaseSelected", { count: items.length })}
-        </button>
-      </div>
-    </form>
-  );
+  return <form className="bulk-verify transition-note-form" {...draft.dropHandlers} onPaste={draft.onPaste}
+    onSubmit={event => { event.preventDefault(); void submit(); }}>
+    <p className="dispatch-note">{t("releaseSelectedHelp")}</p>
+    <ul className="bulk-verify-list">
+      {items.map(item => <li key={item.key}><code>{item.key}</code> {item.title}</li>)}
+    </ul>
+    <label>{t("releaseNoteLabel")}
+      <textarea data-initial-focus rows={3} value={note} disabled={locked} onChange={event => setNote(event.target.value)}
+        placeholder={t("releaseNotePlaceholder")} maxLength={TRANSITION_NOTE_MAX_LENGTH} required />
+    </label>
+    <TransitionFiles draft={draft} disabled={locked} />
+    {results.length > 0 && <div role="status" className="transition-results">
+      <p>{t("transitionBatchRetryHelp")}</p>
+      <ul>{results.map(result => <li key={result.itemKey}><code>{result.itemKey}</code> {result.ok ? t("transitionBatchSuccess") : result.message}</li>)}</ul>
+    </div>}
+    <div className="form-footer">
+      <button type="button" className="secondary-button" disabled={pending} onClick={() => results.length ? onDone(results) : onClose()}>{t(results.some(result => result.ok) ? "close" : "cancel")}</button>
+      <button type="submit" className="primary-button" disabled={!note.trim() || pending || items.length === 0}>
+        {pending ? <LoaderCircle className="spin" size={16} /> : <Undo2 size={16} />}{t("releaseSelected", { count: items.length - results.filter(result => result.ok).length })}
+      </button>
+    </div>
+  </form>;
 }
-
 
 /**
  * A video, or -- when this browser cannot decode it -- a plain statement that it

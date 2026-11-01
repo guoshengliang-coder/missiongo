@@ -29,8 +29,8 @@ export function groupTimeline(events: readonly WorkItemEvent[]): readonly Timeli
     .map(event => [eventKey(event, event.id), event]));
   const commentFiles = new Set<string>();
   for (const event of events) {
-    if (event.eventType !== "comment_added" || event.payload.bodyKind !== "free") continue;
-    const body = event.payload.body;
+    if (event.eventType !== "status_changed" && (event.eventType !== "comment_added" || event.payload.bodyKind !== "free")) continue;
+    const body = event.eventType === "status_changed" ? event.payload : event.payload.body;
     if (!body || typeof body !== "object" || !("attachmentIds" in body) || !Array.isArray(body.attachmentIds)) continue;
     for (const id of body.attachmentIds) if (typeof id === "string") commentFiles.add(eventKey(event, id));
   }
