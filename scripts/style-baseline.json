@@ -434,19 +434,7 @@
       "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
     },
     {
-      "signature": "literal-colour | apps/web/src/styles.css | .media-number-badge { background } rgba(11, 16, 27, .82)",
-      "count": 1,
-      "reason": "Existing style debt, scoped to this rule and occurrence count",
-      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
-    },
-    {
       "signature": "literal-colour | apps/web/src/styles.css | .media-number-badge { box-shadow } 0 2px 7px rgba(0, 0, 0, .16)",
-      "count": 1,
-      "reason": "Existing style debt, scoped to this rule and occurrence count",
-      "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"
-    },
-    {
-      "signature": "literal-colour | apps/web/src/styles.css | .media-number-badge { color } white",
       "count": 1,
       "reason": "Existing style debt, scoped to this rule and occurrence count",
       "tracking": "docs/ui-ue-audit-2026-10.md#uia-06--p2规范实现和历史计划没有闭环"

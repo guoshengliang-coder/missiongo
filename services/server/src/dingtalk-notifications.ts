@@ -73,6 +73,7 @@ export class DingTalkNotifications {
   saveSettings(input: DingTalkSettingsInput, actor: string): DingTalkSettings {
     if (!this.key) throw invalidInput("请先为服务器配置持久化会话密钥，再保存钉钉凭据。");
     const corpId=identifier(input.corpId,"组织 ID"),clientId=identifier(input.clientId,"Client ID");
+    if (z.string().uuid().safeParse(corpId).success) throw invalidInput("组织 ID（CorpId）不能填写应用页面的 UUID。请到钉钉开发者后台的组织基本信息复制企业 CorpId。");
     return this.store.database.transaction(() => {
       const previous=this.config();
       if (input.expectedRevision !== (previous?.revision ?? 0)) throw conflict("dingtalk_settings_changed","配置已被修改，请刷新后重试。");
@@ -330,8 +331,11 @@ export class DingTalkNotifications {
       content:z.string().max(80_000).optional(),value:z.string().max(80_000).optional()}).safeParse(raw);
     if (!envelope.success) throw invalidInput("卡片回复格式无效。");
     const input=envelope.data,job=this.job(input.outTrackId),config=this.config();
-    if (!config || input.corpId!==config.corp_id || !job || job.kind!=="comment" || !job.account_id || !job.comment_id
-      || !["sent","accepted","sending","uncertain"].includes(job.status) || job.config_revision!==config.revision) throw invalidInput("此卡片已失效，请回条目回复。");
+    if (!config) throw invalidInput("钉钉应用尚未配置，请回条目回复。");
+    if (input.corpId!==config.corp_id) throw invalidInput("卡片不属于当前钉钉组织，请回条目回复。");
+    if (!job || job.kind!=="comment" || !job.account_id || !job.comment_id) throw invalidInput("找不到此卡片对应的评论提醒，请从条目评论发送卡片后回复。");
+    if (!["sent","accepted","sending","uncertain"].includes(job.status)) throw invalidInput("此评论卡片没有有效的投递记录，请回条目回复。");
+    if (job.config_revision!==config.revision) throw invalidInput("卡片发送后钉钉应用配置已变化，请回条目回复。");
     const binding=this.bindings().find(b=>b.accountId===job.account_id),account=this.accounts.findActive(job.account_id);
     if (!binding || binding.userId!==input.userId || job.recipient!==input.userId || binding.revision!==job.binding_revision || !account) throw invalidInput("回复者账号绑定已变化，请回条目回复。");
     const itemRow=this.db.prepare("SELECT item_key FROM work_items WHERE id=?").get(job.item_id!) as {item_key:string}|undefined;

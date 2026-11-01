@@ -53,7 +53,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await chooseOption(second.getByRole("combobox"), "completed");
       await second.getByLabel("结果／说明",{exact:true}).fill("Integration complete");
       await second.getByRole("button",{name:"保存执行进展",exact:true}).click();
-      await expect(second.locator(".execution-heading")).toContainText("本轮完成");
+      await expect(second.locator(".record-status")).toContainText("本轮完成");
       await expect(page.getByRole("dialog")).toHaveCount(0);
       // Closing the modal also returns from its same-document history entry.
       await expect.poll(() => page.evaluate(() => history.state?.["missiongo:dialogs"]?.length ?? 0)).toBe(0);

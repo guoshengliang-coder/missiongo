@@ -43,6 +43,16 @@ async function fixture(cardTemplateId?:string) {
   return {app,store,accounts,db,service,product,member,memberCookie,requests,fetchImpl,call,config,bind,enable,create,verify,due,setSend:(value:typeof send)=>{send=value;},setResult:(value:typeof result)=>{result=value;}};
 }
 describe("DingTalk configuration and mappings",()=>{
+  it("rejects an application page UUID used as CorpId before changing settings or bindings",async()=>{
+    const f=await fixture();
+    const wrong={corpId:"00000000-0000-4000-8000-000000000001",clientId:"synthetic-app",agentId:"123",clientSecret:"synthetic-client-secret",expectedRevision:0};
+    const response=await f.call("PUT","/api/v1/dingtalk/settings",wrong);
+    expect(response.statusCode).toBe(400);expect(response.body).toContain("应用页面的 UUID");
+    expect(f.service.settings().revision).toBe(0);
+    f.config();f.bind();const bindings=f.service.bindings();
+    expect(()=>f.service.saveSettings({...wrong,expectedRevision:1},"admin")).toThrow(/企业 CorpId/);
+    expect(f.service.settings().revision).toBe(1);expect(f.service.bindings()).toEqual(bindings);
+  });
   it("protects admin endpoints, encrypts secrets, checks revisions and keeps mappings attached to account IDs",async()=>{
     const f=await fixture();
     expect((await f.call("GET","/api/v1/dingtalk/settings",undefined,f.memberCookie)).statusCode).toBe(404);

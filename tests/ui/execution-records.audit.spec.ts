@@ -26,6 +26,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
         return route.fulfill({ json: { notifications: notices, canRetry: true } });
       });
       await page.goto(`/?product=${product.id}&item=${item.key}`);
+      await expect(page.getByRole("heading",{name:item.title,exact:true})).toBeVisible({timeout:15000});
       const panel = page.getByRole("region", { name: "执行记录", exact: true });
       const history = panel.locator(".execution-history");
       const header = history.locator(":scope > summary");
@@ -49,6 +50,26 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await headers.nth(1).click();
       await expect(records.nth(1).getByText("完整执行范围", { exact: true })).toBeVisible();
       await expect(records.nth(1).getByText("阶段成果", { exact: true })).toBeVisible();
+      // Title and status share the first line; the toggle occupies the next
+      // right-hand line, without stretching the date-to-body spacing.
+      for(const viewport of (width===375 ? [320,375,724,768,844,1180,1440] : [1440])) for(const scale of ["small","medium","large"]) {
+        await page.setViewportSize({width:viewport,height:viewport===844?390:900});
+        await page.evaluate(value=>document.documentElement.dataset.fontScale=value,scale);
+        const geometry=await records.nth(1).evaluate(el=>{
+          const rect=(selector:string)=>el.querySelector(selector)!.getBoundingClientRect();
+          const title=rect("summary strong"),status=rect(".record-status"),toggle=rect(".record-toggle"),date=rect(".record-summary small"),body=rect(".execution-record-body > :first-child");
+          return {titleY:title.top,statusY:status.top,statusRight:status.right,toggleRight:toggle.right,statusBottom:status.bottom,toggleTop:toggle.top,bodyGap:body.top-date.bottom,overflow:el.scrollWidth-el.clientWidth};
+        });
+        expect(Math.abs(geometry.titleY-geometry.statusY)).toBeLessThanOrEqual(1);
+        expect(Math.abs(geometry.statusRight-geometry.toggleRight)).toBeLessThanOrEqual(1);
+        expect(geometry.toggleTop).toBeGreaterThanOrEqual(geometry.statusBottom);
+        expect(geometry.bodyGap).toBeLessThanOrEqual(16);
+        expect(geometry.overflow).toBeLessThanOrEqual(1);
+      }
+      await page.evaluate(()=>delete document.documentElement.dataset.fontScale);
+      await page.setViewportSize({width,height:width===375?812:900});
+      await records.nth(1).screenshot({path:info.outputPath("expanded-session-layout.png")});
+
       await expect(records.nth(0)).not.toHaveAttribute("open", "");
       await headers.nth(4).click();
       await records.nth(4).getByRole("button", { name: "补发通知", exact: true }).click();
@@ -108,6 +129,7 @@ for (const failDelivery of [false, true]) {
     await page.route(`**/api/v1/items/${item.key}/dispatches`, route => route.fulfill({ json: { dispatches: [] } }));
     await page.route(`**/api/v1/items/${item.key}/dingtalk-notifications`, route => route.fulfill({ json: { notifications: [{ id: "only", kind: "verification", status: "sent", reason: "唯一通知", attempts: 1, createdAt: "2026-10-31T00:00:00Z" }], canRetry: false } }));
     await page.goto(`/?product=${product.id}&item=${item.key}`);
+    await expect(page.getByRole("heading",{name:item.title,exact:true})).toBeVisible({timeout:15000});
     const panel = page.getByRole("region", { name: "执行记录", exact: true });
     await expect(panel.locator(".execution-history > summary .record-summary")).toHaveText("执行记录（1）");
     if (failDelivery) await expect(panel.getByRole("alert")).toContainText("执行记录加载失败", { timeout: 15000 });

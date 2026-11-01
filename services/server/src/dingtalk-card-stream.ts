@@ -13,7 +13,9 @@ export class DingTalkCardStream {
         result = onCard(JSON.parse(frame.data));
       } catch(error) {
         const reason=error instanceof MissionGoError ? error.message : "回复未保存，请回条目重试。";
-        result = {cardData:{cardParamMap:{replyStatus:reason,replySaved:"false"}}};
+        // Errors only update feedback; replacing the whole map erases the
+        // original comment, title and the link needed to recover the reply.
+        result = {cardUpdateOptions:{updateCardDataByKey:true},cardData:{cardParamMap:{replyStatus:reason,replySaved:"false"}}};
       }
       this.client.socketCallBackResponse(frame.headers.messageId,result);
     });

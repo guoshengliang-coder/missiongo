@@ -19,6 +19,7 @@ for (const width of [375, 724, 844, 1440]) for (const theme of ["light", "dark"]
     await page.emulateMedia({ colorScheme: theme });
     const { item, root, reply } = await seed(page);
     await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}`);
+    await expect(page.getByRole("heading",{name:item.title,exact:true})).toBeVisible({timeout:15000});
     const gallery = page.locator(".attachment-block").filter({ has: page.getByRole("heading", { name: "截图与视频", exact: true }) });
     await expect(gallery.locator(".media-tile")).toHaveCount(2);
     await expect(gallery.locator("footer")).toHaveCount(0);
@@ -27,6 +28,24 @@ for (const width of [375, 724, 844, 1440]) for (const theme of ["light", "dark"]
     expect(Math.abs(box.y - nextBox.y)).toBeLessThan(2);
     expect(box.height).toBeLessThan(180);
     await expect(first.locator(".media-number-badge")).toHaveText("图片 1");
+    const controls = await first.locator(".media-tile-download").evaluate(el => {
+      const box=el.getBoundingClientRect(), plate=getComputedStyle(el,"::before");
+      return {width:box.width,height:box.height,inset:parseFloat(plate.left),background:plate.backgroundColor};
+    });
+    expect(controls.width).toBeGreaterThanOrEqual(44);
+    expect(controls.height).toBeGreaterThanOrEqual(44);
+    expect(controls.width-controls.inset*2).toBeLessThanOrEqual(28);
+    expect(controls.background).toMatch(/rgba\(.+, 0\.64\)/);
+    const commentTile=page.locator(`#comment-${root.id} .comment-attachment-tile`);
+    const badge=commentTile.locator(".media-number-badge");
+    const corner=await badge.evaluate(el=>{
+      const b=el.getBoundingClientRect(),p=el.closest("button")!.getBoundingClientRect();
+      return {left:b.left-p.left,top:b.top-p.top,bg:getComputedStyle(el).backgroundColor};
+    });
+    expect(corner.left).toBeLessThanOrEqual(3);
+    expect(corner.top).toBeLessThanOrEqual(3);
+    expect(corner.bg).toBe(controls.background);
+
     await expect(page.locator(`#comment-${root.id} .media-number-badge`)).toHaveText("图片 3");
     await expect(page.locator(`#comment-${reply.id} .comment-attachment-tile`)).toHaveCount(1);
     await first.scrollIntoViewIfNeeded();
@@ -59,6 +78,9 @@ for (const width of [375, 724, 844, 1440]) for (const theme of ["light", "dark"]
     await page.screenshot({ path: test.info().outputPath(`preview-${width}-${theme}.png`) });
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
+    await page.locator(`#comment-${root.id} .comment-attachments`).scrollIntoViewIfNeeded();
+    await expect(page.locator(`#comment-${root.id} .comment-attachment-thumb img`)).toBeVisible();
+    await page.locator(`#comment-${root.id} .comment-attachments`).screenshot({path:test.info().outputPath(`comment-corner-${width}-${theme}.png`)});
     await page.reload(); await expect(gallery.locator(".media-tile")).toHaveCount(2);
     await page.getByRole("button", { name: "编辑", exact: true }).click();
     const edit = page.locator(".quick-capture-form");

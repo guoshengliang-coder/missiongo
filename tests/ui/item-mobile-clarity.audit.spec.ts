@@ -77,7 +77,7 @@ for (const width of [320, 353, 375, 390, 768, 1440]) for (const theme of ["light
       await expect(rows).toHaveCount(4);
       for (const record of await rows.locator(".execution-record > summary").all()) await record.click();
       await expect(history.locator(".execution-list")).toHaveCSS("list-style-type", "decimal");
-      const headingSize = await rows.nth(0).locator(".execution-heading strong").evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+      const headingSize = await rows.nth(0).locator("summary .record-summary > strong").evaluate(el => parseFloat(getComputedStyle(el).fontSize));
       const summarySize = await history.locator(":scope > summary").evaluate(el => parseFloat(getComputedStyle(el).fontSize));
       expect(headingSize).toBeLessThan(summarySize);
       await expect(rows.nth(0)).toHaveCSS("border-top-style", "none");
