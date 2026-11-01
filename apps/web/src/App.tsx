@@ -4468,11 +4468,12 @@ function CommentAttachmentThumbnail({itemKey,attachment,onOpen}:{itemKey:string;
     enabled:near && attachment.kind==="image",staleTime:Infinity,
   });
   const url=useObjectUrl(thumbnail.data);
+  const referenceLabel=attachment.kind==="image" || attachment.kind==="video" ? mediaNumberLabel(attachment.kind,attachment.displayNumber,t) : null;
   const Icon=attachment.kind==="image"?ImageIcon:attachment.kind==="video"?Video:attachment.kind==="archive"?Archive:FileText;
   return <button type="button" className="comment-attachment-tile" ref={ref} onClick={onOpen} title={attachment.filename}
     aria-label={t("previewAttachment",{filename:attachment.filename})}>
-    <span className="comment-attachment-thumb">{url?<img src={url} alt="" decoding="async" />:<Icon size={24} aria-hidden="true" />}</span>
-    <span className="comment-attachment-filename">{attachment.filename}</span>
+    <span className="comment-attachment-thumb">{referenceLabel && <small className="media-number-badge">{referenceLabel}</small>}{url?<img src={url} alt="" decoding="async" />:<Icon size={24} aria-hidden="true" />}</span>
+    {!referenceLabel && <span className="comment-attachment-filename">{attachment.filename}</span>}
   </button>;
 }
 

@@ -28,7 +28,7 @@ for (const width of [375, 724, 844, 1440]) for (const theme of ["light", "dark"]
     expect(box.height).toBeLessThan(180);
     await expect(first.locator(".media-number-badge")).toHaveText("图片 1");
     await expect(page.locator(`#comment-${root.id} .media-number-badge`)).toHaveText("图片 3");
-    await expect(page.locator(`#comment-${reply.id} .attachment-card`)).toHaveCount(1);
+    await expect(page.locator(`#comment-${reply.id} .comment-attachment-tile`)).toHaveCount(1);
     await first.scrollIntoViewIfNeeded();
     await expect(first.locator("img")).toBeVisible();
     await page.screenshot({ path: test.info().outputPath(`tiles-${width}-${theme}.png`) });
