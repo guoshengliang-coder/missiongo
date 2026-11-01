@@ -115,6 +115,9 @@ for (const theme of ["light", "dark"] as const) {
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     const banner = page.locator(".agent-console-attention-banner");
     await expect(banner.getByRole("button", { name: /^(批准|Approve)$/ })).toBeDisabled();
+    await expect(banner.locator(".agent-console-approve-reason")).toBeHidden();
+    await banner.locator("summary").click();
+    await expect(banner.locator(".agent-console-approve-reason")).toBeVisible();
     await expect(banner).toContainText(/会话连接当前不可用|connection is unavailable/);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await banner.scrollIntoViewIfNeeded();
