@@ -253,7 +253,7 @@ test.describe("attachments a browser cannot read natively", () => {
     await page.waitForLoadState("networkidle");
     // The thumbnail is mounted lazily; scroll its card before waiting for the
     // image, including when the persistent composer reduces the reading area.
-    const card = page.locator(".attachment-card", { hasText: "iphone.heic" });
+    const card = page.locator(".attachment-card", { has: page.getByRole("button", { name: "下载 iphone.heic", exact: true }) });
     await card.scrollIntoViewIfNeeded();
     const thumbnail = card.locator('.attachment-media-open img[alt="iphone.heic"]');
     await expect(thumbnail).toBeVisible();
@@ -265,10 +265,10 @@ test.describe("attachments a browser cannot read natively", () => {
   test("a video this browser cannot play says so and offers the file", async ({ page }) => {
     await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
     await page.waitForLoadState("networkidle");
-    const card = page.locator(".attachment-card", { hasText: "screen-recording.mov" });
+    const card = page.locator(".attachment-card", { has: page.getByRole("button", { name: "下载 screen-recording.mov", exact: true }) });
     await card.scrollIntoViewIfNeeded();
     await card.locator(".attachment-load-button").click();
-    const notice = card.locator(".video-unplayable");
+    const notice = page.locator(".selected-media-lightbox .video-unplayable");
     await expect(notice).toBeVisible();
     await expect(notice.getByRole("button")).toBeVisible();
   });
@@ -282,13 +282,13 @@ test.describe("item media gallery", () => {
     const row = page.locator(".item-row", { has: page.getByText(fixture.detailKey, { exact: true }) });
     await row.locator(".item-media-thumb").first().click();
     const gallery = page.locator(".selected-media-lightbox[open]");
-    await expect(gallery).toHaveAttribute("aria-label", /screen-a\.png \(1\/4\)/);
+    await expect(gallery).toHaveAttribute("aria-label", /图片 1 · 1\/4/);
     await gallery.getByRole("button", { name: "下一个附件" }).click();
-    await expect(gallery).toHaveAttribute("aria-label", /screen-b\.png \(2\/4\)/);
+    await expect(gallery).toHaveAttribute("aria-label", /图片 2 · 2\/4/);
     await gallery.press("ArrowRight");
-    await expect(gallery).toHaveAttribute("aria-label", /iphone\.heic \(3\/4\)/);
+    await expect(gallery).toHaveAttribute("aria-label", /图片 3 · 3\/4/);
     await gallery.press("ArrowRight");
-    await expect(gallery).toHaveAttribute("aria-label", /screen-recording\.mov \(4\/4\)/);
+    await expect(gallery).toHaveAttribute("aria-label", /视频 1 · 4\/4/);
     await expect(gallery.getByRole("button", { name: "下一个附件" })).toBeHidden();
   });
 
@@ -296,9 +296,9 @@ test.describe("item media gallery", () => {
     await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
     await page.locator('.attachment-media-open img[alt="screen-b.png"]').click();
     const gallery = page.locator(".selected-media-lightbox[open]");
-    await expect(gallery).toHaveAttribute("aria-label", /screen-b\.png \(2\/4\)/);
+    await expect(gallery).toHaveAttribute("aria-label", /图片 2 · 2\/4/);
     await gallery.getByRole("button", { name: "上一个附件" }).click();
-    await expect(gallery).toHaveAttribute("aria-label", /screen-a\.png \(1\/4\)/);
+    await expect(gallery).toHaveAttribute("aria-label", /图片 1 · 1\/4/);
   });
 });
 
@@ -309,7 +309,7 @@ test.describe("item media gallery on touch", () => {
     await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
     // Image pixels are loaded near the viewport. Scroll the card, which is
     // always present, before waiting for its thumbnail below the delivery panel.
-    await page.locator(".attachment-card").filter({ hasText: "screen-a.png" }).scrollIntoViewIfNeeded();
+    await page.locator(".attachment-card").filter({ has: page.getByRole("button", { name: "下载 screen-a.png", exact: true }) }).scrollIntoViewIfNeeded();
     await page.locator('.attachment-media-open img[alt="screen-a.png"]').click();
     const gallery = page.locator(".selected-media-lightbox[open]");
     const bounds = await gallery.locator(".media-gallery-stage").boundingBox();
@@ -319,7 +319,7 @@ test.describe("item media gallery on touch", () => {
     await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: bounds!.x + bounds!.width * .75, y }] });
     await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: bounds!.x + bounds!.width * .25, y }] });
     await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-    await expect(gallery).toHaveAttribute("aria-label", /screen-b\.png \(2\/4\)/);
+    await expect(gallery).toHaveAttribute("aria-label", /图片 2 · 2\/4/);
   });
 });
 

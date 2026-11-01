@@ -4008,6 +4008,13 @@ components:
         itemKey: { type: string }
         kind: { enum: [image, video, log, document] }
         displayNumber: { type: integer, minimum: 1 }
+        commentId:
+          type: string
+          description: >-
+            Comment or reply owning this file, derived from persisted attachmentIds in item snapshots
+            and attachment lists, including withdrawn comments. These files are rendered with their
+            comment, excluded from item evidence and edit galleries, and retain their original
+            displayNumber and access rules. Absent for standalone or creation attachments.
         filename: { type: string }
         contentType: { type: string }
         sizeBytes: { type: integer, minimum: 1 }

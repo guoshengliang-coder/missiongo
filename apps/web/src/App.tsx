@@ -1,3 +1,4 @@
+import { ZoomableImage } from "./zoomable-image";
 import { additionalMentionNames, editMentions, mentionQuery, mentionAudience } from "./comment-mentions";
 import { WebVersion } from "./web-version";
 import { Select } from "./select";
@@ -1227,7 +1228,7 @@ export function App() {
     queryClient.invalidateQueries({ queryKey: ["agent-session"] }),
   ]);
   const visibleItems = items;
-  const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(isMediaAttachment));
+  const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(attachment => !attachment.commentId && isMediaAttachment(attachment)));
   const selectedItems = visibleItems.filter((item) => selectedItemKeys.has(item.key));
   // A selection is one status: the one both batch actions are keyed on (AND-66).
   const selectionStatus = selectedItems[0]?.status;
@@ -1987,7 +1988,7 @@ function ItemRow({
   // An attached log file and a structured log entry are not the same unit, and showing their sum
   // made a whole attached history look like one more line.
   const logFileCount = Math.max(
-    item.attachments.filter((attachment) => attachment.kind === "log").length,
+    item.attachments.filter((attachment) => !attachment.commentId && attachment.kind === "log").length,
     item.diagnosticSummary?.logFileCount ?? 0,
   );
   const logCount = item.diagnosticSummary?.logCount ?? 0;
@@ -2267,7 +2268,7 @@ function ItemMediaStrip({
 }) {
   const { t } = useI18n();
   const mediaAttachments = attachments.filter(
-    (attachment): attachment is WorkItemAttachment & { readonly kind: "image" | "video" } => isMediaAttachment(attachment),
+    (attachment): attachment is WorkItemAttachment & { readonly kind: "image" | "video" } => !attachment.commentId && isMediaAttachment(attachment),
   );
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   // Three thumbnails, then a count on the last rather than shrinking every
@@ -2367,7 +2368,7 @@ function ItemMediaGallery({ itemKey, attachments, activeIndex, onIndexChange, on
   if (!active) return null;
   return (
     <MediaLightbox
-      title={`${mediaNumberLabel(active.kind, active.displayNumber, t)} · ${active.filename} (${activeIndex + 1}/${attachments.length})`}
+      title={`${mediaNumberLabel(active.kind, active.displayNumber, t)} · ${activeIndex + 1}/${attachments.length}`}
       onClose={onClose}
       onPrevious={activeIndex > 0 ? () => onIndexChange(activeIndex - 1) : undefined}
       onNext={activeIndex < attachments.length - 1 ? () => onIndexChange(activeIndex + 1) : undefined}
@@ -2388,12 +2389,26 @@ function ActiveMediaPreview({ itemKey, attachment }: { itemKey: string; attachme
     staleTime: Infinity,
   });
   const objectUrl = useObjectUrl(contentQuery.data);
+  const [downloadError, setDownloadError] = useState("");
+  const download = async () => {
+    try {
+      setDownloadError("");
+      const blob = await api.downloadAttachment(itemKey, attachment.id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url; anchor.download = attachment.filename;
+      document.body.append(anchor); anchor.click(); anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) { setDownloadError(errorMessage(error, t("attachmentFailed"))); }
+  };
   return (
     <>
+      <button type="button" className="media-viewer-download" onClick={() => void download()} aria-label={`${t("download")} ${attachment.filename}`} title={t("download")}><Download size={18} /></button>
+      {downloadError && <div className="media-viewer-error" role="alert">{downloadError}</div>}
       {contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
       {contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
-      {attachment.kind === "image" && objectUrl && <img src={objectUrl} alt={attachment.filename} />}
-      {attachment.kind === "video" && objectUrl && <PlayableVideo src={objectUrl} autoPlay />}
+      {attachment.kind === "image" && objectUrl && <ZoomableImage src={objectUrl} alt={attachment.filename} />}
+      {attachment.kind === "video" && objectUrl && <PlayableVideo src={objectUrl} autoPlay onDownload={() => void download()} />}
     </>
   );
 }
@@ -2817,10 +2832,11 @@ function DetailPane({
   const detailCreator = creatorLabel(item.createdBy, { human: actorLabel("human"), sdk: t("creatorSdk"), agent: actorLabel("agent") });
   const createdEvent = timelineQuery.data?.events.find((event) => event.eventType === "item_created");
   const sdkDiagnostics = diagnosticsFromEvent(createdEvent);
-  const logAttachments = item.attachments.filter((attachment) => attachment.kind === "log");
-  const documentAttachments = item.attachments.filter((attachment) => attachment.kind === "document");
-  const archiveAttachments = item.attachments.filter((attachment) => attachment.kind === "archive");
-  const mediaAttachments = item.attachments.filter(isMediaAttachment);
+  const itemAttachments = item.attachments.filter(attachment => !attachment.commentId);
+  const logAttachments = itemAttachments.filter((attachment) => attachment.kind === "log");
+  const documentAttachments = itemAttachments.filter((attachment) => attachment.kind === "document");
+  const archiveAttachments = itemAttachments.filter((attachment) => attachment.kind === "archive");
+  const mediaAttachments = itemAttachments.filter(isMediaAttachment);
   const globalCurrent = dispatchesByItem([...(activeDispatches.data?.current ?? []),...(activeDispatches.data?.active ?? [])]).get(item.key);
   const currentAttempt = currentDispatchForStatus(item.status,globalCurrent ?? dispatchesQuery.data?.current);
   const latestDispatch = currentAttempt ?? dispatchesQuery.data?.dispatches[0];
@@ -3774,10 +3790,10 @@ function WorkItemFields({
   const diagnosticSlots = draft.diagnosticLog.trim() ? 1 : 0;
   const remainingAttachments = Math.max(0, attachmentLimit - files.length - diagnosticSlots);
   const attachmentOverflow = files.length + diagnosticSlots > attachmentLimit;
-  const existingLogAttachments = existingAttachments.filter((attachment) => attachment.kind === "log");
-  const existingDocumentAttachments = existingAttachments.filter((attachment) => attachment.kind === "document");
-  const existingArchiveAttachments = existingAttachments.filter((attachment) => attachment.kind === "archive");
-  const existingMediaAttachments = existingAttachments.filter(isMediaAttachment);
+  const existingLogAttachments = existingAttachments.filter((attachment) => !attachment.commentId && attachment.kind === "log");
+  const existingDocumentAttachments = existingAttachments.filter((attachment) => !attachment.commentId && attachment.kind === "document");
+  const existingArchiveAttachments = existingAttachments.filter((attachment) => !attachment.commentId && attachment.kind === "archive");
+  const existingMediaAttachments = existingAttachments.filter(attachment => !attachment.commentId && isMediaAttachment(attachment));
   const selectedLogFiles = files.filter(isDiagnosticFile);
   const selectedDocumentFiles = files.filter(isDocumentFile);
   const selectedArchiveFiles = files.filter(isArchiveFile);
@@ -3911,8 +3927,8 @@ function WorkItemFields({
             files={selectedMediaFiles}
             onFiles={(nextMediaFiles) => onFiles(withMediaFiles(nextMediaFiles))}
             startingNumbers={{
-              image: Math.max(0, ...existingMediaAttachments.filter((attachment) => attachment.kind === "image").map((attachment) => attachment.displayNumber)),
-              video: Math.max(0, ...existingMediaAttachments.filter((attachment) => attachment.kind === "video").map((attachment) => attachment.displayNumber)),
+              image: Math.max(0, ...existingAttachments.filter((attachment) => attachment.kind === "image").map((attachment) => attachment.displayNumber)),
+              video: Math.max(0, ...existingAttachments.filter((attachment) => attachment.kind === "video").map((attachment) => attachment.displayNumber)),
             }}
           />
         )}
@@ -4387,10 +4403,10 @@ function SelectedFilePreviews({
       </div>
       {activePreview && (
         <MediaLightbox
-          title={`${mediaNumberLabel(activePreview.kind, activePreview.displayNumber, t)} · ${activePreview.file.name}`}
+          title={mediaNumberLabel(activePreview.kind, activePreview.displayNumber, t)}
           onClose={() => setPreviewIndex(null)}
         >
-          {activePreview.kind === "image" && <img src={activePreview.url} alt={activePreview.file.name} />}
+          {activePreview.kind === "image" && <ZoomableImage src={activePreview.url} alt={activePreview.file.name} />}
           {activePreview.kind === "video" && <video src={activePreview.url} controls playsInline preload="metadata" />}
         </MediaLightbox>
       )}
@@ -4452,11 +4468,12 @@ function CommentAttachmentThumbnail({itemKey,attachment,onOpen}:{itemKey:string;
     enabled:near && attachment.kind==="image",staleTime:Infinity,
   });
   const url=useObjectUrl(thumbnail.data);
+  const referenceLabel=attachment.kind==="image" || attachment.kind==="video" ? mediaNumberLabel(attachment.kind,attachment.displayNumber,t) : null;
   const Icon=attachment.kind==="image"?ImageIcon:attachment.kind==="video"?Video:attachment.kind==="archive"?Archive:FileText;
   return <button type="button" className="comment-attachment-tile" ref={ref} onClick={onOpen} title={attachment.filename}
     aria-label={t("previewAttachment",{filename:attachment.filename})}>
-    <span className="comment-attachment-thumb">{url?<img src={url} alt="" decoding="async" />:<Icon size={24} aria-hidden="true" />}</span>
-    <span className="comment-attachment-filename">{attachment.filename}</span>
+    <span className="comment-attachment-thumb">{referenceLabel && <small className="media-number-badge">{referenceLabel}</small>}{url?<img src={url} alt="" decoding="async" />:<Icon size={24} aria-hidden="true" />}</span>
+    {!referenceLabel && <span className="comment-attachment-filename">{attachment.filename}</span>}
   </button>;
 }
 
@@ -4659,14 +4676,15 @@ function AttachmentCard({
     }
   };
 
+  const mediaTile = isMediaAttachment(attachment) && !onDelete && !onReplaced && !onStageReplacement;
   const Icon = attachment.kind === "image" ? ImageIcon : attachment.kind === "video" ? Video : attachment.kind === "archive" ? Archive : FileText;
   return (
-    <article ref={cardRef} className={`attachment-card attachment-${attachment.kind}`}>
-      {(!compact || isImage || shouldLoad) && <div className="attachment-preview">
+    <article ref={cardRef} className={`attachment-card attachment-${attachment.kind}${mediaTile ? " media-tile" : ""}`}>
+      {(!compact || isImage || shouldLoad || mediaTile) && <div className="attachment-preview">
         {referenceLabel && <small className="media-number-badge">{referenceLabel}</small>}
         {!shouldLoad && attachment.kind !== "image" && attachment.kind !== "archive" && (
-          <button type="button" className="attachment-load-button" onClick={() => setPreviewRequested(true)}>
-            <Icon size={22} /> {t("loadPreview")}
+          <button type="button" className="attachment-load-button" aria-label={mediaTile ? t("previewAttachment", { filename: attachment.filename }) : undefined} onClick={() => mediaTile && onOpenMedia ? onOpenMedia(attachment.id) : setPreviewRequested(true)}>
+            <Icon size={22} /> {!mediaTile && t("loadPreview")}
           </button>
         )}
         {attachment.kind === "archive" && <span><Archive size={22} /> ZIP</span>}
@@ -4689,7 +4707,8 @@ function AttachmentCard({
         )}
         {readsAsText && logText && <pre>{logText}</pre>}
       </div>}
-      <footer>
+      {mediaTile && <button type="button" className="media-tile-download" onClick={() => void download()} aria-label={`${t("download")} ${attachment.filename}`} title={t("download")}><Download size={16} /></button>}
+      {!mediaTile && <footer>
         <Icon size={15} />
         <span><strong>{referenceLabel ? `${referenceLabel} · ` : ""}{attachment.filename}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span>
         <span className="attachment-actions">
@@ -4714,7 +4733,7 @@ function AttachmentCard({
             title={t("delete")}
           >{deleting ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}</button>}
         </span>
-      </footer>
+      </footer>}
       {replacementFile && <p role="status" className="account-note">{t("stagedAnnotation")}</p>}
       {replaceError && <InlineError message={replaceError} />}
       {annotating && annotationSource && (
@@ -4726,10 +4745,10 @@ function AttachmentCard({
         />
       )}
       {viewerOpen && (objectUrl || isImage) && attachment.kind !== "log" && (
-        <MediaLightbox title={`${referenceLabel} · ${attachment.filename}`} onClose={() => setViewerOpen(false)}>
+        <MediaLightbox title={referenceLabel ?? attachment.filename} onClose={() => setViewerOpen(false)}>
           {isImage && contentQuery.isLoading && <div className="media-viewer-loading"><LoaderCircle className="spin" size={22} /> {t("attachmentLoading")}</div>}
           {isImage && contentQuery.isError && <div className="media-viewer-loading attachment-error">{t("attachmentFailed")}</div>}
-          {isImage && (stagedUrl || objectUrl) && <img src={stagedUrl ?? objectUrl!} alt={attachment.filename} />}
+          {isImage && (stagedUrl || objectUrl) && <ZoomableImage src={stagedUrl ?? objectUrl!} alt={attachment.filename} />}
           {attachment.kind === "video" && objectUrl && <PlayableVideo src={objectUrl} autoPlay onDownload={() => void download()} />}
         </MediaLightbox>
       )}
@@ -5379,9 +5398,14 @@ function MediaLightbox({
         }
       }}
       onTouchStart={(event) => {
-        if (!showNavigation || event.touches.length !== 1) return;
+        const zoomed = event.target instanceof Element && event.target.closest('[data-zoomed="true"]');
+        if (!showNavigation || event.touches.length !== 1 || zoomed || (event.target instanceof Element && Boolean(event.target.closest("button, video, input, a")))) { touchStart.current = null; return; }
         touchStart.current = { x: event.touches[0]!.clientX, y: event.touches[0]!.clientY };
       }}
+      onTouchMove={(event) => {
+        if (event.touches.length > 1 || (event.target instanceof Element && event.target.closest('[data-zoomed="true"]'))) touchStart.current = null;
+      }}
+      onTouchCancel={() => { touchStart.current = null; }}
       onTouchEnd={(event) => {
         const start = touchStart.current;
         touchStart.current = null;

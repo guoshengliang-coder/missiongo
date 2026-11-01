@@ -285,3 +285,28 @@ describe("work-item comments", () => {
     })).toThrowError(/at least one piece of evidence/);
   });
 });
+
+
+describe("comment attachment ownership", () => {
+  it("derives ownership for existing root/reply files, survives withdrawal and reopen, and preserves numbers", async () => {
+    const { store, item, databasePath } = await seed();
+    const attach = (kind: "image" | "video" | "document" | "log" | "archive", name: string) => store.createAttachmentMetadata({
+      itemKey: item.key, kind, filename: name, storageFilename: name, contentType: "application/octet-stream", sizeBytes: 12,
+    });
+    const original = attach("image", "original.png");
+    const files = [attach("image", "comment.png"), attach("video", "comment.mp4"), attach("document", "comment.txt"), attach("log", "comment.log"), attach("archive", "comment.zip")];
+    const root = store.createComment({ itemKey: item.key, actorKind: "human", bodyKind: "free", body: { text: "Root", attachmentIds: files.slice(0, 2).map(file => file.id) } });
+    const reply = store.createComment({ itemKey: item.key, actorKind: "human", bodyKind: "free", body: { text: "Reply", attachmentIds: files.slice(2).map(file => file.id) }, replyToCommentId: root.id });
+    for (let i = 0; i < 105; i++) store.createComment({ itemKey: item.key, actorKind: "human", bodyKind: "free", body: { text: `Later ${i}` } });
+    store.withdrawComment({ itemKey: item.key, commentId: reply.id });
+    const reopened = new MissionGoStore(databasePath); stores.push(reopened);
+    for (const reader of [store, reopened]) {
+      const snapshot = reader.getWorkItem(item.key);
+      expect(snapshot.attachments.filter(file => !file.commentId).map(file => file.id)).toEqual([original.id]);
+      expect(snapshot.attachments.slice(1).map(file => file.commentId)).toEqual([root.id, root.id, reply.id, reply.id, reply.id]);
+      expect(snapshot.attachments.map(file => [file.id, file.displayNumber])).toEqual([original, ...files].map(file => [file.id, file.displayNumber]));
+      expect(snapshot.diagnosticSummary?.logFileCount).toBe(0);
+      expect(reader.listAttachments(item.key).map(file => file.commentId)).toEqual(snapshot.attachments.map(file => file.commentId));
+    }
+  });
+});
