@@ -4683,7 +4683,7 @@ function AttachmentCard({
         {referenceLabel && <small className="media-number-badge">{referenceLabel}</small>}
         {!shouldLoad && attachment.kind !== "image" && attachment.kind !== "archive" && (
           <button type="button" className="attachment-load-button" aria-label={mediaTile ? t("previewAttachment", { filename: attachment.filename }) : undefined} onClick={() => mediaTile && onOpenMedia ? onOpenMedia(attachment.id) : setPreviewRequested(true)}>
-            <Icon size={22} /> {t("loadPreview")}
+            <Icon size={22} /> {!mediaTile && t("loadPreview")}
           </button>
         )}
         {attachment.kind === "archive" && <span><Archive size={22} /> ZIP</span>}
