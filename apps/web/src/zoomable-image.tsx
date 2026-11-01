@@ -1,10 +1,31 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Minus, Plus, RotateCcw } from "lucide-react";
 import { useI18n } from "./i18n";
 
 type View = { scale: number; x: number; y: number };
 type Point = { x: number; y: number };
 const INITIAL: View = { scale: 1, x: 0, y: 0 };
+
+/** Touch activation must not depend on a delayed compatibility mouse click. */
+function ZoomControl({ label, disabled, children, onActivate }: {
+  label: string; disabled?: boolean; children: ReactNode; onActivate: () => void;
+}) {
+  const lastTouch = useRef(-Infinity);
+  return <button type="button" disabled={disabled} aria-label={label} title={label}
+    onPointerDown={event => { if (event.pointerType !== "touch") lastTouch.current = -Infinity; }}
+    onPointerUp={event => {
+      if (event.pointerType !== "touch") return;
+      event.preventDefault();
+      lastTouch.current = performance.now();
+      onActivate();
+    }}
+    onClick={event => {
+      // Keyboard activation has detail 0; suppress only the click synthesized
+      // after the touch we already handled, never mouse or keyboard actions.
+      if (event.detail === 0 || performance.now() - lastTouch.current > 750) onActivate();
+    }}
+  >{children}</button>;
+}
 
 /** Owns only image gestures. The gallery still owns unzoomed one-finger swipes. */
 export function ZoomableImage({ src, alt }: { src: string; alt: string }) {
@@ -109,10 +130,10 @@ export function ZoomableImage({ src, alt }: { src: string; alt: string }) {
     >
       <img ref={image} src={src} alt={alt} draggable={false} onLoad={() => apply(INITIAL)} style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }} />
     </div>
-    <div className="image-zoom-controls" onTouchStart={event => event.stopPropagation()} onTouchEnd={event => event.stopPropagation()}>
-      <button type="button" onClick={() => zoom(viewRef.current.scale / 1.5)} disabled={view.scale <= 1} aria-label={t("zoomOutImage")}><Minus size={18} /></button>
-      <button type="button" onClick={() => apply(INITIAL)} aria-label={t("resetImageZoom")} title={t("resetImageZoom")}><RotateCcw size={16} /><span>{Math.round(view.scale * 100)}%</span></button>
-      <button type="button" onClick={() => zoom(viewRef.current.scale * 1.5)} disabled={view.scale >= 5} aria-label={t("zoomInImage")}><Plus size={18} /></button>
+    <div className="image-zoom-controls">
+      <ZoomControl onActivate={() => zoom(viewRef.current.scale / 1.5)} disabled={view.scale <= 1} label={t("zoomOutImage")}><Minus size={18} /></ZoomControl>
+      <ZoomControl onActivate={() => apply(INITIAL)} label={t("resetImageZoom")}><RotateCcw size={16} /><span>{Math.round(view.scale * 100)}%</span></ZoomControl>
+      <ZoomControl onActivate={() => zoom(viewRef.current.scale * 1.5)} disabled={view.scale >= 5} label={t("zoomInImage")}><Plus size={18} /></ZoomControl>
     </div>
   </div>;
 }

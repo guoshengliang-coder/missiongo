@@ -5398,7 +5398,7 @@ function MediaLightbox({
       }}
       onTouchStart={(event) => {
         const zoomed = event.target instanceof Element && event.target.closest('[data-zoomed="true"]');
-        if (!showNavigation || event.touches.length !== 1 || zoomed || event.target instanceof HTMLVideoElement) { touchStart.current = null; return; }
+        if (!showNavigation || event.touches.length !== 1 || zoomed || (event.target instanceof Element && Boolean(event.target.closest("button, video, input, a")))) { touchStart.current = null; return; }
         touchStart.current = { x: event.touches[0]!.clientX, y: event.touches[0]!.clientY };
       }}
       onTouchMove={(event) => {
