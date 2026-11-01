@@ -11,7 +11,7 @@ it("subscribes only card callbacks and acknowledges saved replies or explicit er
   const stream=new DingTalkCardStream("synthetic-app","synthetic-secret",onCard);stream.start();
   expect(state.topic).toBe("/v1.0/card/instances/callback");
   state.listener!({data:'{"valid":true}',headers:{messageId:"one"}});expect(state.ack).toHaveBeenLastCalledWith("one",{cardData:{cardParamMap:{replySaved:"true"}}});
-  state.listener!({data:'{"invalid":true}',headers:{messageId:"two"}});expect(state.ack).toHaveBeenLastCalledWith("two",{cardData:{cardParamMap:{replySaved:"false",replyStatus:"没有评论权限"}}});
+  state.listener!({data:'{"invalid":true}',headers:{messageId:"two"}});expect(state.ack).toHaveBeenLastCalledWith("two",{cardUpdateOptions:{updateCardDataByKey:true},cardData:{cardParamMap:{replySaved:"false",replyStatus:"没有评论权限"}}});
   state.listener!({data:'invalid-json',headers:{messageId:"three"}});expect(onCard).toHaveBeenCalledTimes(2);
   stream.close();expect(state.disconnect).toHaveBeenCalledOnce();
 });

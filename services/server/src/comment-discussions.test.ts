@@ -128,7 +128,7 @@ describe("DingTalk comment card replies",()=>{
   });
   it("rejects wrong organizations, other users and missing operate permission",async()=>{
     const f=fixture();f.configure();f.post("Question",f.writer.id,{mentionTargets:["proposer"]});await f.service.drain();const body=f.callback(f.jobs()[0]!.id);
-    expect(()=>f.service.receiveCommentCard({...body,corpId:"foreign-corp"})).toThrow(/失效/);
+    expect(()=>f.service.receiveCommentCard({...body,corpId:"foreign-corp"})).toThrow(/组织/);
     expect(()=>f.service.receiveCommentCard({...body,userId:"someone-else"})).toThrow(/绑定/);
     f.accounts.replacePermissions(f.member.id,[{productId:f.product.id,canView:true,canOperate:false,canUseAi:false}]);
     expect(()=>f.service.receiveCommentCard(body)).toThrow(/评论权限/);expect(f.store.listComments(f.item.key)).toHaveLength(1);
@@ -140,6 +140,21 @@ describe("DingTalk comment card replies",()=>{
     f.store.withdrawComment({itemKey:f.item.key,commentId:root.id});expect(()=>f.service.receiveCommentCard(body)).toThrow(/撤回/);
     const binding=f.service.bindings()[0]!;f.service.saveBinding(f.member.id,{userId:"changed-user",name:"",department:""},binding.revision,f.writer.id);
     expect(()=>f.service.receiveCommentCard(body)).toThrow(/绑定/);
+  });
+  it("distinguishes untracked platform cards from changed configuration without creating a reply",async()=>{
+    const f=fixture();f.configure();
+    expect(()=>f.service.receiveCommentCard(f.callback("00000000-0000-4000-8000-000000000001"))).toThrow(/找不到.*评论提醒/);
+    f.post("Question",f.writer.id,{mentionTargets:["proposer"]});await f.service.drain();
+    const body=f.callback(f.jobs()[0]!.id);
+    f.service.saveSettings({corpId:"synthetic-corp",clientId:"synthetic-app",agentId:"",expectedRevision:1,deliveryMode:"robot",robotCode:"synthetic-robot"},f.writer.id);
+    expect(()=>f.service.receiveCommentCard(body)).toThrow(/应用配置已变化/);
+    expect(f.store.listComments(f.item.key)).toHaveLength(1);
+  });
+  it("retains valid card correlation across worker restarts",async()=>{
+    const f=fixture();f.configure();f.post("Question",f.writer.id,{mentionTargets:["proposer"]});await f.service.drain();
+    const restarted=new DingTalkNotifications(f.store,f.accounts,secret,"https://example.test");
+    expect(restarted.receiveCommentCard(f.callback(f.jobs()[0]!.id))).toMatchObject({cardData:{cardParamMap:{replySaved:"true"}}});
+    expect(f.store.listComments(f.item.key)).toHaveLength(2);
   });
   it("rechecks recipients after network waits and never sends revoked project content",async()=>{
     const f=fixture();f.configure();f.post("Sensitive",f.writer.id,{mentionTargets:["proposer"]});

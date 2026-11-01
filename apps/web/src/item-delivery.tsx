@@ -104,8 +104,8 @@ function ExecutionRow({execution,delivery,itemKey,onRefresh,summarized,dispatchD
   const finished=["completed","cancelled","handed_over","failed"].includes(execution.status);
   const editable=!finished && (execution.kind==="human" || execution.recorded===true) && (delivery.canManage || delivery.currentAccountId===execution.accountId);
   return <li className="execution-row">
-    <RecordDisclosure className="execution-record" summary={<>
-      <span className="execution-heading"><strong>{summarized ? t("currentSessionDetails") : execution.name}</strong><span>{execution.kind==="agent" ? "Agent" : "人工"} · {executionLabels[execution.status] ?? execution.status}</span></span>
+    <RecordDisclosure className="execution-record" status={<>{execution.kind==="agent" ? "Agent" : "人工"} · {executionLabels[execution.status] ?? execution.status}</>} summary={<>
+      <strong>{summarized ? t("currentSessionDetails") : execution.name}</strong>
       <small>{new Date(execution.createdAt).toLocaleString("zh-CN")}</small>
     </>}>
     <div className="execution-record-body">
