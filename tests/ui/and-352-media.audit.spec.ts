@@ -19,6 +19,7 @@ for (const width of [375, 724, 844, 1440]) for (const theme of ["light", "dark"]
     await page.emulateMedia({ colorScheme: theme });
     const { item, root, reply } = await seed(page);
     await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}`);
+    await expect(page.getByRole("heading",{name:item.title,exact:true})).toBeVisible({timeout:15000});
     const gallery = page.locator(".attachment-block").filter({ has: page.getByRole("heading", { name: "截图与视频", exact: true }) });
     await expect(gallery.locator(".media-tile")).toHaveCount(2);
     await expect(gallery.locator("footer")).toHaveCount(0);
@@ -77,6 +78,8 @@ for (const width of [375, 724, 844, 1440]) for (const theme of ["light", "dark"]
     await page.screenshot({ path: test.info().outputPath(`preview-${width}-${theme}.png`) });
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
+    await page.locator(`#comment-${root.id} .comment-attachments`).scrollIntoViewIfNeeded();
+    await expect(page.locator(`#comment-${root.id} .comment-attachment-thumb img`)).toBeVisible();
     await page.locator(`#comment-${root.id} .comment-attachments`).screenshot({path:test.info().outputPath(`comment-corner-${width}-${theme}.png`)});
     await page.reload(); await expect(gallery.locator(".media-tile")).toHaveCount(2);
     await page.getByRole("button", { name: "编辑", exact: true }).click();

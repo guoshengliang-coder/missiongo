@@ -26,6 +26,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
         return route.fulfill({ json: { notifications: notices, canRetry: true } });
       });
       await page.goto(`/?product=${product.id}&item=${item.key}`);
+      await expect(page.getByRole("heading",{name:item.title,exact:true})).toBeVisible({timeout:15000});
       const panel = page.getByRole("region", { name: "执行记录", exact: true });
       const history = panel.locator(".execution-history");
       const header = history.locator(":scope > summary");
@@ -128,6 +129,7 @@ for (const failDelivery of [false, true]) {
     await page.route(`**/api/v1/items/${item.key}/dispatches`, route => route.fulfill({ json: { dispatches: [] } }));
     await page.route(`**/api/v1/items/${item.key}/dingtalk-notifications`, route => route.fulfill({ json: { notifications: [{ id: "only", kind: "verification", status: "sent", reason: "唯一通知", attempts: 1, createdAt: "2026-10-31T00:00:00Z" }], canRetry: false } }));
     await page.goto(`/?product=${product.id}&item=${item.key}`);
+    await expect(page.getByRole("heading",{name:item.title,exact:true})).toBeVisible({timeout:15000});
     const panel = page.getByRole("region", { name: "执行记录", exact: true });
     await expect(panel.locator(".execution-history > summary .record-summary")).toHaveText("执行记录（1）");
     if (failDelivery) await expect(panel.getByRole("alert")).toContainText("执行记录加载失败", { timeout: 15000 });
