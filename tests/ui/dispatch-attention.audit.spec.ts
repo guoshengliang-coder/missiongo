@@ -54,7 +54,8 @@ for (const width of [375, 1440]) {
         await expect(header).not.toContainText(error);
       }
       const history = page.locator(".execution-history");
-      await history.locator("summary").click();
+      await history.locator(":scope > summary").click();
+      await history.locator(".execution-record > summary").click();
       await expect(history).toContainText(error);
       expect(await page.locator(".detail-scroll").evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
       if (status === "pending_verification" || isCurrent) await page.screenshot({ path: testInfo.outputPath(`${status}.png`) });

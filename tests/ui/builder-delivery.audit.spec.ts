@@ -48,6 +48,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await panel.locator(".execution-history > summary").click();
       await expect(panel.locator(".execution-row").first()).toContainText("已交接");
       const second=panel.locator(".execution-row").nth(1);
+      await second.locator(".execution-record > summary").click();
       await second.getByText("更新本轮执行",{exact:true}).click();
       await chooseOption(second.getByRole("combobox"), "completed");
       await second.getByLabel("结果／说明",{exact:true}).fill("Integration complete");
