@@ -10,7 +10,7 @@ import { hostCall, runHost } from "./host.js";
 import { detectAgents, runNode, verifyRepo, version } from "./runner.js";
 import { loadConfig, readPrivate, safeError, saveConfig, stateRoot } from "./storage.js";
 import { installService, uninstallService } from "./service.js";
-import type { Kind } from "./types.js";
+import type { Kind, RepoMapping } from "./types.js";
 
 const help = `missiongo-node — Linux headless execution node
 Node.js >=22.13; Ubuntu 22.04/24.04 x86_64; no graphical session required.
@@ -63,13 +63,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     case "repo": {
       const client = api(); const profile = await client.call("GET", "/api/v1/node/me");
-      const repos: { productId: string; path: string }[] = profile.repos ?? [];
+      const repos: RepoMapping[] = profile.repos ?? [];
       if (action === "list") { console.log(JSON.stringify(repos, null, 2)); return; }
       if (!arg || !profile.products?.some((product: { id: string }) => product.id === arg)) throw new Error("Choose a product ID from products");
       const next = repos.filter((repo) => repo.productId !== arg);
-      if (action === "set" && path) next.push({ productId: arg, path: await verifyRepo(path) });
+      if (action === "set" && path) next.push({ productId: arg, repoPath: await verifyRepo(path) });
       else if (action !== "remove") throw new Error("Use repo set <product-id> <path> or repo remove <product-id>");
-      await client.call("PUT", "/api/v1/node/repos", { repos: next.map(({ productId, path }) => ({ productId, path })) });
+      await client.call("PUT", "/api/v1/node/repos", { repos: next.map(({ productId, repoPath }) => ({ productId, repoPath })) });
       console.log("Repository mappings saved."); return;
     }
     case "agent": {

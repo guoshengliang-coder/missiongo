@@ -9,7 +9,7 @@ import { launchPrompt } from "./prompt.js";
 import { probe } from "./process.js";
 import { syncSkill } from "./skills.js";
 import { OpenCodeAPI } from "./opencode.js";
-import type { Config, Dispatch, HostState, Kind, Session, Snapshot } from "./types.js";
+import type { Config, Dispatch, HostState, Kind, RepoMapping, Session, Snapshot } from "./types.js";
 
 declare const NODE_VERSION: string;
 export const version = typeof NODE_VERSION === "string" ? NODE_VERSION : "development";
@@ -59,7 +59,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
   if (!config.server || !config.token) throw new Error("Run login first");
   const api = new API(config.server, config.token, signal);
   const healthPath = join(root, "status.json");
-  let repos: { productId: string; path: string }[] = [];
+  let repos: RepoMapping[] = [];
   let agents: Awaited<ReturnType<typeof detectAgents>> = [];
   const pause = (ms: number) => delay(ms, undefined, { signal });
   const retry = async (work: () => Promise<void>, ms: number) => {
@@ -129,7 +129,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
         const job = await api.call("POST", "/api/v1/node/dispatches/claim-next", { waitMs: 25_000, availableAgentKinds: kinds }) as Dispatch | undefined;
         if (!job) return;
         try {
-          if (!repos.some((r) => r.path === job.repoPath) || !loadConfig(root).agents[job.agentKind]) throw new Error("Dispatch repository or Agent is not enabled on this node");
+          if (!repos.some((r) => r.repoPath === job.repoPath) || !loadConfig(root).agents[job.agentKind]) throw new Error("Dispatch repository or Agent is not enabled on this node");
           await launch(root, job, entry); await recoverResults();
         } catch (error) {
           await api.call("POST", `/api/v1/node/dispatches/${encodeURIComponent(job.dispatchId)}/result`, {

@@ -6,6 +6,7 @@ export interface Dispatch {
   nodeName?: string; model?: string; effort?: string; reworkItemKeys?: string[];
 }
 export interface AgentConfig { executable?: string }
+export interface RepoMapping { productId: string; repoPath: string; productKey?: string }
 export interface Config {
   installationId: string; server?: string; nodeId?: string; name?: string; token?: string;
   agents: Partial<Record<Kind, AgentConfig>>;
