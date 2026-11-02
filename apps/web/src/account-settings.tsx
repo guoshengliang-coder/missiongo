@@ -523,10 +523,11 @@ function PermissionGrid({ account, products, productId, onCancel, onSaved }: { a
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<readonly ProductPermission[]>(account.permissions);
+  const [aiScope,setAiScope] = useState(account.aiScope ?? "selected");
   const [saved, setSaved] = useState(false);
 
   const mutation = useMutation({
-    mutationFn: () => api.setAccountProducts(account.id, draft.filter((entry) => entry.canView || entry.canOperate || entry.canUseAi)),
+    mutationFn: () => api.setAccountProducts(account.id, draft.filter((entry) => entry.canView || entry.canOperate || entry.canUseAi), aiScope),
     onSuccess: async () => {
       setSaved(true);
       await queryClient.invalidateQueries({ queryKey: ["accounts"] });
@@ -538,31 +539,30 @@ function PermissionGrid({ account, products, productId, onCancel, onSaved }: { a
     draft.find((entry) => entry.productId === productId)
     ?? { productId, canView: false, canOperate: false, canUseAi: false };
 
-  // An administrator with no AI rows reaches every product by role (AND-63).
+  // AI scope is explicit; an empty selected list grants no AI access.
   const administrator = account.role === "admin"
-    ? { aiUnrestricted: !draft.some((entry) => entry.canUseAi) }
+    ? { aiUnrestricted: aiScope === "all" }
     : undefined;
 
   const toggle = (productId: string, field: "canView" | "canOperate" | "canUseAi", checked: boolean) => {
     setSaved(false);
-    if (administrator?.aiUnrestricted && field === "canUseAi" && !checked) {
-      // Unticking one product while AI is unrestricted means "every product but
-      // this one", and the only way the rows can say that is to name the rest.
-      setDraft(products.map((product) => ({ ...permissionFor(product.id), canUseAi: product.id !== productId })));
-      return;
-    }
     const current = permissionFor(productId);
     const updated: ProductPermission = { ...current, [field]: checked };
     setDraft([...draft.filter((entry) => entry.productId !== productId), updated]);
   };
 
-  useSettingsDraft(!saved && JSON.stringify(draft) !== JSON.stringify(account.permissions), mutation.isPending);
+  useSettingsDraft(!saved && (JSON.stringify(draft) !== JSON.stringify(account.permissions) || aiScope !== (account.aiScope ?? "selected")), mutation.isPending);
 
   if (products.length === 0) return <p className="account-note">{t("noProductsToGrant")}</p>;
 
   return (
     <div className="account-permissions">
       <p className="account-note">{account.role === "admin" ? t("adminProductsHelp") : t("accountProductsHelp")}</p>
+      <label>{t("aiScope")}
+        <Select aria-label={t("aiScope")} value={aiScope} disabled={mutation.isPending} onChange={event=>{setAiScope(event.target.value as "all"|"selected"|"none");setSaved(false);}}>
+          <option value="all">{t("aiScopeAll")}</option><option value="selected">{t("aiScopeSelected")}</option><option value="none">{t("aiScopeNone")}</option>
+        </Select>
+      </label>
       <table>
         <thead>
           <tr>
@@ -584,13 +584,14 @@ function PermissionGrid({ account, products, productId, onCancel, onSaved }: { a
                   // the server will not store. An administrator's view and
                   // operate are the role's and stay locked; its AI stays
                   // editable here, because this grid is where it is narrowed.
-                  const cell = permissionCell(field, permission, administrator);
+                  const baseCell = permissionCell(field, permission, administrator);
+                  const cell=field === "canUseAi" ? {...baseCell,checked:aiScope === "none" ? false : aiScope === "all" ? account.role === "admin" || permission.canView || permission.canOperate || permission.canUseAi || Boolean(account.projectAdministratorProductIds?.includes(product.id)) : permission.canUseAi} : baseCell;
                   return (
                     <td key={field}>
                       <input
                         type="checkbox"
                         checked={cell.checked}
-                        disabled={(cell.byRole && field !== "canUseAi") || (!administrator && field === "canView" && (permission.canOperate || permission.canUseAi))}
+                        disabled={(field === "canUseAi" && aiScope !== "selected") || (cell.byRole && field !== "canUseAi") || (!administrator && field === "canView" && (permission.canOperate || permission.canUseAi))}
                         title={cell.byRole && field !== "canUseAi" ? t("adminAccessByRole") : undefined}
                         onChange={(event) => toggle(product.id, field, event.target.checked)}
                         aria-label={`${product.name} · ${t(field === "canView" ? "permissionView" : field === "canOperate" ? "permissionOperate" : "permissionUseAi")}`}
@@ -607,7 +608,7 @@ function PermissionGrid({ account, products, productId, onCancel, onSaved }: { a
       <div className="account-permissions-footer">
         {saved && <span className="account-note">{t("permissionsSaved")}</span>}
         <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>{t("cancel")}</button>
-        <button className="primary-button" disabled={mutation.isPending || JSON.stringify(draft) === JSON.stringify(account.permissions)} onClick={() => mutation.mutate()}>
+        <button className="primary-button" disabled={mutation.isPending || JSON.stringify(draft) === JSON.stringify(account.permissions) && aiScope === (account.aiScope ?? "selected")} onClick={() => mutation.mutate()}>
           {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
         </button>
       </div>
@@ -638,7 +639,7 @@ function AccountRow({
   const [permissionsOnly, setPermissionsOnly] = useState(Boolean(filterProductId));
   const permission = account.permissions.find(row => row.productId === filterProductId) ?? { canView: false, canOperate: false, canUseAi: false };
   const projectAdministrator = Boolean(filterProductId && account.projectAdministratorProductIds?.includes(filterProductId));
-  const administrator = account.role === "admin" ? { aiUnrestricted: !account.permissions.some(row => row.canUseAi) } : undefined;
+  const administrator = account.role === "admin" ? { aiUnrestricted: account.aiScope === "all" } : undefined;
   const editIntent = `account:${account.id}` as const;
   const open = editor === editIntent;
 
@@ -669,7 +670,7 @@ function AccountRow({
           {(["canView", "canOperate", "canUseAi"] as const).map(field => {
             const cell = permissionCell(field, permission, administrator);
             const label = t(field === "canView" ? "permissionView" : field === "canOperate" ? "permissionOperate" : "permissionUseAi");
-            const effective = (cell.checked || field === "canView" && projectAdministrator) && !account.disabledAt;
+            const effective = (field === "canUseAi" ? account.aiScope === "all" || account.aiScope !== "none" && cell.checked : cell.checked || projectAdministrator) && !account.disabledAt;
             return <div key={field}><dt>{label}</dt><dd title={account.disabledAt ? "账号已停用，配置权限不生效" : cell.byRole ? t("adminAccessByRole") : undefined}>{effective ? "✓" : "—"}<span className="sr-only">{effective ? "已授权" : "未授权"}</span></dd></div>;
           })}
         </dl>}
@@ -1064,6 +1065,7 @@ export function ProductAccessSettings(
   return (
     <div className="account-permissions">
       <p className="account-note">{editsRoster ? t("productAccessHelp") : t("productAccessOwnerHelp")}</p>
+      <p className="account-note">{t("projectAiScopeHelp")}</p>
       <table>
         <thead>
           <tr>
@@ -1078,8 +1080,7 @@ export function ProductAccessSettings(
           {entries.map((entry) => {
             const permission = permissionFor(entry.account.id);
             const mayEdit = editable(entry);
-            // An administrator whose stored row does not grant AI and who still
-            // reaches it here has never been narrowed: AI is the role's, not a row's.
+            // Project grants never change the account-wide AI scope.
             const administrator = entry.reachesByRole
               ? { aiUnrestricted: entry.effective.canUseAi && !entry.permission.canUseAi }
               : undefined;
@@ -1099,14 +1100,16 @@ export function ProductAccessSettings(
                   )}
                 </td>
                 {(["canView", "canOperate", "canUseAi"] as const).map((field) => {
-                  const cell = permissionCell(field, permission, administrator);
+                  const baseCell = permissionCell(field, permission, administrator);
+                  const cell = field === "canUseAi" && entry.aiScope !== "selected"
+                    ? {checked:entry.aiScope === "all" && entry.effective.canView,byRole:true} : baseCell;
                   return (
                     <td key={field}>
                       <input
                         type="checkbox"
                         checked={cell.checked}
                         disabled={!mayEdit || cell.byRole || (!administrator && field === "canView" && (permission.canOperate || permission.canUseAi))}
-                        title={cell.byRole ? t(field === "canUseAi" ? "adminAiByRole" : "adminAccessByRole") : undefined}
+                        title={cell.byRole ? t(field === "canUseAi" ? "projectAiScopeHelp" : "adminAccessByRole") : undefined}
                         onChange={(event) => toggle(entry.account.id, field, event.target.checked)}
                         aria-label={`${entry.account.email} · ${t(field === "canView" ? "permissionView" : field === "canOperate" ? "permissionOperate" : "permissionUseAi")}`}
                       />

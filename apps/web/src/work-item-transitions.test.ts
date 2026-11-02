@@ -14,7 +14,7 @@ const DOMAIN_HUMAN_TARGETS: Record<WorkItemStatus, readonly WorkItemStatus[]> = 
   ready: ["in_progress", "on_hold", "inbox", "cancelled"],
   in_progress: ["on_hold", "development_complete", "ready", "cancelled"],
   development_complete: ["pending_verification", "ready", "cancelled"],
-  on_hold: ["in_progress", "ready", "cancelled"],
+  on_hold: ["in_progress", "ready", "inbox", "cancelled"],
   pending_verification: ["done", "ready", "cancelled"],
   done: ["ready"],
   cancelled: ["inbox"],
@@ -31,7 +31,7 @@ describe("web transition table", () => {
           reason: action.reason,
           // Ways back to Ready need one; the dialog collects it before the
           // request is made, so a placeholder stands in for the person here.
-          ...(transitionRequiresNote(from, action.to) ? { note: "why" } : {}),
+          note:"Audited reason",
         });
         expect(decision.allowed, `${from} → ${action.to} (${action.reason}): ${decision.message}`).toBe(true);
       }
@@ -45,34 +45,17 @@ describe("web transition table", () => {
       TRANSITIONS[from].filter((action) => transitionRequiresNote(from, action.to)).map((action) => [from, action.reason]),
     );
     expect(asking).toEqual([
-      ["inbox", "cancelled"],
-      ["ready", "cancelled"],
-      ["in_progress", "released"],
-      ["in_progress", "cancelled"],
-      ["development_complete", "released"],
-      ["development_complete", "cancelled"],
-      ["on_hold", "reopened"],
-      ["on_hold", "cancelled"],
-      ["pending_verification", "verification_failed"],
-      ["pending_verification", "cancelled"],
-      ["done", "reopened"],
+      ["inbox","request_human_input"],["inbox","cancelled"],["ready","request_human_input"],["ready","cancelled"],
+      ["in_progress","request_human_input"],["in_progress","released"],["in_progress","cancelled"],
+      ["development_complete","released"],["development_complete","cancelled"],
+      ["on_hold","resume"],["on_hold","resume"],["on_hold","resume"],["on_hold","cancelled"],
+      ["pending_verification","verification_failed"],["pending_verification","cancelled"],["done","reopened"],["cancelled","restored"]
     ]);
   });
 
-  it("never offers a direct jump to ready that would skip the reason", () => {
-    // "Move directly to" is built by subtracting what the pipeline already
-    // offers, so Ready is absent from exactly the statuses that owe a reason.
-    // The one jump that does owe a note is Done -> Cancelled, which has no
-    // pipeline edge; the menu routes it through the same note dialog, and the
-    // domain refuses it without one anyway.
-    for (const from of ITEM_STATUSES) {
-      for (const action of manualMoves(from)) {
-        if (action.to === "cancelled") continue;
-        expect(transitionRequiresNote(from, action.to), `${from} offers a silent jump to ${action.to}`).toBe(false);
-      }
-    }
-    expect(manualMoves("done").some((action) => action.to === "cancelled")).toBe(true);
-    expect(transitionRequiresNote("done", "cancelled")).toBe(true);
+  it("never offers terminal shortcuts, and all manager corrections require a reason", () => {
+    expect(manualMoves("done")).toEqual([]);expect(manualMoves("cancelled")).toEqual([]);
+    expect(evaluateWorkItemTransition({from:"inbox",to:"in_progress",actor:"human",reason:"manual_override"}).code).toBe("note_required");
   });
 
   it("reaches cancelled from every status the domain allows it from", () => {
@@ -111,7 +94,7 @@ describe("manual moves", () => {
   it("offers every status the curated table does not already reach", () => {
     for (const from of ITEM_STATUSES) {
       const offered = new Set(TRANSITIONS[from].map((action) => action.to));
-      const expected = ITEM_STATUSES.filter((status) => status !== from && !offered.has(status));
+      const expected = from === "done" || from === "cancelled" ? [] : ITEM_STATUSES.filter((status) => status !== from && !offered.has(status));
       expect(manualMoves(from).map((action) => action.to)).toEqual(expected);
     }
   });
@@ -132,18 +115,16 @@ describe("manual moves", () => {
           to: action.to,
           actor: "human",
           reason: action.reason,
-          ...(transitionRequiresNote(from, action.to) ? { note: "why" } : {}),
+          note:"Audited reason",
         });
         expect(decision.allowed, `${from} \u2192 ${action.to}: ${decision.message}`).toBe(true);
       }
     }
   });
 
-  it("together with the pipeline, reaches every other status from anywhere", () => {
-    for (const from of ITEM_STATUSES) {
-      const reachable = new Set([...TRANSITIONS[from].map((a) => a.to), ...manualMoves(from).map((a) => a.to)]);
-      expect([...reachable].sort()).toEqual(ITEM_STATUSES.filter((status) => status !== from).sort());
-    }
+  it("requires terminal items to leave through reopen or restore", () => {
+    expect([...TRANSITIONS.done,...manualMoves("done")].map(a=>a.to)).toEqual(["ready"]);
+    expect([...TRANSITIONS.cancelled,...manualMoves("cancelled")].map(a=>a.to)).toEqual(["inbox"]);
   });
 });
 

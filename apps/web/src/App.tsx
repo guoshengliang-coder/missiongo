@@ -1,3 +1,4 @@
+import { TransitionCommandKeys } from "./transition-attachments";
 import { TransitionFiles, useTransitionFiles } from "./transition-files";
 import { transitionErrorText, type TransitionAttachmentAttempt } from "./transition-attachments";
 import { validateIncomingFiles } from "./incoming-files";
@@ -2141,7 +2142,7 @@ function ItemRow({
         <span>{formatTime(item.updatedAt)}</span>
       </span>
       <span className="item-row-actions">
-        {(canOperate || item.access?.canVerify) && <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} onStartWork={onStartWork} />}
+        {(canOperate || item.access?.canVerify || item.transitionDecisions?.some(d=>d.allowed)) && <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} onStartWork={onStartWork} />}
       </span>
     </article>
   );
@@ -2453,11 +2454,13 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   const secondaryActions = otherActions.filter((action) => action.tone !== "danger");
   const destructiveActions = otherActions.filter((action) => action.tone === "danger");
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
+  const [statusChecksOpen,setStatusChecksOpen]=useState(false);
   const [transferring, setTransferring] = useState(false);
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
+  const [transitionKeys]=useState(()=>new TransitionCommandKeys());
   const mutation = useMutation({
     mutationFn: ({ action, note, files, attempt }: { action: TransitionAction; note?: string; files?: readonly File[]; attempt?: TransitionAttachmentAttempt }) =>
-      attempt ? attempt.submit(item.key, item.status, action, note!, files ?? []) : api.transitionItem(item.key, action, note),
+      attempt ? attempt.submit(item.key, item.status, action, note!, files ?? [], item.revision) : api.transitionItem(item.key, action, note, transitionKeys.options(item,action)),
     onSuccess: async (updated) => {
       setNoteAction(null);
       await applyConfirmedItemTransition(queryClient, updated);
@@ -2474,8 +2477,9 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   // kept in the browser.
   const startTransition = (action: TransitionAction) => {
     // Picking up waiting work asks how first: by hand, or through an AI (AND-68).
-    if (isStartWork(item.status, action)) onStartWork(item);
-    else if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
+    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen(true);
+    else if (isStartWork(item.status, action)) onStartWork(item);
+    else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else mutation.mutate({ action });
   };
 
@@ -2555,10 +2559,11 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
     </OverlayMenu>
     {/* Outside the menu on purpose: a closed <details> hides everything but its
         <summary>, and a <dialog> under a hidden ancestor never paints. */}
+    {statusChecksOpen && <StatusCheckPanel productId={item.productId} itemKey={item.key} canOperate={item.access?.canOperate !== false} onClose={()=>setStatusChecksOpen(false)} />}
     {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
     {noteAction && (
       <Modal
-        title={t(transitionNoteCopy(noteAction.to).title)}
+        title={t(transitionNoteCopy(noteAction.to,noteAction.reason).title)}
         subtitle={t("transitionNoteSubtitle", { key: item.key, status: statusLabel(item.status) })}
         onClose={() => { setNoteAction(null); mutation.reset(); }}
       >
@@ -2753,9 +2758,10 @@ function DetailPane({
 
 
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
+  const [transitionKeys]=useState(()=>new TransitionCommandKeys());
   const transitionMutation = useMutation({
     mutationFn: ({ action, note, files, attempt }: { action: TransitionAction; note?: string; files?: readonly File[]; attempt?: TransitionAttachmentAttempt }) =>
-      attempt ? attempt.submit(itemKey!, item!.status, action, note!, files ?? []) : api.transitionItem(itemKey!, action, note),
+      attempt ? attempt.submit(itemKey!, item!.status, action, note!, files ?? [], item!.revision) : api.transitionItem(itemKey!, action, note, transitionKeys.options(item!,action)),
     onSuccess: async (updated) => {
       setNoteAction(null);
       await applyConfirmedItemTransition(queryClient, updated);
@@ -2795,8 +2801,9 @@ function DetailPane({
   const PrimaryIcon = TYPE_ICONS[item.type];
   // Same rule as the list row: the domain decides whether this move owes a reason.
   const startTransition = (action: TransitionAction) => {
-    if (isStartWork(item.status, action)) onStartWork(item);
-    else if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
+    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen(true);
+    else if (isStartWork(item.status, action)) onStartWork(item);
+    else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else transitionMutation.mutate({ action });
   };
   const { primaryAction, secondaryActions, manualTargets } = itemTransitionActions(item);
@@ -2895,6 +2902,7 @@ function DetailPane({
       </div>
       <div className="detail-scroll">
         {item.status === "pending_verification" && !item.access?.canVerify && <p className="dispatch-note" role="status">{t("verificationNotPermitted")}</p>}
+        {item.executionDisposition && <p className="dispatch-note" role="status">{t(item.executionDisposition === "stop_requested" ? "executionStopRequested" : "executionKeepRunning")}</p>}
         {deliveryQuery.data && <BuilderHandoverNotice itemKey={item.key} delivery={deliveryQuery.data} onTakeOver={() => onTakeOver(item)} />}
         {(item.transferred || item.transferredFrom) && <div className="transfer-banner" role="status">
           {item.transferred && <p>{t("transferReadOnly")}</p>}
@@ -3122,7 +3130,7 @@ function DetailPane({
       )}
       {noteAction && (
         <Modal
-          title={t(transitionNoteCopy(noteAction.to).title)}
+          title={t(transitionNoteCopy(noteAction.to,noteAction.reason).title)}
           subtitle={t("transitionNoteSubtitle", { key: item.key, status: statusLabel(item.status) })}
           onClose={() => { setNoteAction(null); transitionMutation.reset(); }}
         >
@@ -4834,7 +4842,7 @@ function ProductSettings({
   // Unknown user means the session is still loading. A button is better drawn
   // hopefully and refused than flickering disabled; a tab is better withheld
   // than shown and then failing to load, so the two differ here on purpose.
-  const mayArchive = !user || mayAdminister || !product.createdByAccountId;
+  const mayArchive = !user || mayAdminister;
   const canOperate = user?.role === "admin" || product.access?.canOperate === true;
   const [newComponentName, setNewComponentName] = useState("");
   const [newComponentKind, setNewComponentKind] = useState<ComponentKind>("android");
@@ -5200,8 +5208,9 @@ function BulkVerifyDialog({ items, onClose, onDone }: {
   readonly onDone: (results: readonly BulkTransitionResult[]) => void;
 }) {
   const { t } = useI18n();
+  const [closeKey] = useState(() => crypto.randomUUID());
   const mutation = useMutation({
-    mutationFn: () => api.closeVerifications(items.map((item) => item.key)),
+    mutationFn: () => api.closeVerifications(items.map((item) => item.key), Object.fromEntries(items.map(item=>[item.key,item.revision ?? 0])), closeKey),
     onSuccess: (response) => onDone(response.results),
   });
   useDialogDraft(false, mutation.isPending);
@@ -5257,7 +5266,7 @@ function BulkReleaseDialog({ items, onClose, onDone }: {
       for (const item of items) {
         try {
           if (draft.attempt.confirmed.has(item.key)) { next.push({ itemKey: item.key, ok: true }); continue; }
-          const updated = await draft.attempt.submit(item.key, item.status, { to: "ready", reason: "released", label: "Release" }, note, draft.files);
+          const updated = await draft.attempt.submit(item.key, item.status, { to: "ready", reason: "released", label: "Release" }, note, draft.files, item.revision);
           next.push({ itemKey: item.key, ok: true });
           await applyConfirmedItemTransition(queryClient, updated);
         } catch (error) {

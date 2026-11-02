@@ -1,3 +1,4 @@
+import { versionedTestRequest } from "./testing-fixtures.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -353,7 +354,7 @@ describe("Managing accounts", () => {
       { method: "DELETE" as const, url: `/api/v1/accounts/${member.id}` },
       { method: "PUT" as const, url: `/api/v1/accounts/${member.id}/products` },
     ]) {
-      const response = await app.inject({ ...request, headers: { cookie: memberCookie }, payload: {} });
+      const response = await versionedTestRequest(app, { ...request, headers: { cookie: memberCookie }, payload: {} });
       expect(response.statusCode, `${request.method} ${request.url}`).toBe(404);
     }
   });
@@ -454,7 +455,7 @@ describe("What a member can reach", () => {
       `/api/v1/products/${hidden.id}/icon`,
       `/api/v1/items?productId=${hidden.id}`,
     ]) {
-      const response = await app.inject({ method: "GET", url, headers: { cookie: memberCookie } });
+      const response = await versionedTestRequest(app, { method: "GET", url, headers: { cookie: memberCookie } });
       expect(response.statusCode, url).toBe(404);
     }
   });
@@ -475,7 +476,7 @@ describe("What a member can reach", () => {
       { method: "GET" as const, url: `/api/v1/items/${itemKey}/attachments`, payload: undefined },
       { method: "POST" as const, url: `/api/v1/items/${itemKey}/transitions`, payload: { to: "ready", reason: "ready" } },
     ]) {
-      const response = await app.inject({
+      const response = await versionedTestRequest(app, {
         method: request.method,
         url: request.url,
         headers: { cookie: memberCookie },
@@ -783,7 +784,7 @@ describe("Dispatch configuration per account (item 2.3)", () => {
       { method: "PATCH" as const, url: `/api/v1/nodes/${memberNode.nodeId}`, payload: { nickname: "Taken over" } },
       { method: "DELETE" as const, url: `/api/v1/nodes/${memberNode.nodeId}`, payload: undefined },
     ]) {
-      const response = await app.inject({
+      const response = await versionedTestRequest(app, {
         method: request.method,
         url: request.url,
         headers: { cookie: adminCookie },
@@ -908,7 +909,7 @@ describe("Dispatch configuration per account (item 2.3)", () => {
       { method: "GET" as const, url: "/api/v1/node/me", payload: undefined },
       { method: "POST" as const, url: "/api/v1/node/dispatches/claim-next", payload: {} },
     ]) {
-      const response = await app.inject({
+      const response = await versionedTestRequest(app, {
         method: request.method,
         url: request.url,
         headers: authorization,
@@ -1420,9 +1421,9 @@ describe("Setting permissions from the product's side (item 2.2)", () => {
     // Narrow the administrator's AI clients to the shared product only.
     expect((await app.inject({
       method: "PUT",
-      url: `/api/v1/products/${shared.id}/accounts`,
+      url: `/api/v1/accounts/${admin.id}/products`,
       headers: { cookie: adminCookie },
-      payload: { accounts: [{ accountId: admin.id, canView: true, canOperate: false, canUseAi: true }] },
+      payload: { aiScope: "selected", permissions: [{ productId: shared.id, canView: true, canOperate: false, canUseAi: true }] },
     })).statusCode).toBe(200);
 
     const entryOn = async (productId: string) => (await app.inject({
@@ -1889,7 +1890,7 @@ describe("Delegating product access to its creator (AND-58)", () => {
     )).statusCode).toBe(400);
   });
 
-  it("keeps working for a deployment token, which has no account to narrow for", async () => {
+  it("lets a deployment token inspect access without making human governance decisions", async () => {
     // requireProductOwnership and the guards both step aside for a deployment
     // credential: it is already past every product check, so there is nobody to
     // hide the roster from. What must not happen is it starting to need a
@@ -1919,16 +1920,13 @@ describe("Delegating product access to its creator (AND-58)", () => {
       url: `/api/v1/products/${product.id}/accounts`,
       headers,
       payload: { accounts: [] },
-    })).statusCode).toBe(200);
+    })).statusCode).toBe(403);
   });
 });
 
 describe("Closing verification in bulk (AND-66)", () => {
-  async function toVerification(app: FastifyInstance, cookie: string, key: string) {
-    for (const [to, reason] of [["ready", "triaged"], ["in_progress", "claim"], ["development_complete", "resolution_submitted"], ["pending_verification", "release_verified"]]) {
-      const moved = await app.inject({ method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to, reason } });
-      if (moved.statusCode !== 200) throw new Error(`move failed: ${moved.body}`);
-    }
+  async function toVerification(app: FastifyInstance, _cookie: string, key: string) {
+    app.missionGoStore.transitionWorkItem({itemKey:key,to:"pending_verification",reason:"manual_override",note:"Fixture: published outcome",actor:"human"});
   }
 
   it("closes each item it can, and reports the rest one by one", async () => {
@@ -1941,7 +1939,7 @@ describe("Closing verification in bulk (AND-66)", () => {
     await toVerification(app, memberCookie, second);
     await toVerification(app, adminCookie, elsewhere);
 
-    const response = await app.inject({
+    const response = await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/transitions",
       headers: { cookie: memberCookie },
@@ -1974,21 +1972,21 @@ describe("Closing verification in bulk (AND-66)", () => {
   it("does only the two bulk edges, and only for a signed-in person", async () => {
     const { app, memberCookie, shared } = await twoAccountWorkspace();
     const key = await createItem(app, memberCookie, shared.id, "Anything");
-    const other = await app.inject({
+    const other = await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/transitions",
       headers: { cookie: memberCookie },
       payload: { itemKeys: [key], to: "cancelled", reason: "cancelled" },
     });
     expect(other.statusCode).toBe(400);
-    const tooMany = await app.inject({
+    const tooMany = await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/transitions",
       headers: { cookie: memberCookie },
       payload: { itemKeys: Array.from({ length: 51 }, (_, index) => `SHR-${index + 1}`), to: "done", reason: "verification_passed" },
     });
     expect(tooMany.statusCode).toBe(400);
-    const anonymous = await app.inject({
+    const anonymous = await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/transitions",
       payload: { itemKeys: [key], to: "done", reason: "verification_passed" },
@@ -2000,7 +1998,7 @@ describe("Closing verification in bulk (AND-66)", () => {
 describe("Returning work to ready in bulk (AND-160)", () => {
   async function inProgress(app: FastifyInstance, cookie: string, key: string) {
     for (const [to, reason] of [["ready", "triaged"], ["in_progress", "claim"]]) {
-      const moved = await app.inject({ method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to, reason } });
+      const moved = await versionedTestRequest(app, { method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to, reason } });
       if (moved.statusCode !== 200) throw new Error(`move failed: ${moved.body}`);
     }
   }
@@ -2015,7 +2013,7 @@ describe("Returning work to ready in bulk (AND-160)", () => {
     await inProgress(app, memberCookie, second);
     await inProgress(app, adminCookie, elsewhere);
 
-    const response = await app.inject({
+    const response = await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/transitions",
       headers: { cookie: memberCookie },
@@ -2056,14 +2054,14 @@ describe("Returning work to ready in bulk (AND-160)", () => {
     const { app, memberCookie, shared } = await twoAccountWorkspace();
     const key = await createItem(app, memberCookie, shared.id, "Anything");
     await inProgress(app, memberCookie, key);
-    const missing = await app.inject({
+    const missing = await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/transitions",
       headers: { cookie: memberCookie },
       payload: { itemKeys: [key], to: "ready", reason: "released" },
     });
     expect(missing.statusCode).toBe(400);
-    const blank = await app.inject({
+    const blank = await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/transitions",
       headers: { cookie: memberCookie },
@@ -2121,9 +2119,9 @@ describe("Acceptance permissions (AND-356)", () => {
     const base = await twoAccountWorkspace();
     const own = await createItem(base.app, base.memberCookie, base.shared.id, "My proposal");
     const other = await createItem(base.app, base.adminCookie, base.shared.id, "Another proposal");
-    for (const itemKey of [own, other]) base.app.missionGoStore.transitionWorkItem({ itemKey, to: "pending_verification", actor: "human", reason: "manual_override" });
-    const move = (key: string, cookie = base.memberCookie, reason = "verification_passed") => base.app.inject({
-      method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to: "done", reason },
+    for (const itemKey of [own, other]) base.app.missionGoStore.transitionWorkItem({ itemKey, to: "pending_verification", actor: "human", note:"Test fixture: explicit administrative correction", reason: "manual_override" });
+    const move = (key: string, cookie = base.memberCookie, reason = "verification_passed") => versionedTestRequest(base.app, {
+      method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to: "done", reason, note:"Verified outcome" },
     });
     const read = async (key: string, cookie = base.memberCookie) => (await base.app.inject({ method: "GET", url: `/api/v1/items/${key}`, headers: { cookie } })).json();
     const permissions = (canView: boolean, canOperate: boolean) => base.app.inject({ method: "PUT", url: `/api/v1/accounts/${base.member.id}/products`, headers: { cookie: base.adminCookie },
@@ -2151,7 +2149,7 @@ describe("Acceptance permissions (AND-356)", () => {
   it("allows a proposer with view permission and no operation permission, including AI-assisted proposals", async () => {
     const f = await fixture();
     const agent = f.app.missionGoStore.createDerivedWorkItem({ productId: f.shared.id, status: "ready", type: "requirement", priority: "normal", title: "AI-assisted proposal", description: "", environment: { platform: "shared" }, agentName: "Test agent", attribution: { accountId: f.member.id, clientId: "test-client" }, idempotencyKey: "and356-proposal" });
-    f.app.missionGoStore.transitionWorkItem({ itemKey: agent.key, to: "pending_verification", actor: "human", reason: "manual_override" });
+    f.app.missionGoStore.transitionWorkItem({ itemKey: agent.key, to: "pending_verification", actor: "human", note:"Test fixture: explicit administrative correction", reason: "manual_override" });
     expect((await f.permissions(true, false)).statusCode).toBe(200);
     for (const key of [f.own, agent.key]) {
       expect((await f.read(key)).access).toEqual({ canOperate: false, canVerify: true });
@@ -2167,26 +2165,26 @@ describe("Acceptance permissions (AND-356)", () => {
   it("allows project administrators without operation rows, and rechecks removed roles immediately", async () => {
     const f = await fixture();
     await f.permissions(false, false);
-    f.app.missionGoAccounts.replaceProjectAdministrators(f.shared.id, [f.member.id], [], adminAccount().id);
-    expect((await f.read(f.other)).access).toEqual({ canOperate: false, canVerify: true });
+    f.app.missionGoAccounts.replaceProjectAdministrators(f.shared.id, [f.member.id], f.app.missionGoAccounts.projectAdministratorIds(f.shared.id), adminAccount().id);
+    expect((await f.read(f.other)).access).toEqual({ canOperate: true, canVerify: true });
     expect((await f.move(f.other)).statusCode).toBe(200);
     f.app.missionGoAccounts.replaceProjectAdministrators(f.shared.id, [], [f.member.id], adminAccount().id);
     await f.permissions(true, true);
     expect((await f.read(f.other)).access.canVerify).toBe(false);
     expect((await f.move(f.other)).statusCode).toBe(403);
-    f.app.missionGoAccounts.replaceProjectAdministrators(f.hidden.id, [f.member.id], [], adminAccount().id);
+    f.app.missionGoAccounts.replaceProjectAdministrators(f.hidden.id, [f.member.id], f.app.missionGoAccounts.projectAdministratorIds(f.hidden.id), adminAccount().id);
     expect((await f.move(f.other)).statusCode).toBe(403);
   });
 
   it("checks each batch item separately and exposes the same rights in list and bootstrap", async () => {
     const f = await fixture();
     for (const url of [`/api/v1/items?productId=${f.shared.id}`, `/api/v1/bootstrap?productId=${f.shared.id}`]) {
-      const data = (await f.app.inject({ method: "GET", url, headers: { cookie: f.memberCookie } })).json();
+      const data = (await versionedTestRequest(f.app, { method: "GET", url, headers: { cookie: f.memberCookie } })).json();
       const items = Array.isArray(data.items) ? data.items : data.items.items;
       expect(items.find((item: { key: string }) => item.key === f.own).access.canVerify).toBe(true);
       expect(items.find((item: { key: string }) => item.key === f.other).access.canVerify).toBe(false);
     }
-    const result = await f.app.inject({ method: "POST", url: "/api/v1/items/transitions", headers: { cookie: f.memberCookie }, payload: { itemKeys: [f.own, f.other], to: "done", reason: "verification_passed" } });
+    const result = await versionedTestRequest(f.app, { method: "POST", url: "/api/v1/items/transitions", headers: { cookie: f.memberCookie }, payload: { itemKeys: [f.own, f.other], to: "done", reason: "verification_passed" } });
     expect(result.json().results).toEqual([{ itemKey: f.own, ok: true }, expect.objectContaining({ itemKey: f.other, ok: false, code: "verification_not_permitted" })]);
     expect((await f.read(f.other)).status).toBe("pending_verification");
   });
@@ -2195,8 +2193,9 @@ describe("Acceptance permissions (AND-356)", () => {
     const f = await fixture();
     const product = f.app.missionGoStore.createProduct({ name: "Member owned", keyPrefix: "MOW", createdByAccountId: f.member.id });
     f.app.missionGoAccounts.grantCreatorPermissions(f.member.id, product.id);
+    f.app.missionGoAccounts.replaceProjectAdministrators(product.id,[],[f.member.id],adminAccount().id);
     const unattributed = f.app.missionGoStore.createWorkItem({ productId: product.id, title: "No attribution", description: "", type: "task", priority: "normal" });
-    f.app.missionGoStore.transitionWorkItem({ itemKey: unattributed.key, to: "pending_verification", actor: "human", reason: "manual_override" });
+    f.app.missionGoStore.transitionWorkItem({ itemKey: unattributed.key, to: "pending_verification", actor: "human", note:"Test fixture: explicit administrative correction", reason: "manual_override" });
     expect((await f.move(unattributed.key)).statusCode).toBe(403);
     await f.permissions(false, false);
     expect((await f.move(f.own)).statusCode).toBe(404);
@@ -2210,12 +2209,12 @@ describe("Acceptance permissions (AND-356)", () => {
     const cookie = await signIn(app, config.username, ADMIN_PASSWORD);
     const product = app.missionGoStore.createProduct({ name: "Acceptance", keyPrefix: "ACC" });
     const key = await createItem(app, cookie, product.id, "Proposal");
-    app.missionGoStore.transitionWorkItem({ itemKey: key, to: "pending_verification", actor: "human", reason: "manual_override" });
+    app.missionGoStore.transitionWorkItem({ itemKey: key, to: "pending_verification", actor: "human", note:"Test fixture: explicit administrative correction", reason: "manual_override" });
     for (const [token, status] of [["acceptance-test-operator", 403], [aiToken(app, config, config.id), 401]] as const) {
-      const response = await app.inject({ method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { authorization: `Bearer ${token}` }, payload: { to: "done", reason: "verification_passed" } });
+      const response = await versionedTestRequest(app, { method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { authorization: `Bearer ${token}` }, payload: { to: "done", reason: "verification_passed" } });
       expect(response.statusCode).toBe(status);
       expect(app.missionGoStore.getWorkItem(key).status).toBe("pending_verification");
     }
-    expect((await app.inject({ method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to: "done", reason: "verification_passed" } })).statusCode).toBe(200);
+    expect((await versionedTestRequest(app, { method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to: "done", reason: "verification_passed" } })).statusCode).toBe(200);
   });
 });

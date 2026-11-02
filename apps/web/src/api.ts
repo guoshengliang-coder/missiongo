@@ -132,6 +132,7 @@ export interface AccountSummary {
 
 /** One account's standing on one product, as the product-side editor shows it. */
 export interface ProductAccessEntry {
+  readonly aiScope: "all" | "selected" | "none";
   readonly account: AccountSummary;
   readonly permission: ProductPermission;
   /** True for an administrator, who reaches the product whatever the row says. */
@@ -141,6 +142,7 @@ export interface ProductAccessEntry {
 }
 
 export interface Account {
+  readonly aiScope?: "all" | "selected" | "none";
   readonly projectAdministratorProductIds?: readonly string[];
   readonly id: string;
   readonly email: string;
@@ -258,7 +260,7 @@ export interface Bootstrap {
 }
 
 export interface StatusCheckRecord {
-  id: string; itemKey: string; productId: string; itemStatus: WorkItemStatus; pullRequestUrl: string; completion: CompletionReference;
+  revision?:number; itemRevision?:number; id: string; itemKey: string; productId: string; itemStatus: WorkItemStatus; pullRequestUrl: string; completion: CompletionReference;
   requiredArtifacts: string[] | null; noReleaseReason: string | null; status: string; reason: string;
   lastResultAt?: string | null; checkedAt: string | null; requestedAt: string | null; evidenceUpdatedAt: string; evidenceSource: string; evidenceReporter?: {accountId?:string;note?:string;recordedAt?:string};
   evidence: { merged?: {commit: string; occurredAt: string}; releases?: Array<{artifact:string;version:string;sourceCommit:string;verifiedAt:string}> };
@@ -317,7 +319,7 @@ export const api = {
   registerHandover(itemKey: string, input: {completion:CompletionReference;requiredArtifacts?:string[];noReleaseReason?:string}) {
     return request<{handover:StatusCheckRecord}>(`/api/v1/items/${encodeURIComponent(itemKey)}/handover`,{method:"PUT",body:JSON.stringify(input)});
   },
-  confirmHandover(itemKey: string, handoverId: string, input: {stage:"integration";commit:string;note:string} | {stage:"release";note:string;releases:Array<{artifact:string;version:string;sourceCommit:string}>}) {
+  confirmHandover(itemKey: string, handoverId: string, input: ({stage:"integration";commit:string;note:string} | {stage:"release";note:string;releases:Array<{artifact:string;version:string;sourceCommit:string}>}) & {expectedItemRevision?:number|undefined;expectedHandoverRevision?:number|undefined;idempotencyKey?:string}) {
     return request<{handover:StatusCheckRecord}>(`/api/v1/items/${encodeURIComponent(itemKey)}/handovers/${encodeURIComponent(handoverId)}/confirm`, {method:"POST",body:JSON.stringify(input)});
   },
   getAiTitleSettings: () => request<{ configured: boolean; agentAttentionEnabled: boolean; model: string }>("/api/v1/ai/title-settings"),
@@ -404,10 +406,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ accounts }),
     }),
-  setAccountProducts: (accountId: string, permissions: ProductPermission[]) =>
+  setAccountProducts: (accountId: string, permissions: ProductPermission[], aiScope: "all" | "selected" | "none" = "selected") =>
     request<{ permissions: ProductPermission[] }>(`/api/v1/accounts/${encodeURIComponent(accountId)}/products`, {
       method: "PUT",
-      body: JSON.stringify({ permissions }),
+      body: JSON.stringify({ permissions, aiScope }),
     }),
   listProducts: (options: { includeArchived?: boolean } = {}) =>
     request<Product[]>(`/api/v1/products${options.includeArchived ? "?includeArchived=true" : ""}`),
@@ -471,7 +473,7 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
-  uploadAttachment: async (itemKey: string, file: File, uploadId?: string, creationUploadId?: string) => {
+  uploadAttachment: async (itemKey: string, file: File, uploadId?: string, creationUploadId?: string, transitionUpload = false) => {
     const response = await attachmentRequest(`/api/v1/items/${encodeURIComponent(itemKey)}/attachments`, {
       method: "POST",
       headers: {
@@ -479,6 +481,7 @@ export const api = {
         "x-missiongo-content-type": file.type || "application/octet-stream",
         "x-missiongo-filename": encodeURIComponent(file.name),
         ...(uploadId ? { "x-missiongo-upload-id": uploadId } : {}),
+        ...(transitionUpload ? {"x-missiongo-transition-upload":"true"} : {}),
         ...(creationUploadId ? { "x-missiongo-creation-upload-id": creationUploadId } : {}),
       },
       body: file,
@@ -542,23 +545,24 @@ export const api = {
   // `note` is why the item is moving. The domain demands one on the ways back to
   // ready; everywhere else it is simply left out.
   /** Close verification on several items; each reports on its own (AND-66). */
-  closeVerifications: (itemKeys: readonly string[]) =>
+  closeVerifications: (itemKeys: readonly string[], expectedRevisions?: Record<string,number>, idempotencyKey = crypto.randomUUID()) =>
     request<{ results: BulkTransitionResult[] }>("/api/v1/items/transitions", {
       method: "POST",
-      body: JSON.stringify({ itemKeys, to: "done", reason: "verification_passed" }),
+      body: JSON.stringify({ itemKeys, to: "done", reason: "verification_passed", expectedRevisions, idempotencyKey }),
     }),
   /** Return in-progress work to ready; the note is shared by the whole batch (AND-160). */
-  releaseItems: (itemKeys: readonly string[], note: string) =>
+  releaseItems: (itemKeys: readonly string[], note: string, expectedRevisions: Record<string,number>, idempotencyKey:string) =>
     request<{ results: BulkTransitionResult[] }>("/api/v1/items/transitions", {
       method: "POST",
-      body: JSON.stringify({ itemKeys, to: "ready", reason: "released", note }),
+      body: JSON.stringify({ itemKeys, to: "ready", reason: "released", note, expectedRevisions, idempotencyKey }),
     }),
-  transitionItem: (itemKey: string, action: TransitionAction, note?: string, options?: { attachmentIds: readonly string[]; idempotencyKey: string; expectedStatus: WorkItemStatus }) =>
+  transitionItem: (itemKey: string, action: TransitionAction, note?: string, options?: { attachmentIds?: readonly string[]; idempotencyKey?: string; expectedStatus?: WorkItemStatus; expectedRevision?: number | undefined; executionDisposition?: "keep_running" | "stop_requested" }) =>
     request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transitions`, {
       method: "POST",
       body: JSON.stringify({
         to: action.to,
         reason: action.reason,
+        idempotencyKey: crypto.randomUUID(),
         ...options,
         ...(note?.trim() ? { note: note.trim() } : {}),
       }),

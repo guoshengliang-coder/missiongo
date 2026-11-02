@@ -251,7 +251,7 @@ describe("Builder execution handover",()=>{
 
   it("still stops a running session after a business completion event, and permanently fences closed history",async()=>{
     const f=await fixture(),item=f.item(),{d,sessionId}=f.launch([item.key]);f.start(item.key);
-    f.store.transitionWorkItem({itemKey:item.key,to:"development_complete",actor:"human",reason:"resolution_submitted",attribution:{accountId:f.a.id}});
+    f.store.transitionWorkItem({itemKey:item.key,to:"development_complete",actor:"human",reason:"manual_override",note:"Fixture: verified integration",attribution:{accountId:"admin"}});
     expect(f.transfer(item.key).builderHandover?.status).toBe("stopping");
     const command=f.stopCommand(d.id);expect(command).toBeTruthy();f.snapshot(sessionId,command);
     expect(f.store.getWorkItem(item.key)).toMatchObject({status:"development_complete",builderAccountId:f.b.id});

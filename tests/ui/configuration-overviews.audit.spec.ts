@@ -57,7 +57,10 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
 test("administrator overview shows assignments and enters explicitly scoped details", async ({ page, request }) => {
   const product = await (await request.post("/api/v1/products", { data: { name: "Admin overview", keyPrefix: "AOV" } })).json();
   const member = await (await request.post("/api/v1/accounts", { data: { email: "overview-admin@example.test", password: randomBytes(18).toString("base64url"), role: "member" } })).json();
-  expect((await request.put(`/api/v1/products/${product.id}/administrators`, { data: { accountIds: [member.id], expectedAccountIds: [] } })).status()).toBe(200);
+  const originalAdmins = (await (await request.get(`/api/v1/products/${product.id}/administrators`)).json()).accountIds;
+  const user = (await (await request.get("/api/v1/auth/session")).json()).user;
+  expect(originalAdmins).toEqual([user.id]);
+  expect((await request.put(`/api/v1/products/${product.id}/administrators`, { data: { accountIds: [member.id], expectedAccountIds: originalAdmins } })).status()).toBe(200);
   await page.goto(`/settings/admin/project-administrators?product=${product.id}`);
   const card = page.locator(`.settings-product-card[data-product-id="${product.id}"]`);
   await expect(card).toContainText(member.email);

@@ -13,7 +13,7 @@ it("upgrades existing comments and verification jobs without replaying notificat
     store=new MissionGoStore(path);const product=store.createProduct({name:"Old project",keyPrefix:"OLD"});
     const item=store.createWorkItem({productId:product.id,type:"note",priority:"normal",title:"Old item",description:""});
     const old=store.createComment({itemKey:item.key,actorKind:"human",bodyKind:"free",body:{text:"Before upgrade"}});
-    store.transitionWorkItem({itemKey:item.key,to:"pending_verification",actor:"human",reason:"manual_override"});
+    store.transitionWorkItem({itemKey:item.key,to:"pending_verification",actor:"human",note:"Test fixture: explicit administrative correction", reason:"manual_override"});
     const before=store.database.connection.prepare("SELECT * FROM dingtalk_notifications").all();store.close();store=undefined;
     const db=new DatabaseSync(path);
     try {

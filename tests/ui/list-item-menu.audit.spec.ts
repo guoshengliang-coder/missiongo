@@ -1,3 +1,4 @@
+import { postItemCommand } from "./item-command";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
@@ -10,14 +11,14 @@ const statuses = ["inbox", "ready", "in_progress", "development_complete", "on_h
 type Status = typeof statuses[number];
 const labels: Record<Status, string> = { inbox: "草稿", ready: "待处理", in_progress: "处理中", development_complete: "开发完成", on_hold: "暂缓", pending_verification: "待验证", done: "已完成", cancelled: "已取消" };
 const cases: Record<Status, { primary: string; secondary?: string[]; moves: Status[] }> = {
-  inbox: { primary: "转为待处理", moves: ["in_progress", "development_complete", "on_hold", "pending_verification", "done"] },
+  inbox: { primary: "转为待处理", secondary:["暂缓处理"], moves: ["in_progress", "development_complete", "pending_verification", "done"] },
   ready: { primary: "开始处理", secondary: ["暂缓处理", "移回草稿"], moves: ["development_complete", "pending_verification", "done"] },
   in_progress: { primary: "标记开发完成", secondary: ["暂缓处理", "释放任务"], moves: ["inbox", "pending_verification", "done"] },
   development_complete: { primary: "发布后提交验证", secondary: ["需要继续处理"], moves: ["inbox", "in_progress", "on_hold", "done"] },
-  on_hold: { primary: "继续处理", secondary: ["退回待处理"], moves: ["inbox", "development_complete", "pending_verification", "done"] },
-  pending_verification: { primary: "验证通过", secondary: ["需要继续处理"], moves: ["inbox", "in_progress", "development_complete", "on_hold"] },
-  done: { primary: "重新打开", moves: ["inbox", "in_progress", "development_complete", "on_hold", "pending_verification", "cancelled"] },
-  cancelled: { primary: "恢复", moves: ["ready", "in_progress", "development_complete", "on_hold", "pending_verification", "done"] },
+  on_hold: { primary: "继续处理", moves: ["inbox", "in_progress", "development_complete", "pending_verification", "done"] },
+  pending_verification: { primary: "验证通过", secondary: ["验收打回"], moves: ["inbox", "in_progress", "development_complete", "on_hold"] },
+  done: { primary: "重新打开", moves: [] },
+  cancelled: { primary: "恢复", moves: [] },
 };
 
 async function createItem(request: APIRequestContext, status: Status = "ready") {
@@ -28,7 +29,7 @@ async function createItem(request: APIRequestContext, status: Status = "ready") 
   expect(response.ok()).toBeTruthy();
   const item = await response.json() as { key: string };
   if (status !== "ready") {
-    const moved = await request.post(`/api/v1/items/${item.key}/transitions`, { data: { to: status, reason: "manual_override", note: "Prepare menu test state" } });
+    const moved = await postItemCommand(request,`/api/v1/items/${item.key}/transitions`, { data: { to: status, reason: "manual_override", note: "Prepare menu test state" } });
     expect(moved.ok()).toBeTruthy();
   }
   return item;
@@ -69,6 +70,9 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
         // Every direct operation has a decorative icon; destinations are initially hidden.
         for (const button of await menu.locator(".detail-action-group > button").all()) await expect(button.locator("svg[aria-hidden='true']")).toHaveCount(1);
         const move = menu.locator(".detail-move-menu");
+        if (!cases[status].moves.length) {
+          await expect(move).toHaveCount(0);await page.keyboard.press("Escape");await expect(menu).not.toHaveAttribute("open","");continue;
+        }
         await expect(move.locator("button").first()).toBeHidden();
         await move.locator("summary").click();
         await expect(move.locator("button")).toHaveText(cases[status].moves.map(target => labels[target]));
@@ -114,6 +118,9 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await menu.locator(":scope > summary").click();
       await menu.locator(".detail-move-menu > summary").click();
       await menu.locator(".detail-move-popover").getByRole("button", { name: labels.pending_verification, exact: true }).click();
+      await expect(dialog).toBeVisible();
+      await dialog.getByRole("textbox").fill("Reviewed administrative status correction");
+      await dialog.locator("button[type='submit']").click();
       await expect(row.locator(".status-pill")).toHaveText(labels.pending_verification);
       await menu.locator(":scope > summary").click();
       await menu.locator("button.danger").click();
@@ -160,7 +167,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
         const readOnly = (product: object) => ({ ...product, access: { canOperate: false, canUseAi: true } });
         await route.fulfill({ response, json: Array.isArray(data) ? data.map(readOnly) : {
           ...data, products: data.products.map(readOnly),
-          items: data.items.map((row: object) => ({ ...row, access: { canOperate: false, canVerify: false } })),
+          items: data.items.map((row: object) => ({ ...row, transitionDecisions:[], access: { canOperate: false, canVerify: false } })),
         } });
       });
       // AND-356: no operation permission alone does not remove an admin's or
@@ -170,7 +177,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
         const response = await route.fetch();
         const data = await response.json();
         await route.fulfill({ response, json: { ...data,
-          items: data.items.map((row: object) => ({ ...row, access: { canOperate: false, canVerify: false } })),
+          items: data.items.map((row: object) => ({ ...row, transitionDecisions:[], access: { canOperate: false, canVerify: false } })),
         } });
       });
       await page.goto(`/?product=${fixture.productId}&status=all&q=${item.key}`);
@@ -197,7 +204,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
 
 test("short landscape viewport keeps all submenu targets reachable", async ({ page, request }) => {
   await page.setViewportSize({ width: 812, height: 375 });
-  const item = await createItem(request, "done");
+  const item = await createItem(request, "in_progress");
   const { menu } = await openListMenu(page, item.key);
   await menu.locator(".detail-move-menu > summary").click();
   const last = menu.locator(".detail-move-popover button").last();

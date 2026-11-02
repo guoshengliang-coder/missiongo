@@ -7,6 +7,7 @@ const CANCEL_ACTION: TransitionAction = { label: "Cancel", to: "cancelled", reas
 export const TRANSITIONS: Record<WorkItemStatus, readonly TransitionAction[]> = {
   inbox: [
     { label: "Move to ready", to: "ready", reason: "triaged", tone: "primary" },
+    { label: "Put on hold", to: "on_hold", reason: "request_human_input" },
     CANCEL_ACTION,
   ],
   ready: [
@@ -33,12 +34,13 @@ export const TRANSITIONS: Record<WorkItemStatus, readonly TransitionAction[]> = 
   ],
   on_hold: [
     { label: "Resume work", to: "in_progress", reason: "resume", tone: "primary" },
-    { label: "Return to ready", to: "ready", reason: "reopened" },
+    { label: "Return to ready", to: "ready", reason: "resume" },
+    { label: "Move to inbox", to: "inbox", reason: "resume" },
     CANCEL_ACTION,
   ],
   pending_verification: [
     { label: "Verify & close", to: "done", reason: "verification_passed", tone: "positive" },
-    { label: "Needs more work", to: "ready", reason: "verification_failed" },
+    { label: "Verification failed", to: "ready", reason: "verification_failed" },
     CANCEL_ACTION,
   ],
   done: [{ label: "Reopen", to: "ready", reason: "reopened", tone: "primary" }],
@@ -52,8 +54,9 @@ export const TRANSITIONS: Record<WorkItemStatus, readonly TransitionAction[]> = 
  * the destination and recorded as `manual_override`. Statuses the pipeline
  * already offers are left out — the semantic action should win.
  */
-export function manualMoves(from: WorkItemStatus): readonly TransitionAction[] {
-  const offered = new Set(TRANSITIONS[from].map((action) => action.to));
+export function manualMoves(from: WorkItemStatus, actions = TRANSITIONS[from]): readonly TransitionAction[] {
+  if (from === "done" || from === "cancelled") return [];
+  const offered = new Set(actions.map((action) => action.to));
   return ITEM_STATUSES.filter((status) => status !== from && !offered.has(status)).map((status) => ({
     label: status,
     to: status,
@@ -64,13 +67,15 @@ export function manualMoves(from: WorkItemStatus): readonly TransitionAction[] {
 /** Share the permission filter across list, detail and manual status menus. */
 export function itemTransitionActions(item: WorkItem) {
   const allowed = (action: TransitionAction) => !item.transferred
-    && (action.to === "done" ? item.access?.canVerify === true : item.access?.canOperate !== false);
-  const offered = TRANSITIONS[item.status];
+    && (item.transitionDecisions
+      ? item.transitionDecisions.some(d => d.to === action.to && d.reason === action.reason && d.allowed)
+      : action.to === "done" ? item.access?.canVerify === true : item.access?.canOperate !== false);
+  const offered = item.status === "on_hold" ? TRANSITIONS.on_hold.filter(a=>a.to === "cancelled" || a.to === item.heldFrom) : TRANSITIONS[item.status];
   const primaryAction = offered[0] && allowed(offered[0]) ? offered[0] : undefined;
   return {
     primaryAction,
     secondaryActions: offered.slice(1).filter(allowed),
-    manualTargets: manualMoves(item.status).filter(allowed),
+    manualTargets: manualMoves(item.status,offered.filter(allowed)).filter(allowed),
   };
 }
 

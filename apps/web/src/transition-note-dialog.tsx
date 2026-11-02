@@ -1,3 +1,4 @@
+import { Select } from "./select";
 import { TransitionFiles, useTransitionFiles } from "./transition-files";
 import type { TransitionAttachmentAttempt } from "./transition-attachments";
 import type { WorkItem } from "./types";
@@ -15,11 +16,12 @@ import type { TransitionAction, WorkItemStatus } from "./types";
  * out to Cancelled (AND-64) -- and "why is this going back?" is the wrong
  * question for an item that is not going back anywhere.
  */
-export function transitionNoteCopy(to: WorkItemStatus): {
+export function transitionNoteCopy(to: WorkItemStatus, reason?:TransitionAction["reason"]): {
   readonly title: MessageKey;
   readonly placeholder: MessageKey;
   readonly help: MessageKey;
 } {
+  if (to === "on_hold" || reason === "resume" || reason === "restored" || reason === "manual_override" || reason === "reopened") return {title:"decisionNoteTitle",placeholder:"decisionNotePlaceholder",help:"decisionNoteHelp"};
   return to === "cancelled"
     ? { title: "cancelNoteTitle", placeholder: "cancelNotePlaceholder", help: "cancelNoteHelp" }
     : { title: "transitionNoteTitle", placeholder: "transitionNotePlaceholder", help: "transitionNoteHelp" };
@@ -53,9 +55,12 @@ export function TransitionNoteDialog({
   const [note, setNote] = useState("");
   const helpId = useId();
   const draft = useTransitionFiles([item], pending);
-  useDialogDraft(Boolean(note) || draft.files.length > 0, pending);
-  const copy = transitionNoteCopy(action.to);
+
+  const copy = transitionNoteCopy(action.to,action.reason);
   const cancelling = action.to === "cancelled";
+  const executionDecision = cancelling || action.to === "on_hold";
+  const [disposition,setDisposition] = useState<"keep_running"|"stop_requested">("keep_running");
+  useDialogDraft(Boolean(note) || draft.files.length > 0 || disposition !== "keep_running", pending);
   const quickReasons = ["cancelReasonSentByMistake", "cancelReasonDuplicate", "cancelReasonNoLongerNeeded"] as const;
 
   return (
@@ -65,11 +70,11 @@ export function TransitionNoteDialog({
       onPaste={draft.onPaste}
       onSubmit={(event) => {
         event.preventDefault();
-        if (!pending && note.trim()) onSubmit(note, draft.files, draft.attempt);
+        if (!pending && note.trim()) { draft.attempt.executionDisposition = executionDecision ? disposition : undefined; onSubmit(note, draft.files, draft.attempt); }
       }}
     >
       <div className="transition-note-field">
-        <label htmlFor={`${helpId}-input`}>{t(cancelling ? "cancelNoteLabel" : "transitionNoteLabel")}</label>
+        <label htmlFor={`${helpId}-input`}>{t(cancelling ? "cancelNoteLabel" : copy.title === "decisionNoteTitle" ? "decisionNoteLabel" : "transitionNoteLabel")}</label>
         <p id={helpId} className="dispatch-note">{t(copy.help)}</p>
         <textarea
           id={`${helpId}-input`}
@@ -97,6 +102,13 @@ export function TransitionNoteDialog({
         </div>
       )}
 
+      {executionDecision && <div className="transition-note-field">
+        <label htmlFor={`${helpId}-execution`}>{t("executionDisposition")}</label>
+        <p className="dispatch-note">{t("executionDispositionHelp")}</p>
+        <Select id={`${helpId}-execution`} value={disposition} disabled={pending} onChange={event=>setDisposition(event.target.value as "keep_running"|"stop_requested")}>
+          <option value="keep_running">{t("executionKeepRunning")}</option><option value="stop_requested">{t("executionStopRequested")}</option>
+        </Select>
+      </div>}
       <TransitionFiles draft={draft} disabled={pending} />
 
       {/* A dialog sits in the top layer and covers the page's toast, so the

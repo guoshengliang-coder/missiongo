@@ -1,3 +1,4 @@
+import { versionedTestRequest } from "./testing-fixtures.js";
 import { createHash, randomUUID, scryptSync } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -22,6 +23,7 @@ import { readAiAccessToken } from "./admin-auth.js";
 
 
 const apps: FastifyInstance[] = [];
+const fixtureCookies = new WeakMap<FastifyInstance,string>();
 const temporaryDirectories: string[] = [];
 
 function testAdminAccount(authorizedProductIds?: readonly string[]): AdminAccountConfig {
@@ -65,22 +67,28 @@ describe("Commenting over MCP", () => {
       writeTools,
     });
     apps.push(app);
+    const login=await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:adminAccount.username,password:"correct horse"}});
+    fixtureCookies.set(app,login.headers["set-cookie"]!.split(";",1)[0]!);
 
     const product = (await app.inject({
       method: "POST",
       url: "/api/v1/products",
-      headers: { authorization: "Bearer management-test-token" },
+      headers: { cookie:fixtureCookies.get(app)! },
       payload: { name: "Hermes Go", keyPrefix: "HG" },
     })).json<{ id: string }>();
     app.missionGoStore.setProductReleaseArtifacts(product.id, ["web", "androidApp", "androidSdk", "macosApp"]);
     await app.inject({
       method: "POST",
       url: "/api/v1/items",
-      headers: { authorization: "Bearer management-test-token" },
+      headers: { cookie:fixtureCookies.get(app)! },
       payload: { productId: product.id, type: "bug", priority: "high", title: "Crash", description: "On launch" },
     });
 
+    const executionCredentials=new Map<string,string>();
     const call = async (token: string, id: number, method: string, params: Readonly<Record<string, unknown>> = {}) => {
+      const args=params.arguments as Record<string,unknown>|undefined;
+      const scoped = args && typeof args.itemKey === "string" && ["submit_development_complete","submit_for_verification","register_item_handover","report_handover_evidence"].includes(String(params.name));
+      if (scoped && args.executionAuthorization === undefined && executionCredentials.has(args.itemKey as string)) params={...params,arguments:{...args,executionAuthorization:executionCredentials.get(args.itemKey as string)}};
       const response = await app.inject({
         method: "POST",
         url: "/mcp",
@@ -94,7 +102,10 @@ describe("Commenting over MCP", () => {
       const payload = response.headers["content-type"]?.includes("text/event-stream")
         ? response.body.split("\n").find((line) => line.startsWith("data: "))?.slice(6)
         : response.body;
-      return JSON.parse(payload!) as { result?: Record<string, unknown>; error?: unknown };
+      const result=JSON.parse(payload!) as { result?: Record<string, unknown>; error?: unknown };
+      const claim=result.result?.structuredContent as {executionAuthorization?:string;item?:{key:string}}|undefined;
+      if (params.name === "claim_item" && claim?.executionAuthorization && claim.item) executionCredentials.set(claim.item.key,claim.executionAuthorization);
+      return result;
     };
 
     const aiUser = { id: adminAccount.id, username: adminAccount.username, role: "admin" as const };
@@ -107,7 +118,7 @@ describe("Commenting over MCP", () => {
 
   it("links attachment-only comments, retries uploads and comments, and omits withdrawn evidence from MCP", async () => {
     const { app, call, writeToken } = await commentingApp();
-    const headers = { authorization: "Bearer management-test-token" };
+    const headers = { cookie:fixtureCookies.get(app)! };
     const upload = (id: string, content = "comment evidence", filename = "note.txt") => app.inject({
       method: "POST", url: "/api/v1/items/HG-1/attachments",
       headers: { ...headers, "content-type": "application/octet-stream", "x-missiongo-filename": filename,
@@ -153,7 +164,7 @@ describe("Commenting over MCP", () => {
     const { app, call, productId, writeToken } = await commentingApp();
     const store = app.missionGoStore;
     store.transitionWorkItem({itemKey:"HG-1",to:"ready",actor:"human",reason:"triaged"});
-    store.claimWorkItem({itemKey:"HG-1",agentId:"test",idempotencyKey:"manual-claim"});
+    await call(writeToken,99,"tools/call",{name:"claim_item",arguments:{itemKey:"HG-1",agentId:"test",idempotencyKey:"manual-claim"}});
     const registration = await call(writeToken,1,"tools/call",{name:"register_item_handover",arguments:{
       itemKey:"HG-1",completion:{kind:"manual",commit:"a".repeat(40),description:"Offline build"},requiredArtifacts:["web"],
     }});
@@ -161,7 +172,7 @@ describe("Commenting over MCP", () => {
     const url = `/api/v1/items/HG-1/handovers/${registered.handover.id}/confirm`;
     const input = {stage:"integration",commit:"a".repeat(40),note:"Verified on main"};
     for (const token of ["management-test-token",writeToken]) {
-      expect((await app.inject({method:"POST",url,headers:{authorization:`Bearer ${token}`},payload:input})).statusCode).toBe(401);
+      expect((await versionedTestRequest(app, {method:"POST",url,headers:{authorization:`Bearer ${token}`},payload:input})).statusCode).toBe(401);
     }
     const forged = await call(writeToken,2,"tools/call",{name:"report_handover_evidence",arguments:{
       itemKey:"HG-1",handoverId:registered.handover.id,merged:{commit:"a".repeat(40),occurredAt:new Date().toISOString()},human:true,
@@ -170,10 +181,10 @@ describe("Commenting over MCP", () => {
     expect(store.getWorkItem("HG-1").status).toBe("in_progress");
     const login = await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:"mission-owner",password:"correct horse"}});
     const headers = {cookie:login.headers["set-cookie"]!.split(";",1)[0]!};
-    const confirmed = await app.inject({method:"POST",url,headers,payload:input});
+    const confirmed = await versionedTestRequest(app, {method:"POST",url,headers,payload:input});
     expect(confirmed.statusCode).toBe(200);
     expect(confirmed.json()).toMatchObject({handover:{itemStatus:"development_complete",evidenceSource:"human_confirmation"}});
-    const publication = await app.inject({method:"POST",url,headers,payload:{stage:"release",note:"Installed the offline build",releases:[{artifact:"web",version:"2.0",sourceCommit:"a".repeat(40)}]}});
+    const publication = await versionedTestRequest(app, {method:"POST",url,headers,payload:{stage:"release",note:"Installed the offline build",releases:[{artifact:"web",version:"2.0",sourceCommit:"a".repeat(40)}]}});
     expect(publication.statusCode).toBe(200);
     expect(store.getWorkItem("HG-1").status).toBe("pending_verification");
     expect(store.getProduct(productId).releaseArtifacts).toContain("web");
@@ -186,7 +197,7 @@ describe("Commenting over MCP", () => {
     const {app,call,writeToken} = await commentingApp();
     const store=app.missionGoStore;
     store.transitionWorkItem({itemKey:"HG-1",to:"ready",actor:"human",reason:"triaged"});
-    store.claimWorkItem({itemKey:"HG-1",agentId:"test",idempotencyKey:"platform-claim"});
+    await call(writeToken,99,"tools/call",{name:"claim_item",arguments:{itemKey:"HG-1",agentId:"test",idempotencyKey:"platform-claim"}});
     const response=await call(writeToken,1,"tools/call",{name:"submit_development_complete",arguments:{itemKey:"HG-1",completion,requiredArtifacts:["web"],idempotencyKey:"platform-development"}});
     expect(response.result?.structuredContent).toMatchObject({item:{status:"development_complete"}});
     const published=await call(writeToken,2,"tools/call",{name:"submit_for_verification",arguments:{itemKey:"HG-1",completion,releases:[{artifact:"web",version:"1.0",sourceCommit:"a".repeat(40)}],deployedCommit:"a".repeat(40),receiptDigest:"b".repeat(64),idempotencyKey:"platform-published"}});
@@ -208,7 +219,7 @@ describe("Commenting over MCP", () => {
     const comments = (await app.inject({
       method: "GET",
       url: "/api/v1/items/HG-1/comments",
-      headers: { authorization: "Bearer management-test-token" },
+      headers: { cookie:fixtureCookies.get(app)! },
     })).json<{ comments: Array<{ actorKind: string }> }>().comments;
     expect(comments).toHaveLength(1);
   });
@@ -249,17 +260,17 @@ describe("Commenting over MCP", () => {
     const comments = (await app.inject({
       method: "GET",
       url: "/api/v1/items/HG-1/comments",
-      headers: { authorization: "Bearer management-test-token" },
+      headers: { cookie:fixtureCookies.get(app)! },
     })).json<{ comments: unknown[] }>().comments;
     expect(comments).toHaveLength(0);
   });
 
   it("hands a claimed item over once its pull request is merged", async () => {
     const { app, call, writeToken } = await commentingApp();
-    await app.inject({
+    await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/HG-1/transitions",
-      headers: { authorization: "Bearer management-test-token" },
+      headers: { cookie:fixtureCookies.get(app)! },
       payload: { to: "ready", reason: "triaged" },
     });
     await call(writeToken, 1, "tools/call", {
@@ -285,7 +296,7 @@ describe("Commenting over MCP", () => {
     const events = (await app.inject({
       method: "GET",
       url: "/api/v1/items/HG-1/timeline",
-      headers: { authorization: "Bearer management-test-token" },
+      headers: { cookie:fixtureCookies.get(app)! },
     })).json<{ events: Array<{ toStatus?: string; payload: Record<string, unknown> }> }>().events;
     const moved = events.find((event) => event.toStatus === "development_complete");
     expect(moved?.payload).toMatchObject({ pullRequestUrl: "https://github.com/owner/repo/pull/42", requiredArtifacts: ["web"] });
@@ -293,9 +304,9 @@ describe("Commenting over MCP", () => {
 
   it("accepts explicit no-release work without putting it in the release queue", async () => {
     const { app, call, readToken, writeToken, productId } = await commentingApp();
-    await app.inject({
+    await versionedTestRequest(app, {
       method: "POST", url: "/api/v1/items/HG-1/transitions",
-      headers: { authorization: "Bearer management-test-token" },
+      headers: { cookie:fixtureCookies.get(app)! },
       payload: { to: "ready", reason: "triaged" },
     });
     await call(writeToken, 1, "tools/call", {
@@ -318,7 +329,7 @@ describe("Commenting over MCP", () => {
     expect(handed.result?.structuredContent).toMatchObject({ item: { status: "development_complete" }, statusChanged: true });
     expect(JSON.stringify(handed)).not.toMatch(/awaits a verified release/);
     const events = (await app.inject({
-      method: "GET", url: "/api/v1/items/HG-1/timeline", headers: { authorization: "Bearer management-test-token" },
+      method: "GET", url: "/api/v1/items/HG-1/timeline", headers: { cookie:fixtureCookies.get(app)! },
     })).json<{ events: Array<{ toStatus?: string; payload: Record<string, unknown> }> }>().events;
     expect(events.filter((event) => event.toStatus === "development_complete")).toMatchObject([
       { payload: { requiredArtifacts: [], noReleaseReason: reason } },
@@ -345,9 +356,9 @@ describe("Commenting over MCP", () => {
     });
     expect(empty.result?.structuredContent).toMatchObject({ candidates: [] });
 
-    await app.inject({
+    await versionedTestRequest(app, {
       method: "POST", url: "/api/v1/items/HG-1/transitions",
-      headers: { authorization: "Bearer management-test-token" },
+      headers: { cookie:fixtureCookies.get(app)! },
       payload: { to: "ready", reason: "triaged" },
     });
     await call(writeToken, 2, "tools/call", {
@@ -381,10 +392,10 @@ describe("Commenting over MCP", () => {
     app.missionGoStore.setProductReleaseArtifacts(productId, []);
     for (const artifacts of [null, [], ["web"]]) {
       const result = await app.inject({method:"PUT",url:`/api/v1/products/${productId}/release-artifacts`,
-        headers:{authorization:"Bearer management-test-token"},payload:{artifacts}});
+        headers:{cookie:fixtureCookies.get(app)!},payload:{artifacts}});
       expect(result.statusCode).toBe(404);
     }
-    await app.inject({method:"POST",url:"/api/v1/items/HG-1/transitions",headers:{authorization:"Bearer management-test-token"},payload:{to:"ready",reason:"triaged"}});
+    await versionedTestRequest(app, {method:"POST",url:"/api/v1/items/HG-1/transitions",headers:{cookie:fixtureCookies.get(app)!},payload:{to:"ready",reason:"triaged"}});
     await call(writeToken, 1, "tools/call", {name:"claim_item",arguments:{itemKey:"HG-1",agentId:"agent",idempotencyKey:"auto-artifacts-claim"}});
     const handed = await call(writeToken, 2, "tools/call", {name:"submit_development_complete",arguments:{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/503",requiredArtifacts:["gateway"],idempotencyKey:"auto-artifacts-complete"}});
     expect(handed.result?.structuredContent).toMatchObject({item:{status:"development_complete"}});
@@ -395,7 +406,7 @@ describe("Commenting over MCP", () => {
   it("allows MCP development completion without a release scope", async () => {
     const {app,call,readToken,writeToken,productId} = await commentingApp();
     app.missionGoStore.setProductReleaseArtifacts(productId, []);
-    await app.inject({method:"POST",url:"/api/v1/items/HG-1/transitions",headers:{authorization:"Bearer management-test-token"},payload:{to:"ready",reason:"triaged"}});
+    await versionedTestRequest(app, {method:"POST",url:"/api/v1/items/HG-1/transitions",headers:{cookie:fixtureCookies.get(app)!},payload:{to:"ready",reason:"triaged"}});
     await call(writeToken,1,"tools/call",{name:"claim_item",arguments:{itemKey:"HG-1",agentId:"agent",idempotencyKey:"no-scope-claim"}});
     const result = await call(writeToken,2,"tools/call",{name:"submit_development_complete",arguments:{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504",idempotencyKey:"no-scope-complete"}});
     expect(result.result?.structuredContent).toMatchObject({item:{status:"development_complete"}});
@@ -458,7 +469,7 @@ describe("Commenting over MCP", () => {
       const result = await uploadFile(path, spec, {
         retryDelayMs: 0,
         fetchImpl: async (url: URL, options: RequestInit) => {
-          const response = await app.inject({ method: "PUT", url: url.pathname + url.search,
+          const response = await versionedTestRequest(app, { method: "PUT", url: url.pathname + url.search,
             headers: options.headers as Record<string, string>, payload: options.body as Buffer });
           // Simulate the server committing a chunk whose response never reached the script.
           if (!lostResponse) { lostResponse = true; throw new Error("lost response"); }
@@ -477,7 +488,7 @@ describe("Commenting over MCP", () => {
       expect((await inspectFile(join(directory, file.filename))).sha256).toBe(metadata.sha256);
       // Committed bytes are preserved; the ordinary API still returns the original file.
       const read = await app.inject({ method: "GET", url: `/api/v1/items/HG-1/attachments/${attachment.id}/content`,
-        headers: { authorization: "Bearer management-test-token" } });
+        headers: { cookie:fixtureCookies.get(app)! } });
       expect(createHash("sha256").update(read.rawPayload).digest("hex")).toBe(metadata.sha256);
       expect(stored.filename).toBe(file.filename);
       const replay = await app.inject({ method: "PUT", url: `/api/v1/mcp-attachment-uploads/${uploadId}?offsetBytes=0`,
@@ -544,6 +555,7 @@ describe("Commenting over MCP", () => {
     expect((await put()).statusCode).toBe(403);
     db.prepare("UPDATE accounts SET credentials_changed_at = ? WHERE id = ?").run(new Date(claims.credentialsAt).toISOString(), claims.id);
     db.prepare("UPDATE accounts SET role = 'member' WHERE id = ?").run(claims.id);
+    db.prepare("DELETE FROM product_administrators WHERE account_id=?").run(claims.id);
     expect((await put()).statusCode).toBe(403);
     expect(JSON.stringify(await call(writeToken, 2, "tools/call", { name: "prepare_attachment_upload", arguments: args })))
       .toMatch(/not permitted/);
@@ -614,7 +626,7 @@ describe("Commenting over MCP", () => {
     for (const [index, fixture] of uploads.entries()) {
       const attachment = item.attachments[index]!;
       const fromWeb = await app.inject({ method: "GET", url: `/api/v1/items/HG-2/attachments/${attachment.id}/content`,
-        headers: { authorization: "Bearer management-test-token" } });
+        headers: { cookie:fixtureCookies.get(app)! } });
       expect(fromWeb.rawPayload).toEqual(fixture.bytes);
       const fromMcp = await call(writeToken, sequence++, "tools/call", {
         name: "get_attachment", arguments: { itemKey: "HG-2", attachmentId: attachment.id },
@@ -648,7 +660,7 @@ describe("Commenting over MCP", () => {
     const read = await call(writeToken, 7, "tools/call", { name: "get_attachment", arguments: { itemKey: "HG-1", attachmentId } });
     expect(read.result?.structuredContent).toMatchObject({ text: "boot\nready\n" });
     const timeline = (await app.inject({ method: "GET", url: "/api/v1/items/HG-1/timeline",
-      headers: { authorization: "Bearer management-test-token" } })).json<{ events: Array<{ eventType: string; actorKind: string }> }>().events;
+      headers: { cookie:fixtureCookies.get(app)! } })).json<{ events: Array<{ eventType: string; actorKind: string }> }>().events;
     expect(timeline.find((event) => event.eventType === "attachment_added")?.actorKind).toBe("agent");
 
     const pdf = Buffer.from("%PDF-1.4\nfixture\n");
@@ -711,7 +723,7 @@ describe("Commenting over MCP", () => {
     for (const [index, fixture] of fixtures.entries()) {
       const attachmentId = attachments[index]!.id;
       const downloaded = await app.inject({ method: "GET", url: `/api/v1/items/HG-2/attachments/${attachmentId}/content`,
-        headers: { authorization: "Bearer management-test-token" } });
+        headers: { cookie:fixtureCookies.get(app)! } });
       expect(downloaded.statusCode).toBe(200);
       expect(downloaded.rawPayload).toEqual(fixture.bytes);
       expect(downloaded.headers["content-disposition"]).toMatch(/^attachment;/);
@@ -729,7 +741,7 @@ describe("Commenting over MCP", () => {
 
     const upload = (filename: string, contentType: string, bytes: Buffer) => app.inject({
       method: "POST", url: "/api/v1/items/HG-1/attachments", payload: bytes,
-      headers: { authorization: "Bearer management-test-token", "content-type": "application/octet-stream",
+      headers: { cookie:fixtureCookies.get(app)!, "content-type": "application/octet-stream",
         "x-missiongo-content-type": contentType, "x-missiongo-filename": filename },
     });
     expect((await upload("prototype.html", "text/html", html)).json()).toMatchObject({ kind: "document" });
@@ -798,14 +810,14 @@ describe("Commenting over MCP", () => {
       const source = (await app.inject({
         method: "GET",
         url: "/api/v1/items/HG-1",
-        headers: { authorization: "Bearer management-test-token" },
+        headers: { cookie:fixtureCookies.get(app)! },
       })).json<{ derivedItems?: unknown }>();
       expect(source.derivedItems).toEqual([{ key: "HG-2", title: "Cold start leaks the session", status: "ready" }]);
 
       const timeline = (key: string) => app.inject({
         method: "GET",
         url: `/api/v1/items/${key}/timeline`,
-        headers: { authorization: "Bearer management-test-token" },
+        headers: { cookie:fixtureCookies.get(app)! },
       }).then((response) => response.json<{ events: Array<{ eventType: string; actorKind: string; payload: Record<string, unknown> }> }>().events);
       expect((await timeline("HG-2")).find((event) => event.eventType === "item_created")).toMatchObject({
         actorKind: "agent",
@@ -825,7 +837,7 @@ describe("Commenting over MCP", () => {
       const listed = (await app.inject({
         method: "GET",
         url: "/api/v1/items/HG-1",
-        headers: { authorization: "Bearer management-test-token" },
+        headers: { cookie:fixtureCookies.get(app)! },
       })).json<{ derivedItems?: unknown[] }>();
       expect(listed.derivedItems).toHaveLength(1);
     });
@@ -893,7 +905,7 @@ describe("Commenting over MCP", () => {
       const timeline = (key: string) => app.inject({
         method: "GET",
         url: `/api/v1/items/${key}/timeline`,
-        headers: { authorization: "Bearer management-test-token" },
+        headers: { cookie:fixtureCookies.get(app)! },
       }).then((response) => response.json<{ events: Array<{ eventType: string; actorKind: string; payload: Record<string, unknown> }> }>().events);
       const createdEvent = (await timeline("HG-2")).find((event) => event.eventType === "item_created");
       expect(createdEvent).toMatchObject({
@@ -990,10 +1002,10 @@ describe("Commenting over MCP", () => {
 
   it("takes a ready item into progress and refuses to claim it twice", async () => {
     const { app, call, writeToken } = await commentingApp();
-    await app.inject({
+    await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/HG-1/transitions",
-      headers: { authorization: "Bearer management-test-token" },
+      headers: { cookie:fixtureCookies.get(app)! },
       payload: { to: "ready", reason: "triaged" },
     });
 
@@ -1016,7 +1028,7 @@ describe("Commenting over MCP", () => {
     const { app, call, writeToken } = await commentingApp();
     const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: "mission-owner", password: "correct horse" } });
     const headers = { cookie: login.headers["set-cookie"]!.split(";", 1)[0]! };
-    await app.inject({ method: "POST", url: "/api/v1/items/HG-1/transitions", headers, payload: { to: "ready", reason: "triaged" } });
+    await versionedTestRequest(app, { method: "POST", url: "/api/v1/items/HG-1/transitions", headers, payload: { to: "ready", reason: "triaged" } });
     const args = { itemKey: "HG-1", agentId: "codex", idempotencyKey: "external-claim",
       session: { agentKind: "codex", sessionRef: "trusted-native-thread", refKind: "native", name: "Fix launch" } };
     const claim = await call(writeToken, 1, "tools/call", { name: "claim_item", arguments: args });
@@ -1311,7 +1323,7 @@ describe("The consent screen", () => {
       payload: { client_name: "Codex", redirect_uris: ["http://127.0.0.1:9321/callback"] },
     })).json<{ client_id: string }>();
     const challenge = createHash("sha256").update("a".repeat(64), "utf8").digest("base64url");
-    const response = await app.inject({
+    const response = await versionedTestRequest(app, {
       method: "GET",
       url: `/oauth/authorize?client_id=${encodeURIComponent(client.client_id)}`
         + "&redirect_uri=http%3A%2F%2F127.0.0.1%3A9321%2Fcallback&response_type=code"
@@ -1394,7 +1406,7 @@ describe("Work-item comments over REST", () => {
       url: `/api/v1/items/${itemKey}/comments`,
       payload: { text: "Looks like a launch-path regression." },
     });
-    await app.inject({
+    await versionedTestRequest(app, {
       method: "POST",
       url: `/api/v1/items/${itemKey}/transitions`,
       payload: { to: "ready", reason: "triaged" },
@@ -1430,6 +1442,8 @@ describe("MissionGo REST API", () => {
       publicOrigin: "https://missiongo.test",
     });
     apps.push(app);
+    const humanLogin=await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:adminAccount.username,password:"correct horse"}});
+    const humanHeaders={cookie:humanLogin.headers["set-cookie"]!.split(";",1)[0]!};
     const mcpAccessToken = createAiAccessToken(
       adminAccount,
       { id: adminAccount.id, username: adminAccount.username, role: "admin" },
@@ -1446,19 +1460,19 @@ describe("MissionGo REST API", () => {
     expect(unauthorized.statusCode).toBe(401);
 
     const product = (
-      await app.inject({ method: "POST", url: "/api/v1/products", headers: { authorization: "Bearer management-test-token" }, payload: { name: "Hermes Go", keyPrefix: "HG" } })
+      await app.inject({ method: "POST", url: "/api/v1/products", headers: humanHeaders, payload: { name: "Hermes Go", keyPrefix: "HG" } })
     ).json<{ id: string }>();
     await app.inject({
       method: "POST",
       url: "/api/v1/items",
-      headers: { authorization: "Bearer management-test-token" },
+      headers: humanHeaders,
       payload: { productId: product.id, type: "bug", priority: "high", title: "Crash", description: "Fails on launch", environment: { platform: "other" } },
     });
     const uploadedLog = await app.inject({
       method: "POST",
       url: "/api/v1/items/HG-1/attachments",
       headers: {
-        authorization: "Bearer management-test-token",
+        ...humanHeaders,
         "content-type": "application/octet-stream",
         "x-missiongo-content-type": "text/plain",
         "x-missiongo-filename": "launch.log",
@@ -1470,7 +1484,7 @@ describe("MissionGo REST API", () => {
       method: "POST",
       url: "/api/v1/items/HG-1/attachments",
       headers: {
-        authorization: "Bearer management-test-token",
+        ...humanHeaders,
         "content-type": "application/octet-stream",
         "x-missiongo-content-type": "image/png",
         "x-missiongo-filename": "launch.png",
@@ -1487,7 +1501,7 @@ describe("MissionGo REST API", () => {
       method: "POST",
       url: "/api/v1/items/HG-1/attachments",
       headers: {
-        authorization: "Bearer management-test-token",
+        ...humanHeaders,
         "content-type": "application/octet-stream",
         "x-missiongo-content-type": "video/mp4",
         "x-missiongo-filename": "launch.mp4",
@@ -1505,7 +1519,7 @@ describe("MissionGo REST API", () => {
         method: "POST",
         url: "/api/v1/items/HG-1/attachments",
         headers: {
-          authorization: "Bearer management-test-token",
+          ...humanHeaders,
           "content-type": "application/octet-stream",
           "x-missiongo-content-type": fixture.contentType,
           "x-missiongo-filename": fixture.filename,
@@ -1646,7 +1660,7 @@ describe("MissionGo REST API", () => {
       ]));
     }
 
-    expect((await app.inject({ method: "GET", url: "/api/v1/items/HG-1", headers: { authorization: "Bearer management-test-token" } })).json()).toMatchObject({ status: "inbox" });
+    expect((await app.inject({ method: "GET", url: "/api/v1/items/HG-1", headers: humanHeaders })).json()).toMatchObject({ status: "inbox" });
     expect(app.missionGoStore.getTimeline("HG-1")).toHaveLength(timelineCountBeforeRead);
   });
 
@@ -1882,6 +1896,8 @@ describe("MissionGo REST API", () => {
     const adminAccount = testAdminAccount();
     const app = buildApp({ adminAccount, adminToken: "management-test-token", publicOrigin: "https://missiongo.test" });
     apps.push(app);
+    const humanLogin=await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:adminAccount.username,password:"correct horse"}});
+    const humanHeaders={cookie:humanLogin.headers["set-cookie"]!.split(";",1)[0]!};
 
     const allowed = app.missionGoStore.createProduct({ name: "Allowed", keyPrefix: "OK" });
     const blocked = app.missionGoStore.createProduct({ name: "Blocked", keyPrefix: "NO" });
@@ -1903,7 +1919,7 @@ describe("MissionGo REST API", () => {
       method: "POST",
       url: "/api/v1/items/NO-1/attachments",
       headers: {
-        authorization: "Bearer management-test-token",
+        ...humanHeaders,
         "content-type": "application/octet-stream",
         "x-missiongo-content-type": "video/mp4",
         "x-missiongo-filename": "private.mp4",
@@ -2551,7 +2567,7 @@ describe("MissionGo REST API", () => {
     apps.splice(apps.indexOf(app), 1);
 
     const legacyDatabase = new DatabaseSync(databasePath);
-    legacyDatabase.exec("ALTER TABLE work_items DROP COLUMN report_json;");
+    legacyDatabase.exec("DROP TRIGGER IF EXISTS item_policy_revision; ALTER TABLE work_items DROP COLUMN report_json;");
     legacyDatabase.prepare("DELETE FROM schema_migrations WHERE version = ?").run(8);
     legacyDatabase.close();
 
@@ -2817,7 +2833,7 @@ describe("MissionGo REST API", () => {
       },
     });
 
-    const invalidTransition = await app.inject({
+    const invalidTransition = await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/MG-1/transitions",
       payload: { to: "done", reason: "verification_passed" },
@@ -2843,7 +2859,7 @@ describe("MissionGo REST API", () => {
       affectedComponentIds: [component.id],
     });
 
-    const triageResponse = await app.inject({
+    const triageResponse = await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/MG-1/transitions",
       payload: { to: "ready", reason: "triaged", note: "Ready for AI analysis." },
@@ -2875,10 +2891,10 @@ describe("MissionGo REST API", () => {
       },
     });
     const move = (to: string, reason: string, note?: string) =>
-      app.inject({
+      versionedTestRequest(app, {
         method: "POST",
         url: "/api/v1/items/MG-1/transitions",
-        payload: { to, reason, ...(note === undefined ? {} : { note }) },
+        payload: { to, reason:["development_complete","pending_verification"].includes(to) ? "manual_override" : reason, ...(["development_complete","pending_verification"].includes(to) ? {note:"Fixture: verified delivery"} : note === undefined ? {} : {note}) },
       });
     const timeline = async () =>
       (await app.inject({ method: "GET", url: "/api/v1/items/MG-1/timeline" }))
@@ -2936,7 +2952,7 @@ describe("MissionGo REST API", () => {
       payload: { productId: product.id, type: "task", priority: "normal", title: "Drop me", description: "x", environment: { platform: "web" } },
     });
     const cancel = (note?: string) =>
-      app.inject({
+      versionedTestRequest(app, {
         method: "POST",
         url: "/api/v1/items/MG-1/transitions",
         payload: { to: "cancelled", reason: "cancelled", ...(note === undefined ? {} : { note }) },
@@ -3343,7 +3359,7 @@ describe("MissionGo REST API", () => {
         payload: { productId: product.id, type: "task", priority: "normal", title, description: "x", environment: { platform: "web" } },
       });
     }
-    await app.inject({ method: "POST", url: "/api/v1/items/MG-2/transitions", payload: { to: "cancelled", reason: "cancelled", note: "Filed twice." } });
+    await versionedTestRequest(app, { method: "POST", url: "/api/v1/items/MG-2/transitions", payload: { to: "cancelled", reason: "cancelled", note: "Filed twice." } });
 
     // The default list is live work only.
     const unfiltered = await app.inject({ method: "GET", url: `/api/v1/items?productId=${product.id}` });
@@ -3382,7 +3398,7 @@ describe("MissionGo REST API", () => {
         payload: { productId: product.id, type: "task", priority: "normal", title, description: "H5 iteration", environment: { platform: "web" } },
       });
     }
-    await app.inject({
+    await versionedTestRequest(app, {
       method: "POST",
       url: "/api/v1/items/MG-2/transitions",
       payload: { to: "ready", reason: "triaged" },

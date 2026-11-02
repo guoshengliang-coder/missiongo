@@ -119,7 +119,7 @@ for (const viewport of [
           } else {
             await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
             await page.locator(".execution-history > summary").click();
-            await page.locator(".execution-record > summary").click();
+            await page.locator(".execution-record > summary").filter({ hasText: "派单 · Fixture" }).click();
             await page.locator(".agent-session-toggle").click();
           }
           const area = page.locator(surface === "console" ? ".agent-console-messages" : ".agent-session-messages");
@@ -193,7 +193,7 @@ for (const viewport of [
         } else {
           await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
           await page.locator(".execution-history > summary").click();
-          await page.locator(".execution-record > summary").click();
+          await page.locator(".execution-record > summary").filter({ hasText: "派单 · Fixture" }).click();
           await page.locator(".agent-session-toggle").click();
         }
         const area = page.locator(surface === "console" ? ".agent-console-messages" : ".agent-session-messages");

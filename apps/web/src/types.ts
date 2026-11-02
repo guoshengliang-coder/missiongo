@@ -112,6 +112,11 @@ export interface Component {
 }
 
 export interface WorkItem {
+  readonly revision?: number;
+  readonly contentVersion?: number;
+  readonly heldFrom?: WorkItemStatus;
+  readonly executionDisposition?: string;
+  readonly transitionDecisions?: readonly {to:WorkItemStatus;reason:string;allowed:boolean;code:string}[];
   /** Server-computed rights for the signed-in person; acceptance is separate from operation. */
   readonly access?: { readonly canOperate: boolean; readonly canVerify: boolean };
   readonly hasProcessingRound?: boolean;

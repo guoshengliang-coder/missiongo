@@ -188,6 +188,9 @@ export interface AttachmentRecord extends WorkItemAttachment {
 }
 
 export interface TransitionWorkItemInput {
+  readonly expectedRevision?: number;
+  readonly executionDisposition?: "keep_running" | "stop_requested";
+  readonly confirmedHandoverId?: string;
   readonly attachmentIds?: readonly string[];
   readonly idempotencyKey?: string;
   readonly expectedStatus?: WorkItemStatus;
