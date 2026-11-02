@@ -3169,12 +3169,10 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .media-tile .attachment-media-open, .media-tile .attachment-media-open img { width: 100%; height: 100%; max-height: none; object-fit: cover; }
 .media-tile .attachment-media-open > span { display: none; }
 .media-tile .media-number-badge { z-index: 1; pointer-events: none; }
-.media-tile-download, .media-viewer-download { position: absolute; z-index: 2; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; color: var(--media-overlay-fg); background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; }
-.media-tile-download::before, .media-viewer-download::before { content: ""; position: absolute; inset: 8px; background: var(--media-overlay-bg); border-radius: var(--radius-xs); }
-.media-tile-download > svg, .media-viewer-download > svg { position: relative; }
-@media (hover: hover) { .media-tile-download:hover::before, .media-viewer-download:hover::before { background: var(--media-overlay-hover-bg); } }
-.media-tile-download { right: 4px; bottom: 4px; }
-.media-viewer-download { top: calc(var(--safe-top) + 8px); right: calc(var(--safe-right) + 64px); }
+.media-viewer-download { position: absolute; z-index: 2; top: calc(var(--safe-top) + 8px); right: calc(var(--safe-right) + 64px); display: grid; place-items: center; width: 44px; height: 44px; padding: 0; color: var(--media-overlay-fg); background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; }
+.media-viewer-download::before { content: ""; position: absolute; inset: 8px; background: var(--media-overlay-bg); border-radius: var(--radius-xs); }
+.media-viewer-download > svg { position: relative; }
+@media (hover: hover) { .media-viewer-download:hover::before { background: var(--media-overlay-hover-bg); } }
 .media-viewer-error { position: absolute; z-index: 3; top: calc(var(--safe-top) + 60px); left: 12px; right: 12px; color: var(--code-fg); background: var(--code-bg); padding: 8px; font-size: var(--text-sm); }
 .zoomable-image { position: relative; flex: 1; min-height: 0; width: 100%; height: 100%; overflow: hidden; }
 .zoomable-image-viewport { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; touch-action: none; cursor: zoom-in; user-select: none; }

@@ -28,14 +28,8 @@ for (const width of [375, 724, 844, 1440]) for (const theme of ["light", "dark"]
     expect(Math.abs(box.y - nextBox.y)).toBeLessThan(2);
     expect(box.height).toBeLessThan(180);
     await expect(first.locator(".media-number-badge")).toHaveText("图片 1");
-    const controls = await first.locator(".media-tile-download").evaluate(el => {
-      const box=el.getBoundingClientRect(), plate=getComputedStyle(el,"::before");
-      return {width:box.width,height:box.height,inset:parseFloat(plate.left),background:plate.backgroundColor};
-    });
-    expect(controls.width).toBeGreaterThanOrEqual(44);
-    expect(controls.height).toBeGreaterThanOrEqual(44);
-    expect(controls.width-controls.inset*2).toBeLessThanOrEqual(28);
-    expect(controls.background).toMatch(/rgba\(.+, 0\.64\)/);
+    await expect(first.locator(".media-tile-download")).toHaveCount(0);
+    await expect(first.getByRole("button", { name: "下载 original.png", exact: true })).toHaveCount(0);
     const commentTile=page.locator(`#comment-${root.id} .comment-attachment-tile`);
     const badge=commentTile.locator(".media-number-badge");
     const corner=await badge.evaluate(el=>{
@@ -44,7 +38,7 @@ for (const width of [375, 724, 844, 1440]) for (const theme of ["light", "dark"]
     });
     expect(corner.left).toBeLessThanOrEqual(3);
     expect(corner.top).toBeLessThanOrEqual(3);
-    expect(corner.bg).toBe(controls.background);
+    expect(corner.bg).toMatch(/rgba\(.+, 0\.64\)/);
 
     await expect(page.locator(`#comment-${root.id} .media-number-badge`)).toHaveText("图片 3");
     await expect(page.locator(`#comment-${reply.id} .comment-attachment-tile`)).toHaveCount(1);
@@ -55,6 +49,17 @@ for (const width of [375, 724, 844, 1440]) for (const theme of ["light", "dark"]
     const dialog = page.locator(".selected-media-lightbox"), zoom = dialog.locator(".zoomable-image");
     await expect(zoom.locator("img")).toBeVisible();
     await expect(dialog.locator("header strong")).toHaveText("图片 1 · 1/2");
+    const viewerDownload = dialog.locator(".media-viewer-download");
+    await expect(viewerDownload).toBeVisible();
+    const viewerControls = await viewerDownload.evaluate(el => {
+      const box = el.getBoundingClientRect(), plate = getComputedStyle(el, "::before");
+      return { width: box.width, height: box.height, top: box.top, right: innerWidth - box.right, background: plate.backgroundColor };
+    });
+    expect(viewerControls.width).toBeGreaterThanOrEqual(44);
+    expect(viewerControls.height).toBeGreaterThanOrEqual(44);
+    expect(viewerControls.background).toMatch(/rgba\(.+, 0\.64\)/);
+    expect(viewerControls.top).toBeLessThanOrEqual(80);
+    expect(viewerControls.right).toBeLessThanOrEqual(80);
     await dialog.getByRole("button", { name: "放大图片", exact: true }).click();
     await expect(zoom).toHaveAttribute("data-zoomed", "true");
     await dialog.getByRole("button", { name: "适应屏幕", exact: true }).click();
@@ -133,7 +138,7 @@ test("pinch, zoomed pan and unzoomed swipe have distinct effects", async ({ brow
 });
 
 
-test("list evidence excludes comment files and video tiles retain preview/download", async ({ page }) => {
+test("list evidence excludes comment files and video tiles open the preview with download", async ({ page }) => {
   const { item, files } = await seed(page);
   const uploaded = await page.request.post(`/api/v1/items/${item.key}/attachments`, { headers: {
     "content-type": "application/octet-stream", "x-missiongo-content-type": "video/mp4", "x-missiongo-filename": "clip.mp4",

@@ -4688,13 +4688,12 @@ function AttachmentCard({
         )}
         {attachment.kind === "video" && objectUrl && (
           <div className="attachment-video-preview">
-            <PlayableVideo src={objectUrl} autoPlay={false} playsInline={false} onDownload={() => void download()} />
+            <PlayableVideo src={objectUrl} autoPlay={false} playsInline={false} />
             <button type="button" onClick={() => onOpenMedia ? onOpenMedia(attachment.id) : setViewerOpen(true)} aria-label={t("previewAttachment", { filename: attachment.filename })} title={t("preview")}><Maximize2 size={16} /></button>
           </div>
         )}
         {readsAsText && logText && <pre>{logText}</pre>}
       </div>}
-      {mediaTile && <button type="button" className="media-tile-download" onClick={() => void download()} aria-label={`${t("download")} ${attachment.filename}`} title={t("download")}><Download size={16} /></button>}
       {!mediaTile && <footer>
         <Icon size={15} />
         <span><strong>{referenceLabel ? `${referenceLabel} · ` : ""}{attachment.filename}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span>
