@@ -112,6 +112,8 @@ export interface Component {
 }
 
 export interface WorkItem {
+  /** Server-computed rights for the signed-in person; acceptance is separate from operation. */
+  readonly access?: { readonly canOperate: boolean; readonly canVerify: boolean };
   readonly hasProcessingRound?: boolean;
   readonly deliveryProgress?: import("@missiongo/domain").WorkItemSnapshot["deliveryProgress"];
   /** A migrated original is permanently read-only. */

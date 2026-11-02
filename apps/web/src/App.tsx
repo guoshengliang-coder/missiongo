@@ -160,7 +160,7 @@ import { cachedListSummary } from "./list-summary";
 import { applyConfirmedItemTransition } from "./confirmed-item-transition";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
 import { useForegroundSync } from "./use-foreground-sync";
-import { manualMoves, TRANSITIONS } from "./work-item-transitions";
+import { canSelectForVerification, itemTransitionActions } from "./work-item-transitions";
 import {
   creatorLabel,
   creatorShort,
@@ -1197,16 +1197,24 @@ export function App() {
   ]);
   const visibleItems = items;
   const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(attachment => !attachment.commentId && !attachment.transitionEventId && isMediaAttachment(attachment)));
-  const selectedItems = visibleItems.filter((item) => selectedItemKeys.has(item.key));
+  const selectedItems = visibleItems.filter((item) => selectedItemKeys.has(item.key)
+    && (item.status !== "pending_verification" || canSelectForVerification(item)));
   // A selection is one status: the one both batch actions are keyed on (AND-66).
   const selectionStatus = selectedItems[0]?.status;
 
   // Permissions can be changed while this tab is open. A ready-item selection
-  // must disappear with the dispatch controls, while verification selections
-  // remain ordinary product operation and are left intact.
+  // must disappear with the dispatch controls. Acceptance selections are
+  // filtered by the current per-item right, separately from operation.
   useEffect(() => {
     if (!selectedProductCanUseAi && selectionStatus === "ready") setSelectedItemKeys(new Set());
   }, [selectedProductCanUseAi, selectionStatus]);
+
+  useEffect(() => {
+    const denied = new Set(itemsQuery.data?.pages.flatMap(page => page.items)
+      .filter(item => item.status === "pending_verification" && !canSelectForVerification(item)).map(item => item.key));
+    setSelectedItemKeys(current => [...current].some(key => denied.has(key))
+      ? new Set([...current].filter(key => !denied.has(key))) : current);
+  }, [itemsQuery.data]);
 
   /**
    * A selection belongs to the rows it was made on. Once the filters move those
@@ -1638,7 +1646,8 @@ export function App() {
                 <button
                   type="button"
                   className="primary-button positive"
-                  onClick={() => setVerifyBatch(selectedItems.filter((item) => item.status === "pending_verification"))}
+                  disabled={selectedItems.length === 0}
+                  onClick={() => setVerifyBatch(selectedItems.filter(canSelectForVerification))}
                 >
                   <CheckCircle2 size={16} /> {t("verifySelected", { count: selectedItems.length })}
                 </button>
@@ -1694,7 +1703,7 @@ export function App() {
                   canOperate={selectedProductCanCapture}
                   selected={item.key === selectedItemKey}
                   checked={selectedItemKeys.has(item.key)}
-                  selectionVisible={item.status === "pending_verification"
+                  selectionVisible={canSelectForVerification(item)
                     || item.status === "in_progress"
                     || (selectedProductCanUseAi && isDispatchable(item.status))}
                   selectable={selectedItemKeys.has(item.key) || canJoinSelection(item.status, selectionStatus)}
@@ -2132,7 +2141,7 @@ function ItemRow({
         <span>{formatTime(item.updatedAt)}</span>
       </span>
       <span className="item-row-actions">
-        {canOperate && <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} onStartWork={onStartWork} />}
+        {(canOperate || item.access?.canVerify) && <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} onStartWork={onStartWork} />}
       </span>
     </article>
   );
@@ -2438,13 +2447,11 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
 }) {
   const queryClient = useQueryClient();
   const { statusLabel, t, transitionLabel } = useI18n();
-  const actions = item.transferred ? [] : TRANSITIONS[item.status];
-  const primaryAction = actions[0];
+  const { primaryAction, secondaryActions: otherActions, manualTargets } = itemTransitionActions(item);
   const PrimaryActionIcon = primaryAction ? STATUS_ICONS[primaryAction.to] : CircleDot;
   // Destructive last, whatever order the table lists them in.
-  const secondaryActions = actions.slice(1).filter((action) => action.tone !== "danger");
-  const destructiveActions = actions.slice(1).filter((action) => action.tone === "danger");
-  const manualTargets = item.transferred ? [] : manualMoves(item.status);
+  const secondaryActions = otherActions.filter((action) => action.tone !== "danger");
+  const destructiveActions = otherActions.filter((action) => action.tone === "danger");
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
   const [transferring, setTransferring] = useState(false);
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
@@ -2508,10 +2515,10 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
         {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <MoreVertical size={16} />}
       </summary>
       <div className="detail-more-menu-popover detail-actions-popover">
-        <div className="detail-action-group">
+        {item.access?.canOperate !== false && <div className="detail-action-group">
           <p className="detail-action-heading">{t("actionGroupCollaboration")}</p>
           <button type="button" disabled={mutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}><ArrowRight size={17} aria-hidden="true" />{t("transferItem")}</button>
-        </div>
+        </div>}
         <div className="detail-action-group">
           <p className="detail-action-heading">{t("actionGroupStatus")}</p>
           {primaryAction && <button
@@ -2539,7 +2546,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
         </div>
         <div className="detail-action-group">
           <p className="detail-action-heading">{t("actionGroupTools")}</p>
-          <button type="button" disabled={mutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); onEdit(); }}><Pencil size={17} aria-hidden="true" />{t("edit")}</button>
+          <button type="button" disabled={mutation.isPending || item.access?.canOperate === false} onClick={() => { moreActionsRef.current?.removeAttribute("open"); onEdit(); }}><Pencil size={17} aria-hidden="true" />{t("edit")}</button>
         </div>
         {destructiveActions.map((action) => <div className="detail-action-group" key={`${action.to}-${action.reason}`}>
           <button type="button" className="danger" disabled={mutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><X size={17} aria-hidden="true" />{transitionLabel(action.label)}</button>
@@ -2792,10 +2799,7 @@ function DetailPane({
     else if (transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else transitionMutation.mutate({ action });
   };
-  const actions = item.transferred ? [] : TRANSITIONS[item.status];
-  const primaryAction = actions[0];
-  const secondaryActions = actions.slice(1);
-  const manualTargets = item.transferred ? [] : manualMoves(item.status);
+  const { primaryAction, secondaryActions, manualTargets } = itemTransitionActions(item);
   const sourceComponent = componentsQuery.data?.find((component) => component.id === item.sourceComponentId);
   const affectedComponents = (componentsQuery.data ?? []).filter((component) => item.affectedComponentIds.includes(component.id));
   const environment = environmentFields(item.environment, t);
@@ -2850,15 +2854,15 @@ function DetailPane({
           )}
           <div className="adaptive-toolbar-secondary" data-toolbar-secondary aria-hidden={toolbarOverflow} inert={toolbarOverflow}>
             <RefreshButton refreshing={itemQuery.isFetching || timelineQuery.isFetching} onRefresh={refreshItem} />
-            <button className="secondary-button" disabled={item.transferred} onClick={() => setEditing(true)}>{t("edit")}</button>
+            <button className="secondary-button" disabled={item.transferred || item.access?.canOperate === false} onClick={() => setEditing(true)}>{t("edit")}</button>
           </div>
           <OverlayMenu className="detail-more-menu" ref={moreActionsRef} onToggle={(event) => { if (!event.currentTarget.open) event.currentTarget.querySelector(".detail-move-menu")?.removeAttribute("open"); }}>
             <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={19} /></summary>
             <div className="detail-more-menu-popover detail-actions-popover">
-              {(deliveryQuery.data?.canManageBuilder || !item.transferred) && <div className="detail-action-group">
+              {(deliveryQuery.data?.canManageBuilder || (!item.transferred && item.access?.canOperate !== false)) && <div className="detail-action-group">
                 <p className="detail-action-heading">{t("actionGroupCollaboration")}</p>
                 {deliveryQuery.data?.canManageBuilder && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferBuilderOpen(true); }}><UserRoundCog size={17} aria-hidden="true" />{t("transferBuilder")}</button>}
-                {!item.transferred && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}><ArrowRight size={17} aria-hidden="true" />{t("transferItem")}</button>}
+                {!item.transferred && item.access?.canOperate !== false && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}><ArrowRight size={17} aria-hidden="true" />{t("transferItem")}</button>}
               </div>}
               {(secondaryActions.some((action) => action.tone !== "danger") || manualTargets.length > 0) && <div className="detail-action-group">
                 <p className="detail-action-heading">{t("actionGroupStatus")}</p>
@@ -2878,7 +2882,7 @@ function DetailPane({
                 <p className="detail-action-heading">{t("actionGroupTools")}</p>
                 {toolbarOverflow && <>
                   <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); refreshItem(); }}><RefreshCw size={17} aria-hidden="true" />{t("refresh")}</button>
-                  <button type="button" disabled={item.transferred} onClick={() => { moreActionsRef.current?.removeAttribute("open"); setEditing(true); }}><Pencil size={17} aria-hidden="true" />{t("edit")}</button>
+                  <button type="button" disabled={item.transferred || item.access?.canOperate === false} onClick={() => { moreActionsRef.current?.removeAttribute("open"); setEditing(true); }}><Pencil size={17} aria-hidden="true" />{t("edit")}</button>
                 </>}
                 <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setStatusChecksOpen(true); }}><ClipboardCheck size={17} aria-hidden="true" />{t("statusChecks")}</button>
               </div>
@@ -2890,6 +2894,7 @@ function DetailPane({
         </div>
       </div>
       <div className="detail-scroll">
+        {item.status === "pending_verification" && !item.access?.canVerify && <p className="dispatch-note" role="status">{t("verificationNotPermitted")}</p>}
         {deliveryQuery.data && <BuilderHandoverNotice itemKey={item.key} delivery={deliveryQuery.data} onTakeOver={() => onTakeOver(item)} />}
         {(item.transferred || item.transferredFrom) && <div className="transfer-banner" role="status">
           {item.transferred && <p>{t("transferReadOnly")}</p>}
@@ -3094,7 +3099,7 @@ function DetailPane({
       {!item.transferred && accountId && <CommentComposer key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
         replyTo={replyTo} onLocateReply={()=>replyTo && locateComment(replyTo.id)} onCancelReply={()=>setReplyTo(null)} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
-      {statusChecksOpen && <StatusCheckPanel key={`status-checks:${item.key}`} productId={item.productId} itemKey={item.key} canOperate={!item.transferred} onClose={() => setStatusChecksOpen(false)} />}
+      {statusChecksOpen && <StatusCheckPanel key={`status-checks:${item.key}`} productId={item.productId} itemKey={item.key} canOperate={!item.transferred && item.access?.canOperate !== false} onClose={() => setStatusChecksOpen(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
         <TransferBuilderModal itemKey={item.key} delivery={deliveryQuery.data} onClose={() => setTransferBuilderOpen(false)} />
       )}

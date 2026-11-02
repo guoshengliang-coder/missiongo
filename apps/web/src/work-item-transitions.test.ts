@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { evaluateWorkItemTransition, transitionRequiresNote } from "@missiongo/domain";
 
-import { manualMoves, TRANSITIONS } from "./work-item-transitions";
-import { ITEM_STATUSES, type WorkItemStatus } from "./types";
+import { canSelectForVerification, itemTransitionActions, manualMoves, TRANSITIONS } from "./work-item-transitions";
+import { ITEM_STATUSES, type WorkItem, type WorkItemStatus } from "./types";
 
 // The web transition table is written by hand while the rules live in
 // packages/domain. They drifted once already: every status kept its forward
@@ -144,5 +144,29 @@ describe("manual moves", () => {
       const reachable = new Set([...TRANSITIONS[from].map((a) => a.to), ...manualMoves(from).map((a) => a.to)]);
       expect([...reachable].sort()).toEqual(ITEM_STATUSES.filter((status) => status !== from).sort());
     }
+  });
+});
+
+describe("acceptance controls (AND-356)", () => {
+  const item = (status: WorkItemStatus, canOperate: boolean, canVerify: boolean) => ({ status, access: { canOperate, canVerify } } as WorkItem);
+
+  it("hides completion without promoting a return action into the completion button", () => {
+    const denied = item("pending_verification", true, false);
+    const actions = itemTransitionActions(denied);
+    expect(actions.primaryAction).toBeUndefined();
+    expect(actions.secondaryActions.map(action => action.to)).toEqual(["ready", "cancelled"]);
+    expect(actions.manualTargets.some(action => action.to === "done")).toBe(false);
+    expect(canSelectForVerification(denied)).toBe(false);
+    expect(itemTransitionActions(item("ready", true, false)).manualTargets.some(action => action.to === "done")).toBe(false);
+  });
+
+  it("allows acceptance independently from operation and fails closed on missing rights", () => {
+    const allowed = item("pending_verification", false, true);
+    expect(itemTransitionActions(allowed)).toMatchObject({ primaryAction: { to: "done" }, secondaryActions: [], manualTargets: [] });
+    expect(canSelectForVerification(allowed)).toBe(true);
+    expect(canSelectForVerification({ status: "pending_verification" } as WorkItem)).toBe(false);
+    const transferred = { ...allowed, transferred: true };
+    expect(canSelectForVerification(transferred)).toBe(false);
+    expect(itemTransitionActions(transferred)).toEqual({ primaryAction: undefined, secondaryActions: [], manualTargets: [] });
   });
 });

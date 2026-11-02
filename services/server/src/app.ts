@@ -1813,6 +1813,27 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return normalizedKey;
   };
 
+  // AND-356: acceptance belongs to a person with a project role or the
+  // account that proposed the item, independently of ordinary operation rights.
+  function canVerifyItem(request: FastifyRequest, item: ReturnType<MissionGoStore["getWorkItem"]>): boolean {
+    if (unauthenticatedDeployment) return true; // The local console's synthetic administrator.
+    const account = sessionAccount(request);
+    if (!account) return false; // A deployment/AI token is not a human account.
+    const creator = item.createdBy;
+    return account.role === "admin"
+      || accountStore.isProjectAdministrator(account, item.productId)
+      || (creator?.kind !== "sdk" && creator?.accountId === account.id);
+  }
+
+  function requireTransitionPermission(request: FastifyRequest, itemKey: string, to: string): string {
+    if (to !== "done") return requireItemPermission(request, itemKey, "operate");
+    const key = requireItemPermission(request, itemKey);
+    if (!canVerifyItem(request, store.getWorkItem(key))) {
+      throw new MissionGoError("verification_not_permitted", "Only a system administrator, project administrator or the proposer may complete this item.", 403);
+    }
+    return key;
+  }
+
   /**
    * Retiring a product, and deciding who else reaches it, are the creator's
    * call or an administrator's.
@@ -4016,7 +4037,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   function withTransferReferences(request: FastifyRequest, item: ReturnType<MissionGoStore["getWorkItem"]>) {
-    return { ...item, ...store.transferReferences(item.key, (id) => bearerAuthorized(request)
+    return { ...item,
+      access: {
+        canOperate: bearerAuthorized(request) || accountStore.allows(requireAccount(request), item.productId, "operate"),
+        canVerify: !item.transferred && canVerifyItem(request, item),
+      },
+      ...store.transferReferences(item.key, (id) => bearerAuthorized(request)
       || accountStore.allows(requireAccount(request), id, "view")) };
   }
 
@@ -4056,9 +4082,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.post("/api/v1/items/:itemKey/transitions", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
     const body = objectBody(request.body);
-    return store.transitionWorkItem({
-      itemKey: requireItemPermission(request, itemKey, "operate"),
-      to: enumField(body, "to", WORK_ITEM_STATUSES)!,
+    const to = enumField(body, "to", WORK_ITEM_STATUSES)!;
+    return withTransferReferences(request, store.transitionWorkItem({
+      itemKey: requireTransitionPermission(request, itemKey, to),
+      to,
       actor: "human",
       reason: enumField(body, "reason", TRANSITION_REASONS)!,
       ...(body.attachmentIds !== undefined ? { attachmentIds: stringArrayField(body, "attachmentIds")! } : {}),
@@ -4068,7 +4095,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       // Who moved it. With one account "a human did" was enough; with several it
       // is the difference between a timeline and a rumour.
       ...(sessionUser(request) ? { attribution: { accountId: sessionUser(request)!.id } } : {}),
-    });
+    }));
   });
 
   /**
@@ -4113,7 +4140,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const results = uniqueKeys.map((itemKey) => {
       try {
         store.transitionWorkItem({
-          itemKey: requireItemPermission(request, itemKey, "operate"),
+          itemKey: requireTransitionPermission(request, itemKey, to),
           to,
           actor: "human",
           reason,
