@@ -3,7 +3,9 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { nodeConnectionState } from "@missiongo/domain";
 
-import type { AgentSessionCommand, AgentSessionMessageInput, AgentSessionStatus, AgentSessionTurnState } from "./agent-session-store.js";
+import { sessionHealth } from "./agent-session-health.js";
+
+import type { AgentSessionActivity, AgentSessionCommand, AgentSessionMessageInput, AgentSessionStatus, AgentSessionTurnState } from "./agent-session-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
 import { autoArchiveFinishedConversations } from "./auto-archive.js";
@@ -23,7 +25,7 @@ interface Row {
   native_auto_connect: number;
 }
 interface NativeSnapshot {
-  status: AgentSessionStatus; turnState: AgentSessionTurnState; error?: string; sourceArchived?: boolean;
+  status: AgentSessionStatus; turnState: AgentSessionTurnState; activities?: readonly AgentSessionActivity[]; error?: string; sourceArchived?: boolean;
 }
 interface CommandRow {
   id: string; text: string; status: AgentSessionCommand["status"]; created_at: string;
@@ -102,7 +104,8 @@ export class ExternalNativeSessionStore {
     const node = row.native_node_id ? this.db.prepare("SELECT COALESCE(nickname,name) AS name,last_seen_at,revoked_at FROM nodes WHERE id=? AND account_id=?")
       .get(row.native_node_id, accountId) as { name: string; last_seen_at: string | null; revoked_at: string | null } | undefined : undefined;
     const online = node && !node.revoked_at && nodeConnectionState(node.last_seen_at ?? undefined) === "online";
-    const connected = Boolean(row.native_node_id && online && snapshot && !["failed", "unavailable", "suspended"].includes(snapshot.status) && !snapshot.sourceArchived);
+    const health = snapshot ? sessionHealth(snapshot.status, snapshot.turnState) : undefined;
+    const connected = Boolean(row.native_node_id && online && snapshot && !["failed", "unavailable", "suspended"].includes(health!.status) && !snapshot.sourceArchived);
     const nativeConnection: ExternalNativeConnection | undefined = row.native_generation === 0 && !row.native_auto_connect ? undefined : {
       state: !row.native_node_id ? row.native_auto_connect ? "pending" : "disconnected" : !snapshot ? "pending" : connected ? "connected" : "unavailable",
       ...(row.native_auto_connect ? { automatic: true } : {}),
@@ -115,15 +118,15 @@ export class ExternalNativeSessionStore {
       .map((message) => ({ ...JSON.parse(message.payload_json) as AgentSessionMessageInput, id: message.id }));
     const command = this.command(id);
     const revision = snapshot && row.native_node_id ? createHash("sha256").update(JSON.stringify([nativeMessages.at(-1), snapshot.status, snapshot.turnState.waitingForInput, snapshot.error])).digest("hex") : undefined;
-    const needed = Boolean(revision && (snapshot?.turnState.waitingForInput || snapshot?.status === "failed" || snapshot?.error) && row.dismissed_revision !== revision);
+    const needed = Boolean(revision && (snapshot?.turnState.waitingForInput || snapshot?.status === "failed" || snapshot?.error || health?.reason) && (health?.reason || row.dismissed_revision !== revision));
     return { ...(nativeConnection ? { nativeConnection } : {}), nativeMessages,
-      ...(snapshot ? { status: !row.native_node_id || !online ? "unavailable" as const : snapshot.status, turnState: snapshot.turnState,
+      ...(snapshot ? { status: !row.native_node_id || !online ? "unavailable" as const : health!.status, turnState: snapshot.turnState, activities: snapshot.activities ?? [],
         ...(row.native_synced_at ? { updatedAt: row.native_synced_at } : {}),
-        ...(snapshot.error ? { lastError: snapshot.error } : {}) } : {}),
+        ...(health?.reason || snapshot.error ? { lastError: health?.reason ?? snapshot.error } : {}) } : {}),
       ...(command ? { command } : {}), replyable: connected && !row.archived_at && this.items(id).some((item) => item.status !== "done"),
-      ...(revision ? { attention: { state: needed ? "needed" as const : "not_needed" as const, revision,
-        ...(needed ? { kind: "action" as const, reason: snapshot?.error ?? nativeMessages.at(-1)?.text ?? "请查看原生会话。" } : {}),
-        ...(row.dismissed_revision === revision ? { dismissed: true } : {}) }, needsAttention: needed, waitingForReply: needed } : {}),
+      ...(revision ? { attention: { state: needed ? "needed" as const : "not_needed" as const, ...(!health?.reason ? { revision } : {}),
+        ...(needed ? { kind: "action" as const, reason: health?.reason ?? snapshot?.error ?? nativeMessages.at(-1)?.text ?? "请查看原生会话。" } : {}),
+        ...(row.dismissed_revision === revision && !health?.reason ? { dismissed: true } : {}) }, needsAttention: needed, waitingForReply: needed } : {}),
     };
   }
   enqueue(accountId: string, id: string, textValue: string): AgentSessionCommand {
@@ -195,7 +198,7 @@ export class ExternalNativeSessionStore {
     });
   }
   recordSnapshot(input: { accountId: string; nodeId: string; sessionId: string; generation: number; workerId: string;
-    status: AgentSessionStatus; messages: readonly AgentSessionMessageInput[]; turnState: AgentSessionTurnState;
+    status: AgentSessionStatus; messages: readonly AgentSessionMessageInput[]; activities?: readonly AgentSessionActivity[]; turnState: AgentSessionTurnState;
     error?: string; sourceArchived?: boolean; commandId?: string; commandStatus?: "delivering" | "delivery_unknown" | "delivered" | "failed"; commandError?: string;
     autoConnect?: boolean; nativeSessionRef?: string },
   authorizeProduct: (id: string, execute: boolean) => void): void {
@@ -255,7 +258,12 @@ export class ExternalNativeSessionStore {
           }
         }
       }
-      const snapshot = JSON.stringify({ status: input.status, turnState: input.turnState, ...(input.error ? { error: input.error } : {}), ...(input.sourceArchived ? { sourceArchived: true } : {}) });
+      const activities = input.activities ?? [];
+      if (activities.length > 100 || activities.some((activity) => !activity.id || activity.id.length > 200
+        || !activity.title || activity.title.length > 500 || (activity.detail?.length ?? 0) > 500
+        || (activity.startedAt !== undefined && (!Number.isFinite(Date.parse(activity.startedAt))
+          || Date.parse(activity.startedAt) > Date.now() + 60_000)))) throw invalidInput("Invalid native activities.");
+      const snapshot = JSON.stringify({ status: input.status, turnState: input.turnState, activities, ...(input.error ? { error: input.error } : {}), ...(input.sourceArchived ? { sourceArchived: true } : {}) });
       const clocks = this.db.prepare("SELECT activity_at,unread_at FROM external_agent_sessions WHERE id=?").get(row.id) as { activity_at: string; unread_at: string | null };
       const clock = new Date(Math.max(Date.now(), Date.parse(clocks.activity_at) + 1, clocks.unread_at ? Date.parse(clocks.unread_at) + 1 : 0)).toISOString();
       this.db.prepare(`UPDATE external_agent_sessions SET native_snapshot_json=?,native_synced_at=?,

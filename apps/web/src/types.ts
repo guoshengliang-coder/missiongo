@@ -471,6 +471,8 @@ export interface AgentSessionActivity {
 }
 
 export interface AgentSessionTurnState {
+  readonly observedAt?: string;
+  readonly lastProgressAt?: string;
   readonly turnActive?: boolean;
   readonly waitingForInput?: boolean;
   readonly turnStartedAt?: string;

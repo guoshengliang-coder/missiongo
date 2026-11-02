@@ -573,3 +573,9 @@ describe("dispatch result rejection", () => {
     expect(dispatchActivityLabelKey({ ...session, dispatchStatus: "launched" })).toBe("agentConsoleDispatchLaunched");
   });
 });
+
+it("keeps a freshly observed idle runtime idle while a reply waits for delivery", () => {
+  expect(effectiveAgentSessionStatus("idle", { status: "queued" }, false, true)).toBe("idle");
+  expect(effectiveAgentSessionStatus("idle", { status: "delivering" }, false, true)).toBe("idle");
+  expect(effectiveAgentSessionStatus("idle", { status: "queued" })).toBe("active");
+});

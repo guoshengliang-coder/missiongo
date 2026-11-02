@@ -182,11 +182,13 @@ public struct CodexAppliedSettings: Equatable, Sendable {
 }
 
 public struct CodexThreadSnapshot: Equatable, Sendable {
+    public let execution: NativeExecutionProgress
     public let failure: CodexSessionFailure?
     public let status: String
     /// Keep runtime readiness separate from the last turn's failure.
     public let runtimeStatus: String?
     public let waitingOnApproval: Bool
+    public let waitingOnUserInput: Bool
     public var canContinueAfterFailure: Bool {
         status == "failed" && ["idle", "notLoaded", "systemError"].contains(runtimeStatus ?? "")
             && ["codex_server_error", "codex_connection_failed", "codex_rate_limit_exceeded"].contains(failure?.code ?? "")
@@ -210,12 +212,16 @@ public struct CodexThreadSnapshot: Equatable, Sendable {
         reasoningEffort: String? = nil,
         failure: CodexSessionFailure? = nil,
         runtimeStatus: String? = nil,
-        waitingOnApproval: Bool = false
+        waitingOnApproval: Bool = false,
+        waitingOnUserInput: Bool = false,
+        execution: NativeExecutionProgress = NativeExecutionProgress()
     ) {
+        self.execution = execution
         self.failure = failure
         self.status = status
         self.runtimeStatus = runtimeStatus
         self.waitingOnApproval = waitingOnApproval
+        self.waitingOnUserInput = waitingOnUserInput
         self.activeTurnId = activeTurnId
         self.messages = messages
         self.archived = archived
@@ -537,7 +543,7 @@ public enum CodexProtocol {
         let failure = status == "failed" ? CodexSessionFailure.fromTurn(
             latest?["status"] as? String == "failed" ? latest : nil
         ) : nil
-        let activeTurnId = turns.last(where: { $0["status"] as? String == "inProgress" })?["id"] as? String
+        let activeTurnId = latest?["status"] as? String == "inProgress" ? latest?["id"] as? String : nil
         var messages: [AgentSessionMessage] = []
         for turn in turns {
             let turnId = turn["id"] as? String
@@ -613,7 +619,9 @@ public enum CodexProtocol {
             reasoningEffort: thread["reasoningEffort"] as? String,
             failure: failure,
             runtimeStatus: type,
-            waitingOnApproval: ((thread["status"] as? [String: Any])?["activeFlags"] as? [String] ?? []).contains("waitingOnApproval")
+            waitingOnApproval: ((thread["status"] as? [String: Any])?["activeFlags"] as? [String] ?? []).contains("waitingOnApproval"),
+            waitingOnUserInput: ((thread["status"] as? [String: Any])?["activeFlags"] as? [String] ?? []).contains("waitingOnUserInput"),
+            execution: NativeExecutionProgress.codex(turns: turns)
         )
     }
 

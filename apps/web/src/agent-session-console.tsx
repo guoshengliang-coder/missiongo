@@ -568,6 +568,7 @@ export function AgentSessionConsole({
     sessionQuery.data?.status ?? selected?.status ?? "unavailable",
     command,
     sendingSelected,
+    Boolean(sessionQuery.data?.turnState?.observedAt),
   );
   const messages = sessionQuery.data?.messages ?? [];
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
@@ -617,6 +618,8 @@ export function AgentSessionConsole({
     ? waitingText
     : claudeBackgroundOnly
       ? t("agentSessionWaitingBackground", { count: activities.length })
+      : turnRunning && activities.length > 0
+        ? t("agentSessionWaitingTool", { duration: elapsed(activities[0]?.startedAt, clock) ?? "–" })
       : turnRunning
         ? t("agentSessionTurnRunning", { duration: elapsed(turnState?.turnStartedAt, clock) ?? "–", agent: agentName })
         : t(activityLabelKey(sessionStatus, command?.status === "queued"), { agent: agentName });
@@ -1167,6 +1170,12 @@ export function AgentSessionConsole({
                       )}
                     </header>
                     <MarkdownText>{outgoing.text}</MarkdownText>
+                    {["queued", "delivering", "delivered"].includes(outgoing.status) && <small role="status">
+                      {outgoing.status === "delivered"
+                        ? t("agentSessionReplyAwaitingExecution", { agent: agentName, duration: elapsed(outgoing.occurredAt, clock) ?? "–" })
+                        : t("agentSessionReplyWaitingReason", { duration: elapsed(outgoing.occurredAt, clock) ?? "–",
+                          reason: agentWaiting ? waitingText : activities.length > 0 ? t("agentSessionCurrentTool") : t("agentSessionCurrentTurn") })}
+                    </small>}
                     {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
                       && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} />}
                     {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
@@ -1210,13 +1219,13 @@ export function AgentSessionConsole({
                 )}
                 {resolveDelivery.isError && <p className="inline-error">{localizedErrorText(resolveDelivery.error, t)}</p>}
                 {activities.length > 0 && (
-                  <section className="agent-console-background" aria-label={t("agentSessionBackgroundTitle")}>
-                    <header><LoaderCircle className="spin" size={15} /><strong>{t("agentSessionBackgroundCount", { count: activities.length })}</strong></header>
+                  <section className="agent-console-background" aria-label={t(selected.agentKind === "claude_code" ? "agentSessionBackgroundTitle" : "agentSessionCurrentActivities")}>
+                    <header><LoaderCircle className={sessionStatus === "active" ? "spin" : undefined} size={15} /><strong>{t(selected.agentKind === "claude_code" ? "agentSessionBackgroundCount" : "agentSessionToolCount", { count: activities.length })}</strong></header>
                     <ul>{activities.map((activity) => (
                       <li key={activity.id}>
-                        <span>{activity.title}</span>
+                        <span>{activity.title === "等待 CI" ? t("agentSessionWaitingCI") : activity.title}</span>
                         <small>{activity.startedAt ? t("agentSessionBackgroundElapsed", { duration: elapsed(activity.startedAt, clock) ?? "–" }) : activity.detail}</small>
-                        {selected.canReply && selected.agentSessionId && !pending && !sendingSelected && (
+                        {selected.agentKind === "claude_code" && selected.canReply && selected.agentSessionId && !pending && !sendingSelected && (
                           <button type="button" className="text-button" onClick={() => setReply(t("agentSessionStopTaskMessage", { title: activity.title, id: activity.id }))}>
                             {t("agentSessionRequestTaskStop")}
                           </button>
@@ -1312,14 +1321,15 @@ export function AgentSessionConsole({
                   <div className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
                     <SessionStatusIcon status={visualStatus} />
                     <span>{activityText}</span>
-                    {claudeTurn && <small>{t("agentSessionLastActivity", { duration: elapsed(selected.activityAt, clock) ?? "–" })}</small>}
-                    {claudeTurn && turnState?.lastOutputAt && <small>{t("agentSessionLastOutput", { duration: elapsed(turnState.lastOutputAt, clock) ?? "–" })}</small>}
+                    {(turnRunning || sessionStatus === "stalled") && (turnState?.lastProgressAt || claudeTurn) && <small>{t("agentSessionLastActivity", { duration: elapsed(turnState?.lastProgressAt ?? selected.activityAt, clock) ?? "–" })}</small>}
+                    {turnState?.observedAt && <small>{t("agentSessionLastObserved", { duration: elapsed(turnState.observedAt, clock) ?? "–" })}</small>}
+                    {turnRunning && turnState?.lastOutputAt && <small>{t("agentSessionLastOutput", { duration: elapsed(turnState.lastOutputAt, clock) ?? "–" })}</small>}
                     {claudeTurn && (turnState?.thinkingStartedAt || (turnState?.thinkingTokens ?? 0) > 0) && <small>{t("agentSessionThinking", {
                       duration: duration((turnState?.thinkingDurationSeconds ?? 0) + (turnState?.thinkingStartedAt
                         ? Math.max(0, Math.floor((clock - Date.parse(turnState.thinkingStartedAt)) / 1000)) : 0)),
                       tokens: turnState?.thinkingTokens ?? 0,
                     })}</small>}
-                    {claudeTurn && command?.status === "queued" && <small>{t("agentSessionClaudeNextTurnQueued")}</small>}
+                    {turnRunning && command?.status === "queued" && <small>{t("agentSessionNextTurnQueued", { agent: agentName })}</small>}
                   </div>
                 )}
               </div>

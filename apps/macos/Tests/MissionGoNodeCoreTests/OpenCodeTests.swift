@@ -60,9 +60,12 @@ private actor StubOpenCodeControl: OpenCodeControlling {
         promptCount += 1
         lastPrompt = text
     }
-    func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage], failure: String?) {
-        if !snapshotQueue.isEmpty { return snapshotQueue.removeFirst() }
-        return (snapshotStatus ?? "idle", snapshotMessages, snapshotFailure)
+    func snapshot(id: String) async throws -> OpenCodeSessionSnapshot {
+        if !snapshotQueue.isEmpty {
+            let next = snapshotQueue.removeFirst()
+            return OpenCodeSessionSnapshot(next.status, next.messages, next.failure)
+        }
+        return OpenCodeSessionSnapshot(snapshotStatus ?? "idle", snapshotMessages, snapshotFailure)
     }
     func interrupt(id: String) async throws {}
     func deleteSession(id: String) async throws {}
@@ -844,8 +847,8 @@ final class OpenCodeTests: XCTestCase {
             func createSession(directory: String, agent: String, model: OpenCodeModelRef?) async throws -> String { "ses_test" }
             func renameSession(id: String, title: String) async throws {}
             func prompt(id: String, text: String) async throws {}
-            func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage], failure: String?) {
-                (snapshotStatus, [], nil)
+            func snapshot(id: String) async throws -> OpenCodeSessionSnapshot {
+                OpenCodeSessionSnapshot(snapshotStatus, [], nil)
             }
             func interrupt(id: String) async throws {}
             func deleteSession(id: String) async throws {}
@@ -1029,13 +1032,13 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertFalse(OpenCodeLauncher.reReadShowsReply(
             priorCount: before.filter { $0.role == "user" && $0.text == command.promptText }.count,
             command: command,
-            in: ("idle", before, nil)
+            in: OpenCodeSessionSnapshot("idle", before, nil)
         ))
         let after = before + [AgentSessionMessage(sourceId: "new", role: "user", text: "继续", occurredAt: "2026-09-26T00:00:00Z")]
         XCTAssertTrue(OpenCodeLauncher.reReadShowsReply(
             priorCount: before.filter { $0.role == "user" && $0.text == command.promptText }.count,
             command: command,
-            in: ("idle", after, nil)
+            in: OpenCodeSessionSnapshot("idle", after, nil)
         ))
         XCTAssertFalse(OpenCodeLauncher.reReadShowsReply(priorCount: 0, command: command, in: nil))
     }

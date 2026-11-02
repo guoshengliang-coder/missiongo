@@ -3331,7 +3331,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (body.thinkingDurationSeconds !== undefined
         && (typeof body.thinkingDurationSeconds !== "number" || !Number.isSafeInteger(body.thinkingDurationSeconds)
           || body.thinkingDurationSeconds < 0)) throw invalidInput("thinkingDurationSeconds must be a non-negative integer.");
+      for (const key of ["observedAt", "lastProgressAt"] as const) {
+        if (body[key] !== undefined && (typeof body[key] !== "string"
+          || !Number.isFinite(Date.parse(body[key])) || Date.parse(body[key]) > Date.now() + 60_000)) {
+          throw invalidInput(`${key} must be a valid timestamp, no more than a minute in the future.`);
+        }
+      }
       const turnState = {
+        ...(typeof body.observedAt === "string" ? { observedAt: body.observedAt } : {}),
+        ...(typeof body.lastProgressAt === "string" ? { lastProgressAt: body.lastProgressAt } : {}),
         ...(typeof body.turnActive === "boolean" ? { turnActive: body.turnActive } : {}),
         ...(typeof body.waitingForInput === "boolean" ? { waitingForInput: body.waitingForInput } : {}),
         ...(stringField(body, "turnStartedAt", false) ? { turnStartedAt: body.turnStartedAt as string } : {}),
@@ -3361,7 +3369,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (!Number.isSafeInteger(generation) || generation < (autoConnect ? 0 : 1)) throw invalidInput("An external binding generation is required.");
         externalNativeStore.recordSnapshot({ accountId: node.accountId, nodeId: node.nodeId, sessionId, generation, workerId: externalWorker(request),
           ...(autoConnect ? { autoConnect: true, nativeSessionRef: typeof request.headers["x-missiongo-external-ref"] === "string" ? request.headers["x-missiongo-external-ref"] : "" } : {}),
-          status, messages, turnState,
+          status, messages, activities, turnState,
           ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
           ...(body.sourceArchived === true ? { sourceArchived: true } : {}),
           ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),
