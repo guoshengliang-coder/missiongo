@@ -16,6 +16,7 @@ describe("localizedErrorText", () => {
   });
 
   it("names the failures a person can act on", () => {
+    expect(errorMessageKey(new ApiError(403, "verification_not_permitted", "Refused."))).toBe("verificationNotPermitted");
     expect(errorMessageKey(new ApiError(403, "forbidden", "Forbidden."))).toBe("errorForbidden");
     expect(errorMessageKey(new ApiError(404, "not_found", "Not found."))).toBe("errorNotFound");
     expect(errorMessageKey(new ApiError(429, "rate_limit_exceeded", "Slow down."))).toBe("errorRateLimited");

@@ -2115,3 +2115,107 @@ describe("Handing work to an AI needs the product's AI permission (AND-68)", () 
     expect((await dispatch()).json()).not.toMatchObject({ code: "ai_not_permitted" });
   });
 });
+
+describe("Acceptance permissions (AND-356)", () => {
+  async function fixture() {
+    const base = await twoAccountWorkspace();
+    const own = await createItem(base.app, base.memberCookie, base.shared.id, "My proposal");
+    const other = await createItem(base.app, base.adminCookie, base.shared.id, "Another proposal");
+    for (const itemKey of [own, other]) base.app.missionGoStore.transitionWorkItem({ itemKey, to: "pending_verification", actor: "human", reason: "manual_override" });
+    const move = (key: string, cookie = base.memberCookie, reason = "verification_passed") => base.app.inject({
+      method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to: "done", reason },
+    });
+    const read = async (key: string, cookie = base.memberCookie) => (await base.app.inject({ method: "GET", url: `/api/v1/items/${key}`, headers: { cookie } })).json();
+    const permissions = (canView: boolean, canOperate: boolean) => base.app.inject({ method: "PUT", url: `/api/v1/accounts/${base.member.id}/products`, headers: { cookie: base.adminCookie },
+      payload: { permissions: [{ productId: base.shared.id, canView, canOperate, canUseAi: false }] } });
+    return { ...base, own, other, move, read, permissions };
+  }
+
+  it("refuses an ordinary operator on another person's item, including manual completion, without changing events", async () => {
+    const f = await fixture();
+    expect((await f.read(f.other)).access).toEqual({ canOperate: true, canVerify: false });
+    const events = f.app.missionGoStore.getTimeline(f.other).length;
+    for (const reason of ["verification_passed", "manual_override"]) {
+      const refused = await f.move(f.other, f.memberCookie, reason);
+      expect(refused.statusCode).toBe(403);
+      expect(refused.json().code).toBe("verification_not_permitted");
+    }
+    expect(f.app.missionGoStore.getTimeline(f.other)).toHaveLength(events);
+    expect((await f.read(f.other)).status).toBe("pending_verification");
+    // Moving to another stage first must not create a manual-completion bypass.
+    f.app.missionGoStore.transitionWorkItem({ itemKey: f.other, to: "ready", actor: "human", reason: "verification_failed", note: "Retest" });
+    expect((await f.move(f.other, f.memberCookie, "manual_override")).statusCode).toBe(403);
+    expect((await f.move(f.other, f.adminCookie, "manual_override")).statusCode).toBe(200);
+  });
+
+  it("allows a proposer with view permission and no operation permission, including AI-assisted proposals", async () => {
+    const f = await fixture();
+    const agent = f.app.missionGoStore.createDerivedWorkItem({ productId: f.shared.id, status: "ready", type: "requirement", priority: "normal", title: "AI-assisted proposal", description: "", environment: { platform: "shared" }, agentName: "Test agent", attribution: { accountId: f.member.id, clientId: "test-client" }, idempotencyKey: "and356-proposal" });
+    f.app.missionGoStore.transitionWorkItem({ itemKey: agent.key, to: "pending_verification", actor: "human", reason: "manual_override" });
+    expect((await f.permissions(true, false)).statusCode).toBe(200);
+    for (const key of [f.own, agent.key]) {
+      expect((await f.read(key)).access).toEqual({ canOperate: false, canVerify: true });
+      const accepted = await f.move(key);
+      expect(accepted.statusCode, accepted.body).toBe(200);
+      expect(accepted.json().access).toEqual({ canOperate: false, canVerify: true });
+      expect(f.app.missionGoStore.getTimeline(key).at(-1)).toMatchObject({ actorKind: "human", accountId: f.member.id, toStatus: "done" });
+    }
+    // This right must not grant unrelated mutations.
+    expect((await f.app.inject({ method: "PATCH", url: `/api/v1/items/${f.own}`, headers: { cookie: f.memberCookie }, payload: { title: "No" } })).statusCode).toBe(404);
+  });
+
+  it("allows project administrators without operation rows, and rechecks removed roles immediately", async () => {
+    const f = await fixture();
+    await f.permissions(false, false);
+    f.app.missionGoAccounts.replaceProjectAdministrators(f.shared.id, [f.member.id], [], adminAccount().id);
+    expect((await f.read(f.other)).access).toEqual({ canOperate: false, canVerify: true });
+    expect((await f.move(f.other)).statusCode).toBe(200);
+    f.app.missionGoAccounts.replaceProjectAdministrators(f.shared.id, [], [f.member.id], adminAccount().id);
+    await f.permissions(true, true);
+    expect((await f.read(f.other)).access.canVerify).toBe(false);
+    expect((await f.move(f.other)).statusCode).toBe(403);
+    f.app.missionGoAccounts.replaceProjectAdministrators(f.hidden.id, [f.member.id], [], adminAccount().id);
+    expect((await f.move(f.other)).statusCode).toBe(403);
+  });
+
+  it("checks each batch item separately and exposes the same rights in list and bootstrap", async () => {
+    const f = await fixture();
+    for (const url of [`/api/v1/items?productId=${f.shared.id}`, `/api/v1/bootstrap?productId=${f.shared.id}`]) {
+      const data = (await f.app.inject({ method: "GET", url, headers: { cookie: f.memberCookie } })).json();
+      const items = Array.isArray(data.items) ? data.items : data.items.items;
+      expect(items.find((item: { key: string }) => item.key === f.own).access.canVerify).toBe(true);
+      expect(items.find((item: { key: string }) => item.key === f.other).access.canVerify).toBe(false);
+    }
+    const result = await f.app.inject({ method: "POST", url: "/api/v1/items/transitions", headers: { cookie: f.memberCookie }, payload: { itemKeys: [f.own, f.other], to: "done", reason: "verification_passed" } });
+    expect(result.json().results).toEqual([{ itemKey: f.own, ok: true }, expect.objectContaining({ itemKey: f.other, ok: false, code: "verification_not_permitted" })]);
+    expect((await f.read(f.other)).status).toBe("pending_verification");
+  });
+
+  it("does not infer a proposer from project ownership or a missing creator, or let a proposer reach an inaccessible project", async () => {
+    const f = await fixture();
+    const product = f.app.missionGoStore.createProduct({ name: "Member owned", keyPrefix: "MOW", createdByAccountId: f.member.id });
+    f.app.missionGoAccounts.grantCreatorPermissions(f.member.id, product.id);
+    const unattributed = f.app.missionGoStore.createWorkItem({ productId: product.id, title: "No attribution", description: "", type: "task", priority: "normal" });
+    f.app.missionGoStore.transitionWorkItem({ itemKey: unattributed.key, to: "pending_verification", actor: "human", reason: "manual_override" });
+    expect((await f.move(unattributed.key)).statusCode).toBe(403);
+    await f.permissions(false, false);
+    expect((await f.move(f.own)).statusCode).toBe(404);
+    expect((await f.move(unattributed.key, f.adminCookie)).statusCode).toBe(200);
+  });
+
+  it("does not accept an operator or AI bearer token as a human administrator", async () => {
+    const config = adminAccount();
+    const app = buildApp({ databasePath: join(await temporaryDirectory(), "acceptance.sqlite"), adminAccount: config, adminToken: "acceptance-test-operator" });
+    apps.push(app);
+    const cookie = await signIn(app, config.username, ADMIN_PASSWORD);
+    const product = app.missionGoStore.createProduct({ name: "Acceptance", keyPrefix: "ACC" });
+    const key = await createItem(app, cookie, product.id, "Proposal");
+    app.missionGoStore.transitionWorkItem({ itemKey: key, to: "pending_verification", actor: "human", reason: "manual_override" });
+    for (const [token, status] of [["acceptance-test-operator", 403], [aiToken(app, config, config.id), 401]] as const) {
+      const response = await app.inject({ method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { authorization: `Bearer ${token}` }, payload: { to: "done", reason: "verification_passed" } });
+      expect(response.statusCode).toBe(status);
+      expect(app.missionGoStore.getWorkItem(key).status).toBe("pending_verification");
+    }
+    expect((await app.inject({ method: "POST", url: `/api/v1/items/${key}/transitions`, headers: { cookie }, payload: { to: "done", reason: "verification_passed" } })).statusCode).toBe(200);
+  });
+});
