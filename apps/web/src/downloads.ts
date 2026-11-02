@@ -6,6 +6,8 @@
 export { MACOS_CLIENT_DOWNLOAD_PATH } from "./node-install";
 
 export const ANDROID_APK_DOWNLOAD_PATH = "/downloads/missiongo-android-latest.apk";
+export const LINUX_CLIENT_DOWNLOAD_PATH = "/downloads/missiongo-linux-latest.tgz";
+export const LINUX_CLIENT_MANIFEST_PATH = "/downloads/missiongo-linux-latest.json";
 
 // Keep in sync with MISSIONGO_SKILL_DOWNLOAD_PATH in packages/contracts/src/skill.ts
 export const SKILL_DOWNLOAD_PATH = "/downloads/missiongo-skill/SKILL.md";

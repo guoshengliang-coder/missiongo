@@ -13,6 +13,7 @@ const ARTIFACT_NAMES = {
   androidApp: "Android App",
   androidSdk: "Android SDK",
   macosApp: "macOS App",
+  linuxCli: "Linux CLI",
 };
 
 /** Display name for an artifact; a product-specific identifier stands for itself. */
@@ -26,6 +27,7 @@ export function affectsArtifact(path, artifact) {
   if (artifact === "androidApp") return /^(apps\/android\/|sdks\/android-feedback\/missiongo-feedback\/|sdks\/android-feedback\/gradle\.properties$|product\.json$)/.test(path);
   if (artifact === "androidSdk") return /^(sdks\/android-feedback\/missiongo-feedback\/|sdks\/android-feedback\/gradle\.properties$)/.test(path);
   if (artifact === "macosApp") return /^(apps\/macos\/|product\.json$)/.test(path);
+  if (artifact === "linuxCli") return /^(apps\/node\/|packages\/domain\/|scripts\/(?:build-node|publish-linux)\.mjs$)/.test(path);
   return false;
 }
 

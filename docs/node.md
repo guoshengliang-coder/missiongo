@@ -1,11 +1,19 @@
-# Agent 与设备（macOS 客户端）
+# Agent 与设备
 
 控制台里的「Agent 管理」列出你账号下的设备，以及每台设备上报的 agent（Claude Code、Codex、OpenCode）。
-设备是一台你自己的 Mac。它运行 MissionGo 客户端，主动连到服务端拉取你在控制台派出的任务，然后在本机
+设备是你自己的 Mac 或 Linux 主机。它运行 MissionGo 客户端，主动连到服务端拉取你在控制台派出的任务，然后在本机
 启动 Claude Code、Codex 或 OpenCode 会话处理这批条目。服务端不开放任何指向机器的端口，也不下发 Shell 命令——只下发
 条目编号、agent、模式和仓库路径；启动提示词的业务流程相同，工作区和计划确认说明按客户端适配。
 
 目前支持 Claude Code、Codex 和 OpenCode，Hermes 暂不支持。
+
+Linux headless 节点通过 Node.js/npm 安装，支持 Ubuntu 22.04/24.04 x86_64、前台运行与可选
+systemd 用户服务，见 [Linux 安装与能力边界](../apps/node/README.md)。下文的桌面安装、钥匙串和
+菜单操作针对 macOS。Linux 的设备码授权可在另一台设备完成，模型及 MCP 认证仍由各 Agent 自己配置。
+
+维护者首次发布 Linux 包前，运行 `node scripts/enable-linux-release.mjs` 为已有的本机统一入口增加
+Linux 支持（未知工具版本会拒绝，原文件有备份）；然后使用 `missiongo-release publish:linux`。
+构建、提交账本、合并、统一 deploy 与公开 SHA-256 核验仍是独立步骤；此安装命令本身不发布。
 
 ## 1. 机器上要先具备什么
 

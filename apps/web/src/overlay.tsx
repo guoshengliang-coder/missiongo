@@ -62,6 +62,17 @@ export function holdOverlayHistory(): () => void {
   return () => { suspended--; reconcile(); };
 }
 
+/** Retire a route-owned drawer before opening a shared modal. A push during
+ * history.back() can otherwise make that pop dismiss the newly opened layer. */
+export function afterHistoryBack(action: () => void) {
+  const resume = holdOverlayHistory();
+  window.addEventListener("popstate", () => {
+    resume();
+    afterOverlaysClose(action);
+  }, { once: true });
+  history.back();
+}
+
 function dismiss(layer: Layer): boolean {
   layer.leaving = true;
   if (layer.close() === false) { layer.leaving = false; return false; }

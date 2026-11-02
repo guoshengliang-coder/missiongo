@@ -146,6 +146,7 @@ import { environmentFields, environmentSummary, platformName, type EnvironmentFi
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
+import { afterHistoryBack } from "./overlay";
 import { SettingsPage } from "./settings-page";
 import { useSettingsNavigation } from "./settings-navigation";
 import { useSettingsDraft } from "./settings-drafts";
@@ -758,12 +759,14 @@ export function App() {
     setSidebarOpen(true);
   };
 
-  const closeSidebar = () => {
+  const closeSidebar = (afterClose?: () => void) => {
     if (history.state?.[SIDEBAR_HISTORY_MARKER]) {
-      history.back();
+      if (afterClose) afterHistoryBack(afterClose);
+      else history.back();
       return;
     }
     setSidebarOpen(false);
+    afterClose?.();
   };
   const closeSidebarRef = useRef(closeSidebar);
   closeSidebarRef.current = closeSidebar;
@@ -1552,8 +1555,7 @@ export function App() {
         <button
           className="text-button add-product"
           onClick={() => {
-            closeSidebar();
-            setDownloadsOpen(true);
+            closeSidebar(() => setDownloadsOpen(true));
           }}
         ><Download size={15} /> {t("downloadsEntry")}</button>
         <div className="sidebar-utilities">

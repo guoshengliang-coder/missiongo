@@ -3000,7 +3000,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!principal || !principal.scopes.includes(MISSIONGO_NODE_SCOPE)) {
       throw new MissionGoError(
         "authentication_required",
-        "Sign in from the MissionGo macOS client to register this machine.",
+        "Sign in from a MissionGo node client to register this machine.",
         401,
       );
     }
@@ -3412,9 +3412,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           action: stringField(approval, "action")!,
           ...(stringField(approval, "reason", false) ? { reason: approval.reason as string } : {}),
           startedAtMs: Number(approval.startedAtMs),
-          // Preserve the native list, including an explicit empty list. The
-          // store validates it before persisting or accepting any decision.
-          ...(approval.options !== undefined ? { options: approval.options as NonNullable<AgentApproval["options"]> } : {}),
+          ...(approval.options === undefined ? {} : {
+            options: (() => {
+              if (!Array.isArray(approval.options)) throw invalidInput("approval options must be an array.");
+              return approval.options.map((entry) => {
+                const option = objectBody(entry);
+                return { id: stringField(option, "id")!, kind: stringField(option, "kind")! as NonNullable<AgentApproval["options"]>[number]["kind"],
+                  ...(stringField(option, "label", false) ? { label: option.label as string } : {}),
+                  ...(stringField(option, "detail", false) ? { detail: option.detail as string } : {}) };
+              });
+            })(),
+          }),
         } satisfies AgentApproval);
       }
       if (body.approvalRetryId !== undefined) {
