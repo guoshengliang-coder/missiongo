@@ -158,7 +158,20 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
         const response = await route.fetch();
         const data = await response.json();
         const readOnly = (product: object) => ({ ...product, access: { canOperate: false, canUseAi: true } });
-        await route.fulfill({ response, json: Array.isArray(data) ? data.map(readOnly) : { ...data, products: data.products.map(readOnly) } });
+        await route.fulfill({ response, json: Array.isArray(data) ? data.map(readOnly) : {
+          ...data, products: data.products.map(readOnly),
+          items: data.items.map((row: object) => ({ ...row, access: { canOperate: false, canVerify: false } })),
+        } });
+      });
+      // AND-356: no operation permission alone does not remove an admin's or
+      // proposer's acceptance right. Simulate an ordinary read-only member at
+      // both the product and item boundary, including later list refetches.
+      await page.route(/\/api\/v1\/items\?/, async route => {
+        const response = await route.fetch();
+        const data = await response.json();
+        await route.fulfill({ response, json: { ...data,
+          items: data.items.map((row: object) => ({ ...row, access: { canOperate: false, canVerify: false } })),
+        } });
       });
       await page.goto(`/?product=${fixture.productId}&status=all&q=${item.key}`);
       await expect(page.locator(".item-row")).toHaveCount(1);
