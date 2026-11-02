@@ -64,9 +64,17 @@ for (const viewport of [{ width: 353, height: 850 }, { width: 812, height: 375 }
       expect(Math.max(...boxes.map(box => box.right))).toBeLessThanOrEqual(stripBox.x + stripBox.width + 1);
       expect(stripBox.height).toBeLessThan(100);
       const header = root.locator(".comment-byline");
-      const headerBoxes = await header.locator(":scope > *").evaluateAll(elements => elements.map(el => { const b=el.getBoundingClientRect(); return { center: b.y+b.height/2, right:b.right }; }));
-      expect(Math.max(...headerBoxes.map(b=>b.center))-Math.min(...headerBoxes.map(b=>b.center))).toBeLessThan(2);
-      expect(Math.max(...headerBoxes.map(b=>b.right))).toBeLessThanOrEqual((await header.boundingBox())!.x+(await header.boundingBox())!.width+1);
+      // AND-346: identity now has an author row and a metadata row; reply and
+      // secondary actions stay together at the top right of that identity.
+      const authorBox = (await header.locator(":scope > strong").boundingBox())!;
+      const timeBox = (await header.locator("time").boundingBox())!;
+      const headerBox = (await header.boundingBox())!;
+      const actionsBox = (await root.locator(".comment-header-actions").boundingBox())!;
+      expect(timeBox.y).toBeGreaterThanOrEqual(authorBox.y + authorBox.height - 1);
+      expect(Math.abs(actionsBox.y - headerBox.y)).toBeLessThan(2);
+      expect(actionsBox.x).toBeGreaterThanOrEqual(headerBox.x + headerBox.width);
+      const rights = await header.locator(":scope > *").evaluateAll(elements => elements.map(el => el.getBoundingClientRect().right));
+      expect(Math.max(...rights)).toBeLessThanOrEqual(headerBox.x + headerBox.width + 1);
       const name = root.locator(".comment-author-name");
       expect(await name.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
       await name.click();await expect(page.getByRole("dialog")).toContainText(longName);await page.keyboard.press("Escape");await expect(name).toBeFocused();
