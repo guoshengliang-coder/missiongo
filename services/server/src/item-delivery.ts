@@ -1,3 +1,4 @@
+import { itemRoles } from "./item-policy.js";
 import { BuilderHandovers } from "./builder-handovers.js";
 import { assertBuilderExecution } from "./builder-authority.js";
 import { randomUUID } from "node:crypto";
@@ -30,13 +31,13 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
     if (!accounts.allows(account, productId, "view")) throw notFound("Product");
     return account;
   };
-  const candidates = (productId: string) => accounts.listAccounts().filter(account => !account.disabledAt && accounts.allows(account, productId, "operate") && accounts.allows(account, productId, "ai"));
+  const candidates = (productId: string) => accounts.listAccounts().filter(account => !account.disabledAt && accounts.allows(account, productId, "operate"));
   const name = (id: string) => accounts.displayNames([id]).get(id) ?? "已删除账号";
   const manages = (account: AccountSnapshot, item: ReturnType<MissionGoStore["getWorkItem"]>) =>
     !item.transferred && accounts.allows(account, item.productId, "operate") &&
-    (account.role === "admin" || store.getProduct(item.productId).createdByAccountId === account.id || item.builderAccountId === account.id);
+    (account.role === "admin" || accounts.isProjectAdministrator(account,item.productId) || item.builderAccountId === account.id);
   const configuresBuilders = (account: AccountSnapshot, productId: string) => accounts.isProjectAdministrator(account,productId) ||
-    accounts.allows(account,productId,"operate") && (account.role === "admin" || store.getProduct(productId).createdByAccountId === account.id);
+    accounts.allows(account,productId,"operate") && (account.role === "admin" || accounts.isProjectAdministrator(account,productId));
   const managesBuilder = (account: AccountSnapshot, item: ReturnType<MissionGoStore["getWorkItem"]>) =>
     !item.transferred && (accounts.isProjectAdministrator(account,item.productId) || manages(account,item));
   const writable = (request: FastifyRequest, key: string, builderOnly = false) => {
@@ -73,10 +74,11 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
     const {productId,componentId} = request.params as {productId:string;componentId:string};
     const account = visible(request, productId);
     if (!configuresBuilders(account,productId)) throw new MissionGoError("product_ownership_required", "A product administrator is required.", 403);
+    store.assertProductWritable(productId);
     const component = store.listComponents(productId, {includeArchived:true}).find(row => row.id === componentId);
     if (!component || component.archivedAt) throw notFound("Component");
     const {accountId} = body(request);
-    if (accountId !== null && (typeof accountId !== "string" || !candidates(productId).some(row => row.id === accountId))) throw invalidInput("Choose an active Builder with AI permission on this product.");
+    if (accountId !== null && (typeof accountId !== "string" || !candidates(productId).some(row => row.id === accountId))) throw invalidInput("Choose an active Builder with operation permission on this product.");
     db.prepare("UPDATE components SET default_builder_account_id=?,updated_at=? WHERE id=? AND product_id=?")
       .run(accountId as string | null, new Date().toISOString(), componentId, productId);
     return store.listComponents(productId).find(row => row.id === componentId);
@@ -89,14 +91,14 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
       canTakeOver: Boolean(item.builderHandover?.canTakeOver && item.builderAccountId === account.id && accounts.allows(account,item.productId,"operate") && accounts.allows(account,item.productId,"ai")), builderAccountId: item.builderAccountId ?? null, builderName: item.builderName ?? null,
       builderNeedsReassignment: item.builderNeedsReassignment ?? false, canManage: manages(account,item), canManageBuilder: managesBuilder(account,item), currentAccountId: account.id,
       candidates: candidates(item.productId).map(row => ({id:row.id,name:name(row.id)})),
-      performers: accounts.listAccounts().filter(row => !row.disabledAt && accounts.allows(row,item.productId,"view"))
+      performers: accounts.listAccounts().filter(row => !row.disabledAt && accounts.allows(row,item.productId,"operate"))
         .map(row => ({id:row.id,name:name(row.id)})), executions: list(itemKey) };
   });
   app.post("/api/v1/items/:itemKey/builder", async request => store.database.transaction(() => {
     const {itemKey} = request.params as {itemKey:string}; const {item,account} = writable(request,itemKey,true);
     const input = body(request);
     const target = input.accountId;
-    if (target !== null && (typeof target !== "string" || !candidates(item.productId).some(row => row.id === target))) throw invalidInput("Choose an active Builder with AI permission on this product.");
+    if (target !== null && (typeof target !== "string" || !candidates(item.productId).some(row => row.id === target))) throw invalidInput("Choose an active Builder with operation permission on this product.");
     const draft = typeof input.note === "string" ? input.note.trim() : "";
     if (draft.length > 2000) throw invalidInput("Handover note is too long (max 2000).");
     const note = draft || (item.builderAccountId == null ? "首次分配 builder" : "");
@@ -110,14 +112,15 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
   }));
   app.post("/api/v1/items/:itemKey/executions", async (request,reply) => {
     const {itemKey} = request.params as {itemKey:string}; const {item,account} = writable(request,itemKey);
-    assertBuilderExecution(store.database,item.id,account.id);
+    if (!["ready","in_progress"].includes(item.status)) throw conflict("execution_not_active","请先恢复条目再安排新执行。");
+    assertBuilderExecution(store.database,item.id,account.id,!itemRoles(store.database,item,account.id).manager);
     const input = body(request); const scope = text(input.scope,"Execution scope");
     const kind = input.kind ?? "human";
     if (kind !== "human" && kind !== "agent") throw invalidInput("Unsupported performer type.");
     const agent = kind === "agent" ? list(itemKey).find(row => row.kind === "agent" && row.sessionId === input.sessionId) : undefined;
     if (kind === "agent" && !agent) throw notFound("Linked Agent session");
-    const performer = accounts.listAccounts().find(row => row.id === (agent?.accountId ?? input.accountId) && !row.disabledAt && accounts.allows(row,item.productId,"view"));
-    if (!performer) throw invalidInput("Choose an active account on this product.");
+    const performer = accounts.listAccounts().find(row => row.id === (agent?.accountId ?? input.accountId) && !row.disabledAt && accounts.allows(row,item.productId,"operate"));
+    if (!performer || kind === "agent" && !accounts.allows(performer,item.productId,"ai")) throw invalidInput("Choose an active performer with the required operation and AI permissions.");
     const sessionId = agent && "sessionId" in agent ? agent.sessionId : null;
     const previousId = input.previousId == null ? null : text(input.previousId,"Previous execution",100);
     const note = previousId ? text(input.note,"Execution handover note") : "";
@@ -150,13 +153,16 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
   app.patch("/api/v1/items/:itemKey/executions/:executionId", async request => {
     const {itemKey,executionId} = request.params as {itemKey:string;executionId:string};
     const item = store.getWorkItem(itemKey); const account = visible(request,item.productId); store.assertWorkItemWritable(itemKey);
-    assertBuilderExecution(store.database,item.id,account.id);
     const input = body(request); const status = input.status;
     if (typeof status !== "string" || !["working","completed","blocked","cancelled"].includes(status)) throw invalidInput("Unsupported execution status.");
     const result = status === "working" ? "" : text(input.result,"Execution result");
     store.database.transaction(() => {
       const row = db.prepare("SELECT * FROM item_executions WHERE id=? AND item_id=?").get(executionId,item.id) as unknown as ExecutionRow | undefined;
       if (!row) throw notFound("Execution");
+      if (status === "working") {
+        assertBuilderExecution(store.database,item.id,account.id);
+        if (!["ready","in_progress"].includes(item.status) || (row as ExecutionRow & {authorization_revoked:number}).authorization_revoked) throw conflict("execution_not_active","此执行授权已失效，不能重新启动；仍可报告实际结束结果。");
+      }
       if (!accounts.allows(account,item.productId,"operate") || (row.account_id !== account.id && !manages(account,item))) throw new MissionGoError("execution_owner_required","Only this performer or the delivery manager can update execution.",403);
       if (["completed","cancelled","handed_over"].includes(row.status)) throw conflict("execution_finished","This execution is already finished.");
       const now = new Date().toISOString();

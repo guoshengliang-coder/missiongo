@@ -5,14 +5,14 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import type { DingTalkDeliveryMode, DingTalkSettings, DingTalkSettingsInput, DingTalkBinding, DingTalkBindingInput, DingTalkImportRow, DingTalkImportPreview, DingTalkNotification, DingTalkProjectSettings } from "@missiongo/domain";
 import type { MissionGoStore } from "./store.js";
 import type { MissionGoDatabase } from "./storage/database.js";
-import type { AccountSnapshot, AccountStore } from "./accounts-store.js";
+import { AccountStore, type AccountSnapshot } from "./accounts-store.js";
 import { conflict, invalidInput, notFound, MissionGoError } from "./errors.js";
 import { buildVerificationCard } from "./dingtalk-verification-card.js";
 
 interface ConfigRow { corp_id: string; client_id: string; agent_id: string; delivery_mode: DingTalkDeliveryMode; robot_code: string; encrypted_secret: string; revision: number }
 interface JobRow {
   id: string; event_id: string | null; item_id: string | null; account_id: string | null;
-  kind: "verification" | "test" | "comment"; comment_id: string | null; status: DingTalkNotification["status"]; reason: string;
+  kind: "verification" | "test" | "comment" | "decision"; comment_id: string | null; status: DingTalkNotification["status"]; reason: string;
   attempts: number; task_id: string | null; recipient: string | null; config_revision: number | null;
   binding_revision: string | null;
   created_at: string; updated_at: string;
@@ -45,6 +45,23 @@ export function enqueueVerificationNotification(database: MissionGoDatabase, eve
     (id,event_id,item_id,account_id,kind,status,reason,next_at,created_at,updated_at)
     VALUES (?,?,?,?,'verification',?,?,?,?,?)`).run(randomUUID(),eventId,itemId,accountId ?? null,
       enabled?.enabled ? "queued" : "skipped",enabled?.enabled ? "" : "项目未开启通知",at,at,at);
+}
+
+/** Business decisions notify responsible people; a missing proposer falls back to project administrators. */
+export function enqueueDecisionNotifications(database: MissionGoDatabase,eventId:string,itemId:string,productId:string,proposerId:string|undefined,builderId:string|undefined,at:string): void {
+  const accounts = new AccountStore(database);
+  const reachable = (id:string|undefined) => {const account=id ? accounts.findActive(id) : undefined;return !!account && accounts.allows(account,productId,"view");};
+  const recipients = new Set<string>();
+  if (reachable(proposerId)) recipients.add(proposerId!);
+  else for (const id of accounts.projectAdministratorIds(productId)) if (reachable(id)) recipients.add(id);
+  if (reachable(builderId)) recipients.add(builderId!);
+  const enabled = (database.connection.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(productId) as {enabled:number}|undefined)?.enabled;
+  if (!recipients.size) database.connection.prepare(`INSERT INTO dingtalk_notifications
+    (id,event_id,item_id,kind,status,reason,next_at,created_at,updated_at) VALUES (?,?,?,'decision','skipped',?,?,?,?)`)
+    .run(randomUUID(),eventId,itemId,"提需者和 Builder 不可访问，且没有可接收的项目管理员",at,at,at);
+  for (const id of recipients) database.connection.prepare(`INSERT OR IGNORE INTO dingtalk_notifications
+    (id,event_id,item_id,account_id,kind,status,reason,next_at,created_at,updated_at) VALUES (?,?,?,?,'decision',?,?,?,?,?)`)
+    .run(randomUUID(),eventId,itemId,id,enabled ? "queued" : "skipped",enabled ? "" : "项目未开启通知",at,at,at);
 }
 
 /** One-way work notices or robot DMs. Provider response bodies never enter logs. */
@@ -152,10 +169,10 @@ export class DingTalkNotifications {
     });
   }
   project(productId: string, account: AccountSnapshot): DingTalkProjectSettings {
-    const product=this.store.getProduct(productId);
+    this.store.getProduct(productId);
     if (!this.accounts.allows(account,productId,"view")) throw notFound("Product");
     const row=this.db.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(productId) as {enabled:number}|undefined;
-    return {enabled:Boolean(row?.enabled),canConfigure:account.role==="admin" || this.accounts.isProjectAdministrator(account,productId) || product.createdByAccountId===account.id,integrationConfigured:this.settings().configured};
+    return {enabled:Boolean(row?.enabled),canConfigure:account.role==="admin" || this.accounts.isProjectAdministrator(account,productId),integrationConfigured:this.settings().configured};
   }
   saveProject(productId: string, account: AccountSnapshot, enabled: boolean, expectedEnabled: boolean): DingTalkProjectSettings {
     return this.store.database.transaction(()=>{
@@ -206,6 +223,7 @@ export class DingTalkNotifications {
   private job(id: string) { return this.db.prepare("SELECT * FROM dingtalk_notifications WHERE id=?").get(id) as unknown as JobRow | undefined; }
   private current(job: JobRow): boolean {
     if (job.kind==="test") return true;
+    if (job.kind==="decision") return Boolean(this.db.prepare("SELECT 1 FROM work_item_events WHERE id=? AND item_id=?").get(job.event_id,job.item_id));
     if (job.kind==="comment") {
       const row=this.db.prepare(`SELECT w.item_key FROM work_item_comments c JOIN work_items w ON w.id=c.item_id
         WHERE c.id=? AND c.item_id=? AND c.withdrawn_at IS NULL`).get(job.comment_id,job.item_id) as {item_key:string}|undefined;
@@ -370,6 +388,13 @@ export class DingTalkNotifications {
       return {msgtype:"action_card",action_card:{title:card.headerTitle,markdown:[card.itemTitle,`评论者：${card.author}`,card.parentText ? `回复内容：${card.parentText}` : "",cardText(card.commentText!),card.contentHint].filter(Boolean).join("\n\n"),single_url:card.itemUrl,single_title:"回条目回复"}};
     }
     if (job.kind==="test") return {msgtype:"text",text:{content:`这是一条账号绑定测试通知。收到后无需回复。\n测试编号：${job.id}`}};
+    if (job.kind === "decision") {
+      const row=this.db.prepare("SELECT w.item_key,w.title,w.product_id,e.payload_json FROM work_items w JOIN work_item_events e ON e.item_id=w.id WHERE e.id=?").get(job.event_id!) as {item_key:string;title:string;product_id:string;payload_json:string};
+      const payload=JSON.parse(row.payload_json) as {reason:string;note?:string};
+      const label=payload.reason === "verification_failed" ? "验收打回" : payload.reason === "cancelled" ? "已取消" : "重新打开";
+      const url=new URL(this.origin!);url.searchParams.set("product",row.product_id);url.searchParams.set("item",row.item_key);
+      return {msgtype:"action_card",action_card:{title:`${row.item_key} · ${label}`,markdown:cardText(`${row.title}\n\n${label}：${payload.note ?? ""}`),single_title:"查看条目",single_url:url.href}};
+    }
     const card=this.verificationCard(job);
     const lines=[`### ${card.headerTitle}`,card.heading.replace(/<[^>]*>/g,""),...(card.summary?[card.summary]:[]),"---","**验收方式**",card.verification.replace(/\n/g,"\n\n")];
     return {msgtype:"action_card",action_card:{title:card.headerTitle,markdown:lines.join("\n\n"),single_title:"查看条目并验收",single_url:card.itemUrl}};

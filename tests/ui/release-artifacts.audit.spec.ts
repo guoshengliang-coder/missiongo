@@ -1,3 +1,4 @@
+import { postItemCommand } from "./item-command";
 import {expect,test} from "@playwright/test";
 
 for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
@@ -14,7 +15,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
   await expect(section.getByRole("textbox")).toHaveCount(0);
   await page.screenshot({path:test.info().outputPath("artifacts-empty.png")});
   const item = await (await request.post("/api/v1/items",{data:{productId:product.id,title:"Gateway publication",description:"Release scope discovered from the repository",type:"task",priority:"normal",status:"ready",environment:{platform:"other"}}})).json() as {key:string};
-  await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
+  await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
   const registered = await request.put(`/api/v1/items/${item.key}/handover`,{data:{completion:{kind:"commit",commit:"a".repeat(40),targetBranch:"main"},requiredArtifacts:["gateway"]}});
   expect(registered.ok()).toBe(true);
   await page.reload();

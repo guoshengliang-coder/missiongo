@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { TransitionCommandKeys } from "./transition-attachments";
 import { useDialogDraft } from "./dialog-state";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Bot, CirclePause, LoaderCircle, Rocket, UserRound } from "lucide-react";
@@ -50,8 +52,9 @@ export function StartWorkDialog({
   const mayUseAi = productAllowsAi(product);
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, enabled: mayUseAi });
   const availability = aiAvailability(product, nodesQuery.isError ? [] : nodesQuery.data?.nodes);
+  const [claimKeys]=useState(()=>new TransitionCommandKeys());
   const claim = useMutation({
-    mutationFn: () => api.transitionItem(item.key, CLAIM),
+    mutationFn: () => api.transitionItem(item.key, CLAIM, undefined, claimKeys.options(item,CLAIM)),
     onSuccess: onClaimed,
   });
 

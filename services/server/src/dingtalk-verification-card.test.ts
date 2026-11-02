@@ -25,7 +25,7 @@ describe("delivered card content",()=>{
     ]);
   });
   it("does not infer platform or download instructions without verified evidence",()=>{
-    for(const payload of [{}, {...released(["web"]),reason:"manual_override"}, {...released(["web"]),receiptDigest:undefined}, released([])]) {
+    for(const payload of [{}, {...released(["web"]),note:"Test fixture: explicit administrative correction", reason:"manual_override"}, {...released(["web"]),receiptDigest:undefined}, released([])]) {
       expect(verificationInstructions(payload)).toBe("请进入条目查看交付内容和验收环境后验收。");
     }
     expect(verificationInstructions(released(["gateway"]))).toBe("其他产物：请进入条目查看交付内容和验收环境后验收。");

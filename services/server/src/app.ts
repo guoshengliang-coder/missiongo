@@ -1,3 +1,6 @@
+import { evaluateWorkItemTransition } from "@missiongo/domain";
+import type { WorkItemStatus, TransitionReason } from "@missiongo/domain";
+import { assertTransitionPolicy, transitionPolicy, itemRoles } from "./item-policy.js";
 import { commentAudienceSchema, commentCandidates } from "./comment-discussions.js";
 import { ReleaseObservations } from "./release-observations.js";
 import { BuilderHandovers } from "./builder-handovers.js";
@@ -676,7 +679,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const canCheck = (accountId: string, productId: string): boolean => {
     if (unauthenticatedDeployment) return true;
     const account = accountStore.findActive(accountId);
-    return Boolean(account && accountStore.allows(account,productId,"view") && accountStore.allows(account,productId,"operate"));
+    return Boolean(account && !store.getProduct(productId).archivedAt && accountStore.allows(account,productId,"view") && accountStore.allows(account,productId,"operate"));
   };
   app.addHook("onReady", async () => {
     if (statusCheckTime === false) return;
@@ -1067,7 +1070,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const access = mcpUploads.directAccess(request.params.uploadId, suppliedBearerToken(request));
       const account = accountStore.resolveActive(access.owner.accountId, access.credentialsAt);
       if (!account || accountStore.aiAuthorizationRevoked(access.tokenId)
-        || !accountStore.allows(account, access.productId, "ai")) {
+        || !accountStore.allows(account, access.productId, "ai") || !accountStore.allows(account,access.productId,"operate") || store.getProduct(access.productId).archivedAt) {
         throw new MissionGoError("upload_access_revoked", "The upload authorization is no longer permitted.", 403);
       }
       if (!Buffer.isBuffer(request.body)
@@ -1769,7 +1772,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     request: FastifyRequest,
     products: readonly T[],
   ): Array<T & { access: { canOperate: boolean; canUseAi: boolean; isProjectAdmin?: boolean } }> => {
-    if (bearerAuthorized(request)) return products.map((product) => ({ ...product, access: { canOperate: true, canUseAi: true } }));
+    if (bearerAuthorized(request)) return products.map((product) => ({ ...product, access: { canOperate: unauthenticatedDeployment, canUseAi: unauthenticatedDeployment } }));
     const account = requireAccount(request);
     return products.map((product) => ({
       ...product,
@@ -1786,8 +1789,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     productId: string,
     capability: ProductCapability = "view",
   ): void => {
-    if (bearerAuthorized(request)) return;
+    if (bearerAuthorized(request)) {if (capability !== "view") store.assertProductWritable(productId);return;}
     if (!accountStore.allows(requireAccount(request), productId, capability)) throw notFound("Product");
+    if (capability !== "view") store.assertProductWritable(productId);
   };
 
   // For a product the caller already sees, explain a refused write without
@@ -1795,6 +1799,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const requireCapturePermission = (request: FastifyRequest, productId: string): void => {
     requireProductPermission(request, productId);
     store.getProduct(productId);
+    if (!unauthenticatedDeployment && bearerAuthorized(request)) throw new MissionGoError("human_decision_required","运维凭据不能创建业务条目。",403);
     if (!bearerAuthorized(request) && !accountStore.allows(requireAccount(request), productId, "operate")) {
       throw new MissionGoError("product_operation_not_permitted", "Project operation permission is required to record work or generate a title.", 403);
     }
@@ -1806,10 +1811,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     capability: ProductCapability = "view",
   ): string => {
     const normalizedKey = itemKey.toUpperCase();
-    if (bearerAuthorized(request)) return normalizedKey;
+    if (bearerAuthorized(request)) {
+      if (capability !== "view" && !unauthenticatedDeployment) throw new MissionGoError("human_decision_required","运维凭据不能修改业务条目。",403);
+      if (capability !== "view") store.assertWorkItemWritable(normalizedKey);return normalizedKey;
+    }
     // getWorkItem throws notFound for an unknown key, which is the same answer
     // an unauthorized one gets -- so the two stay indistinguishable.
     requireProductPermission(request, store.getWorkItem(normalizedKey).productId, capability);
+    if (capability !== "view") store.assertWorkItemWritable(normalizedKey);
     return normalizedKey;
   };
 
@@ -1825,12 +1834,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       || (creator?.kind !== "sdk" && creator?.accountId === account.id);
   }
 
-  function requireTransitionPermission(request: FastifyRequest, itemKey: string, to: string): string {
-    if (to !== "done") return requireItemPermission(request, itemKey, "operate");
-    const key = requireItemPermission(request, itemKey);
-    if (!canVerifyItem(request, store.getWorkItem(key))) {
-      throw new MissionGoError("verification_not_permitted", "Only a system administrator, project administrator or the proposer may complete this item.", 403);
-    }
+  function requireTransitionPermission(request: FastifyRequest, itemKey: string, to: WorkItemStatus, reason: TransitionReason, from?: WorkItemStatus): string {
+    const key = requireItemPermission(request,itemKey);
+    if (unauthenticatedDeployment) return key;
+    if (bearerAuthorized(request)) throw new MissionGoError("human_decision_required","运维凭据不能作人工业务决定。",403);
+    const account = requireAccount(request);
+    assertTransitionPolicy(store.database,{...store.getWorkItem(key),...(from ? {status:from} : {})},account.id,to,reason);
     return key;
   }
 
@@ -1853,13 +1862,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    * product you were not allowed to know about exists.
    */
   const requireProductOwnership = (request: FastifyRequest, productId: string, action: string): void => {
-    if (bearerAuthorized(request)) return;
+    if (bearerAuthorized(request)) {if (!unauthenticatedDeployment && request.method !== "GET") throw new MissionGoError("human_decision_required","项目治理需要登录管理者。",403);return;}
     const account = requireAccount(request);
     if (account.role === "admin") return;
-    if (store.getProduct(productId).createdByAccountId !== account.id) {
+    if (!accountStore.isProjectAdministrator(account,productId)) {
       throw new MissionGoError(
         "product_not_owned",
-        `Only the account that created this product, or an administrator, can ${action}.`,
+        `Only a current project administrator or system administrator can ${action}.`,
         403,
       );
     }
@@ -2078,7 +2087,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         canUseAi: permission.canUseAi === true,
       };
     });
-    return { permissions: accountStore.replacePermissions(accountId, permissions) };
+    const scope = body.aiScope;
+    if (scope !== undefined && scope !== "all" && scope !== "selected" && scope !== "none") throw invalidInput("Invalid AI scope.");
+    return { permissions: accountStore.replacePermissions(accountId, permissions, scope ?? "selected",sessionAccount(request)?.id), aiScope:scope ?? "selected" };
   });
 
   /**
@@ -2243,7 +2254,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
     }
 
-    accountStore.replaceProductAccess(productId, [...resolved.values()]);
+    accountStore.replaceProductAccess(productId, [...resolved.values()],sessionAccount(request)?.id);
     return { accounts: productAccessFor(productId, account) };
   });
 
@@ -2976,10 +2987,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const user = sessionUser(request);
     if (!user) throw new MissionGoError("authentication_required", "Human confirmation requires a signed-in console user.", 401);
     const { itemKey, handoverId } = request.params as { itemKey: string; handoverId: string };
-    const key = requireItemPermission(request, itemKey, "operate");
+    const key = requireItemPermission(request, itemKey);
     if (statusChecks.snapshot(handoverId).itemKey !== key) throw notFound("Handover");
     const parsed = humanConfirmationSchema.safeParse(request.body);
     if (!parsed.success) throw invalidInput("Provide confirmation notes and the integration commit or every required artifact's release details.");
+    if (!parsed.data.expectedItemRevision || !parsed.data.expectedHandoverRevision || !parsed.data.idempotencyKey) throw invalidInput("Version and idempotency key are required.","transition_version_required");
     return { handover: statusChecks.confirm(handoverId, user.id, parsed.data) };
   });
 
@@ -3034,12 +3046,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const node = requireNode(request);
     const body = objectBody(request.body);
     const productId = stringField(body,"productId")!;
+    requireNodeAccountPermission(node.accountId,productId,true);
     if (!canCheck(node.accountId,productId)) throw notFound("Product");
     return new ReleaseObservations(store).upload(productId,stringField(body,"repoPath")!,body.observation,node);
   });
   app.post("/api/v1/node/status-checks/claim",async request => {
     const node = requireNode(request);
     return {job:statusChecks.claim(node.nodeId,node.accountId,productId => {
+      requireNodeAccountPermission(node.accountId,productId,true);
       if (!canCheck(node.accountId,productId)) throw notFound("Product");
     },objectBody(request.body ?? {}).supportsSharedReleases === true)};
   });
@@ -3049,6 +3063,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const parsed = handoverEvidenceSchema.safeParse(body.evidence);
     if (!parsed.success) throw invalidInput("Invalid handover evidence.");
     const snapshot = statusChecks.snapshot(handoverId);
+    requireNodeAccountPermission(node.accountId,snapshot.productId,true);
     if (!canCheck(node.accountId,snapshot.productId)) throw notFound("Handover");
     return {handover:statusChecks.report(handoverId,parsed.data,{accountId:node.accountId,nodeId:node.nodeId,leaseToken:stringField(body,"leaseToken")!})};
   });
@@ -3525,7 +3540,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (agentSessionStore.countExecutionSlots(node.nodeId) >= MAX_NODE_EXECUTION_SESSIONS) {
       return reply.status(204).send();
     }
-    const immediate = dispatchStore.claimNextDispatch(node.nodeId, availableAgentKinds);
+    const immediate = dispatchStore.claimNextDispatch(node.nodeId, availableAgentKinds,productId=>{const current=requireNode(request);requireNodeAccountPermission(current.accountId,productId,true);});
     if (immediate) return immediate;
 
     // With nothing locally ready, a long poll could not become claimable until
@@ -3542,7 +3557,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (agentSessionStore.countExecutionSlots(node.nodeId) >= MAX_NODE_EXECUTION_SESSIONS) {
         return reply.status(204).send();
       }
-      const afterWait = dispatchStore.claimNextDispatch(node.nodeId, availableAgentKinds);
+      const afterWait = dispatchStore.claimNextDispatch(node.nodeId, availableAgentKinds,productId=>{const current=requireNode(request);requireNodeAccountPermission(current.accountId,productId,true);});
       if (afterWait) return afterWait;
     }
     return reply.status(204).send();
@@ -3633,17 +3648,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const requireSdkPrincipal = (request: FastifyRequest): SdkPrincipal => {
     const principal = store.authenticateSdkToken(suppliedBearerToken(request));
     if (!principal) throw new MissionGoError("authentication_required", "A valid SDK bearer token is required.", 401);
+    if (request.method !== "GET" && request.method !== "HEAD") store.assertProductWritable(principal.productId);
     return principal;
   };
 
   const requireDraftPrincipal = (request: FastifyRequest, draftId: string): SdkPrincipal => {
     const bearerPrincipal = store.authenticateSdkToken(suppliedBearerToken(request));
-    if (bearerPrincipal) return bearerPrincipal;
+    if (bearerPrincipal) {if (request.method !== "GET" && request.method !== "HEAD") store.assertProductWritable(bearerPrincipal.productId);return bearerPrincipal;}
     const sessionPrincipal = store.authenticateFeedbackWebSession(
       cookieValue(request, "missiongo_feedback_session"),
       draftId,
     );
-    if (sessionPrincipal) return sessionPrincipal;
+    if (sessionPrincipal) {if (request.method !== "GET" && request.method !== "HEAD") store.assertProductWritable(sessionPrincipal.productId);return sessionPrincipal;}
     throw new MissionGoError("authentication_required", "A valid feedback editing session is required.", 401);
   };
 
@@ -3821,12 +3837,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       keyPrefix: stringField(body, "keyPrefix")!,
       ...(account ? { createdByAccountId: account.id } : {}),
     });
-    // Members only. An administrator already reaches every product by role, so
-    // the row would grant nothing -- except that a can_use_ai row is what bounds
-    // an administrator's AI clients. Writing one here would take an
-    // administrator whose AI could read everything and quietly narrow it to
-    // "products I created myself" the first time they made one.
-    if (account?.role === "member") accountStore.grantCreatorPermissions(account.id, product.id);
     return reply.status(201).send(product);
   });
 
@@ -3902,7 +3912,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.patch("/api/v1/products/:productId", async (request) => {
     const { productId } = request.params as { productId: string };
     const body = objectBody(request.body);
-    requireProductPermission(request, productId, "operate");
+    requireProductPermission(request, productId, body.archived === false && body.name === undefined ? "view" : "operate");
     if (body.archived !== undefined) requireProductOwnership(request, productId, "archive it");
     return store.updateProduct(productId, {
       ...(body.name !== undefined ? { name: stringField(body, "name")! } : {}),
@@ -4037,9 +4047,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   function withTransferReferences(request: FastifyRequest, item: ReturnType<MissionGoStore["getWorkItem"]>) {
+    const accountId=sessionAccount(request)?.id;
+    const roles=itemRoles(store.database,item,accountId);
+    const archived=Boolean(store.getProduct(item.productId).archivedAt);
     return { ...item,
+      transitionDecisions: WORK_ITEM_STATUSES.flatMap(to => TRANSITION_REASONS.filter(reason => reason === "manual_override" && to !== item.status || evaluateWorkItemTransition({from:item.status,to,actor:"human",reason,note:"policy check"}).allowed).map(reason => ({to,reason,
+        ...(unauthenticatedDeployment ? {allowed:true,code:"allowed"} : transitionPolicy(store.database,item,accountId,to,reason,"human",roles,archived))}))),
       access: {
-        canOperate: bearerAuthorized(request) || accountStore.allows(requireAccount(request), item.productId, "operate"),
+        canOperate: !archived && (unauthenticatedDeployment || roles.operate),
         canVerify: !item.transferred && canVerifyItem(request, item),
       },
       ...store.transferReferences(item.key, (id) => bearerAuthorized(request)
@@ -4082,12 +4097,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.post("/api/v1/items/:itemKey/transitions", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
     const body = objectBody(request.body);
+    requireItemPermission(request,itemKey);
     const to = enumField(body, "to", WORK_ITEM_STATUSES)!;
+    const reason = enumField(body,"reason",TRANSITION_REASONS)!;
+    requireTransitionPermission(request,itemKey,to,reason,body.expectedStatus as WorkItemStatus|undefined);
+    if (["development_complete","pending_verification"].includes(to) && reason !== "manual_override") throw conflict("delivery_evidence_required","请通过交付状态检查提报。");
+    if (!unauthenticatedDeployment && (!Number.isSafeInteger(body.expectedRevision) || !body.idempotencyKey)) throw invalidInput("expectedRevision and idempotencyKey are required.","transition_version_required");
     return withTransferReferences(request, store.transitionWorkItem({
-      itemKey: requireTransitionPermission(request, itemKey, to),
+      itemKey: requireTransitionPermission(request, itemKey, to, reason,body.expectedStatus as WorkItemStatus|undefined),
       to,
       actor: "human",
-      reason: enumField(body, "reason", TRANSITION_REASONS)!,
+      reason,
+      ...(typeof body.expectedRevision === "number" ? {expectedRevision:body.expectedRevision} : {}),
+      ...(body.executionDisposition === "keep_running" || body.executionDisposition === "stop_requested" ? {executionDisposition:body.executionDisposition} : {}),
       ...(body.attachmentIds !== undefined ? { attachmentIds: stringArrayField(body, "attachmentIds")! } : {}),
       ...(body.expectedStatus !== undefined ? { expectedStatus: enumField(body, "expectedStatus", WORK_ITEM_STATUSES)! } : {}),
       ...(body.idempotencyKey !== undefined ? { idempotencyKey: stringField(body, "idempotencyKey")! } : {}),
@@ -4128,6 +4150,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const bulkEdges: Record<string, string> = {
       "done:verification_passed": "closing verification",
       "ready:released": "returning work to ready",
+      "ready:verification_failed": "verification failed",
     };
     const edge = bulkEdges[`${to}:${reason}`];
     if (!edge) {
@@ -4140,10 +4163,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const results = uniqueKeys.map((itemKey) => {
       try {
         store.transitionWorkItem({
-          itemKey: requireTransitionPermission(request, itemKey, to),
+          itemKey: requireTransitionPermission(request, itemKey, to, reason,to === "done" ? "pending_verification" : undefined),
           to,
           actor: "human",
-          reason,
+          reason: to === "ready" && store.getWorkItem(itemKey).status === "pending_verification" ? "verification_failed" : reason,
+          ...(() => {
+            const revisions = body.expectedRevisions as Record<string,unknown>|undefined;
+            const revision = revisions?.[itemKey];
+            if (!Number.isSafeInteger(revision) || typeof body.idempotencyKey !== "string") throw invalidInput("expectedRevisions and idempotencyKey are required.","transition_version_required");
+            return {expectedRevision:revision as number,idempotencyKey:`${body.idempotencyKey}:${itemKey}`};
+          })(),
           ...(note !== undefined ? { note } : {}),
           attribution: { accountId },
         });
@@ -4272,7 +4301,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.post("/api/v1/items/:itemKey/attachments", async (request, reply) => {
     const { itemKey } = request.params as { itemKey: string };
-    const key = requireItemPermission(request, itemKey, "operate");
+    const transitionUpload = request.headers["x-missiongo-transition-upload"] === "true";
+    const key = requireItemPermission(request,itemKey,transitionUpload ? "view" : "operate");
+    if (transitionUpload && !unauthenticatedDeployment) {
+      const roles=itemRoles(store.database,store.getWorkItem(key),requireAccount(request).id);
+      if (!roles.manager && !roles.proposer && !roles.builder) throw new MissionGoError("decision_not_permitted","没有此条目的业务决定权限。",403);
+    }
+    store.assertWorkItemWritable(key);
     if (!Buffer.isBuffer(request.body)) throw invalidInput("Attachment body must be binary data.");
     const filename = headerText(request.headers["x-missiongo-filename"], "X-MissionGo-Filename");
     const contentType = headerText(request.headers["x-missiongo-content-type"], "X-MissionGo-Content-Type");

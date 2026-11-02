@@ -129,8 +129,10 @@ function HumanConfirmation({record,onSaved,onCancel}:{record:StatusCheckRecord;o
   const [note,setNote] = useState("");
   const [details,setDetails] = useState<Record<string,{version:string;sourceCommit:string}>>({});
   const arrangeVerification = !record.requiredArtifacts?.length;
-  const mutation = useMutation({mutationFn:()=>api.confirmHandover(record.itemKey,record.id,stage === "integration" ? {stage,commit:commit.trim(),note:note.trim()}
-    : {stage,note:note.trim(),releases:(record.requiredArtifacts ?? []).map(artifact=>({artifact,version:details[artifact]?.version.trim() ?? "",sourceCommit:details[artifact]?.sourceCommit.trim() ?? ""}))}),onSuccess:async()=>{await onSaved();}});
+  const [commandKey]=useState(()=>crypto.randomUUID());
+  const version={expectedItemRevision:record.itemRevision,expectedHandoverRevision:record.revision,idempotencyKey:commandKey};
+  const mutation = useMutation({mutationFn:()=>api.confirmHandover(record.itemKey,record.id,stage === "integration" ? {...version,stage,commit:commit.trim(),note:note.trim()}
+    : {...version,stage,note:note.trim(),releases:(record.requiredArtifacts ?? []).map(artifact=>({artifact,version:details[artifact]?.version.trim() ?? "",sourceCommit:details[artifact]?.sourceCommit.trim() ?? ""}))}),onSuccess:async()=>{await onSaved();}});
   const label = stage === "integration" ? (zh ? "人工确认已集成" : "Confirm integration") : arrangeVerification ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication");
   useDialogDraft(Boolean(note) || Object.keys(details).length > 0 || commit !== ("commit" in record.completion ? record.completion.commit : record.evidence.merged?.commit ?? ""), mutation.isPending);
   return <form className="status-check-scope" onSubmit={e=>{e.preventDefault();if (!mutation.isPending) mutation.mutate();}}>

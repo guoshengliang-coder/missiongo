@@ -1,3 +1,4 @@
+import { postItemCommand } from "./item-command";
 import { chooseOption } from "./select-helpers";
 import {readFileSync} from "node:fs";
 import {expect,test} from "@playwright/test";
@@ -5,7 +6,7 @@ const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta
 async function recordArtifacts(request: import("@playwright/test").APIRequestContext, artifacts: string[]) {
  const created = await request.post("/api/v1/items", {data:{productId:fixture.productId,title:"Artifact discovery",description:"Artifacts from a task handover",type:"task",priority:"normal",status:"ready",environment:{platform:"other"}}});
  const item = await created.json() as {key:string};
- await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
+ await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
  const registered = await request.put(`/api/v1/items/${item.key}/handover`,{data:{completion:{kind:"commit",commit:"a".repeat(40),targetBranch:"main"},requiredArtifacts:artifacts}});
  expect(registered.ok()).toBe(true);
 }
@@ -14,7 +15,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
   await recordArtifacts(request,["web","cli"]);
   const created=await request.post("/api/v1/items",{data:{productId:fixture.productId,title:"Status check fixture",description:"Publication handover",type:"requirement",priority:"normal",status:"ready",environment:{platform:"web"}}});
   expect(created.status()).toBe(201);const item=await created.json() as {key:string};
-  const moved=await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});expect(moved.status()).toBe(200);
+  const moved=await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});expect(moved.status()).toBe(200);
   await page.setViewportSize({width,height:width === 375 ? 812 : 900});await page.emulateMedia({colorScheme:theme});
   await page.goto(`/?product=${fixture.productId}&item=${item.key}`);
   const menu=page.locator(".detail-toolbar .detail-more-menu");
@@ -60,7 +61,7 @@ test("local manual confirmation records integration and offline publication", as
  await recordArtifacts(request,["cli"]);
  const created=await request.post("/api/v1/items",{data:{productId:fixture.productId,title:"Offline CLI delivery",description:"Manual evidence",type:"task",priority:"normal",status:"ready",environment:{platform:"other"}}});
  const item=await created.json() as {key:string};
- await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
+ await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
  await page.setViewportSize({width:375,height:812});
  await page.goto(`/?product=${fixture.productId}&item=${item.key}`);
  await page.locator(".detail-toolbar .detail-more-menu > summary").click();
@@ -97,7 +98,7 @@ test("an empty product inventory does not block manual integration or arranging 
  expect(product.releaseArtifacts).toEqual([]);
  const created = await request.post("/api/v1/items",{data:{productId:product.id,title:"Inspect integrated changes",description:"No preconfigured release artifacts",type:"task",priority:"normal",status:"ready",environment:{platform:"other"}}});
  const item = await created.json() as {key:string};
- await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
+ await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
  await page.goto(`/?product=${product.id}&item=${item.key}`);
  await page.locator(".detail-toolbar .detail-more-menu > summary").click();
  await page.locator(".detail-toolbar").getByRole("button",{name:"状态检查",exact:true}).click();
@@ -117,6 +118,6 @@ test("an empty product inventory does not block manual integration or arranging 
  await dialog.getByRole("button",{name:"安排人工验证",exact:true}).click();
  await expect(dialog.getByText("条目状态：待验证",{exact:true})).toBeVisible();
  await expect(dialog.getByText("交接已核对",{exact:true})).toBeVisible();
- await expect(dialog.getByText("发布范围：待确认",{exact:true})).toBeVisible();
+ await expect(dialog.getByText("发布范围：明确无需发布",{exact:true})).toBeVisible();
  await expect(dialog.getByText("来源：登录用户人工确认。",{exact:true})).toBeVisible();
 });

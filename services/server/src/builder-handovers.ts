@@ -20,8 +20,8 @@ export class BuilderHandovers {
     const item = this.db.prepare("SELECT product_id FROM work_items WHERE id=?").get(itemId) as { product_id: string };
     const accounts = new AccountStore(this.store.database);
     const account = accounts.listAccounts().find(row => row.id === accountId);
-    if (!account || account.disabledAt || !accounts.allows(account,item.product_id,"operate") || !accounts.allows(account,item.product_id,"ai")) {
-      throw invalidInput("新 Builder 必须拥有此产品的操作权限和 AI 权限。");
+    if (!account || account.disabledAt || !accounts.allows(account,item.product_id,"operate")) {
+      throw invalidInput("新 Builder 必须拥有此产品的操作权限。");
     }
   }
 
@@ -87,6 +87,9 @@ export class BuilderHandovers {
       this.db.prepare(`INSERT INTO builder_handovers(id,item_id,from_account_id,to_account_id,initiated_by,note,status,created_at,updated_at)
         VALUES (?,?,?,?,?,?,'stopping',?,?)`).run(id,item.id,item.builderAccountId ?? null,targetId,accountId,note,now,now);
       this.db.prepare("UPDATE builder_execution_authorizations SET revoked=1 WHERE item_id=?").run(item.id);
+      this.db.prepare("UPDATE item_executions SET authorization_revoked=1 WHERE item_id=?").run(item.id);
+      // A human's claim responsibility follows the explicit Builder transfer. Scoped performer work and source processes keep their actual state.
+      this.db.prepare("UPDATE item_executions SET status='handed_over',result=?,ended_at=?,updated_at=? WHERE item_id=? AND origin='claim' AND status IN ('assigned','working','blocked')").run(note,now,now,item.id);
       for (const execution of executions) {
         this.db.prepare("INSERT INTO builder_revoked_dispatches(dispatch_id,handover_id) VALUES (?,?)").run(execution.id,id);
         if (execution.status === "queued") this.db.prepare("UPDATE dispatches SET status='cancelled',completed_at=?,error=? WHERE id=? AND status='queued'")
@@ -200,7 +203,7 @@ export class BuilderHandovers {
         return;
       }
       try { this.target(handover.item_id,handover.to_account_id); }
-      catch { this.block(handover,"新 Builder 的产品操作或 AI 权限已失效，请恢复权限后重试。"); return; }
+      catch { this.block(handover,"新 Builder 的产品操作权限已失效，请恢复权限后重试。"); return; }
       const now = new Date().toISOString();
       this.db.prepare("UPDATE work_items SET builder_account_id=?,builder_assignment='manual',updated_at=? WHERE id=?")
         .run(handover.to_account_id,now,handover.item_id);

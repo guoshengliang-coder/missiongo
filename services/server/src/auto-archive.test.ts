@@ -18,8 +18,8 @@ function fixture() {
     return item;
   };
   const finish = (key: string) => {
-    store.transitionWorkItem({ itemKey: key, to: "development_complete", reason: "resolution_submitted", actor: "human" });
-    store.transitionWorkItem({ itemKey: key, to: "pending_verification", reason: "release_verified", actor: "human" });
+    store.transitionWorkItem({ itemKey: key, to: "development_complete", reason:"resolution_submitted", actor: "human" });
+    store.transitionWorkItem({ itemKey: key, to: "pending_verification", reason:"release_verified", actor: "human" });
     store.transitionWorkItem({ itemKey: key, to: "done", reason: "verification_passed", actor: "human" });
   };
   const item = create();

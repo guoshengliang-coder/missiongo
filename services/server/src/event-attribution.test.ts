@@ -1,3 +1,4 @@
+import { seedStoreActors } from "./testing-fixtures.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,7 @@ async function seed() {
   directories.push(directory);
   const store = new MissionGoStore(join(directory, "missiongo.sqlite"));
   stores.push(store);
+  seedStoreActors(store,["account-1"]);
   let product = store.createProduct({ name: "Hermes Go", keyPrefix: "HG" });
   product = store.setProductReleaseArtifacts(product.id,["web","androidApp","androidSdk","macosApp"]);
   const item = store.createWorkItem({
@@ -136,7 +138,7 @@ describe("work-item event attribution", () => {
   it("records a merged PR before a verified release", async () => {
     const { store, item } = await seed();
     store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
-    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1",attribution:{accountId:"account-1"} });
 
     const submitted = store.submitDevelopmentComplete({
       itemKey: item.key,
@@ -173,7 +175,7 @@ describe("work-item event attribution", () => {
   it("records no-release work with a reason, retries once, and leaves verification to a person", async () => {
     const { store, item } = await seed();
     store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
-    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1",attribution:{accountId:"account-1"} });
     const input = {
       itemKey: item.key,
       pullRequestUrl: "https://github.com/owner/repo/pull/42",
@@ -202,7 +204,7 @@ describe("work-item event attribution", () => {
   it("rejects malformed, duplicate, unexplained empty, and contradictory release requirements", async () => {
     const { store, item } = await seed();
     store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
-    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1",attribution:{accountId:"account-1"} });
     const base = { itemKey: item.key, pullRequestUrl: "https://github.com/owner/repo/pull/42", idempotencyKey: "invalid-release" };
     for (const noReleaseReason of [undefined, "", "   ", "x".repeat(4_001)]) {
       expect(() => store.submitDevelopmentComplete({ ...base, requiredArtifacts: [], noReleaseReason })).toThrow();
@@ -225,7 +227,7 @@ describe("work-item event attribution", () => {
     expect(updated.releaseArtifacts).toEqual(["web", "gateway", "connector"]);
 
     store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
-    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1",attribution:{accountId:"account-1"} });
     const base = { itemKey: item.key, pullRequestUrl: "https://github.com/owner/repo/pull/42", idempotencyKey: "and-276" };
     // Task scope no longer requires a manually configured product allowlist.
     expect(store.submitDevelopmentComplete({ ...base, requiredArtifacts: ["web", "gateway", "connector"] }).status)
@@ -265,7 +267,7 @@ describe("work-item event attribution", () => {
     // path would quietly halve this one. The agent's summary is allowed 4,000.
     const { store, item } = await seed();
     store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
-    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1",attribution:{accountId:"account-1"} });
 
     const summary = "详细说明".repeat(750);
     expect(summary.length).toBeGreaterThan(2_000);
@@ -298,7 +300,7 @@ describe("work-item event attribution", () => {
     })).toThrowError(/Only an in-progress work item/);
 
     store.transitionWorkItem({ itemKey: item.key, to: "ready", actor: "human", reason: "triaged" });
-    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1" });
+    store.claimWorkItem({ itemKey: item.key, agentId: "agent-1", idempotencyKey: "claim-1",attribution:{accountId:"account-1"} });
     for (const pullRequestUrl of ["", "   ", "github.com/owner/repo/pull/42"]) {
       expect(() => store.submitDevelopmentComplete({ itemKey: item.key, pullRequestUrl, requiredArtifacts: ["web"], idempotencyKey: `bad-${pullRequestUrl}` }))
         .toThrowError(/completion reference/);

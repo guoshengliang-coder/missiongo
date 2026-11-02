@@ -1,8 +1,9 @@
+import { assertTransitionPolicy, itemRoles } from "./item-policy.js";
 import { resolveCommentAudience, enqueueCommentNotifications } from "./comment-discussions.js";
-import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover } from "./builder-authority.js";
+import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, hasPriorProcessing } from "./builder-authority.js";
 import { completionPayload, normalizeCompletion, sameCompletion } from "./completion.js";
 import { deliveryRound, queueDeliveryChecks } from "./delivery-round.js";
-import { enqueueVerificationNotification } from "./dingtalk-notifications.js";
+import { enqueueDecisionNotifications, enqueueVerificationNotification } from "./dingtalk-notifications.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 
@@ -98,6 +99,7 @@ interface ComponentRow {
 }
 
 interface WorkItemRow {
+  revision: number; content_version: number; held_from: WorkItemStatus | null; execution_disposition: string | null;
   builder_account_id?: string | null;
   id: string;
   item_key: string;
@@ -287,6 +289,11 @@ export class MissionGoStore {
     const item = this.getWorkItemRow(itemKey.toUpperCase());
     if (!item) throw notFound("Work item");
     if (this.isTransferred(item.id)) throw conflict("item_transferred", "This item was transferred and is permanently read-only.");
+    this.assertProductWritable(item.product_id);
+  }
+
+  assertProductWritable(productId: string): void {
+    if (this.getProduct(productId).archivedAt) throw conflict("project_archived", "归档项目只读，请先恢复项目。");
   }
 
   transferReferences(itemKey: string, canView: (productId: string) => boolean): Pick<WorkItemSnapshot, "transferredFrom" | "transferredTo"> {
@@ -319,12 +326,15 @@ export class MissionGoStore {
     const now = new Date().toISOString();
     const id = randomUUID();
     try {
-      this.database.connection
-        .prepare(
-          `INSERT INTO products (id, key_prefix, name, created_at, updated_at, created_by_account_id, release_artifacts)
-           VALUES (?, ?, ?, ?, ?, ?, '[]')`,
-        )
-        .run(id, keyPrefix, name, now, now, input.createdByAccountId ?? null);
+      this.database.transaction(() => {
+        this.database.connection
+          .prepare(
+            `INSERT INTO products (id, key_prefix, name, created_at, updated_at, created_by_account_id, release_artifacts)
+             VALUES (?, ?, ?, ?, ?, ?, '[]')`,
+          )
+          .run(id, keyPrefix, name, now, now, input.createdByAccountId ?? null);
+        if (input.createdByAccountId) new AccountStore(this.database).grantCreatorPermissions(input.createdByAccountId,id);
+      });
     } catch (error) {
       if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
         throw conflict("product_prefix_conflict", `Product prefix ${keyPrefix} is already in use.`);
@@ -798,6 +808,7 @@ export class MissionGoStore {
   }
 
   createWorkItem(input: CreateWorkItemInput): WorkItemSnapshot {
+    this.assertProductWritable(input.productId);
     const { title, description } = this.validateNewWorkItem(input);
 
     const now = new Date().toISOString();
@@ -809,9 +820,9 @@ export class MissionGoStore {
       const accounts = new AccountStore(this.database);
       const builder = input.builderAccountId === undefined ? undefined : accounts.listAccounts().find(account =>
         account.id === input.builderAccountId && !account.disabledAt
-        && accounts.allows(account, input.productId, "operate") && accounts.allows(account, input.productId, "ai"));
+        && accounts.allows(account, input.productId, "operate"));
       if (input.builderAccountId !== undefined && !builder) {
-        throw invalidInput("Choose an active Builder with AI and operation permission on this product.");
+        throw invalidInput("Choose an active Builder with operation permission on this product.");
       }
       const key = this.insertWorkItem(input, title, description, id, now, {
         type: input.type,
@@ -1093,8 +1104,20 @@ export class MissionGoStore {
         : undefined;
     const deliveryScopeChanged = (input.title !== undefined && input.title.trim() !== current.title)
       || (input.description !== undefined && input.description.trim() !== current.description)
-      || (report !== undefined && JSON.stringify(report) !== current.report_json);
+      || (report !== undefined && JSON.stringify(report) !== current.report_json)
+      || (input.type !== undefined && input.type !== current.type)
+      || (input.sourceComponentId !== undefined && input.sourceComponentId !== current.source_component_id)
+      || (input.environment !== undefined && input.environment?.platform !== parseEnvironment(current.environment_json)?.platform)
+      || (affectedComponentIds !== undefined && JSON.stringify([...affectedComponentIds].sort()) !== JSON.stringify([...this.getAffectedComponentIds(current.id)].sort()));
 
+    if (deliveryScopeChanged && ["pending_verification","done","cancelled"].includes(current.status)) {
+      throw conflict("content_decision_required", "修改需求前请先验收打回、重新打开或恢复条目。");
+    }
+    if (deliveryScopeChanged && ["in_progress","development_complete","on_hold"].includes(current.status) && input.attribution?.accountId) {
+      const roles = itemRoles(this.database,this.getWorkItem(itemKey),input.attribution.accountId);
+      if (!roles.manager && !roles.builder) throw new MissionGoError("content_confirmation_required","实质性需求修改须由当前 Builder 或管理者确认。",403);
+    }
+    const beforeContent = this.contentSnapshot(current);
     const fields: string[] = [];
     const values: SQLInputValue[] = [];
     if (input.title !== undefined) {
@@ -1145,7 +1168,14 @@ export class MissionGoStore {
       }
       if (input.sourceComponentId && input.sourceComponentId !== current.source_component_id) this.assignDefaultBuilder(current.id, current.product_id, input.sourceComponentId);
       this.insertEvent(current.id, "item_updated", "human", null, null,
-        { deliveryScopeChanged }, now, input.attribution);
+        { deliveryScopeChanged, contentVersion: current.content_version + (deliveryScopeChanged ? 1 : 0),
+          before:beforeContent,after:this.contentSnapshot(this.getWorkItemRow(itemKey)!) }, now, input.attribution);
+      if (deliveryScopeChanged) {
+        this.database.connection.prepare("UPDATE work_items SET content_version=content_version+1,revision=MAX(revision,?+1) WHERE id=?").run(current.revision,current.id);
+        const updated = this.getWorkItemRow(itemKey)!;
+        this.database.connection.prepare("INSERT INTO item_content_versions VALUES (?,?,?,?,?)").run(current.id,updated.content_version,
+          JSON.stringify(this.contentSnapshot(updated)),input.attribution?.accountId ?? null,now);
+      }
       if (deliveryScopeChanged) queueDeliveryChecks(this.database,current.id,now);
     });
 
@@ -1365,7 +1395,7 @@ export class MissionGoStore {
     if (ids.length && (input.actor !== "human" || !input.note?.trim())) throw invalidInput("Transition attachments require a human reason.");
     const key = input.idempotencyKey ? this.validateIdempotencyKey(input.idempotencyKey) : undefined;
     const fingerprint = createHash("sha256").update(JSON.stringify([input.itemKey.toUpperCase(), input.to, input.reason,
-      input.actor, input.note?.trim() ?? "", ids, input.expectedStatus, input.attribution ?? {}])).digest("hex");
+      input.actor, input.note?.trim() ?? "", ids, input.expectedStatus, input.expectedRevision, input.executionDisposition, input.attribution ?? {}])).digest("hex");
     const operation = `transition_item:${fingerprint}`;
     this.database.transaction(() => {
       if (key && this.getIdempotentResult<boolean>(key, operation)) return;
@@ -1385,6 +1415,12 @@ export class MissionGoStore {
       if (input.expectedStatus !== undefined && current.status !== input.expectedStatus) {
         throw conflict("transition_status_changed", "The item status has changed. Reload before trying again.");
       }
+      if (input.expectedRevision !== undefined && current.revision !== input.expectedRevision) {
+        throw conflict("transition_revision_changed", "条目已发生变化，请刷新后重新确认。");
+      }
+      if (["development_complete","pending_verification"].includes(input.to) && input.attribution?.accountId && input.actor === "human" && input.reason !== "manual_override" && !input.confirmedHandoverId) {
+        throw conflict("delivery_evidence_required", "请通过交付状态检查核实本轮依据后提报。");
+      }
       const uploads = ids.length ? this.getTimeline(current.item_key) : [];
       const attachments = ids.length ? this.listAttachmentsByItemId(current.id) : [];
       for (const id of ids) {
@@ -1398,7 +1434,7 @@ export class MissionGoStore {
         if (attachment.commentId || attachment.transitionEventId) throw invalidInput("Attachment already belongs to another operation.");
       }
       this.applyTransition(current, input.to, input.actor, input.reason, input.note, now, input.attribution ?? {},
-        ids.length ? { attachmentIds: ids } : {});
+        { ...(ids.length ? { attachmentIds: ids } : {}), ...(input.executionDisposition ? {executionDisposition:input.executionDisposition} : {}), ...(input.confirmedHandoverId ? {handoverId:input.confirmedHandoverId,evidenceSource:"human_confirmation"} : {}) });
       if (key) this.saveIdempotentResult(key, operation, true, now);
     });
     return this.getWorkItem(input.itemKey);
@@ -1646,7 +1682,7 @@ export class MissionGoStore {
       if (!item) throw notFound("Work item");
       const correcting = item.status === "ready" || item.status === "inbox";
       let mergeCommit: string | undefined;
-      if (item.status !== "in_progress" && !(correcting && evidence)) {
+      if (item.status !== "in_progress" && !(correcting && evidence) && !(item.status === "development_complete" && evidence)) {
         throw conflict("item_not_ready_for_development_complete", "Only an in-progress work item can be marked development complete.");
       }
       if (evidence) {
@@ -1725,6 +1761,11 @@ export class MissionGoStore {
           || !release.version.trim() || release.version.length > 100
           || !/^[0-9a-f]{40}$/.test(release.sourceCommit))) {
         throw invalidInput("Release evidence does not cover the recorded integration and every required artifact.");
+      }
+      if (evidence) {
+        const registered=this.database.connection.prepare("SELECT item_id,round_key,completion_json FROM status_handovers WHERE id=?").get(evidence.handoverId) as {item_id:string;round_key:string;completion_json:string}|undefined;
+        if (!registered || registered.item_id !== item.id || registered.round_key !== deliveryRound(this.database,item.id)
+          || !sameCompletion(normalizeCompletion({completion:JSON.parse(registered.completion_json)}),completion)) throw conflict("delivery_evidence_required","本轮交付关联已变化，请重新核查。");
       }
       const now = new Date().toISOString();
       this.applyTransition(item, "pending_verification", evidence?.actor ?? "agent", "release_verified", undefined, now,
@@ -1933,6 +1974,7 @@ export class MissionGoStore {
       readonly derivedFromItemId?: string;
     } = { actor: "human" },
   ): string {
+    this.assertProductWritable(input.productId);
     const status = input.status ?? "inbox";
     const affectedComponentIds = [...new Set(input.affectedComponentIds ?? [])];
     const report = this.validateWorkItemReport(input.report ?? { overview: description });
@@ -1977,6 +2019,7 @@ export class MissionGoStore {
         origin.derivedFromItemId ?? null,
       );
 
+    this.database.connection.prepare("INSERT INTO item_content_versions VALUES (?,1,?,?,?)").run(id,JSON.stringify({title,description,report,type:input.type,sourceComponentId:input.sourceComponentId ?? null,affectedComponentIds,environment:input.environment ?? null}),origin.attribution?.accountId ?? null,now);
     const insertAffected = this.database.connection.prepare(
       "INSERT INTO work_item_affected_components (item_id, component_id) VALUES (?, ?)",
     );
@@ -2008,6 +2051,18 @@ export class MissionGoStore {
     // Normalised before the domain sees it, so "is there a reason" and "what gets
     // stored" can never disagree. Newlines survive: a person explaining what
     // failed writes a list as often as a sentence.
+    if (current.status === "pending_verification" && to === "ready") reason = "verification_failed";
+    if (current.status === "pending_verification" && to === "done") reason = "verification_passed";
+    if (current.status === "done" && to === "ready") reason = "reopened";
+    if (current.status === "cancelled" && to === "inbox") reason = "restored";
+    const snapshot = {...this.getWorkItem(current.item_key),...(typeof payloadExtra.dispatchId === "string" ? {executionDispatchId:payloadExtra.dispatchId} : {})};
+    const evidenceRefresh = current.status === "development_complete" && to === "development_complete" && Boolean(payloadExtra.handoverId && payloadExtra.evidenceSource);
+    const authorization = attribution.accountId
+      ? assertTransitionPolicy(this.database,evidenceRefresh ? {...snapshot,status:"in_progress"} : snapshot,attribution.accountId,to,reason,actor)
+      : undefined;
+    if (current.status === "on_hold" && to !== "cancelled" && reason !== "manual_override" && to !== current.held_from) {
+      throw conflict("resume_origin_required", "只能恢复到暂缓前的阶段。");
+    }
     const text = note?.trim() || undefined;
     const decision = evaluateWorkItemTransition({
       from: current.status,
@@ -2016,12 +2071,29 @@ export class MissionGoStore {
       reason,
       ...(text ? { note: text } : {}),
     });
-    if (!decision.allowed) {
+    if (!decision.allowed && !evidenceRefresh) {
       throw decision.code === "note_required"
         ? invalidInput(decision.message, "transition_note_required")
         : conflict("invalid_state_transition", decision.message);
     }
-    assertBuilderExecution(this.database,current.id,attribution.accountId,actor !== "human" || to === "in_progress");
+    if (actor !== "system" && reason !== "manual_override" && (to === "in_progress" && reason === "claim" || actor === "agent")) assertBuilderExecution(this.database,current.id,attribution.accountId);
+    if (to === "in_progress" && reason === "claim" && current.status !== "on_hold" && (current.execution_disposition || hasPriorProcessing(this.database,current.id)) && hasOngoingItemExecution(this.database,current.id,typeof payloadExtra.dispatchId === "string" ? payloadExtra.dispatchId : "")) {
+      throw conflict("execution_stop_unconfirmed", "原执行仍在运行或停止尚未确认，请先查看执行记录。");
+    }
+    if (actor === "human" && attribution.accountId && ["on_hold","cancelled"].includes(to) && this.hasOngoingExecution(current.id)
+      && payloadExtra.executionDisposition !== "keep_running" && payloadExtra.executionDisposition !== "stop_requested") throw invalidInput("请选择在途执行的处置方式。","execution_disposition_required");
+    const round = deliveryRound(this.database,current.id);
+    if (to === "on_hold") this.database.connection.prepare("UPDATE work_items SET held_from=?,execution_disposition=? WHERE id=?")
+      .run(current.status,typeof payloadExtra.executionDisposition === "string" ? payloadExtra.executionDisposition : "keep_running",current.id);
+    if (to === "cancelled") this.database.connection.prepare("UPDATE work_items SET execution_disposition=? WHERE id=?")
+      .run(typeof payloadExtra.executionDisposition === "string" ? payloadExtra.executionDisposition : "stop_requested",current.id);
+    if (reason === "verification_failed" || reason === "reopened" && current.status === "done" || reason === "restored") {
+      this.database.connection.prepare("UPDATE work_items SET execution_disposition='stop_requested' WHERE id=?").run(current.id);
+    }
+    if (reason === "verification_failed" || reason === "reopened" && current.status === "done" || to === "cancelled" || reason === "restored") {
+      this.database.connection.prepare("UPDATE builder_execution_authorizations SET revoked=1 WHERE item_id=?").run(current.id);
+      this.database.connection.prepare("UPDATE item_executions SET authorization_revoked=1 WHERE item_id=?").run(current.id);
+    }
     if (to === "in_progress" && !current.builder_account_id && attribution.accountId) {
       const accounts = new AccountStore(this.database);
       const account = accounts.listAccounts().find(row => row.id === attribution.accountId);
@@ -2032,7 +2104,15 @@ export class MissionGoStore {
           {from:null,to:account.id,fromName:"待分配",toName:account.nickname || account.email.split("@")[0],note:"首次开始处理，自动认领 Builder"},now,attribution);
       }
     }
-    if (to === "in_progress") this.database.connection.prepare("UPDATE builder_handovers SET claimed_at=? WHERE item_id=? AND status='completed' AND claimed_at IS NULL")
+    let humanExecutionId: string | undefined;
+    if (to === "in_progress" && reason === "claim" && actor === "human" && attribution.accountId) {
+      const existing=this.database.connection.prepare("SELECT id FROM item_executions WHERE item_id=? AND account_id=? AND authorization_revoked=0 AND status IN ('assigned','working','blocked') LIMIT 1").get(current.id,attribution.accountId) as {id:string}|undefined;
+      humanExecutionId=existing?.id ?? randomUUID();
+      if (existing) this.database.connection.prepare("UPDATE item_executions SET status='working',started_at=COALESCE(started_at,?),updated_at=? WHERE id=?").run(now,now,existing.id);
+      else this.database.connection.prepare(`INSERT INTO item_executions(id,item_id,account_id,scope,status,created_by,created_at,started_at,updated_at,origin)
+        VALUES (?,?,?,'人工领取处理','working',?,?,?,?,'claim')`).run(humanExecutionId,current.id,attribution.accountId,attribution.accountId,now,now,now);
+    }
+    if (to === "in_progress" && reason === "claim") this.database.connection.prepare("UPDATE builder_handovers SET claimed_at=? WHERE item_id=? AND status='completed' AND claimed_at IS NULL")
       .run(now,current.id);
     this.database.connection.prepare("UPDATE work_items SET status = ?, updated_at = ? WHERE id = ?").run(to, now, current.id);
     const eventId = this.insertEvent(
@@ -2041,19 +2121,29 @@ export class MissionGoStore {
       actor,
       current.status,
       to,
-      { reason, ...(text ? { note: text } : {}), ...payloadExtra },
+      { reason, ...(reason === "resume" ? {executionResumed:false} : {}), ...(text ? { note: text } : {}), roles:authorization?.roles ?? [], authorizationBasis:authorization?.basis ?? actor, contentVersion:current.content_version, roundKey:round, revision:current.revision, resultRevision:(this.database.connection.prepare("SELECT revision FROM work_items WHERE id=?").get(current.id) as {revision:number}).revision, ...(humanExecutionId ? {executionId:humanExecutionId} : {}), ...payloadExtra },
       now,
       attribution,
     );
-    if (actor === "human" && (to === "ready" || to === "inbox")) queueDeliveryChecks(this.database,current.id,now);
+    if (to === "in_progress" && reason === "claim") this.database.connection.prepare("UPDATE work_item_events SET payload_json=json_set(payload_json,'$.roundKey',?) WHERE id=?").run(eventId,eventId);
+    if (actor === "human" && (to === "ready" || to === "inbox" || current.status === "on_hold")) queueDeliveryChecks(this.database,current.id,now);
     if (to === "pending_verification") {
       const creator = this.creatorOf(current.id).createdBy;
       enqueueVerificationNotification(this.database,eventId,current.id,current.product_id,
         creator && creator.kind !== "sdk" ? creator.accountId : undefined,now);
     }
+    if (reason === "verification_failed" || to === "cancelled" || current.status === "done" && to === "ready") {
+      const creator=this.creatorOf(current.id).createdBy;
+      enqueueDecisionNotifications(this.database,eventId,current.id,current.product_id,
+        creator && creator.kind !== "sdk" ? creator.accountId : undefined,current.builder_account_id ?? undefined,now);
+    }
     // Every status write passes here, so this is the one place a hand-off can
     // notice that its last open item just finished (AND-129).
     if (to === "done" || to === "cancelled") autoArchiveForItem(this.database, current.id, now);
+  }
+
+  hasOngoingExecution(itemId: string): boolean {
+    return hasOngoingItemExecution(this.database,itemId);
   }
 
   private getProductRow(productId: string): ProductRow | undefined {
@@ -2488,7 +2578,7 @@ export class MissionGoStore {
     if (module.archivedAt || !module.defaultBuilderAccountId) return;
     const accounts = new AccountStore(this.database);
     const account = accounts.listAccounts().find(entry => entry.id === module.defaultBuilderAccountId);
-    if (!account || account.disabledAt || !accounts.allows(account, productId, "ai") || !accounts.allows(account, productId, "operate")) return;
+    if (!account || account.disabledAt || !accounts.allows(account, productId, "operate")) return;
     this.database.connection.prepare(`UPDATE work_items SET builder_account_id = ?, builder_assignment = 'automatic'
       WHERE id = ? AND builder_account_id IS NULL AND builder_assignment IS NULL`).run(account.id, itemId);
   }
@@ -2504,7 +2594,7 @@ export class MissionGoStore {
     const account = accounts.listAccounts().find(entry => entry.id === row.builder_account_id);
     return { builderAccountId: row.builder_account_id,
       builderName: account ? account.nickname || account.email.split("@")[0]! : "已删除账号",
-      builderNeedsReassignment: !account || Boolean(account.disabledAt) || !accounts.allows(account, row.product_id, "ai") || !accounts.allows(account, row.product_id, "operate") };
+      builderNeedsReassignment: !account || Boolean(account.disabledAt) || !accounts.allows(account, row.product_id, "operate") };
   }
 
   private builderHandoverOf(row: WorkItemRow): Pick<WorkItemSnapshot,"builderHandover"> {
@@ -2512,6 +2602,11 @@ export class MissionGoStore {
     if (!handover) return {};
     return {builderHandover:{id:handover.id,status:handover.status,reason:handover.reason,
       targetAccountId:handover.to_account_id,canTakeOver:handover.status === "completed" && row.status === "in_progress" && !handover.claimed_at}};
+  }
+
+  private contentSnapshot(row:WorkItemRow) {
+    return {title:row.title,description:row.description,report:parseReport(row.report_json),type:row.type,
+      sourceComponentId:row.source_component_id,affectedComponentIds:this.getAffectedComponentIds(row.id),environment:parseEnvironment(row.environment_json)};
   }
 
   private mapWorkItem(row: WorkItemRow): WorkItemSnapshot {
@@ -2522,6 +2617,9 @@ export class MissionGoStore {
     return {
       id: row.id,
       key: row.item_key,
+      revision: row.revision, contentVersion: row.content_version,
+      ...(row.held_from ? {heldFrom:row.held_from} : {}),
+      ...(row.execution_disposition ? {executionDisposition:row.execution_disposition} : {}),
       ...this.builderOf(row),
       ...this.builderHandoverOf(row),
       productId: row.product_id,

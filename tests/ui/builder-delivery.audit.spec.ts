@@ -1,3 +1,4 @@
+import { postItemCommand } from "./item-command";
 import { chooseOption } from "./select-helpers";
 import { randomBytes } from "node:crypto";
 import { expect, test } from "@playwright/test";
@@ -37,7 +38,12 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await expect(page.getByRole("button",{name:"安排执行／交接",exact:true})).toHaveCount(0);
       // The assignment entry is hidden for now, so the same API builds the
       // three rounds this test has always checked on screen.
-      const first=await (await request.post(`/api/v1/items/${item.key}/executions`,{data:{kind:"human",accountId:user.id,scope:"Implement frontend"}})).json();
+      const executionInput={data:{kind:"human",accountId:user.id,scope:"Implement frontend"}};
+      expect((await request.post(`/api/v1/items/${item.key}/executions`,executionInput)).status()).toBe(409);
+      expect((await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"ready",reason:"triaged"}})).ok()).toBeTruthy();
+      const assigned=await request.post(`/api/v1/items/${item.key}/executions`,executionInput);
+      expect(assigned.ok()).toBeTruthy();
+      const first=await assigned.json();
       const panel=page.getByRole("region",{name:"执行记录",exact:true});
       await page.reload();
       await expect(panel.locator(".execution-row")).toHaveCount(1);
@@ -73,8 +79,8 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await page.getByLabel("交接说明",{exact:true}).fill("Take responsibility through verification");
       await page.getByRole("button",{name:"确认转交",exact:true}).click();
       await expect(eyebrow).toContainText(`Builder builder-${suffix}`);
-      const stored=await (await request.get(`/api/v1/items/${item.key}`)).json();expect(stored.status).toBe("inbox");
-      await page.goto(`/?product=${product.id}&status=inbox&builder=mine`);await expect(page.locator(".item-row")).toHaveCount(0);
+      const stored=await (await request.get(`/api/v1/items/${item.key}`)).json();expect(stored.status).toBe("ready");
+      await page.goto(`/?product=${product.id}&status=ready&builder=mine`);await expect(page.locator(".item-row")).toHaveCount(0);
       await chooseOption(page.getByRole("combobox",{name:"Builder",exact:true}), member.id);await expect(page.locator(".item-row")).toHaveCount(1);
       await page.goto(`/settings/admin/accounts?product=${product.id}&settingsProduct=${product.id}`);
       const row=page.locator(".account-row").filter({hasText:member.email});

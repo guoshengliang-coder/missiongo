@@ -1,10 +1,11 @@
+import { seedStoreActors } from "./testing-fixtures.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MissionGoStore } from "./store.js";
 import { StatusChecks } from "./status-checks.js";
 import { DispatchStore } from "./dispatch-store.js";
 
 let store: MissionGoStore;
-beforeEach(()=>{vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date("2026-10-27T01:00:00Z"));store=new MissionGoStore(":memory:");});
+beforeEach(()=>{vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date("2026-10-27T01:00:00Z"));store=new MissionGoStore(":memory:");seedStoreActors(store,["human-1"]);});
 afterEach(()=>{store.close();vi.useRealTimers();});
 const pr="https://github.com/example/project/pull/42";
 const merged={commit:"a".repeat(40),occurredAt:"2026-10-27T01:00:00Z"};
