@@ -55,6 +55,7 @@ import {
   LoaderCircle,
   Maximize2,
   Menu,
+  MessageCircleReply,
   MessageSquarePlus,
   MoreHorizontal,
   MoreVertical,
@@ -3231,14 +3232,18 @@ function CommentGroup({root,replies,item,onReply,onWithdraw,onNotice,notificatio
   const renderComment=(event:WorkItemEvent,isReply:boolean)=><div id={`comment-${event.id}`} key={event.id} className={`${isReply?"comment-thread-reply":"comment-thread-root"}${focusedCommentId===event.id?" comment-focus-target":""}`} tabIndex={-1}>
       <span className="comment-avatar" aria-hidden="true">{Array.from(names.get(event.id) ?? "")[0]}</span>
       <div className="comment-message">
+        <div className="comment-heading">
         <header className="comment-byline"><strong><button type="button" className="comment-author-name" title={names.get(event.id)} onClick={()=>setAuthorName(names.get(event.id) ?? "")}>{names.get(event.id)}</button></strong><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>
           {event.actorKind==="agent" && <span className="comment-actor-label">{commentHeading(event,t("agentAnalysis"),actorLabel("agent"))}</span>}
-          {!item.transferred && !event.payload.withdrawnAt && <CommentMoreActions itemKey={item.key} commentId={event.id} onWithdraw={()=>onWithdraw(event.id)} onNotice={onNotice} />}
         </header>
+        {!item.transferred && !event.payload.withdrawnAt && <div className="comment-header-actions">
+          <button type="button" className="text-button comment-reply-button" onClick={()=>onReply(event)}><MessageCircleReply size={16} aria-hidden="true" />{t("replyComment")}</button>
+          <CommentMoreActions itemKey={item.key} commentId={event.id} onWithdraw={()=>onWithdraw(event.id)} onNotice={onNotice} />
+        </div>}
+        </div>
         {isReply && <p className="comment-reply-byline"><button type="button" className="comment-reply-author" onClick={()=>setAuthorName(names.get(String(event.payload.replyToCommentId)) ?? t("originalComment"))}>{t("commentReplyTo",{name:names.get(String(event.payload.replyToCommentId)) ?? t("originalComment")})}</button></p>}
         <CommentBody payload={event.payload} item={item} />
         <div className="comment-actions">
-          {!item.transferred && !event.payload.withdrawnAt && <button type="button" className="text-button comment-reply-button" onClick={()=>onReply(event)}>{t("replyComment")}</button>}
           <CommentDingTalkNotifications itemKey={item.key} commentId={event.id} query={notificationsQuery}
             hasAudience={Array.isArray(event.payload.mentions) && event.payload.mentions.length>0 || events.some(parent=>parent.id===event.payload.replyToCommentId && parent.accountId && parent.accountId!==event.accountId)}
             readOnly={Boolean(item.transferred || event.payload.withdrawnAt)} />
@@ -3408,9 +3413,8 @@ function CommentBody({
   const extraMentions=additionalMentionNames(commentPlainText(payload.bodyKind,body),mentions);
   const rendered = <div className="comment-content">{textContent}{extraMentions.length>0 && <p className="comment-mentioned">{t("commentRecipients",{names:extraMentions.join("、")})}</p>}{attachmentIds.length > 0 && <CommentAttachments itemKey={item.key} attachments={attachments} />}</div>;
 
-  // Agents write a lot, and at length. A long comment folds behind one line so
-  // a timeline of them can be skimmed; a short one is already its own summary,
-  // and putting a summary above it would just say everything twice.
+  // Human and agent comments share the same summary and in-card expansion.
+  // Short comments are already their own summary.
   const plain = commentPlainText(payload.bodyKind, body);
   const summary = typeof payload.summary === "string" && payload.summary.trim()
     ? payload.summary.trim()
